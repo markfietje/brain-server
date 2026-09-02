@@ -375,37 +375,6 @@ pub async fn list_proposals(
     Ok(Json(rows))
 }
 
-/// if the proposal is older than
-/// [`crate::config::proposal_ttl_secs`], mark it rejected + audit
-/// `proposal_expired` and return `false`. A stale auto-capture prompt's
-/// context is unrecoverable, so the queue refuses to act on it (neither
-/// approve nor reject — it's already beyond verification).
-pub(crate) fn expire_if_stale(
-    conn: &rusqlite::Connection,
-    id: i64,
-    created_at: i64,
-) -> Result<bool, HandlerError> {
-    let now = chrono::Utc::now().timestamp();
-    if now - created_at <= crate::config::proposal_ttl_secs() {
-        return Ok(true);
-    }
-    conn.execute(
-        "UPDATE proposals SET status = 'rejected', decided_at = ?1
-         WHERE id = ?2 AND status = 'pending'",
-        rusqlite::params![now, id],
-    )
-    .map_err(|e| HandlerError::internal(e.to_string()))?;
-    crate::audit::record(
-        conn,
-        crate::audit::AuditKind::Reconcile,
-        "api",
-        &format!("proposal:{id}"),
-        crate::audit::AuditStatus::Ok,
-        "proposal_expired",
-    );
-    Ok(false)
-}
-
 /// `POST /proposals/{id}/approve` — promote a candidate into long-term memory.
 /// One transaction: creates the chunk (memory_kind, authority, observed_at),
 /// marks the proposal approved + decided_at. With `?supersedes=<id>`, calls
@@ -476,15 +445,17 @@ pub async fn approve_proposal(
         // against any concurrent approve/reject — eliminates the double-promote
         // race that was previously caught only by the content_hash UNIQUE index
         // (which surfaced as a generic 500 to the loser).
-        let stale_created_at: Option<i64> = conn
-            .query_row(
-                "SELECT created_at FROM proposals WHERE id = ?1 AND status = 'pending'",
-                rusqlite::params![id],
-                |r| r.get(0),
+        // refuse to act on an expired proposal (audits + rejects it).
+        let created_at = crate::service::gate::pending_created_at(&conn, id);
+        if let Some(created_at) = created_at
+            && !crate::service::gate::expire_if_stale(
+                &conn,
+                id,
+                created_at,
+                chrono::Utc::now().timestamp(),
             )
-            .ok();
-        if let Some(created_at) = stale_created_at
-            && !expire_if_stale(&conn, id, created_at)? {
+            .map_err(|e| HandlerError::internal(e.to_string()))?
+        {
                 return Err(HandlerError::bad_request(
                     "proposal_expired",
                     "proposal aged out of the review window (TTL), refused",
@@ -1604,15 +1575,15 @@ pub async fn reject_proposal(
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
         // refuse to act on an expired proposal (audits + rejects it).
-        let created_at: Option<i64> = conn
-            .query_row(
-                "SELECT created_at FROM proposals WHERE id = ?1 AND status = 'pending'",
-                rusqlite::params![id],
-                |r| r.get(0),
+        let stale_created_at = crate::service::gate::pending_created_at(&conn, id);
+        if let Some(created_at) = stale_created_at
+            && !crate::service::gate::expire_if_stale(
+                &conn,
+                id,
+                created_at,
+                chrono::Utc::now().timestamp(),
             )
-            .ok();
-        if let Some(created_at) = created_at
-            && !expire_if_stale(&conn, id, created_at)?
+            .map_err(|e| HandlerError::internal(e.to_string()))?
         {
             return Err(HandlerError::bad_request(
                 "proposal_expired",
@@ -1640,12 +1611,7 @@ pub async fn reject_proposal(
         ) {
             tracing::warn!("presence touch failed on reject: {e}");
         }
-        let n = tx
-            .execute(
-                "UPDATE proposals SET status = 'rejected', decided_at = ?1
-                 WHERE id = ?2 AND status = 'pending'",
-                rusqlite::params![now_ts, id],
-            )
+        let n = crate::service::gate::cas_rejected(&tx, id, now_ts)
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         tx.commit()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -1661,11 +1627,7 @@ pub async fn reject_proposal(
             // the conversation-event producer — `proposal/decided`
             // (terminal) after the rejection committed; the digest rides the
             // stored row so the node converges without its open event.
-            if let Ok(content) = conn.query_row(
-                "SELECT content FROM proposals WHERE id = ?1",
-                rusqlite::params![id],
-                |r| r.get::<_, String>(0),
-            ) {
+            if let Ok(content) = crate::service::gate::content_of(&conn, id) {
                 crate::alert::publish(
                     &alert_state,
                     crate::alert::ALERT_KIND_PROPOSAL,
@@ -1682,12 +1644,7 @@ pub async fn reject_proposal(
             // semantics as approve, never a mutable row pointer.
             #[cfg(feature = "compliance-pack")]
             {
-                let basis: String = conn
-                    .query_row(
-                        "SELECT content FROM proposals WHERE id = ?1",
-                        rusqlite::params![id],
-                        |r| r.get::<_, String>(0),
-                    )
+                let basis: String = crate::service::gate::content_of(&conn, id)
                     .map(|c| review_digest(&c))
                     .unwrap_or_else(|_| format!("proposal:{id}"));
                 super::compliance::record_oversight(
@@ -1796,15 +1753,16 @@ pub async fn edit_proposal(
             // Same stale/expiry discipline as approve/reject:
             // the TTL check + expiration audit land on the raw autocommit conn
             // BEFORE the tx, then the tx re-checks `status='pending'`.
-            let created_at: Option<i64> = conn
-                .query_row(
-                    "SELECT created_at FROM proposals WHERE id = ?1 AND status = 'pending'",
-                    rusqlite::params![id],
-                    |r| r.get(0),
-                )
-                .ok();
+            let created_at = crate::service::gate::pending_created_at(&conn, id);
             if let Some(ct) = created_at
-                && !expire_if_stale(&conn, id, ct)? {
+                && !crate::service::gate::expire_if_stale(
+                    &conn,
+                    id,
+                    ct,
+                    chrono::Utc::now().timestamp(),
+                )
+                .map_err(|e| HandlerError::internal(e.to_string()))?
+            {
                     return Err(HandlerError::bad_request(
                         "proposal_expired",
                         "proposal aged out of the review window (TTL), refused",

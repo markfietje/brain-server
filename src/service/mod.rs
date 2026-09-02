@@ -105,7 +105,7 @@ mod pins {
     /// is a regression. Slots only shrink — a baseline row may be lowered
     /// when its surface moves to a service core, never raised.
     const SQL_BASELINE: &[(&str, usize)] = &[
-        ("gate.rs", 66),
+        ("gate.rs", 59),
         ("observe.rs", 0),
         ("domains.rs", 0),
         ("clients.rs", 0),
@@ -305,12 +305,15 @@ mod pins {
     /// read (ProposalView + deadline/SLA derivation + the page SELECT pair +
     /// the supervisor owner filter, tests riding along) lowered it to 68, the
     /// creation insert + conflict pre-check (with the pending audit riding
-    /// the insert) to 66 — each in the SAME commit that moved the SQL.
+    /// the insert) to 66, the expire/reject family (the TTL write with
+    /// wall-clock as an argument, the pending-fence read one-defined across
+    /// approve/reject/edit, the reject CAS, the content read) to 59 — each in
+    /// the SAME commit that moved the SQL.
     #[test]
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 66,
+            sum, 59,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );

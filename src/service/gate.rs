@@ -18,7 +18,7 @@
 
 use std::fmt;
 
-use rusqlite::{Connection, params_from_iter};
+use rusqlite::{Connection, params, params_from_iter};
 
 /// Max proposals returned per review page. Bounded so a runaway queue can't
 /// unbounded a response. The cap rides the core so every future caller of
@@ -300,6 +300,76 @@ pub(crate) fn find_conflict(conn: &Connection, content: &str) -> Option<i64> {
         return pairs.into_iter().map(|p| p.from_chunk).next();
     }
     None
+}
+
+/// The pending-fence read behind approve/reject/edit: `created_at` iff the
+/// row is still pending. `None` = already decided (or absent) — the caller
+/// treats that as "nothing to expire".
+pub(crate) fn pending_created_at(conn: &Connection, id: i64) -> Option<i64> {
+    conn.query_row(
+        "SELECT created_at FROM proposals WHERE id = ?1 AND status = 'pending'",
+        params![id],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+/// if the proposal is older than
+/// [`crate::config::proposal_ttl_secs`], mark it rejected + audit
+/// `proposal_expired` and return `false`. A stale auto-capture prompt's
+/// context is unrecoverable, so the queue refuses to act on it (neither
+/// approve nor reject — it's already beyond verification). Wall-clock enters
+/// as an argument so a test pins the instant.
+pub(crate) fn expire_if_stale(
+    conn: &Connection,
+    id: i64,
+    created_at: i64,
+    now: i64,
+) -> Result<bool, GateError> {
+    if now - created_at <= crate::config::proposal_ttl_secs() {
+        return Ok(true);
+    }
+    conn.execute(
+        "UPDATE proposals SET status = 'rejected', decided_at = ?1
+         WHERE id = ?2 AND status = 'pending'",
+        params![now, id],
+    )
+    .map_err(GateError::from)?;
+    crate::audit::record(
+        conn,
+        crate::audit::AuditKind::Reconcile,
+        "api",
+        &format!("proposal:{id}"),
+        crate::audit::AuditStatus::Ok,
+        "proposal_expired",
+    );
+    Ok(false)
+}
+
+/// The reject CAS — `AND status = 'pending'` so a concurrent
+/// approve/reject can't both succeed. Rows-affected belongs to the caller
+/// (0 = the 404 path).
+pub(crate) fn cas_rejected(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    now: i64,
+) -> rusqlite::Result<usize> {
+    tx.execute(
+        "UPDATE proposals SET status = 'rejected', decided_at = ?1
+         WHERE id = ?2 AND status = 'pending'",
+        params![now, id],
+    )
+}
+
+/// The stored proposal content — the digest input for the decided event +
+/// the oversight basis. Best-effort callers keep their `ok()`/`unwrap_or`
+/// shapes against the returned `rusqlite::Result`.
+pub(crate) fn content_of(conn: &Connection, id: i64) -> rusqlite::Result<String> {
+    conn.query_row(
+        "SELECT content FROM proposals WHERE id = ?1",
+        params![id],
+        |r| r.get::<_, String>(0),
+    )
 }
 
 #[cfg(test)]

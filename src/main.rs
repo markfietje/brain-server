@@ -11227,13 +11227,17 @@ Final paragraph after the rule.";
             .unwrap();
 
         // Fresh: still actionable.
-        assert!(handlers::gate::expire_if_stale(&db, fresh, now).expect("fresh is fresh"));
+        assert!(
+            crate::service::gate::expire_if_stale(&db, fresh, now, chrono::Utc::now().timestamp())
+                .expect("fresh is fresh")
+        );
         // Stale: refused + audited as expired.
         assert!(
-            !handlers::gate::expire_if_stale(
+            !crate::service::gate::expire_if_stale(
                 &db,
                 stale,
-                now - crate::config::proposal_ttl_secs() - 1
+                now - crate::config::proposal_ttl_secs() - 1,
+                chrono::Utc::now().timestamp(),
             )
             .expect("stale refused")
         );
