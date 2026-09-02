@@ -364,7 +364,7 @@ pub async fn feedback(
             reason_hash,
             ts,
             session,
-            tenant,
+            &tenant,
             None,
         )
         .map_err(feedback_err)

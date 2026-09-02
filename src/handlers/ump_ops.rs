@@ -834,7 +834,7 @@ pub async fn feedback(
             reason_hash,
             ts,
             session,
-            tenant,
+            &tenant,
             Some(&outcome),
         )
         .map_err(|e| match e {

@@ -63,7 +63,7 @@ pub(crate) fn record_feedback(
     reason_hash: Option<String>,
     ts: i64,
     session: Option<String>,
-    tenant: String,
+    tenant: &str,
     ump_outcome: Option<&str>,
 ) -> Result<(), FeedbackError> {
     // chunk_id validity: refuse feedback on a non-existent chunk so the
