@@ -19,10 +19,7 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
-Predecessor: [1.28.49] — "Terrace": the register surfaces, two cores.
-
----
-
+## [1.28.52] — 2026-09-03 — "Cornerstone": THE FIN — the Foundation Line complete and machine-enforced
 ## [1.28.51] — 2026-09-02 — "Confluence": the long tail, sixteen files to zero
 
 The Foundation Line's long-tail milestone: every handler file EXCEPT
@@ -213,6 +210,106 @@ rows — all pinned through every move.)
   only, untouched; rerun-when-seen).
 
 Predecessor: [1.28.50] — "Aqueduct": the retrieval surfaces, two cores.
+
+---
+
+## [1.28.52] — 2026-09-03 — "Cornerstone": THE FIN — the Foundation Line complete and machine-enforced
+
+The line's last milestone, with one declared amendment: v1.28.51 shipped
+with `gate.rs` (78 statements, the HITL proposal engine) still holding SQL,
+so the milestone opened with the AGENTS.md-prescribed Masonry-class
+extraction of the final vein — a new `service::gate` core, six surfaces,
+six commits, full gate + baseline-row-lowered per commit (78 → 68 → 66 → 59
+→ 57 → 21 → 0) — and then flipped the guard to ENFORCING. Handler-side SQL
+is now ZERO across the tree, and any regression — production, test fixture,
+or even a comment naming a statement opener — fails CI. No features, no
+routes, no schema (1.28.45 untouched).
+
+### Release notes
+
+**Bug fixes**
+- None. (No behavior change ships in this release: the extraction moves
+  statements verbatim with their error messages, and the flip deletes
+  already-satisfied machinery.)
+
+**Improvements**
+- **`service::gate` (NEW)** owns the HITL review queue's complete storage
+  story: the review-queue page read (status filter + `since` window + the
+  LIMIT ceiling) with the deadline/SLA derivation and the supervisor owner
+  filter; the creation insert (the `proposal_pending` audit riding the same
+  call) and the subject-anchor conflict pre-check; the TTL-expire write with
+  wall-clock entering as an argument; the pending-fence read ONE-DEFINED
+  across approve/reject/edit (was three copies); the reject CAS and the
+  content read (was two copies inside reject); the edit-path row read and
+  re-score CAS; and the approve family — the pending-row read, the decision
+  CAS ONE-DEFINED across six branches, the article-state CAS typed
+  (`KcsStateError::SlugTaken`) so `public_slug_taken` keeps its frozen 409,
+  the translation CAS with its verbatim `datetime('now')` quirk pinned and
+  filed, the KCS draft insert, the vec shadow ONE-DEFINED across both
+  promote paths, the idempotent case-article link, the supersession
+  link-follow, and the generic promote insert. The export read moved as
+  `export_bundle` (count pre-flight + the four datasets in stored/legacy
+  JSON forms); the handler keeps the 413 ceiling, redaction, the provenance
+  summary, and the UMP projections.
+- **THE ENFORCING FLIP.** The per-file baseline table, the floor pin, and
+  the allowlist machinery are DELETED — nothing is left to compare against.
+  `no_sql_in_handlers_enforced` walks `src/handlers/` recursively and fails
+  on ANY counted statement; a ≥30-file sanity refuses the vacuous pass, and
+  `sql_statement_counter_still_fires` proves the counter still detects all
+  four openers (a guard that cannot fire is decoration).
+- **`service_layer_free_of_http_types`** — the transport-free grep takes its
+  line-plan name (born a hard error at Plumb; there was never a warning
+  phase). Both guards ride CI via the test jobs (default + bench).
+- **The architecture law is now public documentation**:
+  `docs/architecture.md` states the two layer rules, carries the
+  request-flow mermaid diagram through the seam, and the seam table (what
+  crosses down: connections, injected time, validated values; what crosses
+  up: domain types, typed errors, in-tx audit rows; what never crosses:
+  pools, state, statuses, wire shapes). AGENTS.md's Architecture Law points
+  there as the law's public statement.
+- **The Foundation Line close-out report** is appended to `docs/AUDIT.md`:
+  pin counts (service-tree pins 0 → 89 across the line; suite 1268 → 1308),
+  the v1.28.50 eval-floor history, the per-phase smoke matrix, and the wire
+  + schema identity proof — routes bit-identical (147), the authz gate table
+  md5-identical (201 rows), schema_meta untouched at 1.28.45, and ONE
+  declared openapi exception (the `/ingest/proposal` maxLength 2000 → 10000
+  shipped in Confluence b8cb52c with its same-commit contract edit; that
+  release's diff-empty claim was true for routes, false for this bound).
+
+**Security fixes**
+- None. The review wire (digest binding, sanitize_read, PII masking), the
+  approve-role gate, and the `public_slug_taken` 409 all preserved verbatim
+  and pinned through the move.
+
+### Engineering record
+
+- **The amendment (declared):** the executor prompt assumed an empty
+  allowlist; the prerequisite check printed `78 / 78, Δ 0` and STOPPED. The
+  operator chose the extraction-first path; the flip then proceeded exactly
+  as written. The extraction honored the line discipline — one surface per
+  commit, full gate per commit, baseline row lowered in the same commit.
+- **Gates:** fmt clean; clippy `--all-targets --features bench -D warnings`
+  green at HEAD and at every one of the eight commits; full suite 1308
+  passed / 7 ignored; enforcing guard + self-pin + renamed layer pin green;
+  lipstyk diff-strict vs v1.28.45 CLEAN (one warn fixed: the since-window
+  two-arm match simplified); mdbook build green.
+- **Live smoke on a DB COPY** (release binary v1.28.52): gate propose →
+  digest-bound approve → chunk (817), recall hit, suggest + accept feedback,
+  UMP memory record (content-addressed URN, blake3 integrity, ed25519
+  signature), Art.30 register read, export bundle (8791 knowledge rows,
+  provenance v2), forget → tombstone (erased id 404s at the UMP read),
+  workflow run open (`run_id` 1), kcs worklist read, webhook HMAC posture
+  (missing signature → 401), `/audit/verify ok` at start and finish,
+  `/health` + `/version` green (1.28.52).
+- **Schema untouched at 1.28.45.** openapi.yaml byte-identical to v1.28.51.
+- **Ceilings (honest):** the translation CAS's `decided_at =
+  datetime('now')` (a SQL-side clock, inconsistent with every other branch's
+  bound parameter) is preserved VERBATIM — a pin or fix is filed, not
+  smuggled into the move. The maxLength parity pin for the Confluence bound
+  is a follow-up. The compliance-pack TEST RUN owed from Confluence is still
+  owed before push (clippy green; the one-time full rebuild is the cost).
+
+Predecessor: [1.28.51] — "Confluence": the long tail, sixteen files to zero.
 
 ---
 
