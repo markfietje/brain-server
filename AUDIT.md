@@ -234,3 +234,147 @@ v1.29.x Console inherits.
 
 **Inheritance test:** nothing in v1.29.x may backfill an Order-of-Care row —
 if it must, this line failed and this register says so.
+
+---
+
+## 2026-09-03 — v1.28.52 "Cornerstone" — the Foundation Line close-out report
+
+Source: the line-exit audit of the Foundation Line (v1.28.46 "Plumb" →
+v1.28.52 "Cornerstone"). The line's promise: handlers hold ZERO SQL, the
+service layer owns storage, and the law is machine-checked — "the repo has
+ONE pattern, CI-enforced." This entry records the evidence, per the line's
+executor contract.
+
+### AMENDMENT (declared up front)
+
+The Cornerstone executor prompt assumed v1.28.51 shipped an EMPTY allowlist.
+It did not: `gate.rs` (the HITL proposal engine, 78 statements = 50 prod + 28
+test) was Confluence's declared straggler. Per the prompt's own
+"Deviations = STOP + amendment" rule the executor stopped; the operator chose
+the AGENTS.md-prescribed path (option A): the final-vein extraction ran
+INSIDE v1.28.52 as its opening act, then the flip proceeded exactly as
+written. The extraction honored the line discipline — one surface per
+commit, full gate per commit, baseline row lowered in the same commit.
+
+### The final vein: gate.rs → `service::gate` (six commits)
+
+| Commit | Surface | Floor |
+|---|---|---|
+| 1 | review-queue read (`ProposalView`, deadline/SLA, page SELECT pair, owner filter; 3 read pins ride) | 78 → 68 |
+| 2 | creation insert (`NewProposal` + pending audit) + conflict pre-check | 68 → 66 |
+| 3 | expire/reject (TTL write with wall-clock-as-arg; pending-fence read ONE-DEFINED across approve/reject/edit; reject CAS; content read) | 66 → 59 |
+| 4 | edit path (8-col row read + re-score CAS) | 59 → 57 |
+| 5 | approve family (pending-row read; decision CAS one-defined across SIX branches; article-state CAS typed so `public_slug_taken` keeps its 409; translation CAS with its verbatim `datetime('now')` quirk pinned+filed; KCS draft insert; vec shadow one-defined across both promote paths; case-article link; supersession link-follow; promote insert; the two promote-provenance pins moved onto the core driving the REAL insert) | 57 → 21 |
+| 6 | export read (`export_bundle` = count pre-flight + four datasets; export/migration/pii_map pins ride; comment/identifier residue reworded to zero) | 21 → 0 |
+
+### Scope 1 — the enforcing flip
+
+`SQL_BASELINE` (29 rows), the floor pin, and the substring-absorption
+machinery are DELETED — nothing is left to compare against.
+`no_sql_in_handlers_enforced` walks `src/handlers/` RECURSIVELY and fails on
+ANY counted statement — production, test fixture, or comment residue (the
+substring counter is deliberately strict; the false-positive class the old
+baseline absorbed now has nowhere to hide, so drained files are reworded
+clean). Two anti-vacuity teeth: a ≥30-file sanity on the walk (the lipstyk
+lesson — a guard that scans nothing must not smile) and the
+`sql_statement_counter_still_fires` self-pin proving the counter still
+detects all four statement openers, comment residue included, with a
+negative control.
+
+### Scope 2 — the layer grep
+
+`service_layer_free_of_http_types` (renamed from
+`service_layer_is_transport_free` at the flip) forbids `axum`, `StatusCode`,
+`Json`, `AppState`, `Pool` in production source under `src/service/`. It was
+born a hard error at the Plumb pin — there was never a warning phase — so the
+prompt's "flip" is declarative: the name now matches the line plan, and both
+guards ride CI through the `lint-test` job's `cargo test` steps (default +
+bench), alongside the inventory guard.
+
+### Pin + test counts across the line
+
+| Release | Service-tree pins | Suite (bench) |
+|---|---|---|
+| v1.28.45 (baseline) | 0 (the layer did not exist) | 1268 passed / 7 ignored |
+| v1.28.46 Plumb | 9 | — |
+| v1.28.47 Quarry | 27 | — |
+| v1.28.48 Masonry | 41 | — |
+| v1.28.49 Terrace | 58 | — |
+| v1.28.50 Aqueduct | 76 | — |
+| v1.28.51 Confluence | 80 | 1316 passed / 7 ignored |
+| v1.28.52 HEAD | **89** | **1308 passed / 7 ignored** |
+
+HEAD arithmetic: 80 − 2 (baseline + floor deleted) + 2 (enforcing guard +
+self-pin) + 9 (gate.rs) = 89. The suite count moved 1268 → 1308 over the
+line and 1316 → 1308 across Cornerstone itself: the −8 is the drained
+handler-side test region (queue-read, export, and mirror pins moved onto the
+core where several were merged into REAL-path pins instead of re-stating
+column lists) and the deleted freeze machinery, against the +2 flip pins and
+the moved tests. Every milestone's pins still pass at HEAD (full suite green,
+0 failed). Count ≥ v1.28.45 baseline: YES (1268 → 1308).
+
+### Eval-floor history (v1.28.50 "Aqueduct")
+
+The line's only retrieval-adjacent release gated EVERY extraction commit on
+the frozen 25-doc corpus (fresh scratch instance, CI recipe):
+pre-move baseline r@5 0.976 / r@10 0.991 / MRR 0.956; after the recall core
+commit identical; after the ingest core commit identical — byte-identical
+means AND per-query ranks on all 106 judged queries; floors (0.85) green at
+every gate. The honest scope: this proves behavior preservation on the
+frozen set, NOT external-engine parity (LongMemEval stays pending).
+Confluence and Cornerstone touch no retrieval path and re-ran no eval gate.
+
+### Smoke matrix per phase
+
+| Phase | Live smoke (DB copy, release binary) |
+|---|---|
+| Plumb | old-vs-new smoke on identical copies (retention family) |
+| Quarry | shim-mode copy: owned root + derived surface seeded; held row deferred with reasons |
+| Masonry | two servers, one seeded copy, v1.28.46 vs then-current — lifecycle families only |
+| Terrace | multi-db copy: client register flows, hold fence |
+| Aqueduct | multi-db copy: 3-leg recall, trace replay, include_flagged posture, screened + quarantined ingest, dedup, /audit/verify throughout |
+| Confluence | procedure evaluate, UMP ops read (integrity-verified), kcs worklist, forget (tombstone carries digest), suggest + feedback, Art.30 register read, webhook HMAC path (401s), /audit/verify throughout |
+| Cornerstone | this release's smoke — see the Gates row below (gate-family flows on a DB copy) |
+
+### Wire + schema identity (the line's core proof)
+
+- **Routes:** the registered route set is BIT-IDENTICAL v1.28.45 → HEAD
+  (147 `.route(` registrations, sorted-diff empty).
+- **Route-authz gate table:** the `authz_gates_cover_every_non_public_route`
+  table is md5-identical across the line (201 rows); the pin bodies of both
+  wire guards (`authz_gates_cover_every_non_public_route`,
+  `test_openapi_covers_routes`) are md5-identical — the contract tables were
+  not touched to make a move pass.
+- **openapi.yaml:** ONE line differs from the v1.28.45 baseline —
+  `POST /ingest/proposal` `content.maxLength` 2000 → 10000, shipped in
+  Confluence commit b8cb52c together with the matching server bound
+  (`MAX_PROPOSAL_CONTENT = 10_000` replacing the borrowed `MAX_QUERY = 2000`
+  in the propose/edit paths). FINDING: that release's "openapi.yaml
+  diff-empty" claim is TRUE for routes and FALSE for this bound; the edit
+  honored wire-contract discipline (contract + code in the same commit, the
+  openapi-coverage test green) but was not declared in the release notes.
+  DISPOSITION: declared here; the bound stays (widening is caller-visible
+  but non-breaking, and reverting would break shipped callers); a
+  `docs_truth`-style parity pin on the proposal bound is the follow-up.
+  Every OTHER line release (46→47→48→49→50 and 51→52) is openapi diff-empty.
+- **Schema:** `schema_meta.schema_version` still stamps **1.28.45** —
+  untouched across all seven releases (no migration landed in the line; the
+  line is storage-RELOCATION, not storage-CHANGE).
+
+### Cornerstone gates (this release)
+
+fmt clean; clippy `--all-targets --features bench -D warnings` green; full
+suite 1308 passed / 7 ignored at HEAD (green at every one of the seven
+commits); enforcing guard + self-pin + renamed layer pin green; mdbook build
+green with the new architecture sections.
+
+### Ceilings (honest)
+
+- The compliance-pack TEST RUN owed from Confluence is STILL owed before
+  push (clippy green; the one-time full rebuild is the cost).
+- The translation CAS's `decided_at = datetime('now')` (SQL-side clock,
+  inconsistent with every other branch's bound parameter) is preserved
+  VERBATIM and needs a pin or fix — filed, not changed in the move.
+- The maxLength parity pin (above) is a follow-up.
+- The line proves pattern singularity, not schema evolution readiness: the
+  storage-adapter deadline trigger (pre-v2.x) is the next forcing function.
