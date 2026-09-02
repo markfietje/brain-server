@@ -302,6 +302,16 @@ routes, no schema (1.28.45 untouched).
   (missing signature → 401), `/audit/verify ok` at start and finish,
   `/health` + `/version` green (1.28.52).
 - **Schema untouched at 1.28.45.** openapi.yaml byte-identical to v1.28.51.
+- **The six open dependabot bumps are WRAPPED into this release** (operator
+  call: keep the line at 1.28.52, land them here): argon2 0.5.3 → 0.6.0
+  (password-hash 0.6.1 + a new `phc` crate ride along; the KDF surface —
+  `Argon2::new`/`Params`/`hash_password_into` — unchanged, the full 24-test
+  backup suite green on the PR branch before wrapping), uuid 1.25.0 →
+  1.26.0, fastembed 6.0.1 → 6.0.2 (neural-embed/rerank-tier check clean);
+  actions/cache v4 → v6.1.0 (SHA-pinned, 6 sites across ci/docs/release)
+  and codeql-action init+analyze → 4.37.9 (2 sites). Gates re-run green on
+  the combined tree: clippy -D warnings (default + bench), 1308 passed /
+  7 ignored, engine-crates 157 passed. PRs #20–#25 closed as wrapped.
 - **Ceilings (honest):** the translation CAS's `decided_at =
   datetime('now')` (a SQL-side clock, inconsistent with every other branch's
   bound parameter) is preserved VERBATIM — a pin or fix is filed, not
