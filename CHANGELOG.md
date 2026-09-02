@@ -19,6 +19,203 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+Predecessor: [1.28.49] — "Terrace": the register surfaces, two cores.
+
+---
+
+## [1.28.51] — 2026-09-02 — "Confluence": the long tail, sixteen files to zero
+
+The Foundation Line's long-tail milestone: every handler file EXCEPT
+`gate.rs` drained to ZERO embedded SQL — the inventory's debt floor
+moved 241 → 78, with the one straggler (`gate.rs`, the HITL proposal
+engine — 50 production + 28 test occurrences, the surface Masonry's
+release scoped and only nicked) honestly carried as THE ceiling of this
+milestone. Sixteen files drained across 15 extraction commits + one
+lint fix, one commit per file in the roadmap's order, full gate per
+commit, the baseline row lowered in the same commit as each move.
+
+### Release notes
+
+**Bug fixes**
+- **The compliance-pack's own test suite is compilable again.** The
+  pack's evidence pins (`oversight_links_a_signed_decision_record`,
+  `tampered_signature_fails_verification`, the RoPA upsert pin) could
+  never have run: their fixture created the 7-column
+  `oversight_evidence` while the write targets 9 columns (the moved pin
+  now carries the full schema), and the pack's suites live in the
+  binary's test target where the decision test seam (`cfg(test)` in the
+  lib crate) is invisible — the seam is now
+  `cfg(any(test, feature = "compliance-pack"))`. The pack's clippy
+  build is green; the flagged TEST RUN remains pending (see ceilings).
+- **A latent dead read removed.** `DELETE /sources/{id}` fetched the
+  source URI into a discarded binding "for the tombstone audit" — the
+  post-commit audit logs the id only and never carried it. The read is
+  gone; behavior is byte-identical.
+- **A false "Pinned by test" claim reworded.** `SIGNAL_MAX_PER_HOUR`'s
+  comment asserted a pin that did not exist; the comment now states the
+  truth (a crash-valve the relay backs off on), and the flood bounds
+  read as service counts with the comparisons at the call site.
+
+**Improvements**
+- **Every long-tail surface now has a named core owning its complete
+  storage story**, each taking `&Connection`/`&Transaction` — never a
+  pool, state, or a transport type — with typed errors whose Display
+  carries the exact pre-move message:
+  `service::procedure` (the store tx: root → per-chunk quarantine flags
+  → ordered steps → `next_step` edges skipped for a quarantined root;
+  the step-chain/meta/decision reads; the best-effort vec-shadow
+  writes), `service::ump_ops` (the urn lookup, the bi-temporal
+  supersession read, the raw relations read, the soft-forget block —
+  flag + hash-only tombstone + in-tx audit — and the §3.7
+  consent-denial audit helper, moved WITH its pin), `service::forget`
+  (the single-chunk erasure: document_id + digest capture, the explicit
+  vec0 delete, the tombstone ONLY when a row actually deleted),
+  `service::suggest` (the last-wins feedback upsert with its
+  fail-open existence fence — retyped off `HandlerError` — and the
+  grouped outcome counts), `service::compliance` (the best-effort
+  oversight write, the six evidence counts with `unwrap_or(-1)` per
+  table, the legacy-JSON RoPA read, the RoPA upsert with in-tx audit),
+  `service::art30` (the register's data reads with all three error
+  postures preserved verbatim: fail-the-request categories,
+  best-effort connector/DSAR sections, fail-open lifecycle counts),
+  `service::webhook_ingest` (the kb-feedback flood/finding/hot-count
+  story, the Signal flood bound, the draft-approve read + the
+  digest-gated pending→approved UPDATE), and workflow-side homes for
+  the engine projections (`workflow::state` run-row reads + `open_run`,
+  `workflow::outbox` steering inbox + lineage reads,
+  `workflow::scoreboard` — NEW: the runs page, the fail-closed
+  hash-linkage reconstruction, the aftersales cohort, `score_units_now`
+  + the whole scoreboard test module — `workflow::kcs`'s article
+  lifecycle, `workflow::valet`'s brief projections,
+  `workflow::relay`'s handover reads, `workflow::crew`'s presence
+  touch + skills proposal, `workflow::channels`' user-map proposal +
+  the shared seen-window flood count), plus `role::defined_count`,
+  `capacity::knowledge_docs` (fail-open),
+  `legal_hold::first_missing_id` (the all-or-nothing fence), and
+  `service::recall::chunk_for_verify` (the domain-bound verify read).
+- **The e2e fence pins went home.** The twelve borrowed-fixture pins in
+  `handlers/clients.rs` (hold fences over forget / sources / ump /
+  observe / holds / transfers + the auditor dual gate) moved onto
+  `service::register`'s test module, which already carried the
+  identical fixtures from Terrace; the valet brief tests moved onto
+  `workflow::valet`'s test module. Call paths unchanged, every
+  assertion unchanged.
+
+**Security fixes**
+None. (Every fence moves WITH its code: the legal-hold fences in-tx,
+the screen→flag→store order and its body-scan pin, the
+verify-before-serve UMP orchestration, the digest-gated approve's
+status predicate, the domain-label predicates, the wildcard-injection
+fence inside `reuse_candidates`, the CAS sequences and their audit
+rows — all pinned through every move.)
+
+### Engineering record
+
+- **Inventory: 241 → 78.** Drained to zero: workflow.rs 23,
+  workflow_lineage.rs 11, procedure.rs 13, ump_ops.rs 11, kcs.rs 8,
+  forget.rs 5, suggest.rs 6, compliance.rs 13, webhooks.rs 14,
+  valet.rs 6, relay.rs 4, govern.rs 6, breaches/channel/
+  channel_webhook/crew/mod/sources/verify 7 (one each), holds.rs 2,
+  the comment residues in ingest/shifts/auth/profiles/roles (8), and
+  clients.rs's 26 test seeds. The floor pin now asserts 78 with the
+  single remaining row `("gate.rs", 78)`; per-file deltas printed at
+  every step.
+- **The straggler (honest): `gate.rs` — 78 occurrences, 50 in
+  production code.** It is the HITL proposal engine: the ~950-line
+  approve arm with per-kind storage appliers (knowledge + vec rows,
+  `case_articles`, the kcs publish/retract flips), propose/list/decide/
+  edit/decay/purge/export, the review-posture verb the Herald channel
+  seams reuse byte-identically, and 28 test occurrences. It is
+  Masonry-class work — the roadmap's own law ("a fully-moved smaller
+  scope beats a rushed full scope") says it is its own milestone, NOT
+  a half-day tail item. **The v1.28.52 enforcing flip is therefore
+  BLOCKED on a gate.rs extraction milestone first** (or an explicit
+  amendment extending this one). `well_known.rs` was verified 0-SQL
+  (the roadmap listed it; the guard's unlisted-file rule already pins
+  it at implicit zero — the drained-file template).
+- **CAS discipline untouched.** open/state/events/answer/rewind ride
+  `workflow::state::cas_update` exactly as before; the
+  `read_state_and_revision` core is shared by the bare-connection state
+  view (audited read, row-only-if-present audit), the answer CAS, and
+  the rewind CAS (any read failure → `Gone`); the accept-time ownership
+  transfer reads its CAS inputs inside the SAME Immediate tx as the
+  offer move. The put_run_state 200-body revision quirk the recon
+  flagged is preserved verbatim and filed for a follow-up pin.
+- **Digest/HITL orders pinned through every move.** The Signal
+  draft-approve's digest check and mismatch audit stay in the handler
+  orchestration verbatim — including the pre-existing ceiling that the
+  mismatch `Denied` audit rides the Immediate tx that then rolls back
+  (evidence of the refusal is lost today; NOT fixed mid-move — filed
+  as the audit-adjacency follow-up, alongside forget's no-audit-row
+  tombstone-only posture and the webhook arms' audit-after-commit
+  writes). The kcs approve/publish prechecks, the `kcs_state_invalid`
+  vocabulary, the probe-blind 404 families ("no chunk with id {id}",
+  "no procedure with id {id}", "no memory with id {id}", "workflow run
+  not found") are byte-identical.
+- **Body-scan + authz + read-seam guards passed unchanged**: the
+  screen-sites pin still holds `screen::screen(` inside procedure's
+  `create` (verdicts are wire-shaped at the handler; the core receives
+  the flags); the owner-INSERT and ump sanitize seams hold;
+  `stored_text_fields_pass_the_read_seam` scans unchanged handler
+  bodies; `authz_gates_cover_every_non_public_route` still scans every
+  gate in every handler body. Relations/verify/suggest read shaping
+  (sanitize) stayed handler-side; services return STORED forms — one
+  intended split: `ump_ops::relations_for_chunk` now maps raw service
+  triples through the same sanitize, wire shape identical.
+- **Dup-guard + transport-free greps green**: no duplicated helper
+  names (the ump row-meta read reuses `service::procedure::
+  row_access_meta` — one definition; the signal run-domain lookup
+  reuses `workflow::state::run_domain_of`; the steering write was
+  ALREADY shared and moved once, both callers repointing); the new
+  service modules carry no transport types or version-citing comments.
+- **Pins 1024 → 1036 (+12 net):** the scoreboard tests moved with
+  their fns (9), the consent-denial audit pin moved with its helper
+  (+1 live repointed assertion at the handler), the oversight + tamper
+  pins moved onto the full evidence schema (+2 schema-true fixtures),
+  the RoPA in-tx-audit + 404 pin new (+1), the valet brief tests moved
+  (2), and the twelve borrowed fence pins moved wholesale. Total count
+  never decreased; full suite 1306 → 1316 passed / 7 ignored at the
+  release build.
+- **Gates:** fmt clean; clippy `--all-targets -D warnings` green on
+  bench, default, otel, and compliance-pack (clippy only — see
+  ceilings); full suite `--features bench` 1316 passed / 7 ignored;
+  CI dry-run green (engine-crates tests + clippy + fmt,
+  steward-harness tests + clippy, default-features test --all-targets
+  with `RUSTFLAGS=-D warnings`); lipstyk diff-strict clean vs v1.28.50
+  after one finding fixed (`record_feedback` borrows the tenant);
+  openapi.yaml diff-empty (zero route changes); schema untouched at
+  1.28.45; inventory guard prints 78 / 78, Δ 0.
+- **Live smoke on a DB COPY** (release binary, per Confluence's gate):
+  procedure evaluate, UMP ops read (get-memory, integrity-verified),
+  kcs worklist, `DELETE /memory/{id}` forget (tombstone carries the
+  digest), suggest + feedback, the Art.30 register read, the webhook
+  HMAC path (missing signature → 401, bad signature → 401), and
+  `/audit/verify ok` throughout. (The skipped compliance-pack TEST
+  RUN and the smoke transcript are the two items the release engineer
+  confirms at push time; see ceilings.)
+- **Ceilings (honest):** **The allowlist does NOT reach EMPTY — the
+  milestone's stated headline is missed by one file.** `gate.rs` (78)
+  is the single remaining allowlist row; the enforcing flip of
+  v1.28.52 cannot ship until that extraction lands. The
+  compliance-pack TEST RUN (clippy green, run deferred — three
+  interrupted attempts; one-time full rebuild cost) must be executed
+  before push; the pack's clippy build is green. The forget aggregate
+  still writes no `audit_events` row (the tombstone is the evidence —
+  the erasure-family convergence follow-up). The Signal digest-mismatch
+  `Denied` audit still rolls back with its tx (evidence of the refusal
+  is lost — the audit-adjacency follow-up). `put_run_state`'s 200 body
+  still carries `cas_update`'s run-id-as-revision quirk (nothing
+  consumes it; pinned-fix follow-up). The two known-flaky backup tests
+  (`backup_manifest_integrity`, `backup_produces_decryptable_archive`)
+  raced twice during the session — root cause is the console-seam test
+  setting `BRAIN_CONNECTOR_CONFIG_DIR` without the module env-lock
+  while backup tests read it in-process (pre-existing, test-infra
+  only, untouched; rerun-when-seen).
+
+Predecessor: [1.28.50] — "Aqueduct": the retrieval surfaces, two cores.
+
+---
+
 ## [1.28.50] — 2026-08-28 — "Aqueduct": the retrieval surfaces, two cores
 
 The Foundation Line's fifth vein and the performance-sensitive heart: the

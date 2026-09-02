@@ -8,6 +8,55 @@
 
 ## Release version notes
 
+> **Version note:** **v1.28.50 "Aqueduct" shipped 2026-08-28** — the
+> retrieval surfaces (the performance-sensitive heart) converge onto the
+> service layer, EVAL-GATED PER COMMIT. `src/service/recall.rs` opens with
+> the recall aggregate's storage story: the cross-domain RRF merge
+> (`rrf_merge_domains`, verbatim + pins), the per-domain filter law
+> (`domain_filters` — multi-db drops the in-DB predicate, shim keeps it,
+> a bound profile's retention map REPLACES the server-wide map; pinned),
+> the per-domain read shaping (`finish_domain_results` — snippet,
+> best-effort evidence enrichment, flagged suppression LAST; pinned), and
+> the read-event write story (`record_recall_read_event` — audit row +
+> replayable trace + every-chain retention prune + DSAR piggyback on ONE
+> connection, legacy order, best-effort by contract; the
+> no-early-return order + the every-chain coverage are pinned).
+> `src/service/ingest.rs` opens with the screen → flag → store pipeline:
+> `screen_structured` (two-layer screen + scrape fence — the fence holds
+> of the FUNCTION), `ttl_days_to_expires` (clock injected; row-wins
+> pinned exactly), `apply_profile_ingest` (typed fence), `store_record`
+> (strict-posture re-check UNDER the write lock, xxh3-64 dedup, computed
+> §6.2 ump_id, knowledge + vec0, fail-closed quarantine flag, graph edges
+> + in-tx supersession audits, exact delta counts — all inside the
+> CALLER'S tx). The POOL SCHEDULE STAYS TRANSPORT: the hybrid search's
+> three concurrent legs need three pooled connections per domain, so the
+> handler's spawn_blocking keeps the acquisition schedule verbatim and
+> hands the core decisions, results, and borrowed connections. The read
+> seam (`results_to_hits`) stays at the handler; the seam meta-test takes
+> no additions (no new emission site). The owner-INSERT and screen-sites
+> body-scan guards repoint to the service sources. Pins 1013 → 1024
+> (+11; recall module 20 → 24, ingest module 6 → 11, two handler-free
+> pins). Inventory: ingest.rs 22 → 3 (comment-substring residue) + the
+> stale govern.rs row caught up 18 → 6; debt floor 272 → 241, same commit
+> as the move. Wire artifacts byte-identical (openapi.yaml diff-empty);
+> schema untouched at 1.28.45. **Eval gate per extraction commit**
+> (CI-style 25-doc scratch corpus, release build): r5=0.976 r10=0.991
+> mrr=0.956 byte-identical on baseline, post-recall, AND post-ingest;
+> floors 0.85 green throughout. Full suite 1301 passed / 6 ignored. Live
+> smoke on a DB COPY (multi-db): recall all three legs, trace replay,
+> screened + quarantined ingest, dedup duplicate receipt,
+> `/audit/verify ok` throughout. Ceilings: **LongMemEval parity stays
+> PENDING — no retrieval-quality claim, behavior preservation only**; the
+> read-event write stays a separate best-effort post-search task (the 8 s
+> recall timeout must not absorb prune cost); graph-leg SearchFilters +
+> PRF occurrence-schema pins stayed attached to the (unmoved) retriever
+> engines; trace-detail JSON shaping stays handler-side (wire labels);
+> the request types + wire-shaped validation stay handler-side (Terrace
+> ceiling extended). See CHANGELOG.md §[1.28.50]. Predecessor: v1.28.49
+> "Terrace" — the register surfaces converge (full note retired to
+> `docs/AGENTS_HISTORY.md`).
+
+
 > **Version note:** **v1.28.49 "Terrace" shipped 2026-08-28** — the
 > register surfaces converge: the BPO register (client CRUD, DPA terms,
 > the per-client hold/DSAR/coach/QA/termination delegation seams, the
