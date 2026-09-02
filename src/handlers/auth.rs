@@ -202,7 +202,7 @@ pub async fn logout(
     let cache = s.revocation_cache.clone();
     let issuer = s.jwt_issuer.clone();
     // a failed denylist write must surface. An
-    // operator logging out believes the token is dead; if the INSERT failed
+    // operator logging out believes the token is dead; if the denylist write failed
     // the token would live its full 15 min with that lie in the client.
     tokio::task::spawn_blocking(move || -> Result<(), rusqlite::Error> {
         let conn = pool.get().map_err(|e| {
@@ -259,7 +259,7 @@ pub async fn revoke_handler(
     let jti = req.jti.clone();
     let iss = req.iss.clone();
     let reason = req.reason.clone();
-    // was 204-always — a failed denylist INSERT told
+    // was 204-always — a failed denylist write told
     // the operator the token was dead when it wasn't. Now 500 `revoke_failed`.
     tokio::task::spawn_blocking(move || -> Result<(), rusqlite::Error> {
         let conn = pool.get().map_err(|e| {

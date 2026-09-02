@@ -96,7 +96,7 @@ pub struct RoleUpsertRequest {
 
 /// `POST /roles/{name}` — define or edit a role (Admin + audited). Editing a
 /// seeded preset by name overwrites it (they are starting points, not locked)
-/// and the edit survives re-migrations (INSERT OR IGNORE seeding).
+/// and the edit survives re-migrations (seeded via upsert).
 pub async fn upsert_role(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,

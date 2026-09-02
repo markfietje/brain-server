@@ -109,7 +109,7 @@ mod pins {
         ("domains.rs", 0),
         ("clients.rs", 26),
         ("workflow.rs", 0),
-        ("ingest.rs", 3),
+        ("ingest.rs", 0),
         ("govern.rs", 0),
         ("webhooks.rs", 0),
         ("procedure.rs", 0),
@@ -122,15 +122,15 @@ mod pins {
         ("forget.rs", 0),
         ("relay.rs", 0),
         ("holds.rs", 0),
-        ("auth.rs", 2),
+        ("auth.rs", 0),
         ("breaches.rs", 0),
         ("channel.rs", 0),
         ("channel_webhook.rs", 0),
         ("crew.rs", 0),
         ("mod.rs", 0),
-        ("profiles.rs", 1),
-        ("roles.rs", 1),
-        ("shifts.rs", 1),
+        ("profiles.rs", 0),
+        ("roles.rs", 0),
+        ("shifts.rs", 0),
         ("sources.rs", 0),
         ("verify.rs", 0),
     ];
@@ -286,8 +286,10 @@ mod pins {
     /// effect), verify 1 → 0 (the domain-bound row read onto
     /// service::recall::chunk_for_verify), holds 2 → 0 (the per-id
     /// existence fence onto legal_hold::first_missing_id, same tx, same
-    /// error mapping))
-    /// legitimately lowered it to 112 in the
+    /// error mapping)); then the comment-residue sweep — ingest 3, shifts 1,
+    /// auth 2, profiles 1, roles 1: prose reworded so no counted keyword
+    /// remains in a drained file)
+    /// legitimately lowered it to 104 in the
     /// SAME commit that moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
     /// of the guard itself.
@@ -295,7 +297,7 @@ mod pins {
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 112,
+            sum, 104,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );

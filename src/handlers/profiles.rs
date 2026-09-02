@@ -96,7 +96,7 @@ pub struct ProfileUpsertRequest {
 
 /// `POST /profiles/{name}` — create or edit a profile (Admin + audited).
 /// Editing a seeded preset by name overwrites it (they are starting points,
-/// not locked) and the edit survives re-migrations (INSERT OR IGNORE seeding).
+/// not locked) and the edit survives re-migrations (seeded via upsert).
 pub async fn upsert_profile(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,

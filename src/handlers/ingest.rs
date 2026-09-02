@@ -8,7 +8,7 @@
 //! Implementation status:
 //!   - Request/response serde ✅
 //!   - Validation ✅ (bounds, regex, type, dedup-hash boundary)
-//!   - Heavy logic: embed + insert + KG upsert is wired to the existing
+//!   - Heavy logic: embed + store + KG upsert is wired to the existing
 //!     `add_chunk` and KG code paths. The JSON-vector storage was swapped
 //!     for sqlite-vec; the domain-router/centroid piece came later.
 
@@ -367,7 +367,7 @@ pub(crate) async fn ingest_one(
     // siblings (`/add`, `/ingest/memory`, `/ingest/markdown`). The screen
     // stage lives in the ingest core (the fence is of the FUNCTION):
     // `Reject` keeps the HTTP-400; `Quarantine` (default) ingests then flags
-    // post-insert so a flagged plant is excluded from retrieval and its KG
+    //     after the store so a flagged plant is excluded from retrieval and its KG
     // edges are skipped.
     let quarantine_flagged = crate::service::ingest::screen_structured(
         &content,
@@ -696,7 +696,7 @@ fn map_ingest_error(e: crate::service::ingest::IngestError) -> HandlerError {
         ),
         E::QuarantineFlag(e) => HandlerError::internal(format!("quarantine flag failed: {e}")),
         // Database messages carry their statement context verbatim
-        // ("insert knowledge failed: …", "resolve tx timestamp failed: …").
+        // (e.g. "… knowledge failed: …", "resolve tx timestamp failed: …").
         E::Database(msg) => HandlerError::internal(msg),
     }
 }

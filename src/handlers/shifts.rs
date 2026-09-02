@@ -160,7 +160,7 @@ pub async fn post_ops_shift(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
-        // Validation + insert + audit ride one tx: a refused shift writes nothing.
+        // Validation + write + audit ride one tx: a refused shift writes nothing.
         conn.execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
         let outcome = (|| {
