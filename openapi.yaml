@@ -1763,7 +1763,7 @@ paths:
               type: object
               required: [content]
               properties:
-                content: { type: string, maxLength: 2000 }
+                content: { type: string, maxLength: 10000 }
                 kind:
                   type: string
                   enum: [fact, procedure, step, decision, episodic, entitlement, draft, channel/template]

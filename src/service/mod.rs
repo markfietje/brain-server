@@ -76,6 +76,7 @@ pub mod register;
 pub mod retention;
 pub mod suggest;
 pub mod ump_ops;
+pub mod webhook_ingest;
 #[cfg(test)]
 mod pins {
     use std::path::Path;
@@ -109,7 +110,7 @@ mod pins {
         ("workflow.rs", 0),
         ("ingest.rs", 3),
         ("govern.rs", 6),
-        ("webhooks.rs", 14),
+        ("webhooks.rs", 0),
         ("procedure.rs", 0),
         ("compliance.rs", 0),
         ("workflow_lineage.rs", 0),
@@ -254,8 +255,13 @@ mod pins {
     /// (rows-affected 404 + in-tx audit) out to `service::compliance`,
     /// feature-gated with the handler; the oversight pin moved with the fn
     /// onto the full evidence schema, fixing the latent 7-vs-8-column
-    /// fixture drift)
-    /// legitimately lowered it to 151 in the
+    /// fixture drift); then
+    /// webhooks.rs 14 → 0 — the synchronous webhook side-door (kb-feedback
+    /// flood/finding/hot-count, the Signal flood bound, the draft-approve
+    /// read + digest-gated UPDATE) out to `service::webhook_ingest`; the
+    /// run-domain lookup reuses workflow::state::run_domain_of and the e2e
+    /// seeds ride the cores (open_run, file_pending_draft, steering_inbox))
+    /// legitimately lowered it to 137 in the
     /// SAME commit that moved the SQL. A table edit that
     /// loosens the sum without a matching extraction is a silent regression
     /// of the guard itself.
@@ -263,7 +269,7 @@ mod pins {
     fn sql_baseline_total_stays_at_the_frozen_floor() {
         let sum: usize = SQL_BASELINE.iter().map(|(_, n)| n).sum();
         assert_eq!(
-            sum, 151,
+            sum, 137,
             "the frozen debt total moved — only legitimate extractions lower it, \
              and only in the commit that moves the SQL"
         );

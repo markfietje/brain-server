@@ -73,6 +73,7 @@ pub const NAME_RE: &str = r"^[A-Za-z0-9 _-]{1,100}$";
 pub const RELTYPE_RE: &str = r"^([a-z]+:)?[a-z0-9_]{1,62}$";
 
 pub const MAX_QUERY: usize = 2_000;
+pub const MAX_PROPOSAL_CONTENT: usize = 10_000;
 pub const MAX_TITLE: usize = 500;
 pub const MAX_CONTENT: usize = 1_000_000;
 /// Explicit entry-count bound on `/ingest/memory` (the 1 MiB body cap alone

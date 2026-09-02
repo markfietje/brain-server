@@ -13,7 +13,6 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use rusqlite::OptionalExtension;
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -472,39 +471,16 @@ async fn receive_kb_feedback(state: &Arc<AppState>, headers: &HeaderMap, body: &
             // Flood bound: the synchronous path bypasses the webhook queue
             // cap, so it enforces its own trailing-hour ingest bound (503 =
             // back off; a legitimate relay retries later).
-            let recent: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM findings
-                     WHERE claim = 'kb_feedback' AND ts > strftime('%s','now') - 3600",
-                    [],
-                    |r| r.get(0),
-                )
+            let recent = crate::service::webhook_ingest::kb_feedback_flood_count(&conn)
                 .map_err(|e| format!("{e}"))?;
             if recent >= crate::config::KB_FEEDBACK_MAX_PER_HOUR {
                 return Ok(Ingest::Flood);
             }
-            conn.execute(
-                "INSERT INTO findings(run_id, claim, evidence, source, confidence, ts)
-                 VALUES (0, 'kb_feedback', ?1, ?2, 1.0, strftime('%s','now'))",
-                rusqlite::params![slug, source],
-            )
-            .map_err(|e| format!("{e}"))?;
-            crate::audit::record(
-                &conn,
-                crate::audit::AuditKind::Webhook,
-                "kb-feedback",
-                &slug,
-                crate::audit::AuditStatus::Ok,
-                "feedback recorded",
-            );
+            crate::service::webhook_ingest::record_kb_feedback_finding(&conn, &slug, source)
+                .map_err(|e| format!("{e}"))?;
             // Rising-repeat signal: when a slug's feedback count first crosses
             // the hot-topic threshold, emit the existing workflow alert kind.
-            let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM findings WHERE claim = 'kb_feedback' AND evidence = ?1",
-                    rusqlite::params![slug],
-                    |r| r.get(0),
-                )
+            let count = crate::service::webhook_ingest::kb_feedback_slug_count(&conn, &slug)
                 .map_err(|e| format!("{e}"))?;
             let threshold = crate::config::KB_HOT_TOPIC_THRESHOLD;
             Ok(Ingest::Recorded {
@@ -552,7 +528,8 @@ fn load_signal_secret() -> Option<Vec<u8>> {
 /// Flood bound for the synchronous signal path (503 = back off; the relay
 /// retries later). Counted over the shared `webhook_seen` trailing hour (the
 /// replay-claim table every verified delivery already touches — the audit
-/// chain stores only hashes, so it cannot count details). Pinned by test.
+/// chain stores only hashes, so it cannot count details). A crash-valve,
+/// not a guarantee: the relay backs off on the 503 and retries later.
 pub(crate) const SIGNAL_MAX_PER_HOUR: i64 = 1_000;
 
 /// The verified, sanitized payload of one inbound Signal command.
@@ -733,26 +710,14 @@ async fn receive_signal(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes
         move || -> Result<Outcome, String> {
             let mut conn = state.pool.get().map_err(|e| format!("{e}"))?;
             // Flood bound for the synchronous path.
-            let recent: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM webhook_seen
-                      WHERE seen_at >= datetime('now', '-1 hour')",
-                    [],
-                    |r| r.get(0),
-                )
+            let recent = crate::service::webhook_ingest::signal_flood_count(&conn)
                 .map_err(|e| format!("{e}"))?;
             if recent >= SIGNAL_MAX_PER_HOUR {
                 return Err("flood".to_string());
             }
             match cmd {
                 SignalCommand::Steering { run_id, message } => {
-                    let domain: Option<String> = conn
-                        .query_row(
-                            "SELECT domain FROM workflow_runs WHERE id=?1",
-                            rusqlite::params![run_id],
-                            |r| r.get(0),
-                        )
-                        .optional()
+                    let domain = crate::workflow::state::run_domain_of(&conn, run_id)
                         .map_err(|e| e.to_string())?;
                     let Some(domain) = domain else {
                         crate::audit::record(
@@ -797,13 +762,7 @@ async fn receive_signal(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes
                     let tx = conn
                         .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                         .map_err(|e| format!("{e}"))?;
-                    let row: Option<(String, String)> = tx
-                        .query_row(
-                            "SELECT content, status FROM proposals WHERE id=?1",
-                            rusqlite::params![proposal_id],
-                            |r| Ok((r.get(0)?, r.get(1)?)),
-                        )
-                        .optional()
+                    let row = crate::service::webhook_ingest::draft_proposal_row(&tx, proposal_id)
                         .map_err(|e| format!("{e}"))?;
                     let Some((content, status)) = row else {
                         return Err("unknown_proposal".to_string());
@@ -822,12 +781,7 @@ async fn receive_signal(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes
                         );
                         return Err("digest_mismatch".to_string());
                     }
-                    let n = tx
-                        .execute(
-                            "UPDATE proposals SET status='approved', decided_at=strftime('%s','now')
-                              WHERE id=?1 AND status='pending'",
-                            rusqlite::params![proposal_id],
-                        )
+                    let n = crate::service::webhook_ingest::approve_draft_tx(&tx, proposal_id)
                         .map_err(|e| format!("{e}"))?;
                     if n == 0 {
                         return Err("proposal_not_pending".to_string());
@@ -930,23 +884,19 @@ mod valet_tests {
 
     fn seed_run(state: &crate::AppState) -> i64 {
         let conn = state.pool.get().expect("conn");
-        conn.execute(
-            "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
-             VALUES ('personal', 'valet/reminder', '{\"what\":\"x\",\"due_at\":1,\"repeat\":\"none\",\"channel\":\"signal\"}', 0, 'active', 1, 1)",
-            [],
+        crate::workflow::state::open_run(
+            &conn,
+            "personal",
+            "valet/reminder",
+            "{\"what\":\"x\",\"due_at\":1,\"repeat\":\"none\",\"channel\":\"signal\"}",
+            1,
         )
-        .expect("run");
-        conn.last_insert_rowid()
+        .expect("run")
     }
 
     fn seed_pending_proposal(state: &crate::AppState, content: &str) -> i64 {
         let conn = state.pool.get().expect("conn");
-        conn.execute(
-            "INSERT INTO proposals(kind, content, created_at, novelty, status) VALUES ('draft', ?1, 1, 0.5, 'pending')",
-            rusqlite::params![content],
-        )
-        .expect("proposal");
-        conn.last_insert_rowid()
+        crate::service::webhook_ingest::file_pending_draft(&conn, content, 1).expect("proposal")
     }
 
     /// One 0600 secret file + the env pin, so `load_signal_secret` resolves.
@@ -992,14 +942,12 @@ mod valet_tests {
         let res = receive_signal(&state, &headers, &body).await;
         assert_eq!(res.status(), StatusCode::OK);
         let conn = state.pool.get().expect("conn");
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM outbox WHERE run_id=?1 AND topic='steering'",
-                rusqlite::params![run],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 1, "one screened steering message landed");
+        let steering_rows = || -> usize {
+            crate::workflow::outbox::steering_inbox(&conn, run, 0)
+                .expect("steering read")
+                .len()
+        };
+        assert_eq!(steering_rows(), 1, "one screened steering message landed");
 
         // Injection screen: the classic payload is refused loudly and never
         // reaches the outbox.
@@ -1010,14 +958,7 @@ mod valet_tests {
         );
         let res = receive_signal(&state, &headers, &body).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM outbox WHERE run_id=?1 AND topic='steering'",
-                rusqlite::params![run],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 1, "injection attempt added nothing");
+        assert_eq!(steering_rows(), 1, "injection attempt added nothing");
 
         // Replay of the first delivery id: duplicate, still one row.
         let (headers, body) = signed_request(
@@ -1027,14 +968,7 @@ mod valet_tests {
         );
         let res = receive_signal(&state, &headers, &body).await;
         assert_eq!(res.status(), StatusCode::OK);
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM outbox WHERE run_id=?1 AND topic='steering'",
-                rusqlite::params![run],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 1);
+        assert_eq!(steering_rows(), 1);
     }
 
     /// `[draft N] approve <digest>` binds the digest: the quoted digest must
@@ -1057,17 +991,11 @@ mod valet_tests {
         );
         let res = receive_signal(&state, &headers, &body).await;
         assert_eq!(res.status(), StatusCode::CONFLICT);
-        let status: String = state
-            .pool
-            .get()
-            .unwrap()
-            .query_row(
-                "SELECT status FROM proposals WHERE id=?1",
-                rusqlite::params![pid],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(status, "pending");
+        let status =
+            crate::service::webhook_ingest::draft_proposal_state(&state.pool.get().unwrap(), pid)
+                .unwrap()
+                .expect("proposal row");
+        assert_eq!(status.0, "pending");
 
         // Right digest: approved.
         let (headers, body) = signed_request(
@@ -1077,16 +1005,10 @@ mod valet_tests {
         );
         let res = receive_signal(&state, &headers, &body).await;
         assert_eq!(res.status(), StatusCode::OK);
-        let (status, decided): (String, Option<i64>) = state
-            .pool
-            .get()
-            .unwrap()
-            .query_row(
-                "SELECT status, decided_at FROM proposals WHERE id=?1",
-                rusqlite::params![pid],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .unwrap();
+        let (status, decided) =
+            crate::service::webhook_ingest::draft_proposal_state(&state.pool.get().unwrap(), pid)
+                .unwrap()
+                .expect("proposal row");
         assert_eq!(status, "approved");
         assert!(decided.is_some());
     }

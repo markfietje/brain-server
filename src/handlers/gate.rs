@@ -22,7 +22,7 @@ use serde_json::json;
 use std::sync::Arc;
 
 use crate::handlers::auth::{OptCapability, OptPrincipal};
-use crate::handlers::{HandlerError, MAX_QUERY, MAX_SOURCE_PROMPT};
+use crate::handlers::{HandlerError, MAX_SOURCE_PROMPT};
 
 /// cap on `/export` row count. The export buffers every row into
 /// memory then serializes; on a multi-GB DB this OOMs. We refuse above this
@@ -119,10 +119,13 @@ pub(crate) async fn create_proposal(
             "content is required",
         ));
     }
-    if content.chars().count() > MAX_QUERY {
+    if content.chars().count() > crate::handlers::MAX_PROPOSAL_CONTENT {
         return Err(HandlerError::bad_request(
             "content_too_long",
-            format!("content exceeds {MAX_QUERY} chars"),
+            format!(
+                "content exceeds {} chars",
+                crate::handlers::MAX_PROPOSAL_CONTENT
+            ),
         ));
     }
     // run the injection screen on the proposal
@@ -1970,10 +1973,13 @@ pub async fn edit_proposal(
             "content is required",
         ));
     }
-    if content.chars().count() > MAX_QUERY {
+    if content.chars().count() > crate::handlers::MAX_PROPOSAL_CONTENT {
         return Err(HandlerError::bad_request(
             "content_too_long",
-            format!("content exceeds {MAX_QUERY} chars"),
+            format!(
+                "content exceeds {} chars",
+                crate::handlers::MAX_PROPOSAL_CONTENT
+            ),
         ));
     }
     let screen_res = crate::screen::screen(&content, "");
