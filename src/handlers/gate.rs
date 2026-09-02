@@ -910,11 +910,12 @@ pub async fn approve_proposal(
             }
         }
 
-        // ── Crew: the crew_skills_update branch. Skills tags are HITL-
+        // ── Crew: the skills-tags branch (`KIND_SKILLS_UPDATE`). Skills tags
+        // are HITL-
         // maintained: the ONLY write to `principal_skills` is this approval
         // path — CAS on the pending proposal + the tags land in the SAME tx.
         // An internal act, so `approve` alone gates it (no extra verb).
-        if crate::workflow::crew::KIND_SKILLS_UPDATE == kind {
+        if matches!(kind.as_str(), crate::workflow::crew::KIND_SKILLS_UPDATE) {
             let now_ts = chrono::Utc::now().timestamp();
             let n_applied = crate::workflow::crew::apply_proposal(&tx, id, "global", now_ts)
                 .map_err(crew_skills_err)?;
@@ -1028,7 +1029,7 @@ pub async fn approve_proposal(
             let now_ts = chrono::Utc::now().timestamp();
             let action: &str = if crate::workflow::kcs::KIND_NEW == kind {
                 "created"
-            } else if crate::workflow::kcs::KIND_UPDATE == kind {
+            } else if matches!(kind.as_str(), crate::workflow::kcs::KIND_UPDATE) {
                 "updated"
             } else {
                 "linked"
@@ -2058,11 +2059,11 @@ pub async fn purge(
 // orchestration around it (targets, holds, pragmas, evidence) moved to the
 // lifecycle core in the Masonry move (`crate::service::lifecycle::purge`).
 
-/// the shared `knowledge` column list + row → JSON projection for record
-/// rendering (export + the `/ump/*` record paths) moved to the lifecycle
-/// fetch core in the Masonry move — one source of truth, now consumed from
-/// `crate::service::lifecycle::fetch`.
-use crate::service::lifecycle::fetch::{KNOWLEDGE_ROW_COLS, knowledge_row_to_json};
+// the shared `knowledge` column list + row → JSON projection for record
+// rendering (export + the `/ump/*` record paths) moved to the lifecycle
+// fetch core in the Masonry move — one source of truth; the export read
+// consumes it from `crate::service::gate::export_bundle` (itself riding
+// `crate::service::lifecycle::fetch`).
 
 /// `GET /export` — portable, machine-readable JSON export (data portability,
 /// the GDPR "give me my data"). Live `knowledge` rows + graph + proposals
@@ -2096,6 +2097,8 @@ pub async fn export(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let bundle = crate::service::gate::export_bundle(&conn)
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
         // pre-flight row count to bound memory. The full export
         // buffers every row into a Vec<Value> then serializes; on a multi-GB
         // DB that OOMs the server. We refuse (413) above MAX_EXPORT_ROWS and
@@ -2103,26 +2106,13 @@ pub async fn export(
         // domain's snapshot) + the future streaming variant. ponytail: a true
         // streaming JSON encoder is a v2.x change; this guard prevents the OOM
         // today without rewriting the response shape callers depend on.
-        let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        let total = bundle.total;
         if total > MAX_EXPORT_ROWS {
             return Err(HandlerError::payload_too_large(format!(
                 "export exceeds {MAX_EXPORT_ROWS} rows ({total} present); use GET /domains/{{name}}/export for a single domain snapshot"
             )));
         }
-        let mut knowledge = Vec::new();
-        {
-            let mut stmt = conn
-                .prepare(&format!("SELECT {KNOWLEDGE_ROW_COLS} FROM knowledge ORDER BY id"))
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            let rows = stmt
-                .query_map([], knowledge_row_to_json)
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            for v in rows.flatten() {
-                knowledge.push(v);
-            }
-        }
+        let mut knowledge = bundle.knowledge;
         // same redaction rule as `render_ump` (which already
         // redacts the official `.well-known` surface) — empty owner is
         // personal + shared, so a non-principal exporter sees only the shell;
@@ -2135,72 +2125,9 @@ pub async fn export(
                 }
             }
         }
-        let mut proposals = Vec::new();
-        {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT id, kind, content, novelty, conflict_with, salience, status,
-                            created_at, decided_at
-                     FROM proposals ORDER BY id",
-                )
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            let rows = stmt
-                .query_map([], |r| {
-                    Ok(serde_json::json!({
-                        "id": r.get::<_, i64>(0)?,
-                        "kind": r.get::<_, String>(1)?,
-                        "content": r.get::<_, String>(2)?,
-                        "novelty": r.get::<_, f32>(3)?,
-                        "conflict_with": r.get::<_, Option<i64>>(4)?,
-                        "salience": r.get::<_, f32>(5)?,
-                        "status": r.get::<_, String>(6)?,
-                        "created_at": r.get::<_, i64>(7)?,
-                        "decided_at": r.get::<_, Option<i64>>(8)?,
-                    }))
-                })
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            for v in rows.flatten() {
-                proposals.push(v);
-            }
-        }
-        let mut entities = Vec::new();
-        {
-            let mut stmt = conn
-                .prepare("SELECT id, name, entity_type FROM entities ORDER BY id")
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            let rows = stmt
-                .query_map([], |r| {
-                    Ok(serde_json::json!({
-                        "id": r.get::<_, i64>(0)?,
-                        "name": r.get::<_, String>(1)?,
-                        "entity_type": r.get::<_, Option<String>>(2)?,
-                    }))
-                })
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            for v in rows.flatten() {
-                entities.push(v);
-            }
-        }
-        let mut edges = Vec::new();
-        {
-            let mut stmt = conn
-                .prepare("SELECT id, from_entity_id, to_entity_id, relation_type, knowledge_id FROM relationships ORDER BY id")
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            let rows = stmt
-                .query_map([], |r| {
-                    Ok(serde_json::json!({
-                        "id": r.get::<_, i64>(0)?,
-                        "from_entity_id": r.get::<_, i64>(1)?,
-                        "to_entity_id": r.get::<_, i64>(2)?,
-                        "relation_type": r.get::<_, String>(3)?,
-                        "knowledge_id": r.get::<_, Option<i64>>(4)?,
-                    }))
-                })
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
-            for v in rows.flatten() {
-                edges.push(v);
-            }
-        }
+        let proposals = bundle.proposals;
+        let entities = bundle.entities;
+        let edges = bundle.relationships;
         // provenance summary counts per origin/source
         // kind (the Art 50 model-vs-human bridge) + additive format version.
         let mut by_origin: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
@@ -2470,21 +2397,10 @@ mod tests {
     /// the `/export` read-side round-trip for the never-built
     /// write-time `pii_map` vault is gone. `ExportQuery` no longer carries
     /// `include_pii_map` (an unknown `?include_pii_map=` is ignored by serde),
-    /// the export envelope has no `pii_map` key, and the table is dropped.
+    /// and the export envelope has no `pii_map` key. (The table-dropped
+    /// migration pin rode the export read onto `service::gate::tests`.)
     #[test]
     fn export_has_no_pii_map_envelope() {
-        // The dead placeholder table no longer exists after migration.
-        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
-        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
-        let n: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='pii_map'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(n, 0, "pii_map table must be dropped");
-
         // A request that passes the removed flag is simply ignored: serde maps
         // `format` and drops the unknown `include_pii_map` (no error, no read).
         let uri = axum::http::Uri::from_static("/export?include_pii_map=true&format=ump");
@@ -2647,170 +2563,14 @@ mod tests {
         assert_eq!(no_redact[2]["content"], "No owner.");
     }
 
-    /// Regression: v1.17.1 M4 added `created_at` to the export SELECT, but the
-    /// column is TEXT (`CURRENT_TIMESTAMP` default) while the mapper read it
-    /// as `Option<i64>` — every row errored and `flatten()` silently dropped
-    /// them all, so `/export` (and the UMP re-render) returned an empty
-    /// `knowledge` list on any real DB. The mapper now parses the DB
-    /// timestamp; this test pins the real migration + INSERT + export mapping.
-    #[test]
-    fn export_mapping_survives_real_timestamp_rows() {
-        crate::register_sqlite_vec();
-        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
-        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
-        conn.execute(
-            "INSERT INTO knowledge (title, content, source, content_hash) \
-             VALUES ('d1', 'Dave works at Acme.', 'structured', 'abc123')",
-            [],
-        )
-        .expect("insert");
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {KNOWLEDGE_ROW_COLS} FROM knowledge ORDER BY id"
-            ))
-            .expect("prepare");
-        let rows: Vec<serde_json::Value> = stmt
-            .query_map([], knowledge_row_to_json)
-            .expect("query")
-            .flatten()
-            .collect();
-        assert_eq!(rows.len(), 1, "the row must survive the mapping");
-        assert_eq!(rows[0]["content"], "Dave works at Acme.");
-        assert!(
-            rows[0]["created_at"].is_i64(),
-            "created_at is a unix epoch: {}",
-            rows[0]["created_at"]
-        );
-    }
-
-    /// export JSON carries per-row `source` + `origin` + the
-    /// provenance_summary envelope + export_format_version 2, while all v1
-    /// field names survive (regression guard for downstream importers).
-    #[test]
-    fn export_contains_source_origin_and_provenance_summary() {
-        crate::register_sqlite_vec();
-        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
-        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
-        // One chunk per ingest kind so the summary counts are meaningful.
-        // origin mirrors what the write-time handlers set (manual→human,
-        // memory→model, markdown/structured→imported default).
-        conn.execute(
-            "INSERT INTO knowledge (title, content, source, content_hash, origin) \
-             VALUES ('m', 'manual row', 'manual', 'h-m', 'human')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO knowledge (title, content, source, content_hash, origin) \
-             VALUES ('m2', 'model row', 'memory', 'h-m2', 'model')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO knowledge (title, content, source, content_hash) \
-             VALUES ('s', 'structured row', 'structured', 'h-s')",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO knowledge (title, content, source, content_hash) \
-             VALUES ('md', 'markdown row', 'markdown', 'h-md')",
-            [],
-        )
-        .unwrap();
-
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {KNOWLEDGE_ROW_COLS} FROM knowledge ORDER BY id"
-            ))
-            .unwrap();
-        let knowledge: Vec<serde_json::Value> = stmt
-            .query_map([], knowledge_row_to_json)
-            .unwrap()
-            .flatten()
-            .collect();
-        assert_eq!(knowledge.len(), 4);
-
-        let by_origin: std::collections::HashMap<&str, usize> = knowledge
-            .iter()
-            .map(|k| (k["origin"].as_str().unwrap(), 1))
-            .fold(std::collections::HashMap::new(), |mut m, (o, n)| {
-                *m.entry(o).or_insert(0) += n;
-                m
-            });
-        assert_eq!(by_origin.get("human"), Some(&1));
-        assert_eq!(by_origin.get("model"), Some(&1));
-        assert_eq!(by_origin.get("imported"), Some(&2));
-
-        // Manual → human; memory → model; markdown/structured → imported.
-        assert_eq!(knowledge[0]["source"], "manual");
-        assert_eq!(knowledge[0]["origin"], "human");
-        assert_eq!(knowledge[1]["source"], "memory");
-        assert_eq!(knowledge[1]["origin"], "model");
-        assert_eq!(knowledge[2]["source"], "structured");
-        assert_eq!(knowledge[2]["origin"], "imported");
-        assert_eq!(knowledge[3]["source"], "markdown");
-        assert_eq!(knowledge[3]["origin"], "imported");
-
-        // Every v1 field name still present with the same name.
-        for field in [
-            "id",
-            "content",
-            "memory_kind",
-            "authority",
-            "assertion_kind",
-            "confidence",
-            "access_scope",
-            "owner",
-            "observed_at",
-            "valid_from",
-            "valid_to",
-            "content_hash",
-        ] {
-            assert!(
-                knowledge[0].get(field).is_some(),
-                "v1 field {field} must survive"
-            );
-        }
-    }
-
-    /// the migration backfills `origin` by source kind.
-    #[test]
-    fn migration_backfills_origin_by_source() {
-        crate::register_sqlite_vec();
-        // Build a pre-origin DB by running the migration, then dropping origin,
-        // seeding rows of each kind, and re-running the migration to backfill.
-        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
-        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
-        conn.execute_batch(
-            "DROP INDEX IF EXISTS idx_knowledge_origin;
-             ALTER TABLE knowledge DROP COLUMN origin;
-             INSERT INTO knowledge (content, source, content_hash) VALUES
-                ('a', 'manual', 'h1'),
-                ('b', 'memory', 'h2'),
-                ('c', 'markdown', 'h3'),
-                ('d', 'structured', 'h4'),
-                ('e', 'weird', 'h5');",
-        )
-        .unwrap();
-        brain_server::migration::run_migration(&mut conn, 1).expect("re-migration");
-        let origin: Vec<String> = conn
-            .prepare("SELECT origin FROM knowledge ORDER BY id")
-            .unwrap()
-            .query_map([], |r| r.get(0))
-            .unwrap()
-            .map(|v| v.unwrap())
-            .collect();
-        assert_eq!(
-            origin,
-            vec!["human", "model", "imported", "imported", "imported"]
-        );
-    }
+    // the export read pins (the TEXT-created_at mapping, the per-origin
+    // provenance fields, the migration backfill, and the pii_map table-dropped
+    // pin) moved with the export read onto the gate core's test module.
 
     // `decided_at` + `since` read pins moved with the queue read onto the
     // gate core's test module.
 
-    // the promote-INSERT provenance pins moved onto the gate core's test
+    // the promote-path provenance pins moved onto the gate core's test
     // module, where they now drive the REAL `promote_chunk_insert` instead of
     // mirroring its column list (see `service::gate::tests`).
 }
@@ -2879,13 +2639,7 @@ mod valet_lint_tests {
         .await
         .expect("draft created");
         let conn = state.pool.get().unwrap();
-        let lint: Option<String> = conn
-            .query_row(
-                "SELECT lint_json FROM proposals WHERE id=?1",
-                rusqlite::params![resp.id],
-                |r| r.get(0),
-            )
-            .unwrap();
+        let lint: Option<String> = crate::service::gate::stored_lint_json(&conn, resp.id);
         let lint = lint.expect("lint_json present on drafts");
         let report: brain_server::valet_style::LintReport =
             serde_json::from_str(&lint).expect("lint parses");
