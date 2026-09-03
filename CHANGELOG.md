@@ -19,6 +19,93 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.54] — 2026-09-03 — "Scaffold": the Spire Line opens — measure, freeze, evacuate what needs no router
+
+First milestone of the Spire Line (the monolith dismantling). No behavior
+change of any kind: no new routes, no removed routes, no wire edits, no
+schema movement (schema stays at 1.28.53). Scaffold ships the measuring
+stick and the contract: a machine-enforced structural ledger over
+`main.rs`, the buried route guard tables promoted to named data, and the
+test mass that pins module-owned pure functions relocated to live beside
+its subjects.
+
+### Release notes
+
+**Bug fixes**
+- None. (Nothing behavioral moved — by design; the release's whole point is
+  proving exactly that with a wire-diff-empty gate.)
+
+**Improvements**
+- `src/spire_inventory.rs` (cfg(test)): the frozen structural ledger —
+  ceilings `MAIN_RS_LINES ≤ 19_403`, `TEST_REGION_LINES ≤ 12_833`,
+  `ROUTE_CALL_SITES ≤ 234`; floors `MAIN_RS_TEST ≥ 129`, crate-wide
+  `#[test] ≥ 1,178`, guard-table rows ≥ 151 / ≥ 141. Ceilings only move
+  DOWN, and only in the same commit as the extraction that earned the
+  shrink. Shipped red-then-green: the guard's first commit asserted
+  deliberately tight wrong ceilings and failed loudly on all three.
+- The route-coverage table (151 paths) + route-authz table (141 gates) are
+  now named data in `src/route_guards.rs` instead of arrays buried at line
+  ~12k of main.rs; the guard tests consume the consts with identical
+  verdicts, and their row counts are floored in the ledger.
+- Ten pure-unit test families relocated verbatim to their subjects' own
+  modules (handlers ×6, config, temporal, trace, eval) — pin travels with
+  the thing it pins. main.rs: 19,906 → 19,403 lines; the test region
+  13,342 → 12,833.
+
+**Security fixes**
+- None. (The authz source-scan and coverage pins are byte-identical in
+  verdict; the tables they read gained floors so a row can only be dropped
+  in the same commit as the wire change that earns it.)
+
+### Engineering record
+
+Commit sequence (each commit gate: fmt + clippy -D warnings + affected
+suites; full bin suite re-run per commit):
+1. `test(spire)` — the inventory guard, born red; roadmap numbers
+   re-measured to session-start truth (19,906 lines / region from L6,565 /
+   234 route sites / 139 pins) per the executor stop-rule.
+2. `test(spire)` — green: ceilings set to measured truth (19,909 / 13,342 /
+   234; the +3 ledger decl lines honestly included).
+3. `refactor(spire)` — guard tables → `src/route_guards.rs` as data;
+   ceilings 19,467 / 12,897; docs_truth's test-file-skip preserved by
+   declaring the module from main.rs (a `#[cfg(test)] pub mod` inside
+   handlers/mod.rs would have skipped it from the comment guard).
+4. `refactor(spire)` — the handlers-family pins (authorize ×3, audit_scope
+   ×2, typed-edge) relocate into `handlers/mod.rs`; floor 139→133...
+   then honestly re-measured.
+5. `refactor(spire)` — config/temporal/trace/eval pins relocate; final
+   ceilings 19,403 / 12,833 / 234, floor 134→129 path.
+6. docs + version (this commit).
+
+**Deliberately NOT moved (ceilings say so):** the route chain (234
+`.route(` sites — Vaulting/M3 owns every route move); the screen family
+(its subject `contains_suspicious_pattern` is still main.rs-owned — the
+pin travels when Buttress/M2 promotes the fn); bind predicates, tracker,
+rate-limiter, explanation-paths, snippet-suppression (all main.rs-owned
+subjects); every `test_db()`-driven suite (DB/router-integration mass,
+~900 lines — they move with the handler families or to `tests/` at the
+lib flip).
+
+**Floors are load-bearing proof:** the ledger fired once in development —
+relocating the handlers family without lowering `MAIN_RS_TEST_FLOOR` in
+the same commit failed exactly as designed ("a pin left main.rs without
+its spire_inventory edit") — the red-then-green discipline works in both
+directions.
+
+Validation: full suite `cargo test --features bench` green per commit
+(1,319 passed / 7 ignored at tip: bin 1,036 + lib 208 + CLI/bins 63 +
+integration 12), clippy `-D warnings` clean on the bench surface,
+`cargo fmt --check` clean, `scripts/lipstyk-gate.sh` diff-strict green,
+openapi.yaml + route-coverage + route-authz wire artifacts diff-empty,
+`x-api-version` untouched, `/health` smoke green on the rebuilt binary.
+Ceilings (honest): route-call-site ceiling frozen at 234 (routes move in
+Vaulting, not Scaffold — "strictly below" applies to the line/region
+ceilings); no chunker/capacity pure pins existed in main.rs to relocate
+(their homes already own them); the v1.28.35-era roadmap numbers were
+stale and were re-measured in the opening commit.
+
+---
+
 ## [1.28.53] — 2026-09-03 — "Triage": proposals gain a domain — the review queue is domain-scoped FOR REAL
 
 The gap discovered during "Parcels" (v1.28.30): the `proposals` table
