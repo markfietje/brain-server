@@ -19,7 +19,107 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
-## [1.28.54] — 2026-09-03 — "Scaffold": the Spire Line opens — measure, freeze, evacuate what needs no router
+## [1.28.55] — 2026-09-03 — "Buttress": the helpers come home — the pre-main library code promoted with its pins
+
+Second milestone of the Spire Line. No behavior change of any kind: no new
+routes, no removed routes, no wire edits, no schema movement. Buttress
+promotes the axum-free half of the pre-main region into four bin-private
+modules — every fn relocated with its own unit pins in the same commit,
+the structural ledger lowered in that same commit, every move by
+exact-text relocation so nothing but paths changed.
+
+### Release notes
+
+**Bug fixes**
+- None. (Nothing behavioral moved — the release's gate is proving that:
+  wire artifacts diff-empty, full suite byte-count identical at 1,031
+  bin tests passed / 6 ignored per commit.)
+
+**Improvements**
+- `src/http_limit.rs` (new): the HTTP-edge load-control family — the
+  per-IP `RateLimiter` (with the bounded-bucket eviction), the
+  `ConnectionTracker` + RAII `TrackerEntry`, the connection and RSS
+  watchdogs, and `process_rss_mib` — promoted from `main.rs` with all
+  nine of its unit pins (tracker ×3 + Drop/panic + timeout-slot,
+  limiter ×3, RSS ×1).
+- `src/screen.rs` gains the layer-1 blocklist: `contains_suspicious_pattern`
+  moved beside `is_invisible` (which the matcher calls), with its seven
+  pins including the S2-44/F-61 normalization pin. Same-crate callers
+  (search core, channel annex, handlers) repoint to
+  `crate::screen::contains_suspicious_pattern`.
+- `src/screen.rs` gains the quarantine read-seam pair: `flag_if_quarantined`
+  (the Quarantine verdict's persistence) and `suppress_flagged_evidence`
+  (the verdict's read-seam enforcement) with the snippet pin. Service-layer
+  callers (procedure, recall, ingest) repoint to `crate::screen::*`.
+- `src/graph_read.rs` (new): the signature-clean graph read helpers —
+  `clamp_graph_limit`, `traverse_row_mapper`, `build_explanation_paths` —
+  with the two explanation-path pins. The AppError-typed graph SQL fns
+  (`entity_relations`, `relations_for`) deliberately STAY in `main.rs`:
+  their signatures carry the IntoResponse error type, which fails the
+  Buttress selection rule (moves iff the signature is already free of
+  transport types); they ride with Vaulting's graph family.
+- `src/boot.rs` (new, staged): the boot guards — argv gate,
+  `BRAIN_WORKER_THREADS` resolution, the loopback-bind fail-closed
+  predicates + guard, and the constant-time `ct_eq` — with the ct_eq and
+  bind pins. Deliberately NOT `src/server/**`: that tree is born at
+  Vaulting with the lib flip, and staging there early would defeat its
+  design.
+- The frozen structural ledger (`spire_inventory`) tracks every move:
+  `MAIN_RS_LINES 19,282 → 18,291`, `TEST_REGION_LINES 12,712 → 12,302`,
+  `MAIN_RS_TEST_FLOOR 129 → 109` across the five move commits; the
+  never-decreases crate-test floor re-measured 1,178 → 1,185 and the
+  guard-table floors 151/141 → 161/145 at the Buttress open so the
+  guards stay tight.
+
+**Security fixes**
+- None. (No security-relevant behavior changed; the loopback-bind
+  guard, the blocklist, the quarantine flag, and the read-seam
+  suppression all moved verbatim, pins proving identical behavior.)
+
+### Engineering record
+
+- Five move commits, one family each, ledger lowered in the same commit
+  as every move: `a1480e7` http_limit (fn family + 9 pins), `5a19760`
+  blocklist → screen (fn + 7 pins), `19d3de8` fence kin → screen
+  (2 fns + snippet pin), `1f26978` graph_read (3 fns + 2 pins),
+  `c9ae723` boot (6 fns + 2 pins). Wrap commit: this one.
+- The ledger bit twice exactly as designed: once when the first commit
+  moved 8 `#[test]`-needle pins plus one `#[tokio::test]` (the needle
+  count is 121, not 120 — the floor edit says 121), and once when a
+  botched insertion+range-delete consumed the `screen_folds` pin before
+  commit (crate total dipped 1,185 → 1,184; repaired pin-by-pin, then
+  committed). Both failures were the design working.
+- Executor ceilings (honest): (1) the ingest write core
+  (`write_markdown_ingest`, `link_vault_source`, `parse_memory_content`)
+  did NOT move — the two write fns return `Result<_, AppError>`, and
+  `AppError` implements `IntoResponse` (transport-shaped), so the family
+  fails the selection rule and rides with Vaulting's memory family; the
+  three source-scan pins stay pointed at `main.rs`, where their subjects
+  still live, and their verdicts are unchanged. (2) `html_escape` +
+  `parse_annotations` stayed: their consumers are the axum ingest
+  handlers, which the prompt's scope gate excludes. (3)
+  `measure_capacity` stayed (the prompt's default; its caller wiring —
+  `/health` + the ingest 507 paths — is router substance). (4) the
+  router-level pins (`rate_limit_buckets_per_socket_addr…`,
+  `ingest_timeout…` is moved, `rate_limit_layer_is_outside_auth_layers`,
+  `graph_reads_scope_filtered`, `graph_skips_flagged_edges`,
+  `ingest_quarantines_flagged_instead_of_rejecting`) stay with their
+  router/DB subjects or their `test_db()` fixture, per the stays list.
+- `TrackerEntry::count` is now `#[cfg(test)]` (it was already
+  test-only); the router-level budget pin reads the new
+  `RateLimiter::WINDOW_BUDGET_PROBE` const instead of the private
+  `max_requests` field. No signature changes otherwise.
+- Validation per commit: fmt, clippy `-D warnings` (bench), affected
+  suites + full bin suite (1,031 passed / 6 ignored — identical every
+  commit), spire green with exact measured values. Wrap: full CI
+  dry-run (default-features lint+test, crates, steward-harness, otel),
+  lipstyk diff-strict, badges selfcheck, wire artifacts diff-empty
+  (openapi.yaml, route-coverage, route-authz, x-api-version), live
+  smoke on the rebuilt binary (`/health` + `/audit/verify ok`).
+
+---
+
+## [1.28.54] — 2026-09-03 — "Scaffold": the Spire Line opens — measure, freeze, evacuate what needs no router — 2026-09-03 — "Scaffold": the Spire Line opens — measure, freeze, evacuate what needs no router
 
 First milestone of the Spire Line (the monolith dismantling). No behavior
 change of any kind: no new routes, no removed routes, no wire edits, no
