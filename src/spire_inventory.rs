@@ -27,14 +27,18 @@ use std::path::{Path, PathBuf};
 /// (flag_if_quarantined, suppress_flagged_evidence) with the snippet pin,
 /// then −108 net as the graph read mappers (clamp, row mapper, explanation
 /// paths) moved to graph_read.rs with the two explanation pins — the
-/// AppError-typed graph SQL fns stay for Vaulting (transport-shaped).
+/// AppError-typed graph SQL fns stay for Vaulting (transport-shaped),
+/// then −2 more as the boot guards moved to boot.rs (ct_eq pin + the
+/// loopback-bind predicates pin).
 /// Ceiling.
-const MAIN_RS_LINES_CEIL: usize = 18_460;
+const MAIN_RS_LINES_CEIL: usize = 18_291;
 /// Lines from the `#[cfg(test)] mod tests` boundary to EOF. Ceiling.
 /// 13,342 at session start − 630 net (Scaffold) − 156 net (Buttress: the
-/// http_limit unit pins left the region) − 126 net (the 7 blocklist pins
-/// + their docs) − 32 net (the snippet pin) − 34 net (the explanation pins).
-const TEST_REGION_LINES_CEIL: usize = 12_370;
+/// http_limit unit pins left the region, then 126 net as the 7 blocklist
+/// pins and their docs left, then 32 net as the snippet pin left, then 34
+/// net as the explanation pins left, then 67 net as the ct_eq + loopback
+/// bind pins left.
+const TEST_REGION_LINES_CEIL: usize = 12_302;
 /// Textual `.route(` occurrences in main.rs (the registration chain +
 /// the authz scan's own literals — counted identically every time). Ceiling.
 /// Routes do not move until Vaulting (M3); this freezes at the start value.
@@ -47,8 +51,9 @@ const ROUTE_CALL_SITES_CEIL: usize = 234;
 /// needle, so it lowers the file's test mass without moving this floor),
 /// then −7 more as the layer-1 blocklist moved to screen.rs with its pins,
 /// then −1 more as the snippet-suppression pin followed the suppression fn,
-/// then −2 more as the explanation-path pins moved to graph_read.rs.
-const MAIN_RS_TEST_FLOOR: usize = 111;
+/// then −2 more as the explanation-path pins moved to graph_read.rs,
+/// then −2 more as the boot guards moved (test_ct_eq + the bind pin).
+const MAIN_RS_TEST_FLOOR: usize = 109;
 /// `#[test]` occurrences across all of `src/` (lib + bins + main).
 /// Floor — never decreases. 1,178 at the Scaffold freeze; re-measured to
 /// 1,185 at the Buttress open (tests legitimately added between the lines)

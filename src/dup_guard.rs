@@ -171,7 +171,7 @@ const ALLOWED_DUPES: &[(&str, &str)] = &[
     ("emit_progress", "[bin] connector JSON emit tail"),
     (
         "ct_eq",
-        "TODO(unify): mcp.rs + main.rs constant-time compare — fold into one shared fn",
+        "TODO(unify): mcp.rs + boot.rs constant-time compare — fold into one shared fn",
     ),
     (
         "SERVER_VERSION",
