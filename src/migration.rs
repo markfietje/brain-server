@@ -2117,7 +2117,49 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.28.53 "Triage": the review queue gains a domain ────────────
+    // `proposals` predates domains: every row was a GLOBAL row (parcels
+    // approximated scoping with the `parcel:{domain}:{signer}` source
+    // label). Additive: `domain` is the residency label the review queue
+    // scopes by in shim mode (multi-db pools are the territory already; the
+    // column rides as the denormalized honest stamp), `title` is the
+    // optional passthrough the queue surfaces. Backfill: existing rows keep
+    // 'global' forever — provenance beats guessing (no heuristic
+    // re-attribution). The (status, domain) index serves the narrowed page
+    // read; idx_proposals_status stays for the global sweeps.
+    let prop_domain_present: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('proposals') WHERE name='domain'",
+            [],
+            |r| r.get::<_, i32>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !prop_domain_present {
+        db.execute(
+            "ALTER TABLE proposals ADD COLUMN domain TEXT NOT NULL DEFAULT 'global'",
+            [],
+        )?;
+    }
+    let prop_title_present: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('proposals') WHERE name='title'",
+            [],
+            |r| r.get::<_, i32>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !prop_title_present {
+        db.execute("ALTER TABLE proposals ADD COLUMN title TEXT", [])?;
+    }
+    db.execute(
+        "CREATE INDEX IF NOT EXISTS idx_proposals_status_domain ON proposals(status, domain)",
+        [],
+    )?;
+
     // Bumped once per release that changes this function.
+    // v1.28.53 "Triage": proposals.domain + proposals.title + the
+    // (status, domain) index → 1.28.53.
     // v1.28.45 "Herald": channel_user_map table → 1.28.45.
     // v1.28.43 "Switchboard": channel_threads table → 1.28.43.
     // v1.28.42 "Valet": valet_consents table + proposals.lint_json → 1.28.42.
@@ -2141,8 +2183,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.45')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.45';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.53')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.53';",
         [],
     )?;
 

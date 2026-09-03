@@ -167,6 +167,13 @@ pub const SCHEMA_VERSION_V1_28_43: &str = "1.28.43";
 /// no-op.
 pub const SCHEMA_VERSION_V1_28_45: &str = "1.28.45";
 
+/// Triage: `proposals.domain` (NOT NULL DEFAULT 'global') + `proposals.title`
+/// (nullable) + the `idx_proposals_status_domain` index — the review queue is
+/// domain-scoped for real. Additive; existing rows keep 'global' (backfill by
+/// default, no heuristic re-attribution); one-way; the down-migration is a
+/// documented no-op.
+pub const SCHEMA_VERSION_V1_28_53: &str = "1.28.53";
+
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

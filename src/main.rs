@@ -778,6 +778,7 @@ async fn add_chunk(
                 authority: None,
                 observed_at: None,
                 domain: Some("global".to_string()),
+                title: None,
                 source_prompt: None,
             },
         )
@@ -1287,6 +1288,7 @@ async fn ingest_memory(
                 authority: None,
                 observed_at: None,
                 domain: Some("global".to_string()),
+                title: None,
                 source_prompt: None,
             },
         )
@@ -2793,6 +2795,7 @@ async fn ingest_markdown(
                     authority: None,
                     observed_at: None,
                     domain: Some(domain.clone()),
+                    title: None,
                     source_prompt: None,
                 },
             )
@@ -10404,6 +10407,29 @@ Final paragraph after the rule.";
             "audit_events table is missing v1.1.0 columns: {missing_audit:?}"
         );
 
+        // v1.28.53 "Triage": proposals carry their residency label + the
+        // optional queue-surfaced title. The review queue scopes by `domain`
+        // and parcels stamp the target domain at import; a dropped column
+        // would silently un-scope the queue (every row reads 'global')
+        // instead of erroring, so the contract pins it.
+        let expected_proposals_cols = ["domain", "title"];
+        let actual_proposals_cols: std::collections::HashSet<String> = db
+            .prepare("PRAGMA table_info(proposals)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        let missing_proposals: Vec<String> = expected_proposals_cols
+            .iter()
+            .filter(|c| !actual_proposals_cols.contains(**c))
+            .map(|s| s.to_string())
+            .collect();
+        assert!(
+            missing_proposals.is_empty(),
+            "proposals table is missing v1.28.53 columns: {missing_proposals:?}"
+        );
+
         // Core-loop roundtrip: insert → FTS shadow row exists → vec0 row
         // insertable → row count visible. This is the smallest test that
         // fails if a migration breaks the ingest→search path.
@@ -10528,9 +10554,11 @@ Final paragraph after the rule.";
         // Outreach for the consent_registry table (hashed subject × channel
         // × purpose consent state).
         // Keystone for the case_status_refs + kcs_translations tables.
+        // Triage for the proposals.domain + proposals.title columns (the
+        // domain-scoped review queue).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_45),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_53),
             "schema_version must be recorded as the current release after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×
@@ -11228,12 +11256,17 @@ Final paragraph after the rule.";
 
         // Fresh: still actionable.
         assert!(
-            crate::service::gate::expire_if_stale(&db, fresh, now, chrono::Utc::now().timestamp())
-                .expect("fresh is fresh")
+            crate::service::review::expire_if_stale(
+                &db,
+                fresh,
+                now,
+                chrono::Utc::now().timestamp()
+            )
+            .expect("fresh is fresh")
         );
         // Stale: refused + audited as expired.
         assert!(
-            !crate::service::gate::expire_if_stale(
+            !crate::service::review::expire_if_stale(
                 &db,
                 stale,
                 now - crate::config::proposal_ttl_secs() - 1,
@@ -11277,7 +11310,7 @@ Final paragraph after the rule.";
     fn test_proposal_deadline_is_derived_and_bands_mirror_alert_watcher() {
         let created = 1_750_000_000i64;
         let (expires_at, warn_secs, critical_secs) =
-            crate::service::gate::proposal_deadline(created);
+            crate::service::review::proposal_deadline(created);
         assert_eq!(
             expires_at,
             created + crate::config::proposal_ttl_secs(),
@@ -18971,6 +19004,105 @@ Final paragraph after the rule.";
             .unwrap()
         };
         assert!(audits >= 1, "the publish decision is audited");
+    }
+
+    /// v1.28.53 "Triage" — approve_reauths_row_domain_before_the_cas: the
+    /// by-id approve verb re-authorizes against the ROW's residency label
+    /// before any decision CAS. A caller holding the queue's global gate but
+    /// NOT the row's domain is refused loudly (403) with the row left
+    /// untouched; the same caller WITH the row's domain grant approves
+    /// through the unchanged promote path.
+    #[tokio::test]
+    async fn approve_reauths_row_domain_before_the_cas() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let now = chrono::Utc::now().timestamp();
+        let pid: i64 = {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO proposals(kind, content, novelty, salience, created_at, domain)
+                 VALUES ('fact', 'a domain-scoped candidate', 0.9, 0.5, ?1, 'acme')",
+                [now],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+        let digest = {
+            let conn = state.pool.get().unwrap();
+            crate::handlers::gate::review_digest(&{
+                conn.query_row("SELECT content FROM proposals WHERE id=?1", [pid], |r| {
+                    r.get::<_, String>(0)
+                })
+                .unwrap()
+            })
+        };
+        // A reviewer with the queue's global Write but NOT acme: the
+        // row-domain re-auth refuses BEFORE the CAS.
+        let foreign = auth::Principal {
+            sub: "foreign-reviewer".into(),
+            tenant: "team-alpha".into(),
+            scopes: vec![auth::Scope::parse("write:team-alpha/global").unwrap()],
+            jti: "jti-reauth-1".into(),
+            roles: vec![],
+            manages: vec![],
+        };
+        let err = crate::handlers::gate::approve_proposal(
+            axum::extract::State(state.clone()),
+            crate::handlers::auth::OptPrincipal(Some(foreign)),
+            axum::extract::Path(pid),
+            axum::extract::Query(crate::handlers::gate::ApproveQuery {
+                supersedes: None,
+                digest: Some(digest.clone()),
+            }),
+        )
+        .await
+        .expect_err("a foreign-domain row must not be decidable by a global-only reviewer");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN, "{err:?}");
+        {
+            let conn = state.pool.get().unwrap();
+            let status: String = conn
+                .query_row("SELECT status FROM proposals WHERE id = ?1", [pid], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(status, "pending", "the refusal never mutates the queue");
+        }
+
+        // The SAME reviewer WITH the acme grant: the promote path runs
+        // unchanged (the re-auth can only deny, never widen).
+        let scoped = auth::Principal {
+            sub: "acme-reviewer".into(),
+            tenant: "team-alpha".into(),
+            scopes: vec![
+                auth::Scope::parse("write:team-alpha/global").unwrap(),
+                auth::Scope::parse("write:team-alpha/acme").unwrap(),
+            ],
+            jti: "jti-reauth-2".into(),
+            roles: vec![],
+            manages: vec![],
+        };
+        let out = crate::handlers::gate::approve_proposal(
+            axum::extract::State(state.clone()),
+            crate::handlers::auth::OptPrincipal(Some(scoped)),
+            axum::extract::Path(pid),
+            axum::extract::Query(crate::handlers::gate::ApproveQuery {
+                supersedes: None,
+                digest: Some(digest),
+            }),
+        )
+        .await
+        .expect("the domain-scoped reviewer approves the row")
+        .0;
+        assert_eq!(out["status"], serde_json::json!("approved"));
+        {
+            let conn = state.pool.get().unwrap();
+            let status: String = conn
+                .query_row("SELECT status FROM proposals WHERE id = ?1", [pid], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            assert_eq!(status, "approved");
+        }
     }
 
     #[tokio::test]
