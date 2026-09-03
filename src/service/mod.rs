@@ -75,6 +75,7 @@ pub mod purge;
 pub mod recall;
 pub mod register;
 pub mod retention;
+pub mod review;
 pub mod suggest;
 pub mod ump_ops;
 pub mod webhook_ingest;
@@ -229,6 +230,43 @@ mod pins {
                      return domain types; map to HTTP at the handler boundary"
                 );
             }
+        }
+    }
+
+    /// v1.28.53 "Triage" — the extraction law for the review core the
+    /// piggyback rule named: `src/service/review.rs` (the `proposals`
+    /// aggregate's storage story) takes connections and returns domain
+    /// types; production source never names a transport type, a handler
+    /// type, a pool handle, or server state. `#[cfg(test)]` regions are
+    /// exempt (pins may name what they refute).
+    #[test]
+    fn review_core_has_no_http_types() {
+        const FORBIDDEN: &[&str] = &[
+            "axum",
+            "StatusCode",
+            "Json",
+            "AppState",
+            "Pool",
+            "HandlerError",
+        ];
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/service");
+        let f = dir.join("review.rs");
+        assert!(
+            f.exists(),
+            "sanity: the review core must exist for its law to hold"
+        );
+        let text = std::fs::read_to_string(&f).expect("review core must be readable");
+        let prod = text
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields a first slice");
+        for token in FORBIDDEN {
+            assert!(
+                !prod.contains(token),
+                "layer violation in src/service/review.rs: production source names \
+                 the transport type `{token}` — the review core takes connections \
+                 and returns domain types; map to HTTP at the handler boundary"
+            );
         }
     }
 
