@@ -1045,4 +1045,24 @@ mod tests {
             None => unsafe { std::env::remove_var("AUTH_TOKEN") },
         }
     }
+
+    /// Multiple newline-separated tokens are all accepted; parsed without
+    /// whitespace so rotation/revocation via the token file is live.
+    /// Save/restore the prior env to avoid global-state pollution under
+    /// parallel test execution.
+    /// (Relocated verbatim from main.rs's tests block, Spire v1.28.54 —
+    /// the pin travels with its subject, `auth_tokens`.)
+    #[test]
+    fn auth_tokens_supports_rotation_set() {
+        let prev = std::env::var("AUTH_TOKEN").ok();
+        unsafe { std::env::set_var("AUTH_TOKEN", "tok-a\n  tok-b\n") };
+        let tokens = auth_tokens();
+        assert_eq!(tokens.len(), 2);
+        assert!(tokens.contains(&"tok-a".to_string()));
+        assert!(tokens.contains(&"tok-b".to_string()));
+        match prev {
+            Some(v) => unsafe { std::env::set_var("AUTH_TOKEN", v) },
+            None => unsafe { std::env::remove_var("AUTH_TOKEN") },
+        }
+    }
 }

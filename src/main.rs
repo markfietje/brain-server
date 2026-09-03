@@ -6876,24 +6876,6 @@ mod tests {
     }
 
     #[test]
-    fn auth_tokens_supports_rotation_set() {
-        // Multiple newline-separated tokens are all accepted; parsed without
-        // whitespace so rotation/revocation via the token file is live.
-        // Save/restore the prior env to avoid global-state pollution under
-        // parallel test execution.
-        let prev = std::env::var("AUTH_TOKEN").ok();
-        unsafe { std::env::set_var("AUTH_TOKEN", "tok-a\n  tok-b\n") };
-        let tokens = crate::config::auth_tokens();
-        assert_eq!(tokens.len(), 2);
-        assert!(tokens.contains(&"tok-a".to_string()));
-        assert!(tokens.contains(&"tok-b".to_string()));
-        match prev {
-            Some(v) => unsafe { std::env::set_var("AUTH_TOKEN", v) },
-            None => unsafe { std::env::remove_var("AUTH_TOKEN") },
-        }
-    }
-
-    #[test]
     fn test_connection_tracker_long_running() {
         let tracker = ConnectionTracker::new();
         tracker.track("/test");
@@ -8799,20 +8781,6 @@ mod tests {
     }
 
     #[test]
-    fn temporal_extractor_populates_edge_interval() {
-        // the deterministic extractor pulls valid_at/invalid_at from
-        // free text. "from 2011 to 2017" → [2011, 2017).
-        use crate::temporal::extract_interval;
-        let now = chrono::NaiveDate::from_ymd_opt(2026, 7, 30)
-            .unwrap()
-            .and_hms_opt(12, 0, 0)
-            .unwrap();
-        let iv = extract_interval("was CA AG from 2011 to 2017", &now);
-        assert_eq!(iv.valid_at.as_deref(), Some("2011-01-01 00:00:00"));
-        assert_eq!(iv.invalid_at.as_deref(), Some("2017-01-01 00:00:00"));
-    }
-
-    #[test]
     fn typed_edge_prefix_passes_validation() {
         // TRACE typed-edge prefixes (update:, supersedes:, etc.) must
         // pass the relation_type validator so callers can ingest typed edges.
@@ -8861,27 +8829,6 @@ mod tests {
     fn explanation_paths_empty_on_empty_input() {
         // No traversal rows → no paths. The consuming agent sees `paths: []`.
         assert!(build_explanation_paths(&[]).is_empty());
-    }
-
-    #[test]
-    fn trace_traversal_caps_are_bounded() {
-        // the forbidden-list rule mandates bounded graph walks.
-        // Read into locals so clippy sees a runtime check, not a const assertion.
-        let hops = crate::trace::MAX_HOPS;
-        let visited = crate::trace::MAX_VISITED;
-        assert!((1..=8).contains(&hops));
-        assert!((1..=1024).contains(&visited));
-    }
-
-    #[test]
-    fn eval_metrics_compute_correctly() {
-        // the regression-harness metric functions produce the
-        // hand-computed values (the smallest check that fails if a metric breaks).
-        use brain_server::eval::{mrr, ndcg, precision_at_k, recall_at_k};
-        assert!((precision_at_k(&[1, 2, 3, 4, 5], &[2, 4], 5) - 0.4).abs() < 1e-6);
-        assert!((recall_at_k(&[1, 2, 3], &[2, 4, 6], 3) - 1.0 / 3.0).abs() < 1e-6);
-        assert!((mrr(&[4, 5, 1], &[1]) - 1.0 / 3.0).abs() < 1e-6);
-        assert!((ndcg(&[1, 2, 3], &[1, 2], 5) - 1.0).abs() < 1e-6);
     }
 
     #[test]

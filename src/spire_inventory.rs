@@ -19,21 +19,22 @@ use std::path::{Path, PathBuf};
 // commit.
 
 /// `wc -l src/main.rs`: 19,906 at session start + 5 ledger + guard-table
-/// decl lines, −444 extracted table lines, −11 handlers-family pins
-/// relocated (the extraction + relocation commits). Ceiling.
-const MAIN_RS_LINES_CEIL: usize = 19_456;
+/// decl lines, −444 extracted table lines, −64 relocated pins
+/// (the extraction + relocation commits). Ceiling.
+const MAIN_RS_LINES_CEIL: usize = 19_403;
 /// Lines from the `#[cfg(test)] mod tests` boundary to EOF. Ceiling.
-/// 13,342 at start − 445 extracted table lines − 11 relocated pins
-/// = 12,886.
-const TEST_REGION_LINES_CEIL: usize = 12_886;
+/// 13,342 at start − 445 extracted table lines − 64 relocated pins
+/// = 12,833.
+const TEST_REGION_LINES_CEIL: usize = 12_833;
 /// Textual `.route(` occurrences in main.rs (the registration chain +
 /// the authz scan's own literals — counted identically every time). Ceiling.
 /// Routes do not move until Vaulting (M3); this freezes at the start value.
 const ROUTE_CALL_SITES_CEIL: usize = 234;
 /// `#[test]` occurrences in main.rs. Floor (lowered only when a pin moves,
-/// in the same commit): 139 at session start − 6 handlers-family pins
-/// relocated = 133 (handlers/mod.rs carries them now).
-const MAIN_RS_TEST_FLOOR: usize = 133;
+/// in the same commit): 139 at session start − 5 relocated pure-unit pins
+/// (auth_tokens, temporal, trace_caps, eval to their modules; handlers
+/// family moved in the previous commit) = 134.
+const MAIN_RS_TEST_FLOOR: usize = 134;
 /// `#[test]` occurrences across all of `src/` (lib + bins + main).
 /// Floor — never decreases.
 const TOTAL_SRC_TEST_FLOOR: usize = 1_178;

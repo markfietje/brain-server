@@ -204,4 +204,16 @@ mod tests {
         assert_eq!(rep.queries, 2);
         assert!((rep.answer_in_context_rate - 1.0).abs() < 1e-6); // 1/1 judged
     }
+
+    /// the regression-harness metric functions produce the
+    /// hand-computed values (the smallest check that fails if a metric breaks).
+    /// (Relocated verbatim from main.rs's tests block, Spire v1.28.54 —
+    /// the pin travels with its subjects, the metric fns.)
+    #[test]
+    fn eval_metrics_compute_correctly() {
+        assert!((precision_at_k(&[1, 2, 3, 4, 5], &[2, 4], 5) - 0.4).abs() < 1e-6);
+        assert!((recall_at_k(&[1, 2, 3], &[2, 4, 6], 3) - 1.0 / 3.0).abs() < 1e-6);
+        assert!((mrr(&[4, 5, 1], &[1]) - 1.0 / 3.0).abs() < 1e-6);
+        assert!((ndcg(&[1, 2, 3], &[1, 2], 5) - 1.0).abs() < 1e-6);
+    }
 }

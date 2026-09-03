@@ -383,4 +383,19 @@ mod tests {
         assert_eq!(i.valid_at.as_deref(), Some("2011-01-01 00:00:00"));
         assert_eq!(i.invalid_at.as_deref(), Some("2017-01-01 00:00:00"));
     }
+
+    /// the deterministic extractor pulls valid_at/invalid_at from
+    /// free text. "from 2011 to 2017" → [2011, 2017).
+    /// (Relocated verbatim from main.rs's tests block, Spire v1.28.54 —
+    /// the pin travels with its subject, `extract_interval`.)
+    #[test]
+    fn temporal_extractor_populates_edge_interval() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 7, 30)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap();
+        let iv = extract_interval("was CA AG from 2011 to 2017", &now);
+        assert_eq!(iv.valid_at.as_deref(), Some("2011-01-01 00:00:00"));
+        assert_eq!(iv.invalid_at.as_deref(), Some("2017-01-01 00:00:00"));
+    }
 }

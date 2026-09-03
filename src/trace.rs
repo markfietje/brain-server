@@ -38,4 +38,16 @@ mod tests {
         assert!((1..=8).contains(&MAX_HOPS));
         assert!((1..=1024).contains(&MAX_VISITED));
     }
+
+    /// the forbidden-list rule mandates bounded graph walks.
+    /// Read into locals so clippy sees a runtime check, not a const assertion.
+    /// (Relocated verbatim from main.rs's tests block, Spire v1.28.54 —
+    /// the pin travels with its subjects, MAX_HOPS + MAX_VISITED.)
+    #[test]
+    fn trace_traversal_caps_are_bounded() {
+        let hops = MAX_HOPS;
+        let visited = MAX_VISITED;
+        assert!((1..=8).contains(&hops));
+        assert!((1..=1024).contains(&visited));
+    }
 }
