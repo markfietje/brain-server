@@ -92,6 +92,9 @@ mod transfers;
 // the two-layer injection screen seam.
 mod screen;
 mod sources;
+// the Spire Line's frozen structural ledger (test-only).
+#[cfg(test)]
+mod spire_inventory;
 mod trace;
 mod vault;
 mod webhook;
