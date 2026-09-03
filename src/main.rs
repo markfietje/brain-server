@@ -680,7 +680,7 @@ async fn add_chunk(
             // `flagged = 0` and retrievable while the caller was told it
             // failed. `flag_if_quarantined`'s "never stored clean" doc is
             // now true on this path too.
-            if let Err(e) = flag_if_quarantined(&tx, chunk_id, quarantine) {
+            if let Err(e) = screen::flag_if_quarantined(&tx, chunk_id, quarantine) {
                 return AddResponse::error(format!("quarantine flag failed: {e}"));
             }
 
@@ -881,7 +881,7 @@ async fn search(
                 // enrichment, which would otherwise re-populate evidence) unless the
                 // request opted into flagged rows (operator review path).
                 for r in &mut results {
-                    suppress_flagged_evidence(r, filters.include_flagged);
+                    screen::suppress_flagged_evidence(r, filters.include_flagged);
                 }
 
                 // PII read-projection uniformity — the same
@@ -1298,7 +1298,7 @@ async fn ingest_memory(
                 // fail closed — if the flag write
                 // fails, log and let the tx drop uncommitted (rollback), so an
                 // injection hit that MUST be flagged is never stored clean.
-                if flag_if_quarantined(&tx, chunk_id, quarantine).is_err() {
+                if screen::flag_if_quarantined(&tx, chunk_id, quarantine).is_err() {
                     eprintln!("⚠️ quarantine flag failed — rolling back chunk {chunk_id}");
                     continue;
                 }
@@ -2194,55 +2194,6 @@ fn html_escape(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#x27;")
-}
-
-/// under the default `Quarantine` injection policy, an ingested
-/// chunk that trips `contains_suspicious_pattern` is not rejected — it is stored
-/// with `flagged = 1` so retrieval excludes it until an operator reviews it.
-/// Returns `Ok(true)` if the row was flagged (so callers can skip durable side
-/// effects like KG-edge creation for quarantined evidence).
-///
-/// the caller now passes an explicit `quarantine` flag produced
-/// by [`screen::screen`] (layer 1 blocklist OR layer-2 classifier). This keeps
-/// the flag write paired with the actual screen verdict instead of re-running
-/// the blocklist in isolation — a layer-2 hit quarantines exactly like a
-/// layer-1 hit. Only acts under `Quarantine`; `Reject`/`Allow` are handled at
-/// the call site's pre-insert branch.
-///
-/// returns `rusqlite::Result<bool>` and callers
-/// **fail closed** — an injection chunk that MUST be flagged is never stored
-/// clean if the flag write fails. The worst outcome (a confident injection hit
-/// retrievable with `flagged = 0`) is the one the writer refuses.
-pub(crate) fn flag_if_quarantined(
-    conn: &Connection,
-    id: i64,
-    quarantine: bool,
-) -> rusqlite::Result<bool> {
-    if !quarantine || config::injection_policy() != config::InjectionPolicy::Quarantine {
-        return Ok(false);
-    }
-    conn.execute(
-        "UPDATE knowledge SET flagged = 1 WHERE id = ?1",
-        params![id],
-    )?;
-    Ok(true)
-}
-
-/// keep quarantined prose out of the agent's rendered evidence by
-/// default. Called at the search/recall render boundary — a flagged hit that the
-/// request did not explicitly opt into (`include_flagged`) has its snippet and
-/// structured evidence stripped. Returns whether suppression was applied.
-pub(crate) fn suppress_flagged_evidence(
-    r: &mut crate::SearchResult,
-    include_flagged: bool,
-) -> bool {
-    if r.flagged && !include_flagged {
-        r.snippet = None;
-        r.evidence = None;
-        true
-    } else {
-        false
-    }
 }
 
 async fn ingest_markdown(
@@ -7042,7 +6993,7 @@ mod tests {
         .unwrap();
         let id = db.last_insert_rowid();
 
-        let flagged = flag_if_quarantined(&db, id, true).expect("flag write ok");
+        let flagged = screen::flag_if_quarantined(&db, id, true).expect("flag write ok");
         assert!(
             flagged,
             "suspicious content must be flagged under Quarantine"
@@ -7064,7 +7015,7 @@ mod tests {
         )
         .unwrap();
         let clean_id = db.last_insert_rowid();
-        assert!(!flag_if_quarantined(&db, clean_id, false).expect("clean flag ok"));
+        assert!(!screen::flag_if_quarantined(&db, clean_id, false).expect("clean flag ok"));
         let clean: i64 = db
             .query_row(
                 "SELECT flagged FROM knowledge WHERE id = ?1",
@@ -7085,7 +7036,7 @@ mod tests {
         .unwrap();
         let reject_id = db.last_insert_rowid();
         assert!(
-            !flag_if_quarantined(&db, reject_id, true).expect("reject flag ok"),
+            !screen::flag_if_quarantined(&db, reject_id, true).expect("reject flag ok"),
             "helper is a no-op under Reject policy"
         );
         unsafe { std::env::remove_var("INJECTION_POLICY") };
@@ -8239,39 +8190,6 @@ mod tests {
     fn explanation_paths_empty_on_empty_input() {
         // No traversal rows → no paths. The consuming agent sees `paths: []`.
         assert!(build_explanation_paths(&[]).is_empty());
-    }
-
-    #[test]
-    fn snippet_suppressed_for_flagged() {
-        let make = |flagged: bool| crate::SearchResult {
-            id: 1,
-            score: 0.9,
-            title: None,
-            content: "some content".into(),
-            source: None,
-            provenance: crate::search::Provenance::default(),
-            flagged,
-            untrusted: true,
-            snippet: Some("snip".into()),
-            evidence: None,
-            ..Default::default()
-        };
-
-        // flagged + !include → suppressed.
-        let mut r = make(true);
-        assert!(suppress_flagged_evidence(&mut r, false));
-        assert!(r.snippet.is_none());
-        assert!(r.evidence.is_none());
-
-        // flagged + include → preserved (operator review).
-        let mut r = make(true);
-        assert!(!suppress_flagged_evidence(&mut r, true));
-        assert!(r.snippet.is_some());
-
-        // clean → preserved regardless.
-        let mut r = make(false);
-        assert!(!suppress_flagged_evidence(&mut r, false));
-        assert!(r.snippet.is_some());
     }
 
     // ── migration parity — nearest-neighbor overlap ────────────

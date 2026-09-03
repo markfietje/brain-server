@@ -85,7 +85,7 @@ pub(crate) fn store_procedure(
     let root_id = tx.last_insert_rowid();
     // flag the root if the screen quarantined. Excluded from
     // recall via `WHERE flagged = 0`, KG edges skipped below.
-    let root_flagged = crate::flag_if_quarantined(tx, root_id, root_quarantine)
+    let root_flagged = crate::screen::flag_if_quarantined(tx, root_id, root_quarantine)
         .map_err(|e| ProcedureError::Storage(format!("quarantine flag failed: {e}")))?;
     let mut step_ids: Vec<i64> = Vec::new();
     for (idx, (step_title, step_content, step_kind)) in steps.iter().enumerate() {
@@ -110,7 +110,7 @@ pub(crate) fn store_procedure(
         // actually quarantined are flagged (a benign step in a quarantined
         // procedure stays clean). Fails closed: a step that must be
         // flagged but can't be is a stop-the-write condition.
-        crate::flag_if_quarantined(tx, step_id, step_quarantine[idx])
+        crate::screen::flag_if_quarantined(tx, step_id, step_quarantine[idx])
             .map_err(|e| ProcedureError::Storage(format!("quarantine flag failed: {e}")))?;
         // next_step edge with explicit ordering. Skipped for a quarantined
         // root so a flagged plant can't reach the graph even via a step.

@@ -141,7 +141,7 @@ pub fn finish_domain_results(
         let _ = SearchResult::enrich_evidence(conn, results, snippet_query, historical);
     }
     for r in results.iter_mut() {
-        crate::suppress_flagged_evidence(r, include_flagged);
+        crate::screen::suppress_flagged_evidence(r, include_flagged);
     }
 }
 

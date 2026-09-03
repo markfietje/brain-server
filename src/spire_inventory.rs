@@ -22,14 +22,16 @@ use std::path::{Path, PathBuf};
 /// extractions, relocations, and the dedup of five stale main.rs copies the
 /// handlers-family commit left behind, then −397 net from the Buttress
 /// http_limit promotion (family + 9 unit pins, use/mod wiring added back)
-/// and −245 net from the blocklist joining screen.rs (fn + 7 pins).
+/// and −245 net from the blocklist joining screen.rs (fn + 7 pins), then
+/// −82 net as the quarantine-flag + read-seam-suppression pair joined them
+/// (flag_if_quarantined, suppress_flagged_evidence) with the snippet pin.
 /// Ceiling.
-const MAIN_RS_LINES_CEIL: usize = 18_640;
+const MAIN_RS_LINES_CEIL: usize = 18_558;
 /// Lines from the `#[cfg(test)] mod tests` boundary to EOF. Ceiling.
 /// 13,342 at session start − 630 net (Scaffold) − 156 net (Buttress: the
 /// http_limit unit pins left the region) − 126 net (the 7 blocklist pins
-/// + their docs).
-const TEST_REGION_LINES_CEIL: usize = 12_430;
+/// + their docs) − 32 net (the snippet pin).
+const TEST_REGION_LINES_CEIL: usize = 12_397;
 /// Textual `.route(` occurrences in main.rs (the registration chain +
 /// the authz scan's own literals — counted identically every time). Ceiling.
 /// Routes do not move until Vaulting (M3); this freezes at the start value.
@@ -40,11 +42,9 @@ const ROUTE_CALL_SITES_CEIL: usize = 234;
 /// modules) = 129, then −8 more as the Buttress http_limit family moved
 /// (its 9th pin is a `#[tokio::test]` — outside this substring counter's
 /// needle, so it lowers the file's test mass without moving this floor),
-/// then −7 more as the layer-1 blocklist moved to screen.rs with its pins.
-/// The handlers-family commit initially left five stale
-/// main.rs copies (line-shifted seds); the floor held at 134 until the
-/// dedup — the gap was the warning.
-const MAIN_RS_TEST_FLOOR: usize = 114;
+/// then −7 more as the layer-1 blocklist moved to screen.rs with its pins,
+/// then −1 more as the snippet-suppression pin followed the suppression fn.
+const MAIN_RS_TEST_FLOOR: usize = 113;
 /// `#[test]` occurrences across all of `src/` (lib + bins + main).
 /// Floor — never decreases. 1,178 at the Scaffold freeze; re-measured to
 /// 1,185 at the Buttress open (tests legitimately added between the lines)

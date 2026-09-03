@@ -16,6 +16,8 @@
 
 use std::sync::{Arc, LazyLock};
 
+use rusqlite::{Connection, params};
+
 use crate::config::{self, InjectionPolicy};
 
 // the strip pair moved to the lib module (shared with the
@@ -456,6 +458,55 @@ pub fn contains_suspicious_pattern(input: &str) -> bool {
     })
 }
 
+/// under the default `Quarantine` injection policy, an ingested
+/// chunk that trips `contains_suspicious_pattern` is not rejected — it is stored
+/// with `flagged = 1` so retrieval excludes it until an operator reviews it.
+/// Returns `Ok(true)` if the row was flagged (so callers can skip durable side
+/// effects like KG-edge creation for quarantined evidence).
+///
+/// the caller now passes an explicit `quarantine` flag produced
+/// by [`screen::screen`] (layer 1 blocklist OR layer-2 classifier). This keeps
+/// the flag write paired with the actual screen verdict instead of re-running
+/// the blocklist in isolation — a layer-2 hit quarantines exactly like a
+/// layer-1 hit. Only acts under `Quarantine`; `Reject`/`Allow` are handled at
+/// the call site's pre-insert branch.
+///
+/// returns `rusqlite::Result<bool>` and callers
+/// **fail closed** — an injection chunk that MUST be flagged is never stored
+/// clean if the flag write fails. The worst outcome (a confident injection hit
+/// retrievable with `flagged = 0`) is the one the writer refuses.
+pub(crate) fn flag_if_quarantined(
+    conn: &Connection,
+    id: i64,
+    quarantine: bool,
+) -> rusqlite::Result<bool> {
+    if !quarantine || config::injection_policy() != config::InjectionPolicy::Quarantine {
+        return Ok(false);
+    }
+    conn.execute(
+        "UPDATE knowledge SET flagged = 1 WHERE id = ?1",
+        params![id],
+    )?;
+    Ok(true)
+}
+
+/// keep quarantined prose out of the agent's rendered evidence by
+/// default. Called at the search/recall render boundary — a flagged hit that the
+/// request did not explicitly opt into (`include_flagged`) has its snippet and
+/// structured evidence stripped. Returns whether suppression was applied.
+pub(crate) fn suppress_flagged_evidence(
+    r: &mut crate::SearchResult,
+    include_flagged: bool,
+) -> bool {
+    if r.flagged && !include_flagged {
+        r.snippet = None;
+        r.evidence = None;
+        true
+    } else {
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -584,6 +635,39 @@ mod tests {
             !contains_suspicious_pattern("the developer modes tab documents both modes"),
             "'developer modes' across a boundary is not the jammed entry"
         );
+    }
+
+    #[test]
+    fn snippet_suppressed_for_flagged() {
+        let make = |flagged: bool| crate::SearchResult {
+            id: 1,
+            score: 0.9,
+            title: None,
+            content: "some content".into(),
+            source: None,
+            provenance: crate::search::Provenance::default(),
+            flagged,
+            untrusted: true,
+            snippet: Some("snip".into()),
+            evidence: None,
+            ..Default::default()
+        };
+
+        // flagged + !include → suppressed.
+        let mut r = make(true);
+        assert!(suppress_flagged_evidence(&mut r, false));
+        assert!(r.snippet.is_none());
+        assert!(r.evidence.is_none());
+
+        // flagged + include → preserved (operator review).
+        let mut r = make(true);
+        assert!(!suppress_flagged_evidence(&mut r, true));
+        assert!(r.snippet.is_some());
+
+        // clean → preserved regardless.
+        let mut r = make(false);
+        assert!(!suppress_flagged_evidence(&mut r, false));
+        assert!(r.snippet.is_some());
     }
 
     /// Fake layer-2 scorer whose score is the presence of a sentinel substring

@@ -362,7 +362,7 @@ pub fn store_record(
     // its KG edges are skipped so a quarantined plant can't pollute the
     // graph. `flag_if_quarantined` returns true only when it flagged. Fails
     // closed: a quarantine that can't be recorded aborts the ingest.
-    let quarantined = crate::flag_if_quarantined(tx, id, input.quarantine_flagged)
+    let quarantined = crate::screen::flag_if_quarantined(tx, id, input.quarantine_flagged)
         .map_err(|e| IngestError::QuarantineFlag(e.to_string()))?;
 
     // vec0 (int8 + binary quantized) is the sole vector
@@ -871,7 +871,7 @@ mod tests {
         // drop the knowledge table between insert and flag is not reachable
         // through the core; instead pin the flag helper's contract directly).
         let bare = rusqlite::Connection::open_in_memory().unwrap();
-        let err = crate::flag_if_quarantined(&bare, 1, true).unwrap_err();
+        let err = crate::screen::flag_if_quarantined(&bare, 1, true).unwrap_err();
         let mapped = IngestError::QuarantineFlag(err.to_string());
         assert!(
             mapped.to_string().starts_with("quarantine flag failed:"),
