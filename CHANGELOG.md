@@ -19,6 +19,121 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.53] — 2026-09-03 — "Triage": proposals gain a domain — the review queue is domain-scoped FOR REAL
+
+The gap discovered during "Parcels" (v1.28.30): the `proposals` table
+predates domains and had NO `domain`/`title` columns — parcel imports
+landed as GLOBAL pending proposals, distinguishable only by their
+`parcel:{domain}:{signer}` source label, and a receiving site's reviewers
+saw foreign autocaptures mixed with imported parcels in one
+undifferentiated queue. Triage makes the label REAL: every proposal row
+carries its residency `domain`, the queue reads scope by it, the by-id
+verbs re-authorize against the ROW's label before any decision CAS, and
+parcels stamp the TARGET domain. The piggyback rule is paid in the same
+change: the review surface's storage story is extracted out of
+`service::gate` into a named `service::review` core. First feature release
+after the Foundation Line; schema moves 1.28.45 → 1.28.53 (additive only).
+
+### Release notes
+
+**Bug fixes**
+- **Imported parcels are reviewable per-site.** A parcel import now stamps
+  every proposal with the TARGET domain, so a receiving site's reviewer sees
+  the imported rows (and only them, via `?domain=`) instead of every site's
+  mixed queue.
+- **A cross-domain reviewer can no longer decide a foreign-domain
+  proposal.** Approve, reject, and edit re-check the ROW's `domain` against
+  the caller INSIDE the decision transaction, BEFORE the CAS — a proposal
+  stamped for another domain is a loud 403 with the row untouched, never a
+  silent promotion by a caller its domain never answered for.
+
+**Improvements**
+- **Schema 1.28.53 (additive, idempotent):** `proposals.domain TEXT NOT NULL
+  DEFAULT 'global'` + nullable `proposals.title` + the
+  `idx_proposals_status_domain` index. Existing rows keep `'global'`
+  forever — provenance beats guessing. The schema-contract test gains the
+  missing `expected_proposals_cols` block.
+- **`GET /proposals?domain=<label>`** scopes the queue to one domain; the
+  read gate checks the REQUESTED domain (fail-closed 403 for a foreign one;
+  loopback/opaque unchanged). Every queue row now carries its `domain` and
+  optional `title` (the autocapture source title, the parcel row title);
+  `POST /ingest/proposal` accepts the optional bounded+screened `title`.
+- **Parcels dedup narrows:** the pending-scan filters to the target domain
+  PLUS one global pass, so a foreign domain's outstanding reviews never
+  swallow this domain's rows while pre-Triage global pendings still dedup.
+- **Crew skills proposals** stamp the change's target domain — the review
+  queue scopes them to the domain whose roster they edit.
+- **`service::review` (NEW):** the `proposals` aggregate's complete storage
+  story — the page read (status + `since` + the domain clamp + the cap), the
+  creation insert, the decision CASes (approve / reject / translate / TTL),
+  the edit path, the conflict pre-check, and the deadline/SLA derivation —
+  extracted from `service::gate`, which keeps the KCS/promotion/export
+  machinery. Pinned by `review_core_has_no_http_types`.
+
+**Security fixes**
+- The row-domain re-auth above is the release's hardening: by-id review
+  verbs (approve/reject/edit) now authorize twice — the queue posture at
+  the route, and the row's own residency label before the CAS.
+
+### Engineering record
+
+- **The plan-to-reality mapping (deviations, declared):** the plan's
+  "gate.rs ~4 sites" was written before Cornerstone drained the handlers —
+  the insert sites now live in `service::gate::insert_proposal` (ONE
+  definition, which this release extends with domain+title); the plan's
+  `list_proposals_page` is the review core's `pending_page` (the
+  Cornerstone name kept); the plan's `sql_inventory_baseline` gate.rs-row
+  check is SUPERSEDED — the enforcing flip deleted the baseline machinery,
+  and `no_sql_in_handlers_enforced` (still green) holds handler SQL at
+  ZERO, so the extraction is a service-core split (gate → review), not a
+  handler drain. The piggyback rule's intent — the review surface's core
+  named in the same change that scopes it — is honored.
+- **Write-site inventory:** production `INSERT INTO proposals` sites
+  WITHOUT an explicit stamp ride the column's `'global'` default by design
+  (outreach, complaints, KCS, channel user-map/template, webhook drafts,
+  CRM merge-suggestions — all global acts with id/kind-scoped reads).
+  Explicit stamps: the review core (`create_proposal`'s authorized
+  domain), parcels (target domain), crew skills (change domain).
+- **Tests (+5 named pins):** `proposal_rows_carry_their_domain_and_clamp_to
+_caller_scopes` (service::review), `approve_reauths_row_domain_before_the
+_cas` (main.rs, handler-level: 403 + row untouched, then the same caller
+with the grant approves), `parcel_import_proposals_scope_to_the_target
+_domain` + `pending_dedup_narrows_to_domain_without_losing_global_rows`
+(workflow::parcels), `review_core_has_no_http_types` (service::pins).
+  Moved-with-pins: the three service::gate queue-read pins ride the
+  extraction verbatim (call sites adapted to the new domain parameter).
+- **Wire artifacts:** openapi.yaml — `/proposals` gains the `domain` query
+  param + description; `/ingest/proposal` gains `title` (maxLength 500);
+  the `ProposalView` component schema is now DEFINED (the two `$ref`s were
+  dangling since the view shipped — fixed opportunistically with the
+  domain/title fields added); `/ops/workload`'s gate_backlog description
+  no longer claims "proposals carry no domain column" (the attribution
+  stays lineage-only). docs/api.md updated; the Parcels ceiling "no
+  per-domain review queue yet" is LIFTED. No new routes; the route-coverage
+  and route-authz guard tables are unchanged by construction.
+- **Gates:** fmt clean; clippy `--all-targets --features bench -D warnings`
+  green; full suite +N passed / 7 ignored (delta below); CI dry-run set
+  green (default-features clippy/test, engine-crates, steward-harness,
+  otel). Live smoke on a DB COPY: see below.
+- **Ceilings (honest):** pre-Triage rows read `'global'` forever (no
+  heuristic re-attribution). Cross-domain reviewers with wildcard scopes
+  see everything they could before — nothing narrows superuser visibility.
+  The by-id verbs keep the queue's global gate, so a domain-scoped approver
+  needs the global grant PLUS the row-domain grant (the row re-auth can
+  only deny, never widen; relaxing the route gate is a follow-up). Approval
+  promotion still stamps knowledge `global` — the proposal's domain does
+  not yet flow into the promoted chunk (the parcel comment that claimed it
+  did was aspirational; now corrected). `/clients/{name}/proposals` stays
+  owner-scoped only (no domain narrowing). The export bundle's proposal
+  projection keeps its legacy column list (no domain/title). The workload
+  view's attribution stays lineage-only. Gold-set sync does NOT ride
+  parcels (unchanged from the plan).
+
+Predecessor: [1.28.52] — "Cornerstone": the fin, the Foundation Line
+complete and machine-enforced.
+
+---
+
 ## [1.28.52] — 2026-09-03 — "Cornerstone": THE FIN — the Foundation Line complete and machine-enforced
 
 The line's last milestone, with one declared amendment: v1.28.51 shipped

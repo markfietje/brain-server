@@ -83,7 +83,7 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/ingest/proposal` · `/proposals/{id}/approve[?supersedes=N][&digest=...]` · `/reject` · `/proposals/{id}/edit` | Human-in-the-loop write-back (v1.14). Since v1.27.12 `approve` accepts an optional `digest` (SHA-256 of the read-canonical review form, as served by `GET /proposals`); any drift → `409` — the approval binds to the bytes the reviewer saw. Caravel: kind `channel/template` is proposal-only — content is the JSON packet `{tenant, conversation_ref, template, body}`; approving CASes it approved and dispatches the governed send in ONE tx (window + consent + approved proposal all verified kernel-side; business-initiated cold contact additionally opens its `care/case`). Replay-safe: a decided id returns `{moved:false}`, never a second send. If the kernel's own gates refuse after the human decision, the refusal is audited and reported (`{moved:true, enqueued:false, reason}` or 409 with nothing written) |
-| GET | `/proposals?status=` · `/decayed` | Approval queue + decayed review. Each row is a `ProposalView` (`content` = read-canonical form, `content_digest` = SHA-256 the approve verb binds to, v1.27.12) |
+| GET | `/proposals?status=&domain=` · `/decayed` | Approval queue + decayed review. Each row is a `ProposalView` (`content` = read-canonical form, `content_digest` = SHA-256 the approve verb binds to, v1.27.12; v1.28.53 "Triage": rows carry their `domain` label + optional `title`, and `?domain=` scopes the queue — the read gate checks the REQUESTED domain, fail-closed 403 for a foreign one; approve/reject/edit re-check the ROW's domain before the CAS, so a foreign-domain proposal is never decided by a caller its domain never answered for) |
 | POST | `/consolidate/propose` · `/apply` · `/undo` | Reviewable consolidation, supersession, undo |
 | POST | `/suggest` · `/suggest/feedback` · GET `/suggest/metrics` | Opt-in anticipation + false-positive metric |
 | POST | `/verify` | Claim span verification |
@@ -145,17 +145,21 @@ reviewed act.
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/parcels/export` | Build + sign a parcel of a domain's approved knowledge (Admin). Only promoted (non-quarantined) rows leave; residency stamps are copied read-only; signed with the UMP operator key; the export crossing is ledgered + audited in-tx. `400 parcel_too_large` over the 500-row cap; `409 operator_key_missing` without a key |
-| POST | `/parcels/import` | Verify-then-import: signature checked BEFORE any write (`400 parcel_unsigned` / `parcel_tampered`; optional `expected_signer` refuses publisher mismatch). Rows land as PENDING proposals in the target domain — never direct knowledge writes — deduplicated by content hash; injection-screened rows refused and counted. Ledger + audit in-tx |
+| POST | `/parcels/import` | Verify-then-import: signature checked BEFORE any write (`400 parcel_unsigned` / `parcel_tampered`; optional `expected_signer` refuses publisher mismatch). Rows land as PENDING proposals stamped with the TARGET domain — never direct knowledge writes — deduplicated by content hash against the domain's knowledge plus its own and global pendings; injection-screened rows refused and counted. Ledger + audit in-tx |
 | GET | `/parcels` | The parcel ledger: direction (in/out), hash, signer did, row count, reviewer — bounded (`limit` ≤ 200) |
 
 CLI: `brain parcel export --domain <d> [--since <ts>] --out <file>` ·
 `brain parcel import --file <file> --domain <d> [--expected-signer <did>]` ·
 `brain parcel ledger [--domain <d>]`.
 
-Honest ceilings: proposals are global until approval (no per-domain review
-queue yet — planned v1.28.53 "Triage"); parcels sign with the UMP operator
-key, not minisign; no encryption-at-rest on the bundle yet; gold-set packs do
-not ride the envelope.
+Honest ceilings: pre-Triage proposals read `domain='global'` forever (no
+heuristic re-attribution — provenance beats guessing); the by-id verbs still
+gate at the queue's global posture, so a domain-scoped approver needs the
+global grant plus the row-domain grant (the row re-auth can only deny, never
+widen); approval promotion still stamps knowledge `global` (the proposal's
+domain does not yet flow into the promoted chunk); parcels sign with the UMP
+operator key, not minisign; no encryption-at-rest on the bundle yet; gold-set
+packs do not ride the envelope.
 
 ---
 

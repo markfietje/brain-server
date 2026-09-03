@@ -1779,6 +1779,15 @@ paths:
                 authority: { type: number }
                 observed_at: { type: integer }
                 domain: { type: string }
+                title:
+                  type: string
+                  maxLength: 500
+                  description: >-
+                    v1.28.53 "Triage": the optional candidate title (the
+                    autocapture's source title), stored on the proposal row and
+                    surfaced in the queue view. Bounded + screened like every
+                    untrusted text; never gates approval. The row is stamped
+                    with the `domain` the write was authorized against.
       responses:
         "200":
           description: Proposal queued with deterministic scores
@@ -1800,11 +1809,23 @@ paths:
         The human review queue. v1.20.23 adds `decided_at` (the decision
         timestamp, `null` while pending — the reviewer calibration signal) and
         an optional `since` window so a client can fetch a bounded 7/30-day
-        decision set in one request.
+        decision set in one request. v1.28.53 "Triage": every row carries its
+        `domain` residency label, and an optional `domain` query param scopes
+        the queue — the read gate checks the REQUESTED domain (fail-closed 403
+        for a foreign one; loopback/opaque unchanged), so a site-scoped
+        reviewer works only their own queue. Absent → the legacy
+        global-authorized queue.
       parameters:
         - in: query
           name: status
           schema: { type: string, enum: [pending, approved, rejected] }
+        - in: query
+          name: domain
+          schema: { type: string }
+          description: >-
+            v1.28.53: narrow the queue to rows stamped with this domain
+            (pre-Triage rows read `global` forever). The caller must hold a
+            Read grant on the named domain.
         - in: query
           name: since
           schema: { type: integer }
@@ -4440,8 +4461,11 @@ paths:
                           type: integer
                           description: >
                             Pending proposals owned by the principal that this
-                            domain's lineage already surfaced (proposals carry
-                            no domain column; no cross-tenant inference).
+                            domain's lineage already surfaced. Since v1.28.53
+                            proposals carry a `domain` column, but this view's
+                            attribution still rides domain-lineage only (by
+                            owner within the queried pool) — no cross-tenant
+                            inference.
                   fatigue_signals:
                     type: array
                     items:
@@ -6427,6 +6451,50 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
   schemas:
+    ProposalView:
+      type: object
+      description: >-
+        One row of the human review queue (GET /proposals and
+        /clients/{name}/proposals). `content` is the read-canonical form the
+        reviewer sees; `content_digest` is the SHA-256 the approve verb binds
+        to.
+      required: [id, kind, content, novelty, salience, created_at, screen_verdict,
+                 expires_at, warn_secs, critical_secs, domain]
+      properties:
+        id: { type: integer }
+        kind: { type: string }
+        content: { type: string }
+        content_digest:
+          type: string
+          description: SHA-256 of the canonical review form; the digest the approve verb binds to (empty on pre-digest rows).
+        source: { type: string, nullable: true }
+        source_prompt: { type: string, nullable: true }
+        authority: { type: number, nullable: true }
+        novelty: { type: number }
+        conflict_with: { type: integer, nullable: true }
+        salience: { type: number }
+        created_at: { type: integer }
+        screen_verdict: { type: string, enum: [clean, quarantine] }
+        edited_at: { type: integer, nullable: true }
+        decided_at: { type: integer, nullable: true }
+        expires_at: { type: integer }
+        warn_secs: { type: integer }
+        critical_secs: { type: integer }
+        owner: { type: string, nullable: true }
+        qa_note: { type: string, nullable: true }
+        qa_score: { type: integer }
+        domain:
+          type: string
+          description: >-
+            v1.28.53 "Triage": the residency label the queue scopes by.
+            Stamped at creation from the caller's domain context; parcels
+            stamp the TARGET domain; pre-Triage rows read `global` forever.
+        title:
+          type: string
+          nullable: true
+          description: >-
+            v1.28.53: the optional caller title (autocapture source title,
+            parcel row title); absent for bodies without one.
     IpassSection:
       type: object
       description: One rendered I-PASS handoff section.
