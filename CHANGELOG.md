@@ -37,7 +37,7 @@ its subjects.
 
 **Improvements**
 - `src/spire_inventory.rs` (cfg(test)): the frozen structural ledger —
-  ceilings `MAIN_RS_LINES ≤ 19_403`, `TEST_REGION_LINES ≤ 12_833`,
+  ceilings `MAIN_RS_LINES ≤ 19_282`, `TEST_REGION_LINES ≤ 12_712`,
   `ROUTE_CALL_SITES ≤ 234`; floors `MAIN_RS_TEST ≥ 129`, crate-wide
   `#[test] ≥ 1,178`, guard-table rows ≥ 151 / ≥ 141. Ceilings only move
   DOWN, and only in the same commit as the extraction that earned the
@@ -49,8 +49,8 @@ its subjects.
   verdicts, and their row counts are floored in the ledger.
 - Ten pure-unit test families relocated verbatim to their subjects' own
   modules (handlers ×6, config, temporal, trace, eval) — pin travels with
-  the thing it pins. main.rs: 19,906 → 19,403 lines; the test region
-  13,342 → 12,833.
+  the thing it pins. main.rs: 19,906 → 19,282 lines; the test region
+  13,342 → 12,712.
 
 **Security fixes**
 - None. (The authz source-scan and coverage pins are byte-identical in
@@ -71,11 +71,21 @@ suites; full bin suite re-run per commit):
    declaring the module from main.rs (a `#[cfg(test)] pub mod` inside
    handlers/mod.rs would have skipped it from the comment guard).
 4. `refactor(spire)` — the handlers-family pins (authorize ×3, audit_scope
-   ×2, typed-edge) relocate into `handlers/mod.rs`; floor 139→133...
-   then honestly re-measured.
-5. `refactor(spire)` — config/temporal/trace/eval pins relocate; final
-   ceilings 19,403 / 12,833 / 234, floor 134→129 path.
-6. docs + version (this commit).
+   ×2, typed-edge) relocate into `handlers/mod.rs`.
+5. `refactor(spire)` — config/temporal/trace/eval pins relocate.
+6. `fix(spire)` — CORRECTION: commit 4's line-numbered seds ran after an
+   earlier edit had shifted the file, so five originals (authz ×3,
+   audit_scope ×2, typed-edge) survived in main.rs alongside their
+   relocated copies — different modules, so the compiler never fired, and
+   the suite double-ran five pins (1,319 "passed" included 5 ghosts).
+   Caught by reconciling the pin arithmetic (139 − 10 relocations ≠ 134
+   measured); the stale copies are removed, main.rs floor honestly 129,
+   totals 1,314 passed / 7 ignored. Lesson encoded in the line's prompts:
+   relocate by exact-text match, never by line number.
+7. docs + version (this commit).
+
+Landed truth: main.rs 19,906 → **19,282** lines; test region 13,342 →
+**12,712**; route sites frozen at 234 (Vaulting owns every route move).
 
 **Deliberately NOT moved (ceilings say so):** the route chain (234
 `.route(` sites — Vaulting/M3 owns every route move); the screen family
@@ -93,7 +103,7 @@ its spire_inventory edit") — the red-then-green discipline works in both
 directions.
 
 Validation: full suite `cargo test --features bench` green per commit
-(1,319 passed / 7 ignored at tip: bin 1,036 + lib 208 + CLI/bins 63 +
+(1,314 passed / 7 ignored at tip: bin 1,031 + lib 208 + CLI/bins 63 +
 integration 12), clippy `-D warnings` clean on the bench surface,
 `cargo fmt --check` clean, `scripts/lipstyk-gate.sh` diff-strict green,
 openapi.yaml + route-coverage + route-authz wire artifacts diff-empty,

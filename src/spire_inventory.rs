@@ -18,23 +18,24 @@ use std::path::{Path, PathBuf};
 // Every shrink from here on is earned by a move and lands in that move's
 // commit.
 
-/// `wc -l src/main.rs`: 19,906 at session start + 5 ledger + guard-table
-/// decl lines, −444 extracted table lines, −64 relocated pins
-/// (the extraction + relocation commits). Ceiling.
-const MAIN_RS_LINES_CEIL: usize = 19_403;
+/// `wc -l src/main.rs`: 19,906 at session start, −624 net across Scaffold's
+/// extractions, relocations, and the dedup of five stale main.rs copies the
+/// handlers-family commit left behind. Ceiling.
+const MAIN_RS_LINES_CEIL: usize = 19_282;
 /// Lines from the `#[cfg(test)] mod tests` boundary to EOF. Ceiling.
-/// 13,342 at start − 445 extracted table lines − 64 relocated pins
-/// = 12,833.
-const TEST_REGION_LINES_CEIL: usize = 12_833;
+/// 13,342 at session start − 630 net.
+const TEST_REGION_LINES_CEIL: usize = 12_712;
 /// Textual `.route(` occurrences in main.rs (the registration chain +
 /// the authz scan's own literals — counted identically every time). Ceiling.
 /// Routes do not move until Vaulting (M3); this freezes at the start value.
 const ROUTE_CALL_SITES_CEIL: usize = 234;
 /// `#[test]` occurrences in main.rs. Floor (lowered only when a pin moves,
-/// in the same commit): 139 at session start − 5 relocated pure-unit pins
-/// (auth_tokens, temporal, trace_caps, eval to their modules; handlers
-/// family moved in the previous commit) = 134.
-const MAIN_RS_TEST_FLOOR: usize = 134;
+/// in the same commit): 139 at session start − 10 relocated pure-unit pins
+/// (6 → handlers/mod.rs; auth_tokens, temporal, trace_caps, eval → their
+/// modules) = 129. The handlers-family commit initially left five stale
+/// main.rs copies (line-shifted seds); the floor held at 134 until the
+/// dedup — the gap was the warning.
+const MAIN_RS_TEST_FLOOR: usize = 129;
 /// `#[test]` occurrences across all of `src/` (lib + bins + main).
 /// Floor — never decreases.
 const TOTAL_SRC_TEST_FLOOR: usize = 1_178;

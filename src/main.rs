@@ -8781,23 +8781,6 @@ mod tests {
     }
 
     #[test]
-    fn typed_edge_prefix_passes_validation() {
-        // TRACE typed-edge prefixes (update:, supersedes:, etc.) must
-        // pass the relation_type validator so callers can ingest typed edges.
-        use crate::handlers::{RELTYPE_RE, is_match};
-        assert!(is_match(RELTYPE_RE, "update:lives_in"));
-        assert!(is_match(RELTYPE_RE, "supersedes:address"));
-        assert!(is_match(RELTYPE_RE, "contradicts:claim"));
-        assert!(is_match(RELTYPE_RE, "causes:failure"));
-        // Base relation without prefix still valid.
-        assert!(is_match(RELTYPE_RE, "works_at"));
-        // Garbage rejected.
-        assert!(!is_match(RELTYPE_RE, "update:"));
-        assert!(!is_match(RELTYPE_RE, ":lives_in"));
-        assert!(!is_match(RELTYPE_RE, "has space"));
-    }
-
-    #[test]
     fn explanation_paths_reconstruct_hop_chain_from_cte_output() {
         // build_explanation_paths must turn a flat traversal
         // row (path="1->5->9", edge_path="works_at|ceo_of") into a structured
@@ -12767,58 +12750,7 @@ Final paragraph after the rule.";
         assert_eq!(err.code, "revoke_failed");
     }
 
-    /// AuthZ: a principal with team-alpha scopes cannot authorize team-beta.
-    /// This is the DoD's cross-tenant 403 test. A DOMAIN wildcard grants only
-    /// the shared `global` pool (domains are a flat namespace — a team can
-    /// never narrow a `*` domain grant, so `*` must not read other tenants'
-    /// named domains); naming a domain requires a scope that names it.
-    #[test]
-    fn authz_cross_team_read_is_denied() {
-        let principal = auth::Principal {
-            sub: "user:eve".to_string(),
-            tenant: "team-alpha".to_string(),
-            scopes: vec![auth::Scope::parse("read:team-alpha/*").unwrap()],
-            jti: "jti-eve".to_string(),
-            roles: vec![],
-            manages: vec![],
-        };
-        // Same team, shared pool: allowed.
-        assert!(
-            handlers::authorize(
-                &Some(principal.clone()),
-                auth::Action::Read,
-                "team-alpha",
-                "global"
-            )
-            .is_ok()
-        );
-        // Same team but a NAMED domain the scope does not name: denied — a
-        // domain wildcard is not a cross-domain grant.
-        assert!(
-            handlers::authorize(
-                &Some(principal.clone()),
-                auth::Action::Read,
-                "team-alpha",
-                "acme-us"
-            )
-            .is_err()
-        );
-        // Cross-team: denied with 403.
-        let err = handlers::authorize(&Some(principal), auth::Action::Read, "team-beta", "global")
-            .unwrap_err();
-        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
-        assert_eq!(err.inner.code, "forbidden");
-    }
-
-    /// AuthZ back-compat: None principal = superuser (v1.1 opaque-token mode).
-    /// Every authorize() call passes. This is the back-compat invariant.
-    #[test]
-    fn authz_none_principal_is_superuser() {
-        assert!(handlers::authorize(&None, auth::Action::Admin, "any", "any").is_ok());
-        assert!(handlers::authorize(&None, auth::Action::Write, "any", "any").is_ok());
-    }
-
-    /// the bind guard is the symmetric defense to the
+    /// every non-public route's handler must
     /// `None`-principal-is-superuser behavior above — a non-loopback bind with
     /// no auth must refuse startup. Pure predicates + guard, no live socket.
     #[test]
@@ -12869,59 +12801,6 @@ Final paragraph after the rule.";
             enforce_loopback_bind_guard(&site, auth::AuthMode::Jwt).is_ok(),
             "site IP with JWT configured is a valid (authenticated) public bind"
         );
-    }
-
-    /// AuthZ escalation: write scope implies read down, admin implies both.
-    #[test]
-    fn authz_write_implies_read_admin_implies_both() {
-        let writer = auth::Principal {
-            sub: "u".to_string(),
-            tenant: "t".to_string(),
-            scopes: vec![auth::Scope::parse("write:t/l1").unwrap()],
-            jti: "j".to_string(),
-            roles: vec![],
-            manages: vec![],
-        };
-        assert!(handlers::authorize(&Some(writer.clone()), auth::Action::Read, "t", "l1").is_ok());
-        assert!(handlers::authorize(&Some(writer), auth::Action::Write, "t", "l1").is_ok());
-        let admin = auth::Principal {
-            sub: "u".to_string(),
-            tenant: "t".to_string(),
-            scopes: vec![auth::Scope::parse("admin:t/l1").unwrap()],
-            jti: "j".to_string(),
-            roles: vec![],
-            manages: vec![],
-        };
-        assert!(handlers::authorize(&Some(admin.clone()), auth::Action::Read, "t", "l1").is_ok());
-        assert!(handlers::authorize(&Some(admin.clone()), auth::Action::Write, "t", "l1").is_ok());
-        assert!(handlers::authorize(&Some(admin), auth::Action::Admin, "t", "l1").is_ok());
-    }
-
-    /// audit-surface tenant scope. A non-superuser principal
-    /// may only read its own tenant's audit rows; cross-tenant requests 403.
-    #[test]
-    fn audit_scope_forces_own_tenant_and_blocks_cross_tenant() {
-        let eve = auth::Principal {
-            sub: "user:eve".to_string(),
-            tenant: "team-alpha".to_string(),
-            scopes: vec![auth::Scope::parse("admin:team-alpha/*").unwrap()],
-            jti: "jti-eve".to_string(),
-            roles: vec![],
-            manages: vec![],
-        };
-        // No requested tenant -> forced to own tenant.
-        assert_eq!(
-            handlers::audit_scope(&Some(eve.clone()), &None).unwrap(),
-            Some("team-alpha".to_string())
-        );
-        // Requesting own tenant -> allowed, own tenant applied.
-        assert_eq!(
-            handlers::audit_scope(&Some(eve.clone()), &Some("team-alpha".to_string())).unwrap(),
-            Some("team-alpha".to_string())
-        );
-        // Requesting another tenant -> 403 (cross-tenant forbidden).
-        let err = handlers::audit_scope(&Some(eve), &Some("team-beta".to_string())).unwrap_err();
-        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
     }
 
     /// every non-public route's handler must
