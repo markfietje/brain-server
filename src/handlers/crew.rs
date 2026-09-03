@@ -198,7 +198,7 @@ pub async fn post_ops_skills(
         serde_json::to_string(&change).map_err(|e| HandlerError::internal(e.to_string()))?;
     let audit_domain = change.domain.clone();
     let pool = super::resolve_domain_pool(&state.registry, None)?;
-    let id: Result<i64, HandlerError> = tokio::task::spawn_blocking(move || {
+    let id_result: Result<i64, HandlerError> = tokio::task::spawn_blocking(move || {
         let mut conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
@@ -208,9 +208,14 @@ pub async fn post_ops_skills(
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
-        let id: i64 =
-            crew::file_skills_proposal(&tx, &content, &actor, chrono::Utc::now().timestamp())
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
+        let id: i64 = crew::file_skills_proposal(
+            &tx,
+            &content,
+            &actor,
+            &change.domain,
+            chrono::Utc::now().timestamp(),
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
         crate::audit::record_tenant(
             &tx,
             crate::audit::AuditKind::Workflow,
@@ -226,7 +231,7 @@ pub async fn post_ops_skills(
     })
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?;
-    let id = id?;
+    let id = id_result?;
     Ok(Json(serde_json::json!({
         "proposal_id": id,
         "kind": crew::KIND_SKILLS_UPDATE,

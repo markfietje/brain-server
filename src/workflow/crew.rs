@@ -500,17 +500,20 @@ pub fn apply_proposal(
 /// File ONE `crew_skills_update` proposal: the raw INSERT + id resolution
 /// inside the CALLER'S tx. Probe validation stays at the caller; the audit
 /// row (same tx) stays at the call site, adjacent to the write it
-/// evidences.
+/// evidences. The change's target domain is stamped on the row (Triage) so
+/// the review queue scopes the proposal to the domain whose roster it
+/// edits — the same domain the filing caller was authorized against.
 pub(crate) fn file_skills_proposal(
     tx: &Connection,
     content: &str,
     owner: &str,
+    domain: &str,
     now: i64,
 ) -> rusqlite::Result<i64> {
     tx.query_row(
-        "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
-         VALUES (?1, ?2, 0.5, 0.5, ?3, ?4) RETURNING id",
-        params![KIND_SKILLS_UPDATE, content, now, owner],
+        "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner, domain)
+         VALUES (?1, ?2, 0.5, 0.5, ?3, ?4, ?5) RETURNING id",
+        params![KIND_SKILLS_UPDATE, content, now, owner, domain],
         |r| r.get(0),
     )
 }

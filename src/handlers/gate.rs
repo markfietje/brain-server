@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use crate::handlers::auth::{OptCapability, OptPrincipal};
 use crate::handlers::{HandlerError, MAX_SOURCE_PROMPT};
-use crate::service::gate::{MAX_PROPOSALS, ProposalView};
+use crate::service::review::{MAX_PROPOSALS, ProposalView};
 
 /// cap on `/export` row count. The export buffers every row into
 /// memory then serializes; on a multi-GB DB this OOMs. We refuse above this
@@ -47,6 +47,11 @@ pub struct ProposalRequest {
     pub observed_at: Option<i64>,
     #[serde(default)]
     pub domain: Option<String>,
+    /// the optional candidate title (Triage): the autocapture's source
+    /// title, stored verbatim on the proposal row and surfaced in the queue
+    /// view. Bounded + screened like every untrusted text; never gates.
+    #[serde(default)]
+    pub title: Option<String>,
     /// the caller-provided prompt that fed this capture.
     /// Lets a reviewer context-check the proposal and lets the queue surface
     /// re-run the injection screen against the sourcing text.
@@ -125,6 +130,32 @@ pub(crate) async fn create_proposal(
             ),
         ));
     }
+    // Triage: the optional title rides the row (queue-surfaced). Same bounds
+    // law as every untrusted text, and the injection screen runs on it too —
+    // a Reject refuses the WHOLE proposal before any write (a titled capture
+    // whose own title is instruction-bearing must not ride the queue).
+    let title = req
+        .title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    if let Some(t) = &title
+        && t.chars().count() > crate::handlers::MAX_TITLE
+    {
+        return Err(HandlerError::bad_request(
+            "title_too_long",
+            format!("title exceeds {} chars", crate::handlers::MAX_TITLE),
+        ));
+    }
+    if let Some(t) = &title
+        && crate::screen::screen(t, "") == crate::screen::ScreenResult::Reject
+    {
+        return Err(HandlerError::bad_request(
+            "input_rejected",
+            "input contains suspicious patterns",
+        ));
+    }
     // run the injection screen on the proposal
     // content. `Reject` → 400, never persisted (the review queue only ever
     // sees `clean`/`quarantine`); `Quarantine` → stored + badged so the
@@ -178,6 +209,8 @@ pub(crate) async fn create_proposal(
     let pool = super::resolve_domain_pool(&state.registry, Some(&domain))?;
     let model = Arc::clone(&state.model);
     let content_for_task = content.clone();
+    let row_domain = domain.clone();
+    let row_title = title.clone();
     // attribute the candidate to the acting agent so the
     // supervisor's QA queue can scope by owner. `None` (loopback/opaque) →
     // unowned, the legacy default.
@@ -194,7 +227,7 @@ pub(crate) async fn create_proposal(
             return Err(HandlerError::internal("embedding generation failed"));
         }
         let novelty = crate::gate::novelty(&conn, &embedding).unwrap_or(1.0); // first memory / no index → max novelty
-        let conflict_with = crate::service::gate::find_conflict(&conn, &content_for_task);
+        let conflict_with = crate::service::review::find_conflict(&conn, &content_for_task);
         let entity_count = crate::linker::extract_vocabulary(&content_for_task, &[])
             .entities
             .len();
@@ -214,9 +247,9 @@ pub(crate) async fn create_proposal(
             None
         };
 
-        let id = crate::service::gate::insert_proposal(
+        let id = crate::service::review::insert_proposal(
             &conn,
-            &crate::service::gate::NewProposal {
+            &crate::service::review::NewProposal {
                 kind: &req.kind,
                 content: &content_for_task,
                 source: req.source.as_deref(),
@@ -233,6 +266,10 @@ pub(crate) async fn create_proposal(
                     .as_deref(),
                 owner: owner.as_deref(),
                 lint_json: lint_json.as_deref(),
+                // the SAME label the write was authorized against — the
+                // queue scopes by this value (Triage).
+                domain: &row_domain,
+                title: row_title.as_deref(),
             },
         )
         .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -308,6 +345,13 @@ pub struct ProposalListQuery {
     /// Absent → the legacy query (every row, newest first).
     #[serde(default)]
     pub since: Option<i64>,
+    /// `?domain=<label>` (Triage): narrow the queue to one domain's rows.
+    /// The read is authorized against the REQUESTED domain (fail-closed 403
+    /// for a foreign one — the JWT clamp to readable domains, the same
+    /// posture as the knowledge reads; loopback/opaque unchanged). Absent →
+    /// the legacy global-authorized queue.
+    #[serde(default)]
+    pub domain: Option<String>,
 }
 
 fn default_pending() -> String {
@@ -321,8 +365,19 @@ pub async fn list_proposals(
     principal: OptPrincipal,
     Query(q): Query<ProposalListQuery>,
 ) -> Result<Json<Vec<ProposalView>>, HandlerError> {
-    let domain = "global";
-    super::authorize(&principal.0, crate::auth::Action::Read, "", domain)?;
+    // Triage: an explicit `?domain=` scopes the queue to that domain and the
+    // read gate checks THAT domain (a reviewer scoped to their site's domain
+    // can work its queue; a foreign domain is a loud 403). Absent → the
+    // legacy global gate + unscoped query. Either way the JWT principal is
+    // clamped to domains they may read — the clamp can only narrow.
+    let domain_filter: Option<String> = q
+        .domain
+        .as_deref()
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string);
+    let authz_domain = domain_filter.as_deref().unwrap_or("global");
+    super::authorize(&principal.0, crate::auth::Action::Read, "", authz_domain)?;
     let status = q.status.trim().to_string();
     if !matches!(status.as_str(), "pending" | "approved" | "rejected") {
         return Err(HandlerError::bad_request(
@@ -332,13 +387,13 @@ pub async fn list_proposals(
     }
     let limit = q.limit.unwrap_or(50).min(MAX_PROPOSALS);
     let since = q.since;
-    let pool = super::resolve_domain_pool(&state.registry, Some(domain))?;
+    let pool = super::resolve_domain_pool(&state.registry, Some(authz_domain))?;
 
     let rows = tokio::task::spawn_blocking(move || -> Result<Vec<ProposalView>, HandlerError> {
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        crate::service::gate::pending_page(&conn, &status, limit, since)
+        crate::service::review::pending_page(&conn, &status, limit, since, domain_filter.as_deref())
             .map_err(|e| HandlerError::internal(e.to_string()))
     })
     .await
@@ -370,6 +425,11 @@ pub async fn list_proposals(
         p.source = crate::gate::sanitize_read_opt(p.source.take(), pii, &principal.0);
         p.source_prompt = crate::gate::sanitize_read_opt(p.source_prompt.take(), pii, &principal.0);
         p.qa_note = crate::gate::sanitize_read_opt(p.qa_note.take(), pii, &principal.0);
+        // Triage: the title is caller free-text — same read seam as `source`.
+        // The domain label passes the seam too (it is emitted text; the
+        // parcels ledger already treats its domain label the same way).
+        p.title = crate::gate::sanitize_read_opt(p.title.take(), pii, &principal.0);
+        p.domain = crate::gate::sanitize_read(&p.domain, pii, &principal.0);
     }
 
     Ok(Json(rows))
@@ -446,9 +506,9 @@ pub async fn approve_proposal(
         // race that was previously caught only by the content_hash UNIQUE index
         // (which surfaced as a generic 500 to the loser).
         // refuse to act on an expired proposal (audits + rejects it).
-        let created_at = crate::service::gate::pending_created_at(&conn, id);
+        let created_at = crate::service::review::pending_created_at(&conn, id);
         if let Some(created_at) = created_at
-            && !crate::service::gate::expire_if_stale(
+            && !crate::service::review::expire_if_stale(
                 &conn,
                 id,
                 created_at,
@@ -468,19 +528,27 @@ pub async fn approve_proposal(
 
         // Load the pending proposal (re-checked inside the tx to catch a
         // concurrent state change since the autocommit expire check above).
-        let Some(row) = crate::service::gate::approve_pending_row(&tx, id) else {
+        let Some(row) = crate::service::review::approve_pending_row(&tx, id) else {
             return Err(HandlerError::not_found(format!(
                 "no pending proposal with id {id}"
             )));
         };
-        let crate::service::gate::ApproveRow {
+        let crate::service::review::ApproveRow {
             kind,
             content,
             source,
             authority,
             observed_at,
             qa_note,
+            domain: row_domain,
         } = row;
+
+        // Triage: row-domain re-auth BEFORE any decision CAS. The top-level
+        // gate authorized the queue posture; the ROW's own residency label is
+        // authoritative for the by-id act — a proposal stamped for another
+        // domain is refused here (fail closed, loud 403), never decided by a
+        // caller its domain never answered for.
+        super::authorize(&principal.0, crate::auth::Action::Write, "", &row_domain)?;
 
         // bind the decision to the bytes the reviewer
         // was shown. The client passes the `content_digest` it rendered; a
@@ -606,7 +674,7 @@ pub async fn approve_proposal(
                 &format!("workflow/kcs/{action}"),
                 "global",
             );
-            let n = crate::service::gate::cas_proposal_approved(&tx, id, now_ts)
+            let n = crate::service::review::cas_proposal_approved(&tx, id, now_ts)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
             if n == 0 {
                 tx.rollback().map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -715,7 +783,7 @@ pub async fn approve_proposal(
                 "gate/outreach_consent applied",
                 "global",
             );
-            let n = crate::service::gate::cas_proposal_approved(&tx, id, now_ts)
+            let n = crate::service::review::cas_proposal_approved(&tx, id, now_ts)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
             if n == 0 {
                 tx.rollback()
@@ -742,7 +810,7 @@ pub async fn approve_proposal(
             || kind == crate::workflow::outreach::KIND_FOLLOWUP
         {
             let now_ts = chrono::Utc::now().timestamp();
-            let n = crate::service::gate::cas_proposal_approved(&tx, id, now_ts)
+            let n = crate::service::review::cas_proposal_approved(&tx, id, now_ts)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
             if n == 0 {
                 tx.rollback()
@@ -817,7 +885,7 @@ pub async fn approve_proposal(
             // CAS pending→approved. n==0 means a concurrent decision already
             // committed: hand back the DECIDED receipt without re-dispatching
             // (moved:false — never a second send).
-            let moved = crate::service::gate::cas_proposal_approved(&tx, id, now_ts)
+            let moved = crate::service::review::cas_proposal_approved(&tx, id, now_ts)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
             if moved == 0 {
                 tx.rollback()
@@ -997,7 +1065,7 @@ pub async fn approve_proposal(
                 "workflow/kcs/translate",
                 "global",
             );
-            let n = crate::service::gate::cas_translation_approved(&tx, id)
+            let n = crate::service::review::cas_translation_approved(&tx, id)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
             tx.commit()
                 .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
@@ -1086,7 +1154,7 @@ pub async fn approve_proposal(
                 &format!("kcs/approve {kind} case:{case_ref}"),
                 "global",
             );
-            let n = crate::service::gate::cas_proposal_approved(&tx, id, now_ts)
+            let n = crate::service::review::cas_proposal_approved(&tx, id, now_ts)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
             if n == 0 {
                 tx.rollback()
@@ -1188,7 +1256,7 @@ pub async fn approve_proposal(
         // concurrent approve/reject can't both succeed. Combined with the
         // IMMEDIATE tx above, this eliminates the double-promote race; the
         // UNIQUE content_hash index is the last-resort backstop.
-        let n = crate::service::gate::cas_proposal_approved(
+        let n = crate::service::review::cas_proposal_approved(
             &tx,
             id,
             chrono::Utc::now().timestamp(),
@@ -1493,9 +1561,9 @@ pub async fn reject_proposal(
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
         // refuse to act on an expired proposal (audits + rejects it).
-        let stale_created_at = crate::service::gate::pending_created_at(&conn, id);
+        let stale_created_at = crate::service::review::pending_created_at(&conn, id);
         if let Some(created_at) = stale_created_at
-            && !crate::service::gate::expire_if_stale(
+            && !crate::service::review::expire_if_stale(
                 &conn,
                 id,
                 created_at,
@@ -1514,6 +1582,13 @@ pub async fn reject_proposal(
         let tx = conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| HandlerError::internal(e.to_string()))?;
+        // Triage: row-domain re-auth BEFORE the reject CAS — the row's own
+        // residency label is authoritative for the by-id act. A missing row
+        // falls through to the CAS's 0 (the frozen 404); a foreign-domain row
+        // is a loud 403 with the tx rolled back, never decided.
+        if let Some(row_domain) = crate::service::review::pending_domain(&tx, id) {
+            super::authorize(&principal.0, crate::auth::Action::Write, "", &row_domain)?;
+        }
         if let Err(e) = crate::workflow::crew::touch(
             &tx,
             "global",
@@ -1529,7 +1604,7 @@ pub async fn reject_proposal(
         ) {
             tracing::warn!("presence touch failed on reject: {e}");
         }
-        let n = crate::service::gate::cas_rejected(&tx, id, now_ts)
+        let n = crate::service::review::cas_rejected(&tx, id, now_ts)
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         tx.commit()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -1545,7 +1620,7 @@ pub async fn reject_proposal(
             // the conversation-event producer — `proposal/decided`
             // (terminal) after the rejection committed; the digest rides the
             // stored row so the node converges without its open event.
-            if let Ok(content) = crate::service::gate::content_of(&conn, id) {
+            if let Ok(content) = crate::service::review::content_of(&conn, id) {
                 crate::alert::publish(
                     &alert_state,
                     crate::alert::ALERT_KIND_PROPOSAL,
@@ -1562,7 +1637,7 @@ pub async fn reject_proposal(
             // semantics as approve, never a mutable row pointer.
             #[cfg(feature = "compliance-pack")]
             {
-                let basis: String = crate::service::gate::content_of(&conn, id)
+                let basis: String = crate::service::review::content_of(&conn, id)
                     .map(|c| review_digest(&c))
                     .unwrap_or_else(|_| format!("proposal:{id}"));
                 super::compliance::record_oversight(
@@ -1631,6 +1706,9 @@ pub async fn edit_proposal(
 ) -> Result<Json<ProposalView>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     let domain = "global";
+    // The row-domain re-auth inside the blocking closure needs the caller
+    // after the move — one clone, captured up front.
+    let principal_for_reauth = principal.0.clone();
     let content = req.content.trim().to_string();
     if content.is_empty() {
         return Err(HandlerError::bad_request(
@@ -1671,9 +1749,9 @@ pub async fn edit_proposal(
             // Same stale/expiry discipline as approve/reject:
             // the TTL check + expiration audit land on the raw autocommit conn
             // BEFORE the tx, then the tx re-checks `status='pending'`.
-            let created_at = crate::service::gate::pending_created_at(&conn, id);
+            let created_at = crate::service::review::pending_created_at(&conn, id);
             if let Some(ct) = created_at
-                && !crate::service::gate::expire_if_stale(
+                && !crate::service::review::expire_if_stale(
                     &conn,
                     id,
                     ct,
@@ -1691,12 +1769,12 @@ pub async fn edit_proposal(
                 .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
 
-            let Some(row) = crate::service::gate::pending_edit_row(&tx, id) else {
+            let Some(row) = crate::service::review::pending_edit_row(&tx, id) else {
                 return Err(HandlerError::not_found(format!(
                     "no pending proposal with id {id}"
                 )));
             };
-            let crate::service::gate::PendingEditRow {
+            let crate::service::review::PendingEditRow {
                 kind,
                 content: before,
                 source,
@@ -1705,7 +1783,20 @@ pub async fn edit_proposal(
                 created_at,
                 owner,
                 qa_note,
+                domain: row_domain,
+                title,
             } = row;
+
+            // Triage: row-domain re-auth BEFORE the edit CAS — same by-id law
+            // as approve/reject. The refusal rolls the tx back on drop; the
+            // row is never rewritten by a caller its domain never answered
+            // for.
+            super::authorize(
+                &principal_for_reauth,
+                crate::auth::Action::Write,
+                "",
+                &row_domain,
+            )?;
 
             // Re-score the edited content deterministically (the ingest path).
             let embedding = model.encode_one(&content);
@@ -1713,14 +1804,14 @@ pub async fn edit_proposal(
                 return Err(HandlerError::internal("embedding generation failed"));
             }
             let new_novelty = crate::gate::novelty(&tx, &embedding).unwrap_or(1.0);
-            let new_conflict = crate::service::gate::find_conflict(&tx, &content);
+            let new_conflict = crate::service::review::find_conflict(&tx, &content);
             let entity_count = crate::linker::extract_vocabulary(&content, &[])
                 .entities
                 .len();
             let new_salience = crate::gate::salience(&content, entity_count);
 
             let now = chrono::Utc::now().timestamp();
-            let n = crate::service::gate::apply_edit(
+            let n = crate::service::review::apply_edit(
                 &tx,
                 id,
                 &content,
@@ -1757,7 +1848,7 @@ pub async fn edit_proposal(
             );
 
             let (expires_at, warn_secs, critical_secs) =
-                crate::service::gate::proposal_deadline(created_at);
+                crate::service::review::proposal_deadline(created_at);
             let qa_score = crate::qa::score_for(owner.is_some(), false, false, false);
             let content_digest = review_digest(&content);
             Ok(ProposalView {
@@ -1781,6 +1872,10 @@ pub async fn edit_proposal(
                 owner,
                 qa_note,
                 qa_score,
+                domain: row_domain,
+                // the edit verb rewrites content only; the stored title (if
+                // any) keeps riding the view.
+                title,
             })
         })
         .await
@@ -1797,6 +1892,8 @@ pub async fn edit_proposal(
         v.source = crate::gate::sanitize_read_opt(v.source.take(), pii, &principal.0);
         v.source_prompt = crate::gate::sanitize_read_opt(v.source_prompt.take(), pii, &principal.0);
         v.qa_note = crate::gate::sanitize_read_opt(v.qa_note.take(), pii, &principal.0);
+        v.title = crate::gate::sanitize_read_opt(v.title.take(), pii, &principal.0);
+        v.domain = crate::gate::sanitize_read(&v.domain, pii, &principal.0);
         return Ok(Json(v));
     }
 
@@ -2392,13 +2489,13 @@ mod tests {
     // the review-queue read pins (the owner/scorecard round-trip, the
     // `decided_at` round-trip, the `since` window) moved verbatim onto the
     // gate core's test module in the queue-read move (see
-    // `service::gate::pending_page`).
+    // `service::review::pending_page`).
 
     /// the `/export` read-side round-trip for the never-built
     /// write-time `pii_map` vault is gone. `ExportQuery` no longer carries
     /// `include_pii_map` (an unknown `?include_pii_map=` is ignored by serde),
     /// and the export envelope has no `pii_map` key. (The table-dropped
-    /// migration pin rode the export read onto `service::gate::tests`.)
+    /// migration pin rode the export read onto `service::review::tests`.)
     #[test]
     fn export_has_no_pii_map_envelope() {
         // A request that passes the removed flag is simply ignored: serde maps
@@ -2572,7 +2669,7 @@ mod tests {
 
     // the promote-path provenance pins moved onto the gate core's test
     // module, where they now drive the REAL `promote_chunk_insert` instead of
-    // mirroring its column list (see `service::gate::tests`).
+    // mirroring its column list (see `service::review::tests`).
 }
 
 #[cfg(test)]
@@ -2621,6 +2718,7 @@ mod valet_lint_tests {
             authority: None,
             observed_at: None,
             domain: None,
+            title: None,
             source_prompt: None,
         }
     }
@@ -2639,7 +2737,7 @@ mod valet_lint_tests {
         .await
         .expect("draft created");
         let conn = state.pool.get().unwrap();
-        let lint: Option<String> = crate::service::gate::stored_lint_json(&conn, resp.id);
+        let lint: Option<String> = crate::service::review::stored_lint_json(&conn, resp.id);
         let lint = lint.expect("lint_json present on drafts");
         let report: brain_server::valet_style::LintReport =
             serde_json::from_str(&lint).expect("lint parses");
@@ -2684,6 +2782,7 @@ mod valet_lint_tests {
             authority: None,
             observed_at: None,
             domain: None,
+            title: None,
             source_prompt: None,
         };
         let resp = create_proposal(state.clone(), None, req)

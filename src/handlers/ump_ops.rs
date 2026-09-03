@@ -139,6 +139,7 @@ pub async fn remember(
                 authority: None,
                 observed_at: None,
                 domain: req.domain,
+                title: None,
                 source_prompt: None,
             },
         )
@@ -660,6 +661,7 @@ pub async fn revise(
                 authority: None,
                 observed_at: None,
                 domain: new_req.domain,
+                title: None,
                 source_prompt: None,
             },
         )

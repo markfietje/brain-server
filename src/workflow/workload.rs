@@ -217,9 +217,10 @@ pub fn workload_view(conn: &Connection, domain: &str) -> Result<Vec<WorkloadRow>
         }
     }
     // Gate backlog rides only onto principals this domain's lineage already
-    // surfaced: proposals carry no domain column, and inventing a global
-    // attribution would leak across tenants. The domainless-proposal
-    // limitation is a documented honest ceiling.
+    // surfaced: proposals carry a `domain` column now, but this view's
+    // attribution is still owner-within-the-queried-pool — inventing a
+    // cross-domain join would leak across tenants. The lineage-only
+    // attribution remains a documented honest ceiling.
     for owner in &gate_owners {
         if let Some(row) = acc.get_mut(owner.as_str()) {
             row.gate_backlog += 1;

@@ -400,7 +400,11 @@ pub fn import_parcel(conn: &Connection, draft: &ImportDraft) -> Result<ImportOut
 
     // Dedup: knowledge content hashes for the domain (the UNIQUE-index law)
     // plus the fingerprints of still-pending proposals, so re-importing the
-    // same parcel while reviews are outstanding stays idempotent.
+    // same parcel while reviews are outstanding stays idempotent. Triage
+    // narrows the pending scan to the target domain PLUS one global pass —
+    // pre-Triage pendings (and every global-act proposal) still dedup, while
+    // a foreign domain's outstanding reviews never swallow this domain's
+    // rows.
     let known: std::collections::HashSet<String> = conn
         .prepare(
             "SELECT content_hash FROM knowledge WHERE domain = ?1 AND content_hash IS NOT NULL",
@@ -411,8 +415,11 @@ pub fn import_parcel(conn: &Connection, draft: &ImportDraft) -> Result<ImportOut
         .into_iter()
         .collect();
     let pending: std::collections::HashSet<String> = conn
-        .prepare("SELECT content FROM proposals WHERE status = 'pending'")?
-        .query_map([], |r| r.get::<_, String>(0))?
+        .prepare(
+            "SELECT content FROM proposals
+              WHERE status = 'pending' AND (domain = ?1 OR domain = 'global')",
+        )?
+        .query_map(params![target_domain], |r| r.get::<_, String>(0))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(ParcelError::from)?
         .iter()
@@ -426,18 +433,26 @@ pub fn import_parcel(conn: &Connection, draft: &ImportDraft) -> Result<ImportOut
             duplicates += 1;
             continue;
         }
-        // The proposals table predates domains: a parcel proposal is global
-        // until approval, where promotion stamps the receiving domain.
+        // Triage: the proposal row is stamped with the TARGET domain (the
+        // queue scopes by the column now); the parcel:{domain}:{signer}
+        // source label stays as provenance only. The row's title rides for
+        // the queue view.
         conn.execute(
-            "INSERT INTO proposals(kind, content, source, authority, observed_at, novelty, salience,
-                                  status, created_at)
-             VALUES ('fact', ?1, ?2, ?3, ?4, 0.5, 0.5, 'pending', ?5)",
+            "INSERT INTO proposals(kind, content, title, source, authority, observed_at,
+                                  novelty, salience, status, created_at, domain)
+             VALUES ('fact', ?1, ?2, ?3, ?4, ?5, 0.5, 0.5, 'pending', ?6, ?7)",
             params![
                 row.content,
-                format!("parcel:{}:{}", target_domain, &claimed_signer[..claimed_signer.len().min(48)]),
+                row.title,
+                format!(
+                    "parcel:{}:{}",
+                    target_domain,
+                    &claimed_signer[..claimed_signer.len().min(48)]
+                ),
                 row.confidence,
                 row.observed_at,
-                now
+                now,
+                target_domain
             ],
         )
         .map_err(ParcelError::from)?;
@@ -883,6 +898,139 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM proposals", [], |r| r.get(0))
             .unwrap();
         assert_eq!(total, 1);
+    }
+
+    /// parcel_import_proposals_scope_to_the_target_domain — Triage: every
+    /// imported proposal row is stamped with the TARGET domain (the review
+    /// queue scopes by the column now) and carries the parcel row's title;
+    /// the parcel:{domain}:{signer} source label stays as provenance only.
+    #[test]
+    fn parcel_import_proposals_scope_to_the_target_domain() {
+        let _guard = lock_env();
+        let _key = OperatorKey::new();
+        let src = db();
+        seed_knowledge(
+            &src,
+            "mnl",
+            "Titled handover",
+            "scoped import rides the target domain stamp",
+            0,
+        );
+        let bundle = build_parcel(&src, "mnl", None, 2000).unwrap();
+
+        let mut dst = db();
+        let out = {
+            let mut tx = WorkflowTx::begin(&mut dst).unwrap();
+            let o = import_parcel(
+                tx.tx(),
+                &ImportDraft {
+                    target_domain: "ams",
+                    manifest_json: &bundle.manifest_json,
+                    signature_hex: &bundle.signature_hex,
+                    claimed_signer: &bundle.signed_by,
+                    expected_signer: None,
+                    reviewer: "reviewer",
+                    now: 2100,
+                },
+            )
+            .expect("imported");
+            tx.commit().unwrap();
+            o
+        };
+        assert_eq!(out.proposals_created.len(), 1);
+        let (domain, title, source): (String, Option<String>, String) = dst
+            .query_row(
+                "SELECT domain, title, source FROM proposals WHERE id = ?1",
+                params![out.proposals_created[0]],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            domain, "ams",
+            "the proposal carries the TARGET domain, not 'global'"
+        );
+        assert_eq!(
+            title.as_deref(),
+            Some("Titled handover"),
+            "the parcel row's title rides the proposal"
+        );
+        assert!(
+            source.starts_with("parcel:ams:"),
+            "the source label stays as provenance: {source}"
+        );
+    }
+
+    /// pending_dedup_narrows_to_domain_without_losing_global_rows — Triage:
+    /// the pending-dedup scan filters to the target domain PLUS one global
+    /// pass. A foreign domain's outstanding review never swallows this
+    /// domain's row (the narrow), while a pre-Triage global pending still
+    /// dedups (the pass) — idempotent re-imports stay idempotent.
+    #[test]
+    fn pending_dedup_narrows_to_domain_without_losing_global_rows() {
+        let _guard = lock_env();
+        let _key = OperatorKey::new();
+        let src = db();
+        seed_knowledge(
+            &src,
+            "mnl",
+            "Foreign pend",
+            "foreign domain holds this pending",
+            0,
+        );
+        seed_knowledge(&src, "mnl", "Global pend", "a global row still dedups", 0);
+        let bundle = build_parcel(&src, "mnl", None, 2000).unwrap();
+
+        let mut dst = db();
+        // A FOREIGN domain's outstanding review of the first row must not
+        // dedup the ams import; a GLOBAL pending of the second row must.
+        dst.execute(
+            "INSERT INTO proposals(kind, content, novelty, salience, status, created_at, domain)
+             VALUES ('fact', 'foreign domain holds this pending', 0.5, 0.5, 'pending', 2000, 'beta-eu')",
+            [],
+        )
+        .unwrap();
+        dst.execute(
+            "INSERT INTO proposals(kind, content, novelty, salience, status, created_at, domain)
+             VALUES ('fact', 'a global row still dedups', 0.5, 0.5, 'pending', 2000, 'global')",
+            [],
+        )
+        .unwrap();
+
+        let out = {
+            let mut tx = WorkflowTx::begin(&mut dst).unwrap();
+            let o = import_parcel(
+                tx.tx(),
+                &ImportDraft {
+                    target_domain: "ams",
+                    manifest_json: &bundle.manifest_json,
+                    signature_hex: &bundle.signature_hex,
+                    claimed_signer: &bundle.signed_by,
+                    expected_signer: None,
+                    reviewer: "reviewer",
+                    now: 2100,
+                },
+            )
+            .expect("imported");
+            tx.commit().unwrap();
+            o
+        };
+        assert_eq!(
+            out.proposals_created.len(),
+            1,
+            "the foreign pending never swallows the target domain's row"
+        );
+        assert_eq!(
+            out.duplicates, 1,
+            "the global pending still dedups (the pre-Triage pass)"
+        );
+        let imported_domain: String = dst
+            .query_row(
+                "SELECT domain FROM proposals WHERE id = ?1",
+                params![out.proposals_created[0]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(imported_domain, "ams");
     }
 
     /// parcel_ledger_chains_into_audit — every crossing (out at export, in at

@@ -309,6 +309,7 @@ async fn propose_structured(
             authority: None,
             observed_at: None,
             domain: req.domain,
+            title: Some(req.title),
             source_prompt: None,
         },
     )
