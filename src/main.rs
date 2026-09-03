@@ -12977,17 +12977,6 @@ Final paragraph after the rule.";
         assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
     }
 
-    /// superuser (None principal) keeps the v1.1 passthrough
-    /// — the requested tenant filter applies verbatim.
-    #[test]
-    fn audit_scope_none_principal_passes_requested_tenant_through() {
-        assert_eq!(
-            handlers::audit_scope(&None, &Some("any-team".to_string())).unwrap(),
-            Some("any-team".to_string())
-        );
-        assert_eq!(handlers::audit_scope(&None, &None).unwrap(), None);
-    }
-
     /// every non-public route's handler must
     /// call `authorize()` with the v1.2-matrix action. Mirrors
     /// `test_openapi_covers_routes` (hardcoded contract table). A route that

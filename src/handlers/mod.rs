@@ -930,6 +930,148 @@ mod tests {
         assert!(resolve_domain_pool(&reg, Some("../evil")).is_err());
     }
 
+    /// AuthZ: the DoS's cross-tenant 403. A DOMAIN wildcard grants only the
+    /// shared `global` pool (domains are a flat namespace — a team can never
+    /// narrow a `*` domain grant, so `*` must not read other tenants' named
+    /// domains); naming a domain requires a scope that names it.
+    /// (Relocated verbatim from main.rs's tests block, Spire v1.28.54 —
+    /// the pin travels with its subject, `authorize`.)
+    #[test]
+    fn authz_cross_team_read_is_denied() {
+        let principal = crate::auth::Principal {
+            sub: "user:eve".to_string(),
+            tenant: "team-alpha".to_string(),
+            scopes: vec![crate::auth::Scope::parse("read:team-alpha/*").unwrap()],
+            jti: "jti-eve".to_string(),
+            roles: vec![],
+            manages: vec![],
+        };
+        // Same team, shared pool: allowed.
+        assert!(
+            authorize(
+                &Some(principal.clone()),
+                crate::auth::Action::Read,
+                "team-alpha",
+                "global"
+            )
+            .is_ok()
+        );
+        // Same team but a NAMED domain the scope does not name: denied — a
+        // domain wildcard is not a cross-domain grant.
+        assert!(
+            authorize(
+                &Some(principal.clone()),
+                crate::auth::Action::Read,
+                "team-alpha",
+                "acme-us"
+            )
+            .is_err()
+        );
+        // Cross-team: denied with 403.
+        let err = authorize(
+            &Some(principal),
+            crate::auth::Action::Read,
+            "team-beta",
+            "global",
+        )
+        .unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        assert_eq!(err.inner.code, "forbidden");
+    }
+
+    /// AuthZ back-compat: None principal = superuser (v1.1 opaque-token mode).
+    /// Every authorize() call passes. This is the back-compat invariant.
+    /// (Relocated verbatim from main.rs, Spire v1.28.54.)
+    #[test]
+    fn authz_none_principal_is_superuser() {
+        assert!(authorize(&None, crate::auth::Action::Admin, "any", "any").is_ok());
+        assert!(authorize(&None, crate::auth::Action::Write, "any", "any").is_ok());
+    }
+
+    /// AuthZ escalation: write scope implies read down, admin implies both.
+    /// (Relocated verbatim from main.rs, Spire v1.28.54.)
+    #[test]
+    fn authz_write_implies_read_admin_implies_both() {
+        let writer = crate::auth::Principal {
+            sub: "u".to_string(),
+            tenant: "t".to_string(),
+            scopes: vec![crate::auth::Scope::parse("write:t/l1").unwrap()],
+            jti: "j".to_string(),
+            roles: vec![],
+            manages: vec![],
+        };
+        assert!(authorize(&Some(writer.clone()), crate::auth::Action::Read, "t", "l1").is_ok());
+        assert!(authorize(&Some(writer), crate::auth::Action::Write, "t", "l1").is_ok());
+        let admin = crate::auth::Principal {
+            sub: "u".to_string(),
+            tenant: "t".to_string(),
+            scopes: vec![crate::auth::Scope::parse("admin:t/l1").unwrap()],
+            jti: "j".to_string(),
+            roles: vec![],
+            manages: vec![],
+        };
+        assert!(authorize(&Some(admin.clone()), crate::auth::Action::Read, "t", "l1").is_ok());
+        assert!(authorize(&Some(admin.clone()), crate::auth::Action::Write, "t", "l1").is_ok());
+        assert!(authorize(&Some(admin), crate::auth::Action::Admin, "t", "l1").is_ok());
+    }
+
+    /// audit-surface tenant scope. A non-superuser principal
+    /// may only read its own tenant's audit rows; cross-tenant requests 403.
+    /// (Relocated verbatim from main.rs, Spire v1.28.54.)
+    #[test]
+    fn audit_scope_forces_own_tenant_and_blocks_cross_tenant() {
+        let eve = crate::auth::Principal {
+            sub: "user:eve".to_string(),
+            tenant: "team-alpha".to_string(),
+            scopes: vec![crate::auth::Scope::parse("admin:team-alpha/*").unwrap()],
+            jti: "jti-eve".to_string(),
+            roles: vec![],
+            manages: vec![],
+        };
+        // No requested tenant -> forced to own tenant.
+        assert_eq!(
+            audit_scope(&Some(eve.clone()), &None).unwrap(),
+            Some("team-alpha".to_string())
+        );
+        // Requesting own tenant -> allowed, own tenant applied.
+        assert_eq!(
+            audit_scope(&Some(eve.clone()), &Some("team-alpha".to_string())).unwrap(),
+            Some("team-alpha".to_string())
+        );
+        // Requesting another tenant -> 403 (cross-tenant forbidden).
+        let err = audit_scope(&Some(eve), &Some("team-beta".to_string())).unwrap_err();
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    /// audit-scope pass-through: a `None` (superuser) principal gets whatever
+    /// tenant it asked for. (Relocated verbatim from main.rs, Spire v1.28.54.)
+    #[test]
+    fn audit_scope_none_principal_passes_requested_tenant_through() {
+        assert_eq!(
+            audit_scope(&None, &Some("any-team".to_string())).unwrap(),
+            Some("any-team".to_string())
+        );
+        assert_eq!(audit_scope(&None, &None).unwrap(), None);
+    }
+
+    /// TRACE typed-edge prefixes (update:, supersedes:, …) must pass the
+    /// relation_type validator so callers can ingest typed edges.
+    /// (Relocated verbatim from main.rs, Spire v1.28.54 — the pin travels
+    /// with its subjects, RELTYPE_RE + is_match.)
+    #[test]
+    fn typed_edge_prefix_passes_validation() {
+        assert!(is_match(RELTYPE_RE, "update:lives_in"));
+        assert!(is_match(RELTYPE_RE, "supersedes:address"));
+        assert!(is_match(RELTYPE_RE, "contradicts:claim"));
+        assert!(is_match(RELTYPE_RE, "causes:failure"));
+        // Base relation without prefix still valid.
+        assert!(is_match(RELTYPE_RE, "works_at"));
+        // Garbage rejected.
+        assert!(!is_match(RELTYPE_RE, "update:"));
+        assert!(!is_match(RELTYPE_RE, ":lives_in"));
+        assert!(!is_match(RELTYPE_RE, "has space"));
+    }
+
     /// Pin the three validator shapes. The previous is_match silently rejected
     /// spaces in entity names, breaking the canonical `vitamin d3` example.
     #[test]
