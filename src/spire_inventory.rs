@@ -13,16 +13,20 @@
 use std::path::{Path, PathBuf};
 
 // ── session-start freeze (2026-09-03, v1.28.54 "Scaffold" opening) ──────
-// RED PROOF VALUES — deliberately tight wrong ceilings; the green commit
-// sets the measured session-start truth in the same milestone.
+// GREEN VALUES — the measured session-start truth (with the +3-line
+// `mod spire_inventory` declaration honestly included in the line count).
+// Every shrink from here on is earned by a move and lands in that move's
+// commit.
 
-/// `wc -l src/main.rs` at session start. Ceiling (may only go down).
-const MAIN_RS_LINES_CEIL: usize = 19_000;
+/// `wc -l src/main.rs`: 19,906 at session start + 3 ledger decl lines.
+/// Ceiling (may only go down).
+const MAIN_RS_LINES_CEIL: usize = 19_909;
 /// Lines from the `#[cfg(test)] mod tests` boundary to EOF. Ceiling.
-const TEST_REGION_LINES_CEIL: usize = 13_000;
+const TEST_REGION_LINES_CEIL: usize = 13_342;
 /// Textual `.route(` occurrences in main.rs (the registration chain +
 /// the authz scan's own literals — counted identically every time). Ceiling.
-const ROUTE_CALL_SITES_CEIL: usize = 200;
+/// Routes do not move until Vaulting (M3); this freezes at the start value.
+const ROUTE_CALL_SITES_CEIL: usize = 234;
 /// `#[test]` occurrences in main.rs. Floor (lowered only when a pin moves).
 const MAIN_RS_TEST_FLOOR: usize = 139;
 /// `#[test]` occurrences across all of `src/` (lib + bins + main).
@@ -78,7 +82,10 @@ fn spire_inventory_freezes_the_monolith() {
     );
 
     let mut files = Vec::new();
-    walk_rs_files(&Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+    walk_rs_files(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        &mut files,
+    );
     assert!(
         files.len() >= 50,
         "spire: src walk found only {} files — the tree walker is broken",
@@ -86,12 +93,7 @@ fn spire_inventory_freezes_the_monolith() {
     );
     let total_tests = files
         .iter()
-        .map(|p| {
-            count_needle(
-                &std::fs::read_to_string(p).unwrap_or_default(),
-                "#[test]",
-            )
-        })
+        .map(|p| count_needle(&std::fs::read_to_string(p).unwrap_or_default(), "#[test]"))
         .sum::<usize>();
 
     let mut breaches: Vec<String> = Vec::new();
