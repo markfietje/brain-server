@@ -67,6 +67,8 @@ mod domain_router;
 #[cfg(test)]
 mod dup_guard;
 mod gate;
+// Graph read helpers: limit clamp + traversal mappers.
+mod graph_read;
 mod graph_supersede;
 mod handlers;
 // HTTP-edge load control: the per-IP limiter + connection/RSS watchdogs.
@@ -118,10 +120,12 @@ pub use search::{
     rrf_fuse, vec0_knn,
 };
 
+#[cfg(test)]
+use config::MAX_GRAPH_EDGES;
 use config::{
-    DEFAULT_K, MAX_EXPLAIN_BYTES, MAX_GRAPH_EDGES, MAX_K, MAX_MULTI_GET, MAX_QUERY_LENGTH,
-    MAX_REQUEST_SIZE, MODEL_ID, POOL_CONNECTION_TIMEOUT_SECS, POOL_IDLE_TIMEOUT_SECS,
-    POOL_MAX_LIFETIME_SECS, POOL_MAX_SIZE, POOL_MIN_IDLE, SERVER_VERSION,
+    DEFAULT_K, MAX_EXPLAIN_BYTES, MAX_K, MAX_MULTI_GET, MAX_QUERY_LENGTH, MAX_REQUEST_SIZE,
+    MODEL_ID, POOL_CONNECTION_TIMEOUT_SECS, POOL_IDLE_TIMEOUT_SECS, POOL_MAX_LIFETIME_SECS,
+    POOL_MAX_SIZE, POOL_MIN_IDLE, SERVER_VERSION,
 };
 
 type Pool = r2d2::Pool<SqliteConnectionManager>;
@@ -3464,7 +3468,7 @@ async fn get_entity(
         .unwrap_or(state.pool.clone());
     let name_lower = name.to_lowercase();
     // finite edge set, clamped like the multi-get cap.
-    let limit = clamp_graph_limit(limit_q.limit);
+    let limit = graph_read::clamp_graph_limit(limit_q.limit);
     // in shim mode a JWT principal reads only
     // edges whose chunk provenance carries the requested domain label.
     let domain_scoped = domain.as_deref().unwrap_or("global");
@@ -3545,12 +3549,6 @@ fn entity_relations(
     Ok(relations)
 }
 
-/// Clamp a graph `?limit=` into `1..=MAX_GRAPH_EDGES` (a missing or bogus value
-/// falls back to the default cap). Shared by `get_entity` and `get_relations`.
-fn clamp_graph_limit(limit: Option<i64>) -> i64 {
-    limit.unwrap_or(MAX_GRAPH_EDGES).clamp(1, MAX_GRAPH_EDGES)
-}
-
 async fn get_relations(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
@@ -3578,7 +3576,7 @@ async fn get_relations(
         .unwrap_or(state.pool.clone());
     let param_lower = param.to_lowercase();
     // finite edge set, clamped like the multi-get cap.
-    let limit = clamp_graph_limit(limit_q.limit);
+    let limit = graph_read::clamp_graph_limit(limit_q.limit);
     // shim-mode JWT edge scoping (see
     // `graph_domain_scope`).
     let domain_scope = handlers::graph_domain_scope(
@@ -4054,49 +4052,49 @@ async fn traverse_graph(
                 domain_scope.as_ref(),
             ) {
                 (Some(at), Some(k), Some(sc)) => stmt
-                    .query_map(params![eid, depth, at, k, sc], traverse_row_mapper(domain))
+                    .query_map(params![eid, depth, at, k, sc], graph_read::traverse_row_mapper(domain))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
                 (Some(at), Some(k), None) => stmt
-                    .query_map(params![eid, depth, at, k], traverse_row_mapper(domain))
+                    .query_map(params![eid, depth, at, k], graph_read::traverse_row_mapper(domain))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
                 (Some(at), None, Some(sc)) => stmt
-                    .query_map(params![eid, depth, at, sc], traverse_row_mapper(domain))
+                    .query_map(params![eid, depth, at, sc], graph_read::traverse_row_mapper(domain))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
                 (Some(at), None, None) => stmt
-                    .query_map(params![eid, depth, at], traverse_row_mapper(domain))
+                    .query_map(params![eid, depth, at], graph_read::traverse_row_mapper(domain))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
                 (None, Some(k), Some(sc)) => stmt
-                    .query_map(params![eid, depth, k, sc], traverse_row_mapper(domain))
+                    .query_map(params![eid, depth, k, sc], graph_read::traverse_row_mapper(domain))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
                 (None, Some(k), None) => stmt
-                    .query_map(params![eid, depth, k], traverse_row_mapper(domain))
+                    .query_map(params![eid, depth, k], graph_read::traverse_row_mapper(domain))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
                 (None, None, Some(sc)) => stmt
-                    .query_map(params![eid, depth, sc], traverse_row_mapper(domain))
+                    .query_map(params![eid, depth, sc], graph_read::traverse_row_mapper(domain))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
                 (None, None, None) => stmt
-                    .query_map(params![eid, depth], traverse_row_mapper(domain))
+                    .query_map(params![eid, depth], graph_read::traverse_row_mapper(domain))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
@@ -4110,7 +4108,7 @@ async fn traverse_graph(
         // + relation types, so a consuming agent can render
         // "A --works_at--> B --ceo_of--> C" without parsing the id-string.
         let paths = if explain {
-            build_explanation_paths(&all)
+            graph_read::build_explanation_paths(&all)
         } else {
             Vec::new()
         };
@@ -4124,94 +4122,6 @@ async fn traverse_graph(
     .map_err(|_| AppError::Internal("Task join error".into()))??;
 
     Ok(Json(result))
-}
-
-/// row mapper for the recursive CTE. Extracted so all four
-/// param-shape branches share one definition (DRY; the only thing that varies
-/// is which params are bound, not how the row maps).
-fn traverse_row_mapper(
-    domain: &str,
-) -> impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value> + '_ {
-    move |r| {
-        Ok(serde_json::json!({
-            "entity": r.get::<_, String>(0)?,
-            "depth": r.get::<_, i64>(1)?,
-            "path": r.get::<_, String>(2)?,
-            "edge_path": r.get::<_, String>(3)?,
-            "from_entity": r.get::<_, Option<String>>(4)?,
-            "domain": domain,
-        }))
-    }
-}
-
-/// turn the flat traversal rows into structured hop chains.
-/// Each row's `path` is `id->id->id` and `edge_path` is `rel|rel|rel`. We pair
-/// them with the entity names already on the row (the leaf) and the from_entity
-/// (the seed) to reconstruct the named chain. ponytail: this is a best-effort
-/// reconstruction from the CTE output; a true path-aware walk would carry
-/// (entity, rel) tuples through the recursion. That's a larger change; this is
-/// the smallest faithful explanation that reuses the existing bounded BFS and
-/// stays inside MAX_VISITED. Intermediate node names are NOT resolved here —
-/// hops surface the seed name, the leaf name, and every id; a consuming agent
-/// that needs an intermediate's name calls `/get/{id}` on the id.
-fn build_explanation_paths(rows: &[serde_json::Value]) -> Vec<serde_json::Value> {
-    if rows.is_empty() {
-        return Vec::new();
-    }
-    rows.iter()
-        .map(|row| {
-            let path_str = row.get("path").and_then(|v| v.as_str()).unwrap_or("");
-            let edge_str = row.get("edge_path").and_then(|v| v.as_str()).unwrap_or("");
-            let ids: Vec<&str> = path_str.split("->").filter(|s| !s.is_empty()).collect();
-            let rels: Vec<&str> = edge_str.split('|').filter(|s| !s.is_empty()).collect();
-            // Build the hop chain. ids.len() == rels.len()+1 (one more node than
-            // edges); zip them so each hop is {from, relation, to}. The first
-            // node's name is `from_entity`; the last is `entity`.
-            let leaf = row.get("entity").and_then(|v| v.as_str()).unwrap_or("");
-            let seed = row
-                .get("from_entity")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let mut hops: Vec<serde_json::Value> = Vec::new();
-            for (i, rel) in rels.iter().enumerate() {
-                let from_id = ids.get(i).copied().unwrap_or("");
-                let to_id = ids.get(i + 1).copied().unwrap_or("");
-                // First hop's from is the named seed; last hop's to is the named leaf.
-                let from_name = if i == 0 { seed } else { "" };
-                let to_name = if i + 1 == rels.len() { leaf } else { "" };
-                hops.push(serde_json::json!({
-                    "from": {"id": from_id, "name": from_name},
-                    "relation": rel,
-                    "to": {"id": to_id, "name": to_name},
-                }));
-            }
-            serde_json::json!({
-                "hops": hops,
-                "depth": row.get("depth").cloned().unwrap_or(serde_json::Value::Null),
-                "domain": row.get("domain").cloned().unwrap_or(serde_json::Value::Null),
-            })
-        })
-        .collect()
-}
-
-/// Request ID middleware - generates UUID v4 for tracing if not provided.
-async fn request_id_middleware(mut req: Request<Body>, next: Next) -> Response {
-    let request_id = req
-        .headers()
-        .get("x-request-id")
-        .and_then(|h| h.to_str().ok())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-
-    req.headers_mut().insert(
-        "x-request-id",
-        request_id.parse().unwrap_or_else(|_| {
-            axum::http::HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
-                .expect("generated uuid is a valid header value")
-        }),
-    );
-    next.run(req).await
 }
 
 /// CSP for API routes — the strictest possible (JSON-only, no content executes).
@@ -4237,6 +4147,25 @@ const CLIENT_CSP: &str = concat!(
     "form-action 'self'; ",
     "base-uri 'self'"
 );
+
+/// Request ID middleware - generates UUID v4 for tracing if not provided.
+async fn request_id_middleware(mut req: Request<Body>, next: Next) -> Response {
+    let request_id = req
+        .headers()
+        .get("x-request-id")
+        .and_then(|h| h.to_str().ok())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+
+    req.headers_mut().insert(
+        "x-request-id",
+        request_id.parse().unwrap_or_else(|_| {
+            axum::http::HeaderValue::from_str(&uuid::Uuid::new_v4().to_string())
+                .expect("generated uuid is a valid header value")
+        }),
+    );
+    next.run(req).await
+}
 
 /// Security headers middleware — applies standard hardening headers to every
 /// response. Path-aware CSP (strict for API, WASM-friendly for client).
@@ -6178,10 +6107,17 @@ mod tests {
         let tiny = entity_relations(&c, 1, 3, None).unwrap();
         assert_eq!(tiny.len(), 3);
         // The clamp (handler-side) keeps limits in 1..=MAX_GRAPH_EDGES.
-        assert_eq!(clamp_graph_limit(None), MAX_GRAPH_EDGES);
-        assert_eq!(clamp_graph_limit(Some(0)), 1, "0 clamps up to 1");
-        assert_eq!(clamp_graph_limit(Some(999_999)), MAX_GRAPH_EDGES);
-        assert_eq!(clamp_graph_limit(Some(10)), 10);
+        assert_eq!(graph_read::clamp_graph_limit(None), MAX_GRAPH_EDGES);
+        assert_eq!(
+            graph_read::clamp_graph_limit(Some(0)),
+            1,
+            "0 clamps up to 1"
+        );
+        assert_eq!(
+            graph_read::clamp_graph_limit(Some(999_999)),
+            MAX_GRAPH_EDGES
+        );
+        assert_eq!(graph_read::clamp_graph_limit(Some(10)), 10);
     }
 
     #[test]
@@ -8156,40 +8092,6 @@ mod tests {
             visible, 1,
             "superseded chunk 1 must be invisible to /suggest (same as /recall)"
         );
-    }
-
-    #[test]
-    fn explanation_paths_reconstruct_hop_chain_from_cte_output() {
-        // build_explanation_paths must turn a flat traversal
-        // row (path="1->5->9", edge_path="works_at|ceo_of") into a structured
-        // hop chain with named endpoints. This is the faithful explanation
-        // the roadmap exit criterion asks for.
-        let rows = vec![serde_json::json!({
-            "entity": "acme_corp",
-            "depth": 2,
-            "path": "1->5->9",
-            "edge_path": "works_at|ceo_of",
-            "from_entity": "alice",
-            "domain": "global"
-        })];
-        let paths = build_explanation_paths(&rows);
-        assert_eq!(paths.len(), 1);
-        let hops = paths[0]["hops"].as_array().unwrap();
-        assert_eq!(hops.len(), 2, "two edges → two hops");
-        // First hop: seed (named) → intermediate (id only).
-        assert_eq!(hops[0]["from"]["name"].as_str().unwrap(), "alice");
-        assert_eq!(hops[0]["relation"].as_str().unwrap(), "works_at");
-        assert_eq!(hops[0]["to"]["id"].as_str().unwrap(), "5");
-        // Second hop: intermediate (id only) → leaf (named).
-        assert_eq!(hops[1]["from"]["id"].as_str().unwrap(), "5");
-        assert_eq!(hops[1]["relation"].as_str().unwrap(), "ceo_of");
-        assert_eq!(hops[1]["to"]["name"].as_str().unwrap(), "acme_corp");
-    }
-
-    #[test]
-    fn explanation_paths_empty_on_empty_input() {
-        // No traversal rows → no paths. The consuming agent sees `paths: []`.
-        assert!(build_explanation_paths(&[]).is_empty());
     }
 
     // ── migration parity — nearest-neighbor overlap ────────────
