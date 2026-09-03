@@ -20,11 +20,14 @@ use std::path::{Path, PathBuf};
 
 /// `wc -l src/main.rs`: 19,906 at session start, −624 net across Scaffold's
 /// extractions, relocations, and the dedup of five stale main.rs copies the
-/// handlers-family commit left behind. Ceiling.
-const MAIN_RS_LINES_CEIL: usize = 19_282;
+/// handlers-family commit left behind, then −397 net from the Buttress
+/// http_limit promotion (family + 9 unit pins, use/mod wiring added back).
+/// Ceiling.
+const MAIN_RS_LINES_CEIL: usize = 18_885;
 /// Lines from the `#[cfg(test)] mod tests` boundary to EOF. Ceiling.
-/// 13,342 at session start − 630 net.
-const TEST_REGION_LINES_CEIL: usize = 12_712;
+/// 13,342 at session start − 630 net (Scaffold) − 156 net (Buttress: the
+/// http_limit unit pins left the region).
+const TEST_REGION_LINES_CEIL: usize = 12_556;
 /// Textual `.route(` occurrences in main.rs (the registration chain +
 /// the authz scan's own literals — counted identically every time). Ceiling.
 /// Routes do not move until Vaulting (M3); this freezes at the start value.
@@ -32,20 +35,26 @@ const ROUTE_CALL_SITES_CEIL: usize = 234;
 /// `#[test]` occurrences in main.rs. Floor (lowered only when a pin moves,
 /// in the same commit): 139 at session start − 10 relocated pure-unit pins
 /// (6 → handlers/mod.rs; auth_tokens, temporal, trace_caps, eval → their
-/// modules) = 129. The handlers-family commit initially left five stale
+/// modules) = 129, then −8 more as the Buttress http_limit family moved
+/// (its 9th pin is a `#[tokio::test]` — outside this substring counter's
+/// needle, so it lowers the file's test mass without moving this floor).
+/// The handlers-family commit initially left five stale
 /// main.rs copies (line-shifted seds); the floor held at 134 until the
 /// dedup — the gap was the warning.
-const MAIN_RS_TEST_FLOOR: usize = 129;
+const MAIN_RS_TEST_FLOOR: usize = 121;
 /// `#[test]` occurrences across all of `src/` (lib + bins + main).
-/// Floor — never decreases.
-const TOTAL_SRC_TEST_FLOOR: usize = 1_178;
+/// Floor — never decreases. 1,178 at the Scaffold freeze; re-measured to
+/// 1,185 at the Buttress open (tests legitimately added between the lines)
+/// so the never-decreases guard stays tight rather than trailing by seven.
+const TOTAL_SRC_TEST_FLOOR: usize = 1_185;
 /// Route-coverage table rows (`handlers::route_guards::OPENAPI_ROUTES`)
-/// — 151 paths at extraction (v1.28.54). Rows join only with the wire
-/// change that earns them, in the same commit.
-const OPENAPI_ROUTE_ROWS_FLOOR: usize = 151;
+/// — 151 paths at extraction (v1.28.54), re-measured to 161 at the Buttress
+/// open (rows joined only with the wire changes that earned them). Rows join
+/// only with the wire change that earns them, in the same commit.
+const OPENAPI_ROUTE_ROWS_FLOOR: usize = 161;
 /// Route-authz table rows (`handlers::route_guards::AUTHZ_GATES`) — 141
-/// gates at extraction (v1.28.54).
-const AUTHZ_TABLE_ROWS_FLOOR: usize = 141;
+/// gates at extraction (v1.28.54), re-measured to 145 at the Buttress open.
+const AUTHZ_TABLE_ROWS_FLOOR: usize = 145;
 
 fn count_needle(hay: &str, needle: &str) -> usize {
     hay.matches(needle).count()
