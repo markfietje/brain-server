@@ -18,11 +18,12 @@ use std::path::{Path, PathBuf};
 // Every shrink from here on is earned by a move and lands in that move's
 // commit.
 
-/// `wc -l src/main.rs`: 19,906 at session start + 3 ledger decl lines.
-/// Ceiling (may only go down).
-const MAIN_RS_LINES_CEIL: usize = 19_909;
+/// `wc -l src/main.rs`: 19,906 at session start + 5 ledger + guard-table
+/// decl lines, −444 extracted table lines (the extraction commit). Ceiling.
+const MAIN_RS_LINES_CEIL: usize = 19_467;
 /// Lines from the `#[cfg(test)] mod tests` boundary to EOF. Ceiling.
-const TEST_REGION_LINES_CEIL: usize = 13_342;
+/// 13,342 at start − 445 extracted table lines = 12,897.
+const TEST_REGION_LINES_CEIL: usize = 12_897;
 /// Textual `.route(` occurrences in main.rs (the registration chain +
 /// the authz scan's own literals — counted identically every time). Ceiling.
 /// Routes do not move until Vaulting (M3); this freezes at the start value.
@@ -32,6 +33,13 @@ const MAIN_RS_TEST_FLOOR: usize = 139;
 /// `#[test]` occurrences across all of `src/` (lib + bins + main).
 /// Floor — never decreases.
 const TOTAL_SRC_TEST_FLOOR: usize = 1_178;
+/// Route-coverage table rows (`handlers::route_guards::OPENAPI_ROUTES`)
+/// — 151 paths at extraction (v1.28.54). Rows join only with the wire
+/// change that earns them, in the same commit.
+const OPENAPI_ROUTE_ROWS_FLOOR: usize = 151;
+/// Route-authz table rows (`handlers::route_guards::AUTHZ_GATES`) — 141
+/// gates at extraction (v1.28.54).
+const AUTHZ_TABLE_ROWS_FLOOR: usize = 141;
 
 fn count_needle(hay: &str, needle: &str) -> usize {
     hay.matches(needle).count()
@@ -124,6 +132,20 @@ fn spire_inventory_freezes_the_monolith() {
              load-bearing total-test floor dropped; tests may not be deleted, only moved"
         ));
     }
+    let route_rows = crate::route_guards::OPENAPI_ROUTES.len();
+    let authz_rows = crate::route_guards::AUTHZ_GATES.len();
+    if route_rows < OPENAPI_ROUTE_ROWS_FLOOR {
+        breaches.push(format!(
+            "  route-coverage rows: {route_rows} < floor {OPENAPI_ROUTE_ROWS_FLOOR} — a \
+             documented route left the table without its wire change"
+        ));
+    }
+    if authz_rows < AUTHZ_TABLE_ROWS_FLOOR {
+        breaches.push(format!(
+            "  route-authz rows: {authz_rows} < floor {AUTHZ_TABLE_ROWS_FLOOR} — an \
+             authz gate row was dropped without its wire change"
+        ));
+    }
 
     assert!(
         breaches.is_empty(),
@@ -136,6 +158,7 @@ fn spire_inventory_freezes_the_monolith() {
         "spire: main.rs {total_lines}≤{MAIN_RS_LINES_CEIL} · region {region}≤\
          {TEST_REGION_LINES_CEIL} · routes {route_sites}≤{ROUTE_CALL_SITES_CEIL} · \
          main tests {main_tests}≥{MAIN_RS_TEST_FLOOR} · crate tests {total_tests}≥\
-         {TOTAL_SRC_TEST_FLOOR}"
+         {TOTAL_SRC_TEST_FLOOR} · coverage rows {route_rows}≥{OPENAPI_ROUTE_ROWS_FLOOR} · \
+         authz rows {authz_rows}≥{AUTHZ_TABLE_ROWS_FLOOR}"
     );
 }
