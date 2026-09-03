@@ -127,7 +127,7 @@ pub fn screen_content(content: &str) -> Result<String, ChannelError> {
     if trimmed.len() > MAX_NOTE_LEN {
         return Err(ChannelError::InvalidContent("too_long"));
     }
-    if crate::contains_suspicious_pattern(trimmed) {
+    if crate::screen::contains_suspicious_pattern(trimmed) {
         return Err(ChannelError::InvalidContent("blocklist"));
     }
     Ok(brain_server::fence::strip_markdown_refs(

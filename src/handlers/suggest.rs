@@ -142,7 +142,7 @@ pub async fn suggest(
     )?;
 
     // Same prompt-injection defense as /recall: never embed adversarial input.
-    if crate::contains_suspicious_pattern(&context) {
+    if crate::screen::contains_suspicious_pattern(&context) {
         return Err(HandlerError::bad_request(
             "context_rejected",
             "context matches a blocked prompt-injection pattern",

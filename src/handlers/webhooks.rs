@@ -676,7 +676,7 @@ async fn receive_signal(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes
     }
     // Injection screen BEFORE any state change — a Signal message is exactly
     // as untrusted as a pasted prompt.
-    if crate::contains_suspicious_pattern(&payload.text) {
+    if crate::screen::contains_suspicious_pattern(&payload.text) {
         deny(&state, "signal", "injection pattern rejected");
         return HandlerError::bad_request(
             "steering_rejected",

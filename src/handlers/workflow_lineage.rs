@@ -197,7 +197,7 @@ pub async fn post_rewind(
             "reason must be 1..=4000 characters",
         ));
     }
-    if crate::contains_suspicious_pattern(&body.reason) {
+    if crate::screen::contains_suspicious_pattern(&body.reason) {
         return Err(HandlerError::bad_request(
             "reason_rejected",
             "reason matches a blocked prompt-injection pattern",

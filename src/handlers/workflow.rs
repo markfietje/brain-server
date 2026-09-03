@@ -150,7 +150,7 @@ pub async fn post_steering(
     }
     // Steering text drives an engine state machine — screen it like any other
     // untrusted ingest BEFORE it can reach the outbox (prompt-injection class).
-    if crate::contains_suspicious_pattern(&body.message) {
+    if crate::screen::contains_suspicious_pattern(&body.message) {
         return Err(HandlerError::bad_request(
             "steering_rejected",
             "steering message matches a blocked prompt-injection pattern",
@@ -1162,7 +1162,7 @@ pub async fn post_answer(
             "answer must not be empty",
         ));
     }
-    if crate::contains_suspicious_pattern(&body.answer) {
+    if crate::screen::contains_suspicious_pattern(&body.answer) {
         return Err(HandlerError::bad_request(
             "answer_rejected",
             "answer matches a blocked prompt-injection pattern",

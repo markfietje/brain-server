@@ -21,13 +21,15 @@ use std::path::{Path, PathBuf};
 /// `wc -l src/main.rs`: 19,906 at session start, −624 net across Scaffold's
 /// extractions, relocations, and the dedup of five stale main.rs copies the
 /// handlers-family commit left behind, then −397 net from the Buttress
-/// http_limit promotion (family + 9 unit pins, use/mod wiring added back).
+/// http_limit promotion (family + 9 unit pins, use/mod wiring added back)
+/// and −245 net from the blocklist joining screen.rs (fn + 7 pins).
 /// Ceiling.
-const MAIN_RS_LINES_CEIL: usize = 18_885;
+const MAIN_RS_LINES_CEIL: usize = 18_640;
 /// Lines from the `#[cfg(test)] mod tests` boundary to EOF. Ceiling.
 /// 13,342 at session start − 630 net (Scaffold) − 156 net (Buttress: the
-/// http_limit unit pins left the region).
-const TEST_REGION_LINES_CEIL: usize = 12_556;
+/// http_limit unit pins left the region) − 126 net (the 7 blocklist pins
+/// + their docs).
+const TEST_REGION_LINES_CEIL: usize = 12_430;
 /// Textual `.route(` occurrences in main.rs (the registration chain +
 /// the authz scan's own literals — counted identically every time). Ceiling.
 /// Routes do not move until Vaulting (M3); this freezes at the start value.
@@ -37,11 +39,12 @@ const ROUTE_CALL_SITES_CEIL: usize = 234;
 /// (6 → handlers/mod.rs; auth_tokens, temporal, trace_caps, eval → their
 /// modules) = 129, then −8 more as the Buttress http_limit family moved
 /// (its 9th pin is a `#[tokio::test]` — outside this substring counter's
-/// needle, so it lowers the file's test mass without moving this floor).
+/// needle, so it lowers the file's test mass without moving this floor),
+/// then −7 more as the layer-1 blocklist moved to screen.rs with its pins.
 /// The handlers-family commit initially left five stale
 /// main.rs copies (line-shifted seds); the floor held at 134 until the
 /// dedup — the gap was the warning.
-const MAIN_RS_TEST_FLOOR: usize = 121;
+const MAIN_RS_TEST_FLOOR: usize = 114;
 /// `#[test]` occurrences across all of `src/` (lib + bins + main).
 /// Floor — never decreases. 1,178 at the Scaffold freeze; re-measured to
 /// 1,185 at the Buttress open (tests legitimately added between the lines)

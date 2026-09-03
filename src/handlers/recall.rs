@@ -56,8 +56,8 @@ use super::{
     DEFAULT_RECALL_LIMIT, HitSource, MAX_LIMIT, MAX_QUERY, MIN_LIMIT, RecallHit, RecallResponse,
     normalize_domain,
 };
-use crate::contains_suspicious_pattern;
 use crate::handlers::HandlerError;
+use crate::screen::contains_suspicious_pattern;
 
 #[derive(Debug, Deserialize)]
 pub struct RecallRequest {

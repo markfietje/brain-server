@@ -303,7 +303,7 @@ impl SearchResult {
     /// the blocklist screen runs here — once per hit,
     /// not per consumer.
     pub(crate) fn raw(id: i64, score: f32, title: Option<String>, content: String) -> Self {
-        let blocklist_hit = crate::contains_suspicious_pattern(&content);
+        let blocklist_hit = crate::screen::contains_suspicious_pattern(&content);
         Self {
             id,
             score,
