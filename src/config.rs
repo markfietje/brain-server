@@ -1060,9 +1060,10 @@ mod tests {
         assert_eq!(tokens.len(), 2);
         assert!(tokens.contains(&"tok-a".to_string()));
         assert!(tokens.contains(&"tok-b".to_string()));
-        match prev {
-            Some(v) => unsafe { std::env::set_var("AUTH_TOKEN", v) },
-            None => unsafe { std::env::remove_var("AUTH_TOKEN") },
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("AUTH_TOKEN", v) }
+        } else {
+            unsafe { std::env::remove_var("AUTH_TOKEN") }
         }
     }
 }
