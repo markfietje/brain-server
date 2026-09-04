@@ -52,6 +52,25 @@ pub struct JwtMiddlewareState {
     pub principal_rate_limiter: Arc<RateLimiter>,
 }
 
+impl JwtMiddlewareState {
+    /// The opaque-mode bundle for composed-app test states: empty
+    /// issuer/audience, fresh revocation cache + principal limiter.
+    #[cfg(test)]
+    pub(crate) fn opaque_for_tests(pool: Pool, db_path: PathBuf) -> Self {
+        Self {
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))
+                .expect("empty key store"),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            pool,
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            db_path,
+            principal_rate_limiter: Arc::new(RateLimiter::new()),
+        }
+    }
+}
+
 /// JWT verification middleware. Runs ONLY when JWT mode is
 /// on (BRAIN_JWT_ISSUER + keys configured). In opaque mode it's a no-op pass-
 /// through. On success, injects a `Principal` into request extensions; the
@@ -395,5 +414,219 @@ pub(crate) async fn auth_middleware(
             Json(serde_json::json!({ "error": "unauthorized", "code": "unauthorized" })),
         )
             .into_response()
+    }
+}
+
+// ── middleware pins (moved with their subjects from main.rs) ────────────
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::http_limit;
+    use crate::server::router::rate_limit_middleware;
+    use axum::middleware;
+    use std::net::SocketAddr;
+
+    /// auth presentation at the middleware layer. Non-public
+    /// routes 401 without a token; public + webhook prefixes bypass; a valid
+    /// opaque token passes. The per-handler action gates are pinned separately
+    /// by `authz_gates_cover_every_non_public_route`.
+    #[tokio::test]
+    async fn auth_middleware_enforces_presentation_and_public_bypass() {
+        use axum::routing::{get, post};
+        use tower::ServiceExt;
+
+        async fn stub() -> &'static str {
+            "ok"
+        }
+
+        // Inject a known token via the file-reload path (no env races under
+        // parallel tests); mirror the auth module's own rotation-test pattern
+        // (sleep so the second write advances the 1s mtime resolution).
+        let f = tempfile::NamedTempFile::new().expect("temp file");
+        std::fs::write(f.path(), "test-tok-1\n").unwrap();
+        let store = TokenStore::from_file(Some(f.path().to_path_buf()));
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(f.path(), "test-tok-1\n").unwrap();
+        assert!(store.reload_if_changed_from(vec!["test-tok-1".to_string()]));
+
+        let app = axum::Router::new()
+            .route("/health", get(stub))
+            .route("/webhooks/gh", post(stub))
+            .route("/private", get(stub))
+            .with_state(store.clone())
+            .layer(middleware::from_fn_with_state(store, auth_middleware));
+
+        // No token on a non-public route -> 401.
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/private")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+
+        // Wrong token on a non-public route -> 401.
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/private")
+                    .header("authorization", "Bearer wrong-token")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+
+        // Public route bypasses without a token.
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/health")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        // Webhook prefix bypasses (HMAC is verified inside the handler).
+        let resp = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/webhooks/gh")
+                    .method("POST")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        // Valid opaque token on the non-public route passes.
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/private")
+                    .header("authorization", "Bearer test-tok-1")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    /// the rate limiter keys buckets by the
+    /// peer `SocketAddr` extension — the gap the audit flagged (pre-v1.27.16
+    /// the extension was missing, so EVERY request shared one bucket). One
+    /// remote address exhausting its budget must never throttle another.
+    #[tokio::test]
+    async fn rate_limit_buckets_per_socket_addr_and_does_not_share() {
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        async fn stub() -> &'static str {
+            "ok"
+        }
+
+        let limiter = Arc::new(RateLimiter::new());
+        let app = axum::Router::new()
+            .route("/", get(stub))
+            .with_state(limiter.clone())
+            .layer(middleware::from_fn_with_state(
+                limiter,
+                rate_limit_middleware,
+            ));
+
+        let addr_a: SocketAddr = "10.0.0.1:1111".parse().unwrap();
+        let addr_b: SocketAddr = "10.0.0.2:2222".parse().unwrap();
+
+        fn req(addr: Option<SocketAddr>) -> axum::http::Request<Body> {
+            let mut r = axum::http::Request::builder()
+                .uri("/")
+                .body(Body::empty())
+                .unwrap();
+            if let Some(a) = addr {
+                r.extensions_mut().insert(a);
+            }
+            r
+        }
+
+        // A exhausts its own 60s window budget (10 000 req/min default).
+        for _ in 0..http_limit::RateLimiter::WINDOW_BUDGET_PROBE {
+            let resp = app.clone().oneshot(req(Some(addr_a))).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::OK,
+                "within budget → served"
+            );
+        }
+        let resp = app.clone().oneshot(req(Some(addr_a))).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::TOO_MANY_REQUESTS,
+            "exhausted budget → 429"
+        );
+
+        // B shares nothing with A: its own bucket, still served.
+        for _ in 0..3 {
+            let resp = app.clone().oneshot(req(Some(addr_b))).await.unwrap();
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::OK,
+                "a second address is unaffected"
+            );
+        }
+
+        // No extension → the "unknown" bucket (the real wiring always injects
+        // one via into_make_service_with_connect_info; a request without it
+        // simply shares the fallback bucket).
+        let resp = app.clone().oneshot(req(None)).await.unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+    }
+
+    /// a configured-but-EMPTY token store
+    /// must deny (401), never read as "auth disabled" (the pre-Drawbridge
+    /// allow-all collapse). Middleware-level pin: file exists, zero tokens.
+    #[tokio::test]
+    async fn configured_but_empty_token_store_denies_not_opens() {
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        async fn stub() -> &'static str {
+            "ok"
+        }
+
+        let f = tempfile::NamedTempFile::new().expect("temp file");
+        std::fs::write(f.path(), b"").unwrap();
+        let store = TokenStore::from_file(Some(f.path().to_path_buf()));
+
+        let app = axum::Router::new()
+            .route("/private", get(stub))
+            .with_state(store.clone())
+            .layer(middleware::from_fn_with_state(store, auth_middleware));
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/private")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "configured-but-empty must deny"
+        );
     }
 }

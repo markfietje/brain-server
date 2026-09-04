@@ -831,6 +831,14 @@ mod tests {
             })
             .clone();
         std::sync::Arc::new(AppState {
+            token_store: crate::auth::TokenStore::new(),
+            jwt_middleware_state: std::sync::Arc::new(
+                crate::server::router::auth::JwtMiddlewareState::opaque_for_tests(
+                    pool.clone(),
+                    path.clone(),
+                ),
+            ),
+            cors: tower_http::cors::CorsLayer::new(),
             model,
             registry: DomainRegistry::new(pool.clone(), &path, multi_db),
             pool,

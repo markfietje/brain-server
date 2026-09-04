@@ -558,6 +558,14 @@ mod tests {
         let pool: crate::Pool = r2d2::Pool::builder().build(mgr).expect("pool");
         run_migration(&mut pool.get().expect("conn"), 0).expect("migration");
         let state = std::sync::Arc::new(crate::AppState {
+            token_store: crate::auth::TokenStore::new(),
+            jwt_middleware_state: std::sync::Arc::new(
+                crate::server::router::auth::JwtMiddlewareState::opaque_for_tests(
+                    pool.clone(),
+                    db_path.clone(),
+                ),
+            ),
+            cors: tower_http::cors::CorsLayer::new(),
             model: std::sync::Arc::new(
                 brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
             ),

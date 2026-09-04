@@ -2686,6 +2686,14 @@ mod valet_lint_tests {
         brain_server::migration::run_migration(&mut pool.get().expect("conn"), 0)
             .expect("migration");
         let state = Arc::new(crate::AppState {
+            token_store: crate::auth::TokenStore::new(),
+            jwt_middleware_state: std::sync::Arc::new(
+                crate::server::router::auth::JwtMiddlewareState::opaque_for_tests(
+                    pool.clone(),
+                    db_path.clone(),
+                ),
+            ),
+            cors: tower_http::cors::CorsLayer::new(),
             model: Arc::new(
                 brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
             ),

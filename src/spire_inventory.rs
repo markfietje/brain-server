@@ -31,20 +31,31 @@ use std::path::{Path, PathBuf};
 /// then −2 more as the boot guards moved to boot.rs (ct_eq pin + the
 /// loopback-bind predicates pin), then −489 net at the Vaulting open as the
 /// middleware stack + auth middlewares staged into server/router/{mod,auth}.rs
-/// (fns + CSP consts verbatim; the poisoned-lock pin repointed same-commit).
+/// (fns + CSP consts verbatim; the poisoned-lock pin repointed same-commit),
+/// then −95 net as `app(state)` was lifted out of main_inner (the inline
+/// chain became the composed fn; AppState construction + watcher spawns
+/// hoisted to the main side of the seam) and the three middleware oneshot
+/// suites moved into server/router/auth.rs's test module with their subjects
+/// (the +102 AppState-initializer fixture lines across the composed-state
+/// test sites came in the same commit — net monolith motion still down).
 /// Ceiling.
-const MAIN_RS_LINES_CEIL: usize = 17_802;
+const MAIN_RS_LINES_CEIL: usize = 17_707;
 /// Lines from the `#[cfg(test)] mod tests` boundary to EOF. Ceiling.
 /// 13,342 at session start − 630 net (Scaffold) − 156 net (Buttress: the
 /// http_limit unit pins left the region, then 126 net as the 7 blocklist
 /// pins and their docs left, then 32 net as the snippet pin left, then 34
 /// net as the explanation pins left, then 67 net as the ct_eq + loopback
-/// bind pins left.
-const TEST_REGION_LINES_CEIL: usize = 12_302;
+/// bind pins left, then −113 net as the three middleware oneshot suites
+/// moved to server/router/auth.rs with their subjects, +102 back as the
+/// composed-app test sites gained the middleware-stack fixture fields.
+const TEST_REGION_LINES_CEIL: usize = 12_189;
 /// Textual `.route(` occurrences in main.rs (the registration chain +
 /// the authz scan's own literals — counted identically every time). Ceiling.
-/// Routes do not move until Vaulting (M3); this freezes at the start value.
-const ROUTE_CALL_SITES_CEIL: usize = 234;
+/// 234 at the Vaulting open; −5 as the three middleware oneshot suites
+/// (stub-router literals, not real registrations) moved to
+/// server/router/auth.rs with their subjects. The real registrations leave
+/// only in the family commits, each lowering this toward 0.
+const ROUTE_CALL_SITES_CEIL: usize = 229;
 /// `#[test]` occurrences in main.rs. Floor (lowered only when a pin moves,
 /// in the same commit): 139 at session start − 10 relocated pure-unit pins
 /// (6 → handlers/mod.rs; auth_tokens, temporal, trace_caps, eval → their

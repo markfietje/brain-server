@@ -204,6 +204,14 @@ struct AppState {
     /// Written by `alert::spawn_chain_watcher`; read by `/health` so the
     /// tamper-evident posture is visible without an on-demand full scan.
     chain_watch: alert::ChainWatchState,
+    // ── middleware-stack inputs (Vaulting: app(state) reads them here so
+    // the composition is a pure function of state) ────────────────────
+    /// The cached bearer-token store; `auth_middleware`'s from_fn state.
+    token_store: TokenStore,
+    /// JWT-mode verification state mirrored from the boot-resolved values.
+    jwt_middleware_state: Arc<JwtMiddlewareState>,
+    /// The boot-built CORS layer (env-resolved origins/methods/headers).
+    cors: CorsLayer,
 }
 
 #[derive(Deserialize)]
@@ -4692,679 +4700,691 @@ async fn main_inner() -> Result<()> {
     // raised by an inner one) and real DB imports would be uncapturable.
     // Compliance-pack evidence surfaces. Feature-gated: without the feature
     // the router is EMPTY — the routes do not exist on the wire at all.
-    let compliance_router: Router<Arc<AppState>> = {
-        #[cfg(feature = "compliance-pack")]
-        {
-            Router::new()
-                .route("/audit/export", get(handlers::compliance::export_audit))
-                .route(
-                    "/compliance/evaluation-record",
-                    post(handlers::compliance::post_evaluation_record),
-                )
-                .route(
-                    "/compliance/inventory",
-                    get(handlers::compliance::inventory),
-                )
-                .route(
-                    "/ropa",
-                    get(handlers::compliance::list_ropa).post(handlers::compliance::create_ropa),
-                )
-                .route("/ropa/{id}", post(handlers::compliance::upsert_ropa))
-        }
-        #[cfg(not(feature = "compliance-pack"))]
-        {
-            Router::new()
-        }
-    };
-
-    let import_router = Router::new()
-        .route(
-            "/domains/{name}/import",
-            post(handlers::domains::import_domain),
-        )
-        // F-49a: this dial is DELIBERATE and scoped to exactly this route
-        // group — bulk markdown imports are Admin-gated (handler re-checks
-        // before reading a byte) and stream-parsed one file at a time, so
-        // the 1 GiB ceiling is an operator-scale allowance, not an anonymous
-        // amplification surface. Every other route stays at the 1 MiB
-        // default layered after this router.
-        .layer(RequestBodyLimitLayer::new(1024 * 1024 * 1024));
-
-    let app = Router::new()
-        // Static SPA seat (host-frontend-static semantics).
-        // Serves the built client dist; absent dist degrades to 404 so an
-        // API-only deployment is unaffected. Public surface (no auth) — the
-        // bundle is static, data flows only through the gated API routes.
-        .route("/app/", get(handlers::frontend::spa_index))
-        .route("/app/{*path}", get(handlers::frontend::spa_static))
-        .route("/app/boot.json", get(handlers::frontend::boot_json))
-        .route("/app/boot.js", get(handlers::frontend::boot_js))
-        .route("/app/boot.pub", get(handlers::frontend::boot_pub))
-        .route("/app/sw.js", get(handlers::frontend::sw_js))
-        .route(
-            "/app/sw-register.js",
-            get(handlers::frontend::sw_register_js),
-        )
-        .route("/health", get(health))
-        .route("/health/db", get(health_db))
-        .route("/ready", get(ready))
-        .route("/openapi.yaml", get(openapi))
-        .route("/stats", get(stats))
-        .route("/version", get(version))
-        .route("/add", post(add_chunk))
-        .route("/ingest/memory", post(ingest_memory))
-        .route("/search", get(search))
-        // Legacy contract markers: `/add` and GET `/search` are superseded by
-        // `/ingest/memory` + `/recall`. The `Deprecation` header (RFC 8594)
-        // signals clients to migrate; both still function.
-        .route_layer(SetResponseHeaderLayer::overriding(
-            axum::http::HeaderName::from_static("deprecation"),
-            axum::http::HeaderValue::from_static("version=\"0.9.5\""),
-        ))
-        .route("/v1/embeddings", post(embeddings))
-        .route("/ingest/markdown", post(ingest_markdown))
-        .route("/reindex", post(reindex))
-        .route("/get/{id}", get(get_chunk))
-        .route("/multi-get", post(multi_get))
-        // quarantine operator surface. `GET /quarantine` lists
-        // flagged chunks; release clears the flag; delete purges the chunk.
-        .route("/quarantine", get(list_quarantined))
-        .route("/quarantine/{id}/release", post(release_quarantine))
-        .route("/quarantine/{id}/delete", post(delete_quarantine))
-        .route("/graph/entity/{name}", get(get_entity))
-        .route("/graph/relations", get(get_relations))
-        .route("/graph/traverse", get(traverse_graph))
-        .route("/graph/relationships/{id}/history", get(get_edge_history))
-        // Plugin API (contract: API_CONTRACT.md). Wire is locked.
-        .route("/recall", post(handlers::recall::recall))
-        .route("/ingest", post(handlers::ingest::ingest))
-        // the UMP 1.0 HTTP ops binding. Capabilities +
-        // `/.well-known/ump.json` are PUBLIC (negotiation handshake); the
-        // rest are authz-gated per the §3.3 matrix.
-        .route("/ump/capabilities", get(handlers::ump_ops::capabilities))
-        .route("/ump/remember", post(handlers::ump_ops::remember))
-        .route("/ump/memory/{id}", get(handlers::ump_ops::get_memory))
-        .route("/ump/recall", post(handlers::ump_ops::recall))
-        .route("/ump/revise", post(handlers::ump_ops::revise))
-        .route("/ump/forget", post(handlers::ump_ops::forget))
-        .route("/ump/feedback", post(handlers::ump_ops::feedback))
-        .route("/ump/subscribe", get(handlers::ump_ops::subscribe))
-        .route("/events", get(alert::events))
-        .route("/ump/audit", post(handlers::ump_ops::audit))
-        .route("/ump/audit/verify", get(handlers::ump_ops::audit_verify))
-        .route(
-            "/.well-known/ump.json",
-            get(handlers::ump_ops::capabilities),
-        )
-        .route("/memory/{id}", delete(handlers::forget::forget))
-        .route(
-            "/domains",
-            get(handlers::domains::domains).post(handlers::domains::create_domain),
-        )
-        .route("/domains/{name}", delete(handlers::domains::delete_domain))
-        // bulk relabel of chunks across domains (the non-re-ingest
-        // fix for the 99%-in-global corpus). A POST on a distinct path, so it
-        // cannot collide with the `/domains/{name}` DELETE above.
-        .route("/domains/move", post(handlers::domains::move_domains))
-        // one-shot recompute sweep over every domain's centroid.
-        .route(
-            "/domains/recompute",
-            post(handlers::domains::recompute_domains),
-        )
-        // per-domain lifecycle. Vacuum reclaims free pages; export
-        // streams a consistent snapshot; import restores a snapshot into a new
-        // domain name. `name` is validated inside each handler.
-        .route(
-            "/domains/{name}/vacuum",
-            post(handlers::domains::vacuum_domain),
-        )
-        .route(
-            "/domains/{name}/export",
-            get(handlers::domains::export_domain),
-        )
-        // the preset API. Reads are Read-gated; writes
-        // (profile upsert + domain binding) are Admin + audited. Dual-method
-        // paths register GET first then POST (the /retention precedent) so the
-        // authz source-scan lands on the Admin POST as the conservative check.
-        .route("/profiles", get(handlers::profiles::list_profiles))
-        .route("/profiles/{name}", get(handlers::profiles::get_profile))
-        .route("/profiles/{name}", post(handlers::profiles::upsert_profile))
-        .route(
-            "/domains/{name}/profile",
-            get(handlers::profiles::domain_profile_get),
-        )
-        .route(
-            "/domains/{name}/profile",
-            post(handlers::profiles::domain_profile_bind),
-        )
-        // the role API. Reads are Read-gated; writes
-        // (role upsert) are Admin + audited. Dual-method on {name}: GET then
-        // POST, so the authz source-scan lands on the Admin POST as the
-        // conservative check (the /retention + /profiles precedent).
-        .route("/roles", get(handlers::roles::list_roles))
-        .route("/roles/{name}", get(handlers::roles::get_role))
-        .route("/roles/{name}", post(handlers::roles::upsert_role))
-        // legal hold — place/release/list holds that
-        // freeze ids against erasure (decay, /purge, DSAR).
-        .route("/legal-hold", post(handlers::holds::post_legal_hold))
-        .route(
-            "/legal-hold/{id}/release",
-            post(handlers::holds::release_legal_hold),
-        )
-        .route("/legal-holds", get(handlers::holds::list_legal_holds))
-        // the breach-notification workflow. Human-
-        // opened by the DPO role; every event is hash-chained into the audit.
-        .route("/breach", post(handlers::breaches::post_breach))
-        .route(
-            "/breach/{id}/event",
-            post(handlers::breaches::post_breach_event),
-        )
-        .route("/breach/{id}/close", post(handlers::breaches::close_breach))
-        .route("/breaches", get(handlers::breaches::list_breaches))
-        .route("/breaches/{id}", get(handlers::breaches::get_breach))
-        // the cross-border transfer register +
-        // the TIA/DPA evidence artifacts. Writes are Admin + audited; the
-        // register + templates are the Art 30/46 + Schrems II evidence a
-        // client's regulator asks for (a human DPO/legal reviews + signs them).
-        .route("/transfers", post(handlers::transfers::register_transfer))
-        .route("/transfers", get(handlers::transfers::list_transfers))
-        .route("/transfers/{id}/tia", get(handlers::transfers::get_tia))
-        .route("/transfers/{id}/dpa", get(handlers::transfers::get_dpa))
-        // the BPO operating register — the spine every later
-        // BPO release (onboard/dpa/dsar/holds/termination) reads. Writes are
-        // Admin + audited (AuditKind::Client); the identity/evidence surface
-        // only (no enforcement gate).
-        .route("/clients", post(handlers::clients::register_client))
-        .route("/clients", get(handlers::clients::list_clients))
-        .route("/clients/{name}", get(handlers::clients::get_client))
-        .route(
-            "/clients/{name}/dpa",
-            post(handlers::clients::set_client_dpa),
-        )
-        .route(
-            "/clients/{name}/dpa",
-            get(handlers::clients::get_client_dpa),
-        )
-        .route("/clients/{name}/dsar", post(handlers::clients::client_dsar))
-        .route("/clients/{name}/hold", post(handlers::clients::client_hold))
-        .route("/clients/{name}/end", post(handlers::clients::client_end))
-        // the supervisor QA surface — owner-scoped queue
-        // list + audited coaching (read + write are Admin like every client op).
-        .route(
-            "/clients/{name}/proposals",
-            get(handlers::clients::client_proposals),
-        )
-        .route(
-            "/clients/{name}/proposals/{id}/coach",
-            post(handlers::clients::coach_proposal),
-        )
-        // source lifecycle. `reconcile` retires active sources
-        // of a kind whose URI is no longer in the live set (a vault delete or
-        // rename); `delete /sources/{id}` retires a single source explicitly.
-        .route("/sources/reconcile", post(handlers::sources::reconcile))
-        .route("/sources/{id}", delete(handlers::sources::delete_source))
-        // connector registry. `GET /connectors` lists every
-        // registered connector instance across all kinds.
-        .route("/connectors", get(handlers::connectors::list))
-        // register a connector instance, gated by the
-        // domain's bound profile `connectors_allowed` (Admin, audited).
-        .route("/connectors/register", post(handlers::connectors::register))
-        // deterministic span verification. Given a
-        // claim + chunk_id, returns whether the claim is supported by the
-        // chunk's text. Pure lexical match — no embeddings, no LLM.
-        .route("/verify", post(handlers::verify::verify))
-        // opt-in, non-interrupting anticipation. `/suggest`
-        // is an explicit pull (caller asks "what else might be relevant?");
-        // `/suggest/feedback` records accept/dismiss; `/suggest/metrics` is
-        // the false-positive rate (roadmap exit criterion). All three are
-        // gated by BRAIN_SUGGEST_ENABLED and return 501 when disabled — the
-        // roadmap's "otherwise the feature is removed" kill switch.
-        .route("/suggest", post(handlers::suggest::suggest))
-        .route("/suggest/feedback", post(handlers::suggest::feedback))
-        .route("/suggest/metrics", get(handlers::suggest::metrics))
-        // procedural memory + deterministic categorization
-        // + decision evaluation. `POST /procedure` ingests an ordered runbook;
-        // `GET /procedure/{id}/steps` returns the ordered chain; `POST /classify`
-        // categorizes text deterministically (Mem0's premium, free); `POST
-        // /decision/{id}/evaluate` runs a stored decision rule against input vars.
-        // All deterministic — no LLM, no cloud, no tokens.
-        .route("/procedure", post(handlers::procedure::create))
-        .route("/procedure/{id}/steps", get(handlers::procedure::steps))
-        .route("/classify", post(handlers::procedure::classify))
-        .route(
-            "/decision/{id}/evaluate",
-            post(handlers::procedure::evaluate),
-        )
-        // reviewable consolidation. `propose` is pure
-        // detection (no mutation); `apply` records operator-chosen typed links.
-        .route("/consolidate/propose", post(handlers::consolidate::propose))
-        .route("/consolidate/apply", post(handlers::consolidate::apply))
-        // reverse prior supersession resolutions. The undo
-        // arm of the roadmap exit criterion ("reject or undo them without
-        // retrieval regression"). Clears valid_to + removes the supersedes link.
-        .route("/consolidate/undo", post(handlers::consolidate::undo))
-        // write-back gate — proposals queue + human review.
-        // No auto-promote: a candidate becomes memory only by explicit approval.
-        .route("/ingest/proposal", post(handlers::gate::ingest_proposal))
-        .route("/proposals", get(handlers::gate::list_proposals))
-        .route(
-            "/proposals/{id}/approve",
-            post(handlers::gate::approve_proposal),
-        )
-        .route(
-            "/proposals/{id}/reject",
-            post(handlers::gate::reject_proposal),
-        )
-        .route("/proposals/{id}/edit", post(handlers::gate::edit_proposal))
-        // decay + GDPR lifecycle. `/export` is portable JSON
-        // (interchange); `/purge` is hard, explicit, audited deletion; `/decayed`
-        // is the operator review list. Nothing is deleted autonomously.
-        .route("/decayed", get(handlers::gate::list_decayed))
-        .route("/export", get(handlers::gate::export))
-        .route("/purge", post(handlers::gate::purge))
-        // per-kind retention policy, the Art 30
-        // records-of-processing register, and the snapshot self-check
-        // panel. GET /retention reads; POST /retention overrides
-        // (Admin + audited); /art30 and /snapshot/status are Admin read-only.
-        .route("/retention", get(handlers::govern::retention_get))
-        .route("/retention", post(handlers::govern::retention_post))
-        .route("/retention/report", get(handlers::govern::retention_report))
-        .route("/art30", get(handlers::govern::art30))
-        .route("/snapshot/status", get(handlers::govern::snapshot_status))
-        // read-event trace + DSAR workflow. `/recall/{id}/
-        // trace` replays a recorded recall decision path; `/dsar` is the GDPR
-        // Art 15/17 workflow (locate → export → purge → certificate);
-        // `/tombstones` is the queryable deletion registry; `/dsar/{id}/
-        // certificate` re-fetches a past deletion certificate.
-        .route(
-            "/recall/{trace_id}/trace",
-            get(handlers::observe::get_trace),
-        )
-        .route("/dsar", post(handlers::observe::post_dsar))
-        // the DSAR ledger list (Admin) — past requests
-        // + the Art 17 window the client countdown renders.
-        .route("/dsar", get(handlers::observe::list_dsar))
-        .route("/tombstones", get(handlers::observe::list_tombstones))
-        .route(
-            "/dsar/{id}/certificate",
-            get(handlers::observe::get_dsar_certificate),
-        )
-        // verified webhook ingestion. The handler only verifies
-        // the HMAC + enqueues; the drain worker (spawned in main) does the rest.
-        .route("/webhooks/{kind}", post(handlers::webhooks::receive))
-        .route(
-            "/webhooks/channel/{kind}",
-            post(handlers::channel_webhook::receive_channel),
-        )
-        .route(
-            "/webhooks/channel/{kind}/drain",
-            post(handlers::channel_webhook::drain_channel),
-        )
-        .route(
-            "/webhooks/channel/{kind}/console",
-            post(handlers::channel_webhook::post_console),
-        )
-        // The console annex is HMAC self-authenticating like its sibling
-        // channel seams: the bridge holds no bearer, ever.
-        // OIDC discovery + JWKS + auth endpoints. These are
-        // PUBLIC routes (no auth_middleware) except `/auth/revoke` (admin)
-        // and `/auth/logout` (the
-        // middleware verifies the presented access token, so the handler can
-        // revoke its `jti`; an unauthenticated logout would revoke nothing).
-        // `/auth/refresh` verifies the presented refresh token itself.
-        .route(
-            "/.well-known/openid-configuration",
-            get(handlers::well_known::openid_configuration),
-        )
-        .route("/.well-known/jwks.json", get(handlers::well_known::jwks))
-        .route(
-            "/.well-known/security.txt",
-            get(handlers::well_known::security_txt),
-        )
-        .route(
-            "/.well-known/ai-notice",
-            get(handlers::well_known::ai_notice),
-        )
-        .route(
-            "/.well-known/ai-literacy",
-            get(handlers::well_known::ai_literacy),
-        )
-        .route(
-            "/.well-known/cop-notice",
-            get(handlers::well_known::cop_notice),
-        )
-        .route("/auth/refresh", post(handlers::auth::refresh))
-        .route("/auth/logout", post(handlers::auth::logout))
-        .route("/auth/revoke", post(handlers::auth::revoke_handler))
-        .route("/audit", get(list_audit))
-        .route("/workflow/runs/{id}", get(handlers::workflow::get_run))
-        .route(
-            "/workflow/runs/{id}/state",
-            get(handlers::workflow::get_run_state),
-        )
-        .route(
-            "/workflow/runs/{id}/state",
-            put(handlers::workflow::put_run_state),
-        )
-        .route("/workflow/runs", post(handlers::workflow::post_run))
-        .route(
-            "/workflow/runs/{id}/events",
-            get(handlers::workflow_lineage::get_run_events),
-        )
-        .route(
-            "/workflow/runs/{id}/events",
-            post(handlers::workflow::post_event),
-        )
-        .route(
-            "/workflow/runs/{id}/rewind",
-            post(handlers::workflow_lineage::post_rewind),
-        )
-        .route(
-            "/workflow/runs/{id}/handoff",
-            get(handlers::workflow_lineage::get_handoff),
-        )
-        .route(
-            "/workflow/runs/{id}/handover/offer",
-            post(handlers::relay::post_handover_offer),
-        )
-        .route(
-            "/workflow/runs/{id}/handover/{offer_id}/accept",
-            post(handlers::relay::post_handover_accept),
-        )
-        .route(
-            "/workflow/runs/{id}/handover/{offer_id}/decline",
-            post(handlers::relay::post_handover_decline),
-        )
-        .route(
-            "/workflow/runs/{id}/notes",
-            post(handlers::channel::post_notes),
-        )
-        .route(
-            "/workflow/runs/{id}/notes",
-            get(handlers::channel::get_notes),
-        )
-        .route(
-            "/workflow/runs/{id}/notes/{invite_id}/accept",
-            post(handlers::channel::post_invite_accept),
-        )
-        .route(
-            "/workflow/channel/user-map",
-            post(handlers::channel::post_user_map_proposal),
-        )
-        // Mesh: agents as named colleagues — signed cards + delegation.
-        .route("/ops/agents/cards", post(handlers::mesh::post_card))
-        .route("/ops/agents/cards", get(handlers::mesh::get_cards))
-        .route(
-            "/workflow/runs/{id}/delegations",
-            post(handlers::mesh::post_delegation),
-        )
-        .route(
-            "/workflow/runs/{id}/delegations",
-            get(handlers::mesh::get_delegations),
-        )
-        .route(
-            "/workflow/runs/{id}/delegations/{delegation_id}/result",
-            post(handlers::mesh::post_delegation_result),
-        )
-        // Parcels: signed site-to-site knowledge — export, import, ledger.
-        .route("/parcels/export", post(handlers::parcels::post_export))
-        .route("/parcels/import", post(handlers::parcels::post_import))
-        .route("/parcels", get(handlers::parcels::get_ledger))
-        .route("/ops/handovers", get(handlers::relay::get_ops_handovers))
-        .route(
-            "/workflow/runs/{id}/context",
-            get(handlers::workflow_lineage::get_run_context),
-        )
-        .route(
-            "/workflow/runs/{id}/answer",
-            post(handlers::workflow::post_answer),
-        )
-        .route(
-            "/workflow/runs/{id}/steering",
-            get(handlers::workflow::get_steering),
-        )
-        .route(
-            "/workflow/runs/{id}/steps",
-            get(handlers::workflow::list_steps),
-        )
-        .route(
-            "/workflow/runs/{id}/steering",
-            post(handlers::workflow::post_steering),
-        )
-        .route(
-            "/workflow/runs/{id}/suggestions",
-            get(handlers::workflow::get_suggestions),
-        )
-        // The personal assistant's cranks + views.
-        // due is the cron-cranked scheduler (no daemon); brief is today's
-        // derived context; consent is the one-subject Outreach-lite registry.
-        .route("/workflow/valet/due", post(handlers::valet::post_due))
-        .route("/workflow/valet/brief", get(handlers::valet::get_brief))
-        .route("/workflow/valet/consent", put(handlers::valet::put_consent))
-        .route(
-            "/workflow/runs/{id}/complaint/lifecycle",
-            post(handlers::workflow::post_complaint_lifecycle),
-        )
-        .route(
-            "/workflow/runs/{id}/complaint/remedy",
-            post(handlers::workflow::post_complaint_remedy),
-        )
-        .route(
-            "/workflow/runs/{id}/complaint/adr-packet",
-            get(handlers::workflow::get_complaint_adr_packet),
-        )
-        .route(
-            "/workflow/runs/{id}/complaint/ack",
-            post(handlers::workflow::post_complaint_ack),
-        )
-        .route(
-            "/workflow/complaints/ack-sweep",
-            post(handlers::workflow::post_complaint_ack_sweep),
-        )
-        .route(
-            "/workflow/outreach/campaign",
-            post(handlers::workflow::post_outreach_campaign),
-        )
-        .route(
-            "/workflow/outreach/campaign/{id}",
-            get(handlers::workflow::get_outreach_campaign),
-        )
-        .route(
-            "/workflow/outreach/consent",
-            get(handlers::workflow::get_outreach_consent),
-        )
-        .route(
-            "/workflow/runs/{id}/outreach/followup",
-            post(handlers::workflow::post_outreach_followup),
-        )
-        .route(
-            "/workflow/runs/{id}/status-ref",
-            post(handlers::workflow::post_status_ref),
-        )
-        .route(
-            "/workflow/scoreboard",
-            get(handlers::workflow::get_scoreboard),
-        )
-        .route(
-            "/workflow/calibration/sign",
-            post(handlers::workflow::post_calibration_sign),
-        )
-        .route(
-            "/workflow/plugins/mount",
-            post(handlers::workflow::post_plugin_mount),
-        )
-        .route(
-            "/kcs/articles/{id}/approve",
-            post(handlers::kcs::post_kcs_article_approve),
-        )
-        .route("/kcs/articles", get(handlers::kcs::get_kcs_articles))
-        .route("/kcs/translate", post(handlers::kcs::post_kcs_translate))
-        .route(
-            "/kcs/articles/{id}/publish",
-            post(handlers::kcs::post_kcs_article_publish),
-        )
-        .route(
-            "/kcs/articles/{id}/preview",
-            get(handlers::kcs::get_kcs_article_preview),
-        )
-        .route("/ops/shifts", get(handlers::shifts::get_ops_shifts))
-        .route("/ops/shifts", post(handlers::shifts::post_ops_shift))
-        .route("/ops/crew", get(handlers::crew::get_ops_crew))
-        .route("/ops/skills", get(handlers::crew::get_ops_skills))
-        .route("/ops/skills", post(handlers::crew::post_ops_skills))
-        .route(
-            "/ops/crew/config",
-            post(handlers::crew::post_ops_crew_config),
-        )
-        // Workload visibility: lineage-only
-        // reads; fatigue alerts the scheduling human, never reassigns.
-        .route("/ops/workload", get(handlers::workload::get_ops_workload))
-        .route("/ops/coverage", get(handlers::workload::get_ops_coverage))
-        .route("/audit/verify", get(verify_audit_chain))
-        .route("/metrics", get(metrics))
-        // Static SPA seat is registered ABOVE (`/app/` + `/app/{*path}` →
-        // `handlers::frontend`): MIME + path-traversal prevention + SPA
-        // deep-link fallback to index.html live there. The historical
-        // `nest_service("/app", ServeDir)` registration is GONE — axum 0.8
-        // panics at boot on the conflicting internal wildcard
-        // (/app/{*__private__axum_nest_tail_param} vs /app/{*path}), a
-        // latent boot-blocker the 1.28.4 line never exercised end-to-end.
-        // Root → the client shell (a 301 so browsers + the client's fetch base
-        // both see a canonical `/app/`).
-        .route(
-            "/",
-            get(|| async { axum::response::Redirect::permanent("/app/") }),
-        )
-        // Inner layers (closest to handler)
-        .layer(RequestBodyLimitLayer::new(config::MAX_REQUEST_SIZE))
-        // merge the 1 GiB import router AFTER the
-        // shared 1 MiB limit so the shared cap never wraps the import route
-        // (see the import_router comment above). All shared layers below
-        // (auth, JWT, rate limit, timeout, trace) still cover it.
-        .merge(import_router)
-        .merge(compliance_router)
-        .layer(TimeoutLayer::with_status_code(
-            axum::http::StatusCode::REQUEST_TIMEOUT,
-            StdDuration::from_secs(30),
-        ))
-        .layer(CatchPanicLayer::new())
-        .layer(SetSensitiveHeadersLayer::new([
-            axum::http::header::AUTHORIZATION,
-            axum::http::header::COOKIE,
-            axum::http::header::SET_COOKIE,
-        ]))
-        .layer(CompressionLayer::new())
-        .layer(middleware::from_fn(request_id_middleware))
-        .layer(PropagateRequestIdLayer::new(
-            axum::http::HeaderName::from_static("x-request-id"),
-        ))
-        .layer(TraceLayer::new_for_http())
-        // Security layers
-        .layer(cors)
-        .layer(middleware::from_fn_with_state(
-            token_store.clone(),
-            auth_middleware,
-        ))
-        // JWT verification. Runs before `auth_middleware`.
-        // In opaque mode (default) it's a no-op pass-through.
-        // In JWT mode it verifies the JWS, checks revocation, and injects a
-        // Principal into extensions (which `auth_middleware` then sees + passes).
-        .layer(middleware::from_fn_with_state(
-            jwt_middleware_state.clone(),
-            jwt_auth_middleware,
-        ))
-        // Rate limiting — OUTERMOST of the security stack.
-        // Previously it sat *inside* both auth layers, so an
-        // unauthenticated flood was 401-rejected before ever consuming a
-        // bucket: the limiter never bounded the very traffic shape it exists
-        // for, and every free 401 performed a synchronous audit write (fresh
-        // Connection::open + INSERT) — an unthrottled DB-write-per-request
-        // DoS amplification. Outside authN, a flood trips 429 before any
-        // token work or audit write happens.
-        .layer(middleware::from_fn_with_state(
-            rate_limiter.clone(),
-            rate_limit_middleware,
-        ))
-        // Security headers — OUTERMOST of the security stack (axum: the last
-        // `.layer()` wraps everything before it) so 401/403/429/404 responses
-        // carry CSP/nosniff/HSTS too; previously they sat inside auth +
-        // rate-limit and pre-auth rejections went out bare.
-        .layer(middleware::from_fn(security_headers_middleware))
-        // Response headers
-        .layer(SetResponseHeaderLayer::overriding(
-            axum::http::header::SERVER,
-            axum::http::HeaderValue::from_static("brain-server"),
-        ))
-        .layer(SetResponseHeaderLayer::overriding(
-            axum::http::HeaderName::from_static("x-api-version"),
-            axum::http::HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
-        ))
-        .with_state({
-            let app_state = Arc::new(AppState {
-                model,
-                registry: domain_registry::DomainRegistry::new(
-                    pool.clone(),
-                    &db_path,
-                    config::multi_db(),
-                ),
-                pool,
-                db_path: db_path.clone(),
-                connection_tracker,
-                rate_limiter,
-                snapshot: snapshot_state,
-                audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
-                auth_mode,
-                key_store,
-                revocation_cache,
-                jwt_issuer,
-                jwt_audience,
-                oidc_config,
-                ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
-                alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
-                alert_seq: std::sync::atomic::AtomicU64::new(0),
-                chain_watch: alert::ChainWatchState::default(),
-            });
-            // watch pending proposals and fire the `expiry`
-            // alert once per SLA-tier boundary crossed.
-            let watcher_state = Arc::clone(&app_state);
-            tokio::spawn(async move { alert::spawn_expiry_watcher(watcher_state).await });
-            // Beacon: watch published articles whose freshness review is due
-            // (the demand-reduction loop's staleness signal, `expiry` kind).
-            let fresh_state = Arc::clone(&app_state);
-            tokio::spawn(async move { alert::spawn_freshness_watcher(fresh_state).await });
-            // watch the audit hash chain and raise an
-            // `integrity` alert on ok↔broken transitions; /health reads the
-            // cached posture.
-            let cw_state = Arc::clone(&app_state);
-            let cw_watch = app_state.chain_watch.clone();
-            tokio::spawn(async move { alert::spawn_chain_watcher(cw_state, cw_watch).await });
-            // The workflow-outbox → SSE bridge: every 2s the drained
-            // `workflow/*` events publish on the /events bus (explicitly
-            // subscribed consumers only, per-domain Read-gated at fan-out).
-            let we_state = Arc::clone(&app_state);
-            alert::spawn_workflow_event_worker(we_state);
-            // seed the multi-db registry from
-            // the clients register — a client's domain must resolve even if
-            // its per-domain file vanished between boots (register recreates
-            // it: cap-bounded; a refused seed is logged, never fatal).
-            if config::multi_db()
-                && let Ok(conn) = app_state.pool.get()
+    /// The composed application: every route family, the shared middleware
+    /// stack, and the state binding. THE WIRE: paths, methods, status
+    /// vocabulary, and the layer order below are frozen (openapi.yaml +
+    /// the route-authz table + the law-9 matrix pin them); the layer ORDER
+    /// is load-bearing — the rate limiter sits OUTSIDE both auth layers
+    /// (429 before token work), security headers outermost of all, and the
+    /// 1 MiB body limit is applied BEFORE the 1 GiB import-router merge
+    /// (tower-http eager-application pitfall — see the import_router
+    /// comment below).
+    fn app(state: Arc<AppState>) -> Router {
+        let compliance_router: Router<Arc<AppState>> = {
+            #[cfg(feature = "compliance-pack")]
             {
-                let domains: Vec<String> = conn
-                    .prepare("SELECT DISTINCT domain FROM clients")
-                    .and_then(|mut stmt| {
-                        stmt.query_map([], |r| r.get::<_, String>(0))
-                            .map(|rows| rows.filter_map(|r| r.ok()).collect())
-                    })
-                    .unwrap_or_default();
-                for d in domains {
-                    if let Err(e) = app_state.registry.seed_registered(&d) {
-                        warn!("clients-table domain seed refused: {e}");
-                    }
-                }
+                Router::new()
+                    .route("/audit/export", get(handlers::compliance::export_audit))
+                    .route(
+                        "/compliance/evaluation-record",
+                        post(handlers::compliance::post_evaluation_record),
+                    )
+                    .route(
+                        "/compliance/inventory",
+                        get(handlers::compliance::inventory),
+                    )
+                    .route(
+                        "/ropa",
+                        get(handlers::compliance::list_ropa)
+                            .post(handlers::compliance::create_ropa),
+                    )
+                    .route("/ropa/{id}", post(handlers::compliance::upsert_ropa))
             }
-            app_state
-        });
+            #[cfg(not(feature = "compliance-pack"))]
+            {
+                Router::new()
+            }
+        };
+
+        let import_router = Router::new()
+            .route(
+                "/domains/{name}/import",
+                post(handlers::domains::import_domain),
+            )
+            // F-49a: this dial is DELIBERATE and scoped to exactly this route
+            // group — bulk markdown imports are Admin-gated (handler re-checks
+            // before reading a byte) and stream-parsed one file at a time, so
+            // the 1 GiB ceiling is an operator-scale allowance, not an anonymous
+            // amplification surface. Every other route stays at the 1 MiB
+            // default layered after this router.
+            .layer(RequestBodyLimitLayer::new(1024 * 1024 * 1024));
+
+        Router::new()
+            // Static SPA seat (host-frontend-static semantics).
+            // Serves the built client dist; absent dist degrades to 404 so an
+            // API-only deployment is unaffected. Public surface (no auth) — the
+            // bundle is static, data flows only through the gated API routes.
+            .route("/app/", get(handlers::frontend::spa_index))
+            .route("/app/{*path}", get(handlers::frontend::spa_static))
+            .route("/app/boot.json", get(handlers::frontend::boot_json))
+            .route("/app/boot.js", get(handlers::frontend::boot_js))
+            .route("/app/boot.pub", get(handlers::frontend::boot_pub))
+            .route("/app/sw.js", get(handlers::frontend::sw_js))
+            .route(
+                "/app/sw-register.js",
+                get(handlers::frontend::sw_register_js),
+            )
+            .route("/health", get(health))
+            .route("/health/db", get(health_db))
+            .route("/ready", get(ready))
+            .route("/openapi.yaml", get(openapi))
+            .route("/stats", get(stats))
+            .route("/version", get(version))
+            .route("/add", post(add_chunk))
+            .route("/ingest/memory", post(ingest_memory))
+            .route("/search", get(search))
+            // Legacy contract markers: `/add` and GET `/search` are superseded by
+            // `/ingest/memory` + `/recall`. The `Deprecation` header (RFC 8594)
+            // signals clients to migrate; both still function.
+            .route_layer(SetResponseHeaderLayer::overriding(
+                axum::http::HeaderName::from_static("deprecation"),
+                axum::http::HeaderValue::from_static("version=\"0.9.5\""),
+            ))
+            .route("/v1/embeddings", post(embeddings))
+            .route("/ingest/markdown", post(ingest_markdown))
+            .route("/reindex", post(reindex))
+            .route("/get/{id}", get(get_chunk))
+            .route("/multi-get", post(multi_get))
+            // quarantine operator surface. `GET /quarantine` lists
+            // flagged chunks; release clears the flag; delete purges the chunk.
+            .route("/quarantine", get(list_quarantined))
+            .route("/quarantine/{id}/release", post(release_quarantine))
+            .route("/quarantine/{id}/delete", post(delete_quarantine))
+            .route("/graph/entity/{name}", get(get_entity))
+            .route("/graph/relations", get(get_relations))
+            .route("/graph/traverse", get(traverse_graph))
+            .route("/graph/relationships/{id}/history", get(get_edge_history))
+            // Plugin API (contract: API_CONTRACT.md). Wire is locked.
+            .route("/recall", post(handlers::recall::recall))
+            .route("/ingest", post(handlers::ingest::ingest))
+            // the UMP 1.0 HTTP ops binding. Capabilities +
+            // `/.well-known/ump.json` are PUBLIC (negotiation handshake); the
+            // rest are authz-gated per the §3.3 matrix.
+            .route("/ump/capabilities", get(handlers::ump_ops::capabilities))
+            .route("/ump/remember", post(handlers::ump_ops::remember))
+            .route("/ump/memory/{id}", get(handlers::ump_ops::get_memory))
+            .route("/ump/recall", post(handlers::ump_ops::recall))
+            .route("/ump/revise", post(handlers::ump_ops::revise))
+            .route("/ump/forget", post(handlers::ump_ops::forget))
+            .route("/ump/feedback", post(handlers::ump_ops::feedback))
+            .route("/ump/subscribe", get(handlers::ump_ops::subscribe))
+            .route("/events", get(alert::events))
+            .route("/ump/audit", post(handlers::ump_ops::audit))
+            .route("/ump/audit/verify", get(handlers::ump_ops::audit_verify))
+            .route(
+                "/.well-known/ump.json",
+                get(handlers::ump_ops::capabilities),
+            )
+            .route("/memory/{id}", delete(handlers::forget::forget))
+            .route(
+                "/domains",
+                get(handlers::domains::domains).post(handlers::domains::create_domain),
+            )
+            .route("/domains/{name}", delete(handlers::domains::delete_domain))
+            // bulk relabel of chunks across domains (the non-re-ingest
+            // fix for the 99%-in-global corpus). A POST on a distinct path, so it
+            // cannot collide with the `/domains/{name}` DELETE above.
+            .route("/domains/move", post(handlers::domains::move_domains))
+            // one-shot recompute sweep over every domain's centroid.
+            .route(
+                "/domains/recompute",
+                post(handlers::domains::recompute_domains),
+            )
+            // per-domain lifecycle. Vacuum reclaims free pages; export
+            // streams a consistent snapshot; import restores a snapshot into a new
+            // domain name. `name` is validated inside each handler.
+            .route(
+                "/domains/{name}/vacuum",
+                post(handlers::domains::vacuum_domain),
+            )
+            .route(
+                "/domains/{name}/export",
+                get(handlers::domains::export_domain),
+            )
+            // the preset API. Reads are Read-gated; writes
+            // (profile upsert + domain binding) are Admin + audited. Dual-method
+            // paths register GET first then POST (the /retention precedent) so the
+            // authz source-scan lands on the Admin POST as the conservative check.
+            .route("/profiles", get(handlers::profiles::list_profiles))
+            .route("/profiles/{name}", get(handlers::profiles::get_profile))
+            .route("/profiles/{name}", post(handlers::profiles::upsert_profile))
+            .route(
+                "/domains/{name}/profile",
+                get(handlers::profiles::domain_profile_get),
+            )
+            .route(
+                "/domains/{name}/profile",
+                post(handlers::profiles::domain_profile_bind),
+            )
+            // the role API. Reads are Read-gated; writes
+            // (role upsert) are Admin + audited. Dual-method on {name}: GET then
+            // POST, so the authz source-scan lands on the Admin POST as the
+            // conservative check (the /retention + /profiles precedent).
+            .route("/roles", get(handlers::roles::list_roles))
+            .route("/roles/{name}", get(handlers::roles::get_role))
+            .route("/roles/{name}", post(handlers::roles::upsert_role))
+            // legal hold — place/release/list holds that
+            // freeze ids against erasure (decay, /purge, DSAR).
+            .route("/legal-hold", post(handlers::holds::post_legal_hold))
+            .route(
+                "/legal-hold/{id}/release",
+                post(handlers::holds::release_legal_hold),
+            )
+            .route("/legal-holds", get(handlers::holds::list_legal_holds))
+            // the breach-notification workflow. Human-
+            // opened by the DPO role; every event is hash-chained into the audit.
+            .route("/breach", post(handlers::breaches::post_breach))
+            .route(
+                "/breach/{id}/event",
+                post(handlers::breaches::post_breach_event),
+            )
+            .route("/breach/{id}/close", post(handlers::breaches::close_breach))
+            .route("/breaches", get(handlers::breaches::list_breaches))
+            .route("/breaches/{id}", get(handlers::breaches::get_breach))
+            // the cross-border transfer register +
+            // the TIA/DPA evidence artifacts. Writes are Admin + audited; the
+            // register + templates are the Art 30/46 + Schrems II evidence a
+            // client's regulator asks for (a human DPO/legal reviews + signs them).
+            .route("/transfers", post(handlers::transfers::register_transfer))
+            .route("/transfers", get(handlers::transfers::list_transfers))
+            .route("/transfers/{id}/tia", get(handlers::transfers::get_tia))
+            .route("/transfers/{id}/dpa", get(handlers::transfers::get_dpa))
+            // the BPO operating register — the spine every later
+            // BPO release (onboard/dpa/dsar/holds/termination) reads. Writes are
+            // Admin + audited (AuditKind::Client); the identity/evidence surface
+            // only (no enforcement gate).
+            .route("/clients", post(handlers::clients::register_client))
+            .route("/clients", get(handlers::clients::list_clients))
+            .route("/clients/{name}", get(handlers::clients::get_client))
+            .route(
+                "/clients/{name}/dpa",
+                post(handlers::clients::set_client_dpa),
+            )
+            .route(
+                "/clients/{name}/dpa",
+                get(handlers::clients::get_client_dpa),
+            )
+            .route("/clients/{name}/dsar", post(handlers::clients::client_dsar))
+            .route("/clients/{name}/hold", post(handlers::clients::client_hold))
+            .route("/clients/{name}/end", post(handlers::clients::client_end))
+            // the supervisor QA surface — owner-scoped queue
+            // list + audited coaching (read + write are Admin like every client op).
+            .route(
+                "/clients/{name}/proposals",
+                get(handlers::clients::client_proposals),
+            )
+            .route(
+                "/clients/{name}/proposals/{id}/coach",
+                post(handlers::clients::coach_proposal),
+            )
+            // source lifecycle. `reconcile` retires active sources
+            // of a kind whose URI is no longer in the live set (a vault delete or
+            // rename); `delete /sources/{id}` retires a single source explicitly.
+            .route("/sources/reconcile", post(handlers::sources::reconcile))
+            .route("/sources/{id}", delete(handlers::sources::delete_source))
+            // connector registry. `GET /connectors` lists every
+            // registered connector instance across all kinds.
+            .route("/connectors", get(handlers::connectors::list))
+            // register a connector instance, gated by the
+            // domain's bound profile `connectors_allowed` (Admin, audited).
+            .route("/connectors/register", post(handlers::connectors::register))
+            // deterministic span verification. Given a
+            // claim + chunk_id, returns whether the claim is supported by the
+            // chunk's text. Pure lexical match — no embeddings, no LLM.
+            .route("/verify", post(handlers::verify::verify))
+            // opt-in, non-interrupting anticipation. `/suggest`
+            // is an explicit pull (caller asks "what else might be relevant?");
+            // `/suggest/feedback` records accept/dismiss; `/suggest/metrics` is
+            // the false-positive rate (roadmap exit criterion). All three are
+            // gated by BRAIN_SUGGEST_ENABLED and return 501 when disabled — the
+            // roadmap's "otherwise the feature is removed" kill switch.
+            .route("/suggest", post(handlers::suggest::suggest))
+            .route("/suggest/feedback", post(handlers::suggest::feedback))
+            .route("/suggest/metrics", get(handlers::suggest::metrics))
+            // procedural memory + deterministic categorization
+            // + decision evaluation. `POST /procedure` ingests an ordered runbook;
+            // `GET /procedure/{id}/steps` returns the ordered chain; `POST /classify`
+            // categorizes text deterministically (Mem0's premium, free); `POST
+            // /decision/{id}/evaluate` runs a stored decision rule against input vars.
+            // All deterministic — no LLM, no cloud, no tokens.
+            .route("/procedure", post(handlers::procedure::create))
+            .route("/procedure/{id}/steps", get(handlers::procedure::steps))
+            .route("/classify", post(handlers::procedure::classify))
+            .route(
+                "/decision/{id}/evaluate",
+                post(handlers::procedure::evaluate),
+            )
+            // reviewable consolidation. `propose` is pure
+            // detection (no mutation); `apply` records operator-chosen typed links.
+            .route("/consolidate/propose", post(handlers::consolidate::propose))
+            .route("/consolidate/apply", post(handlers::consolidate::apply))
+            // reverse prior supersession resolutions. The undo
+            // arm of the roadmap exit criterion ("reject or undo them without
+            // retrieval regression"). Clears valid_to + removes the supersedes link.
+            .route("/consolidate/undo", post(handlers::consolidate::undo))
+            // write-back gate — proposals queue + human review.
+            // No auto-promote: a candidate becomes memory only by explicit approval.
+            .route("/ingest/proposal", post(handlers::gate::ingest_proposal))
+            .route("/proposals", get(handlers::gate::list_proposals))
+            .route(
+                "/proposals/{id}/approve",
+                post(handlers::gate::approve_proposal),
+            )
+            .route(
+                "/proposals/{id}/reject",
+                post(handlers::gate::reject_proposal),
+            )
+            .route("/proposals/{id}/edit", post(handlers::gate::edit_proposal))
+            // decay + GDPR lifecycle. `/export` is portable JSON
+            // (interchange); `/purge` is hard, explicit, audited deletion; `/decayed`
+            // is the operator review list. Nothing is deleted autonomously.
+            .route("/decayed", get(handlers::gate::list_decayed))
+            .route("/export", get(handlers::gate::export))
+            .route("/purge", post(handlers::gate::purge))
+            // per-kind retention policy, the Art 30
+            // records-of-processing register, and the snapshot self-check
+            // panel. GET /retention reads; POST /retention overrides
+            // (Admin + audited); /art30 and /snapshot/status are Admin read-only.
+            .route("/retention", get(handlers::govern::retention_get))
+            .route("/retention", post(handlers::govern::retention_post))
+            .route("/retention/report", get(handlers::govern::retention_report))
+            .route("/art30", get(handlers::govern::art30))
+            .route("/snapshot/status", get(handlers::govern::snapshot_status))
+            // read-event trace + DSAR workflow. `/recall/{id}/
+            // trace` replays a recorded recall decision path; `/dsar` is the GDPR
+            // Art 15/17 workflow (locate → export → purge → certificate);
+            // `/tombstones` is the queryable deletion registry; `/dsar/{id}/
+            // certificate` re-fetches a past deletion certificate.
+            .route(
+                "/recall/{trace_id}/trace",
+                get(handlers::observe::get_trace),
+            )
+            .route("/dsar", post(handlers::observe::post_dsar))
+            // the DSAR ledger list (Admin) — past requests
+            // + the Art 17 window the client countdown renders.
+            .route("/dsar", get(handlers::observe::list_dsar))
+            .route("/tombstones", get(handlers::observe::list_tombstones))
+            .route(
+                "/dsar/{id}/certificate",
+                get(handlers::observe::get_dsar_certificate),
+            )
+            // verified webhook ingestion. The handler only verifies
+            // the HMAC + enqueues; the drain worker (spawned in main) does the rest.
+            .route("/webhooks/{kind}", post(handlers::webhooks::receive))
+            .route(
+                "/webhooks/channel/{kind}",
+                post(handlers::channel_webhook::receive_channel),
+            )
+            .route(
+                "/webhooks/channel/{kind}/drain",
+                post(handlers::channel_webhook::drain_channel),
+            )
+            .route(
+                "/webhooks/channel/{kind}/console",
+                post(handlers::channel_webhook::post_console),
+            )
+            // The console annex is HMAC self-authenticating like its sibling
+            // channel seams: the bridge holds no bearer, ever.
+            // OIDC discovery + JWKS + auth endpoints. These are
+            // PUBLIC routes (no auth_middleware) except `/auth/revoke` (admin)
+            // and `/auth/logout` (the
+            // middleware verifies the presented access token, so the handler can
+            // revoke its `jti`; an unauthenticated logout would revoke nothing).
+            // `/auth/refresh` verifies the presented refresh token itself.
+            .route(
+                "/.well-known/openid-configuration",
+                get(handlers::well_known::openid_configuration),
+            )
+            .route("/.well-known/jwks.json", get(handlers::well_known::jwks))
+            .route(
+                "/.well-known/security.txt",
+                get(handlers::well_known::security_txt),
+            )
+            .route(
+                "/.well-known/ai-notice",
+                get(handlers::well_known::ai_notice),
+            )
+            .route(
+                "/.well-known/ai-literacy",
+                get(handlers::well_known::ai_literacy),
+            )
+            .route(
+                "/.well-known/cop-notice",
+                get(handlers::well_known::cop_notice),
+            )
+            .route("/auth/refresh", post(handlers::auth::refresh))
+            .route("/auth/logout", post(handlers::auth::logout))
+            .route("/auth/revoke", post(handlers::auth::revoke_handler))
+            .route("/audit", get(list_audit))
+            .route("/workflow/runs/{id}", get(handlers::workflow::get_run))
+            .route(
+                "/workflow/runs/{id}/state",
+                get(handlers::workflow::get_run_state),
+            )
+            .route(
+                "/workflow/runs/{id}/state",
+                put(handlers::workflow::put_run_state),
+            )
+            .route("/workflow/runs", post(handlers::workflow::post_run))
+            .route(
+                "/workflow/runs/{id}/events",
+                get(handlers::workflow_lineage::get_run_events),
+            )
+            .route(
+                "/workflow/runs/{id}/events",
+                post(handlers::workflow::post_event),
+            )
+            .route(
+                "/workflow/runs/{id}/rewind",
+                post(handlers::workflow_lineage::post_rewind),
+            )
+            .route(
+                "/workflow/runs/{id}/handoff",
+                get(handlers::workflow_lineage::get_handoff),
+            )
+            .route(
+                "/workflow/runs/{id}/handover/offer",
+                post(handlers::relay::post_handover_offer),
+            )
+            .route(
+                "/workflow/runs/{id}/handover/{offer_id}/accept",
+                post(handlers::relay::post_handover_accept),
+            )
+            .route(
+                "/workflow/runs/{id}/handover/{offer_id}/decline",
+                post(handlers::relay::post_handover_decline),
+            )
+            .route(
+                "/workflow/runs/{id}/notes",
+                post(handlers::channel::post_notes),
+            )
+            .route(
+                "/workflow/runs/{id}/notes",
+                get(handlers::channel::get_notes),
+            )
+            .route(
+                "/workflow/runs/{id}/notes/{invite_id}/accept",
+                post(handlers::channel::post_invite_accept),
+            )
+            .route(
+                "/workflow/channel/user-map",
+                post(handlers::channel::post_user_map_proposal),
+            )
+            // Mesh: agents as named colleagues — signed cards + delegation.
+            .route("/ops/agents/cards", post(handlers::mesh::post_card))
+            .route("/ops/agents/cards", get(handlers::mesh::get_cards))
+            .route(
+                "/workflow/runs/{id}/delegations",
+                post(handlers::mesh::post_delegation),
+            )
+            .route(
+                "/workflow/runs/{id}/delegations",
+                get(handlers::mesh::get_delegations),
+            )
+            .route(
+                "/workflow/runs/{id}/delegations/{delegation_id}/result",
+                post(handlers::mesh::post_delegation_result),
+            )
+            // Parcels: signed site-to-site knowledge — export, import, ledger.
+            .route("/parcels/export", post(handlers::parcels::post_export))
+            .route("/parcels/import", post(handlers::parcels::post_import))
+            .route("/parcels", get(handlers::parcels::get_ledger))
+            .route("/ops/handovers", get(handlers::relay::get_ops_handovers))
+            .route(
+                "/workflow/runs/{id}/context",
+                get(handlers::workflow_lineage::get_run_context),
+            )
+            .route(
+                "/workflow/runs/{id}/answer",
+                post(handlers::workflow::post_answer),
+            )
+            .route(
+                "/workflow/runs/{id}/steering",
+                get(handlers::workflow::get_steering),
+            )
+            .route(
+                "/workflow/runs/{id}/steps",
+                get(handlers::workflow::list_steps),
+            )
+            .route(
+                "/workflow/runs/{id}/steering",
+                post(handlers::workflow::post_steering),
+            )
+            .route(
+                "/workflow/runs/{id}/suggestions",
+                get(handlers::workflow::get_suggestions),
+            )
+            // The personal assistant's cranks + views.
+            // due is the cron-cranked scheduler (no daemon); brief is today's
+            // derived context; consent is the one-subject Outreach-lite registry.
+            .route("/workflow/valet/due", post(handlers::valet::post_due))
+            .route("/workflow/valet/brief", get(handlers::valet::get_brief))
+            .route("/workflow/valet/consent", put(handlers::valet::put_consent))
+            .route(
+                "/workflow/runs/{id}/complaint/lifecycle",
+                post(handlers::workflow::post_complaint_lifecycle),
+            )
+            .route(
+                "/workflow/runs/{id}/complaint/remedy",
+                post(handlers::workflow::post_complaint_remedy),
+            )
+            .route(
+                "/workflow/runs/{id}/complaint/adr-packet",
+                get(handlers::workflow::get_complaint_adr_packet),
+            )
+            .route(
+                "/workflow/runs/{id}/complaint/ack",
+                post(handlers::workflow::post_complaint_ack),
+            )
+            .route(
+                "/workflow/complaints/ack-sweep",
+                post(handlers::workflow::post_complaint_ack_sweep),
+            )
+            .route(
+                "/workflow/outreach/campaign",
+                post(handlers::workflow::post_outreach_campaign),
+            )
+            .route(
+                "/workflow/outreach/campaign/{id}",
+                get(handlers::workflow::get_outreach_campaign),
+            )
+            .route(
+                "/workflow/outreach/consent",
+                get(handlers::workflow::get_outreach_consent),
+            )
+            .route(
+                "/workflow/runs/{id}/outreach/followup",
+                post(handlers::workflow::post_outreach_followup),
+            )
+            .route(
+                "/workflow/runs/{id}/status-ref",
+                post(handlers::workflow::post_status_ref),
+            )
+            .route(
+                "/workflow/scoreboard",
+                get(handlers::workflow::get_scoreboard),
+            )
+            .route(
+                "/workflow/calibration/sign",
+                post(handlers::workflow::post_calibration_sign),
+            )
+            .route(
+                "/workflow/plugins/mount",
+                post(handlers::workflow::post_plugin_mount),
+            )
+            .route(
+                "/kcs/articles/{id}/approve",
+                post(handlers::kcs::post_kcs_article_approve),
+            )
+            .route("/kcs/articles", get(handlers::kcs::get_kcs_articles))
+            .route("/kcs/translate", post(handlers::kcs::post_kcs_translate))
+            .route(
+                "/kcs/articles/{id}/publish",
+                post(handlers::kcs::post_kcs_article_publish),
+            )
+            .route(
+                "/kcs/articles/{id}/preview",
+                get(handlers::kcs::get_kcs_article_preview),
+            )
+            .route("/ops/shifts", get(handlers::shifts::get_ops_shifts))
+            .route("/ops/shifts", post(handlers::shifts::post_ops_shift))
+            .route("/ops/crew", get(handlers::crew::get_ops_crew))
+            .route("/ops/skills", get(handlers::crew::get_ops_skills))
+            .route("/ops/skills", post(handlers::crew::post_ops_skills))
+            .route(
+                "/ops/crew/config",
+                post(handlers::crew::post_ops_crew_config),
+            )
+            // Workload visibility: lineage-only
+            // reads; fatigue alerts the scheduling human, never reassigns.
+            .route("/ops/workload", get(handlers::workload::get_ops_workload))
+            .route("/ops/coverage", get(handlers::workload::get_ops_coverage))
+            .route("/audit/verify", get(verify_audit_chain))
+            .route("/metrics", get(metrics))
+            // Static SPA seat is registered ABOVE (`/app/` + `/app/{*path}` →
+            // `handlers::frontend`): MIME + path-traversal prevention + SPA
+            // deep-link fallback to index.html live there. The historical
+            // `nest_service("/app", ServeDir)` registration is GONE — axum 0.8
+            // panics at boot on the conflicting internal wildcard
+            // (/app/{*__private__axum_nest_tail_param} vs /app/{*path}), a
+            // latent boot-blocker the 1.28.4 line never exercised end-to-end.
+            // Root → the client shell (a 301 so browsers + the client's fetch base
+            // both see a canonical `/app/`).
+            .route(
+                "/",
+                get(|| async { axum::response::Redirect::permanent("/app/") }),
+            )
+            // Inner layers (closest to handler)
+            .layer(RequestBodyLimitLayer::new(config::MAX_REQUEST_SIZE))
+            // merge the 1 GiB import router AFTER the
+            // shared 1 MiB limit so the shared cap never wraps the import route
+            // (see the import_router comment above). All shared layers below
+            // (auth, JWT, rate limit, timeout, trace) still cover it.
+            .merge(import_router)
+            .merge(compliance_router)
+            .layer(TimeoutLayer::with_status_code(
+                axum::http::StatusCode::REQUEST_TIMEOUT,
+                StdDuration::from_secs(30),
+            ))
+            .layer(CatchPanicLayer::new())
+            .layer(SetSensitiveHeadersLayer::new([
+                axum::http::header::AUTHORIZATION,
+                axum::http::header::COOKIE,
+                axum::http::header::SET_COOKIE,
+            ]))
+            .layer(CompressionLayer::new())
+            .layer(middleware::from_fn(request_id_middleware))
+            .layer(PropagateRequestIdLayer::new(
+                axum::http::HeaderName::from_static("x-request-id"),
+            ))
+            .layer(TraceLayer::new_for_http())
+            // Security layers
+            .layer(state.cors.clone())
+            .layer(middleware::from_fn_with_state(
+                state.token_store.clone(),
+                auth_middleware,
+            ))
+            // JWT verification. Runs before `auth_middleware`.
+            // In opaque mode (default) it's a no-op pass-through.
+            // In JWT mode it verifies the JWS, checks revocation, and injects a
+            // Principal into extensions (which `auth_middleware` then sees + passes).
+            .layer(middleware::from_fn_with_state(
+                state.jwt_middleware_state.clone(),
+                jwt_auth_middleware,
+            ))
+            // Rate limiting — OUTERMOST of the security stack.
+            // Previously it sat *inside* both auth layers, so an
+            // unauthenticated flood was 401-rejected before ever consuming a
+            // bucket: the limiter never bounded the very traffic shape it exists
+            // for, and every free 401 performed a synchronous audit write (fresh
+            // Connection::open + INSERT) — an unthrottled DB-write-per-request
+            // DoS amplification. Outside authN, a flood trips 429 before any
+            // token work or audit write happens.
+            .layer(middleware::from_fn_with_state(
+                state.rate_limiter.clone(),
+                rate_limit_middleware,
+            ))
+            // Security headers — OUTERMOST of the security stack (axum: the last
+            // `.layer()` wraps everything before it) so 401/403/429/404 responses
+            // carry CSP/nosniff/HSTS too; previously they sat inside auth +
+            // rate-limit and pre-auth rejections went out bare.
+            .layer(middleware::from_fn(security_headers_middleware))
+            // Response headers
+            .layer(SetResponseHeaderLayer::overriding(
+                axum::http::header::SERVER,
+                axum::http::HeaderValue::from_static("brain-server"),
+            ))
+            .layer(SetResponseHeaderLayer::overriding(
+                axum::http::HeaderName::from_static("x-api-version"),
+                axum::http::HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
+            ))
+            .with_state(state.clone())
+    }
+
+    let app_state = Arc::new(AppState {
+        model,
+        registry: domain_registry::DomainRegistry::new(pool.clone(), &db_path, config::multi_db()),
+        pool,
+        db_path: db_path.clone(),
+        connection_tracker,
+        rate_limiter,
+        snapshot: snapshot_state,
+        audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+        auth_mode,
+        key_store,
+        revocation_cache,
+        jwt_issuer,
+        jwt_audience,
+        oidc_config,
+        ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+        alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+        alert_seq: std::sync::atomic::AtomicU64::new(0),
+        chain_watch: alert::ChainWatchState::default(),
+        token_store,
+        jwt_middleware_state,
+        cors,
+    });
+    // watch pending proposals and fire the `expiry`
+    // alert once per SLA-tier boundary crossed.
+    let watcher_state = Arc::clone(&app_state);
+    tokio::spawn(async move { alert::spawn_expiry_watcher(watcher_state).await });
+    // Beacon: watch published articles whose freshness review is due
+    // (the demand-reduction loop's staleness signal, `expiry` kind).
+    let fresh_state = Arc::clone(&app_state);
+    tokio::spawn(async move { alert::spawn_freshness_watcher(fresh_state).await });
+    // watch the audit hash chain and raise an
+    // `integrity` alert on ok↔broken transitions; /health reads the
+    // cached posture.
+    let cw_state = Arc::clone(&app_state);
+    let cw_watch = app_state.chain_watch.clone();
+    tokio::spawn(async move { alert::spawn_chain_watcher(cw_state, cw_watch).await });
+    // The workflow-outbox → SSE bridge: every 2s the drained
+    // `workflow/*` events publish on the /events bus (explicitly
+    // subscribed consumers only, per-domain Read-gated at fan-out).
+    let we_state = Arc::clone(&app_state);
+    alert::spawn_workflow_event_worker(we_state);
+    // seed the multi-db registry from
+    // the clients register — a client's domain must resolve even if
+    // its per-domain file vanished between boots (register recreates
+    // it: cap-bounded; a refused seed is logged, never fatal).
+    if config::multi_db()
+        && let Ok(conn) = app_state.pool.get()
+    {
+        let domains: Vec<String> = conn
+            .prepare("SELECT DISTINCT domain FROM clients")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |r| r.get::<_, String>(0))
+                    .map(|rows| rows.filter_map(|r| r.ok()).collect())
+            })
+            .unwrap_or_default();
+        for d in domains {
+            if let Err(e) = app_state.registry.seed_registered(&d) {
+                warn!("clients-table domain seed refused: {e}");
+            }
+        }
+    }
+
+    let app = app(app_state);
 
     // spawn the webhook drain worker. It processes verified
     // deliveries off the bounded queue without an HTTP round-trip.
@@ -6439,6 +6459,12 @@ mod tests {
             brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
         );
         let state = Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                pool.clone(),
+                tmp.path().to_path_buf(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -10774,6 +10800,12 @@ Final paragraph after the rule.";
         // The handler's full response: aggregate false + the failing domain
         // named in the breakdown (and health/global still true).
         let state = Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                global_pool.clone(),
+                global_path.clone(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             model: Arc::new(
                 brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
             ),
@@ -11354,6 +11386,12 @@ Final paragraph after the rule.";
             brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
         );
         let state = Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                pool.clone(),
+                tmp.path().to_path_buf(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -12165,173 +12203,6 @@ Final paragraph after the rule.";
         None
     }
 
-    /// auth presentation at the middleware layer. Non-public
-    /// routes 401 without a token; public + webhook prefixes bypass; a valid
-    /// opaque token passes. The per-handler action gates are pinned separately
-    /// by `authz_gates_cover_every_non_public_route`.
-    #[tokio::test]
-    async fn auth_middleware_enforces_presentation_and_public_bypass() {
-        use axum::routing::{get, post};
-        use tower::ServiceExt;
-
-        async fn stub() -> &'static str {
-            "ok"
-        }
-
-        // Inject a known token via the file-reload path (no env races under
-        // parallel tests); mirror the auth module's own rotation-test pattern
-        // (sleep so the second write advances the 1s mtime resolution).
-        let f = tempfile::NamedTempFile::new().expect("temp file");
-        std::fs::write(f.path(), "test-tok-1\n").unwrap();
-        let store = TokenStore::from_file(Some(f.path().to_path_buf()));
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        std::fs::write(f.path(), "test-tok-1\n").unwrap();
-        assert!(store.reload_if_changed_from(vec!["test-tok-1".to_string()]));
-
-        let app = axum::Router::new()
-            .route("/health", get(stub))
-            .route("/webhooks/gh", post(stub))
-            .route("/private", get(stub))
-            .with_state(store.clone())
-            .layer(middleware::from_fn_with_state(store, auth_middleware));
-
-        // No token on a non-public route -> 401.
-        let resp = app
-            .clone()
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri("/private")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
-
-        // Wrong token on a non-public route -> 401.
-        let resp = app
-            .clone()
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri("/private")
-                    .header("authorization", "Bearer wrong-token")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
-
-        // Public route bypasses without a token.
-        let resp = app
-            .clone()
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri("/health")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), axum::http::StatusCode::OK);
-
-        // Webhook prefix bypasses (HMAC is verified inside the handler).
-        let resp = app
-            .clone()
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri("/webhooks/gh")
-                    .method("POST")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), axum::http::StatusCode::OK);
-
-        // Valid opaque token on the non-public route passes.
-        let resp = app
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri("/private")
-                    .header("authorization", "Bearer test-tok-1")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), axum::http::StatusCode::OK);
-    }
-
-    /// the rate limiter keys buckets by the
-    /// peer `SocketAddr` extension — the gap the audit flagged (pre-v1.27.16
-    /// the extension was missing, so EVERY request shared one bucket). One
-    /// remote address exhausting its budget must never throttle another.
-    #[tokio::test]
-    async fn rate_limit_buckets_per_socket_addr_and_does_not_share() {
-        use axum::routing::get;
-        use tower::ServiceExt;
-
-        async fn stub() -> &'static str {
-            "ok"
-        }
-
-        let limiter = Arc::new(RateLimiter::new());
-        let app = axum::Router::new()
-            .route("/", get(stub))
-            .with_state(limiter.clone())
-            .layer(middleware::from_fn_with_state(
-                limiter,
-                rate_limit_middleware,
-            ));
-
-        let addr_a: SocketAddr = "10.0.0.1:1111".parse().unwrap();
-        let addr_b: SocketAddr = "10.0.0.2:2222".parse().unwrap();
-
-        fn req(addr: Option<SocketAddr>) -> axum::http::Request<Body> {
-            let mut r = axum::http::Request::builder()
-                .uri("/")
-                .body(Body::empty())
-                .unwrap();
-            if let Some(a) = addr {
-                r.extensions_mut().insert(a);
-            }
-            r
-        }
-
-        // A exhausts its own 60s window budget (10 000 req/min default).
-        for _ in 0..http_limit::RateLimiter::WINDOW_BUDGET_PROBE {
-            let resp = app.clone().oneshot(req(Some(addr_a))).await.unwrap();
-            assert_eq!(
-                resp.status(),
-                axum::http::StatusCode::OK,
-                "within budget → served"
-            );
-        }
-        let resp = app.clone().oneshot(req(Some(addr_a))).await.unwrap();
-        assert_eq!(
-            resp.status(),
-            axum::http::StatusCode::TOO_MANY_REQUESTS,
-            "exhausted budget → 429"
-        );
-
-        // B shares nothing with A: its own bucket, still served.
-        for _ in 0..3 {
-            let resp = app.clone().oneshot(req(Some(addr_b))).await.unwrap();
-            assert_eq!(
-                resp.status(),
-                axum::http::StatusCode::OK,
-                "a second address is unaffected"
-            );
-        }
-
-        // No extension → the "unknown" bucket (the real wiring always injects
-        // one via into_make_service_with_connect_info; a request without it
-        // simply shares the fallback bucket).
-        let resp = app.clone().oneshot(req(None)).await.unwrap();
-        assert_eq!(resp.status(), axum::http::StatusCode::OK);
-    }
-
     /// the serve wiring MUST inject the peer
     /// socket via `into_make_service_with_connect_info` — the production pin
     /// for the per-IP bucket guarantee (a direct `axum::serve` regression
@@ -12371,43 +12242,6 @@ Final paragraph after the rule.";
         );
     }
 
-    /// a configured-but-EMPTY token store
-    /// must deny (401), never read as "auth disabled" (the pre-Drawbridge
-    /// allow-all collapse). Middleware-level pin: file exists, zero tokens.
-    #[tokio::test]
-    async fn configured_but_empty_token_store_denies_not_opens() {
-        use axum::routing::get;
-        use tower::ServiceExt;
-
-        async fn stub() -> &'static str {
-            "ok"
-        }
-
-        let f = tempfile::NamedTempFile::new().expect("temp file");
-        std::fs::write(f.path(), b"").unwrap();
-        let store = TokenStore::from_file(Some(f.path().to_path_buf()));
-
-        let app = axum::Router::new()
-            .route("/private", get(stub))
-            .with_state(store.clone())
-            .layer(middleware::from_fn_with_state(store, auth_middleware));
-
-        let resp = app
-            .oneshot(
-                axum::http::Request::builder()
-                    .uri("/private")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            resp.status(),
-            axum::http::StatusCode::UNAUTHORIZED,
-            "configured-but-empty must deny"
-        );
-    }
-
     // ── (M1, F-04/F-05/F-06) ─────────────────────────
     //
     // The domain read-gate: a tenant-scoped JWT principal can read chunks,
@@ -12427,6 +12261,12 @@ Final paragraph after the rule.";
             brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
         );
         Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                pool.clone(),
+                tmp.path().to_path_buf(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -13747,6 +13587,12 @@ Final paragraph after the rule.";
         let beta_pool = reg.register("beta").expect("register beta");
         seed_into(&beta_pool, "beta", None, None, "beta content");
         let state = Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                global_pool.clone(),
+                global_path.clone(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             pool: global_pool,
             registry: reg,
             model: Arc::new(
@@ -13847,6 +13693,12 @@ Final paragraph after the rule.";
                 .unwrap();
         }
         let state = Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                global_pool.clone(),
+                global_path.clone(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             pool: global_pool,
             registry: reg,
             model: Arc::new(
@@ -14475,6 +14327,12 @@ Final paragraph after the rule.";
         run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
 
         let app_state = Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                pool.clone(),
+                db_path.clone(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             pool: pool.clone(),
             registry: domain_registry::DomainRegistry::new(pool.clone(), &db_path, true),
             model: Arc::new(
@@ -14607,6 +14465,12 @@ Final paragraph after the rule.";
             brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
         );
         let state = Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                pool.clone(),
+                tmp.path().to_path_buf(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -14780,6 +14644,12 @@ Final paragraph after the rule.";
             brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
         );
         let state = Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                pool.clone(),
+                tmp.path().to_path_buf(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -15026,6 +14896,12 @@ Final paragraph after the rule.";
             brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
         );
         let state = Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                pool.clone(),
+                tmp.path().to_path_buf(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -15158,6 +15034,12 @@ Final paragraph after the rule.";
             brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
         );
         let state = Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                pool.clone(),
+                tmp.path().to_path_buf(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -15310,6 +15192,12 @@ Final paragraph after the rule.";
             brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
         );
         let state = Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                pool.clone(),
+                tmp.path().to_path_buf(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -15601,6 +15489,12 @@ Final paragraph after the rule.";
             brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID)?,
         );
         let state = Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                pool.clone(),
+                tmp.path().to_path_buf(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool: pool.clone(),
@@ -15823,6 +15717,12 @@ Final paragraph after the rule.";
             brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
         );
         Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                pool.clone(),
+                tmp.path().to_path_buf(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -15948,10 +15848,10 @@ Final paragraph after the rule.";
         fn rate_limit_layer_is_outside_auth_layers() {
             let src = include_str!("main.rs");
             let jwt = src
-                .find("jwt_auth_middleware,\n        ))")
+                .find("jwt_auth_middleware,\n            ))")
                 .expect("jwt layer registration not found");
             let rl = src
-                .find("rate_limit_middleware,\n        ))")
+                .find("rate_limit_middleware,\n            ))")
                 .expect("rate-limit layer registration not found");
             assert!(
                 rl > jwt,
@@ -17657,6 +17557,12 @@ Final paragraph after the rule.";
         unsafe { std::env::set_var("BRAIN_CONNECTOR_CONFIG_DIR", dir.path()) };
 
         let state = Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                pool.clone(),
+                PathBuf::from(":memory:"),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
             model: Arc::new(
                 brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
             ),
