@@ -9,6 +9,7 @@ use axum::{
     extract::{Request, State},
     middleware::Next,
     response::{IntoResponse, Response},
+    routing::{get, post},
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -415,6 +416,40 @@ pub(crate) async fn auth_middleware(
         )
             .into_response()
     }
+}
+
+// ── the auth route family (moved from the chain at C3b) ─────────────────
+
+/// The auth + well-known routes; merges into `app()` like every family.
+pub(crate) fn router() -> axum::Router<Arc<crate::AppState>> {
+    axum::Router::new()
+        // middleware verifies the presented access token, so the handler can
+        // revoke its `jti`; an unauthenticated logout would revoke nothing).
+        // `/auth/refresh` verifies the presented refresh token itself.
+        .route(
+            "/.well-known/openid-configuration",
+            get(handlers::well_known::openid_configuration),
+        )
+        .route("/.well-known/jwks.json", get(handlers::well_known::jwks))
+        .route(
+            "/.well-known/security.txt",
+            get(handlers::well_known::security_txt),
+        )
+        .route(
+            "/.well-known/ai-notice",
+            get(handlers::well_known::ai_notice),
+        )
+        .route(
+            "/.well-known/ai-literacy",
+            get(handlers::well_known::ai_literacy),
+        )
+        .route(
+            "/.well-known/cop-notice",
+            get(handlers::well_known::cop_notice),
+        )
+        .route("/auth/refresh", post(handlers::auth::refresh))
+        .route("/auth/logout", post(handlers::auth::logout))
+        .route("/auth/revoke", post(handlers::auth::revoke_handler))
 }
 
 // ── middleware pins (moved with their subjects from main.rs) ────────────

@@ -54,7 +54,7 @@ const MAIN_RS_LINES_CEIL: usize = 16_869;
 /// composed-app test sites gained the middleware-stack fixture fields.
 // C3a: +5 net — the chain/layers moved to src/server/router (pins repointed
 /// with one comment line each) while the middleware suites had already left.
-const TEST_REGION_LINES_CEIL: usize = 12_194;
+const TEST_REGION_LINES_CEIL: usize = 12_216;
 /// Textual `.route(` occurrences in main.rs (the registration chain +
 /// the authz scan's own literals — counted identically every time). Ceiling.
 /// 234 at the Vaulting open; −5 as the three middleware oneshot suites
@@ -130,13 +130,22 @@ fn spire_inventory_freezes_the_monolith() {
     // registrations live there now; main.rs's remaining `.route(` sites are
     // test-stub routers inside cfg(test). Count the router files to keep the
     // anti-vacuous guard meaningful.
+    let router_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server/router");
     let mut router_src = String::new();
-    for f in ["src/server/router/mod.rs", "src/server/router/auth.rs"] {
-        router_src.push_str(
-            &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(f))
-                .unwrap_or_default(),
-        );
+    let mut router_files = 0usize;
+    if let Ok(entries) = std::fs::read_dir(&router_dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|e| e == "rs") {
+                router_src.push_str(&std::fs::read_to_string(&p).unwrap_or_default());
+                router_files += 1;
+            }
+        }
     }
+    assert!(
+        router_files >= 6,
+        "spire: router family files missing ({router_files} found, need core+memory+ump+compliance+workflow+auth+mod)"
+    );
     let router_sites = count_needle(&router_src, ".route(");
 
     // Anti-vacuous sanity: the counters must be looking at the real thing

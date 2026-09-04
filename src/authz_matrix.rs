@@ -188,7 +188,15 @@ fn mint(
 /// hand-rolled shape the authz source-scan pin uses.
 fn registered_methods() -> std::collections::HashMap<&'static str, Vec<(&'static str, &'static str)>>
 {
-    let chain = include_str!("server/router/mod.rs");
+    let chain = concat!(
+        include_str!("server/router/mod.rs"),
+        include_str!("server/router/core.rs"),
+        include_str!("server/router/memory.rs"),
+        include_str!("server/router/ump.rs"),
+        include_str!("server/router/compliance.rs"),
+        include_str!("server/router/workflow.rs"),
+        include_str!("server/router/auth.rs"),
+    );
     let flat: &'static str = Box::leak(
         chain
             .split_whitespace()
