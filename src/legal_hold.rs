@@ -69,7 +69,7 @@ pub(crate) fn validate(ids: &[i64], reason: &str) -> Result<(), HandlerError> {
 
 /// Insert one hold per id (caller validates first). Runs inside the caller's
 /// transaction. Returns the created hold ids.
-pub(crate) fn insert_holds(
+pub fn insert_holds(
     tx: &rusqlite::Transaction,
     ids: &[i64],
     reason: &str,

@@ -132,7 +132,7 @@ pub async fn domains(
             // ponytail: opens N connections sequentially; upgrade to parallel if > 100 domains.
             let names = state.registry.known_domains();
             for name in &names {
-                let Ok(layout) = brain_server::storage_layout::StorageLayout::detect() else {
+                let Ok(layout) = crate::storage_layout::StorageLayout::detect() else {
                     continue;
                 };
                 let Ok(path) = layout.domain_db(name) else {
@@ -430,7 +430,7 @@ pub async fn import_domain(
 
     // Resolve the target path via StorageLayout so the security check (path
     // traversal) lives in exactly one place. Refuse if the file already exists.
-    let layout = brain_server::storage_layout::StorageLayout::detect()
+    let layout = crate::storage_layout::StorageLayout::detect()
         .map_err(|e| HandlerError::internal(format!("storage layout: {e}")))?;
     let final_path = layout.domain_db(&name).map_err(|_| {
         HandlerError::bad_request("domain_invalid", format!("invalid domain: {name}"))

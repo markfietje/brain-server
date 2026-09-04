@@ -222,8 +222,8 @@ pub(crate) fn active_legal_holds(conn: &Connection) -> rusqlite::Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
 
     fn seed() -> Connection {
         register_sqlite_vec();

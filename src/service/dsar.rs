@@ -465,7 +465,7 @@ pub fn build_export_bundle(
     Ok(serde_json::json!({
         "exported_at": chrono::Utc::now().to_rfc3339(),
         // the residency stamp on the DSAR bundle too.
-        "region": brain_server::storage_layout::region(),
+        "region": crate::storage_layout::region(),
         "subject": subject,
         "knowledge": rows,
         "channel_notes": notes,
@@ -535,7 +535,7 @@ pub fn certificate_json(
         "action": action,
         "found_count": found_count,
         "purged_ids": purged_ids,
-        "region": brain_server::storage_layout::region(),
+        "region": crate::storage_layout::region(),
         "held_ids": held,
         "jurisdiction": jurisdiction,
         "mechanism": mechanism,
@@ -603,7 +603,7 @@ pub fn run_pool(
     // checkpoint after commit, so the certificate's erasure claim has teeth.
     // Best-effort profile lookup: an unreadable/missing bind defaults to the
     // disclosed logical posture (nothing ever fails closed into a lie).
-    let strict = brain_server::profile::profile_for_domain(conn, domain)
+    let strict = crate::profile::profile_for_domain(conn, domain)
         .ok()
         .flatten()
         .is_some_and(|p| p.pii_strict());
@@ -1177,9 +1177,9 @@ mod tests {
     #[test]
     fn dsar_export_bundle_builder_matches_live_shape() {
         // Full-migration fixture: the bundle now also reads case_notes.
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, 1).unwrap();
+        crate::migration::run_migration(&mut conn, 1).unwrap();
         conn.execute_batch(
             "INSERT INTO knowledge(id, content, content_hash, owner) VALUES
                  (1, 'alice root', 'h1', 'alice@example.com'),
@@ -1234,7 +1234,7 @@ mod tests {
     fn cross_domain_dsar_purges_all_pools_and_ledgers_once() {
         use r2d2_sqlite::SqliteConnectionManager;
 
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mk_pool = || {
             let mgr = SqliteConnectionManager::memory();
             let pool: crate::Pool = r2d2::Pool::builder()
@@ -1242,7 +1242,7 @@ mod tests {
                 .build(mgr)
                 .expect("build pool");
             let mut conn = pool.get().unwrap();
-            brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+            crate::migration::run_migration(&mut conn, 1).expect("migration");
             drop(conn);
             pool
         };
@@ -1357,11 +1357,11 @@ mod tests {
     #[test]
     fn dsar_purge_erases_proposals_and_orphaned_entities() {
         use r2d2_sqlite::SqliteConnectionManager;
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mgr = SqliteConnectionManager::memory();
         let pool: crate::Pool = r2d2::Pool::builder().max_size(1).build(mgr).expect("pool");
         let mut conn = pool.get().unwrap();
-        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        crate::migration::run_migration(&mut conn, 1).expect("migration");
         let subject = "alice@example.com";
         // Root knowledge owned by the subject (will be purged).
         conn.execute(

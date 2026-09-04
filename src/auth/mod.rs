@@ -33,7 +33,7 @@ pub mod revocation;
 /// ponytail: `install-service.sh`'s chmod is still the writer-side contract;
 /// this is the reader-side enforcement, and non-Unix platforms are unchecked
 /// (no POSIX modes to read).
-pub use brain_server::secret_file::check_secret_permissions;
+pub use crate::secret_file::check_secret_permissions;
 
 // Re-export the principal types used across handler boundaries.
 // Truthful allows: `auth` is a bin-private module (compiled into the server

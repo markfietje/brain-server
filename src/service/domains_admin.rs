@@ -55,7 +55,7 @@
 //!   preserves the file in place).
 //!
 //! Path safety ceiling: `export_snapshot` writes through the SHARED
-//! escaper [`brain_server::backup::vacuum_into`] — never a hand-rolled literal
+//! escaper [`crate::backup::vacuum_into`] — never a hand-rolled literal
 //! (a `'` in TMPDIR would break out). The quote-escaping and
 //! symlink-containment pins stay attached to that primitive in
 //! `src/backup.rs` verbatim;
@@ -435,7 +435,7 @@ pub(crate) fn vacuum(conn: &Connection) -> Result<(), DomainAdminError> {
 /// domain's DB via SQLite's `VACUUM INTO`, read back as bytes. Avoids
 /// reading the live file directly (WAL pages would be missed; concurrent
 /// writes could corrupt the read). The path goes through the SHARED
-/// quote-escaping primitive [`brain_server::backup::vacuum_into`] — never a
+/// quote-escaping primitive [`crate::backup::vacuum_into`] — never a
 /// hand-rolled literal (pinned below); the temp file is best-effort removed
 /// after the read (maintenance scratch, not evidence).
 pub(crate) fn export_snapshot(
@@ -452,7 +452,7 @@ pub(crate) fn export_snapshot(
     ));
     // VACUUM INTO writes a consistent snapshot to `temp` without holding
     // a write lock on the source. Safe under concurrent writes.
-    brain_server::backup::vacuum_into(conn, &temp)
+    crate::backup::vacuum_into(conn, &temp)
         .map_err(|e| DomainAdminError::Database(format!("VACUUM INTO failed: {e}")))?;
     let bytes = std::fs::read(&temp)
         .map_err(|e| DomainAdminError::Database(format!("read export: {e}")))?;
@@ -536,12 +536,13 @@ pub(crate) fn relabel_chunks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AppState;
     use crate::alert::ChainWatchState;
     use crate::auth::jwks::KeyStore;
     use crate::domain_registry::DomainRegistry;
     use crate::handlers::domains::delete_domain;
+    use crate::http_limit::{ConnectionTracker, RateLimiter};
     use crate::integrity::SnapshotState;
-    use crate::{AppState, ConnectionTracker, RateLimiter};
     use axum::extract::{Path, Query, State};
     use axum::http::StatusCode;
     use rusqlite::params;
@@ -553,9 +554,9 @@ mod tests {
     /// any single domain was deleted.
     #[test]
     fn delete_domain_shim_mode_sql_preserves_global_tables() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
+        crate::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
             .expect("migration");
 
         // Seed two domains + global audit + a global centroid.
@@ -645,9 +646,9 @@ mod tests {
     /// evidence row commit — or roll back — TOGETHER.
     #[test]
     fn domain_delete_rolls_back_with_its_audit() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
+        crate::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
             .expect("migration");
         conn.execute(
             "INSERT INTO knowledge (title, content, source, content_hash, domain)
@@ -680,9 +681,9 @@ mod tests {
     /// of the fallback bucket requires `?confirm=global`.
     #[test]
     fn relabel_chunks_moves_rows_and_preserves_provenance() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
+        crate::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
             .expect("migration");
 
         let mut global_ids = Vec::new();
@@ -739,9 +740,9 @@ mod tests {
 
     #[test]
     fn relabel_chunks_rejects_missing_ids() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
+        crate::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
             .expect("migration");
         let err = relabel_chunks(&mut conn, &[999_999], "business", "global").unwrap_err();
         match err {
@@ -760,28 +761,22 @@ mod tests {
         app_state_with(dir, true, 4)
     }
 
-    static TEST_EMBEDDER: std::sync::OnceLock<Arc<dyn brain_server::embed::Embedder>> =
+    static TEST_EMBEDDER: std::sync::OnceLock<Arc<dyn crate::embed::Embedder>> =
         std::sync::OnceLock::new();
 
     fn app_state_with(dir: &tempfile::TempDir, multi_db: bool, max_size: u32) -> Arc<AppState> {
-        brain_server::register_sqlite_vec::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let path = dir.path().join("brain.db");
         let mgr = r2d2_sqlite::SqliteConnectionManager::file(&path);
         let pool: crate::Pool = r2d2::Pool::builder()
             .max_size(max_size)
             .build(mgr)
             .expect("pool");
-        brain_server::migration::run_migration(
-            &mut pool.get().unwrap(),
-            crate::config::DB_MMAP_SIZE_MIB,
-        )
-        .expect("migration");
-        let model: Arc<dyn brain_server::embed::Embedder> = TEST_EMBEDDER
+        crate::migration::run_migration(&mut pool.get().unwrap(), crate::config::DB_MMAP_SIZE_MIB)
+            .expect("migration");
+        let model: Arc<dyn crate::embed::Embedder> = TEST_EMBEDDER
             .get_or_init(|| {
-                Arc::new(
-                    brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID)
-                        .expect("model"),
-                )
+                Arc::new(crate::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"))
             })
             .clone();
         Arc::new(AppState {

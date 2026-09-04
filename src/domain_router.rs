@@ -175,7 +175,7 @@ pub fn recompute_all_centroids(global_pool: &Pool) -> Result<Vec<(String, usize)
 /// dequantizes via `decode_embedding`. `valid_to IS NULL` excludes superseded
 /// chunks (the loser of a contradiction resolution) so a centroid isn't pulled
 /// toward outdated content. Kept Connection-taking so tests use `test_db()`.
-pub(crate) fn read_domain_vectors(conn: &Connection, domain: &str) -> Result<Vec<Vec<f32>>> {
+pub fn read_domain_vectors(conn: &Connection, domain: &str) -> Result<Vec<Vec<f32>>> {
     let mut stmt = conn.prepare(
         "SELECT v.embedding_int8
          FROM vec_knowledge v
@@ -333,13 +333,13 @@ mod tests {
     /// pin's subject was always THIS module's sweep.)
     #[test]
     fn recompute_sweep_recomputes_all_and_cleans_stale() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sweep.db");
         // Schema first on a raw connection (the pool reads the same file).
         {
             let mut conn = rusqlite::Connection::open(&path).unwrap();
-            brain_server::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
+            crate::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
                 .expect("migration");
             conn.execute(
                 "INSERT INTO knowledge(id, content, content_hash, domain) VALUES

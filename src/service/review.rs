@@ -29,7 +29,7 @@ pub(crate) const MAX_PROPOSALS: usize = 200;
 /// A storage failure. `Database`'s Display carries the exact pre-move
 /// message; the handler wraps it unchanged in its internal-error form.
 #[derive(Debug)]
-pub(crate) enum GateError {
+pub enum GateError {
     Database(String),
 }
 
@@ -52,7 +52,7 @@ impl From<rusqlite::Error> for GateError {
 /// approve-verb binding) and the `sanitize_read` pass over every emitted
 /// text field.
 #[derive(Debug, serde::Serialize)]
-pub(crate) struct ProposalView {
+pub struct ProposalView {
     pub id: i64,
     pub kind: String,
     /// the READ-canonical form — `sanitize_read` of the
@@ -125,7 +125,7 @@ pub(crate) struct ProposalView {
 
 /// the review deadline + SLA bands, shared by every
 /// `ProposalView` construction site so the countdown is one definition.
-pub(crate) fn proposal_deadline(created_at: i64) -> (i64, i64, i64) {
+pub fn proposal_deadline(created_at: i64) -> (i64, i64, i64) {
     (
         created_at + crate::config::proposal_ttl_secs(),
         crate::config::ALERT_WARN_SECS,
@@ -363,7 +363,7 @@ pub(crate) fn pending_domain(conn: &Connection, id: i64) -> Option<String> {
 /// context is unrecoverable, so the queue refuses to act on it (neither
 /// approve nor reject — it's already beyond verification). Wall-clock enters
 /// as an argument so a test pins the instant.
-pub(crate) fn expire_if_stale(
+pub fn expire_if_stale(
     conn: &Connection,
     id: i64,
     created_at: i64,
@@ -566,9 +566,9 @@ mod tests {
     /// owned rows.
     #[test]
     fn proposal_owner_and_scorecard_round_trip() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().expect("db");
-        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        crate::migration::run_migration(&mut conn, 1).expect("migration");
         let now = chrono::Utc::now().timestamp();
         let owned: i64 = conn
             .query_row(
@@ -624,9 +624,9 @@ mod tests {
     /// where the writers always wrote it.
     #[test]
     fn proposal_view_round_trips_decided_at() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().expect("db");
-        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        crate::migration::run_migration(&mut conn, 1).expect("migration");
         let now = chrono::Utc::now().timestamp();
         let pending: i64 = conn
             .query_row(
@@ -704,9 +704,9 @@ mod tests {
     /// its absence returns the legacy full query (back-compat pinned).
     #[test]
     fn proposals_since_filters_created_at_and_is_optional() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().expect("db");
-        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        crate::migration::run_migration(&mut conn, 1).expect("migration");
         // Three approved rows at distinct created_at (newest first by default).
         conn.execute_batch(
             "INSERT INTO proposals(kind, content, novelty, salience, created_at, status) VALUES
@@ -747,9 +747,9 @@ mod tests {
     /// (the JWT clamp); this pin proves the statement honors the clamp.
     #[test]
     fn proposal_rows_carry_their_domain_and_clamp_to_caller_scopes() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().expect("db");
-        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        crate::migration::run_migration(&mut conn, 1).expect("migration");
         let now = chrono::Utc::now().timestamp();
 
         // The creation insert stamps the caller's domain context + title.

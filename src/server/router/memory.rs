@@ -27,6 +27,7 @@ use crate::http_limit::process_rss_mib;
 use crate::search as search_mod;
 use crate::search::{perform_search_with_prf, query::QueryDoc};
 
+use crate::audit;
 use crate::server::bootstrap::AppState;
 use crate::{
     chunker, config, domain_router, graph_read, hygiene, linker, screen, sources, trace, vault,
@@ -35,14 +36,13 @@ use crate::{
     config::{DEFAULT_K, MAX_K, MAX_REQUEST_SIZE},
     http_limit::TrackerEntry,
 };
-use brain_server::audit;
 use std::time::Duration as StdDuration;
 use tokio::{task, time::timeout};
 
 /// The three legacy surfaces (`/add`, `/ingest/memory`, `/search`) that
 /// sit BEFORE the `Deprecation` header route_layer in `mod.rs` — the
 /// header's application set is order-frozen (see mod.rs).
-pub(crate) fn legacy_router() -> Router<Arc<AppState>> {
+pub fn legacy_router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/add", post(add_chunk))
         .route("/ingest/memory", post(ingest_memory))
@@ -50,7 +50,7 @@ pub(crate) fn legacy_router() -> Router<Arc<AppState>> {
     // Legacy contract markers: `/add` and GET `/search` are superseded by
 }
 
-pub(crate) fn router() -> Router<Arc<AppState>> {
+pub fn router() -> Router<Arc<AppState>> {
     Router::new()
         .route("/v1/embeddings", post(embeddings))
         .route("/ingest/markdown", post(ingest_markdown))
@@ -133,7 +133,7 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct SearchParams {
+pub struct SearchParams {
     q: String,
     #[serde(default)]
     k: Option<usize>,
@@ -188,12 +188,12 @@ pub(crate) struct SearchParams {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct AddRequest {
-    pub(crate) text: String,
+pub struct AddRequest {
+    pub text: String,
     #[serde(default)]
-    pub(crate) title: Option<String>,
+    pub title: Option<String>,
     #[serde(default = "default_source")]
-    pub(crate) source: String,
+    pub source: String,
 }
 
 /// the closed `/add` `source` vocabulary for
@@ -270,7 +270,7 @@ enum EmbeddingsInput {
 const MAX_EMBEDDING_BATCH: usize = 64;
 
 #[derive(Deserialize)]
-pub(crate) struct EmbeddingsRequest {
+pub struct EmbeddingsRequest {
     #[serde(deserialize_with = "deserialize_input")]
     input: EmbeddingsInput,
     #[serde(default = "default_model")]
@@ -300,7 +300,7 @@ fn default_model() -> String {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct MarkdownPayload {
+pub struct MarkdownPayload {
     content: String,
     title: Option<String>,
     /// absolute file path for vault ingest provenance. When set, the
@@ -321,7 +321,7 @@ pub(crate) struct MarkdownPayload {
 }
 
 #[derive(Deserialize)]
-pub(crate) struct RelationsQuery {
+pub struct RelationsQuery {
     from: Option<String>,
     to: Option<String>,
 }
@@ -329,13 +329,13 @@ pub(crate) struct RelationsQuery {
 /// graph endpoints read a `?limit=` that is clamped to
 /// `MAX_GRAPH_EDGES` (bounded output on the operator Graph surface).
 #[derive(Deserialize)]
-pub(crate) struct GraphLimit {
+pub struct GraphLimit {
     #[serde(default)]
     limit: Option<i64>,
 }
 
 #[derive(Deserialize)]
-pub(crate) struct TraverseQuery {
+pub struct TraverseQuery {
     /// Start entity. `name` and `entity` accepted as aliases (the response
     /// field is `entity`, so callers may mirror it back). Docs canonical: `start`.
     #[serde(alias = "name", alias = "entity")]
@@ -411,8 +411,8 @@ impl axum::response::IntoResponse for AppError {
 /// fails open if the pool or measurement errors. Mirrors
 /// `handlers::guard_capacity` (which uses `HandlerError` for the `/ingest` +
 /// `/ingest/markdown` paths).
-pub(crate) fn guard_capacity(state: &AppState) -> Result<(), AppError> {
-    use brain_server::capacity::{CapacityEnvelope, capacity_target, classify};
+pub fn guard_capacity(state: &AppState) -> Result<(), AppError> {
+    use crate::capacity::{CapacityEnvelope, capacity_target, classify};
     let Some(conn) = state.pool.get().ok() else {
         return Ok(());
     };
@@ -437,7 +437,7 @@ pub(crate) fn guard_capacity(state: &AppState) -> Result<(), AppError> {
 }
 
 #[inline(always)]
-pub(crate) async fn add_chunk(
+pub async fn add_chunk(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     Json(req): Json<AddRequest>,
@@ -662,7 +662,7 @@ pub(crate) async fn add_chunk(
     }
 }
 
-pub(crate) async fn search(
+pub async fn search(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     Query(p): Query<SearchParams>,
@@ -933,7 +933,7 @@ pub(crate) async fn search(
     )
 }
 
-pub(crate) async fn ingest_memory(
+pub async fn ingest_memory(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     body: Body,
@@ -1350,7 +1350,7 @@ pub(crate) async fn ingest_memory(
     }
 }
 
-pub(crate) fn parse_memory_content(text: &str) -> Vec<(String, Option<String>)> {
+pub fn parse_memory_content(text: &str) -> Vec<(String, Option<String>)> {
     let mut entries = Vec::new();
     let mut current = String::new();
     let mut title = None;
@@ -1390,9 +1390,9 @@ pub(crate) fn parse_memory_content(text: &str) -> Vec<(String, Option<String>)> 
 /// All three inputs are read in the caller's `spawn_blocking` context; this fn
 /// is pure and side-effect-free so it composes cleanly with the existing
 /// health/stats query patterns.
-pub(crate) fn measure_capacity(conn: &Connection, db_path: &std::path::Path) -> serde_json::Value {
-    let target = brain_server::capacity::capacity_target();
-    let envelope = brain_server::capacity::CapacityEnvelope::for_target(target);
+pub fn measure_capacity(conn: &Connection, db_path: &std::path::Path) -> serde_json::Value {
+    let target = crate::capacity::capacity_target();
+    let envelope = crate::capacity::CapacityEnvelope::for_target(target);
     let docs: usize = conn
         .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get::<_, i64>(0))
         .unwrap_or(0)
@@ -1405,11 +1405,11 @@ pub(crate) fn measure_capacity(conn: &Connection, db_path: &std::path::Path) -> 
     // System::used_memory() (system-wide) would always exceed it on any
     // machine with real workload, blocking every write with a spurious 507.
     let rss_mib = process_rss_mib();
-    let status = brain_server::capacity::classify(docs, db_mib, rss_mib, &envelope);
+    let status = crate::capacity::classify(docs, db_mib, rss_mib, &envelope);
     serde_json::json!({
         "target": match target {
-            brain_server::capacity::CapacityTarget::Desktop => "desktop",
-            brain_server::capacity::CapacityTarget::Jetson => "jetson",
+            crate::capacity::CapacityTarget::Desktop => "desktop",
+            crate::capacity::CapacityTarget::Jetson => "jetson",
         },
         "docs": docs,
         "max_docs": envelope.max_docs,
@@ -1421,7 +1421,7 @@ pub(crate) fn measure_capacity(conn: &Connection, db_path: &std::path::Path) -> 
     })
 }
 
-pub(crate) async fn embeddings(
+pub async fn embeddings(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     Json(req): Json<EmbeddingsRequest>,
@@ -1503,7 +1503,7 @@ pub(crate) async fn embeddings(
 
 // === KNOWLEDGE GRAPH FUNCTIONS ===
 
-pub(crate) fn parse_annotations(content: &str) -> Vec<(String, String)> {
+pub fn parse_annotations(content: &str) -> Vec<(String, String)> {
     let mut results = Vec::new();
     let bytes = content.as_bytes();
     let len = bytes.len();
@@ -1573,7 +1573,7 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
-pub(crate) async fn ingest_markdown(
+pub async fn ingest_markdown(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     Json(payload): Json<MarkdownPayload>,
@@ -1954,7 +1954,7 @@ pub(crate) async fn ingest_markdown(
 // production caller (ingest_markdown) plus unit tests, all of which would have
 // to spell every field by name anyway. The signature stays verbose-but-honest.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn write_markdown_ingest(
+pub fn write_markdown_ingest(
     tx: &rusqlite::Transaction<'_>,
     chunks: &[chunker::Chunk],
     embeddings: &[Vec<f32>],
@@ -2179,7 +2179,7 @@ pub(crate) fn write_markdown_ingest(
 ///
 /// `raw_content` is the file's full original payload; `chunk_ids` are the
 /// knowledge rows that should point at this source + revision.
-pub(crate) fn link_vault_source(
+pub fn link_vault_source(
     tx: &rusqlite::Transaction<'_>,
     source_path: &str,
     title: &str,
@@ -2221,7 +2221,7 @@ pub(crate) fn link_vault_source(
     Ok(())
 }
 
-pub(crate) async fn reindex(
+pub async fn reindex(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
 ) -> Json<serde_json::Value> {
@@ -2284,7 +2284,7 @@ pub(crate) async fn reindex(
     }
 }
 
-pub(crate) async fn get_chunk(
+pub async fn get_chunk(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     headers: axum::http::HeaderMap,
@@ -2386,11 +2386,11 @@ pub(crate) async fn get_chunk(
 }
 
 #[derive(Deserialize)]
-pub(crate) struct MultiGetRequest {
-    pub(crate) ids: Vec<i64>,
+pub struct MultiGetRequest {
+    pub ids: Vec<i64>,
 }
 
-pub(crate) async fn multi_get(
+pub async fn multi_get(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     headers: axum::http::HeaderMap,
@@ -2494,12 +2494,12 @@ pub(crate) async fn multi_get(
 // (release), or purge (delete) quarantined chunks.
 
 #[derive(Deserialize)]
-pub(crate) struct QuarantineListParams {
+pub struct QuarantineListParams {
     limit: Option<usize>,
 }
 
 /// `GET /quarantine` — list flagged (quarantined) chunks for operator review.
-pub(crate) async fn list_quarantined(
+pub async fn list_quarantined(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     headers: axum::http::HeaderMap,
@@ -2589,7 +2589,7 @@ pub(crate) async fn list_quarantined(
 
 /// `POST /quarantine/{id}/release` — operator approves the evidence; clears the
 /// flag so the chunk re-enters retrieval.
-pub(crate) async fn release_quarantine(
+pub async fn release_quarantine(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     Path(id): Path<i64>,
@@ -2632,7 +2632,7 @@ pub(crate) async fn release_quarantine(
 
 /// `POST /quarantine/{id}/delete` — operator purges a quarantined chunk (removes
 /// the knowledge row + its vec0 index entry).
-pub(crate) async fn delete_quarantine(
+pub async fn delete_quarantine(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     Path(id): Path<i64>,
@@ -2687,7 +2687,7 @@ pub(crate) async fn delete_quarantine(
     Ok(Json(serde_json::json!({ "ok": true, "deleted": deleted })))
 }
 
-pub(crate) async fn get_entity(
+pub async fn get_entity(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     headers: axum::http::HeaderMap,
@@ -2766,7 +2766,7 @@ pub(crate) async fn get_entity(
 /// chunk provenance carries the label (shim mode, JWT principal) — an edge
 /// with no knowledge link has no domain atom and is invisible to scoped
 /// readers. `None` = loopback/opaque/multi-db (unrestricted, unchanged).
-pub(crate) fn entity_relations(
+pub fn entity_relations(
     conn: &rusqlite::Connection,
     id: i64,
     limit: i64,
@@ -2799,7 +2799,7 @@ pub(crate) fn entity_relations(
     Ok(relations)
 }
 
-pub(crate) async fn get_relations(
+pub async fn get_relations(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     headers: axum::http::HeaderMap,
@@ -2858,7 +2858,7 @@ pub(crate) async fn get_relations(
 /// (newest ids first). Extracted for the LIMIT contract to be unit-testable.
 /// `domain_scope` restricts edges by their chunk
 /// provenance label (see `entity_relations`).
-pub(crate) fn relations_for(
+pub fn relations_for(
     conn: &rusqlite::Connection,
     param_lower: &str,
     is_from: bool,
@@ -2918,7 +2918,7 @@ pub(crate) fn relations_for(
 /// Admin-gated at the row level (the history is operator evidence, not a
 /// regular read); the call is audit-recorded (`AuditKind::GraphRead`) so the
 /// retrieval of retired PII-bearing labels is itself on the chain.
-pub(crate) async fn get_edge_history(
+pub async fn get_edge_history(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     headers: axum::http::HeaderMap,
@@ -3031,7 +3031,7 @@ pub(crate) async fn get_edge_history(
     Ok(Json(result))
 }
 
-pub(crate) async fn traverse_graph(
+pub async fn traverse_graph(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
     headers: axum::http::HeaderMap,
@@ -3376,7 +3376,7 @@ pub(crate) async fn traverse_graph(
 
 /// The 1 GiB import dial (F-49a): merged AFTER the shared 1 MiB cap in
 /// `mod.rs` — see the mod.rs comment for the tower-http ordering.
-pub(crate) fn import_router() -> Router<Arc<AppState>> {
+pub fn import_router() -> Router<Arc<AppState>> {
     Router::new()
         .route(
             "/domains/{name}/import",

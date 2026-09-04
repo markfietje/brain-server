@@ -5,12 +5,12 @@
 //! `serve_wires_connect_info_with_socket_addr`) travel with the
 //! composition, not with these definitions.
 
-pub(crate) mod auth;
-pub(crate) mod compliance;
-pub(crate) mod core;
-pub(crate) mod memory;
-pub(crate) mod ump;
-pub(crate) mod workflow;
+pub mod auth;
+pub mod compliance;
+pub mod core;
+pub mod memory;
+pub mod ump;
+pub mod workflow;
 
 use axum::{
     Json, Router,
@@ -36,7 +36,7 @@ use auth::{auth_middleware, jwt_auth_middleware};
 use std::time::Duration as StdDuration;
 
 /// CSP for API routes — the strictest possible (JSON-only, no content executes).
-pub(crate) const API_CSP: &str = "default-src 'none'; frame-ancestors 'none'; form-action 'none'";
+pub const API_CSP: &str = "default-src 'none'; frame-ancestors 'none'; form-action 'none'";
 
 /// CSP for client routes — allows WASM compilation, same-origin API calls,
 /// self-hosted fonts/CSS. No CDN, no inline scripts, NO eval.
@@ -47,7 +47,7 @@ pub(crate) const API_CSP: &str = "default-src 'none'; frame-ancestors 'none'; fo
 /// built client once under the trimmed policy before shipping; if a glue path
 /// still demands eval, restore `'unsafe-eval'` and re-document with evidence.
 /// style-src 'unsafe-inline' covers Dioxus runtime <style> injection.
-pub(crate) const CLIENT_CSP: &str = concat!(
+pub const CLIENT_CSP: &str = concat!(
     "default-src 'self'; ",
     "script-src 'self' 'wasm-unsafe-eval'; ",
     "style-src 'self' 'unsafe-inline'; ",
@@ -60,7 +60,7 @@ pub(crate) const CLIENT_CSP: &str = concat!(
 );
 
 /// Request ID middleware - generates UUID v4 for tracing if not provided.
-pub(crate) async fn request_id_middleware(mut req: Request<Body>, next: Next) -> Response {
+pub async fn request_id_middleware(mut req: Request<Body>, next: Next) -> Response {
     let request_id = req
         .headers()
         .get("x-request-id")
@@ -80,7 +80,7 @@ pub(crate) async fn request_id_middleware(mut req: Request<Body>, next: Next) ->
 
 /// Security headers middleware — applies standard hardening headers to every
 /// response. Path-aware CSP (strict for API, WASM-friendly for client).
-pub(crate) async fn security_headers_middleware(req: Request<Body>, next: Next) -> Response {
+pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Response {
     // Read the path BEFORE next.run(req) consumes the request.
     let is_client = req.uri().path().starts_with("/app") || req.uri().path() == "/";
     let mut res = next.run(req).await;
@@ -120,7 +120,7 @@ pub(crate) async fn security_headers_middleware(req: Request<Body>, next: Next) 
 /// `into_make_service_with_connect_info`) is now guaranteed present, so each
 /// remote address gets its own bucket. `X-Forwarded-For` is still honored
 /// only under `BRAIN_TRUST_PROXY=1`.
-pub(crate) async fn rate_limit_middleware(
+pub async fn rate_limit_middleware(
     State(rate_limiter): State<Arc<RateLimiter>>,
     req: Request<Body>,
     next: Next,
@@ -172,7 +172,7 @@ pub(crate) async fn rate_limit_middleware(
 /// 1 MiB body limit is applied BEFORE the 1 GiB import-router merge
 /// (tower-http eager-application pitfall — see the import_router
 /// comment below).
-pub(crate) fn app(state: Arc<AppState>) -> Router {
+pub fn app(state: Arc<AppState>) -> Router {
     let base = core::router()
         .merge(memory::legacy_router())
         // Legacy contract markers: `/add` and GET `/search` are superseded by

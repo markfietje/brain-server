@@ -59,18 +59,18 @@ pub mod register_sqlite_vec;
 // MCP binary + `brain` CLI so every agent-facing surface closes the same
 // bidi/zero-width smuggling class as the server screen. The server binary's
 // `screen.rs` re-exports these so `crate::screen::*` paths stay unchanged.
+pub mod graph_supersede;
+pub mod proposal_events;
 pub mod strip_invisible;
 
 // Edge supersession: the pure write-path core that makes
 // `relationships` true to the bi-temporal contract `trace` documents.
 // Lives in the lib so a bare-`Connection` unit test can
 // drive it (the `page_decayed` idiom) and so the server handler only wires.
-pub mod graph_supersede;
 
 // The proposal conversation-event producer (`proposal/open|decided`):
 // the wire contract between the HITL queue and the client's review-job
 // node, in one place. Pure builders; payloads are metadata only.
-pub mod proposal_events;
 
 // The shared untrusted-fence primitives: the
 // sentinel constants + the markdown-ref strip the MCP binary and CLI wrap
@@ -102,3 +102,86 @@ pub mod role;
 /// Valet style gate: the deterministic, advisory-only linter for
 /// draft proposals. Pure + zero-token; see module docs.
 pub mod valet_style;
+
+// ── the server surface (Vaulting lib flip) ──────────────────────────────
+//
+// Privacy contract, amended: the server module tree below is the ONLY
+// server surface. Consumers: the same-workspace `brain-server` binary and
+// this crate's integration tests (tests/*.rs). Nothing here crosses a
+// trust boundary — the modules below compile in-process with the lib and
+// are exercised by the same CI gates as before the flip.
+//
+// Token/key material visibility notes (law: secrets never widen):
+// - `auth` (TokenStore/KeyStore/JWT claims): consumed by the brain-server
+//   binary's bootstrap + the router integration tests. No other binary
+//   links it.
+// - `secrets`: file-permission helpers shared with the `brain` CLI.
+// - `http_limit` (RateLimiter/ConnectionTracker): consumed by the binary
+//   bootstrap + integration tests.
+
+pub mod server {
+    pub mod bootstrap;
+    pub mod router;
+}
+
+pub mod alert;
+pub mod auth;
+pub mod breach;
+pub mod chunker;
+pub mod config;
+pub mod consolidate;
+pub mod domain_registry;
+pub mod domain_router;
+pub mod gate;
+pub mod graph_read;
+pub mod handlers;
+pub mod http_limit;
+pub mod hygiene;
+pub mod integrity;
+pub mod legal_hold;
+pub mod linker;
+pub mod ph;
+pub mod procedural;
+pub mod qa;
+pub mod screen;
+pub mod search;
+pub mod secrets;
+pub mod service;
+pub mod sources;
+pub mod temporal;
+pub mod trace;
+pub mod transfers;
+pub mod vault;
+pub mod webhook;
+pub mod workflow;
+
+#[cfg(feature = "otel")]
+pub mod otel;
+
+#[cfg(test)]
+pub mod docs_truth;
+#[cfg(test)]
+pub mod dup_guard;
+pub mod route_guards;
+// The law-9 net: every AUTHZ_GATES row × principal class through the
+// composed app(state).
+#[cfg(test)]
+mod authz_matrix;
+#[cfg(test)]
+pub mod spire_inventory;
+
+/// The shared r2d2 pool alias every server module uses.
+pub type Pool = r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>;
+
+// crate-root re-exports the server modules address AppState/JWT state by.
+pub use server::bootstrap::AppState;
+pub use server::router::auth::JwtMiddlewareState;
+
+pub use search::{
+    PrfConfig, Provenance, RRF_K, RRF_OVERFETCH, SearchFilters, SearchResult, SearchSource,
+    SearchTelemetry, cosine_sim, fuse_prf_passes, perform_search, perform_search_with_prf,
+    prf_extract_terms, prf_should_expand,
+    quality::{HeuristicEstimator, Recommendation, RetrievalAssessment, RetrievalQualityEstimator},
+    query::{LexSpec, QueryDoc, QueryDocError, compile_lex},
+    rrf_fuse, vec0_knn,
+};

@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration as StdDuration;
 use tracing::{debug, info, warn};
 
+use crate::audit;
 use crate::auth::TokenStore;
 use crate::config;
 #[allow(unused_imports)]
@@ -26,19 +27,17 @@ use crate::config::{
 use crate::handlers;
 use crate::http_limit::{ConnectionTracker, RateLimiter};
 use crate::http_limit::{spawn_connection_watchdog, spawn_rss_watchdog};
+use crate::migration::run_migration_with_store_dim;
+use crate::register_sqlite_vec::register_sqlite_vec;
+use crate::server::router::auth::JwtMiddlewareState;
 use crate::{Pool, alert, auth, domain_registry, integrity, webhook};
-use brain_server::audit;
-use brain_server::migration::run_migration_with_store_dim;
-use brain_server::register_sqlite_vec::register_sqlite_vec;
 use rusqlite::{Connection, params};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use zerocopy::IntoBytes;
 
-pub(crate) use crate::JwtMiddlewareState;
-
 /// What `bootstrap` resolved: serve with this state + address, or an
 /// offline maintenance mode already ran (the process exits Ok).
-pub(crate) enum BootOutcome {
+pub enum BootOutcome {
     /// Serve: every component is up; `main_inner` composes + serves.
     Serve(Bootstrap),
     /// An offline `--re-embed`/`--re-audit` mode ran INSTEAD of serving.
@@ -46,32 +45,39 @@ pub(crate) enum BootOutcome {
 }
 
 /// The serving world `bootstrap` hands to `main_inner`.
-pub(crate) struct Bootstrap {
-    pub(crate) state: Arc<crate::AppState>,
+pub struct Bootstrap {
+    /// The fully-wired server state: every handler consumes this.
+    pub state: Arc<crate::AppState>,
     /// A dedicated pool clone for the post-shutdown WAL checkpoint.
-    pub(crate) shutdown_pool: Pool,
-    pub(crate) addr: SocketAddr,
+    pub shutdown_pool: Pool,
+    /// The resolved bind address (loopback-guarded, opt-in enforced).
+    pub addr: SocketAddr,
 }
 
-pub(crate) struct AppState {
+/// The server world-state: pool, registries, JWT material, event buses.
+/// Constructed once by `bootstrap()`; consumed by every handler via
+/// `State<Arc<AppState>>`. Fields are `pub`: the same-workspace binaries
+/// (brain-server) + integration tests construct/read it; nothing outside
+/// the workspace links this crate.
+pub struct AppState {
     // The embedding model behind the `Embedder` trait so the
     // active profile (edge-default potion / enterprise bge-m3 / …) is selected
     // at boot by `embed::embedder_for_profile`, not compiled in. Recall/ingest
     // sites call `model.encode_one(&t)` and are profile-agnostic.
-    pub(crate) model: Arc<dyn brain_server::embed::Embedder>,
-    pub(crate) pool: Pool,
+    pub model: Arc<dyn crate::embed::Embedder>,
+    pub pool: Pool,
     /// Per-domain DB registry. In shim mode (BRAIN_MULTI_DB off) every
     /// domain resolves to `pool`; the domain-aware write/search paths use this.
-    pub(crate) registry: domain_registry::DomainRegistry,
+    pub registry: domain_registry::DomainRegistry,
     #[allow(dead_code)]
-    pub(crate) db_path: PathBuf,
-    pub(crate) connection_tracker: std::sync::Arc<ConnectionTracker>,
+    pub db_path: PathBuf,
+    pub connection_tracker: std::sync::Arc<ConnectionTracker>,
     /// Axum accesses this by type (State<Arc<RateLimiter>>), not by field name.
     /// The compiler sees zero direct reads — false positive, required.
     #[allow(dead_code)]
-    pub(crate) rate_limiter: Arc<RateLimiter>,
+    pub rate_limiter: Arc<RateLimiter>,
     /// last backup+integrity result for `/health`.
-    pub(crate) snapshot: integrity::SnapshotState,
+    pub snapshot: integrity::SnapshotState,
     /// TTL-memoized `audit::verify_chain` result for `/metrics`.
     /// `/audit/verify` always does a fresh full scan (authoritative answer);
     /// `/metrics` reads this cache and refreshes only if older than
@@ -80,45 +86,45 @@ pub(crate) struct AppState {
     /// reported on the next TTL boundary, not instantly. Ponytail ceiling:
     /// adequate for monitoring; an operator wanting a fresh answer hits
     /// `/audit/verify`.
-    pub(crate) audit_chain_cache: Arc<std::sync::Mutex<Option<(std::time::Instant, bool)>>>,
+    pub audit_chain_cache: Arc<std::sync::Mutex<Option<(std::time::Instant, bool)>>>,
     // ── JWT fields ─────────────────────────────────────
     /// Which auth mode the server resolved at startup. `Opaque` (v1.1 back-
     /// compat, default) or `Jwt` (opt-in via BRAIN_JWT_ISSUER + key dir).
-    pub(crate) auth_mode: auth::AuthMode,
+    pub auth_mode: auth::AuthMode,
     /// Loaded signing + verifying keys. Empty in opaque mode.
-    pub(crate) key_store: auth::jwks::KeyStore,
+    pub key_store: auth::jwks::KeyStore,
     /// Per-process negative-lookup cache for `(jti, iss)` revocation checks.
-    pub(crate) revocation_cache: Arc<auth::revocation::RevocationCache>,
+    pub revocation_cache: Arc<auth::revocation::RevocationCache>,
     /// Configured JWT issuer (verified against every token's `iss` claim).
     /// Empty in opaque mode.
-    pub(crate) jwt_issuer: String,
+    pub jwt_issuer: String,
     /// Configured JWT audience (verified against every token's `aud` claim).
     /// Empty in opaque mode.
-    pub(crate) jwt_audience: String,
+    pub jwt_audience: String,
     /// OIDC discovery metadata (built from BRAIN_PUBLIC_BASE_URL). Served at
     /// `/.well-known/openid-configuration`. Empty placeholder when JWT is off.
-    pub(crate) oidc_config: handlers::well_known::OidcConfig,
+    pub oidc_config: handlers::well_known::OidcConfig,
     /// `GET /ump/subscribe` SSE change events (`{kind, id}` —
     /// never record bodies). Published by remember/revise/forget.
-    pub(crate) ump_events: tokio::sync::broadcast::Sender<serde_json::Value>,
+    pub ump_events: tokio::sync::broadcast::Sender<serde_json::Value>,
     /// `GET /events` SSE live alert feed (`{kind, ts, seq,
     /// payload}` — never content/PII). Published by the four decision cores.
-    pub(crate) alert_events: tokio::sync::broadcast::Sender<serde_json::Value>,
+    pub alert_events: tokio::sync::broadcast::Sender<serde_json::Value>,
     /// monotonic alert sequence (the webhook delivery-id
     /// source + the receiver's idempotency key).
-    pub(crate) alert_seq: std::sync::atomic::AtomicU64,
+    pub alert_seq: std::sync::atomic::AtomicU64,
     /// cached audit-chain posture from the integrity watcher.
     /// Written by `alert::spawn_chain_watcher`; read by `/health` so the
     /// tamper-evident posture is visible without an on-demand full scan.
-    pub(crate) chain_watch: alert::ChainWatchState,
+    pub chain_watch: alert::ChainWatchState,
     // ── middleware-stack inputs (Vaulting: app(state) reads them here so
     // the composition is a pure function of state) ────────────────────
     /// The cached bearer-token store; `auth_middleware`'s from_fn state.
-    pub(crate) token_store: TokenStore,
+    pub token_store: TokenStore,
     /// JWT-mode verification state mirrored from the boot-resolved values.
-    pub(crate) jwt_middleware_state: Arc<JwtMiddlewareState>,
+    pub jwt_middleware_state: Arc<JwtMiddlewareState>,
     /// The boot-built CORS layer (env-resolved origins/methods/headers).
-    pub(crate) cors: CorsLayer,
+    pub cors: CorsLayer,
 }
 
 /// The offline `--re-embed <profile>` body. Loads the TARGET
@@ -127,11 +133,11 @@ pub(crate) struct AppState {
 /// as the `/reindex` handler, inline here because the handler needs a live
 /// AppState (a server that can't boot under a dim mismatch) and this runs cold.
 fn run_reembed(pool: &Pool, target_profile: &str) -> Result<()> {
-    let model = brain_server::embed::embedder_for_profile(target_profile)?;
+    let model = crate::embed::embedder_for_profile(target_profile)?;
     let dim = model.store_dim();
     println!("re-embed → profile={target_profile} dim={dim}");
     let mut conn = pool.get().context("DB connection failed")?;
-    brain_server::migration::rebuild_vec_store_at_dim(&mut conn, dim)?;
+    crate::migration::rebuild_vec_store_at_dim(&mut conn, dim)?;
     // Same loop as /reindex: encode → delete + re-insert (vec0 has no UPSERT).
     let ids: Vec<(i64, String)> = conn
         .prepare("SELECT id, content FROM knowledge ORDER BY id")?
@@ -179,7 +185,7 @@ fn run_reembed(pool: &Pool, target_profile: &str) -> Result<()> {
 /// new evidence baseline). Per-domain failures are reported and fail the run —
 /// never silent.
 fn run_reaudit(pool: &Pool, db_path: &std::path::Path) -> Result<()> {
-    use brain_server::audit;
+    use crate::audit;
     println!("re-audit → scheme=hmac256 (8-field rows, HMAC-SHA256 links, head pin)");
     println!(
         "operator protocol: `brain backup` FIRST (the pre-anchor chain stays readable \
@@ -249,7 +255,7 @@ fn run_reaudit(pool: &Pool, db_path: &std::path::Path) -> Result<()> {
 /// watchdogs → middleware wiring → `AppState` → watchers → bind address.
 /// Every step in here is boot-order-frozen; reordering is a behavior
 /// change and needs its own release.
-pub(crate) fn bootstrap() -> Result<BootOutcome> {
+pub fn bootstrap() -> Result<BootOutcome> {
     // ── Argv guard (before any side effect) ────────────────────────────
     // Handle --version/-V and --help/-h, and reject unknown flags instead of
     // silently starting the server. MUST run before tracing init or bind() so
@@ -279,7 +285,7 @@ pub(crate) fn bootstrap() -> Result<BootOutcome> {
     // When BRAIN_MODEL_MANIFEST is set, every pinned artifact must match its
     // SHA-256 or the server refuses to start — a model file must never
     // silently differ from what the operator pinned.
-    if let Err(e) = brain_server::model_pin::verify_configured_models() {
+    if let Err(e) = crate::model_pin::verify_configured_models() {
         return Err(anyhow::anyhow!("fatal model manifest: {e}"));
     }
 
@@ -407,7 +413,7 @@ pub(crate) fn bootstrap() -> Result<BootOutcome> {
                     // Through the shared quote-escaping primitive —
                     // a `'` in the operator's data dir would break out of the
                     // raw literal.
-                    match brain_server::backup::vacuum_into(&conn, &backup_path) {
+                    match crate::backup::vacuum_into(&conn, &backup_path) {
                         Ok(_) => {
                             // Touch the marker so we never re-backup.
                             let _ = std::fs::write(&marker, b"v0.9.0 backup complete");
@@ -428,7 +434,7 @@ pub(crate) fn bootstrap() -> Result<BootOutcome> {
     let profile = config::model_profile();
     let model_id = config::model_id_for_profile(profile);
     info!("Loading model: {} (profile: {})", model_id, profile);
-    let model = brain_server::embed::embedder_for_profile(profile)?;
+    let model = crate::embed::embedder_for_profile(profile)?;
     info!(
         "Model loaded (profile: {}, dim: {})",
         profile,
@@ -497,7 +503,7 @@ pub(crate) fn bootstrap() -> Result<BootOutcome> {
     // covers the heavier per-row migration; this is the boot-time
     // safety net for the actual cutover day.
     if config::multi_db() {
-        let layout = brain_server::storage_layout::StorageLayout::detect()?;
+        let layout = crate::storage_layout::StorageLayout::detect()?;
         let global_path = layout.global_domain_db();
         let legacy_path = layout.legacy_db();
         let marker = layout.root().join(".v1-legacy-cutover-done");
@@ -527,7 +533,7 @@ pub(crate) fn bootstrap() -> Result<BootOutcome> {
                 Ok(conn) => {
                     // Escaped primitive (see the pre-migration backup
                     // above).
-                    match brain_server::backup::vacuum_into(&conn, &global_path) {
+                    match crate::backup::vacuum_into(&conn, &global_path) {
                         Ok(_) => {
                             let _ = std::fs::write(&marker, b"v1.0 legacy cutover complete");
                             info!("v1.0 legacy cutover complete");
@@ -938,7 +944,7 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 /// rejects unknown `-`-prefixed flags so the server never starts silently on
 /// a typo (e.g. `brain-server --version` previously launched the server).
 /// Positional args are allowed through (back-compat for any wrapper script).
-pub(crate) fn handle_cli_args() {
+pub fn handle_cli_args() {
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "-V" | "--version" => {
@@ -980,7 +986,7 @@ pub(crate) fn handle_cli_args() {
     }
 }
 
-pub(crate) fn worker_threads() -> Option<usize> {
+pub fn worker_threads() -> Option<usize> {
     std::env::var("BRAIN_WORKER_THREADS")
         .ok()
         .and_then(|s| s.trim().parse().ok())

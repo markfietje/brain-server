@@ -262,8 +262,8 @@ pub(crate) fn sweep_subject(
 mod tests {
     use super::*;
     use crate::config;
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
 
     fn db() -> (
         r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,

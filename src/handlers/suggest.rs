@@ -401,6 +401,7 @@ impl FeedbackOutcome {
     /// Parse `"accept"` / `"dismiss"` (case-insensitive). `None` for anything
     /// else — the caller turns that into a 400. Pure so the parsing contract
     /// can be unit-tested without a handler.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().as_str() {
             "accept" | "accepted" | "positive" | "useful" => Some(FeedbackOutcome::Accept),

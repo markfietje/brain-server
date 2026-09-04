@@ -77,10 +77,10 @@ pub fn skills_response(domain: &str, grouped: &[(String, Vec<String>)]) -> serde
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
     use crate::workflow::crew;
     use crate::workflow::shifts::{ShiftDraft, insert_shift, list_shifts, ring_view};
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
     use rusqlite::Connection;
 
     fn seed_file_db() -> Connection {

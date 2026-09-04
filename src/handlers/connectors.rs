@@ -87,7 +87,7 @@ pub async fn register(
             // Profile gate: a bound profile's `connectors_allowed` is the vertical
             // configuration lever. Unbound domain → no constraint → allowed.
             if let Some(profile) =
-                brain_server::profile::profile_for_domain(&conn, &domain).map_err(map_err)?
+                crate::profile::profile_for_domain(&conn, &domain).map_err(map_err)?
                 && !profile.connector_allowed(&kind)
             {
                 return Err(HandlerError {

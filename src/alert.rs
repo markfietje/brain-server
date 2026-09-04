@@ -725,13 +725,12 @@ mod tests {
         std::sync::Arc<crate::AppState>,
         tokio::sync::broadcast::Receiver<Value>,
     ) {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let dir = TempDir::new().expect("temp dir");
         let db_path = dir.path().join("brain.db");
         let mgr = r2d2_sqlite::SqliteConnectionManager::file(&db_path);
         let pool: crate::Pool = r2d2::Pool::builder().build(mgr).expect("pool");
-        brain_server::migration::run_migration(&mut pool.get().expect("conn"), 0)
-            .expect("migration");
+        crate::migration::run_migration(&mut pool.get().expect("conn"), 0).expect("migration");
         let state = Arc::new(crate::AppState {
             token_store: crate::auth::TokenStore::new(),
             jwt_middleware_state: std::sync::Arc::new(
@@ -742,13 +741,13 @@ mod tests {
             ),
             cors: tower_http::cors::CorsLayer::new(),
             model: Arc::new(
-                brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
+                crate::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
             ),
             registry: crate::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
             pool,
             db_path: db_path.clone(),
-            connection_tracker: Arc::new(crate::ConnectionTracker::new()),
-            rate_limiter: Arc::new(crate::RateLimiter::new()),
+            connection_tracker: Arc::new(crate::http_limit::ConnectionTracker::new()),
+            rate_limiter: Arc::new(crate::http_limit::RateLimiter::new()),
             snapshot: crate::integrity::SnapshotState::default(),
             audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
             auth_mode: crate::auth::AuthMode::Opaque,
@@ -965,7 +964,7 @@ mod tests {
         assert!(
             !payload_json
                 .chars()
-                .any(brain_server::strip_invisible::is_invisible),
+                .any(crate::strip_invisible::is_invisible),
             "invisible chars stripped before broadcast: {payload_json:?}"
         );
         assert!(

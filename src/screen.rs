@@ -23,7 +23,7 @@ use crate::config::{self, InjectionPolicy};
 // the strip pair moved to the lib module (shared with the
 // MCP binary + `brain` CLI). Re-exported here so `crate::screen::*` paths are
 // unchanged.
-pub use brain_server::strip_invisible::{is_invisible, strip_invisible};
+pub use crate::strip_invisible::{is_invisible, strip_invisible};
 
 /// The verdict of the two-layer screen. `Reject` → HTTP 400; `Quarantine` →
 /// store flagged (excluded from retrieval until review); `Clean` → proceed.
@@ -475,11 +475,7 @@ pub fn contains_suspicious_pattern(input: &str) -> bool {
 /// **fail closed** — an injection chunk that MUST be flagged is never stored
 /// clean if the flag write fails. The worst outcome (a confident injection hit
 /// retrievable with `flagged = 0`) is the one the writer refuses.
-pub(crate) fn flag_if_quarantined(
-    conn: &Connection,
-    id: i64,
-    quarantine: bool,
-) -> rusqlite::Result<bool> {
+pub fn flag_if_quarantined(conn: &Connection, id: i64, quarantine: bool) -> rusqlite::Result<bool> {
     if !quarantine || config::injection_policy() != config::InjectionPolicy::Quarantine {
         return Ok(false);
     }
@@ -754,7 +750,7 @@ mod tests {
     #[test]
     fn connector_translated_record_quarantines_on_injection_suspect() {
         let s = Screen::for_test(InjectionPolicy::Quarantine, None, 0.9, 0.7);
-        let poisoned = brain_server::connector::pipeline::translate_slack_message(
+        let poisoned = crate::connector::pipeline::translate_slack_message(
             "sales",
             "1700000000.99",
             "bot",
@@ -766,7 +762,7 @@ mod tests {
             "a poisoned connector record must quarantine, not reach memory"
         );
         // A clean record passes through.
-        let clean = brain_server::connector::pipeline::translate_slack_message(
+        let clean = crate::connector::pipeline::translate_slack_message(
             "sales",
             "1700000000.98",
             "ada",

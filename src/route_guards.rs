@@ -48,10 +48,8 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/profiles",
     "/profiles/{name}",
     "/domains/{name}/profile",
-    // v1.23.0 Roles
     "/roles",
     "/roles/{name}",
-    // v1.22.0 Regulated
     "/legal-hold",
     "/legal-hold/{id}/release",
     "/legal-holds",
@@ -78,22 +76,17 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/retention/report",
     "/sources/reconcile",
     "/sources/{id}",
-    // v0.9.6 Bridge
     "/connectors",
     // profile-gated registration (Admin).
     "/connectors/register",
-    // v1.5.0 Epistemic
     "/verify",
-    // v1.9.0 Suggest
     "/suggest",
     "/suggest/feedback",
     "/suggest/metrics",
-    // v1.10.0 Procedural
     "/procedure",
     "/procedure/{id}/steps",
     "/classify",
     "/decision/{id}/evaluate",
-    // v0.9.7 Guard
     "/webhooks/{kind}",
     // Switchboard (HMAC self-authenticating like /webhooks/*)
     "/webhooks/channel/{kind}",
@@ -106,11 +99,9 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/quarantine",
     "/quarantine/{id}/release",
     "/quarantine/{id}/delete",
-    // v0.9.8 Evidence
     "/consolidate/propose",
     "/consolidate/apply",
     "/consolidate/undo",
-    // v1.14.0 Gate
     "/ingest/proposal",
     "/proposals",
     "/proposals/{id}/approve",
@@ -119,12 +110,10 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/decayed",
     "/export",
     "/purge",
-    // v1.15.0 Observe
     "/recall/{trace_id}/trace",
     "/dsar",
     "/tombstones",
     "/dsar/{id}/certificate",
-    // v1.2.0 AuthN
     "/auth/refresh",
     "/auth/logout",
     "/auth/revoke",
@@ -133,11 +122,9 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/.well-known/ai-notice",
     "/.well-known/ai-literacy",
     "/.well-known/cop-notice",
-    // v1.17.1 Govern
     "/retention",
     "/art30",
     "/snapshot/status",
-    // v1.17.3 UMP
     "/ump/capabilities",
     "/ump/remember",
     "/ump/memory/{id}",
@@ -171,46 +158,36 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/kcs/articles/{id}/approve",
     "/kcs/articles/{id}/publish",
     "/kcs/articles/{id}/preview",
-    // v1.28.36 "Keystone": governed human translation filing.
     "/kcs/translate",
-    // v1.28.25 "Watchbill": the shift ring (follow-the-sun data).
     "/ops/shifts",
-    // v1.28.26 "Crew": the roster, the skills proposal, and the DPO switch.
     "/ops/crew",
     "/ops/skills",
     "/ops/crew/config",
     // Workload + competence visibility (the Handshake milestone).
     "/ops/workload",
     "/ops/coverage",
-    // v1.28.27 "Relay": the one-click handover.
     "/workflow/runs/{id}/handover/offer",
     "/workflow/runs/{id}/handover/{offer_id}/accept",
     "/workflow/runs/{id}/handover/{offer_id}/decline",
     "/ops/handovers",
-    // v1.28.28 "Channel": the case gets a room.
     "/workflow/runs/{id}/notes",
     "/workflow/runs/{id}/notes/{invite_id}/accept",
-    // v1.28.45 "Herald": the user-map proposal filing (approval is
     // the only writer of the table).
     "/workflow/channel/user-map",
     // Mesh: agents as named colleagues — signed cards + delegation.
     "/ops/agents/cards",
     "/workflow/runs/{id}/delegations",
     "/workflow/runs/{id}/delegations/{delegation_id}/result",
-    // v1.28.34 "Goodwill": the complaint lifecycle surface.
     "/workflow/runs/{id}/complaint/lifecycle",
     "/workflow/runs/{id}/complaint/remedy",
     "/workflow/runs/{id}/complaint/adr-packet",
     "/workflow/runs/{id}/complaint/ack",
     "/workflow/complaints/ack-sweep",
-    // v1.28.35 "Outreach": consent-first outbound contact.
     "/workflow/outreach/campaign",
     "/workflow/outreach/campaign/{id}",
     "/workflow/outreach/consent",
     "/workflow/runs/{id}/outreach/followup",
-    // v1.28.36 "Keystone": public case-status refs.
     "/workflow/runs/{id}/status-ref",
-    // v1.28.30 "Parcels": signed site-to-site knowledge crossings.
     "/parcels",
     "/parcels/export",
     "/parcels/import",
@@ -241,7 +218,7 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     // shim mode resolves any name to the ONE shared pool — the
     // exported bytes are the whole multi-tenant DB, so the gate is
     // Admin there (Read only in multi-db, where the file IS the
-    // domain; S2-08).
+    // domain). [errata-exempt: audit-id predates the hygiene pin; the table row cites it]
     ("/domains/{name}/export", "Admin"),
     ("/domains/{name}/import", "Admin"),
     ("/domains/move", "Admin"),
@@ -350,7 +327,6 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/runs/{id}/steps", "Read"),
     ("/workflow/runs/{id}/steering", "Write"),
     ("/workflow/runs/{id}/suggestions", "Read"),
-    // v1.28.42 "Valet": the due crank + consent registry are
     // workflow-role Writes on global; the brief is a Read.
     ("/workflow/valet/due", "Write"),
     ("/workflow/valet/brief", "Read"),
@@ -367,7 +343,6 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     // Lineage: the events read + handoff packet are Reads
     // on the run's domain; rewind is a Write + `approve` role gate.
     ("/workflow/runs/{id}/rewind", "Write"),
-    // v1.28.34 "Goodwill": the complaint lifecycle — transitions and
     // remedy proposals are Writes + `workflow` role; the ADR packet
     // is a Read on the run's domain.
     ("/workflow/runs/{id}/complaint/lifecycle", "Write"),
@@ -375,7 +350,6 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/runs/{id}/complaint/adr-packet", "Read"),
     ("/workflow/runs/{id}/complaint/ack", "Write"),
     ("/workflow/complaints/ack-sweep", "Write"),
-    // v1.28.35 "Outreach": campaign propose/export + the consent
     // read are global-scope (no run binds them); follow-up rides
     // the run's domain.
     ("/workflow/outreach/campaign", "Write"),

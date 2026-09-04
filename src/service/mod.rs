@@ -461,7 +461,7 @@ mod pins {
 
         type Ttl = fn(Option<i64>, Option<i64>, i64) -> Result<Option<i64>, ig::IngestError>;
         type Profile = fn(
-            Option<&brain_server::profile::Profile>,
+            Option<&crate::profile::Profile>,
             &str,
             &str,
             Option<String>,

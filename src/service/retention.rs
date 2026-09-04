@@ -230,9 +230,9 @@ pub fn report_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
     use crate::workflow::tx::WorkflowTx;
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
 
     fn db() -> Connection {
         register_sqlite_vec();

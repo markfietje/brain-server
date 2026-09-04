@@ -15,12 +15,12 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::Pool;
+use crate::audit;
 use crate::auth::{self, TokenStore};
 use crate::config;
 use crate::handlers;
 use crate::http_limit::RateLimiter;
 use crate::server::bootstrap::ct_eq;
-use brain_server::audit;
 
 /// Auth middleware. When
 /// `AUTH_TOKEN`/`AUTH_TOKEN_FILE` is set, every non-public route requires a
@@ -56,8 +56,9 @@ pub struct JwtMiddlewareState {
 impl JwtMiddlewareState {
     /// The opaque-mode bundle for composed-app test states: empty
     /// issuer/audience, fresh revocation cache + principal limiter.
-    #[cfg(test)]
-    pub(crate) fn opaque_for_tests(pool: Pool, db_path: PathBuf) -> Self {
+    /// Opaque-mode bundle for composed-app test states (integration
+    /// fixtures + the law-9 matrix).
+    pub fn opaque_for_tests(pool: Pool, db_path: PathBuf) -> Self {
         Self {
             auth_mode: auth::AuthMode::Opaque,
             key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))
@@ -79,7 +80,7 @@ impl JwtMiddlewareState {
 ///
 /// This is layered BEFORE `auth_middleware` so the opaque path becomes the
 /// fallback for non-JWT deployments (zero behavior change for v1.1 installs).
-pub(crate) async fn jwt_auth_middleware(
+pub async fn jwt_auth_middleware(
     State(s): State<Arc<JwtMiddlewareState>>,
     mut req: Request<Body>,
     next: Next,
@@ -231,13 +232,13 @@ pub(crate) fn capability_pass_through(req: &mut Request<Body>, raw: &str, path: 
         return false;
     }
     let pk = sk.verifying_key().to_bytes();
-    if let Ok(cap) = brain_server::ump_integrity::parse_capability_token(raw, &pk) {
+    if let Ok(cap) = crate::ump_integrity::parse_capability_token(raw, &pk) {
         // Replay defense: a jti-bearing token is accepted once per
         // (jti, method, path) — capability tokens are per-request bearers,
         // so keying on jti alone burned the use on the first call; keyed this
         // way retries on the SAME endpoint stay valid while reuse on any
         // other method/path is refused as a replay.
-        if !brain_server::ump_integrity::cap_replay_check(&cap, req.method().as_str(), path) {
+        if !crate::ump_integrity::cap_replay_check(&cap, req.method().as_str(), path) {
             return false;
         }
         req.extensions_mut().insert(cap);
@@ -251,9 +252,9 @@ pub(crate) fn capability_pass_through(req: &mut Request<Body>, raw: &str, path: 
 /// bearer verifies as a capability token signed by `pk` AND the path is on
 /// the UMP surface. Split out so the security decision is unit-testable
 /// without env mutation (the parallel-test lesson from Agent 24).
-pub(crate) fn capability_accepted(raw: &str, path: &str, pk: &[u8; 32]) -> bool {
+pub fn capability_accepted(raw: &str, path: &str, pk: &[u8; 32]) -> bool {
     (path.starts_with("/ump/") || path == "/export")
-        && brain_server::ump_integrity::parse_capability_token(raw, pk).is_ok()
+        && crate::ump_integrity::parse_capability_token(raw, pk).is_ok()
 }
 
 /// Write an audit row for a failed JWT verification. Best-effort (opens a
@@ -290,7 +291,7 @@ pub(crate) fn unauthorized_response(code: &str) -> Response {
         .into_response()
 }
 
-pub(crate) async fn auth_middleware(
+pub async fn auth_middleware(
     State(tokens): State<TokenStore>,
     mut req: Request<Body>,
     next: Next,

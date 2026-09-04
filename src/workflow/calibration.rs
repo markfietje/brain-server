@@ -62,7 +62,7 @@ pub(crate) fn signature_blocked(conn: &Connection, now: i64) -> bool {
 /// row lands first (best-effort chain), then the cadence/baseline stamps.
 /// Stamps are transactional with each other; a failed stamp bumps nothing and
 /// the next call re-reports (idempotent at the gate).
-pub(crate) fn record_report(
+pub fn record_report(
     conn: &Connection,
     score_units: i32,
     now: i64,
@@ -126,10 +126,10 @@ pub(crate) fn record_signed(
 mod tests {
     use super::*;
     use crate::audit::verify_chain;
-    use brain_server::migration::run_migration;
+    use crate::migration::run_migration;
 
     fn db() -> Connection {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = Connection::open_in_memory().unwrap();
         run_migration(&mut conn, 1).unwrap();
         conn

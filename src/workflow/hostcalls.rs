@@ -635,10 +635,10 @@ fn run_knowledge_suggest(host: &SqliteWorkflowHost, body: &str) -> Result<String
 mod tests {
     use super::*;
     use crate::config;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
     use brain_engine_sdk::hostcall::DispatchError;
     use brain_engine_sdk::trust::{Decision, EngineOverride, PolicyMode};
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
 
     /// Env-mutating tests serialize on this lock (the compliance-test
     /// posture): env reads are process-global.

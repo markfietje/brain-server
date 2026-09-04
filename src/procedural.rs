@@ -55,6 +55,7 @@ impl MemoryKind {
     /// Parse from the stored string. Unknown values fall back to `Fact`
     /// (forward-compat: a future kind we don't know about still answers
     /// `/recall` as a declarative chunk).
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.trim() {
             "procedure" => MemoryKind::Procedure,

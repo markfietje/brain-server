@@ -287,9 +287,8 @@ pub fn emit_record(
     let mut rec = to_ump(row, domain, entities, relations);
     if row["content_hash"].as_str().is_some_and(|h| !h.is_empty()) {
         let content = rec["body"]["text"].as_str().unwrap_or("");
-        let hash =
-            brain_server::ump_integrity::record_hash(format!("{domain}\0{content}").as_bytes());
-        rec["id"] = json!(brain_server::ump_integrity::content_id(&hash));
+        let hash = crate::ump_integrity::record_hash(format!("{domain}\0{content}").as_bytes());
+        rec["id"] = json!(crate::ump_integrity::content_id(&hash));
     }
     if !superseded_by.is_empty() {
         rec["superseded_by"] = json!(superseded_by);
@@ -322,11 +321,11 @@ pub fn emit_record(
     // (integral floats serialize as `1`, not `1.0`).
     let mut canonical = rec.clone();
     canonical.as_object_mut().map(|m| m.remove("integrity"));
-    if let Ok(bytes) = brain_server::ump_integrity::canonical_ump(&canonical) {
-        let content_hash = brain_server::ump_integrity::content_hash_string(&bytes);
+    if let Ok(bytes) = crate::ump_integrity::canonical_ump(&canonical) {
+        let content_hash = crate::ump_integrity::content_hash_string(&bytes);
         let mut integrity = json!({ "content_hash": content_hash });
         if let Some((did, sk)) = signer {
-            let sig = brain_server::ump_integrity::sign_hash_string(
+            let sig = crate::ump_integrity::sign_hash_string(
                 integrity["content_hash"].as_str().unwrap_or(""),
                 sk,
             );
@@ -358,10 +357,10 @@ pub fn verify_record(record: &Value, pk: Option<&[u8; 32]>) -> bool {
         }
         let mut canonical = record.clone();
         canonical.as_object_mut().map(|m| m.remove("integrity"));
-        let Ok(bytes) = brain_server::ump_integrity::canonical_ump(&canonical) else {
+        let Ok(bytes) = crate::ump_integrity::canonical_ump(&canonical) else {
             return false;
         };
-        if brain_server::ump_integrity::content_hash_string(&bytes) != content_hash {
+        if crate::ump_integrity::content_hash_string(&bytes) != content_hash {
             return false;
         }
         return match (pk, record["integrity"]["signature"].as_str()) {
@@ -372,7 +371,7 @@ pub fn verify_record(record: &Value, pk: Option<&[u8; 32]>) -> bool {
                 let Ok(sig_bytes) = base64::engine::general_purpose::STANDARD.decode(b64) else {
                     return false;
                 };
-                brain_server::ump_integrity::verify_hash_string(content_hash, pk, &sig_bytes)
+                crate::ump_integrity::verify_hash_string(content_hash, pk, &sig_bytes)
             }
             _ => true,
         };
@@ -383,10 +382,10 @@ pub fn verify_record(record: &Value, pk: Option<&[u8; 32]>) -> bool {
     let mut canonical = record.clone();
     canonical["id"] = Value::Null;
     canonical["integrity"] = Value::Null;
-    let Ok(bytes) = brain_server::ump_integrity::canonical_jcs(&canonical) else {
+    let Ok(bytes) = crate::ump_integrity::canonical_jcs(&canonical) else {
         return false;
     };
-    let hash = brain_server::ump_integrity::record_hash(&bytes);
+    let hash = crate::ump_integrity::record_hash(&bytes);
     let mut want = [0u8; 32];
     if hex_decode(hash_hex, &mut want).is_err() || hash != want {
         return false;
@@ -396,7 +395,7 @@ pub fn verify_record(record: &Value, pk: Option<&[u8; 32]>) -> bool {
             let Ok(sig_bytes) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(sig) else {
                 return false;
             };
-            brain_server::ump_integrity::verify_hash(pk, &hash, &sig_bytes)
+            crate::ump_integrity::verify_hash(pk, &hash, &sig_bytes)
         }
         _ => true,
     }
@@ -885,7 +884,7 @@ mod tests {
         SysRng.try_fill_bytes(&mut seed).expect("OS entropy failed");
         let sk = SigningKey::from_bytes(&seed);
         let pk = sk.verifying_key().to_bytes();
-        let did = brain_server::ump_integrity::did_key_from_ed25519(&pk);
+        let did = crate::ump_integrity::did_key_from_ed25519(&pk);
         let row = fixture_row();
         let rec = emit_record(
             &row,

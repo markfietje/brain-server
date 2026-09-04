@@ -6,7 +6,7 @@ use crate::config::MAX_GRAPH_EDGES;
 
 /// Clamp a graph `?limit=` into `1..=MAX_GRAPH_EDGES` (a missing or bogus value
 /// falls back to the default cap). Shared by `get_entity` and `get_relations`.
-pub(crate) fn clamp_graph_limit(limit: Option<i64>) -> i64 {
+pub fn clamp_graph_limit(limit: Option<i64>) -> i64 {
     limit.unwrap_or(MAX_GRAPH_EDGES).clamp(1, MAX_GRAPH_EDGES)
 }
 

@@ -63,9 +63,9 @@ pub(crate) fn record_oversight(
     proposal_id: Option<i64>,
     domain: &str,
 ) -> Option<i64> {
-    let decision = brain_server::audit::decision::record_decision(
+    let decision = crate::audit::decision::record_decision(
         conn,
-        &brain_server::audit::decision::DecisionInput {
+        &crate::audit::decision::DecisionInput {
             actor_id: reviewer_id,
             role: authority,
             policy_version: env!("CARGO_PKG_VERSION"),
@@ -257,15 +257,14 @@ mod tests {
     /// oversight pins install the same fixed seed under the crate-wide
     /// decision lock so signatures verify deterministically.
     fn ensure_test_key() -> std::sync::MutexGuard<'static, ()> {
-        let _g = brain_server::audit::decision::decision_test_lock();
-        brain_server::audit::decision::install_test_signing_key([7u8; 32]);
+        let _g = crate::audit::decision::decision_test_lock();
+        crate::audit::decision::install_test_signing_key([7u8; 32]);
         _g
     }
 
     fn db() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(brain_server::audit::decision::DDL)
-            .unwrap();
+        conn.execute_batch(crate::audit::decision::DDL).unwrap();
         conn.execute_batch(
             "CREATE TABLE oversight_evidence(
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -315,8 +314,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, hash);
-        let _g = brain_server::audit::decision::decision_test_lock();
-        assert!(brain_server::audit::decision::verify_decisions(&conn).unwrap());
+        let _g = crate::audit::decision::decision_test_lock();
+        assert!(crate::audit::decision::verify_decisions(&conn).unwrap());
     }
 
     /// The tamper-evidence twin: flipping one bit of a stored signature must
@@ -343,15 +342,15 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
-        let _g = brain_server::audit::decision::decision_test_lock();
-        assert!(!brain_server::audit::decision::verify_decisions(&conn).unwrap());
+        let _g = crate::audit::decision::decision_test_lock();
+        assert!(!crate::audit::decision::verify_decisions(&conn).unwrap());
     }
 
     #[test]
     fn ropa_upsert_audits_inside_its_tx_and_404s_on_missing_id() {
-        brain_server::register_sqlite_vec::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, 0)
+        crate::migration::run_migration(&mut conn, 0)
             .unwrap_or_else(|e| panic!("in-memory migration must succeed: {e}"));
         let body = RopaInput {
             activity: "payroll".into(),

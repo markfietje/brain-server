@@ -21,7 +21,7 @@ use crate::handlers::auth::OptPrincipal;
 const KCS_FRESHNESS_SECS: i64 = crate::workflow::kcs::KCS_FRESHNESS_SECS;
 
 #[derive(serde::Deserialize)]
-pub(crate) struct TranslateRequest {
+pub struct TranslateRequest {
     pub knowledge_id: i64,
     pub locale: String,
     pub title: String,
@@ -211,7 +211,7 @@ pub async fn get_kcs_articles(
 /// page). Both travel through the SAME HITL proposal — publishing is a human
 /// decision, never an API side effect.
 #[derive(Debug, serde::Deserialize)]
-pub(crate) struct PublishBody {
+pub struct PublishBody {
     #[serde(default)]
     pub public_slug: Option<String>,
     #[serde(default)]
@@ -243,7 +243,7 @@ pub async fn post_kcs_article_publish(
                 "publish requires a public_slug",
             ));
         };
-        if !brain_server::kb::is_valid_slug(slug) {
+        if !crate::kb::is_valid_slug(slug) {
             return Err(HandlerError::bad_request(
                 "public_slug_invalid",
                 "slug must be lowercase alnum + hyphen, no leading/trailing/doubled hyphen",
@@ -333,7 +333,7 @@ pub async fn get_kcs_article_preview(
             };
             // The preview IS the public page: same strict seam as the build
             // (unconditional PII redact + invisible strip + markdown-ref strip).
-            let article = brain_server::kb::KbArticle {
+            let article = crate::kb::KbArticle {
                 id,
                 slug,
                 title: {
@@ -342,20 +342,17 @@ pub async fn get_kcs_article_preview(
                     } else {
                         title
                     };
-                    brain_server::kb::sanitize_public(&t)
+                    crate::kb::sanitize_public(&t)
                 },
-                body: brain_server::kb::sanitize_public(&content),
+                body: crate::kb::sanitize_public(&content),
                 updated_at: created_at,
-                origin: origin.as_deref().map(brain_server::kb::sanitize_public),
+                origin: origin.as_deref().map(crate::kb::sanitize_public),
                 revision: hash
                     .as_deref()
-                    .map(brain_server::kb::sanitize_public)
+                    .map(crate::kb::sanitize_public)
                     .unwrap_or_default(),
             };
-            Some((
-                kcs_state,
-                brain_server::kb::render_article_page(&article, None),
-            ))
+            Some((kcs_state, crate::kb::render_article_page(&article, None)))
         })
         .await
         .map_err(|e| HandlerError::internal(format!("{e}")))?;

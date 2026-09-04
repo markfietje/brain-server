@@ -298,7 +298,7 @@ where
 /// a bearer verified as an operator-signed UMP capability token on the UMP
 /// surface (`/ump/*` + `/export`). `None` for every other auth path — the
 /// handler's `cap_gate` is then a no-op.
-pub struct OptCapability(pub Option<brain_server::ump_integrity::CapabilityToken>);
+pub struct OptCapability(pub Option<crate::ump_integrity::CapabilityToken>);
 
 impl<S> axum::extract::FromRequestParts<S> for OptCapability
 where
@@ -312,7 +312,7 @@ where
     ) -> Result<Self, Self::Rejection> {
         let c = parts
             .extensions
-            .get::<brain_server::ump_integrity::CapabilityToken>()
+            .get::<crate::ump_integrity::CapabilityToken>()
             .cloned();
         Ok(OptCapability(c))
     }

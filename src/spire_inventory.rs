@@ -54,7 +54,10 @@ const MAIN_RS_LINES_CEIL: usize = 16_869;
 /// composed-app test sites gained the middleware-stack fixture fields.
 // C3a: +5 net — the chain/layers moved to src/server/router (pins repointed
 /// with one comment line each) while the middleware suites had already left.
-const TEST_REGION_LINES_CEIL: usize = 12_216;
+// C4 (lib flip): +70 net — the region gains the brain_server glob + explicit
+/// bindings that replaced the bin-root re-exports; the monolith's line mass
+/// moved to the lib (MAIN_RS_LINES covers main.rs only).
+const TEST_REGION_LINES_CEIL: usize = 12_291;
 /// Textual `.route(` occurrences in main.rs (the registration chain +
 /// the authz scan's own literals — counted identically every time). Ceiling.
 /// 234 at the Vaulting open; −5 as the three middleware oneshot suites

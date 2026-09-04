@@ -118,12 +118,20 @@ pub struct RateLimiter {
     max_keys: usize,
 }
 
+impl Default for RateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RateLimiter {
     /// The default per-window budget, exposed read-only for router-level pins
     /// that drive a limiter to exhaustion without reaching into privates.
     #[cfg(test)]
     pub(crate) const WINDOW_BUDGET_PROBE: usize = 10_000;
-    pub(crate) fn new() -> Self {
+    /// Promoted to `pub` at the lib flip (integration fixtures construct it);
+    /// the `Default` impl satisfies the clippy lint without changing behavior.
+    pub fn new() -> Self {
         Self {
             requests: Mutex::new(HashMap::new()),
             max_requests: 10_000,
@@ -218,9 +226,8 @@ pub fn spawn_rss_watchdog() {
             CONNECTION_WATCHDOG_INTERVAL_SECS,
         ));
         let mut prev_over = false;
-        let envelope = brain_server::capacity::CapacityEnvelope::for_target(
-            brain_server::capacity::capacity_target(),
-        );
+        let envelope =
+            crate::capacity::CapacityEnvelope::for_target(crate::capacity::capacity_target());
         loop {
             interval.tick().await;
             let rss = process_rss_mib();

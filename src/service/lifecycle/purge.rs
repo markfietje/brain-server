@@ -135,7 +135,7 @@ pub(crate) fn purge_targets(
     // checkpoint after commit — the same hygiene the DSAR pool path runs.
     // Best-effort profile lookup: an unreadable/missing bind falls back to
     // fast logical deletes (remanence disclosed in docs), never a lie.
-    let strict = brain_server::profile::profile_for_domain(conn, "global")
+    let strict = crate::profile::profile_for_domain(conn, "global")
         .ok()
         .flatten()
         .is_some_and(|p| p.pii_strict());
@@ -219,9 +219,9 @@ mod pins {
     use super::*;
 
     fn fresh_conn() -> rusqlite::Connection {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().expect("db");
-        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        crate::migration::run_migration(&mut conn, 1).expect("migration");
         conn
     }
 

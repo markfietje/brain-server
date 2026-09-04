@@ -527,9 +527,9 @@ mod scoreboard_tests {
     /// not in production reads. Reserved (planned) entries pin tables only.
     #[test]
     fn every_entry_source_table_exists_in_schema() {
-        brain_server::register_sqlite_vec::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, 0)
+        crate::migration::run_migration(&mut conn, 0)
             .unwrap_or_else(|e| panic!("in-memory migration must succeed: {e}"));
         let json = metrics_json();
         for entry in json["metrics"]
@@ -660,18 +660,18 @@ mod scoreboard_tests {
         // SAFETY: single-threaded under ENV_LOCK — the documented env-mutation posture.
         unsafe { std::env::remove_var("BRAIN_REASK_WINDOW_DAYS") };
         assert_eq!(
-            brain_server::connector::crm::reask_window_days(),
-            brain_server::connector::crm::DEFAULT_REASK_WINDOW_DAYS
+            crate::connector::crm::reask_window_days(),
+            crate::connector::crm::DEFAULT_REASK_WINDOW_DAYS
         );
-        assert_eq!(brain_server::connector::crm::DEFAULT_REASK_WINDOW_DAYS, 3);
+        assert_eq!(crate::connector::crm::DEFAULT_REASK_WINDOW_DAYS, 3);
         unsafe { std::env::set_var("BRAIN_REASK_WINDOW_DAYS", "5") };
-        assert_eq!(brain_server::connector::crm::reask_window_days(), 5);
+        assert_eq!(crate::connector::crm::reask_window_days(), 5);
         // Garbage and non-positive values fall back, deterministically.
         unsafe { std::env::set_var("BRAIN_REASK_WINDOW_DAYS", "-1") };
-        assert_eq!(brain_server::connector::crm::reask_window_days(), 3);
+        assert_eq!(crate::connector::crm::reask_window_days(), 3);
         unsafe { std::env::set_var("BRAIN_REASK_WINDOW_DAYS", "zero") };
-        assert_eq!(brain_server::connector::crm::reask_window_days(), 3);
+        assert_eq!(crate::connector::crm::reask_window_days(), 3);
         unsafe { std::env::remove_var("BRAIN_REASK_WINDOW_DAYS") };
-        assert_eq!(brain_server::connector::crm::reask_window_days(), 3);
+        assert_eq!(crate::connector::crm::reask_window_days(), 3);
     }
 }

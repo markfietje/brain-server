@@ -389,13 +389,13 @@ impl HandlerError {
 /// brain read-only. Callers: every ingest path (`/add`, `/ingest`,
 /// `/ingest/memory`, `/ingest/markdown`). Read routes do NOT call this.
 pub fn guard_capacity(state: &crate::AppState) -> Result<(), HandlerError> {
-    use brain_server::capacity::{CapacityEnvelope, capacity_target};
+    use crate::capacity::{CapacityEnvelope, capacity_target};
     // Cheap short-circuit: pool state never blocks writes here; we only need a
     // connection to count rows. If the pool is momentarily exhausted, fail open.
     let Some(conn) = state.pool.get().ok() else {
         return Ok(());
     };
-    let docs: usize = brain_server::capacity::knowledge_docs(&conn);
+    let docs: usize = crate::capacity::knowledge_docs(&conn);
     let db_mib: u64 = std::fs::metadata(&state.db_path)
         .map(|m| m.len() / 1_000_000)
         .unwrap_or(0);
@@ -415,7 +415,7 @@ pub fn guard_capacity(state: &crate::AppState) -> Result<(), HandlerError> {
         .map(|p| p.memory() / 1_000_000)
         .unwrap_or(0);
     let envelope = CapacityEnvelope::for_target(capacity_target());
-    let status = brain_server::capacity::classify(docs, db_mib, rss_mib, &envelope);
+    let status = crate::capacity::classify(docs, db_mib, rss_mib, &envelope);
     if status.blocks_writes() {
         return Err(HandlerError::insufficient_storage(format!(
             "capacity_exceeded: docs={docs}/{} db_mib={db_mib}/{} rss_mib={rss_mib}/{} — see BENCHMARKS.md §capacity",
@@ -544,7 +544,7 @@ pub fn authorize_role(
     let conn = pool
         .get()
         .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-    let roles = brain_server::role::resolve(&conn, &p.roles)
+    let roles = crate::role::resolve(&conn, &p.roles)
         .map_err(|e| HandlerError::internal(format!("role store: {e}")))?;
     if roles.iter().any(|r| r.can(capability)) {
         Ok(())
@@ -566,7 +566,7 @@ pub fn authorize_role(
 /// surface is the global project. Call AFTER `authorize` (the capability
 /// bearer has no JWT principal, so `authorize` alone would pass as superuser).
 pub fn cap_gate(
-    cap: &Option<brain_server::ump_integrity::CapabilityToken>,
+    cap: &Option<crate::ump_integrity::CapabilityToken>,
     verb: &str,
 ) -> Result<(), HandlerError> {
     let Some(cap) = cap else { return Ok(()) };
@@ -864,7 +864,7 @@ pub(crate) fn is_match(pattern: &str, s: &str) -> bool {
 /// `^[a-z0-9][a-z0-9_-]{0,62}$` — delegates to storage_layout (security-critical;
 /// one source of truth for filename safety).
 fn is_valid_domain(s: &str) -> bool {
-    brain_server::storage_layout::is_valid_domain(s.trim())
+    crate::storage_layout::is_valid_domain(s.trim())
 }
 
 /// `^[A-Za-z0-9 _-]{1,100}$` — entity/note names. Allows spaces (e.g. note
@@ -1106,7 +1106,7 @@ mod tests {
     // (None — JWT/opaque-authenticated request) is always a pass.
     #[test]
     fn cap_gate_enforces_verbs_scope_and_never_admin() {
-        use brain_server::ump_integrity::CapabilityToken;
+        use crate::ump_integrity::CapabilityToken;
         let cap = |verbs: &[&str], scope: Option<&str>| CapabilityToken {
             alg: "EdDSA".into(),
             iss: "did:key:z6MkTest".into(),

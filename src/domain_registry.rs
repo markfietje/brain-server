@@ -111,7 +111,7 @@ impl DomainRegistry {
     /// the security check lives in exactly one place (shared with the
     /// `brain-migrate-rehearse` binary).
     pub fn is_valid_domain(domain: &str) -> bool {
-        brain_server::storage_layout::is_valid_domain(domain)
+        crate::storage_layout::is_valid_domain(domain)
     }
 
     /// Resolve `domain` to its pool. In shim mode (or for `global`) this always
@@ -267,13 +267,13 @@ fn open_with_migration(path: &Path) -> Result<BrainPool, DomainRegistryError> {
     let mut conn = pool
         .get()
         .map_err(|e| DomainRegistryError::Open(e.to_string()))?;
-    brain_server::migration::run_migration(&mut conn, config::DB_MMAP_SIZE_MIB)
+    crate::migration::run_migration(&mut conn, config::DB_MMAP_SIZE_MIB)
         .map_err(|e| DomainRegistryError::Migration(e.to_string()))?;
     // A FRESH domain DB (zero audit rows) starts
     // directly on the hmac256 chain epoch when the process holds a chain key
     // (the server inits it before any pool opens). A no-op everywhere else —
     // in particular every unit test that never installs a key.
-    brain_server::audit::bootstrap_epoch(&conn);
+    crate::audit::bootstrap_epoch(&conn);
     Ok(pool)
 }
 
@@ -337,7 +337,7 @@ mod tests {
     /// Multi-db mode opens a real per-domain file and migrates it.
     #[test]
     fn multi_db_opens_per_domain_file() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let dir = std::env::temp_dir().join(format!(
             "brain-registry-test-{}",
             std::time::SystemTime::now()
@@ -372,7 +372,7 @@ mod tests {
     /// registered-only rule is the anti-disk-fill bound on probeable reads.
     #[test]
     fn pool_for_rejects_unregistered_domain_without_creating_file() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let dir = std::env::temp_dir().join(format!(
             "brain-unregistered-test-{}",
             std::time::SystemTime::now()
@@ -407,7 +407,7 @@ mod tests {
     /// files may exist — creation is refused (Capacity, no file) beyond it.
     #[test]
     fn register_respects_domain_cap_and_creates_no_file_beyond() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let dir = std::env::temp_dir().join(format!(
             "brain-cap-test-{}",
             std::time::SystemTime::now()
@@ -448,7 +448,7 @@ mod tests {
     /// opening a pool (no eager connections); the first access opens lazily.
     #[test]
     fn seeded_domain_opened_lazily_on_first_access() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let dir = std::env::temp_dir().join(format!(
             "brain-seed-test-{}",
             std::time::SystemTime::now()

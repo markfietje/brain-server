@@ -67,10 +67,10 @@ fn rsa_keypair(key_dir: &Path) -> rsa::RsaPrivateKey {
 fn build_server() -> TestServer {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let db_path = dir.path().join("brain.db");
-    crate::register_sqlite_vec();
+    crate::register_sqlite_vec::register_sqlite_vec();
     let mgr = SqliteConnectionManager::file(&db_path);
     let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
-    crate::run_migration(
+    crate::migration::run_migration(
         &mut pool.get().expect("conn"),
         crate::config::DB_MMAP_SIZE_MIB,
     )
@@ -85,8 +85,8 @@ fn build_server() -> TestServer {
         )
         .expect("seed matrix role");
     }
-    let model: Arc<dyn brain_server::embed::Embedder> =
-        Arc::new(brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"));
+    let model: Arc<dyn crate::embed::Embedder> =
+        Arc::new(crate::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"));
 
     let priv_key = rsa_keypair(&dir.path().join("keys"));
     let key_store =
@@ -102,7 +102,7 @@ fn build_server() -> TestServer {
         pool: pool.clone(),
         revocation_cache: Arc::new(crate::auth::revocation::RevocationCache::new()),
         db_path: db_path.clone(),
-        principal_rate_limiter: Arc::new(crate::RateLimiter::new()),
+        principal_rate_limiter: Arc::new(crate::http_limit::RateLimiter::new()),
     });
 
     let state = Arc::new(crate::AppState {
@@ -119,8 +119,8 @@ fn build_server() -> TestServer {
         ),
         pool,
         db_path,
-        connection_tracker: Arc::new(crate::ConnectionTracker::new()),
-        rate_limiter: Arc::new(crate::RateLimiter::new()),
+        connection_tracker: Arc::new(crate::http_limit::ConnectionTracker::new()),
+        rate_limiter: Arc::new(crate::http_limit::RateLimiter::new()),
         snapshot: crate::integrity::SnapshotState::default(),
         audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
         auth_mode: crate::auth::AuthMode::Jwt,
@@ -723,17 +723,16 @@ mod tests {
         // Opaque-mode server: no keys, opaque middleware decides.
         let dir = tempfile::TempDir::new().expect("temp dir");
         let db_path = dir.path().join("brain.db");
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mgr = SqliteConnectionManager::file(&db_path);
         let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
-        crate::run_migration(
+        crate::migration::run_migration(
             &mut pool.get().expect("conn"),
             crate::config::DB_MMAP_SIZE_MIB,
         )
         .expect("migration");
-        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
-            brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
-        );
+        let model: Arc<dyn crate::embed::Embedder> =
+            Arc::new(crate::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"));
         // one known opaque token via a token file
         let tok_file = tempfile::NamedTempFile::new().expect("token file");
         std::fs::write(tok_file.path(), b"seed\n").unwrap();
@@ -755,7 +754,7 @@ mod tests {
             pool: pool.clone(),
             revocation_cache: Arc::new(crate::auth::revocation::RevocationCache::new()),
             db_path: db_path.clone(),
-            principal_rate_limiter: Arc::new(crate::RateLimiter::new()),
+            principal_rate_limiter: Arc::new(crate::http_limit::RateLimiter::new()),
         });
         let state = Arc::new(crate::AppState {
             token_store,
@@ -765,8 +764,8 @@ mod tests {
             registry: crate::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
             pool,
             db_path,
-            connection_tracker: Arc::new(crate::ConnectionTracker::new()),
-            rate_limiter: Arc::new(crate::RateLimiter::new()),
+            connection_tracker: Arc::new(crate::http_limit::ConnectionTracker::new()),
+            rate_limiter: Arc::new(crate::http_limit::RateLimiter::new()),
             snapshot: crate::integrity::SnapshotState::default(),
             audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
             auth_mode: crate::auth::AuthMode::Opaque,

@@ -138,11 +138,7 @@ pub(crate) fn verify_outbox_lineage(conn: &Connection, run_id: i64) -> rusqlite:
 
 /// Resolve an event id's ancestry chain (target first, root last) — the
 /// `GET /workflow/runs/{id}/events?branch=` read.
-pub(crate) fn branch_chain(
-    conn: &Connection,
-    run_id: i64,
-    event_id: i64,
-) -> rusqlite::Result<Vec<i64>> {
+pub fn branch_chain(conn: &Connection, run_id: i64, event_id: i64) -> rusqlite::Result<Vec<i64>> {
     let mut chain = Vec::new();
     let mut cur = Some(event_id);
     while let Some(id) = cur {
@@ -370,8 +366,8 @@ pub(crate) fn latest_checkpoint_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
 
     fn db() -> Connection {
         register_sqlite_vec();

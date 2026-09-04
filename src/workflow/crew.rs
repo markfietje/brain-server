@@ -133,9 +133,7 @@ fn sanitize_roles(roles: &[String]) -> Vec<String> {
     roles
         .iter()
         .take(16)
-        .map(|r| {
-            brain_server::strip_invisible::strip_invisible(&r.chars().take(64).collect::<String>())
-        })
+        .map(|r| crate::strip_invisible::strip_invisible(&r.chars().take(64).collect::<String>()))
         .filter(|r| !r.is_empty())
         .collect()
 }
@@ -335,14 +333,14 @@ pub fn roster(conn: &Connection, domain: &str, now: i64) -> Result<Vec<CrewMembe
         // fence marker or instruction through the roster into any LLM-facing
         // consumer. Activity kind needs no strip (closed vocabulary, checked
         // again below); site comes from operator-declared shifts.
-        let principal = brain_server::strip_invisible::strip_invisible(&r.principal);
+        let principal = crate::strip_invisible::strip_invisible(&r.principal);
         if principal.is_empty() {
             continue;
         }
         let current_case_ref = r
             .current_case_ref
             .as_deref()
-            .map(brain_server::strip_invisible::strip_invisible)
+            .map(crate::strip_invisible::strip_invisible)
             .filter(|s| !s.is_empty());
         let activity_kind = if ACTIVITY_KINDS.contains(&r.activity_kind.as_str()) {
             r.activity_kind.clone()
@@ -521,9 +519,9 @@ pub(crate) fn file_skills_proposal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
     use crate::workflow::frontdoor::worktype_skills;
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
 
     #[test]
     fn crew_board_routes_by_worktype_tags() {

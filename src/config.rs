@@ -434,7 +434,7 @@ pub fn injection_threshold_low() -> f32 {
 /// `storage_layout::tests::legacy_db_matches_brain_db_path_env_when_set`).
 /// The historical default is preserved exactly.
 pub fn brain_db_path() -> std::path::PathBuf {
-    brain_server::storage_layout::StorageLayout::detect()
+    crate::storage_layout::StorageLayout::detect()
         .map(|l| l.legacy_db())
         .unwrap_or_else(|_| {
             // Defensive: detect() only fails on a non-absolute BRAIN_DATA_ROOT,

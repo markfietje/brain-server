@@ -267,7 +267,7 @@ pub(crate) fn list_cards(conn: &Connection, domain: &str) -> Result<Vec<AgentCar
 
 /// The pure working-set arbiter: (base domain, agent principal) → the agent's
 /// own scratch-domain name. Deterministic, charset-legal (same law as
-/// [`brain_server::storage_layout::is_valid_domain`]), collision-safe via a
+/// [`crate::storage_layout::is_valid_domain`]), collision-safe via a
 /// content hash of the principal. Agent writes land here; the shared base
 /// domain only receives promoted knowledge through the proposal gate.
 pub fn working_set_domain(base_domain: &str, agent_principal: &str) -> String {
@@ -479,9 +479,9 @@ pub(crate) fn list_delegations(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
     use crate::workflow::tx::WorkflowTx;
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
     use rusqlite::Connection;
     use std::sync::{Mutex, MutexGuard, PoisonError};
 

@@ -429,8 +429,7 @@ fn resolve_console_actor(
     if roles.is_empty() {
         return Err("actor_unroled");
     }
-    let resolved =
-        brain_server::role::resolve(conn, &roles).map_err(|_| "role_store_unreadable")?;
+    let resolved = crate::role::resolve(conn, &roles).map_err(|_| "role_store_unreadable")?;
     if !resolved.iter().any(|r| r.can(capability)) {
         return Err("actor_lacks_capability");
     }

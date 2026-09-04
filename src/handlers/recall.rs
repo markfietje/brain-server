@@ -167,7 +167,7 @@ fn default_graph() -> bool {
 /// the shared recall core's return — the tagged (result, domain)
 /// pairs plus the decision/telemetry/trace envelope. Each binding (`/recall`,
 /// `/ump/recall`) renders its own hit shape from `tagged`.
-pub(crate) struct RecallOutcome {
+pub struct RecallOutcome {
     pub tagged: Vec<(crate::SearchResult, String)>,
     pub tel: crate::search::SearchTelemetry,
     pub decision: crate::handlers::RecallDecision,
@@ -251,7 +251,7 @@ pub async fn recall(
         )
     )
 )]
-pub(crate) async fn run_recall(
+pub async fn run_recall(
     state: &Arc<AppState>,
     principal: &Option<crate::auth::Principal>,
     req: RecallRequest,
@@ -503,7 +503,7 @@ pub(crate) async fn run_recall(
     // (transient, availability-first). The map also carries the audit_level
     // for the read-event decision below.
     let bound_profiles = match state.pool.get() {
-        Ok(conn) => brain_server::profile::domain_profiles(&conn).unwrap_or_default(),
+        Ok(conn) => crate::profile::domain_profiles(&conn).unwrap_or_default(),
         Err(_) => std::collections::HashMap::new(),
     };
     let profile_retention: std::collections::HashMap<String, Vec<(String, i64)>> = bound_profiles
@@ -663,7 +663,7 @@ pub(crate) async fn run_recall(
     // profile decides (verbose on / minimal off / standard = JWT posture);
     // `/search`, `/get`, `/multi-get` keep the global env posture (ceiling —
     // they are not the decision-path read).
-    let audit_on = brain_server::profile::audit_read_events_for(
+    let audit_on = crate::profile::audit_read_events_for(
         crate::config::audit_read_events_explicit(),
         bound_profiles.get(&primary_domain),
         principal.is_some(),

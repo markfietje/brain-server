@@ -683,8 +683,8 @@ pub(crate) fn voc_measures(conn: &Connection) -> Result<VocMeasures, OutreachErr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
     use rusqlite::Connection;
 
     fn db() -> Connection {

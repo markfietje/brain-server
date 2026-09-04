@@ -96,7 +96,7 @@ fn validate_to_principal(to: &str) -> Result<(), HandlerError> {
     }
     if to
         .chars()
-        .any(|c| c.is_control() || brain_server::strip_invisible::is_invisible(c))
+        .any(|c| c.is_control() || crate::strip_invisible::is_invisible(c))
     {
         return Err(HandlerError::bad_request(
             "principal_invalid",

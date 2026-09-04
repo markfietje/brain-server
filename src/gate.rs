@@ -364,7 +364,7 @@ pub fn redact_content(
 /// moved to the shared lib `fence` module (re-export
 /// here) so the MCP binary + CLI use the same single definition. Behavior
 /// unchanged; `sanitize_read` still routes through this exact function.
-pub use brain_server::fence::strip_markdown_refs;
+pub use crate::fence::strip_markdown_refs;
 
 /// the read-path output seam. Applies PII redaction
 /// (when the row is PII-flagged and the principal holds no `pii:read`) AND the
@@ -384,9 +384,9 @@ pub use brain_server::fence::strip_markdown_refs;
 /// `[redacted:*]` placeholders carry no following `(...)`, so they pass through
 /// `strip_markdown_refs` untouched (no interaction).
 pub fn sanitize_read(s: &str, pii: bool, principal: &Option<crate::auth::Principal>) -> String {
-    strip_markdown_refs(&brain_server::strip_invisible::strip_invisible(
-        &redact_content(s, pii, principal),
-    ))
+    strip_markdown_refs(&crate::strip_invisible::strip_invisible(&redact_content(
+        s, pii, principal,
+    )))
 }
 
 /// borrow-preserving variant of [`sanitize_read`].
@@ -407,8 +407,7 @@ pub fn sanitize_read_cow<'a>(
         // masked path materializes (plain sanitize_read, unchanged semantics).
         return std::borrow::Cow::Owned(sanitize_read(s, pii, principal));
     }
-    if !s.as_bytes().contains(&b'[') && !s.chars().any(brain_server::strip_invisible::is_invisible)
-    {
+    if !s.as_bytes().contains(&b'[') && !s.chars().any(crate::strip_invisible::is_invisible) {
         return std::borrow::Cow::Borrowed(s);
     }
     std::borrow::Cow::Owned(sanitize_read(s, pii, principal))

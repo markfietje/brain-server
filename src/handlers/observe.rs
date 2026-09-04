@@ -707,7 +707,7 @@ pub async fn get_dsar_certificate(
 /// (`X-Brain-Signature-256: sha256=<hex>`) when `BRAIN_DSAR_WEBHOOK_SECRET`
 /// is set. Fail-soft: bounded retries, then a logged warning — a webhook
 /// failure NEVER rolls back the purge.
-pub(crate) fn notify_art19(subject: String, certificate_id: i64, certified_at: String) {
+pub fn notify_art19(subject: String, certificate_id: i64, certified_at: String) {
     let Some(url) = crate::config::dsar_webhook_url() else {
         return;
     };

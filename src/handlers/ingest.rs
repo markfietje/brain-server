@@ -568,8 +568,7 @@ pub(crate) async fn ingest_one(
             .pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        brain_server::profile::profile_for_domain(&conn, &domain_label)
-            .map_err(HandlerError::internal)?
+        crate::profile::profile_for_domain(&conn, &domain_label).map_err(HandlerError::internal)?
     };
     let (title_for_store, content, access_scope) = crate::service::ingest::apply_profile_ingest(
         profile.as_ref(),
@@ -585,7 +584,7 @@ pub(crate) async fn ingest_one(
     // lawful_basis (purpose-limitation + data-minimization evidence).
     let strict_domain = profile
         .as_ref()
-        .is_some_and(brain_server::profile::Profile::pii_strict);
+        .is_some_and(crate::profile::Profile::pii_strict);
     // Resolve the owner label before the closure (the reference can't cross
     // the spawn_blocking boundary).
     let owner = super::gate::principal_to_owner(principal);

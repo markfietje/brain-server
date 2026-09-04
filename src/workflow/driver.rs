@@ -46,8 +46,8 @@ pub fn advance(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
     use rusqlite::Connection;
     use serde_json::json;
 

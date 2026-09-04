@@ -484,8 +484,8 @@ pub async fn get_scoreboard(
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CalibrationSignBody {
-    pub(crate) reviewer_id: String,
-    pub(crate) human_agreement_kappa_units: i32,
+    pub reviewer_id: String,
+    pub human_agreement_kappa_units: i32,
 }
 
 /// `POST /workflow/calibration/sign` — the monthly human-signed calibration

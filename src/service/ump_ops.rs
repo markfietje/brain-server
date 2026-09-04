@@ -182,9 +182,9 @@ mod tests {
     /// promised it; the gap this closes was a silent 400 with no footprint).
     #[test]
     fn forbidden_scope_is_audited_as_denied_auth_event() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, 1).unwrap();
+        crate::migration::run_migration(&mut conn, 1).unwrap();
         assert!(
             record_forbidden_scope(&conn, "alice", "eve"),
             "the audit write succeeds on the migrated chain"

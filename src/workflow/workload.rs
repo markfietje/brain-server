@@ -366,9 +366,9 @@ pub fn coverage_view(conn: &Connection, domain: &str) -> Result<Vec<CoverageRow>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
     use crate::workflow::shifts::{ShiftDraft, insert_shift};
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
 
     fn db() -> Connection {
         register_sqlite_vec();

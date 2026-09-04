@@ -121,7 +121,7 @@ pub fn run_once(db_path: &Path) -> anyhow::Result<bool> {
     // Checkpoint WAL first so the snapshot is consistent + WAL is small.
     let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
     // The shared escaper (backup::vacuum_into) — never a hand-rolled literal.
-    brain_server::backup::vacuum_into(&conn, &snap)?;
+    crate::backup::vacuum_into(&conn, &snap)?;
     drop(conn);
 
     // Snapshots are plaintext copies of the whole store; lock them to the

@@ -52,7 +52,7 @@ use rusqlite::{Connection, Transaction};
 /// Art 28 sub-processor terms — the evidence a controller checks before
 /// authorizing the BPO. Free-text + bounded, exported as-is; CONFIG the operator fills, not a signed contract.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct DpaTerms {
+pub struct DpaTerms {
     pub retention_on_termination: String,
     pub deletion_timeline: String,
     pub audit_rights: String,
@@ -150,10 +150,10 @@ pub(crate) fn validate_new_client(
     domain: &str,
     jurisdiction: &str,
 ) -> Result<(), RegisterError> {
-    if !brain_server::storage_layout::is_valid_domain(name) {
+    if !crate::storage_layout::is_valid_domain(name) {
         return Err(RegisterError::InvalidName);
     }
-    if !brain_server::storage_layout::is_valid_domain(domain) {
+    if !crate::storage_layout::is_valid_domain(domain) {
         return Err(RegisterError::InvalidDomain);
     }
     // Same code + message as the DSAR + transfers `jurisdiction` gate.
@@ -374,7 +374,7 @@ pub(crate) fn scaffold_and_register(
         return Ok(());
     }
     if let Some(p) = profile {
-        brain_server::profile::bind(tx, domain, Some(p)).map_err(RegisterError::ProfileNotFound)?;
+        crate::profile::bind(tx, domain, Some(p)).map_err(RegisterError::ProfileNotFound)?;
     }
     register(tx, name, domain, jurisdiction, profile, now)
 }
@@ -489,6 +489,7 @@ pub(crate) fn termination_clause(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AppState;
     use crate::alert::ChainWatchState;
     use crate::auth::jwks::KeyStore;
     use crate::domain_registry::DomainRegistry;
@@ -497,8 +498,8 @@ mod tests {
         ClientDsarRequest, ClientEndRequest, ClientHoldRequest, CoachRequest, client_dsar,
         client_end, client_hold, client_proposals, coach_proposal, get_client, list_clients,
     };
+    use crate::http_limit::{ConnectionTracker, RateLimiter};
     use crate::integrity::SnapshotState;
-    use crate::{AppState, ConnectionTracker, RateLimiter};
     use axum::Json;
     use axum::extract::{Path, State};
     use axum::http::StatusCode;
@@ -586,12 +587,12 @@ mod tests {
         crate::Pool,
         crate::domain_registry::DomainRegistry,
     ) {
-        brain_server::register_sqlite_vec::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("brain.db");
         let mgr = r2d2_sqlite::SqliteConnectionManager::file(&path);
         let global: crate::Pool = r2d2::Pool::builder().build(mgr).expect("global pool");
-        brain_server::migration::run_migration(
+        crate::migration::run_migration(
             &mut global.get().unwrap(),
             crate::config::DB_MMAP_SIZE_MIB,
         )
@@ -624,7 +625,7 @@ mod tests {
 
     #[test]
     fn create_domain_scaffolding_is_idempotent_and_binds_profile() {
-        brain_server::register_sqlite_vec::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let (_dir, global, reg) = registry();
         scaffold_via(
             &reg,
@@ -667,7 +668,7 @@ mod tests {
 
     #[test]
     fn create_domain_bad_profile_fails_closed_no_client_row() {
-        brain_server::register_sqlite_vec::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let (_dir, global, reg) = registry();
         let err = scaffold_via(
             &reg,
@@ -802,7 +803,7 @@ mod tests {
     // The shared static embedder is loaded once and reused across tests: many
     // parallel tests each building a fresh model2vec instance raced on huggingface's
     // file-based cache lock ("Lock acquisition failed") under a cold CI cache.
-    static TEST_EMBEDDER: std::sync::OnceLock<std::sync::Arc<dyn brain_server::embed::Embedder>> =
+    static TEST_EMBEDDER: std::sync::OnceLock<std::sync::Arc<dyn crate::embed::Embedder>> =
         std::sync::OnceLock::new();
 
     fn app_state_with(
@@ -810,23 +811,19 @@ mod tests {
         multi_db: bool,
         max_size: u32,
     ) -> std::sync::Arc<AppState> {
-        brain_server::register_sqlite_vec::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let path = dir.path().join("brain.db");
         let mgr = r2d2_sqlite::SqliteConnectionManager::file(&path);
         let pool: crate::Pool = r2d2::Pool::builder()
             .max_size(max_size)
             .build(mgr)
             .expect("pool");
-        brain_server::migration::run_migration(
-            &mut pool.get().unwrap(),
-            crate::config::DB_MMAP_SIZE_MIB,
-        )
-        .expect("migration");
-        let model: std::sync::Arc<dyn brain_server::embed::Embedder> = TEST_EMBEDDER
+        crate::migration::run_migration(&mut pool.get().unwrap(), crate::config::DB_MMAP_SIZE_MIB)
+            .expect("migration");
+        let model: std::sync::Arc<dyn crate::embed::Embedder> = TEST_EMBEDDER
             .get_or_init(|| {
                 std::sync::Arc::new(
-                    brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID)
-                        .expect("model"),
+                    crate::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
                 )
             })
             .clone();
@@ -1959,13 +1956,13 @@ mod tests {
         seed_subject(&state, "beta-eu", "alice@beta");
         {
             let conn = state.registry.register("beta-eu").unwrap().get().unwrap();
-            let p = brain_server::profile::Profile {
+            let p = crate::profile::Profile {
                 name: "strict-holdall".into(),
                 pii_mode: Some("strict".into()),
                 ..Default::default()
             };
-            brain_server::profile::upsert(&conn, &p).unwrap();
-            brain_server::profile::bind(&conn, "beta-eu", Some("strict-holdall")).unwrap();
+            crate::profile::upsert(&conn, &p).unwrap();
+            crate::profile::bind(&conn, "beta-eu", Some("strict-holdall")).unwrap();
         }
         // Default-posture domain (no bound profile).
         register_client(&state, "acme", "acme-us", "us");

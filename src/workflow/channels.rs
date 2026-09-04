@@ -101,7 +101,7 @@ pub(crate) const MAX_USER_MAP_ROLES: usize = 8;
 /// invisible-stripped read form with PII redaction DISABLED — a stable,
 /// reader-independent content fingerprint. Byte-identical to the historical
 /// handlers copy (which now delegates here).
-pub(crate) fn review_digest(content: &str) -> String {
+pub fn review_digest(content: &str) -> String {
     use sha2::Digest;
     let screened = crate::gate::sanitize_read(content, false, &None);
     let digest = sha2::Sha256::digest(screened.as_bytes());
@@ -963,7 +963,7 @@ pub(crate) fn parse_user_map_change(content: &str) -> Result<UserMapChange, Stri
         }
         for r in list {
             let name = r.as_str().ok_or("role names must be strings")?;
-            if !brain_server::role::is_valid_role_name(name) {
+            if !crate::role::is_valid_role_name(name) {
                 return Err(format!("invalid role name {name:?}"));
             }
             roles.push(name.to_string());
@@ -1732,8 +1732,8 @@ mod tests {
     // migration runner. The bin-root `crate::` path resolves to the same fn
     // but pairing the lib import with the bin registration misses the
     // extension load ordering these tests rely on.
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
 
     fn db() -> Connection {
         // Sibling-exact order matters: the vec0 extension registers via

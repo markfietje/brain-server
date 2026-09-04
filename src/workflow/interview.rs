@@ -29,10 +29,10 @@ pub fn persist_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brain_server::migration::run_migration;
+    use crate::migration::run_migration;
 
     fn db() -> Connection {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = Connection::open_in_memory().unwrap();
         run_migration(&mut conn, 1).unwrap();
         conn.execute(

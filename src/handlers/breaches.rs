@@ -24,7 +24,7 @@ use crate::handlers::{HandlerError, MAX_LIMIT};
 /// Whether a resolved role bundle may act on a breach: it must include the
 /// `dpo` role or one carrying the `admin` capability. Pure, so the
 /// role-gate test (`dpo_role_is_the_breach_actor`) pins the rule directly.
-fn can_act_on_breach(roles: &[brain_server::role::Role]) -> bool {
+fn can_act_on_breach(roles: &[crate::role::Role]) -> bool {
     roles.iter().any(|r| r.name == "dpo" || r.can("admin"))
 }
 
@@ -45,7 +45,7 @@ pub(crate) fn require_dpo_role(
         // with no roles is exactly the single-token shape the dual gate
         // exists to stop (hold release / breach close are one-principal
         // decisions that must not ride a bare admin scope).
-        let defined = brain_server::role::defined_count(&conn)
+        let defined = crate::role::defined_count(&conn)
             .map_err(|e| HandlerError::internal(format!("role store: {e}")))?;
         if defined == 0 {
             return Ok(());
@@ -56,7 +56,7 @@ pub(crate) fn require_dpo_role(
             "breach",
         ));
     }
-    let roles = brain_server::role::resolve(&conn, &p.roles)
+    let roles = crate::role::resolve(&conn, &p.roles)
         .map_err(|e| HandlerError::internal(format!("role store: {e}")))?;
     if can_act_on_breach(&roles) {
         Ok(())
@@ -357,12 +357,12 @@ pub async fn get_breach(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brain_server::role::Role;
+    use crate::role::Role;
 
     fn role(name: &str, can: &[&str]) -> Role {
         Role {
             name: name.to_string(),
-            scopes: brain_server::role::ROLE_SCOPES
+            scopes: crate::role::ROLE_SCOPES
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
@@ -389,7 +389,7 @@ mod tests {
             can_act_on_breach(std::slice::from_ref(&admin)),
             "admin capability acts"
         );
-        let dpo_and_agent: Vec<brain_server::role::Role> = vec![dpo.clone(), agent.clone()];
+        let dpo_and_agent: Vec<crate::role::Role> = vec![dpo.clone(), agent.clone()];
         assert!(can_act_on_breach(&dpo_and_agent), "dpo among others");
         assert!(
             !can_act_on_breach(std::slice::from_ref(&agent)),

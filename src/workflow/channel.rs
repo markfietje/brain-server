@@ -130,8 +130,8 @@ pub fn screen_content(content: &str) -> Result<String, ChannelError> {
     if crate::screen::contains_suspicious_pattern(trimmed) {
         return Err(ChannelError::InvalidContent("blocklist"));
     }
-    Ok(brain_server::fence::strip_markdown_refs(
-        &brain_server::strip_invisible::strip_invisible(trimmed),
+    Ok(crate::fence::strip_markdown_refs(
+        &crate::strip_invisible::strip_invisible(trimmed),
     ))
 }
 
@@ -291,7 +291,7 @@ pub fn insert_note(
             || invitee.len() > MAX_PRINCIPAL_LEN
             || invitee
                 .chars()
-                .any(|c| c.is_control() || brain_server::strip_invisible::is_invisible(c))
+                .any(|c| c.is_control() || crate::strip_invisible::is_invisible(c))
         {
             return Err(ChannelError::InvalidPrincipal(invitee.clone()));
         }
@@ -538,10 +538,10 @@ pub fn accept_invite(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
     use crate::workflow::crew;
     use crate::workflow::tx::WorkflowTx;
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
     use rusqlite::Connection;
 
     fn db() -> Connection {
@@ -597,11 +597,7 @@ mod tests {
         // markdown refs neutralized.
         let screened =
             screen_content("see \u{200B}https://x ![i](https://evil.example/p)\u{FEFF}").unwrap();
-        assert!(
-            !screened
-                .chars()
-                .any(brain_server::strip_invisible::is_invisible)
-        );
+        assert!(!screened.chars().any(crate::strip_invisible::is_invisible));
         assert!(!screened.contains("](https://evil.example/p)"));
 
         let mut conn = db();

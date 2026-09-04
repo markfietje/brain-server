@@ -96,7 +96,7 @@ pub fn content_fingerprint(content: &str) -> String {
 }
 
 /// Decode the Ed25519 public key out of a `did:key:z…` multicodec form
-/// (inverse of [`brain_server::ump_integrity::did_key_from_ed25519`]).
+/// (inverse of [`crate::ump_integrity::did_key_from_ed25519`]).
 fn pubkey_from_did(did: &str) -> Option<[u8; 32]> {
     let b58 = did.strip_prefix("did:key:z")?;
     let buf = bs58::decode(b58).into_vec().ok()?;
@@ -195,7 +195,7 @@ pub fn build_parcel(
     now: i64,
 ) -> Result<ParcelBundle, ParcelError> {
     let (_, sk) = crate::handlers::ump::operator_signing_key().ok_or(ParcelError::NoOperatorKey)?;
-    let region = brain_server::storage_layout::region();
+    let region = crate::storage_layout::region();
     let mut stmt = conn.prepare(
         "SELECT title, content, content_hash, assertion_kind, confidence, observed_at, region, origin
            FROM knowledge
@@ -235,8 +235,7 @@ pub fn build_parcel(
     let manifest_json =
         serde_json::to_string(&manifest).map_err(|e| ParcelError::Database(e.to_string()))?;
     let sig = ed25519_dalek::Signer::sign(&sk, sha256_hex(manifest_json.as_bytes()).as_bytes());
-    let signed_by =
-        brain_server::ump_integrity::did_key_from_ed25519(&sk.verifying_key().to_bytes());
+    let signed_by = crate::ump_integrity::did_key_from_ed25519(&sk.verifying_key().to_bytes());
     Ok(ParcelBundle {
         parcel_hash: sha256_hex(manifest_json.as_bytes()),
         manifest_json,
@@ -521,9 +520,9 @@ pub fn list_ledger(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
     use crate::workflow::tx::WorkflowTx;
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
     use rusqlite::Connection;
     use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -576,7 +575,7 @@ mod tests {
         }
         fn did(&self) -> String {
             let (_, sk) = crate::handlers::ump::operator_signing_key().unwrap();
-            brain_server::ump_integrity::did_key_from_ed25519(&sk.verifying_key().to_bytes())
+            crate::ump_integrity::did_key_from_ed25519(&sk.verifying_key().to_bytes())
         }
     }
     impl Drop for OperatorKey {
@@ -1082,7 +1081,7 @@ mod tests {
                 .unwrap();
             assert_eq!(audits, 1, "{direction} crossing audited in-tx");
             assert!(
-                brain_server::audit::verify_chain(conn),
+                crate::audit::verify_chain(conn),
                 "{direction} side chain intact"
             );
         }

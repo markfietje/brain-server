@@ -8,11 +8,11 @@
 #![deny(unsafe_code)]
 
 use crate::config::{MAX_SNIPPET_CHARS, QualityConfig, SNIPPET_CONTEXT_CHARS};
+use crate::embed::Embedder;
 use crate::search::graph_ppr::graph_retrieve;
 use crate::search::quality::{HeuristicEstimator, Recommendation, RetrievalQualityEstimator};
 use crate::search::query::LegFilter;
 use anyhow::{Context, Result};
-use brain_server::embed::Embedder;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use rusqlite::{Connection, ToSql, params};
 use serde::Serialize;
@@ -302,7 +302,7 @@ impl SearchResult {
     /// Minimal constructor for a raw retriever hit (no provenance yet).
     /// the blocklist screen runs here — once per hit,
     /// not per consumer.
-    pub(crate) fn raw(id: i64, score: f32, title: Option<String>, content: String) -> Self {
+    pub fn raw(id: i64, score: f32, title: Option<String>, content: String) -> Self {
         let blocklist_hit = crate::screen::contains_suspicious_pattern(&content);
         Self {
             id,
@@ -1908,21 +1908,20 @@ pub fn perform_search_traced(
                 // in-process). On the impossible "flag set, table absent" case
                 // (e.g. `migrate_down_0_9_0` rehearsal) the error falls back to
                 // the legacy scan and clears the flag.
-                let res = if !brain_server::migration::VEC0_READY
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                {
-                    perform_search_legacy(&conn, &vq, overfetch)
-                } else {
-                    match vec0_knn(&conn, &vq, overfetch, &vfilters) {
-                        Ok(r) => Ok(r),
-                        Err(e) if e.to_string().contains("no such table: vec_knowledge") => {
-                            brain_server::migration::VEC0_READY
-                                .store(false, std::sync::atomic::Ordering::Relaxed);
-                            perform_search_legacy(&conn, &vq, overfetch)
+                let res =
+                    if !crate::migration::VEC0_READY.load(std::sync::atomic::Ordering::Relaxed) {
+                        perform_search_legacy(&conn, &vq, overfetch)
+                    } else {
+                        match vec0_knn(&conn, &vq, overfetch, &vfilters) {
+                            Ok(r) => Ok(r),
+                            Err(e) if e.to_string().contains("no such table: vec_knowledge") => {
+                                crate::migration::VEC0_READY
+                                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                                perform_search_legacy(&conn, &vq, overfetch)
+                            }
+                            Err(e) => Err(e),
                         }
-                        Err(e) => Err(e),
-                    }
-                }?;
+                    }?;
                 Ok((res, t_vec.elapsed().as_secs_f32() * 1000.0))
             });
             let fh = scope.spawn(move || -> (Vec<SearchResult>, f32) {

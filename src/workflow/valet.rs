@@ -356,8 +356,8 @@ pub(crate) fn evening_notes(conn: &Connection, since: i64) -> rusqlite::Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
 
     fn seed() -> Connection {
         register_sqlite_vec();
@@ -551,7 +551,7 @@ mod tests {
     // seeds riding the cores — call path changed, assertions did not) ──
 
     fn brief_state() -> (tempfile::TempDir, std::sync::Arc<crate::AppState>) {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let dir = tempfile::TempDir::new().expect("temp dir");
         let db_path = dir.path().join("brain.db");
         let mgr = r2d2_sqlite::SqliteConnectionManager::file(&db_path);
@@ -567,13 +567,13 @@ mod tests {
             ),
             cors: tower_http::cors::CorsLayer::new(),
             model: std::sync::Arc::new(
-                brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
+                crate::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
             ),
             registry: crate::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
             pool,
             db_path,
-            connection_tracker: std::sync::Arc::new(crate::ConnectionTracker::new()),
-            rate_limiter: std::sync::Arc::new(crate::RateLimiter::new()),
+            connection_tracker: std::sync::Arc::new(crate::http_limit::ConnectionTracker::new()),
+            rate_limiter: std::sync::Arc::new(crate::http_limit::RateLimiter::new()),
             snapshot: crate::integrity::SnapshotState::default(),
             audit_chain_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
             auth_mode: crate::auth::AuthMode::Opaque,
@@ -603,7 +603,7 @@ mod tests {
             .unwrap();
         }
         // One pending draft with a lint report + one decided draft (must NOT appear).
-        let lint = brain_server::valet_style::LintReport {
+        let lint = crate::valet_style::LintReport {
             score: 60,
             findings: vec![],
             style_memory_hash: "h".repeat(64),

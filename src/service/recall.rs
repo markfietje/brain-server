@@ -319,9 +319,9 @@ mod tests {
     /// artifact (the DSAR residue sweep relies on this invariant).
     #[test]
     fn stored_trace_hashes_query_never_stores_raw_text() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, 1).unwrap();
+        crate::migration::run_migration(&mut conn, 1).unwrap();
         let secret_query = "alice@example.com's medical history";
         let trace_detail = serde_json::json!({
             "query_hash": crate::audit::hash(secret_query),
@@ -401,9 +401,9 @@ mod tests {
     /// an opted-in reviewer sees the enriched evidence survive.
     #[test]
     fn finish_domain_results_enriches_then_suppresses_flagged_evidence() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, 1).unwrap();
+        crate::migration::run_migration(&mut conn, 1).unwrap();
         conn.execute_batch(
             "INSERT INTO knowledge(id, content, source) VALUES (1, 'alpha beta gamma', 'structured'),
              (2, 'delta epsilon zeta', 'structured');
@@ -476,13 +476,13 @@ mod tests {
     /// cadence.
     #[test]
     fn read_event_prunes_every_domain_chain_and_piggybacks_dsar() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut global = Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut global, 1).unwrap();
+        crate::migration::run_migration(&mut global, 1).unwrap();
         let mut domain_a = Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut domain_a, 1).unwrap();
+        crate::migration::run_migration(&mut domain_a, 1).unwrap();
         let mut domain_b = Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut domain_b, 1).unwrap();
+        crate::migration::run_migration(&mut domain_b, 1).unwrap();
 
         // Aged evidence on every chain (hand-inserted legacy rows — the same
         // fixture shape the retention pins use; NULL prev_hash rows verify as
@@ -561,11 +561,11 @@ mod tests {
     /// `?` refactor cannot silently strand retention).
     #[test]
     fn read_event_failure_returns_none_and_still_prunes() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         // No migration → the audit chain cannot be written → the record fails.
         let broken = Connection::open_in_memory().unwrap();
         let mut prunable = Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut prunable, 1).unwrap();
+        crate::migration::run_migration(&mut prunable, 1).unwrap();
         prunable
             .execute(
                 "INSERT INTO audit_events(id, ts, kind, actor, target_hash, status, detail_hash, tenant_id, prev_hash)

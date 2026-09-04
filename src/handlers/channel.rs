@@ -215,7 +215,7 @@ pub async fn get_notes(
             .get()
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
         let ttl_days: Option<i64> = if crate::config::brain_retention_enabled() {
-            let profile_map = brain_server::profile::profile_for_domain(&conn, &domain)
+            let profile_map = crate::profile::profile_for_domain(&conn, &domain)
                 .ok()
                 .flatten()
                 .and_then(|p| p.retention_map());

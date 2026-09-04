@@ -202,7 +202,7 @@ pub async fn retention_report(
         .get()
         .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
     let per_domain: std::collections::HashMap<String, std::collections::BTreeMap<String, i64>> =
-        brain_server::profile::domain_profiles(&conn)
+        crate::profile::domain_profiles(&conn)
             .map_err(|e| HandlerError::internal(format!("domain profile store: {e}")))?
             .into_iter()
             .filter_map(|(d, p)| p.retention_map().map(|m| (d, m)))

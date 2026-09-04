@@ -33,7 +33,7 @@ pub async fn list_profiles(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        brain_server::profile::list(&conn).map_err(map_err)
+        crate::profile::list(&conn).map_err(map_err)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -47,7 +47,7 @@ pub async fn get_profile(
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
-    if !brain_server::profile::is_valid_profile_name(&name) {
+    if !crate::profile::is_valid_profile_name(&name) {
         return Err(HandlerError::bad_request(
             "profile_invalid",
             "profile name must be lowercase alnum + hyphen (max 63)",
@@ -59,7 +59,7 @@ pub async fn get_profile(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        brain_server::profile::load(&conn, &name).map_err(map_err)
+        crate::profile::load(&conn, &name).map_err(map_err)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -104,7 +104,7 @@ pub async fn upsert_profile(
     Json(req): Json<ProfileUpsertRequest>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
-    let p = brain_server::profile::Profile {
+    let p = crate::profile::Profile {
         name,
         description: req.description,
         default_access_scope: req.default_access_scope,
@@ -123,7 +123,7 @@ pub async fn upsert_profile(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        brain_server::profile::upsert(&conn, &p).map_err(map_err)?;
+        crate::profile::upsert(&conn, &p).map_err(map_err)?;
         crate::audit::record(
             &conn,
             crate::audit::AuditKind::Reconcile,
@@ -132,7 +132,7 @@ pub async fn upsert_profile(
             crate::audit::AuditStatus::Ok,
             "profile_upserted",
         );
-        brain_server::profile::load(&conn, &p.name).map_err(map_err)
+        crate::profile::load(&conn, &p.name).map_err(map_err)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -158,7 +158,7 @@ pub async fn domain_profile_get(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        brain_server::profile::profile_for_domain(&conn, &domain).map_err(map_err)
+        crate::profile::profile_for_domain(&conn, &domain).map_err(map_err)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -215,7 +215,7 @@ pub async fn domain_profile_bind(
         Some(p) => Some(p.trim().to_string()),
     };
     if let Some(p) = &profile
-        && !brain_server::profile::is_valid_profile_name(p)
+        && !crate::profile::is_valid_profile_name(p)
     {
         return Err(HandlerError::bad_request(
             "profile_invalid",
@@ -230,13 +230,11 @@ pub async fn domain_profile_bind(
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
         // Friendly 404 for an unknown profile (the FK would also refuse).
         if let Some(p) = &profile
-            && brain_server::profile::load(&conn, p)
-                .map_err(map_err)?
-                .is_none()
+            && crate::profile::load(&conn, p).map_err(map_err)?.is_none()
         {
             return Err(HandlerError::not_found(format!("no profile named '{p}'")));
         }
-        brain_server::profile::bind(&conn, &domain, profile.as_deref()).map_err(map_err)?;
+        crate::profile::bind(&conn, &domain, profile.as_deref()).map_err(map_err)?;
         crate::audit::record(
             &conn,
             crate::audit::AuditKind::Reconcile,

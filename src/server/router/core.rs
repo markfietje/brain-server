@@ -18,12 +18,12 @@ use tokio::task;
 use tokio::time::timeout;
 
 use crate::alert;
+use crate::audit;
 use crate::config::{self, MODEL_ID, SERVER_VERSION};
 use crate::handlers;
 use crate::http_limit::process_rss_mib;
 use crate::server::bootstrap::AppState;
 use crate::server::router::memory::measure_capacity;
-use brain_server::audit;
 use sysinfo::System;
 
 pub(crate) fn router() -> Router<Arc<AppState>> {
@@ -70,7 +70,7 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
 /// Every deployment-fingerprinting field (model, otel, pool, backup, webhook,
 /// hardening, DPO contact) moved behind the Read gate on `/health/db`
 /// (surface-reduction — same class as the `/health/db` carve-out).
-pub(crate) async fn health() -> Json<serde_json::Value> {
+pub async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "status": "ok", "version": SERVER_VERSION }))
 }
 
@@ -80,7 +80,7 @@ pub(crate) async fn health() -> Json<serde_json::Value> {
 /// information disclosure). Public `/health` (see `health`) no longer carries
 /// any of these fields.
 #[allow(clippy::too_many_arguments)] // 8 health fields; a struct would add ceremony to the single call site
-pub(crate) fn health_body(
+pub fn health_body(
     used_mb: u64,
     total_mb: u64,
     pool_connections: u32,
@@ -203,9 +203,9 @@ pub(crate) async fn openapi() -> impl axum::response::IntoResponse {
 /// Canonical OpenAPI document (kept in sync with the route table in
 /// `build_app`). The `test_openapi_covers_routes` unit test asserts every
 /// registered route path appears here.
-pub(crate) const OPENAPI_YAML: &str = include_str!("../../../openapi.yaml");
+pub const OPENAPI_YAML: &str = include_str!("../../../openapi.yaml");
 
-pub(crate) async fn health_db(
+pub async fn health_db(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
 ) -> Result<Json<serde_json::Value>, crate::handlers::HandlerError> {
@@ -467,7 +467,7 @@ pub(crate) async fn metrics(
 /// Verifies EVERY registered domain's chain, not just the global
 /// pool — `ok` is the all-domains aggregate and a per-domain breakdown is
 /// attached so the failing domain is named, never silent.
-pub(crate) async fn verify_audit_chain(
+pub async fn verify_audit_chain(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
 ) -> Json<serde_json::Value> {

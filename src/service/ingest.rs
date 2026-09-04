@@ -130,7 +130,7 @@ pub fn ttl_days_to_expires(
 /// entities were always stored verbatim). The HITL /ingest/proposal flow
 /// keeps its legacy posture (binding the gate flow is future work).
 pub fn apply_profile_ingest(
-    profile: Option<&brain_server::profile::Profile>,
+    profile: Option<&crate::profile::Profile>,
     title: &str,
     content: &str,
     access_scope: Option<String>,
@@ -257,11 +257,11 @@ pub fn store_record(
     // Re-check the bound profile UNDER THE WRITE LOCK: a concurrent
     // profile bind/unbind between the pre-tx mask decision and this write
     // would otherwise land unmasked content into a now-strict domain.
-    let profile_now = brain_server::profile::profile_for_domain(tx, input.domain)
-        .map_err(IngestError::Database)?;
+    let profile_now =
+        crate::profile::profile_for_domain(tx, input.domain).map_err(IngestError::Database)?;
     let strict_now = profile_now
         .as_ref()
-        .is_some_and(brain_server::profile::Profile::pii_strict);
+        .is_some_and(crate::profile::Profile::pii_strict);
     if strict_now != input.strict_domain {
         return Err(IngestError::ProfileChanged);
     }
@@ -313,7 +313,7 @@ pub fn store_record(
     // §6.2 ids are derived, never trusted from a record), so re-imports
     // of the same content land on the same id and the unique index holds.
     let ump_id = input.ump_meta.as_ref().map(|_| {
-        brain_server::ump_integrity::content_id(&brain_server::ump_integrity::record_hash(
+        crate::ump_integrity::content_id(&crate::ump_integrity::record_hash(
             format!("{}\0{}", input.domain, input.content).as_bytes(),
         ))
     });
@@ -506,9 +506,9 @@ mod tests {
     use super::*;
 
     fn migrated_db() -> rusqlite::Connection {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
-        brain_server::migration::run_migration(&mut conn, 1).unwrap();
+        crate::migration::run_migration(&mut conn, 1).unwrap();
         conn
     }
 
@@ -576,7 +576,7 @@ mod tests {
     /// "no vault" posture: one-way, no recovery map).
     #[test]
     fn profile_sets_ingest_defaults_strict_masks_and_scope_fills() {
-        let p = brain_server::profile::Profile {
+        let p = crate::profile::Profile {
             name: "health-hipaa".into(),
             pii_mode: Some("strict".into()),
             default_access_scope: Some("private".into()),
@@ -624,7 +624,7 @@ mod tests {
         );
         // non-strict pii_mode leaves content alone (read-time redaction is the
         // v1.14 seam and stays untouched).
-        let std = brain_server::profile::Profile {
+        let std = crate::profile::Profile {
             name: "call-center".into(),
             pii_mode: Some("standard".into()),
             ..Default::default()
@@ -642,7 +642,7 @@ mod tests {
     /// typed fence error carrying the frozen wire text.
     #[test]
     fn kind_vocabulary_rejects_out_of_list_kinds() {
-        let p = brain_server::profile::Profile {
+        let p = crate::profile::Profile {
             name: "call-center".into(),
             kinds: Some(vec!["fact".into(), "episodic".into()]),
             ..Default::default()
@@ -664,7 +664,7 @@ mod tests {
             "the fence message is the frozen wire text"
         );
         // An empty list allows nothing (a lockdown posture).
-        let sealed = brain_server::profile::Profile {
+        let sealed = crate::profile::Profile {
             name: "sealed".into(),
             kinds: Some(vec![]),
             ..Default::default()

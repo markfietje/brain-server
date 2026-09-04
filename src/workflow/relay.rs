@@ -379,10 +379,10 @@ pub(crate) fn load_run_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
     use crate::workflow::state::cas_update;
     use crate::workflow::tx::WorkflowTx;
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
     use rusqlite::Connection;
 
     fn db() -> Connection {

@@ -593,7 +593,7 @@ pub(crate) fn kcs_measures(conn: &Connection, now: i64) -> rusqlite::Result<KcsM
 }
 
 /// The compact summary string the weekly calibration report carries.
-pub(crate) fn kcs_summary(conn: &Connection, now: i64) -> rusqlite::Result<String> {
+pub fn kcs_summary(conn: &Connection, now: i64) -> rusqlite::Result<String> {
     let m = kcs_measures(conn, now)?;
     Ok(format!(
         "kcs_linkage_rate:{} reuse_rate:{} freshness_median_age_secs:{}",
@@ -979,8 +979,8 @@ pub(crate) fn publishable_article_row(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::register_sqlite_vec;
-    use brain_server::migration::run_migration;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
 
     fn db() -> Connection {
         register_sqlite_vec();

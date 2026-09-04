@@ -50,7 +50,7 @@ use std::collections::{HashMap, HashSet};
 /// `LegalHold` carries the active-hold reasons so the handler can render the
 /// exact shared `409 legal_hold_active` envelope.
 #[derive(Debug)]
-pub(crate) enum PurgeError {
+pub enum PurgeError {
     /// A query failed; the rusqlite message travels unchanged.
     Database(String),
     /// The in-function legal-hold fence fired: held id → reasons. A held id
@@ -80,7 +80,7 @@ impl From<rusqlite::Error> for PurgeError {
 /// (reason `explicit`) and the DSAR workflow (reason `owner:<subject>`, with
 /// derived descendants carrying `derived` + the purge root's origin id).
 /// Returns the number of chunks actually deleted.
-pub(crate) fn purge_chunk_ids(
+pub fn purge_chunk_ids(
     tx: &rusqlite::Transaction<'_>,
     ids: &[i64],
     now: i64,
@@ -235,9 +235,9 @@ mod tests {
     /// the same lowercase-hex SHA-256 the gate-local copy produced.)
     #[test]
     fn purge_tombstone_digest_is_sha256_of_content() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().expect("db");
-        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        crate::migration::run_migration(&mut conn, 1).expect("migration");
         conn.execute(
             "INSERT INTO knowledge (content, content_hash, node_kind) \
              VALUES ('SSN 123-45-6789', 'xxh3-of-content', 'fact')",
@@ -273,9 +273,9 @@ mod tests {
     /// reasons for the shared `409 legal_hold_active` envelope.
     #[test]
     fn purge_chunk_ids_backstop_refuses_held_id() {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = rusqlite::Connection::open_in_memory().expect("db");
-        brain_server::migration::run_migration(&mut conn, 1).expect("migration");
+        crate::migration::run_migration(&mut conn, 1).expect("migration");
         conn.execute(
             "INSERT INTO knowledge (content, content_hash) VALUES ('litigation evidence', 'h1')",
             [],

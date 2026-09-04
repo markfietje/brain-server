@@ -70,7 +70,7 @@ pub fn is_jurisdiction_code(code: &str) -> bool {
 /// (commensurate)" per the law (PH RA 10173) — the operator window is used as
 /// the practical countdown. Curated + versioned; re-checked on each release.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
-pub(crate) struct JurisdictionRule {
+pub struct JurisdictionRule {
     pub code: &'static str,
     pub law: &'static str,
     pub deadline_days: Option<i64>,
@@ -171,7 +171,7 @@ pub fn dsar_deadline_for(created_at: i64, code: &str) -> i64 {
 /// A curated snapshot (not a legal opinion) — the operator's counsel confirms
 /// the assessment. `note` names the specific authority to weigh.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
-pub(crate) struct SurveillancePosture {
+pub struct SurveillancePosture {
     pub country: &'static str,
     pub note: &'static str,
 }
@@ -222,7 +222,7 @@ pub fn lawful_basis_flag(strict_domain: bool, basis: Option<&str>) -> bool {
 /// None-vs-blank distinction at the row boundary — a NULL serializes as
 /// `null`, never as an empty-string basis in an evidence artifact.
 #[derive(Debug, Clone, serde::Serialize)]
-pub(crate) struct Transfer {
+pub struct Transfer {
     pub id: i64,
     pub dataset: String,
     pub origin_jurisdiction: String,
@@ -445,7 +445,7 @@ pub struct TiaTemplate {
 }
 
 #[derive(Debug, serde::Serialize)]
-pub(crate) struct TiaSection {
+pub struct TiaSection {
     pub key: &'static str,
     pub title: &'static str,
     pub prompt: String,

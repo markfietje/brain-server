@@ -131,7 +131,7 @@ pub async fn get_ops_skills(
         let mut by_principal: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
         for (p, s) in rows {
-            let p = brain_server::strip_invisible::strip_invisible(&p);
+            let p = crate::strip_invisible::strip_invisible(&p);
             if p.is_empty() {
                 continue;
             }

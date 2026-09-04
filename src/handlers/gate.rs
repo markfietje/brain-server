@@ -237,8 +237,8 @@ pub(crate) async fn create_proposal(
         // Advisory lint for drafts: computed at creation, rides the proposal,
         // NEVER gates approval (the human outranks the linter).
         let lint_json: Option<String> = if is_draft {
-            let (banned, hash) = brain_server::valet_style::style_memory(&conn);
-            let report = brain_server::valet_style::style_check(&content_for_task, &banned, &hash);
+            let (banned, hash) = crate::valet_style::style_memory(&conn);
+            let report = crate::valet_style::style_check(&content_for_task, &banned, &hash);
             Some(
                 serde_json::to_string(&report)
                     .map_err(|e| HandlerError::internal(format!("lint serialize failed: {e}")))?,
@@ -626,7 +626,7 @@ pub async fn approve_proposal(
                             "publish requires public_slug",
                         )
                     })?;
-                if !brain_server::kb::is_valid_slug(slug) {
+                if !crate::kb::is_valid_slug(slug) {
                     return Err(HandlerError::bad_request(
                         "public_slug_invalid",
                         "slug must be lowercase alnum + hyphen",
@@ -1400,12 +1400,12 @@ pub fn scope_filter(p: &Option<crate::auth::Principal>) -> Option<Vec<String>> {
 pub fn role_retrieval_gate(
     principal: &Option<crate::auth::Principal>,
     pool: &crate::Pool,
-) -> Option<brain_server::role::RetrievalGate> {
+) -> Option<crate::role::RetrievalGate> {
     let pr = principal.as_ref()?;
     if pr.roles.is_empty() {
         return None;
     }
-    let empty_permit = || brain_server::role::RetrievalGate {
+    let empty_permit = || crate::role::RetrievalGate {
         access_scopes: Some(Vec::new()),
         owner_in: Some(Vec::new()),
     };
@@ -1422,8 +1422,8 @@ pub fn role_retrieval_gate(
             return Some(empty_permit());
         }
     };
-    match brain_server::role::resolve(&conn, &pr.roles) {
-        Ok(roles) => Some(brain_server::role::effective_filter(&sub, &manages, &roles)),
+    match crate::role::resolve(&conn, &pr.roles) {
+        Ok(roles) => Some(crate::role::effective_filter(&sub, &manages, &roles)),
         Err(e) => {
             tracing::warn!(
                 sub = %super::mask_sub(&sub),
@@ -1516,7 +1516,7 @@ pub fn record_read_gate(
 /// through exactly as before.
 pub fn apply_role_gate(
     filters: &mut crate::search::SearchFilters,
-    gate: &brain_server::role::RetrievalGate,
+    gate: &crate::role::RetrievalGate,
 ) {
     if let Some(s) = &gate.access_scopes {
         filters.access_scopes = Some(std::sync::Arc::new(s.clone()));
@@ -1940,7 +1940,7 @@ pub(crate) fn sha256_hex(s: &str) -> String {
 /// ponytail: reader PII redaction stays OUT of the fingerprint — it is display-
 /// only and would otherwise break digest stability across principals. Constant-
 /// time not required; the fingerprint catches content drift, not side channels.
-pub(crate) fn review_digest(content: &str) -> String {
+pub fn review_digest(content: &str) -> String {
     // Herald: canonicalized in the domain layer (workflow::channels) so the
     // channel console binds to the SAME function — one fingerprint, all
     // approvers. This delegate stays for the handler-layer call sites.
@@ -2018,7 +2018,7 @@ pub async fn list_decayed(
         .pool
         .get()
         .map(|conn| {
-            brain_server::profile::domain_profiles(&conn)
+            crate::profile::domain_profiles(&conn)
                 .unwrap_or_default()
                 .into_iter()
                 .filter_map(|(d, p)| p.retention_map().map(|m| (d, m)))
@@ -2245,7 +2245,7 @@ pub async fn export(
             // travels WITH it, never a sanitizer over it.
             "untrusted": true,
             // the residency stamp — where data lived.
-            "region": brain_server::storage_layout::region(),
+            "region": crate::storage_layout::region(),
             "knowledge": knowledge,
             "entities": entities,
             "relationships": edges,
@@ -2678,13 +2678,12 @@ mod valet_lint_tests {
     use std::sync::Arc;
 
     fn test_state() -> (tempfile::TempDir, Arc<crate::AppState>) {
-        crate::register_sqlite_vec();
+        crate::register_sqlite_vec::register_sqlite_vec();
         let dir = tempfile::TempDir::new().expect("temp dir");
         let db_path = dir.path().join("brain.db");
         let mgr = r2d2_sqlite::SqliteConnectionManager::file(&db_path);
         let pool: crate::Pool = r2d2::Pool::builder().build(mgr).expect("pool");
-        brain_server::migration::run_migration(&mut pool.get().expect("conn"), 0)
-            .expect("migration");
+        crate::migration::run_migration(&mut pool.get().expect("conn"), 0).expect("migration");
         let state = Arc::new(crate::AppState {
             token_store: crate::auth::TokenStore::new(),
             jwt_middleware_state: std::sync::Arc::new(
@@ -2695,13 +2694,13 @@ mod valet_lint_tests {
             ),
             cors: tower_http::cors::CorsLayer::new(),
             model: Arc::new(
-                brain_server::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
+                crate::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
             ),
             registry: crate::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
             pool,
             db_path,
-            connection_tracker: Arc::new(crate::ConnectionTracker::new()),
-            rate_limiter: Arc::new(crate::RateLimiter::new()),
+            connection_tracker: Arc::new(crate::http_limit::ConnectionTracker::new()),
+            rate_limiter: Arc::new(crate::http_limit::RateLimiter::new()),
             snapshot: crate::integrity::SnapshotState::default(),
             audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
             auth_mode: crate::auth::AuthMode::Opaque,
@@ -2747,7 +2746,7 @@ mod valet_lint_tests {
         let conn = state.pool.get().unwrap();
         let lint: Option<String> = crate::service::review::stored_lint_json(&conn, resp.id);
         let lint = lint.expect("lint_json present on drafts");
-        let report: brain_server::valet_style::LintReport =
+        let report: crate::valet_style::LintReport =
             serde_json::from_str(&lint).expect("lint parses");
         assert!(report.score < 100);
         assert!(!report.findings.is_empty());
@@ -2779,14 +2778,14 @@ mod valet_lint_tests {
     async fn style_memory_changes_flow_through_the_proposal_gate() {
         let (_dir, state) = test_state();
         let conn = state.pool.get().unwrap();
-        let (before, hash_before) = brain_server::valet_style::style_memory(&conn);
+        let (before, hash_before) = crate::valet_style::style_memory(&conn);
         assert!(before.is_empty());
 
         // 1. The style amendment arrives as an ordinary pending proposal.
         let req = ProposalRequest {
             content: r#"{"banned_phrases":["synergy"]}"#.to_string(),
             kind: "fact".to_string(),
-            source: Some(brain_server::valet_style::STYLE_MEMORY_SOURCE.to_string()),
+            source: Some(crate::valet_style::STYLE_MEMORY_SOURCE.to_string()),
             authority: None,
             observed_at: None,
             domain: None,
@@ -2796,7 +2795,7 @@ mod valet_lint_tests {
         let resp = create_proposal(state.clone(), None, req)
             .await
             .expect("proposed");
-        let (after_pending, _) = brain_server::valet_style::style_memory(&conn);
+        let (after_pending, _) = crate::valet_style::style_memory(&conn);
         assert!(
             after_pending.is_empty(),
             "a PENDING proposal must not change the style memory"
@@ -2816,7 +2815,7 @@ mod valet_lint_tests {
         .await
         .expect("approved");
         assert_eq!(res.0["status"], "approved");
-        let (after, hash_after) = brain_server::valet_style::style_memory(&conn);
+        let (after, hash_after) = crate::valet_style::style_memory(&conn);
         assert_eq!(after, vec!["synergy".to_string()]);
         assert_ne!(
             hash_after, hash_before,

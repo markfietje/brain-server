@@ -60,14 +60,14 @@ pub async fn export_audit(
     }
     let targets = crate::handlers::domain_pools(&state.registry, &state.pool);
     let since = q.since;
-    let records: Vec<(String, brain_server::audit::decision::DecisionRecord)> =
+    let records: Vec<(String, crate::audit::decision::DecisionRecord)> =
         tokio::task::spawn_blocking(
-            move || -> Vec<(String, brain_server::audit::decision::DecisionRecord)> {
+            move || -> Vec<(String, crate::audit::decision::DecisionRecord)> {
                 let mut all = Vec::new();
                 for (domain, pool) in &targets {
                     let Some(pool) = pool else { continue };
                     let Ok(conn) = pool.get() else { continue };
-                    match brain_server::audit::decision::list_decisions(&conn, since, 10_000) {
+                    match crate::audit::decision::list_decisions(&conn, since, 10_000) {
                         Ok(rows) => all.extend(rows.into_iter().map(|r| (domain.clone(), r))),
                         Err(_) => continue, // table absent (feature added later) exports empty
                     }
@@ -85,7 +85,7 @@ pub async fn export_audit(
 
     let content_disposition = |name: &str| format!("attachment; filename=\"{name}\"");
     if format == "pdf" {
-        let body = brain_server::audit::decision::render_pdf_labelled(
+        let body = crate::audit::decision::render_pdf_labelled(
             &label_refs,
             // render_pdf_labelled borrows the records; rebuild the slice view.
             &records.iter().map(|(_, r)| r).collect::<Vec<_>>(),
@@ -199,7 +199,7 @@ pub async fn post_evaluation_record(
     let pool = state.pool.clone();
     let actor = crate::handlers::recall::principal_label(&principal.0);
     let record = tokio::task::spawn_blocking(
-        move || -> Result<brain_server::audit::decision::DecisionRecord, HandlerError> {
+        move || -> Result<crate::audit::decision::DecisionRecord, HandlerError> {
             let conn = pool
                 .get()
                 .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
@@ -207,9 +207,9 @@ pub async fn post_evaluation_record(
                 "declared:{} dataset_sha256:{} version:{}",
                 body.declaration, body.dataset_hash, body.system_version
             );
-            brain_server::audit::decision::record_decision(
+            crate::audit::decision::record_decision(
                 &conn,
-                &brain_server::audit::decision::DecisionInput {
+                &crate::audit::decision::DecisionInput {
                     actor_id: &actor,
                     role: "operator",
                     policy_version: env!("CARGO_PKG_VERSION"),
@@ -452,15 +452,14 @@ pub(crate) mod tests {
     /// record→verify span. Env-var racing cannot produce mixed-key
     /// signatures (the tip_truncation CI flake).
     pub(crate) fn ensure_test_key() -> std::sync::MutexGuard<'static, ()> {
-        let _g = brain_server::audit::decision::decision_test_lock();
-        brain_server::audit::decision::install_test_signing_key([7u8; 32]);
+        let _g = crate::audit::decision::decision_test_lock();
+        crate::audit::decision::install_test_signing_key([7u8; 32]);
         _g
     }
 
     fn db() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute_batch(brain_server::audit::decision::DDL)
-            .unwrap();
+        conn.execute_batch(crate::audit::decision::DDL).unwrap();
         conn
     }
 
@@ -491,18 +490,17 @@ pub(crate) mod tests {
         let conn = db();
         let _key = ensure_test_key();
         record_oversight(&conn, "dpo-1", "d", "accept", "approve", None, "global");
-        let recs = brain_server::audit::decision::list_decisions(&conn, None, 10).unwrap();
+        let recs = crate::audit::decision::list_decisions(&conn, None, 10).unwrap();
         let labels = vec!["acme-us"];
-        let refs: Vec<&brain_server::audit::decision::DecisionRecord> = recs.iter().collect();
-        let body = String::from_utf8(brain_server::audit::decision::render_pdf_labelled(
+        let refs: Vec<&crate::audit::decision::DecisionRecord> = recs.iter().collect();
+        let body = String::from_utf8(crate::audit::decision::render_pdf_labelled(
             &labels, &refs, "t",
         ))
         .unwrap();
         assert!(body.contains("domain=acme-us"), "label present");
         assert!(body.contains("decision id="));
         // Unlabelled render stays label-free (legacy shape).
-        let plain =
-            String::from_utf8(brain_server::audit::decision::render_pdf(&recs, "t")).unwrap();
+        let plain = String::from_utf8(crate::audit::decision::render_pdf(&recs, "t")).unwrap();
         assert!(!plain.contains("domain="));
     }
 

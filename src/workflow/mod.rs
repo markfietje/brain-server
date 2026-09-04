@@ -22,22 +22,22 @@
 
 #![allow(dead_code)]
 
-pub(crate) mod calibration;
+pub mod calibration;
 pub(crate) mod case_status;
 pub(crate) mod channel;
-pub(crate) mod channels;
+pub mod channels;
 pub(crate) mod complaint;
 pub(crate) mod crew;
 pub(crate) mod driver;
 pub(crate) mod entitlement;
 pub(crate) mod frontdesk;
 pub(crate) mod frontdoor;
-pub(crate) mod host;
+pub mod host;
 pub(crate) mod hostcalls;
 pub(crate) mod interview;
-pub(crate) mod kcs;
+pub mod kcs;
 pub(crate) mod mesh;
-pub(crate) mod outbox;
+pub mod outbox;
 pub(crate) mod outreach;
 pub(crate) mod parcels;
 pub(crate) mod recall;
@@ -45,10 +45,10 @@ pub(crate) mod relay;
 pub(crate) mod scoreboard;
 pub(crate) mod session;
 pub(crate) mod shifts;
-pub(crate) mod state;
+pub mod state;
 pub(crate) mod tiers;
 pub(crate) mod tx;
-pub(crate) mod valet;
+pub mod valet;
 pub(crate) mod wfm;
 pub(crate) mod workload;
 
@@ -111,11 +111,11 @@ fn audit_write_global(conn: &Connection, target: &str, status: AuditStatus, deta
 mod tests {
     use super::*;
     use crate::audit::verify_chain;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
     use crate::workflow::outbox;
     use crate::workflow::state::{CasError, cas_update};
     use crate::workflow::tx::WorkflowTx;
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
 
     fn db() -> Connection {
         register_sqlite_vec();

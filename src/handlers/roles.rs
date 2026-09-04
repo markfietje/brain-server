@@ -35,7 +35,7 @@ pub async fn list_roles(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        brain_server::role::list(&conn).map_err(map_err)
+        crate::role::list(&conn).map_err(map_err)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -49,7 +49,7 @@ pub async fn get_role(
     Path(name): Path<String>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
-    if !brain_server::role::is_valid_role_name(&name) {
+    if !crate::role::is_valid_role_name(&name) {
         return Err(HandlerError::bad_request(
             "role_invalid",
             "role name must be lowercase alnum + hyphen (max 63)",
@@ -61,7 +61,7 @@ pub async fn get_role(
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        brain_server::role::load(&conn, &name).map_err(map_err)
+        crate::role::load(&conn, &name).map_err(map_err)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -104,7 +104,7 @@ pub async fn upsert_role(
     Json(req): Json<RoleUpsertRequest>,
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
-    let r = brain_server::role::Role {
+    let r = crate::role::Role {
         name,
         description: req.description,
         scopes: req.scopes,
@@ -114,14 +114,14 @@ pub async fn upsert_role(
         panels_hidden: req.panels_hidden,
         tools_allowed: req.tools_allowed,
     };
-    brain_server::role::validate(&r).map_err(|e| HandlerError::bad_request("role_invalid", e))?;
+    crate::role::validate(&r).map_err(|e| HandlerError::bad_request("role_invalid", e))?;
     let actor = super::recall::principal_label(&principal.0);
     let pool = state.pool.clone();
     let stored = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
         let conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
-        brain_server::role::upsert(&conn, &r).map_err(map_err)?;
+        crate::role::upsert(&conn, &r).map_err(map_err)?;
         crate::audit::record(
             &conn,
             crate::audit::AuditKind::Reconcile,
@@ -130,7 +130,7 @@ pub async fn upsert_role(
             crate::audit::AuditStatus::Ok,
             "role_upserted",
         );
-        brain_server::role::load(&conn, &r.name).map_err(map_err)
+        crate::role::load(&conn, &r.name).map_err(map_err)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;

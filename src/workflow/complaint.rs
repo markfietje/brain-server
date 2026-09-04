@@ -856,9 +856,9 @@ pub(crate) fn goodwill_ledger(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
     use brain_engine_sdk::pure::complaint::CAP_TABLE;
-    use brain_server::migration::run_migration;
-    use brain_server::register_sqlite_vec::register_sqlite_vec;
     use rusqlite::Connection;
 
     // ── Ack SLA, confirm-gate closure, and the monthly register.
