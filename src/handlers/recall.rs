@@ -502,10 +502,11 @@ pub async fn run_recall(
     // search closure; an exhausted pool degrades to the server-wide policy
     // (transient, availability-first). The map also carries the audit_level
     // for the read-event decision below.
-    let bound_profiles = match state.pool.get() {
-        Ok(conn) => crate::profile::domain_profiles(&conn).unwrap_or_default(),
-        Err(_) => std::collections::HashMap::new(),
-    };
+    let bound_profiles = state
+        .pool
+        .get()
+        .map(|conn| crate::profile::domain_profiles(&conn).unwrap_or_default())
+        .unwrap_or_default();
     let profile_retention: std::collections::HashMap<String, Vec<(String, i64)>> = bound_profiles
         .iter()
         .filter_map(|(d, p)| {

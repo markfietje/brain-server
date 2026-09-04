@@ -59,7 +59,7 @@ const MAIN_RS_LINES_CEIL: usize = 16_869;
 /// moved to the lib (MAIN_RS_LINES covers main.rs only).
 // C6 (law-13 gauges): +5 net — health_body gains the db_busy_hits
 /// parameter and the /metrics busy counter lands beside the audit counter.
-const TEST_REGION_LINES_CEIL: usize = 12_293;
+const TEST_REGION_LINES_CEIL: usize = 12_294;
 /// Textual `.route(` occurrences in main.rs (the registration chain +
 /// the authz scan's own literals — counted identically every time). Ceiling.
 /// 234 at the Vaulting open; −5 as the three middleware oneshot suites

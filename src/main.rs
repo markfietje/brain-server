@@ -62,8 +62,6 @@ pub(crate) use brain_server::secret_file;
 // the crate root, alongside the other crate-root re-exports the moved
 // modules and test fixtures have always used.
 #[cfg(test)]
-pub(crate) use brain_server::auth::TokenStore;
-#[cfg(test)]
 use brain_server::server::bootstrap::AppState;
 // test-only references (oneshot suites + moved-surface pins) live inside
 // `mod tests` (the nested bindings below its `use brain_server::*;` glob).
@@ -9011,9 +9009,10 @@ Final paragraph after the rule.";
                 0,
                 0,
             );
-            match prev {
-                Some(v) => unsafe { std::env::set_var("BRAIN_DPO_CONTACT", v) },
-                None => unsafe { std::env::remove_var("BRAIN_DPO_CONTACT") },
+            if let Some(v) = prev {
+                unsafe { std::env::set_var("BRAIN_DPO_CONTACT", v) }
+            } else {
+                unsafe { std::env::remove_var("BRAIN_DPO_CONTACT") }
             }
             body
         };

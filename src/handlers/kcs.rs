@@ -21,7 +21,7 @@ use crate::handlers::auth::OptPrincipal;
 const KCS_FRESHNESS_SECS: i64 = crate::workflow::kcs::KCS_FRESHNESS_SECS;
 
 #[derive(serde::Deserialize)]
-pub struct TranslateRequest {
+pub(crate) struct TranslateRequest {
     pub knowledge_id: i64,
     pub locale: String,
     pub title: String,
@@ -31,7 +31,7 @@ pub struct TranslateRequest {
 /// `POST /kcs/translate` — file a pending `kcs_translate` HITL proposal
 /// (role `workflow`). Translation is a HUMAN act: the tool files, only an
 /// approval promotes. Audited inside the tx.
-pub async fn post_kcs_translate(
+pub(crate) async fn post_kcs_translate(
     State(state): State<Arc<AppState>>,
     principal: OptPrincipal,
     Json(body): Json<TranslateRequest>,

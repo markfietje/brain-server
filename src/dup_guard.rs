@@ -214,10 +214,6 @@ const ALLOWED_DUPES: &[(&str, &str)] = &[
         "[shim] handlers/mod.rs delegates to storage_layout (single truth)",
     ),
     (
-        "guard_capacity",
-        "[vaulting] memory family copy vs handlers/mod.rs core — unify at Capstone",
-    ),
-    (
         "review_digest",
         "[vaulting] workflow/channels canonical vs handlers/gate.rs delegate",
     ),

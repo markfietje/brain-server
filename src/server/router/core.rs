@@ -549,54 +549,57 @@ pub(crate) async fn stats(
     };
     let stats_future = task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| anyhow::anyhow!(e))?;
-        let (count, embed_count): (i64, i64) = match &shim_label {
-            Some(label) => (
+        let (count, embed_count): (i64, i64) = if let Some(label) = &shim_label {
+            (
                 conn.query_row(
                     "SELECT COUNT(*) FROM knowledge WHERE domain = ?1",
-                    [&label],
+                    [label],
                     |r| r.get(0),
                 )?,
                 conn.query_row(
                     "SELECT COUNT(*) FROM vec_knowledge v JOIN knowledge k ON k.id = v.knowledge_id
                      WHERE k.domain = ?1",
-                    [&label],
+                    [label],
                     |r| r.get(0),
                 )
                 .unwrap_or(0),
-            ),
-            None => (
+            )
+        } else {
+            (
                 conn.query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))?,
                 conn.query_row("SELECT COUNT(*) FROM vec_knowledge", [], |r| r.get(0))
                     .unwrap_or(0),
-            ),
+            )
         };
         // Entities/relationships are linked to chunks; scope by the chunk's
         // domain in shim mode (edges with no chunk link are unscopable — the
         // documented NULL-knowledge_id graph ceiling).
-        let (entities, relationships): (i64, i64) = match &shim_label {
-            Some(label) => (
+        let (entities, relationships): (i64, i64) = if let Some(label) = &shim_label {
+            (
                 conn.query_row(
                     "SELECT COUNT(DISTINCT e.id) FROM entities e
                      WHERE EXISTS (
                        SELECT 1 FROM relationships r JOIN knowledge k ON k.id = r.knowledge_id
                         WHERE (r.from_entity_id = e.id OR r.to_entity_id = e.id) AND k.domain = ?1)",
-                    [&label],
+                    [label],
                     |r| r.get(0),
                 )
                 .unwrap_or(0),
                 conn.query_row(
                     "SELECT COUNT(*) FROM relationships r JOIN knowledge k ON k.id = r.knowledge_id
                      WHERE k.domain = ?1",
-                    [&label],
+                    [label],
                     |r| r.get(0),
                 )
                 .unwrap_or(0),
-            ),
-            None => (
-                conn.query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0)).unwrap_or(0),
+            )
+        } else {
+            (
+                conn.query_row("SELECT COUNT(*) FROM entities", [], |r| r.get(0))
+                    .unwrap_or(0),
                 conn.query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
                     .unwrap_or(0),
-            ),
+            )
         };
         Ok::<_, anyhow::Error>((count, embed_count, entities, relationships))
     });

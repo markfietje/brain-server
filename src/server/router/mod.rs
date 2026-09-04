@@ -6,11 +6,11 @@
 //! composition, not with these definitions.
 
 pub mod auth;
-pub mod compliance;
+pub(crate) mod compliance;
 pub mod core;
 pub mod memory;
-pub mod ump;
-pub mod workflow;
+pub(crate) mod ump;
+pub(crate) mod workflow;
 
 use axum::{
     Json, Router,
