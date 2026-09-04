@@ -30,8 +30,8 @@
 //! as the pass cell everywhere, with the literal-200 list as the positive
 //! anchor.
 
-use crate::app;
 use crate::route_guards::AUTHZ_GATES;
+use crate::server::router::app;
 use crate::server::router::auth::JwtMiddlewareState;
 
 use axum::{body::Body, http::Request, http::StatusCode};
@@ -188,7 +188,7 @@ fn mint(
 /// hand-rolled shape the authz source-scan pin uses.
 fn registered_methods() -> std::collections::HashMap<&'static str, Vec<(&'static str, &'static str)>>
 {
-    let chain = include_str!("main.rs");
+    let chain = include_str!("server/router/mod.rs");
     let flat: &'static str = Box::leak(
         chain
             .split_whitespace()
@@ -677,31 +677,6 @@ mod tests {
                 st != StatusCode::UNAUTHORIZED,
                 "{method} {template} (role-denied) must never 401 — the token verifies"
             );
-        }
-    }
-
-    #[tokio::test]
-    async fn zz_census_soft_deny() {
-        let srv = build_server();
-        let xtok = mint(&srv, "c-xt", "user:c", "team-b", &["read:team-a/*"], &[]);
-        let mut soft = Vec::new();
-        for (template, path, method, body) in rows() {
-            let st = send(&srv, Some(&xtok), &path, method, body).await;
-            if st != StatusCode::FORBIDDEN {
-                soft.push(format!("{template} -> {st}"));
-            }
-        }
-        println!(
-            "SOFT-DENY CENSUS (cross-tenant, non-403):\n{}",
-            soft.join("\n")
-        );
-    }
-
-    #[tokio::test]
-    async fn zz_probe_methods() {
-        let mt = registered_methods();
-        for p in ["/memory/{id}", "/domains/{name}", "/sources/{id}"] {
-            println!("PROBE3 {} -> {:?}", p, mt.get(p));
         }
     }
 

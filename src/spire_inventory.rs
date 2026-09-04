@@ -52,14 +52,20 @@ const MAIN_RS_LINES_CEIL: usize = 16_869;
 /// bind pins left, then −113 net as the three middleware oneshot suites
 /// moved to server/router/auth.rs with their subjects, +102 back as the
 /// composed-app test sites gained the middleware-stack fixture fields.
-const TEST_REGION_LINES_CEIL: usize = 12_189;
+// C3a: +5 net — the chain/layers moved to src/server/router (pins repointed
+/// with one comment line each) while the middleware suites had already left.
+const TEST_REGION_LINES_CEIL: usize = 12_194;
 /// Textual `.route(` occurrences in main.rs (the registration chain +
 /// the authz scan's own literals — counted identically every time). Ceiling.
 /// 234 at the Vaulting open; −5 as the three middleware oneshot suites
 /// (stub-router literals, not real registrations) moved to
 /// server/router/auth.rs with their subjects. The real registrations leave
 /// only in the family commits, each lowering this toward 0.
-const ROUTE_CALL_SITES_CEIL: usize = 229;
+const ROUTE_CALL_SITES_CEIL: usize = 35;
+/// `.route(` sites under src/server/router/** (the composed chain). Floor —
+/// the wire's registrations may not silently disappear during the family
+/// moves; the authz matrix + route-coverage table pin their correctness.
+const ROUTER_SITES_FLOOR: usize = 199;
 /// `#[test]` occurrences in main.rs. Floor (lowered only when a pin moves,
 /// in the same commit): 139 at session start − 10 relocated pure-unit pins
 /// (6 → handlers/mod.rs; auth_tokens, temporal, trace_caps, eval → their
@@ -120,6 +126,18 @@ fn spire_inventory_freezes_the_monolith() {
         .unwrap_or_else(|| panic!("spire: `#[cfg(test)] mod tests` marker not found in main.rs"));
     let route_sites = count_needle(main_src, ".route(");
     let main_tests = count_needle(main_src, "#[test]");
+    // the composed chain moved to src/server/router (C3a): the real
+    // registrations live there now; main.rs's remaining `.route(` sites are
+    // test-stub routers inside cfg(test). Count the router files to keep the
+    // anti-vacuous guard meaningful.
+    let mut router_src = String::new();
+    for f in ["src/server/router/mod.rs", "src/server/router/auth.rs"] {
+        router_src.push_str(
+            &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(f))
+                .unwrap_or_default(),
+        );
+    }
+    let router_sites = count_needle(&router_src, ".route(");
 
     // Anti-vacuous sanity: the counters must be looking at the real thing
     // (the Cornerstone lesson — a guard that can pass on nothing guards
@@ -129,8 +147,8 @@ fn spire_inventory_freezes_the_monolith() {
         "spire: test-region derivation looks wrong ({region} of {total_lines})"
     );
     assert!(
-        route_sites >= 100 && main_tests >= 100,
-        "spire: counters look broken (routes {route_sites}, tests {main_tests})"
+        router_sites >= ROUTER_SITES_FLOOR && main_tests >= 100,
+        "spire: counters look broken (router routes {router_sites}, tests {main_tests})"
     );
 
     let mut files = Vec::new();
@@ -161,7 +179,13 @@ fn spire_inventory_freezes_the_monolith() {
     }
     if route_sites > ROUTE_CALL_SITES_CEIL {
         breaches.push(format!(
-            "  .route( sites: {route_sites} > ceiling {ROUTE_CALL_SITES_CEIL}"
+            "  .route( sites in main.rs: {route_sites} > ceiling {ROUTE_CALL_SITES_CEIL}"
+        ));
+    }
+    if router_sites < ROUTER_SITES_FLOOR {
+        breaches.push(format!(
+            "  .route( sites under src/server/router: {router_sites} < floor {ROUTER_SITES_FLOOR} — \
+             the composed chain lost registrations"
         ));
     }
     if main_tests < MAIN_RS_TEST_FLOOR {
