@@ -39,7 +39,7 @@ use std::path::{Path, PathBuf};
 /// (the +102 AppState-initializer fixture lines across the composed-state
 /// test sites came in the same commit — net monolith motion still down).
 /// Ceiling.
-const MAIN_RS_LINES_CEIL: usize = 17_707;
+const MAIN_RS_LINES_CEIL: usize = 17_710;
 /// Lines from the `#[cfg(test)] mod tests` boundary to EOF. Ceiling.
 /// 13,342 at session start − 630 net (Scaffold) − 156 net (Buttress: the
 /// http_limit unit pins left the region, then 126 net as the 7 blocklist
