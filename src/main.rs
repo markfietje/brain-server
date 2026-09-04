@@ -4633,16 +4633,14 @@ async fn auth_middleware(
 /// (default = cores; Jetson target = 2). Built here instead of `#[tokio::main]`
 /// so the env var is read before the runtime starts.
 fn main() {
-    let runtime = match boot::worker_threads() {
-        Some(n) => tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(n)
-            .enable_all()
-            .build(),
-        None => tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build(),
-    };
-    let runtime = runtime.expect("failed to build tokio runtime");
+    let mut builder = tokio::runtime::Builder::new_multi_thread();
+    if let Some(n) = boot::worker_threads() {
+        builder.worker_threads(n);
+    }
+    let runtime = builder
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime");
     if let Err(e) = runtime.block_on(main_inner()) {
         eprintln!("error: {e:#}");
         std::process::exit(1);
