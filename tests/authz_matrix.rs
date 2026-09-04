@@ -30,9 +30,9 @@
 //! as the pass cell everywhere, with the literal-200 list as the positive
 //! anchor.
 
-use crate::route_guards::AUTHZ_GATES;
-use crate::server::router::app;
-use crate::server::router::auth::JwtMiddlewareState;
+use brain_server::route_guards::AUTHZ_GATES;
+use brain_server::server::router::app;
+use brain_server::server::router::auth::JwtMiddlewareState;
 
 use axum::{body::Body, http::Request, http::StatusCode};
 use r2d2_sqlite::SqliteConnectionManager;
@@ -45,7 +45,7 @@ use tower::ServiceExt;
 
 struct TestServer {
     _dir: tempfile::TempDir,
-    state: Arc<crate::AppState>,
+    state: Arc<brain_server::AppState>,
     priv_key: rsa::RsaPrivateKey,
 }
 
@@ -67,12 +67,12 @@ fn rsa_keypair(key_dir: &Path) -> rsa::RsaPrivateKey {
 fn build_server() -> TestServer {
     let dir = tempfile::TempDir::new().expect("temp dir");
     let db_path = dir.path().join("brain.db");
-    crate::register_sqlite_vec::register_sqlite_vec();
+    brain_server::register_sqlite_vec::register_sqlite_vec();
     let mgr = SqliteConnectionManager::file(&db_path);
-    let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
-    crate::migration::run_migration(
+    let pool: brain_server::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+    brain_server::migration::run_migration(
         &mut pool.get().expect("conn"),
-        crate::config::DB_MMAP_SIZE_MIB,
+        brain_server::config::DB_MMAP_SIZE_MIB,
     )
     .expect("migration");
     {
@@ -85,32 +85,33 @@ fn build_server() -> TestServer {
         )
         .expect("seed matrix role");
     }
-    let model: Arc<dyn crate::embed::Embedder> =
-        Arc::new(crate::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"));
+    let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+        brain_server::embed::StaticEmbedder::new(brain_server::config::MODEL_ID).expect("model"),
+    );
 
     let priv_key = rsa_keypair(&dir.path().join("keys"));
     let key_store =
-        crate::auth::jwks::KeyStore::load(&dir.path().join("keys")).expect("load test keys");
+        brain_server::auth::jwks::KeyStore::load(&dir.path().join("keys")).expect("load test keys");
     let jwt_issuer = "https://brain.matrix/".to_string();
     let jwt_audience = "brain-server".to_string();
 
     let jwt_middleware_state = Arc::new(JwtMiddlewareState {
-        auth_mode: crate::auth::AuthMode::Jwt,
+        auth_mode: brain_server::auth::AuthMode::Jwt,
         key_store: key_store.clone(),
         jwt_issuer: jwt_issuer.clone(),
         jwt_audience: jwt_audience.clone(),
         pool: pool.clone(),
-        revocation_cache: Arc::new(crate::auth::revocation::RevocationCache::new()),
+        revocation_cache: Arc::new(brain_server::auth::revocation::RevocationCache::new()),
         db_path: db_path.clone(),
-        principal_rate_limiter: Arc::new(crate::http_limit::RateLimiter::new()),
+        principal_rate_limiter: Arc::new(brain_server::http_limit::RateLimiter::new()),
     });
 
-    let state = Arc::new(crate::AppState {
-        token_store: crate::auth::TokenStore::new(),
+    let state = Arc::new(brain_server::AppState {
+        token_store: brain_server::auth::TokenStore::new(),
         jwt_middleware_state,
         cors: tower_http::cors::CorsLayer::new(),
         model,
-        registry: crate::domain_registry::DomainRegistry::new(
+        registry: brain_server::domain_registry::DomainRegistry::new(
             pool.clone(),
             &db_path,
             // shim mode: every domain resolves to the one pool — the
@@ -119,20 +120,20 @@ fn build_server() -> TestServer {
         ),
         pool,
         db_path,
-        connection_tracker: Arc::new(crate::http_limit::ConnectionTracker::new()),
-        rate_limiter: Arc::new(crate::http_limit::RateLimiter::new()),
-        snapshot: crate::integrity::SnapshotState::default(),
+        connection_tracker: Arc::new(brain_server::http_limit::ConnectionTracker::new()),
+        rate_limiter: Arc::new(brain_server::http_limit::RateLimiter::new()),
+        snapshot: brain_server::integrity::SnapshotState::default(),
         audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
-        auth_mode: crate::auth::AuthMode::Jwt,
+        auth_mode: brain_server::auth::AuthMode::Jwt,
         key_store,
-        revocation_cache: Arc::new(crate::auth::revocation::RevocationCache::new()),
+        revocation_cache: Arc::new(brain_server::auth::revocation::RevocationCache::new()),
         jwt_issuer,
         jwt_audience,
-        oidc_config: crate::handlers::well_known::OidcConfig::unconfigured(),
-        ump_events: tokio::sync::broadcast::channel(crate::config::UMP_EVENT_BUFFER).0,
-        alert_events: tokio::sync::broadcast::channel(crate::config::ALERT_EVENT_BUFFER).0,
+        oidc_config: brain_server::handlers::well_known::OidcConfig::unconfigured(),
+        ump_events: tokio::sync::broadcast::channel(brain_server::config::UMP_EVENT_BUFFER).0,
+        alert_events: tokio::sync::broadcast::channel(brain_server::config::ALERT_EVENT_BUFFER).0,
         alert_seq: std::sync::atomic::AtomicU64::new(0),
-        chain_watch: crate::alert::ChainWatchState::default(),
+        chain_watch: brain_server::alert::ChainWatchState::default(),
     });
     TestServer {
         _dir: dir,
@@ -155,7 +156,7 @@ fn mint(
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let claims = crate::auth::jwt::Claims {
+    let claims = brain_server::auth::jwt::Claims {
         iss: "https://brain.matrix/".to_string(),
         aud: "brain-server".to_string(),
         sub: sub.to_string(),
@@ -189,13 +190,13 @@ fn mint(
 fn registered_methods() -> std::collections::HashMap<&'static str, Vec<(&'static str, &'static str)>>
 {
     let chain = concat!(
-        include_str!("server/router/mod.rs"),
-        include_str!("server/router/core.rs"),
-        include_str!("server/router/memory.rs"),
-        include_str!("server/router/ump.rs"),
-        include_str!("server/router/compliance.rs"),
-        include_str!("server/router/workflow.rs"),
-        include_str!("server/router/auth.rs"),
+        include_str!("../src/server/router/mod.rs"),
+        include_str!("../src/server/router/core.rs"),
+        include_str!("../src/server/router/memory.rs"),
+        include_str!("../src/server/router/ump.rs"),
+        include_str!("../src/server/router/compliance.rs"),
+        include_str!("../src/server/router/workflow.rs"),
+        include_str!("../src/server/router/auth.rs"),
     );
     let flat: &'static str = Box::leak(
         chain
@@ -512,297 +513,294 @@ const EMPTY_SAFE_200: &[&str] = &[
     "/workflow/runs",
 ];
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    async fn send(
-        srv: &TestServer,
-        token: Option<&str>,
-        path: &str,
-        method: &str,
-        body: &str,
-    ) -> StatusCode {
-        let method = axum::http::Method::from_bytes(method.as_bytes()).unwrap();
-        let mut builder = Request::builder().method(method).uri(path);
-        if !body.is_empty() {
-            builder = builder.header("content-type", "application/json");
-        }
-        if let Some(t) = token {
-            builder = builder.header("authorization", format!("Bearer {t}"));
-        }
-        let req = builder.body(Body::from(body.to_owned())).unwrap();
-        let resp = app(srv.state.clone()).oneshot(req).await.expect("oneshot");
-        resp.status()
+async fn send(
+    srv: &TestServer,
+    token: Option<&str>,
+    path: &str,
+    method: &str,
+    body: &str,
+) -> StatusCode {
+    let method = axum::http::Method::from_bytes(method.as_bytes()).unwrap();
+    let mut builder = Request::builder().method(method).uri(path);
+    if !body.is_empty() {
+        builder = builder.header("content-type", "application/json");
     }
+    if let Some(t) = token {
+        builder = builder.header("authorization", format!("Bearer {t}"));
+    }
+    let req = builder.body(Body::from(body.to_owned())).unwrap();
+    let resp = app(srv.state.clone()).oneshot(req).await.expect("oneshot");
+    resp.status()
+}
 
-    /// THE NET. Every AUTHZ_GATES row × the seven principal classes.
-    #[tokio::test]
-    async fn authz_matrix_rows_x_classes_through_composed_app() {
-        let srv = build_server();
-        let read_tok = mint(
-            &srv,
-            "m-read",
-            "user:read",
-            "team-a",
-            &["read:team-a/*"],
-            &[],
+/// THE NET. Every AUTHZ_GATES row × the seven principal classes.
+#[tokio::test]
+async fn authz_matrix_rows_x_classes_through_composed_app() {
+    let srv = build_server();
+    let read_tok = mint(
+        &srv,
+        "m-read",
+        "user:read",
+        "team-a",
+        &["read:team-a/*"],
+        &[],
+    );
+    let write_tok = mint(
+        &srv,
+        "m-write",
+        "user:write",
+        "team-a",
+        &["write:team-a/*"],
+        &[],
+    );
+    // the "admin" role rides the scopes: the breaches/holds DPO dual gate
+    // (require_dpo_role) checks roles once the store is populated (migration
+    // seeds the presets), so a roleless token cannot exercise those rows.
+    let admin_tok = mint(
+        &srv,
+        "m-admin",
+        "user:admin",
+        "team-a",
+        &["admin:*/*"],
+        &["admin", "matrix-role"],
+    );
+    let xtok_tok = mint(&srv, "m-xt", "user:xt", "team-b", &["read:team-a/*"], &[]);
+    let role_ok = mint(
+        &srv,
+        "m-rh",
+        "user:rh",
+        "team-a",
+        &["admin:*/*"],
+        &["matrix-role"],
+    );
+    let role_no = mint(
+        &srv,
+        "m-rd",
+        "user:rd",
+        "team-a",
+        &["admin:*/*"],
+        &["qa-specialist"],
+    );
+
+    for (template, path, method, body) in rows() {
+        let action = AUTHZ_GATES
+            .iter()
+            .find(|(t, _)| *t == template)
+            .map(|(_, a)| *a)
+            .expect("template from the table");
+
+        // ── none: unauthenticated is a middleware 401 on EVERY gated row ──
+        let st = send(&srv, None, &path, method, body).await;
+        assert_eq!(
+            st,
+            StatusCode::UNAUTHORIZED,
+            "{method} {template} (none) must 401"
         );
-        let write_tok = mint(
-            &srv,
-            "m-write",
-            "user:write",
-            "team-a",
-            &["write:team-a/*"],
-            &[],
-        );
-        // the "admin" role rides the scopes: the breaches/holds DPO dual gate
-        // (require_dpo_role) checks roles once the store is populated (migration
-        // seeds the presets), so a roleless token cannot exercise those rows.
-        let admin_tok = mint(
-            &srv,
-            "m-admin",
-            "user:admin",
-            "team-a",
-            &["admin:*/*"],
-            &["admin", "matrix-role"],
-        );
-        let xtok_tok = mint(&srv, "m-xt", "user:xt", "team-b", &["read:team-a/*"], &[]);
-        let role_ok = mint(
-            &srv,
-            "m-rh",
-            "user:rh",
-            "team-a",
-            &["admin:*/*"],
-            &["matrix-role"],
-        );
-        let role_no = mint(
-            &srv,
-            "m-rd",
-            "user:rd",
-            "team-a",
-            &["admin:*/*"],
-            &["qa-specialist"],
-        );
 
-        for (template, path, method, body) in rows() {
-            let action = AUTHZ_GATES
-                .iter()
-                .find(|(t, _)| *t == template)
-                .map(|(_, a)| *a)
-                .expect("template from the table");
-
-            // ── none: unauthenticated is a middleware 401 on EVERY gated row ──
-            let st = send(&srv, None, &path, method, body).await;
-            assert_eq!(
-                st,
-                StatusCode::UNAUTHORIZED,
-                "{method} {template} (none) must 401"
-            );
-
-            // denied-cell expectation: 403, or the route's documented
-            // pre-gate vocabulary (legacy 200 shell / SSE handshake /
-            // row-lookup 404).
-            let denied = |st: StatusCode, label: &str| {
-                if SOFT_DENY_LEGACY.contains(&template) || SSE_SOFT.contains(&template) {
-                    assert_eq!(
-                        st,
-                        StatusCode::OK,
-                        "{method} {template} ({label}) soft-denies with the legacy/SSE 200 shape"
-                    );
-                } else if PRE_GATE_400.contains(&template) {
-                    assert_eq!(
-                        st,
-                        StatusCode::BAD_REQUEST,
-                        "{method} {template} ({label}) pre-gate 400s on an invalid bundle"
-                    );
-                } else if PRE_GATE_404.contains(&template) {
-                    assert!(
-                        st == StatusCode::NOT_FOUND || st == StatusCode::FORBIDDEN,
-                        "{method} {template} ({label}) must pre-gate 404 or 403, got {st}"
-                    );
-                } else {
-                    assert_eq!(
-                        st,
-                        StatusCode::FORBIDDEN,
-                        "{method} {template} ({label}) must 403"
-                    );
-                }
-            };
-
-            // ── cross-tenant: scope-team ≠ tenant is 403 on EVERY gated row ──
-            let st = send(&srv, Some(&xtok_tok), &path, method, body).await;
-            denied(st, "cross-tenant");
-
-            // ── scope-tier cells ──
-            let can_read = matches!(action, "Read" | "Traverse");
-            let can_write = matches!(action, "Read" | "Write" | "Traverse");
-
-            let st = send(&srv, Some(&read_tok), &path, method, body).await;
-            if can_read && LAYOUT_CONDITIONAL.contains(&template) {
+        // denied-cell expectation: 403, or the route's documented
+        // pre-gate vocabulary (legacy 200 shell / SSE handshake /
+        // row-lookup 404).
+        let denied = |st: StatusCode, label: &str| {
+            if SOFT_DENY_LEGACY.contains(&template) || SSE_SOFT.contains(&template) {
+                assert_eq!(
+                    st,
+                    StatusCode::OK,
+                    "{method} {template} ({label}) soft-denies with the legacy/SSE 200 shape"
+                );
+            } else if PRE_GATE_400.contains(&template) {
+                assert_eq!(
+                    st,
+                    StatusCode::BAD_REQUEST,
+                    "{method} {template} ({label}) pre-gate 400s on an invalid bundle"
+                );
+            } else if PRE_GATE_404.contains(&template) {
+                assert!(
+                    st == StatusCode::NOT_FOUND || st == StatusCode::FORBIDDEN,
+                    "{method} {template} ({label}) must pre-gate 404 or 403, got {st}"
+                );
+            } else {
                 assert_eq!(
                     st,
                     StatusCode::FORBIDDEN,
-                    "{method} {template} (read) is Admin-gated in shim mode (layout-conditional row)"
-                );
-            } else if can_read {
-                assert!(
-                    st != StatusCode::UNAUTHORIZED && st != StatusCode::FORBIDDEN,
-                    "{method} {template} (read) must pass the gate, got {st}"
-                );
-            } else {
-                denied(st, "read");
-            }
-
-            let st = send(&srv, Some(&write_tok), &path, method, body).await;
-            if can_write && LAYOUT_CONDITIONAL.contains(&template) {
-                assert_eq!(
-                    st,
-                    StatusCode::FORBIDDEN,
-                    "{method} {template} (write) is Admin-gated in shim mode (layout-conditional row)"
-                );
-            } else if can_write {
-                assert!(
-                    st != StatusCode::UNAUTHORIZED && st != StatusCode::FORBIDDEN,
-                    "{method} {template} (write) must pass the gate, got {st}"
-                );
-            } else {
-                denied(st, "write");
-            }
-
-            for (label, tok) in [("admin", &admin_tok), ("role-held", &role_ok)] {
-                let st = send(&srv, Some(tok), &path, method, body).await;
-                assert!(
-                    st != StatusCode::UNAUTHORIZED && st != StatusCode::FORBIDDEN,
-                    "{method} {template} ({label}) must pass the gate, got {st}"
+                    "{method} {template} ({label}) must 403"
                 );
             }
-
-            // role-denied: scope gates pass; role-gated routes (approve/
-            // reject/publish/purge/workflow/dsar_export capabilities) 403.
-            let st = send(&srv, Some(&role_no), &path, method, body).await;
-            assert!(
-                st != StatusCode::UNAUTHORIZED,
-                "{method} {template} (role-denied) must never 401 — the token verifies"
-            );
-        }
-    }
-
-    /// The positive anchor: empty-safe list reads are literal 200 for the
-    /// admin principal — the pass cell can never silently degrade into
-    /// "any non-auth error counts".
-    #[tokio::test]
-    async fn authz_matrix_empty_safe_reads_are_literal_200() {
-        let srv = build_server();
-        let admin = mint(
-            &srv,
-            "m200",
-            "user:admin200",
-            "team-a",
-            &["admin:*/*"],
-            &["admin", "dpo"],
-        );
-        for (template, path, method, body) in rows() {
-            if !EMPTY_SAFE_200.contains(&template) || method != "GET" {
-                continue;
-            }
-            let st = send(&srv, Some(&admin), &path, method, body).await;
-            assert_eq!(
-                st,
-                StatusCode::OK,
-                "{method} {template} must be 200 for admin on an empty corpus"
-            );
-        }
-    }
-
-    /// The opaque back-compat path per row: a verified bearer with no
-    /// principal is the v1.1 superuser — the gate never 401s/403s it; and
-    /// with NO token the presentation layer still 401s.
-    #[tokio::test]
-    async fn authz_matrix_opaque_mode_superuser_and_none() {
-        // Opaque-mode server: no keys, opaque middleware decides.
-        let dir = tempfile::TempDir::new().expect("temp dir");
-        let db_path = dir.path().join("brain.db");
-        crate::register_sqlite_vec::register_sqlite_vec();
-        let mgr = SqliteConnectionManager::file(&db_path);
-        let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
-        crate::migration::run_migration(
-            &mut pool.get().expect("conn"),
-            crate::config::DB_MMAP_SIZE_MIB,
-        )
-        .expect("migration");
-        let model: Arc<dyn crate::embed::Embedder> =
-            Arc::new(crate::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"));
-        // one known opaque token via a token file
-        let tok_file = tempfile::NamedTempFile::new().expect("token file");
-        std::fs::write(tok_file.path(), b"seed\n").unwrap();
-        let token_store = crate::auth::TokenStore::from_file(Some(tok_file.path().to_path_buf()));
-        // `from_file` seeds from env (unset here); the explicit reload makes
-        // the store Active with exactly the matrix token (mtime-safe: distinct
-        // write after construction, mirroring the rotation-test pattern).
-        std::fs::write(tok_file.path(), b"opaque-matrix-token\n").unwrap();
-        assert!(
-            token_store.reload_if_changed_from(vec!["opaque-matrix-token".to_string()]),
-            "the explicit reload must activate the matrix token"
-        );
-
-        let jwt_middleware_state = Arc::new(JwtMiddlewareState {
-            auth_mode: crate::auth::AuthMode::Opaque,
-            key_store: crate::auth::jwks::KeyStore::default(),
-            jwt_issuer: String::new(),
-            jwt_audience: String::new(),
-            pool: pool.clone(),
-            revocation_cache: Arc::new(crate::auth::revocation::RevocationCache::new()),
-            db_path: db_path.clone(),
-            principal_rate_limiter: Arc::new(crate::http_limit::RateLimiter::new()),
-        });
-        let state = Arc::new(crate::AppState {
-            token_store,
-            jwt_middleware_state,
-            cors: tower_http::cors::CorsLayer::new(),
-            model,
-            registry: crate::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
-            pool,
-            db_path,
-            connection_tracker: Arc::new(crate::http_limit::ConnectionTracker::new()),
-            rate_limiter: Arc::new(crate::http_limit::RateLimiter::new()),
-            snapshot: crate::integrity::SnapshotState::default(),
-            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
-            auth_mode: crate::auth::AuthMode::Opaque,
-            key_store: crate::auth::jwks::KeyStore::default(),
-            revocation_cache: Arc::new(crate::auth::revocation::RevocationCache::new()),
-            jwt_issuer: String::new(),
-            jwt_audience: String::new(),
-            oidc_config: crate::handlers::well_known::OidcConfig::unconfigured(),
-            ump_events: tokio::sync::broadcast::channel(crate::config::UMP_EVENT_BUFFER).0,
-            alert_events: tokio::sync::broadcast::channel(crate::config::ALERT_EVENT_BUFFER).0,
-            alert_seq: std::sync::atomic::AtomicU64::new(0),
-            chain_watch: crate::alert::ChainWatchState::default(),
-        });
-        let srv = TestServer {
-            _dir: dir,
-            state,
-            // opaque mode never mints; reuse a throwaway key for the type
-            priv_key: {
-                let mut rng = rand::rngs::ThreadRng::default();
-                rsa::RsaPrivateKey::new(&mut rng, 2048).expect("keypair")
-            },
         };
 
-        for (template, path, method, body) in rows() {
-            // no token → the opaque presentation layer 401s
-            let st = send(&srv, None, &path, method, body).await;
+        // ── cross-tenant: scope-team ≠ tenant is 403 on EVERY gated row ──
+        let st = send(&srv, Some(&xtok_tok), &path, method, body).await;
+        denied(st, "cross-tenant");
+
+        // ── scope-tier cells ──
+        let can_read = matches!(action, "Read" | "Traverse");
+        let can_write = matches!(action, "Read" | "Write" | "Traverse");
+
+        let st = send(&srv, Some(&read_tok), &path, method, body).await;
+        if can_read && LAYOUT_CONDITIONAL.contains(&template) {
             assert_eq!(
                 st,
-                StatusCode::UNAUTHORIZED,
-                "{method} {template} (opaque none) must 401"
+                StatusCode::FORBIDDEN,
+                "{method} {template} (read) is Admin-gated in shim mode (layout-conditional row)"
             );
-            // valid opaque token → superuser: the gate passes
-            let st = send(&srv, Some("opaque-matrix-token"), &path, method, body).await;
+        } else if can_read {
             assert!(
                 st != StatusCode::UNAUTHORIZED && st != StatusCode::FORBIDDEN,
-                "{method} {template} (opaque superuser) must pass the gate, got {st}"
+                "{method} {template} (read) must pass the gate, got {st}"
+            );
+        } else {
+            denied(st, "read");
+        }
+
+        let st = send(&srv, Some(&write_tok), &path, method, body).await;
+        if can_write && LAYOUT_CONDITIONAL.contains(&template) {
+            assert_eq!(
+                st,
+                StatusCode::FORBIDDEN,
+                "{method} {template} (write) is Admin-gated in shim mode (layout-conditional row)"
+            );
+        } else if can_write {
+            assert!(
+                st != StatusCode::UNAUTHORIZED && st != StatusCode::FORBIDDEN,
+                "{method} {template} (write) must pass the gate, got {st}"
+            );
+        } else {
+            denied(st, "write");
+        }
+
+        for (label, tok) in [("admin", &admin_tok), ("role-held", &role_ok)] {
+            let st = send(&srv, Some(tok), &path, method, body).await;
+            assert!(
+                st != StatusCode::UNAUTHORIZED && st != StatusCode::FORBIDDEN,
+                "{method} {template} ({label}) must pass the gate, got {st}"
             );
         }
+
+        // role-denied: scope gates pass; role-gated routes (approve/
+        // reject/publish/purge/workflow/dsar_export capabilities) 403.
+        let st = send(&srv, Some(&role_no), &path, method, body).await;
+        assert!(
+            st != StatusCode::UNAUTHORIZED,
+            "{method} {template} (role-denied) must never 401 — the token verifies"
+        );
+    }
+}
+
+/// The positive anchor: empty-safe list reads are literal 200 for the
+/// admin principal — the pass cell can never silently degrade into
+/// "any non-auth error counts".
+#[tokio::test]
+async fn authz_matrix_empty_safe_reads_are_literal_200() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "m200",
+        "user:admin200",
+        "team-a",
+        &["admin:*/*"],
+        &["admin", "dpo"],
+    );
+    for (template, path, method, body) in rows() {
+        if !EMPTY_SAFE_200.contains(&template) || method != "GET" {
+            continue;
+        }
+        let st = send(&srv, Some(&admin), &path, method, body).await;
+        assert_eq!(
+            st,
+            StatusCode::OK,
+            "{method} {template} must be 200 for admin on an empty corpus"
+        );
+    }
+}
+
+/// The opaque back-compat path per row: a verified bearer with no
+/// principal is the v1.1 superuser — the gate never 401s/403s it; and
+/// with NO token the presentation layer still 401s.
+#[tokio::test]
+async fn authz_matrix_opaque_mode_superuser_and_none() {
+    // Opaque-mode server: no keys, opaque middleware decides.
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let db_path = dir.path().join("brain.db");
+    brain_server::register_sqlite_vec::register_sqlite_vec();
+    let mgr = SqliteConnectionManager::file(&db_path);
+    let pool: brain_server::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+    brain_server::migration::run_migration(
+        &mut pool.get().expect("conn"),
+        brain_server::config::DB_MMAP_SIZE_MIB,
+    )
+    .expect("migration");
+    let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+        brain_server::embed::StaticEmbedder::new(brain_server::config::MODEL_ID).expect("model"),
+    );
+    // one known opaque token via a token file
+    let tok_file = tempfile::NamedTempFile::new().expect("token file");
+    std::fs::write(tok_file.path(), b"seed\n").unwrap();
+    let token_store =
+        brain_server::auth::TokenStore::from_file(Some(tok_file.path().to_path_buf()));
+    // `from_file` seeds from env (unset here); the explicit reload makes
+    // the store Active with exactly the matrix token (mtime-safe: distinct
+    // write after construction, mirroring the rotation-test pattern).
+    std::fs::write(tok_file.path(), b"opaque-matrix-token\n").unwrap();
+    assert!(
+        token_store.reload_if_changed_from(vec!["opaque-matrix-token".to_string()]),
+        "the explicit reload must activate the matrix token"
+    );
+
+    let jwt_middleware_state = Arc::new(JwtMiddlewareState {
+        auth_mode: brain_server::auth::AuthMode::Opaque,
+        key_store: brain_server::auth::jwks::KeyStore::default(),
+        jwt_issuer: String::new(),
+        jwt_audience: String::new(),
+        pool: pool.clone(),
+        revocation_cache: Arc::new(brain_server::auth::revocation::RevocationCache::new()),
+        db_path: db_path.clone(),
+        principal_rate_limiter: Arc::new(brain_server::http_limit::RateLimiter::new()),
+    });
+    let state = Arc::new(brain_server::AppState {
+        token_store,
+        jwt_middleware_state,
+        cors: tower_http::cors::CorsLayer::new(),
+        model,
+        registry: brain_server::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
+        pool,
+        db_path,
+        connection_tracker: Arc::new(brain_server::http_limit::ConnectionTracker::new()),
+        rate_limiter: Arc::new(brain_server::http_limit::RateLimiter::new()),
+        snapshot: brain_server::integrity::SnapshotState::default(),
+        audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+        auth_mode: brain_server::auth::AuthMode::Opaque,
+        key_store: brain_server::auth::jwks::KeyStore::default(),
+        revocation_cache: Arc::new(brain_server::auth::revocation::RevocationCache::new()),
+        jwt_issuer: String::new(),
+        jwt_audience: String::new(),
+        oidc_config: brain_server::handlers::well_known::OidcConfig::unconfigured(),
+        ump_events: tokio::sync::broadcast::channel(brain_server::config::UMP_EVENT_BUFFER).0,
+        alert_events: tokio::sync::broadcast::channel(brain_server::config::ALERT_EVENT_BUFFER).0,
+        alert_seq: std::sync::atomic::AtomicU64::new(0),
+        chain_watch: brain_server::alert::ChainWatchState::default(),
+    });
+    let srv = TestServer {
+        _dir: dir,
+        state,
+        // opaque mode never mints; reuse a throwaway key for the type
+        priv_key: {
+            let mut rng = rand::rngs::ThreadRng::default();
+            rsa::RsaPrivateKey::new(&mut rng, 2048).expect("keypair")
+        },
+    };
+
+    for (template, path, method, body) in rows() {
+        // no token → the opaque presentation layer 401s
+        let st = send(&srv, None, &path, method, body).await;
+        assert_eq!(
+            st,
+            StatusCode::UNAUTHORIZED,
+            "{method} {template} (opaque none) must 401"
+        );
+        // valid opaque token → superuser: the gate passes
+        let st = send(&srv, Some("opaque-matrix-token"), &path, method, body).await;
+        assert!(
+            st != StatusCode::UNAUTHORIZED && st != StatusCode::FORBIDDEN,
+            "{method} {template} (opaque superuser) must pass the gate, got {st}"
+        );
     }
 }

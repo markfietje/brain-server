@@ -89,6 +89,7 @@ pub fn health_body(
     capacity: Option<serde_json::Value>,
     integrity: serde_json::Value,
     audit_commit_failures: usize,
+    db_busy_hits: usize,
 ) -> serde_json::Value {
     let mut body = serde_json::json!({
             "status": "ok",
@@ -147,6 +148,9 @@ pub fn health_body(
                 "panics_caught": 0,
                 "memory_leaks_detected": 0,
                 "audit_commit_failures": audit_commit_failures,
+                // law-13 contention gauge: SQLITE_BUSY surfaced as audit-seam
+                // commit failures (busy_timeout burn-through), monotonic.
+                "db_busy_hits": db_busy_hits,
                 // whether the layer-2 injection classifier
                 // is loaded. Mirrors `screen::screen_classifier_loaded()`; lets ops
                 // confirm the opt-in model is actually active.
@@ -261,6 +265,7 @@ pub async fn health_db(
                 capacity,
                 integrity,
                 crate::audit::audit_commit_failures(),
+                crate::audit::busy_hits(),
             );
             if let serde_json::Value::Object(ref mut m) = body {
                 m.insert("database_size_bytes".to_string(), db_size.into());
@@ -453,6 +458,12 @@ pub(crate) async fn metrics(
         out.push_str("# HELP brain_audit_chain_ok 1=every registered domain's chain verifies, 0=tamper detected.\n");
         out.push_str("# TYPE brain_audit_chain_ok gauge\n");
         out.push_str(&format!("brain_audit_chain_ok {}\n", u8::from(chain_ok)));
+        out.push_str("# HELP brain_db_busy_total SQLITE_BUSY events surfaced at the audit seam (busy_timeout burn-through). Monotonic.\n");
+        out.push_str("# TYPE brain_db_busy_total counter\n");
+        out.push_str(&format!(
+            "brain_db_busy_total {}\n",
+            crate::audit::busy_hits()
+        ));
         out
     })
     .await

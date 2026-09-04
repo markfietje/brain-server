@@ -823,6 +823,35 @@ pub fn record_tenant(
 /// unavailable and the row is refused; read by `/health` so the absence is
 /// visible to operators, not just the log.
 static COMMIT_FAILURES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+/// SQLite busy events surfaced as commit failures (SQLITE_BUSY after the
+/// 5s `busy_timeout` burn). Monotonic; surfaced on `/metrics` as
+/// `brain_db_busy_total` — the law-13 contention gauge (frozen concurrency:
+/// this OBSERVES busy events, it never changes locking behavior).
+static BUSY_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Whether a rusqlite error is a SQLITE_BUSY family event (busy /
+/// busy_snapshot / busy_recovery — all "the writer waited and lost").
+fn is_busy_error(e: &rusqlite::Error) -> bool {
+    matches!(e, rusqlite::Error::SqliteFailure(ffi, _)
+        if ffi.extended_code == rusqlite::ffi::SQLITE_BUSY
+            || ffi.extended_code == rusqlite::ffi::SQLITE_BUSY_SNAPSHOT
+            || ffi.extended_code == rusqlite::ffi::SQLITE_BUSY_RECOVERY)
+}
+
+/// Count a busy event. Called from the audit commit-failure path (every
+/// write tx crosses the audit seam) so contention is observable without
+/// touching the frozen busy-handler semantics.
+fn note_busy_hit(e: &rusqlite::Error) {
+    if is_busy_error(e) {
+        BUSY_HITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Busy events since process start (see [`note_busy_hit`]). Monotonic;
+/// surfaced on `/metrics`.
+pub fn busy_hits() -> usize {
+    BUSY_HITS.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 fn note_chain_health_failure(msg: &str) {
     COMMIT_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -830,6 +859,7 @@ fn note_chain_health_failure(msg: &str) {
 }
 
 fn record_commit_failure(e: &rusqlite::Error) {
+    note_busy_hit(e);
     note_chain_health_failure(&format!(
         "tx settle failed — the audit row may not be durable: {e}"
     ));

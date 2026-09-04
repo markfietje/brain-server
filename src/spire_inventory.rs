@@ -57,7 +57,9 @@ const MAIN_RS_LINES_CEIL: usize = 16_869;
 // C4 (lib flip): +70 net — the region gains the brain_server glob + explicit
 /// bindings that replaced the bin-root re-exports; the monolith's line mass
 /// moved to the lib (MAIN_RS_LINES covers main.rs only).
-const TEST_REGION_LINES_CEIL: usize = 12_291;
+// C6 (law-13 gauges): +5 net — health_body gains the db_busy_hits
+/// parameter and the /metrics busy counter lands beside the audit counter.
+const TEST_REGION_LINES_CEIL: usize = 12_293;
 /// Textual `.route(` occurrences in main.rs (the registration chain +
 /// the authz scan's own literals — counted identically every time). Ceiling.
 /// 234 at the Vaulting open; −5 as the three middleware oneshot suites

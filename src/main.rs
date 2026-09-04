@@ -8957,6 +8957,7 @@ Final paragraph after the rule.";
             Some(serde_json::json!({ "max_docs": 100_000 })),
             serde_json::json!({ "chain_ok": true, "last_checked_at": 0, "chain_head": "" }),
             7,
+            0,
         );
         let obj = body.as_object().expect("health body is an object");
         for key in obj.keys() {
@@ -9007,6 +9008,7 @@ Final paragraph after the rule.";
                 serde_json::json!({}),
                 Some(serde_json::json!({})),
                 serde_json::json!({}),
+                0,
                 0,
             );
             match prev {

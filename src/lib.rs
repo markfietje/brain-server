@@ -163,10 +163,6 @@ pub mod docs_truth;
 #[cfg(test)]
 pub mod dup_guard;
 pub mod route_guards;
-// The law-9 net: every AUTHZ_GATES row × principal class through the
-// composed app(state).
-#[cfg(test)]
-mod authz_matrix;
 #[cfg(test)]
 pub mod spire_inventory;
 
