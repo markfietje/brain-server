@@ -7,4 +7,5 @@
 //! Law: `src/server/**` contains ONLY these modules (no new submodules
 //! beyond the six router families); bootstrap takes no axum types.
 
+pub(crate) mod bootstrap;
 pub(crate) mod router;

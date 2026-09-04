@@ -15,10 +15,10 @@ use std::sync::Arc;
 
 use crate::Pool;
 use crate::auth::{self, TokenStore};
-use crate::boot;
 use crate::config;
 use crate::handlers;
 use crate::http_limit::RateLimiter;
+use crate::server::bootstrap::ct_eq;
 use brain_server::audit;
 
 /// Auth middleware. When
@@ -376,7 +376,7 @@ pub(crate) async fn auth_middleware(
         .map(|p| {
             accepted
                 .iter()
-                .any(|t| boot::ct_eq(p.as_bytes(), t.trim().as_bytes()))
+                .any(|t| ct_eq(p.as_bytes(), t.trim().as_bytes()))
         })
         .unwrap_or(false);
     // Owned copy: the capability fallback needs `&mut req`, and `presented`
