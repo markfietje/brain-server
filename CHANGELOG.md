@@ -19,6 +19,108 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.56] — 2026-09-04 — "Vaulting": the lib flip — bootstrap + router decomposition
+
+Third milestone of the Spire Line. No behavior change of any kind: no new
+routes, no removed routes, no wire edits, no schema movement. Vaulting
+splits the monolith into the thin-bin seam: the server module tree moved
+into the library behind a single named surface (`pub mod server { boot
+strap, router }`), the boot region became a protocol-free `bootstrap()`,
+the inline router chain became six family builders, and main.rs collapsed
+to wiring (main + serve + graceful shutdown) over its test region.
+
+### Release notes
+
+**Bug fixes**
+
+- None.
+
+**Improvements**
+
+- None (refactor-only release; the wire is byte-identical to 1.28.55).
+
+**Security fixes**
+
+- None. The authz posture is UNCHANGED and now continuously verified: the
+  new law-9 matrix drives every AUTHZ_GATES row through the composed
+  router in seven principal classes (none/read/write/admin/cross-tenant/
+  role-held/role-denied) plus an opaque-mode superuser block, asserting
+  401/403 per cell, with literal-200 anchors on the empty-safe list reads.
+
+### Engineering record
+
+**Scope landed, in order (one commit per move family):**
+
+1. Middleware stack + auth middlewares staged into `server/router/{mod,
+   auth}.rs` (C1a).
+2. `app(state)` composition lifted out of main_inner; the middleware
+   inputs (token store, JWT state, CORS) moved onto `AppState` so the
+   composition is a pure function of state; the three middleware oneshot
+   suites moved into `server/router/auth.rs` with their subjects (C1b).
+3. `server/bootstrap.rs` receives the whole boot region — argv guard,
+   fail-closed checks (auth misconfig, write posture, model pinning),
+   OTLP init, sqlite-vec registration, audit chain key, pool + offline
+   modes, pre-migration backup, model load, migration, legacy cutover,
+   PRF report, connection/RSS watchdogs, token rotation watcher,
+   integrity scheduler, pool health probe, rate limiter, CORS build,
+   JWT/JWS wiring incl. the UMP key-dir scan + revocation purge,
+   `JwtMiddlewareState`, `AppState` construction + the four alert
+   watchers + multi-db seed, webhook drain worker, bind resolution +
+   loopback-bind guard + unsigned-egress warnings. `boot.rs` folds in
+   whole (ct_eq, argv, worker threads, bind predicates — pins travel).
+   `main_inner` is now the serve loop only (C2).
+4. `app(state)` moves to `server/router/mod.rs`; the six family builders
+   land — core (17 routes), memory (56 + the 3-route deprecated legacy
+   fragment + the 1 GiB `import_router`), ump (12), compliance (10 +
+   the 5-route feature-gated pack), workflow (82), auth (9). mod.rs
+   keeps the middleware fns, CSP consts, and the merge/layer order;
+   the Deprecation route_layer's application set is preserved exactly
+   (core ∪ legacy fragment — the original chain's set, byte-for-byte).
+   main.rs retains ZERO production `.route(` registrations (C3).
+5. THE LIB FLIP: lib.rs declares the whole server tree with `pub mod
+   server` as the only named surface; main.rs consumes it via
+   `brain_server::server::...`; the law-9 matrix moved to
+   `tests/authz_matrix.rs` driving `brain_server::server::router::app`
+   from outside the crate — the lib seam earns its keep (C4/C5).
+6. Law-13 gauges: `brain_db_busy_total` (SQLITE_BUSY surfaced at the
+   audit seam) on `/metrics`, `db_busy_hits` in the `/health` hardening
+   block, beside the existing pool-saturation gauges. Honest ceiling:
+   busy-HANDLER invocation counts require replacing the 5s busy_timeout
+   — a concurrency change law 13 freezes; observe failures, not waits.
+
+**Law-9 net (the milestone's safety story):** the matrix went green on
+the pre-split monolith and ran unchanged through every family commit.
+Pre-gate vocabularies the census surfaced and codified: soft-deny 200
+shapes (/add /search /ingest/memory /v1/embeddings /reindex /audit
+/audit/verify), SSE in-band denial (/events /ump/subscribe), pre-gate
+404s (workflow run-bound rows, kcs approve/publish), pre-gate 400
+(/workflow/plugins/mount), and the layout-conditional
+/consolidate/propose (Read in multi-db, Admin in shim).
+
+**Ledger (spire), Buttress → Vaulting:** MAIN_RS_LINES 18,291 → 12,470;
+TEST_REGION 12,302 → 12,294; main.rs route sites 234 → 35 (test stubs
+only; production registrations: 199 under src/server/router/**, floored);
+MAIN_RS_TEST floor 109 held (moved suites were tokio tests);
+ROUTER_SITES_FLOOR 199 gained (≥6 family files asserted). Wire
+artifacts: openapi.yaml byte-identical to v1.28.55; x-api-version moves
+only with this release stamp.
+
+**Validation:** full suite 1,022 bin + 163 lib + 208/37/19/6/8/4/3/1
+passed / 6 ignored, identical at every gate; clippy -D warnings (bench +
+otel + default) clean; fmt clean; lipstyk diff-strict exit 0; CI dry-run
+green (default, crates, steward-harness, otel); live smoke on a DB copy:
+/health, /audit/verify ok, 413 + 408 paths, and one 2 MiB import
+round-trip proving the 1 GiB dial survived the split.
+
+**Ceilings (honest):** main.rs keeps its 12k-line test region (the
+non-router-bound mass moves at Capstone with the docs_truth/dup_guard
+decls); busy-HANDLER hit counts are unobservable without changing
+frozen concurrency semantics (gauges observe busy FAILURES at the audit
+seam instead); /consolidate/propose remains layout-conditional (Read in
+multi-db, Admin in shim) exactly as authored.
+
+---
+
 ## [1.28.55] — 2026-09-03 — "Buttress": the helpers come home — the pre-main library code promoted with its pins
 
 Second milestone of the Spire Line. No behavior change of any kind: no new
