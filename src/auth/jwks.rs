@@ -214,6 +214,9 @@ impl KeyStore {
             .collect();
         Ok(Self {
             keys: Arc::new(keys),
+            // read only by `find` today (its own tests are the callers) — the
+            // O(1) kid seam stays indexed for `brain key rotate` hot-reload.
+            #[allow(dead_code)]
             by_kid: Arc::new(by_kid),
         })
     }
@@ -224,7 +227,9 @@ impl KeyStore {
         self.keys.iter().map(|k| k.verifying.clone()).collect()
     }
 
-    /// Find a key by kid. O(1).
+    /// Find a key by kid. O(1). Test-consumed today; the by-kid seam stays
+    /// indexed for the `brain key rotate` hot-reload follow-up.
+    #[allow(dead_code)]
     pub fn find(&self, kid: &str) -> Option<&ManagedKey> {
         self.by_kid.get(kid).map(|&i| &self.keys[i])
     }
@@ -252,6 +257,7 @@ impl KeyStore {
         self.keys.len()
     }
 
+    #[allow(dead_code)]
     pub fn is_empty(&self) -> bool {
         self.keys.is_empty()
     }
@@ -259,6 +265,7 @@ impl KeyStore {
     /// Re-read from disk. Used by the rotation watcher + `brain key rotate`.
     /// Returns the previous snapshot on any load failure (fail-safe: a bad
     /// key file must not leave the server with no keys).
+    #[allow(dead_code)]
     pub fn reload(&mut self, dir: &Path) -> Result<(), LoadError> {
         let next = Self::load(dir)?;
         *self = next;

@@ -29,9 +29,11 @@ use std::path::{Path, PathBuf};
 /// paths) moved to graph_read.rs with the two explanation pins — the
 /// AppError-typed graph SQL fns stay for Vaulting (transport-shaped),
 /// then −2 more as the boot guards moved to boot.rs (ct_eq pin + the
-/// loopback-bind predicates pin).
+/// loopback-bind predicates pin), then −489 net at the Vaulting open as the
+/// middleware stack + auth middlewares staged into server/router/{mod,auth}.rs
+/// (fns + CSP consts verbatim; the poisoned-lock pin repointed same-commit).
 /// Ceiling.
-const MAIN_RS_LINES_CEIL: usize = 18_291;
+const MAIN_RS_LINES_CEIL: usize = 17_802;
 /// Lines from the `#[cfg(test)] mod tests` boundary to EOF. Ceiling.
 /// 13,342 at session start − 630 net (Scaffold) − 156 net (Buttress: the
 /// http_limit unit pins left the region, then 126 net as the 7 blocklist
