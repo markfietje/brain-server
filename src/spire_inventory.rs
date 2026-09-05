@@ -1,99 +1,60 @@
-//! The Spire Line's frozen structural ledger — `#[cfg(test)]`, sibling
-//! idiom of the Foundation Line's `sql_inventory_baseline` (Plumb, retired
-//! at Cornerstone): measured constants with date + release comments, CI
-//! fails on ceiling growth or floor drop. Ceilings may only go DOWN; floors
-//! only UP — except `MAIN_RS_TEST_FLOOR`, which is lowered only when a pin
-//! physically relocates out of `main.rs` (the crate-wide
-//! `TOTAL_SRC_TEST_FLOOR` is the load-bearing never-decreases pin).
+//! The Spire Line's structural ledger — `#[cfg(test)]`. Born at Scaffold
+//! (v1.28.54) as the freeze-on-the-monolith: measured constants with date +
+//! release comments, CI fails on ceiling growth or floor drop. At the
+//! Capstone flip (v1.28.57) the monolith is structurally impossible, so the
+//! ceilings RETIRE instead of zeroing (the Cornerstone precedent — the
+//! enforcing guard replaces the table row). What survives is what the thin
+//! binary must never lose: the main.rs ≤ 300 pin, the router's registration
+//! floor, the crate-wide test floor (`src/` + `tests/` — the load-bearing
+//! never-decreases pin), and the route-coverage/authz table row floors.
 //!
 //! Like the SQL baseline before it, the counters are deliberate substring
 //! locks, not precision instruments — they are measured the same way every
 //! time, which is what a freeze needs.
+//!
+//! Retired at Capstone, and why (the move commit is the record):
+//!   * `MAIN_RS_LINES_CEIL` (16,869, Scaffold freeze) → replaced by
+//!     `MAIN_RS_LINES_MAX` (300): the pin IS the ceiling now.
+//!   * `TEST_REGION_LINES_CEIL` (12,294, Vaulting tip) → absence-pinned:
+//!     main.rs must not regrow a `#[cfg(test)]` region at all; the mass
+//!     lives in `tests/main_suite.rs` (moved verbatim, nothing deleted).
+//!   * `MAIN_RS_TEST_FLOOR` (109) → its 109 pins relocated verbatim to
+//!     `tests/main_suite.rs` in the Capstone move commit (the ledger's own
+//!     relocation convention — lowered only when pins physically move, in
+//!     that commit); the crate-wide floor below is load-bearing.
+//!   * `ROUTE_CALL_SITES_CEIL` (35) → retired at the move commit: main.rs
+//!     sites are pinned to 0 below, and the enforcing successor is the
+//!     tree-wide `.route(` gate
+//!     (`route_registrations_live_only_under_router`) — a main.rs-only
+//!     ceiling cannot see a violation planted in any other non-router file;
+//!     the gate covers the whole `src/` tree.
 
 use std::path::{Path, PathBuf};
 
-// ── session-start freeze (2026-09-03, v1.28.54 "Scaffold" opening) ──────
-// GREEN VALUES — the measured session-start truth (with the +3-line
-// `mod spire_inventory` declaration honestly included in the line count).
-// Every shrink from here on is earned by a move and lands in that move's
-// commit.
+// ── the thin binary (v1.28.57 "Capstone") ───────────────────────────────
 
-/// `wc -l src/main.rs`: 19,906 at session start, −624 net across Scaffold's
-/// extractions, relocations, and the dedup of five stale main.rs copies the
-/// handlers-family commit left behind, then −397 net from the Buttress
-/// http_limit promotion (family + 9 unit pins, use/mod wiring added back)
-/// and −245 net from the blocklist joining screen.rs (fn + 7 pins), then
-/// −82 net as the quarantine-flag + read-seam-suppression pair joined them
-/// (flag_if_quarantined, suppress_flagged_evidence) with the snippet pin,
-/// then −108 net as the graph read mappers (clamp, row mapper, explanation
-/// paths) moved to graph_read.rs with the two explanation pins — the
-/// AppError-typed graph SQL fns stay for Vaulting (transport-shaped),
-/// then −2 more as the boot guards moved to boot.rs (ct_eq pin + the
-/// loopback-bind predicates pin), then −489 net at the Vaulting open as the
-/// middleware stack + auth middlewares staged into server/router/{mod,auth}.rs
-/// (fns + CSP consts verbatim; the poisoned-lock pin repointed same-commit),
-/// then −95 net as `app(state)` was lifted out of main_inner (the inline
-/// chain became the composed fn; AppState construction + watcher spawns
-/// hoisted to the main side of the seam) and the three middleware oneshot
-/// suites moved into server/router/auth.rs's test module with their subjects
-/// (the +102 AppState-initializer fixture lines across the composed-state
-/// test sites came in the same commit — net monolith motion still down).
-/// Ceiling.
-/// 17,710 at the C2 open, then −841 net as the boot region (fail-closed
-/// checks, pool/model/migration, watchdogs, JWT wiring, state construction,
-/// bind guard) moved into server/bootstrap.rs and boot.rs folded in
-/// (ct_eq + argv + worker-threads + bind predicates, pins traveling).
-const MAIN_RS_LINES_CEIL: usize = 16_869;
-/// Lines from the `#[cfg(test)] mod tests` boundary to EOF. Ceiling.
-/// 13,342 at session start − 630 net (Scaffold) − 156 net (Buttress: the
-/// http_limit unit pins left the region, then 126 net as the 7 blocklist
-/// pins and their docs left, then 32 net as the snippet pin left, then 34
-/// net as the explanation pins left, then 67 net as the ct_eq + loopback
-/// bind pins left, then −113 net as the three middleware oneshot suites
-/// moved to server/router/auth.rs with their subjects, +102 back as the
-/// composed-app test sites gained the middleware-stack fixture fields.
-// C3a: +5 net — the chain/layers moved to src/server/router (pins repointed
-/// with one comment line each) while the middleware suites had already left.
-// C4 (lib flip): +70 net — the region gains the brain_server glob + explicit
-/// bindings that replaced the bin-root re-exports; the monolith's line mass
-/// moved to the lib (MAIN_RS_LINES covers main.rs only).
-// C6 (law-13 gauges): +5 net — health_body gains the db_busy_hits
-/// parameter and the /metrics busy counter lands beside the audit counter.
-const TEST_REGION_LINES_CEIL: usize = 12_294;
-/// Textual `.route(` occurrences in main.rs (the registration chain +
-/// the authz scan's own literals — counted identically every time). Ceiling.
-/// 234 at the Vaulting open; −5 as the three middleware oneshot suites
-/// (stub-router literals, not real registrations) moved to
-/// server/router/auth.rs with their subjects. The real registrations leave
-/// only in the family commits, each lowering this toward 0.
-const ROUTE_CALL_SITES_CEIL: usize = 35;
+/// `wc -l src/main.rs`: 19,906 at the Scaffold freeze → 12,471 at the
+/// Vaulting tip → 113 at the Capstone flip (wiring only: bootstrap →
+/// compose → serve). Pin: main.rs never regrows beyond a thin wiring shell.
+const MAIN_RS_LINES_MAX: usize = 300;
 /// `.route(` sites under src/server/router/** (the composed chain). Floor —
-/// the wire's registrations may not silently disappear during the family
-/// moves; the authz matrix + route-coverage table pin their correctness.
+/// the wire's registrations may not silently disappear; the authz matrix +
+/// route-coverage table pin their correctness.
 const ROUTER_SITES_FLOOR: usize = 199;
-/// `#[test]` occurrences in main.rs. Floor (lowered only when a pin moves,
-/// in the same commit): 139 at session start − 10 relocated pure-unit pins
-/// (6 → handlers/mod.rs; auth_tokens, temporal, trace_caps, eval → their
-/// modules) = 129, then −8 more as the Buttress http_limit family moved
-/// (its 9th pin is a `#[tokio::test]` — outside this substring counter's
-/// needle, so it lowers the file's test mass without moving this floor),
-/// then −7 more as the layer-1 blocklist moved to screen.rs with its pins,
-/// then −1 more as the snippet-suppression pin followed the suppression fn,
-/// then −2 more as the explanation-path pins moved to graph_read.rs,
-/// then −2 more as the boot guards moved (test_ct_eq + the bind pin).
-const MAIN_RS_TEST_FLOOR: usize = 109;
-/// `#[test]` occurrences across all of `src/` (lib + bins + main).
-/// Floor — never decreases. 1,178 at the Scaffold freeze; re-measured to
-/// 1,185 at the Buttress open (tests legitimately added between the lines)
-/// so the never-decreases guard stays tight rather than trailing by seven.
-const TOTAL_SRC_TEST_FLOOR: usize = 1_185;
-/// Route-coverage table rows (`handlers::route_guards::OPENAPI_ROUTES`)
-/// — 151 paths at extraction (v1.28.54), re-measured to 161 at the Buttress
-/// open (rows joined only with the wire changes that earned them). Rows join
+/// `#[test]` occurrences across `src/` + `tests/` (lib + bins + the
+/// integration suites). Floor — never decreases. 1,185 src-only at the
+/// Scaffold freeze; the Capstone move relocated main.rs's region into
+/// tests/ without deleting a single pin, and the floor re-measured 1,196
+/// over the widened subject (1,074 src + 122 tests) in the move commit.
+/// (The needle counts doc-comment literals too — a deliberate substring
+/// lock, measured the same way every time.)
+const CRATE_TEST_FLOOR: usize = 1_196;
+/// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
+/// extraction (v1.28.54), re-measured to 161 at the Buttress open. Rows join
 /// only with the wire change that earns them, in the same commit.
 const OPENAPI_ROUTE_ROWS_FLOOR: usize = 161;
-/// Route-authz table rows (`handlers::route_guards::AUTHZ_GATES`) — 141
-/// gates at extraction (v1.28.54), re-measured to 145 at the Buttress open.
+/// Route-authz table rows (`route_guards::AUTHZ_GATES`) — 141 gates at
+/// extraction (v1.28.54), re-measured to 145 at the Buttress open.
 const AUTHZ_TABLE_ROWS_FLOOR: usize = 145;
 
 fn count_needle(hay: &str, needle: &str) -> usize {
@@ -101,7 +62,8 @@ fn count_needle(hay: &str, needle: &str) -> usize {
 }
 
 /// Lines from the (unique) `#[cfg(test)]\nmod tests {` boundary, inclusive,
-/// to EOF — the region the Spire Line is dismantling.
+/// to EOF — the region the Spire Line dismantled. Returns `None` once the
+/// region is gone; the thin-binary pin below asserts it stays gone.
 fn test_region_lines(main_src: &str) -> Option<usize> {
     const MARKER: &str = "#[cfg(test)]\nmod tests {";
     let idx = main_src.find(MARKER)?;
@@ -124,17 +86,14 @@ fn walk_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 }
 
 #[test]
-fn spire_inventory_freezes_the_monolith() {
+fn spire_inventory_freezes_the_thin_binary() {
     let main_src = include_str!("main.rs");
     let total_lines = main_src.lines().count();
-    let region = test_region_lines(main_src)
-        .unwrap_or_else(|| panic!("spire: `#[cfg(test)] mod tests` marker not found in main.rs"));
     let route_sites = count_needle(main_src, ".route(");
-    let main_tests = count_needle(main_src, "#[test]");
-    // the composed chain moved to src/server/router (C3a): the real
-    // registrations live there now; main.rs's remaining `.route(` sites are
-    // test-stub routers inside cfg(test). Count the router files to keep the
-    // anti-vacuous guard meaningful.
+    // the composed chain lives in src/server/router (the router families);
+    // main.rs's remaining `.route(` sites are the region residue, counted
+    // toward 0 by the same needle that froze the monolith. Count the router
+    // files to keep the anti-vacuous guard meaningful.
     let router_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server/router");
     let mut router_src = String::new();
     let mut router_files = 0usize;
@@ -155,24 +114,39 @@ fn spire_inventory_freezes_the_monolith() {
 
     // Anti-vacuous sanity: the counters must be looking at the real thing
     // (the Cornerstone lesson — a guard that can pass on nothing guards
-    // nothing).
+    // nothing). main.rs is the wiring file (it has `fn main`), the router
+    // chain is where the registrations live, and the test region stays GONE
+    // from main.rs — it lives in tests/main_suite.rs now.
     assert!(
-        region < total_lines && region > total_lines / 2,
-        "spire: test-region derivation looks wrong ({region} of {total_lines})"
+        main_src.contains("fn main("),
+        "spire: include_str!(\"main.rs\") does not look like the wiring file"
     );
     assert!(
-        router_sites >= ROUTER_SITES_FLOOR && main_tests >= 100,
-        "spire: counters look broken (router routes {router_sites}, tests {main_tests})"
+        router_sites >= ROUTER_SITES_FLOOR,
+        "spire: counters look broken (router routes {router_sites})"
+    );
+    assert!(
+        test_region_lines(main_src).is_none(),
+        "spire: main.rs regrew a `#[cfg(test)]` region — the test mass lives \
+         in tests/; a region in main.rs is the monolith's first vertebra"
     );
 
+    // The crate-wide floor walks BOTH trees: the lib/bins (src/) and the
+    // integration suites (tests/) — the Capstone move relocated main.rs's
+    // region into tests/ without deleting a pin, and neither tree may shrink
+    // its mass quietly.
     let mut files = Vec::new();
     walk_rs_files(
         &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
         &mut files,
     );
+    walk_rs_files(
+        &Path::new(env!("CARGO_MANIFEST_DIR")).join("tests"),
+        &mut files,
+    );
     assert!(
         files.len() >= 50,
-        "spire: src walk found only {} files — the tree walker is broken",
+        "spire: src+tests walk found only {} files — the tree walker is broken",
         files.len()
     );
     let total_tests = files
@@ -181,19 +155,16 @@ fn spire_inventory_freezes_the_monolith() {
         .sum::<usize>();
 
     let mut breaches: Vec<String> = Vec::new();
-    if total_lines > MAIN_RS_LINES_CEIL {
+    if total_lines > MAIN_RS_LINES_MAX {
         breaches.push(format!(
-            "  main.rs lines: {total_lines} > ceiling {MAIN_RS_LINES_CEIL}"
+            "  main.rs lines: {total_lines} > pin {MAIN_RS_LINES_MAX} — the thin binary \
+             is regrowing; wiring belongs in server/bootstrap + server/router"
         ));
     }
-    if region > TEST_REGION_LINES_CEIL {
+    if route_sites > 0 {
         breaches.push(format!(
-            "  test-region lines: {region} > ceiling {TEST_REGION_LINES_CEIL}"
-        ));
-    }
-    if route_sites > ROUTE_CALL_SITES_CEIL {
-        breaches.push(format!(
-            "  .route( sites in main.rs: {route_sites} > ceiling {ROUTE_CALL_SITES_CEIL}"
+            "  .route( sites in main.rs: {route_sites} > 0 — wiring-only means \
+             NO registrations here; they live under src/server/router/**"
         ));
     }
     if router_sites < ROUTER_SITES_FLOOR {
@@ -202,15 +173,9 @@ fn spire_inventory_freezes_the_monolith() {
              the composed chain lost registrations"
         ));
     }
-    if main_tests < MAIN_RS_TEST_FLOOR {
+    if total_tests < CRATE_TEST_FLOOR {
         breaches.push(format!(
-            "  main.rs #[test] count: {main_tests} < floor {MAIN_RS_TEST_FLOOR} — a pin \
-             left main.rs without its spire_inventory edit in the same commit"
-        ));
-    }
-    if total_tests < TOTAL_SRC_TEST_FLOOR {
-        breaches.push(format!(
-            "  crate #[test] count: {total_tests} < floor {TOTAL_SRC_TEST_FLOOR} — the \
+            "  crate #[test] count: {total_tests} < floor {CRATE_TEST_FLOOR} — the \
              load-bearing total-test floor dropped; tests may not be deleted, only moved"
         ));
     }
@@ -231,16 +196,15 @@ fn spire_inventory_freezes_the_monolith() {
 
     assert!(
         breaches.is_empty(),
-        "SPIRE INVENTORY VIOLATION — the monolith regrew or a pin was lost; \
+        "SPIRE INVENTORY VIOLATION — the thin binary regrew or a pin was lost; \
          fix the code, or lower/raise the constant in the same reviewed commit:\n{}",
         breaches.join("\n")
     );
 
     println!(
-        "spire: main.rs {total_lines}≤{MAIN_RS_LINES_CEIL} · region {region}≤\
-         {TEST_REGION_LINES_CEIL} · routes {route_sites}≤{ROUTE_CALL_SITES_CEIL} · \
-         main tests {main_tests}≥{MAIN_RS_TEST_FLOOR} · crate tests {total_tests}≥\
-         {TOTAL_SRC_TEST_FLOOR} · coverage rows {route_rows}≥{OPENAPI_ROUTE_ROWS_FLOOR} · \
-         authz rows {authz_rows}≥{AUTHZ_TABLE_ROWS_FLOOR}"
+        "spire: main.rs {total_lines}≤{MAIN_RS_LINES_MAX} · region absent · \
+         main routes {route_sites}=0 · router routes {router_sites}≥{ROUTER_SITES_FLOOR} · \
+         crate tests {total_tests}≥{CRATE_TEST_FLOOR} · coverage rows {route_rows}≥\
+         {OPENAPI_ROUTE_ROWS_FLOOR} · authz rows {authz_rows}≥{AUTHZ_TABLE_ROWS_FLOOR}"
     );
 }
