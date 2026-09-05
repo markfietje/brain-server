@@ -30,9 +30,7 @@ pub async fn list_profiles(
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = state.pool.clone();
     let profiles = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         crate::profile::list(&conn).map_err(map_err)
     })
     .await
@@ -56,9 +54,7 @@ pub async fn get_profile(
     let pool = state.pool.clone();
     let name_for_err = name.clone();
     let p = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         crate::profile::load(&conn, &name).map_err(map_err)
     })
     .await
@@ -120,9 +116,7 @@ pub async fn upsert_profile(
     let actor = super::recall::principal_label(&principal.0);
     let pool = state.pool.clone();
     let stored = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         crate::profile::upsert(&conn, &p).map_err(map_err)?;
         crate::audit::record(
             &conn,
@@ -155,9 +149,7 @@ pub async fn domain_profile_get(
     let domain_for_resp = domain.clone();
     let pool = state.pool.clone();
     let bound = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         crate::profile::profile_for_domain(&conn, &domain).map_err(map_err)
     })
     .await
@@ -225,9 +217,7 @@ pub async fn domain_profile_bind(
     let actor = super::recall::principal_label(&principal.0);
     let pool = state.pool.clone();
     let out = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         // Friendly 404 for an unknown profile (the FK would also refuse).
         if let Some(p) = &profile
             && crate::profile::load(&conn, p).map_err(map_err)?.is_none()

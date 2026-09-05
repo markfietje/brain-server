@@ -19,7 +19,16 @@ pub(crate) struct WorkflowTx<'a> {
 
 impl<'a> WorkflowTx<'a> {
     pub(crate) fn begin(conn: &'a mut Connection) -> rusqlite::Result<WorkflowTx<'a>> {
-        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .inspect_err(
+                // Contention telemetry (the Throughput milestone): the
+                // write-discipline BEGIN is the choke point every governed
+                // transition crosses; a SQLITE_BUSY here IS write contention.
+                // Counted at the existing error arm — the error still
+                // propagates unchanged.
+                crate::concurrency::note_busy_error,
+            )?;
         Ok(WorkflowTx { tx: Some(tx) })
     }
 

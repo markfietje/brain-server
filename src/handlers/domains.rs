@@ -114,9 +114,7 @@ pub async fn domains(
         // mode each per-domain file is a real domain; we use the file list.
         let mut out = Vec::new();
         if !multi_db {
-            let conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool.get().map_err(HandlerError::db_down)?;
             out = crate::service::domains_admin::shim_domain_rows(&conn)?
                 .into_iter()
                 .map(|r| DomainInfo {
@@ -184,9 +182,7 @@ pub async fn create_domain(
         .map_err(super::map_domain_error)?;
 
     let is_new = tokio::task::spawn_blocking(move || -> Result<bool, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         Ok(crate::service::domains_admin::is_empty_store(&conn))
     })
     .await
@@ -251,9 +247,7 @@ pub async fn delete_domain(
     let root = state.db_path.parent().map(ToOwned::to_owned);
 
     tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
-        let mut conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = pool.get().map_err(HandlerError::db_down)?;
         // Transaction for atomicity: every delete either all-succeeds or all-rolls-back.
         // VACUUM cannot run inside a tx, so we run it after commit.
         let tx = conn
@@ -299,9 +293,7 @@ pub async fn vacuum_domain(
         .map_err(super::map_domain_error)?;
 
     tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         Ok(crate::service::domains_admin::vacuum(&conn)?)
     })
     .await
@@ -348,9 +340,7 @@ pub async fn export_domain(
 
     let (bytes, filename) =
         tokio::task::spawn_blocking(move || -> Result<(Vec<u8>, String), HandlerError> {
-            let conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool.get().map_err(HandlerError::db_down)?;
             Ok(crate::service::domains_admin::export_snapshot(
                 &conn, &name,
             )?)
@@ -535,9 +525,7 @@ pub async fn move_domains(
 
     let (moved, from_domains) =
         tokio::task::spawn_blocking(move || -> Result<(usize, Vec<String>), HandlerError> {
-            let mut conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let mut conn = pool.get().map_err(HandlerError::db_down)?;
             Ok(crate::service::domains_admin::relabel_chunks(
                 &mut conn, &ids, &to_c, &confirm,
             )?)

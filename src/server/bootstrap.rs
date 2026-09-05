@@ -117,6 +117,11 @@ pub struct AppState {
     /// Written by `alert::spawn_chain_watcher`; read by `/health` so the
     /// tamper-evident posture is visible without an on-demand full scan.
     pub chain_watch: alert::ChainWatchState,
+    /// Contention telemetry (the Throughput milestone): pool-timeout + busy-error
+    /// counters and the /health/db-refreshed WAL snapshot. A `&'static` alias
+    /// of `concurrency::CONCURRENCY` — the same object the deep write-path
+    /// error arms increment without state plumbing.
+    pub concurrency: &'static crate::concurrency::Concurrency,
     // ── middleware-stack inputs (Vaulting: app(state) reads them here so
     // the composition is a pure function of state) ────────────────────
     /// The cached bearer-token store; `auth_middleware`'s from_fn state.
@@ -811,6 +816,7 @@ pub fn bootstrap() -> Result<BootOutcome> {
         alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
         alert_seq: std::sync::atomic::AtomicU64::new(0),
         chain_watch: alert::ChainWatchState::default(),
+        concurrency: &crate::concurrency::CONCURRENCY,
         token_store,
         jwt_middleware_state,
         cors,

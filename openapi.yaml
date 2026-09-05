@@ -111,6 +111,20 @@ paths:
                       chain_ok: { type: boolean }
                       last_checked_at: { type: integer }
                       chain_head: { type: string }
+                  concurrency:
+                    type: object
+                    description: >-
+                      Contention telemetry (additive, v1.28.58). Counters are
+                      process-local since process start; wal_pages_pending is
+                      refreshed by THIS endpoint's WAL sweep (the PASSIVE
+                      checkpoint PRAGMA runs only here, never per request).
+                    properties:
+                      pool_timeouts_total: { type: integer }
+                      busy_errors_total: { type: integer }
+                      wal_pages_pending:
+                        type: object
+                        additionalProperties: { type: integer }
+                        description: Per-domain WAL frames not yet checkpointed (last sweep).
                   database_size_bytes: { type: integer }
                   last_write: { type: string, nullable: true }
   /ready:

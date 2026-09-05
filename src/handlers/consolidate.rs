@@ -83,9 +83,7 @@ pub async fn propose(
     let pool = state.pool.clone();
     let (exact_duplicates, conflicts, unresolved, stale, near_dups) =
         tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
-            let conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool.get().map_err(HandlerError::db_down)?;
             let dups = consolidate::find_exact_duplicates(&conn).map_err(|e| {
                 HandlerError::internal(format!("find_exact_duplicates failed: {e}"))
             })?;
@@ -179,9 +177,7 @@ pub async fn apply(
     let links = req.links;
     let now_utc = chrono::Utc::now().to_rfc3339();
     let (recorded, rejected) = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
-        let mut conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = pool.get().map_err(HandlerError::db_down)?;
         let mut recorded = 0usize;
         let mut rejected: Vec<String> = Vec::new();
         let tx = conn
@@ -256,9 +252,7 @@ pub async fn undo(
     let pool = state.pool.clone();
     let chunks = req.old_chunks;
     let (undone, rejected) = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
-        let mut conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = pool.get().map_err(HandlerError::db_down)?;
         let mut undone = 0usize;
         let mut rejected: Vec<String> = Vec::new();
         let tx = conn

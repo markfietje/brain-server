@@ -885,6 +885,7 @@ mod valet_tests {
             alert_events: tokio::sync::broadcast::channel(16).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: crate::alert::ChainWatchState::default(),
+            concurrency: &crate::concurrency::CONCURRENCY,
         });
         (dir, state)
     }

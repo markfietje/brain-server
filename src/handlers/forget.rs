@@ -21,9 +21,7 @@ pub async fn forget(
     let pool = state.pool.clone();
 
     let deleted = tokio::task::spawn_blocking(move || -> Result<bool, HandlerError> {
-        let mut conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = pool.get().map_err(HandlerError::db_down)?;
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(format!("transaction failed: {e}")))?;

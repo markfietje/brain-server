@@ -100,9 +100,7 @@ pub async fn get_trace(
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     let pool = super::resolve_domain_pool(&state.registry, Some("global"))?;
     let trace = tokio::task::spawn_blocking(move || -> Result<Option<String>, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         Ok(crate::audit::read_trace(&conn, trace_id))
     })
     .await
@@ -307,10 +305,7 @@ pub async fn post_dsar(
 
         // 6. Post-commit: audit + certificate on the global pool (the audit
         //    chain is the registry of record), then backfill the ledger row.
-        let global_conn = pools[global_idx]
-            .1
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let global_conn = pools[global_idx].1.get().map_err(HandlerError::db_down)?;
         crate::audit::record(
             &global_conn,
             crate::audit::AuditKind::Reconcile,
@@ -535,10 +530,7 @@ pub(crate) async fn run_dsar_subject(
         // below — in shim mode both resolve to the SAME r2d2 pool, so holding
         // both at once could exceed a `max_size(1)` pool and deadlock.
         let chain_head = {
-            let g = state_for
-                .pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let g = state_for.pool.get().map_err(HandlerError::db_down)?;
             crate::audit::record(
                 &g,
                 crate::audit::AuditKind::Client,
@@ -563,9 +555,7 @@ pub(crate) async fn run_dsar_subject(
             chain_head,
             &run.remanence,
         );
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         backfill_certificate(&conn, ledger_id, &subject, &certificate);
         let deadline = jurisdiction
             .as_deref()
@@ -618,9 +608,7 @@ pub async fn list_dsar(
         .unwrap_or(100);
     let offset = q.offset.unwrap_or(0).max(0);
     let body = tokio::task::spawn_blocking(move || -> Result<DsarLedger, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         list_dsar_page(&conn, limit, offset).map_err(HandlerError::from)
     })
     .await
@@ -659,9 +647,7 @@ pub async fn list_tombstones(
     // caller-filter takes precedence if it's narrower than the principal scope.
     let tenant_filter: Option<String> = principal.0.as_ref().map(|p| format!("owner:{}", p.sub));
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         tombstones_page(&conn, subject, since, limit, tenant_filter).map_err(HandlerError::from)
     })
     .await
@@ -687,9 +673,7 @@ pub async fn get_dsar_certificate(
     // existence of another tenant's certificate).
     let tenant_sub: Option<String> = principal.0.as_ref().map(|p| p.sub.clone());
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         certificate_view(&conn, id, tenant_sub).map_err(HandlerError::from)
     })
     .await
@@ -768,9 +752,7 @@ fn run_dsar_pool(
     aggregate_bundle_hash: Option<&str>,
     subject_exact: bool,
 ) -> Result<crate::service::dsar::DsarRun, HandlerError> {
-    let mut conn = pool
-        .get()
-        .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+    let mut conn = pool.get().map_err(HandlerError::db_down)?;
     crate::service::dsar::run_pool(
         &mut conn,
         domain,

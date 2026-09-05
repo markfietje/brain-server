@@ -564,10 +564,7 @@ pub(crate) async fn ingest_one(
     // legacy behavior). An unreadable bound profile fails CLOSED — a
     // strict-posture domain must not silently ingest raw PII.
     let profile = {
-        let conn = state
-            .pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = state.pool.get().map_err(HandlerError::db_down)?;
         crate::profile::profile_for_domain(&conn, &domain_label).map_err(HandlerError::internal)?
     };
     let (title_for_store, content, access_scope) = crate::service::ingest::apply_profile_ingest(
@@ -590,9 +587,7 @@ pub(crate) async fn ingest_one(
     let owner = super::gate::principal_to_owner(principal);
 
     let result = tokio::task::spawn_blocking(move || -> Result<IngestResponse, HandlerError> {
-        let mut conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = pool.get().map_err(HandlerError::db_down)?;
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(format!("transaction failed: {e}")))?;

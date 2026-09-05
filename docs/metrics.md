@@ -89,6 +89,33 @@ formula change bumps the version, this file, the JSON twin, and the gold-pack
 expectations together, in one PR** — pinned by the meta-test
 `formula_change_bumps_scorer_version`.
 
+## Server telemetry series (`/metrics` + `/health/db`)
+
+The Prometheus text surface (`GET /metrics`, Read-gated) and the
+`/health/db` JSON carry the server's own telemetry. Every emitted series
+carries a dictionary row here — pinned by the meta-test
+`metrics_series_have_dictionary_rows` (a series cannot ship without a
+row, the scoreboard discipline applied to ops telemetry). Counters are
+**process-local** (single-process truth since process start; multi-site
+aggregation remains Parcels federation). Gauges are scrape-time snapshots.
+
+| Series | Type | Definition | Source |
+|---|---|---|---|
+| `brain_rss_mib` | gauge | Process resident set in MiB — the same measurement `/health` reports, NOT whole-host memory | `http_limit::process_rss_mib` |
+| `brain_pool_connections` | gauge | Global pool connection counts by `state` label (`idle`/`busy`) | `r2d2::Pool::state()` at scrape |
+| `brain_pool_in_use` | gauge | Per-domain pool connections in use (`connections − idle`) — the pool-saturation signal under the concurrent bench | `r2d2::Pool::state()` per registered domain |
+| `brain_pool_idle` | gauge | Per-domain pool idle connections | `r2d2::Pool::state()` per registered domain |
+| `brain_pool_timeouts_total` | counter | Pool checkouts that timed out (r2d2 `get()` failure) — counted at the existing handler error seam (`HandlerError::db_down`) and the workflow lane's checkout arm; zero cost on success paths | `concurrency::CONCURRENCY` |
+| `brain_busy_errors_total` | counter | SQLITE_BUSY-family errors observed at the governed-write BEGIN sites (`WorkflowTx::begin` + the workflow lane's `BEGIN IMMEDIATE`) — write contention after the 5 s `busy_timeout` burn, counted where the error arm already propagates | `concurrency::CONCURRENCY` |
+| `brain_wal_pages_pending` | gauge | WAL frames not yet checkpointed, per domain (`log − checkpointed` from the PASSIVE checkpoint row). The PRAGMA runs ONLY inside `/health/db` (cold path); `/metrics` reports the last snapshot — absent domains have no snapshot yet | `/health/db` WAL sweep → `concurrency::CONCURRENCY` |
+| `brain_capacity_status` | gauge | Capacity posture: 1=ok 2=warning 3=exceeded | `capacity::classify` |
+| `brain_audit_chain_ok` | gauge | 1 = every registered domain's audit chain verifies; 0 = tamper detected (TTL-cached; authoritative answer on `/audit/verify`) | `audit::verify_chain` |
+| `brain_db_busy_total` | counter | SQLITE_BUSY events surfaced at the audit seam specifically (audit-tx settle failures after busy_timeout burn-through) — the narrower audit-seam twin of `brain_busy_errors_total` | `audit::busy_hits()` |
+
+`/health/db` JSON additive keys (v1.28.58): `concurrency.pool_timeouts_total`,
+`concurrency.busy_errors_total`, and `concurrency.wal_pages_pending` (a
+`{domain: frames}` object) — the same numbers as the series above.
+
 ## Deliberately absent (scope guards)
 
 - **AHT decomposition** (talk + hold + ACW): appears only when CRM data

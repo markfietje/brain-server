@@ -178,9 +178,7 @@ pub async fn suggest(
 
     let suggestions =
         tokio::task::spawn_blocking(move || -> Result<Vec<SuggestionHit>, HandlerError> {
-            let conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool.get().map_err(HandlerError::db_down)?;
             // Embed once (same path as /recall).
             let qvec = model.encode_one(&context);
             // Over-fetch by exclude.len() so filtering excluded ids doesn't starve
@@ -354,9 +352,7 @@ pub async fn feedback(
 
     let pool = state.pool.clone();
     tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         crate::service::suggest::record_feedback(
             &conn,
             chunk_id,
@@ -494,9 +490,7 @@ pub async fn metrics(
     let session_for_task = session.clone();
     let since_for_task = since_norm.clone();
     let m = tokio::task::spawn_blocking(move || -> Result<MetricsResponse, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         let counts = crate::service::suggest::feedback_counts(
             &conn,
             &tenant,

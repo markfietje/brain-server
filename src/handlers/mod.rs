@@ -348,6 +348,15 @@ impl HandlerError {
             inner: ApiError::new("internal_error", message.into()),
         }
     }
+    /// The pool-checkout error seam (the Throughput milestone): every handler's
+    /// `pool.get().map_err` arm lands here, so `brain_pool_timeouts_total`
+    /// counts at the existing error arm instead of growing a counter call per
+    /// call site. Wire-identical to the `internal(format!("DB connection
+    /// failed: {e}"))` it replaced — same status, same code, same message.
+    pub fn db_down(e: r2d2::Error) -> Self {
+        crate::concurrency::note_pool_timeout();
+        Self::internal(format!("DB connection failed: {e}"))
+    }
     /// like [`internal`](Self::internal) but with an
     /// explicit status + code. Used for the `BRAIN_SUGGEST_ENABLED=false` kill
     /// switch, which returns `501 Not Implemented` (not 500) so a configured
@@ -541,9 +550,7 @@ pub fn authorize_role(
     if p.roles.is_empty() {
         return Ok(());
     }
-    let conn = pool
-        .get()
-        .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+    let conn = pool.get().map_err(HandlerError::db_down)?;
     let roles = crate::role::resolve(&conn, &p.roles)
         .map_err(|e| HandlerError::internal(format!("role store: {e}")))?;
     if roles.iter().any(|r| r.can(capability)) {

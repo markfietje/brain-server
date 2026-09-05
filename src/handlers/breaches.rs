@@ -35,9 +35,7 @@ pub(crate) fn require_dpo_role(
     let Some(p) = principal else {
         return Ok(()); // no JWT = loopback incumbent
     };
-    let conn = pool
-        .get()
-        .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+    let conn = pool.get().map_err(HandlerError::db_down)?;
     if p.roles.is_empty() {
         // a scope-only admin token passes ONLY while the
         // deployment defines no roles at all. Once the role store is populated
@@ -136,9 +134,7 @@ pub async fn post_breach(
     let jur_for = req.jurisdictions.clone();
     let by = opened_by.clone();
     let id = tokio::task::spawn_blocking(move || -> Result<i64, HandlerError> {
-        let mut conn = pool_for
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = pool_for.get().map_err(HandlerError::db_down)?;
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -220,9 +216,7 @@ pub async fn post_breach_event(
     let jur_for = req.jurisdiction.clone();
     let jur_audit = jur_for.clone();
     let pushed = tokio::task::spawn_blocking(move || -> Result<bool, HandlerError> {
-        let mut conn = pool_for
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = pool_for.get().map_err(HandlerError::db_down)?;
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -268,9 +262,7 @@ pub async fn close_breach(
     let closed =
         tokio::task::spawn_blocking(move || -> Result<Option<Option<i64>>, HandlerError> {
             // Returns (closed_at) when the breach was found (was it newly closed?).
-            let mut conn = pool_for
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let mut conn = pool_for.get().map_err(HandlerError::db_down)?;
             let tx = conn
                 .transaction()
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -317,9 +309,7 @@ pub async fn list_breaches(
     let pool_for = pool.clone();
     let body =
         tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, HandlerError> {
-            let conn = pool_for
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool_for.get().map_err(HandlerError::db_down)?;
             let rows = crate::breach::list(&conn, limit)?;
             Ok(rows
                 .into_iter()
@@ -343,9 +333,7 @@ pub async fn get_breach(
     let pool_for = pool.clone();
     let view = tokio::task::spawn_blocking(
         move || -> Result<Option<crate::breach::BreachView>, HandlerError> {
-            let conn = pool_for
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool_for.get().map_err(HandlerError::db_down)?;
             crate::breach::get(&conn, id)
         },
     )

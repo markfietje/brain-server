@@ -831,7 +831,10 @@ static BUSY_HITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsiz
 
 /// Whether a rusqlite error is a SQLITE_BUSY family event (busy /
 /// busy_snapshot / busy_recovery — all "the writer waited and lost").
-fn is_busy_error(e: &rusqlite::Error) -> bool {
+/// `pub(crate)` so the Throughput contention counter
+/// (`concurrency::note_busy_error`) reuses the one classification —
+/// two busy definitions would drift.
+pub(crate) fn is_busy_error(e: &rusqlite::Error) -> bool {
     matches!(e, rusqlite::Error::SqliteFailure(ffi, _)
         if ffi.extended_code == rusqlite::ffi::SQLITE_BUSY
             || ffi.extended_code == rusqlite::ffi::SQLITE_BUSY_SNAPSHOT

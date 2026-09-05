@@ -200,9 +200,7 @@ pub async fn post_evaluation_record(
     let actor = crate::handlers::recall::principal_label(&principal.0);
     let record = tokio::task::spawn_blocking(
         move || -> Result<crate::audit::decision::DecisionRecord, HandlerError> {
-            let conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool.get().map_err(HandlerError::db_down)?;
             let outcome = format!(
                 "declared:{} dataset_sha256:{} version:{}",
                 body.declaration, body.dataset_hash, body.system_version
@@ -352,9 +350,7 @@ pub async fn list_ropa(
     let pool = state.pool.clone();
     let rows =
         tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, HandlerError> {
-            let conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool.get().map_err(HandlerError::db_down)?;
             crate::service::compliance::ropa_rows(&conn)
                 .map_err(|e| HandlerError::internal(e.to_string()))
         })
@@ -414,9 +410,7 @@ async fn ropa_upsert(
     let pool = state.pool.clone();
     let actor = crate::handlers::recall::principal_label(&principal.0);
     let id_out = tokio::task::spawn_blocking(move || -> Result<i64, HandlerError> {
-        let mut conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = pool.get().map_err(HandlerError::db_down)?;
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(e.to_string()))?;

@@ -14,7 +14,7 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 |---|---|---|
 | GET | `/health` | Liveness probe (minimal `{status, version}`; detail on `/health/db`) |
 | GET | `/ready` | Readiness probe for load balancers |
-| GET | `/health/db` | Read-gated detail — capacity, pool, hardening, model, otel, DPO |
+| GET | `/health/db` | Read-gated detail — capacity, pool, hardening, model, otel, DPO, concurrency (pool timeouts, busy errors, WAL pages pending) |
 | GET | `/stats`, `/version` | Counts, model, version |
 | GET | `/openapi.yaml` | Full API contract |
 | GET | `/.well-known/security.txt` · `/openid-configuration` · `/jwks.json` | RFC 9116 disclosure file, OIDC discovery (RFC 8414), JWKS key set (RFC 7517) — all public, no auth |

@@ -855,6 +855,7 @@ mod tests {
             alert_events: tokio::sync::broadcast::channel(crate::config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: ChainWatchState::default(),
+            concurrency: &crate::concurrency::CONCURRENCY,
         })
     }
 

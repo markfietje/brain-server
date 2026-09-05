@@ -134,6 +134,7 @@ fn build_server() -> TestServer {
         alert_events: tokio::sync::broadcast::channel(brain_server::config::ALERT_EVENT_BUFFER).0,
         alert_seq: std::sync::atomic::AtomicU64::new(0),
         chain_watch: brain_server::alert::ChainWatchState::default(),
+        concurrency: &brain_server::concurrency::CONCURRENCY,
     });
     TestServer {
         _dir: dir,
@@ -777,6 +778,7 @@ async fn authz_matrix_opaque_mode_superuser_and_none() {
         alert_events: tokio::sync::broadcast::channel(brain_server::config::ALERT_EVENT_BUFFER).0,
         alert_seq: std::sync::atomic::AtomicU64::new(0),
         chain_watch: brain_server::alert::ChainWatchState::default(),
+        concurrency: &brain_server::concurrency::CONCURRENCY,
     });
     let srv = TestServer {
         _dir: dir,

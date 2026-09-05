@@ -60,9 +60,7 @@ pub async fn retention_get(
     let pool = super::resolve_domain_pool(&_state.registry, Some("global"))?;
     let (overridden, counts) = tokio::task::spawn_blocking(
         move || -> Result<(Vec<(String, i64)>, KindMap), HandlerError> {
-            let conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool.get().map_err(HandlerError::db_down)?;
             let overridden = retention::effective_overrides(&conn).map_err(retention_err)?;
             let counts = retention::kind_counts(&conn);
             Ok((overridden, counts))
@@ -139,9 +137,7 @@ pub async fn retention_post(
     let now = chrono::Utc::now().timestamp();
     let to_set2 = to_set.clone();
     let n = tokio::task::spawn_blocking(move || -> Result<usize, HandlerError> {
-        let mut conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = pool.get().map_err(HandlerError::db_down)?;
         let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn)
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         // The override and its evidence audit commit (or roll back) TOGETHER,
@@ -186,10 +182,7 @@ pub async fn retention_report(
     // stored" from "overrides unreadable": fail closed on the latter.
     let mut policy = crate::config::retention_kind_days();
     {
-        let conn = state
-            .pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = state.pool.get().map_err(HandlerError::db_down)?;
         for (k, d) in retention::effective_overrides(&conn).map_err(retention_err)? {
             policy.insert(k, d);
         }
@@ -197,10 +190,7 @@ pub async fn retention_report(
     // Per-domain policies from the bound profiles (the /decayed resolution).
     // Same fail-closed rule: an unreadable profile store must not silently
     // narrow the report to the server-wide defaults.
-    let conn = state
-        .pool
-        .get()
-        .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+    let conn = state.pool.get().map_err(HandlerError::db_down)?;
     let per_domain: std::collections::HashMap<String, std::collections::BTreeMap<String, i64>> =
         crate::profile::domain_profiles(&conn)
             .map_err(|e| HandlerError::internal(format!("domain profile store: {e}")))?
@@ -217,9 +207,7 @@ pub async fn retention_report(
         let mut rows: Vec<serde_json::Value> = Vec::new();
         for d in &domains {
             let pool = super::resolve_domain_pool(&state.registry, Some(d))?;
-            let conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool.get().map_err(HandlerError::db_down)?;
             let p = per_domain.get(d).unwrap_or(&policy);
             rows.extend(retention::report_rows(&conn, now, d, p).map_err(retention_err)?);
         }
@@ -262,7 +250,7 @@ pub async fn art30(
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
         let conn = pool
             .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            .map_err(HandlerError::db_down)?;
 
         // Categories of data: per-memory_kind counts (the kinds are the
         // categories brain-server processes).

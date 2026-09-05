@@ -32,9 +32,7 @@ pub async fn list_roles(
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = state.pool.clone();
     let roles = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         crate::role::list(&conn).map_err(map_err)
     })
     .await
@@ -58,9 +56,7 @@ pub async fn get_role(
     let pool = state.pool.clone();
     let name_for_err = name.clone();
     let r = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         crate::role::load(&conn, &name).map_err(map_err)
     })
     .await
@@ -118,9 +114,7 @@ pub async fn upsert_role(
     let actor = super::recall::principal_label(&principal.0);
     let pool = state.pool.clone();
     let stored = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         crate::role::upsert(&conn, &r).map_err(map_err)?;
         crate::audit::record(
             &conn,

@@ -96,10 +96,7 @@ pub async fn register_client(
         st.registry
             .register(&domain_for)
             .map_err(super::map_domain_error)?;
-        let mut conn = st
-            .pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = st.pool.get().map_err(HandlerError::db_down)?;
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -167,9 +164,7 @@ pub async fn list_clients(
     let pool_for = pool.clone();
     let rows = tokio::task::spawn_blocking(
         move || -> Result<Vec<crate::service::register::Client>, HandlerError> {
-            let conn = pool_for
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool_for.get().map_err(HandlerError::db_down)?;
             Ok(crate::service::register::list_for_domain_grants(
                 &conn,
                 granted.as_deref(),
@@ -202,9 +197,7 @@ pub async fn get_client(
     let key = name.trim().to_ascii_lowercase();
     let value = tokio::task::spawn_blocking(
         move || -> Result<Option<crate::service::register::Client>, HandlerError> {
-            let conn = pool_for
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool_for.get().map_err(HandlerError::db_down)?;
             Ok(crate::service::register::by_name(&conn, &key)?)
         },
     )
@@ -257,9 +250,7 @@ pub async fn client_dsar(
     let key = name.trim().to_ascii_lowercase();
     let (domain, jurisdiction, mechanism) = tokio::task::spawn_blocking(
         move || -> Result<(String, String, Option<String>), HandlerError> {
-            let conn = pool_for
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool_for.get().map_err(HandlerError::db_down)?;
             let c = crate::service::register::require_active_client(&conn, &key)?;
             let mech = crate::transfers::list(&conn, 1, None, Some(&c.jurisdiction), None)?
                 .first()
@@ -317,9 +308,7 @@ pub async fn client_hold(
     let pool_for = pool.clone();
     let key = name.trim().to_ascii_lowercase();
     let domain = tokio::task::spawn_blocking(move || -> Result<String, HandlerError> {
-        let conn = pool_for
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool_for.get().map_err(HandlerError::db_down)?;
         Ok(crate::service::register::require_active_client(&conn, &key)?.domain)
     })
     .await
@@ -354,9 +343,7 @@ pub async fn coach_proposal(
     let key = name.trim().to_ascii_lowercase();
     let key_lookup = key.clone();
     let domain = tokio::task::spawn_blocking(move || -> Result<String, HandlerError> {
-        let conn = pool_for
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool_for.get().map_err(HandlerError::db_down)?;
         Ok(crate::service::register::require_active_client(&conn, &key_lookup)?.domain)
     })
     .await
@@ -366,9 +353,7 @@ pub async fn coach_proposal(
     let flagged = req.flagged;
     let key_for = key.clone();
     let updated = tokio::task::spawn_blocking(move || -> Result<usize, HandlerError> {
-        let mut conn = domain_pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = domain_pool.get().map_err(HandlerError::db_down)?;
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -406,9 +391,7 @@ pub async fn client_proposals(
     let pool_for = pool.clone();
     let key = name.trim().to_ascii_lowercase();
     let domain = tokio::task::spawn_blocking(move || -> Result<String, HandlerError> {
-        let conn = pool_for
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool_for.get().map_err(HandlerError::db_down)?;
         Ok(crate::service::register::require_active_client(&conn, &key)?.domain)
     })
     .await
@@ -421,9 +404,7 @@ pub async fn client_proposals(
         .unwrap_or_default();
     let rows = tokio::task::spawn_blocking(
         move || -> Result<Vec<crate::service::review::ProposalView>, HandlerError> {
-            let conn = domain_pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = domain_pool.get().map_err(HandlerError::db_down)?;
             let page = crate::service::review::pending_page(
                 &conn,
                 "pending",
@@ -492,9 +473,7 @@ pub async fn client_end(
     let key_for = key.clone();
     let (domain, jurisdiction, dpa_purge) =
         tokio::task::spawn_blocking(move || -> Result<(String, String, bool), HandlerError> {
-            let conn = pool_for
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool_for.get().map_err(HandlerError::db_down)?;
             let c = crate::service::register::require_active_client(&conn, &key_for)?;
             let dpa_purge = c
                 .dpa_terms
@@ -527,9 +506,7 @@ pub async fn client_end(
             // no-ops after the first flip, so a crash post-purge recovers by
             // re-running `end`.
             let outcome = {
-                let mut conn = domain_pool
-                    .get()
-                    .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+                let mut conn = domain_pool.get().map_err(HandlerError::db_down)?;
                 let tx = conn
                     .transaction()
                     .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -550,10 +527,7 @@ pub async fn client_end(
             // `archive` no-ops after the first flip, so a crash post-purge recovers.
             // The audit row rides INSIDE the archive tx (SAVEPOINT-nested) —
             // the transition and its evidence commit together.
-            let mut g = state_for
-                .pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let mut g = state_for.pool.get().map_err(HandlerError::db_down)?;
             let tx = g
                 .transaction()
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -607,9 +581,7 @@ pub async fn set_client_dpa(
     let key_for = key.clone();
     let terms = req;
     let changed = tokio::task::spawn_blocking(move || -> Result<usize, HandlerError> {
-        let mut conn = pool_for
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = pool_for.get().map_err(HandlerError::db_down)?;
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -648,9 +620,7 @@ pub async fn get_client_dpa(
     let pool_for = pool.clone();
     let key = name.trim().to_ascii_lowercase();
     let value = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
-        let conn = pool_for
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool_for.get().map_err(HandlerError::db_down)?;
         let c = crate::service::register::by_name(&conn, &key)?
             .ok_or_else(|| HandlerError::not_found("client not found"))?;
         Ok(c.dpa_terms

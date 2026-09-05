@@ -163,9 +163,7 @@ pub async fn create(
 
     let (root_id, step_ids) =
         tokio::task::spawn_blocking(move || -> Result<(i64, Vec<i64>), HandlerError> {
-            let mut conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let mut conn = pool.get().map_err(HandlerError::db_down)?;
             let tx = conn
                 .transaction()
                 .map_err(|e| HandlerError::internal(format!("tx begin failed: {e}")))?;
@@ -301,9 +299,7 @@ pub async fn steps(
     let procedure_id = id;
     let view =
         tokio::task::spawn_blocking(move || -> Result<ProcedureStepsResponse, HandlerError> {
-            let conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool.get().map_err(HandlerError::db_down)?;
             // Root must exist + be a procedure.
             let root: Option<(Option<String>, String)> =
                 crate::service::procedure::procedure_root(&conn, procedure_id, &label)
@@ -423,9 +419,7 @@ pub async fn evaluate(
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = state.pool.clone();
     let outcome = tokio::task::spawn_blocking(move || -> Result<DecisionOutcome, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         let content: String =
             crate::service::procedure::decision_rule_content(&conn, id).map_err(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => {

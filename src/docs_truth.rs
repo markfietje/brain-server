@@ -59,4 +59,49 @@ mod pins {
             "code default drifted from the documented default"
         );
     }
+
+    /// Throughput v1.28.58: every `/metrics` series the core router emits
+    /// carries a dictionary row in docs/metrics.md — the scoreboard
+    /// docs↔code parity applied to ops telemetry. Scans the metrics handler's
+    /// source for `brain_*` series literals (the substring-lock idiom: a
+    /// series added in code without its dictionary row fails here).
+    #[test]
+    fn metrics_series_have_dictionary_rows() {
+        let core = doc("src/server/router/core.rs");
+        let metrics = doc("docs/metrics.md");
+        // collect every `brain_[a-z0-9_]+` literal in the metrics surface
+        let mut series: Vec<String> = Vec::new();
+        let bytes = core.as_bytes();
+        let mut i = 0usize;
+        while let Some(rel) = core[i..].find("brain_") {
+            let start = i + rel;
+            let mut end = start;
+            while end < bytes.len()
+                && (bytes[end].is_ascii_lowercase()
+                    || bytes[end].is_ascii_digit()
+                    || bytes[end] == b'_')
+            {
+                end += 1;
+            }
+            let name = core[start..end].to_string();
+            if !series.contains(&name) {
+                series.push(name);
+            }
+            i = start + 6;
+        }
+        // anti-vacuous: the scan must see the real surface — the pre-Throughput
+        // series floor. If this fires, the scanner (or the handler) is broken.
+        assert!(
+            series.len() >= 10,
+            "metrics-series scan found only {} names — the scanner or the handler is broken",
+            series.len()
+        );
+        for name in &series {
+            assert!(
+                metrics.contains(&format!("`{name}`")),
+                "metrics dictionary is missing a row for series `{name}` — add it to \
+                 docs/metrics.md §\"Server telemetry series\" in the same commit"
+            );
+        }
+    }
 }

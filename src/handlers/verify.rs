@@ -100,9 +100,7 @@ pub async fn verify(
     let claim_for_task = claim.clone();
 
     let content = tokio::task::spawn_blocking(move || -> Result<Option<String>, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         let r = crate::service::recall::chunk_for_verify(&conn, chunk_id, &label);
         match r {
             Ok(Some((content, row_domain, row_owner, row_scope))) => {

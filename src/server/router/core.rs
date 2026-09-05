@@ -221,6 +221,10 @@ pub async fn health_db(
     let pool = s.pool.clone();
     let db_path = s.db_path.clone();
     let snapshot = s.snapshot.clone();
+    // Throughput: the WAL sweep covers EVERY registered domain (same target
+    // list the audit chain verify uses). Collected owned so the blocking
+    // closure stays 'static.
+    let wal_targets = handlers::domain_pools(&s.registry, &pool);
 
     let db_future = task::spawn_blocking(move || {
         let mut sys = System::new();
@@ -236,6 +240,28 @@ pub async fn health_db(
             c.query_row("SELECT MAX(created_at) FROM knowledge", [], |r| r.get(0))
                 .ok()
         });
+        // Throughput: the ONLY place the WAL PRAGMA runs — admin cold path
+        // (Read-gated detail), never per request. PASSIVE never blocks
+        // writers; the row is (busy, log, checkpointed) and "pending" is
+        // log − checkpointed. A domain that cannot open, or a pragma that
+        // errors, is absent from the snapshot — never invented as zero.
+        let mut wal: Vec<(String, u64)> = Vec::new();
+        for (domain, pool) in &wal_targets {
+            let Some(p) = pool else { continue };
+            let Ok(c) = p.get() else { continue };
+            let (log, checkpointed): (i64, i64) =
+                match c.query_row("PRAGMA wal_checkpoint(PASSIVE)", [], |r| {
+                    Ok((r.get(1)?, r.get(2)?))
+                }) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+            wal.push((
+                domain.clone(),
+                log.saturating_sub(checkpointed).max(0) as u64,
+            ));
+        }
+        crate::concurrency::CONCURRENCY.set_wal_snapshot(wal);
         Ok::<_, anyhow::Error>((
             sys.used_memory() / 1_000_000,
             sys.total_memory() / 1_000_000,
@@ -270,6 +296,22 @@ pub async fn health_db(
             if let serde_json::Value::Object(ref mut m) = body {
                 m.insert("database_size_bytes".to_string(), db_size.into());
                 m.insert("last_write".to_string(), last_write.into());
+                // Throughput: contention telemetry as additive JSON keys
+                // (the same numbers /metrics scrapes; counters process-local).
+                let wal: serde_json::Map<String, serde_json::Value> =
+                    crate::concurrency::CONCURRENCY
+                        .wal_snapshot()
+                        .into_iter()
+                        .map(|(d, n)| (d, serde_json::Value::from(n)))
+                        .collect();
+                m.insert(
+                    "concurrency".to_string(),
+                    serde_json::json!({
+                        "pool_timeouts_total": crate::concurrency::CONCURRENCY.pool_timeouts(),
+                        "busy_errors_total": crate::concurrency::CONCURRENCY.busy_errors(),
+                        "wal_pages_pending": serde_json::Value::Object(wal),
+                    }),
+                );
             }
             Ok(Json(body))
         }
@@ -394,6 +436,9 @@ pub(crate) async fn metrics(
     let audit_cache = std::sync::Arc::clone(&s.audit_chain_cache);
     // The gauge aggregates EVERY registered domain's chain —
     // collected here (owned) so the blocking closure stays 'static.
+    // Throughput: the SAME target list feeds the per-domain pool gauges
+    // (`brain_pool_in_use`/`brain_pool_idle` from `r2d2::State` snapshots
+    // taken at scrape) — no extra registry work.
     let chain_targets = crate::handlers::domain_pools(&s.registry, &pool);
     let body = task::spawn_blocking(move || -> String {
         let pool_state = pool.state();
@@ -412,6 +457,24 @@ pub(crate) async fn metrics(
             .and_then(|c| c.get("status"))
             .and_then(|v| v.as_str())
             .unwrap_or("unknown");
+        // Throughput contention telemetry: per-domain pool gauges
+        // from the SAME target list the chain gauge consumes (state() is an
+        // in-memory snapshot — no syscalls). Computed BEFORE the chain block
+        // below, which may consume (move) the target vec on a cache miss.
+        let mut domain_pool_lines = String::new();
+        for (domain, pool) in &chain_targets {
+            if let Some(p) = pool {
+                let st = p.state();
+                domain_pool_lines.push_str(&format!(
+                    "brain_pool_in_use{{domain=\"{domain}\"}} {}\n",
+                    st.connections.saturating_sub(st.idle_connections)
+                ));
+                domain_pool_lines.push_str(&format!(
+                    "brain_pool_idle{{domain=\"{domain}\"}} {}\n",
+                    st.idle_connections
+                ));
+            }
+        }
         let chain_ok = {
             // /metrics path: use the TTL cache so a scrape doesn't trigger a
             // full O(n) chain scan (now × N domains). /audit/verify bypasses
@@ -446,6 +509,29 @@ pub(crate) async fn metrics(
         out.push_str(&format!(
             "brain_pool_connections{{state=\"busy\"}} {busy}\n"
         ));
+        // Throughput: the precomputed per-domain gauges, then the
+        // process-local counters, then the /health/db-refreshed WAL snapshot.
+        // Additive series; the scrape adds nothing to any request path.
+        out.push_str(&domain_pool_lines);
+        out.push_str("# HELP brain_pool_timeouts_total Pool checkouts that timed out (r2d2 get() failure) since process start. Monotonic.\n");
+        out.push_str("# TYPE brain_pool_timeouts_total counter\n");
+        out.push_str(&format!(
+            "brain_pool_timeouts_total {}\n",
+            crate::concurrency::CONCURRENCY.pool_timeouts()
+        ));
+        out.push_str("# HELP brain_busy_errors_total SQLITE_BUSY-family errors observed at the governed-write BEGIN sites (WorkflowTx::begin + the workflow lane) since process start. Audit-seam busy is brain_db_busy_total. Monotonic.\n");
+        out.push_str("# TYPE brain_busy_errors_total counter\n");
+        out.push_str(&format!(
+            "brain_busy_errors_total {}\n",
+            crate::concurrency::CONCURRENCY.busy_errors()
+        ));
+        out.push_str("# HELP brain_wal_pages_pending WAL frames not yet checkpointed, per domain — last /health/db snapshot (the PASSIVE checkpoint PRAGMA runs ONLY there, cold path). Absent domains: no snapshot yet.\n");
+        out.push_str("# TYPE brain_wal_pages_pending gauge\n");
+        for (domain, pending) in crate::concurrency::CONCURRENCY.wal_snapshot() {
+            out.push_str(&format!(
+                "brain_wal_pages_pending{{domain=\"{domain}\"}} {pending}\n"
+            ));
+        }
         out.push_str("# HELP brain_capacity_status 1=ok 2=warning 3=exceeded.\n");
         out.push_str("# TYPE brain_capacity_status gauge\n");
         let cap_num = match cap_status {

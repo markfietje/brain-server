@@ -240,6 +240,7 @@ mod tests {
             max_docs: 5,
             max_db_mib: 512,
             max_rss_mib: 320,
+            search_p95_ms_ceiling: u64::MAX,
         };
         // Even with docs exceeding the limit, Exceeded only blocks writes.
         assert_eq!(
@@ -1057,6 +1058,7 @@ mod tests {
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         });
         state
             .pool
@@ -5422,6 +5424,7 @@ Final paragraph after the rule.";
             alert_events: tokio::sync::broadcast::channel(16).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         });
         let Json(body) = verify_audit_chain(
             axum::extract::State(state),
@@ -6009,6 +6012,7 @@ Final paragraph after the rule.";
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         });
         let err = handlers::auth::revoke_handler(
             State(state),
@@ -7072,6 +7076,7 @@ Final paragraph after the rule.";
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         })
     }
 
@@ -8404,6 +8409,7 @@ Final paragraph after the rule.";
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         });
 
         // Federation (no forced domain, no confident centroid): the alpha
@@ -8512,6 +8518,7 @@ Final paragraph after the rule.";
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         });
 
         use auth::Scope;
@@ -9156,6 +9163,7 @@ Final paragraph after the rule.";
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         });
 
         let token = "detailed-health-tok";
@@ -9293,6 +9301,7 @@ Final paragraph after the rule.";
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         });
         let app = axum::Router::new()
             .route("/ingest", axum::routing::post(handlers::ingest::ingest))
@@ -9473,6 +9482,7 @@ Final paragraph after the rule.";
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         });
         let app = axum::Router::new()
             .route("/ingest", axum::routing::post(handlers::ingest::ingest))
@@ -9726,6 +9736,7 @@ Final paragraph after the rule.";
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         });
         let app = axum::Router::new()
             .route("/ingest", axum::routing::post(handlers::ingest::ingest))
@@ -9865,6 +9876,7 @@ Final paragraph after the rule.";
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         });
         let app = axum::Router::new()
             .route(
@@ -10024,6 +10036,7 @@ Final paragraph after the rule.";
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         });
         let app = axum::Router::new()
             .route(
@@ -10320,6 +10333,7 @@ Final paragraph after the rule.";
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         });
         let app = axum::Router::new()
             .route(
@@ -10550,6 +10564,7 @@ Final paragraph after the rule.";
             alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         })
     }
 
@@ -12410,6 +12425,7 @@ Final paragraph after the rule.";
             alert_events: tokio::sync::broadcast::channel(16).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
         });
 
         fn sign(body: &[u8]) -> [String; 3] {

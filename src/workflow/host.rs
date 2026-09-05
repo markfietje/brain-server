@@ -119,13 +119,16 @@ impl WorkflowHost for SqliteWorkflowHost {
         if matches!(&*guard, Lane::Active(_)) {
             return Err(HostError::Busy);
         }
-        let conn = self
-            .inner
-            .pool
-            .get()
-            .map_err(|e| HostError::Internal(e.to_string()))?;
-        conn.execute_batch("BEGIN IMMEDIATE")
-            .map_err(|e| HostError::Internal(format!("begin failed: {e}")))?;
+        let conn = self.inner.pool.get().map_err(|e| {
+            // Contention telemetry (Throughput): the lane's checkout arm.
+            crate::concurrency::note_pool_timeout();
+            HostError::Internal(e.to_string())
+        })?;
+        conn.execute_batch("BEGIN IMMEDIATE").map_err(|e| {
+            // Contention telemetry (Throughput): the lane's BEGIN arm.
+            crate::concurrency::note_busy_error(&e);
+            HostError::Internal(format!("begin failed: {e}"))
+        })?;
         *guard = Lane::Active(Box::new(conn));
         Ok(HostTx::new(Box::new(SqliteUnitHandle {
             inner: Arc::clone(&self.inner),

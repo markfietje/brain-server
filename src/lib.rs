@@ -128,6 +128,7 @@ pub mod alert;
 pub mod auth;
 pub mod breach;
 pub mod chunker;
+pub mod concurrency;
 pub mod config;
 pub mod consolidate;
 pub mod domain_registry;
@@ -162,6 +163,10 @@ pub mod otel;
 pub mod docs_truth;
 #[cfg(test)]
 pub mod dup_guard;
+// The regulation-date watch (Enterprise law 13): the calendar as code. Test-only
+// by construction — every pin is a #[test].
+#[cfg(test)]
+pub mod reg_watch;
 #[cfg(test)]
 pub mod spire_inventory;
 

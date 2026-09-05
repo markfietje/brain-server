@@ -81,9 +81,7 @@ pub async fn register(
 
     let out =
         tokio::task::spawn_blocking(move || -> Result<RegisterConnectorResponse, HandlerError> {
-            let conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool.get().map_err(HandlerError::db_down)?;
             // Profile gate: a bound profile's `connectors_allowed` is the vertical
             // configuration lever. Unbound domain → no constraint → allowed.
             if let Some(profile) =
@@ -138,9 +136,7 @@ pub async fn list(
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = state.pool.clone();
     let rows = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         let rows = crate::connector::list_connectors(&conn)
             .map_err(|e| HandlerError::internal(format!("list_connectors failed: {e}")))?;
         Ok::<_, HandlerError>(rows)

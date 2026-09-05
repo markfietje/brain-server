@@ -69,9 +69,7 @@ pub(crate) async fn post_legal_hold_for_domain(
 
     let (held, hold_ids) =
         tokio::task::spawn_blocking(move || -> Result<(usize, Vec<i64>), HandlerError> {
-            let mut conn = pool_for
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let mut conn = pool_for.get().map_err(HandlerError::db_down)?;
             let tx = conn
                 .transaction()
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -128,9 +126,7 @@ pub async fn release_legal_hold(
     let pool_for = pool.clone();
     let released = tokio::task::spawn_blocking(
         move || -> Result<Option<crate::legal_hold::LegalHoldRow>, HandlerError> {
-            let mut conn = pool_for
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let mut conn = pool_for.get().map_err(HandlerError::db_down)?;
             let tx = conn
                 .transaction()
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -205,9 +201,7 @@ pub async fn list_legal_holds(
         let mut total = 0;
         for d in &domains {
             let pool = super::resolve_domain_pool(&state.registry, Some(d))?;
-            let conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool.get().map_err(HandlerError::db_down)?;
             let (rows, t) = crate::legal_hold::list_holds(&conn, id, reason.as_deref(), limit)?;
             total += t;
             for h in rows {

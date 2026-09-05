@@ -97,10 +97,7 @@ pub async fn reconcile(
     let audit_state = Arc::clone(&state);
 
     let report = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
-        let mut conn = state
-            .pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = state.pool.get().map_err(HandlerError::db_down)?;
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(format!("transaction failed: {e}")))?;
@@ -159,9 +156,7 @@ pub async fn delete_source(
     let pool = state.pool.clone();
 
     let deleted = tokio::task::spawn_blocking(move || -> Result<bool, HandlerError> {
-        let mut conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = pool.get().map_err(HandlerError::db_down)?;
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(format!("transaction failed: {e}")))?;

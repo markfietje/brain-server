@@ -70,9 +70,7 @@ pub async fn register_transfer(
     let mechanism_label = req.mechanism.clone();
     let mech_for_closure = mechanism_label.clone();
     let id = tokio::task::spawn_blocking(move || -> Result<i64, HandlerError> {
-        let mut conn = pool_for
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = pool_for.get().map_err(HandlerError::db_down)?;
         let tx = conn
             .transaction()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
@@ -143,9 +141,7 @@ pub async fn list_transfers(
     let d = q.dataset.clone();
     let rows =
         tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, HandlerError> {
-            let conn = pool_for
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool_for.get().map_err(HandlerError::db_down)?;
             let rows =
                 crate::transfers::list(&conn, limit, m.as_deref(), j.as_deref(), d.as_deref())?;
             Ok(rows
@@ -170,9 +166,7 @@ pub async fn get_tia(
     let pool_for = pool.clone();
     let tia = tokio::task::spawn_blocking(
         move || -> Result<Option<crate::transfers::TiaTemplate>, HandlerError> {
-            let conn = pool_for
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool_for.get().map_err(HandlerError::db_down)?;
             crate::transfers::tia_from(&conn, id)
         },
     )
@@ -194,9 +188,7 @@ pub async fn get_dpa(
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     let pool_for = pool.clone();
     let value = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
-        let conn = pool_for
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool_for.get().map_err(HandlerError::db_down)?;
         let t = crate::transfers::transfer_by_id(&conn, id)?
             .ok_or_else(|| HandlerError::not_found("no transfer with this id"))?;
         Ok(crate::transfers::dpa_fields(&t))

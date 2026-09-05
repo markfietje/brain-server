@@ -217,9 +217,7 @@ pub(crate) async fn create_proposal(
     let owner = principal_to_owner(&principal);
 
     let resp = tokio::task::spawn_blocking(move || -> Result<ProposalResponse, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         // Deterministic scoring: novelty via vec0 KNN, conflict via the
         // consolidate machinery, salience via the length/entity heuristic.
         let embedding = model.encode_one(&content_for_task);
@@ -390,9 +388,7 @@ pub async fn list_proposals(
     let pool = super::resolve_domain_pool(&state.registry, Some(authz_domain))?;
 
     let rows = tokio::task::spawn_blocking(move || -> Result<Vec<ProposalView>, HandlerError> {
-        let conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let conn = pool.get().map_err(HandlerError::db_down)?;
         crate::service::review::pending_page(&conn, &status, limit, since, domain_filter.as_deref())
             .map_err(|e| HandlerError::internal(e.to_string()))
     })
@@ -492,7 +488,7 @@ pub async fn approve_proposal(
         tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
         let mut conn = pool
             .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            .map_err(HandlerError::db_down)?;
 
         // run the TTL check + expiration audit on the raw autocommit
         // connection BEFORE opening the tx. Previously `expire_if_stale` was
@@ -1557,9 +1553,7 @@ pub async fn reject_proposal(
     let actor_for_span = actor_label.clone();
     let alert_state = Arc::clone(&state);
     let updated = tokio::task::spawn_blocking(move || -> Result<usize, HandlerError> {
-        let mut conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = pool.get().map_err(HandlerError::db_down)?;
         // refuse to act on an expired proposal (audits + rejects it).
         let stale_created_at = crate::service::review::pending_created_at(&conn, id);
         if let Some(created_at) = stale_created_at
@@ -1742,9 +1736,7 @@ pub async fn edit_proposal(
 
     let res: Result<ProposalView, HandlerError> =
         tokio::task::spawn_blocking(move || -> Result<ProposalView, HandlerError> {
-            let mut conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let mut conn = pool.get().map_err(HandlerError::db_down)?;
 
             // Same stale/expiry discipline as approve/reject:
             // the TTL check + expiration audit land on the raw autocommit conn
@@ -2031,9 +2023,7 @@ pub async fn list_decayed(
 
     let rows =
         tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, HandlerError> {
-            let conn = pool
-                .get()
-                .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            let conn = pool.get().map_err(HandlerError::db_down)?;
             // the whole storage story lives in the decay core: the
             // superset WHERE narrows the scan, held ids drop, and the
             // Rust-side arbiter (moved with it as ONE unit) decides every
@@ -2116,9 +2106,7 @@ pub async fn purge(
     let ids = req.ids;
     let owner = req.owner;
     let count = tokio::task::spawn_blocking(move || -> Result<i64, HandlerError> {
-        let mut conn = pool
-            .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+        let mut conn = pool.get().map_err(HandlerError::db_down)?;
         crate::service::lifecycle::purge::purge_targets(&mut conn, ids, owner.as_deref(), now)
             .map_err(|e| match e {
                 crate::service::lifecycle::purge::LifecyclePurgeError::NoMatch => {
@@ -2193,7 +2181,7 @@ pub async fn export(
     let body = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
         let conn = pool
             .get()
-            .map_err(|e| HandlerError::internal(format!("DB connection failed: {e}")))?;
+            .map_err(HandlerError::db_down)?;
         let bundle = crate::service::gate::export_bundle(&conn)
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         // pre-flight row count to bound memory. The full export
@@ -2713,6 +2701,7 @@ mod valet_lint_tests {
             alert_events: tokio::sync::broadcast::channel(16).0,
             alert_seq: std::sync::atomic::AtomicU64::new(0),
             chain_watch: crate::alert::ChainWatchState::default(),
+            concurrency: &crate::concurrency::CONCURRENCY,
         });
         (dir, state)
     }
