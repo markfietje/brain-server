@@ -48,10 +48,12 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// integration suites). Floor — never decreases. 1,185 src-only at the
 /// Scaffold freeze; the Capstone move relocated main.rs's region into
 /// tests/ without deleting a single pin, and the floor re-measured 1,196
-/// over the widened subject (1,074 src + 122 tests) in the move commit.
-/// (The needle counts doc-comment literals too — a deliberate substring
-/// lock, measured the same way every time.)
-const CRATE_TEST_FLOOR: usize = 1_196;
+/// over the widened subject (1,074 src + 122 tests) in the move commit
+/// (1,207 at the Throughput open — the calendar pins, the concurrency
+/// proptests, the merge determinism pin, and the metrics-dictionary parity
+/// test earned the raise). (The needle counts doc-comment literals too —
+/// a deliberate substring lock, measured the same way every time.)
+const CRATE_TEST_FLOOR: usize = 1_207;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), re-measured to 161 at the Buttress open. Rows join
 /// only with the wire change that earns them, in the same commit.

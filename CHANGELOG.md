@@ -19,6 +19,127 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.58] — 2026-09-05 — "Throughput": concurrent truth, visible contention, the calendar as code — the Enterprise Line opens
+
+Two deadlines make the milestone non-slottable: CRA Art 14 reporting goes
+live 2026-09-11 (24 h/72 h/final to ENISA + CSIRT), and every later
+Enterprise claim ("measured service levels") would be unfounded while the
+bench is single-client and contention is invisible. The release ships the
+calendar-as-code mechanism, the concurrent measurement, the visibility,
+and the runbook — nothing behavioral changes on any request path: no new
+routes, none removed, no schema movement, `x-api-version` untouched, and
+main.rs untouched entirely (net delta 0; the thin binary stands).
+
+### Release notes
+
+**Bug fixes**
+- None.
+
+**Improvements**
+- **The calendar becomes executable** (`src/reg_watch.rs`, cfg(test), the
+  docs_truth idiom — Enterprise law 13): each pinned regulation deadline
+  carries its source URL and a date-shaped assertion. `reg_watch_cra_pin
+  _is_green` asserts the CRA reporting runbook exists with its three
+  clock anchors — landed RED (no runbook) and flipped GREEN the same
+  release, proving the mechanism catches lateness; the deadline constant
+  is load-bearing (the runbook's stamped date is derived from it — a
+  constant re-mapped without the doc fails the pin). AI Act Art 50
+  marking (2026-12-02) and the PQC inventory seam (2030-12-31) ride in
+  watch form (`today < DATE`); the day a date passes without its
+  deliverable, CI goes red on the pin, not in the operator's inbox.
+- **The bench learns concurrency** (`BENCH_CLIENTS`, default 1 — the
+  sequential run is byte-compatible): N clients fan out over the SAME
+  seeded per-scale search mix (`BENCH_SEED` printed; no RNG crate — the
+  mix stays a deterministic formula), samples merge per scale into
+  pooled p50/p95/p99/max + non-2xx/transport failure counts + per-client
+  skew (printed, not hidden). Ingest stays single-client at every value —
+  the corpus build is untouched. `BENCH_ASSERT_P95_MS` is an
+  envelope-free ship gate; `BENCH_ENVELOPE` gains a per-target
+  concurrent p95 ceiling (`search_p95_ms_ceiling`): desktop 60 ms,
+  measured from three live 8-client runs (22.28/22.86/23.07 ms — worst
+  + ~2.5× margin, docs/THROUGHPUT_PROOF_20260905.md); jetson 150 ms
+  marked unmeasured (no ARM runner). The merge is pinned deterministic
+  (`bench_clients_merge_is_deterministic`).
+- **Contention becomes visible** (`src/concurrency.rs`): process-local
+  counters (the audit-static precedent) surfaced on `/metrics` and
+  `/health/db`, wired ONLY at existing error arms — zero added cost on
+  success paths. `brain_pool_timeouts_total` counts r2d2 checkout
+  failures at the handler error seam (`HandlerError::db_down`, the
+  shared `pool.get().map_err` arm — 92 call sites collapsed onto it,
+  wire-identical) and the workflow lane's checkout arm;
+  `brain_busy_errors_total` counts SQLITE_BUSY-family errors at the
+  governed-write BEGIN sites (`WorkflowTx::begin` + the lane's
+  `BEGIN IMMEDIATE`); `brain_pool_in_use{domain}`/`brain_pool_idle
+  {domain}` come from `r2d2::State` snapshots at scrape;
+  `brain_wal_pages_pending{domain}` is refreshed ONLY by `/health/db`
+  (the PASSIVE-checkpoint PRAGMA runs there and nowhere else — admin
+  cold path). `/health/db` JSON gains additive `concurrency.*` keys.
+  A proptest pins counter monotonicity under Relaxed ordering (2 cases).
+- **The metrics dictionary gains its ops twin** — every `/metrics` series
+  (the ten `brain_*` names) now has a docs/metrics.md dictionary row,
+  pinned by the new `metrics_series_have_dictionary_rows` meta-test
+  (the scoreboard parity discipline applied to telemetry); docs/api.md's
+  `/health/db` row and openapi.yaml (additive-only) updated in the same
+  change.
+- **The CRA reporting runbook + timed drill** (`docs/cra-reporting
+  -runbook.md`, `scripts/cra-report-drill.sh`): trigger taxonomy, the
+  three clocks with their templates, the ENISA + CSIRT channel table
+  with a deploy-time operator blank, the artifact checklist (SBOM,
+  affected-version matrix, containment statement, signed release, audit
+  posture), and the operator-role call (honest: these are one
+  operator's hats). The drill fabricates an exploited-vuln notice,
+  fills the 24 h template, stamps every step, and prints a timing
+  report; the baseline is archived in docs/THROUGHPUT_PROOF_20260905.md.
+- **CI gains the concurrent-truth gate** (`bench-concurrency`, desktop
+  x86 runner only): boots a release-built scratch instance and drives it
+  with `BENCH_CLIENTS=8 BENCH_SEARCHES=200 BENCH_ASSERT_P95_MS=10000`
+  (generous by design — the gate fails on catastrophic contention
+  serialization, not runner noise; retry-once documented), then asserts
+  the scrape surface survived. Jetson floors stay local-measured — the
+  known no-ARM-runner gap, printed honestly.
+
+**Security fixes**
+- None. (Visibility + rehearsal ARE the posture work: contention that
+  cannot be seen cannot be capacity-planned, and a reporting clock that
+  has never been rehearsed will be missed.)
+
+### Engineering record
+
+- Drift adaptations (the prompt's cites predate the Capstone flip;
+  adapted in the same change, as instructed): the `/metrics` handler is
+  `src/server/router/core.rs::metrics` (was main.rs ~2092); the r2d2
+  pool builder is `src/server/bootstrap.rs` (was main.rs ~5393);
+  `resolve_domain_pool` lives in `src/handlers/mod.rs` and resolves
+  REGISTRIES, not connections — its error arms are domain-resolution
+  errors, so the checkout-timeout counter wires at the actual checkout
+  arms (the 92-site `HandlerError::db_down` seam + the lane), which is
+  where r2d2 timeouts observably surface.
+- Counters are process-local by design (single-process truth; multi-site
+  aggregation remains Parcels federation). `brain_busy_errors_total` and
+  `brain_db_busy_total` are deliberately distinct series: write-path
+  BEGIN-site busy vs audit-tx settle busy.
+- Honest ceilings: the CI concurrency floor is x86-desktop only; jetson
+  floors are constants pending a device run. The WAL gauge on /metrics
+  is a cached snapshot (fresh only as recent as the last /health/db
+  scrape) — the PRAGMA must not run per request. Some checkout-error
+  sites outside the shared handler seam (the `/add` AddResponse arms,
+  anyhow-context sites in search/domain-router internals) do not bump
+  `brain_pool_timeouts_total` — wiring them would have meant touching
+  arms the milestone freezes; the seam covers the dominant handler
+  surface.
+- Live proof (copy instance, docs/THROUGHPUT_PROOF_20260905.md): 3×
+  measured runs (1600/1600 ops, 0 failures, p95 22.28–23.07 ms); same-
+  seed structural diff identical; `/metrics` before/during/after a
+  6 400-search burst shows `brain_pool_in_use` 0 → 5 → 0 with counters
+  flat at 0; CRA drill baseline archived.
+- Gates: full suite per surface (lib 1031+ / main_suite 163+ / authz
+  matrix / metrics / eval / bench + reg_watch + concurrency pins);
+  clippy `-D warnings` on all surfaces incl. otel; fmt clean; spire
+  gates green (main.rs untouched, net delta 0); CRATE_TEST_FLOOR raised
+  with the new pins.
+
+---
+
 ## [1.28.57] — 2026-09-05 — "Capstone": the enforcing flip + the audit — the Spire Line closes
 
 The Spire Line's fin. No behavior change of any kind: no new routes, no
