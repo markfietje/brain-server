@@ -21,6 +21,22 @@ pub enum CapacityTarget {
     Jetson,
 }
 
+/// Concurrent-truth p95 ceilings (the Throughput milestone): the p95 of
+/// /search under the bench's BENCH_CLIENTS=8 fan-out that a target must stay
+/// under for `BENCH_ENVELOPE` to pass.
+///
+/// desktop = 60 ms: three measured runs against a 1 000-doc release-built
+/// corpus (2026-09-05, docs/THROUGHPUT_PROOF_20260905.md) landed merged p95
+/// at 22.28 / 22.86 / 23.07 ms — the ceiling is the worst run + ~2.5× margin
+/// for shared-dev-box noise (the 200 ms UX ceiling below stays the
+/// plugin-facing bound).
+///
+/// jetson = 150 ms: NOT yet measured under load (no ARM runner — the known
+/// repo CI gap); asserted only on local `BENCH_ENVELOPE=jetson` runs.
+/// Re-measure on the device and tighten before trusting it.
+const P95_CEILING_DESKTOP: u64 = 60;
+const P95_CEILING_JETSON: u64 = 150;
+
 /// Resolve the capacity target from `BRAIN_CAPACITY_TARGET` (desktop|jetson).
 /// Unknown/empty → Jetson (conservative).
 pub fn capacity_target() -> CapacityTarget {
@@ -41,11 +57,17 @@ pub struct CapacityEnvelope {
     pub max_docs: usize,
     pub max_db_mib: u64,
     pub max_rss_mib: u64,
+    /// Concurrent-truth ceiling (the Throughput milestone): the p95 of /search
+    /// under the bench's client fan-out that a target must stay under for
+    /// the run to pass `BENCH_ENVELOPE`. Values are measured constants set
+    /// from live runs minus margin — see the consts below and
+    /// docs/THROUGHPUT_PROOF_20260905.md.
+    pub search_p95_ms_ceiling: u64,
 }
 
 impl CapacityEnvelope {
     pub fn for_target(target: CapacityTarget) -> Self {
-        let (max_docs, max_db_mib, max_rss_mib) = match target {
+        let (max_docs, max_db_mib, max_rss_mib, search_p95_ms_ceiling) = match target {
             // v1.16.x: RSS ceiling raised 320 → 512 MiB (the 320 cap was tuned
             // to a 4 GB Jetson; the live desktop install runs ~180–320 MiB and
             // a transient spike (large /multi-get, backup pass) must not sit
@@ -56,16 +78,16 @@ impl CapacityEnvelope {
             // 512 would pin the warning band permanently on desktop hardware.
             // Jetson stays 512 (the 4 GB edge contract — edge-default runs the
             // static potion model, ~340 MiB, well under it).
-            CapacityTarget::Desktop => (50_000, 2_048, 1024),
-            CapacityTarget::Jetson => (10_000, 512, 512),
+            CapacityTarget::Desktop => (50_000, 2_048, 1024, P95_CEILING_DESKTOP),
+            CapacityTarget::Jetson => (10_000, 512, 512, P95_CEILING_JETSON),
         };
-        Self::from_env(max_docs, max_db_mib, max_rss_mib)
+        Self::from_env(max_docs, max_db_mib, max_rss_mib, search_p95_ms_ceiling)
     }
 
     /// Layer env-var overrides on top of the built-in defaults. Tests use this
     /// to drive the envelope below the live corpus so they can exercise the
     /// 507 path without ingesting 10k real docs.
-    fn from_env(d_docs: usize, d_db: u64, d_rss: u64) -> Self {
+    fn from_env(d_docs: usize, d_db: u64, d_rss: u64, d_p95: u64) -> Self {
         let parse_usize = |k: &str, d: usize| {
             std::env::var(k)
                 .ok()
@@ -82,6 +104,7 @@ impl CapacityEnvelope {
             max_docs: parse_usize("CAPACITY_MAX_DOCS", d_docs),
             max_db_mib: parse_u64("CAPACITY_MAX_DB_MIB", d_db),
             max_rss_mib: parse_u64("CAPACITY_MAX_RSS_MIB", d_rss),
+            search_p95_ms_ceiling: parse_u64("CAPACITY_MAX_P95_MS", d_p95),
         }
     }
 }
@@ -167,6 +190,7 @@ mod tests {
             max_docs: docs,
             max_db_mib: db,
             max_rss_mib: rss,
+            search_p95_ms_ceiling: u64::MAX,
         }
     }
 

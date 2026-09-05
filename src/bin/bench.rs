@@ -16,8 +16,22 @@
 //!   BRAIN_TOKEN_FILE  path to a 0600 secret file (preferred over BRAIN_TOKEN)
 //!   BRAIN_TOKEN       raw bearer token (dev convenience)
 //!   BENCH_SCALES      comma-separated doc counts (default 1000,5000,10000)
-//!   BENCH_SEARCHES    search queries per scale (default 100)
+//!   BENCH_SEARCHES    search queries per client per scale (default 100)
 //!   BENCH_ENVELOPE    assert against this capacity envelope (desktop|jetson)
+//!   BENCH_CLIENTS     parallel search clients per scale (default 1; N>=2
+//!                     fans out N std::threads over the SAME seeded mix and
+//!                     merges the latency samples — the concurrent truth the
+//!                     Enterprise Line gates on)
+//!   BENCH_SEED        query-space offset for the mix (default 0); printed so
+//!                     any floor breach is reproducible
+//!   BENCH_ASSERT_P95_MS  fail the run when the merged p95 exceeds this
+//!                     (an envelope-free ship gate; CI uses it with a
+//!                     generous bound)
+//!
+//! Ingest stays single-client at every BENCH_CLIENTS value (the corpus build
+//! is deterministic: synthetic titles/content stay unique across cumulative
+//! scales); only the search phase fans out. With BENCH_CLIENTS=1 the report
+//! is byte-identical to the pre-Throughput sequential behavior.
 //!
 //! Scales are cumulative within one run — the server exposes no reset API, so
 //! each scale's docs are appended on top of the previous scale's. "RSS at rest"
@@ -139,6 +153,135 @@ fn num_searches() -> usize {
         .unwrap_or(100)
 }
 
+/// Parallel search clients per scale. 1 = the pre-Throughput sequential run.
+fn num_clients() -> usize {
+    std::env::var("BENCH_CLIENTS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .unwrap_or(1)
+        .max(1)
+}
+
+/// Query-space offset for the deterministic mix — the "seed". The mix itself
+/// is a fixed formula (`topic {(q + seed) % 50}`), no RNG crate (bench stays
+/// dependency-free); same seed + same server state ⇒ same query sequence.
+fn bench_seed() -> u64 {
+    std::env::var("BENCH_SEED")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+/// Envelope-free p95 ship gate: when set, the run fails if the merged p95 of
+/// any scale exceeds this many milliseconds.
+fn assert_p95_ms() -> Option<f64> {
+    std::env::var("BENCH_ASSERT_P95_MS")
+        .ok()
+        .and_then(|s| s.trim().parse::<f64>().ok())
+}
+
+/// One client's search phase over the seeded mix. Pure-ish: network I/O only,
+/// failures COUNTED (non-2xx + transport errors) rather than aborting the
+/// client — the merged report must show contention, not die of it.
+struct ClientSearchResult {
+    client: usize,
+    lats: Vec<Duration>,
+    failures: usize,
+}
+
+fn run_search_client(
+    base: &str,
+    bearer: Option<&str>,
+    searches: usize,
+    seed: u64,
+    client: usize,
+) -> ClientSearchResult {
+    let mut lats = Vec::with_capacity(searches);
+    let mut failures = 0usize;
+    for q in 0..searches {
+        let start = Instant::now();
+        let resp = get(
+            base,
+            "/search",
+            &[
+                (
+                    "q".to_string(),
+                    format!("topic {}", (q + seed as usize) % 50),
+                ),
+                ("k".to_string(), "10".to_string()),
+            ],
+            bearer,
+        );
+        let elapsed = start.elapsed();
+        match resp {
+            Ok(r) if r.status == 200 => lats.push(elapsed),
+            Ok(r) => {
+                failures += 1;
+                eprintln!(
+                    "bench: client {client} q={q} non-2xx status {}: {}",
+                    r.status,
+                    r.body.chars().take(120).collect::<String>()
+                );
+            }
+            Err(e) => {
+                failures += 1;
+                eprintln!("bench: client {client} q={q} transport error: {e}");
+            }
+        }
+    }
+    ClientSearchResult {
+        client,
+        lats,
+        failures,
+    }
+}
+
+/// The merged per-scale search report. Pure + deterministic: same inputs ⇒
+/// byte-identical output (the `bench_clients_merge_is_deterministic` pin).
+#[derive(Debug, Clone, PartialEq)]
+struct MergedSearch {
+    /// (client, ops_ok, failures, p50_ms, p95_ms) per client, in client order
+    per_client: Vec<(usize, usize, usize, f64, f64)>,
+    total_ops: usize,
+    failures: usize,
+    p50_ms: f64,
+    p95_ms: f64,
+    p99_ms: f64,
+    max_ms: f64,
+}
+
+fn merge_search_results(results: &[ClientSearchResult]) -> MergedSearch {
+    let mut per_client = Vec::with_capacity(results.len());
+    let mut pooled: Vec<Duration> = Vec::new();
+    let mut failures = 0usize;
+    for r in results {
+        let mut sorted = r.lats.clone();
+        sorted.sort();
+        per_client.push((
+            r.client,
+            r.lats.len(),
+            r.failures,
+            percentile(&sorted, 50.0).as_secs_f64() * 1000.0,
+            percentile(&sorted, 95.0).as_secs_f64() * 1000.0,
+        ));
+        failures += r.failures;
+        pooled.extend_from_slice(&r.lats);
+    }
+    pooled.sort();
+    MergedSearch {
+        total_ops: pooled.len(),
+        failures,
+        p50_ms: percentile(&pooled, 50.0).as_secs_f64() * 1000.0,
+        p95_ms: percentile(&pooled, 95.0).as_secs_f64() * 1000.0,
+        p99_ms: percentile(&pooled, 99.0).as_secs_f64() * 1000.0,
+        max_ms: pooled
+            .last()
+            .map(|d| d.as_secs_f64() * 1000.0)
+            .unwrap_or(0.0),
+        per_client,
+    }
+}
+
 /// capacity envelope to assert against. `None` when `BENCH_ENVELOPE`
 /// is unset (report-only). When set (desktop|jetson), the harness reads the
 /// published envelope from `brain_server::capacity` and exits non-zero on any
@@ -182,6 +325,15 @@ fn check_envelope(
         breaches.push(format!(
             "p95 /search = {:.0} ms > {} ms (UX ceiling)",
             row.p95_ms, ENVELOPE_P95_MS_CEILING
+        ));
+    }
+    // Throughput: the concurrent-truth ceiling — the p95 the target must stay
+    // under with the bench fan-out driving it (the main table's p95 IS the
+    // merged p95 when BENCH_CLIENTS >= 2).
+    if row.p95_ms > env.search_p95_ms_ceiling as f64 {
+        breaches.push(format!(
+            "p95 /search = {:.0} ms > {} ms ({} concurrent ceiling)",
+            row.p95_ms, env.search_p95_ms_ceiling, target_name
         ));
     }
     breaches
@@ -289,6 +441,8 @@ fn run() -> Result<(), String> {
     let base = base_url();
     let scales = scales();
     let searches = num_searches();
+    let clients = num_clients();
+    let seed = bench_seed();
     let token = auth_token();
     let bearer = token.as_deref();
 
@@ -304,19 +458,23 @@ fn run() -> Result<(), String> {
     }
 
     eprintln!(
-        "bench: target={base} scales={scales:?} searches={searches} (progress -> stderr, table -> stdout)"
+        "bench: target={base} scales={scales:?} searches={searches} clients={clients} seed={seed} (progress -> stderr, table -> stdout)"
     );
 
     let mut rss_after_batches: Vec<Vec<u64>> = Vec::new();
     let mut rows: Vec<Row> = Vec::new();
+    let mut merges: Vec<Option<MergedSearch>> = Vec::new();
     // Global doc index keeps synthetic titles/content unique across cumulative
     // scales, so the corpus actually grows instead of being deduped by content hash.
-    let mut global_doc_index: usize = 0;
+    let mut global_doc_index = 0usize;
 
     for &scale in &scales {
         let rss_rest = read_rss_mb(&base)?;
         eprintln!("bench: scale {scale} — RSS at rest {rss_rest} MB; ingesting...");
 
+        // Ingest is ALWAYS single-client: the corpus build is deterministic
+        // (unique synthetic titles) and the milestone changes nothing about
+        // write-path behavior. Only the search phase fans out.
         let ingest_start = Instant::now();
         let mut batch_rss: Vec<u64> = Vec::new();
         for i in 0..scale {
@@ -331,32 +489,67 @@ fn run() -> Result<(), String> {
         let ingest_secs = ingest_start.elapsed().as_secs_f64();
         let rss_after = read_rss_mb(&base)?;
 
-        // Latency: run `searches` /search queries, record each.
-        let mut lats: Vec<Duration> = Vec::with_capacity(searches);
-        for q in 0..searches {
-            let start = Instant::now();
-            let resp = get(
-                &base,
-                "/search",
-                &[
-                    ("q".to_string(), format!("topic {}", q % 50)),
-                    ("k".to_string(), "10".to_string()),
-                ],
-                bearer,
-            )?;
-            let elapsed = start.elapsed();
-            if resp.status != 200 {
-                return Err(format!(
-                    "/search q={q} returned status {}: {}",
-                    resp.status, resp.body
-                ));
+        // Latency: BENCH_CLIENTS parallel clients each drive the SAME seeded
+        // mix; samples are pooled for the merged percentiles. BENCH_CLIENTS=1
+        // keeps the pre-Throughput sequential shape (abort on first error).
+        let (p50, p95, p99, merged);
+        if clients <= 1 {
+            let mut lats: Vec<Duration> = Vec::with_capacity(searches);
+            for q in 0..searches {
+                let start = Instant::now();
+                let resp = get(
+                    &base,
+                    "/search",
+                    &[
+                        ("q".to_string(), format!("topic {}", q % 50)),
+                        ("k".to_string(), "10".to_string()),
+                    ],
+                    bearer,
+                )?;
+                let elapsed = start.elapsed();
+                if resp.status != 200 {
+                    return Err(format!(
+                        "/search q={q} returned status {}: {}",
+                        resp.status, resp.body
+                    ));
+                }
+                lats.push(elapsed);
             }
-            lats.push(elapsed);
+            lats.sort();
+            p50 = percentile(&lats, 50.0).as_secs_f64() * 1000.0;
+            p95 = percentile(&lats, 95.0).as_secs_f64() * 1000.0;
+            p99 = percentile(&lats, 99.0).as_secs_f64() * 1000.0;
+            merged = None;
+        } else {
+            let search_start = Instant::now();
+            // ONE scope around ALL spawns — scope() blocks until the threads
+            // it spawned finish, so per-client scopes would serialize.
+            let results: Vec<ClientSearchResult> = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..clients)
+                    .map(|id| {
+                        let base = base.clone();
+                        scope.spawn(move || run_search_client(&base, bearer, searches, seed, id))
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        h.join()
+                            .map_err(|e| format!("search client panicked: {e:?}"))
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })?;
+            let wall = search_start.elapsed();
+            let m = merge_search_results(&results);
+            eprintln!(
+                "bench: scale {scale} — {clients} clients wall {wall:.0?}, ops_ok={} failures={}",
+                m.total_ops, m.failures
+            );
+            p50 = m.p50_ms;
+            p95 = m.p95_ms;
+            p99 = m.p99_ms;
+            merged = Some(m);
         }
-        lats.sort();
-        let p50 = percentile(&lats, 50.0);
-        let p95 = percentile(&lats, 95.0);
-        let p99 = percentile(&lats, 99.0);
 
         rss_after_batches.push(batch_rss);
         rows.push(Row {
@@ -369,20 +562,33 @@ fn run() -> Result<(), String> {
                 0.0
             },
             ingest_secs,
-            p50_ms: p50.as_secs_f64() * 1000.0,
-            p95_ms: p95.as_secs_f64() * 1000.0,
-            p99_ms: p99.as_secs_f64() * 1000.0,
+            p50_ms: p50,
+            p95_ms: p95,
+            p99_ms: p99,
         });
+        merges.push(merged);
         eprintln!("bench: scale {scale} done");
     }
 
-    print_report(&base, searches, &rows, &rss_after_batches);
+    print_report(
+        &base,
+        searches,
+        clients,
+        seed,
+        &rows,
+        &rss_after_batches,
+        &merges,
+    );
 
     // when BENCH_ENVELOPE is set, assert each scale against the
     // published capacity envelope. Any breach exits non-zero — the report
     // becomes a ship gate, not just a measurement.
     if let Some((env, target_name)) = envelope() {
         println!("\n### Capacity envelope assertion (target: {target_name})\n");
+        println!(
+            "> p95 ceiling for this run: the stricter of the UX ceiling ({} ms) and the target's concurrent ceiling ({} ms)\n",
+            ENVELOPE_P95_MS_CEILING, env.search_p95_ms_ceiling
+        );
         println!("| scale | max RSS (MB) | max p95 (ms) | result |");
         println!("|---|---|---|---|");
         let mut all_ok = true;
@@ -396,7 +602,10 @@ fn run() -> Result<(), String> {
             };
             println!(
                 "| {} | {} | {} | {} |",
-                r.scale, env.max_rss_mib, ENVELOPE_P95_MS_CEILING, result
+                r.scale,
+                env.max_rss_mib,
+                ENVELOPE_P95_MS_CEILING.min(env.search_p95_ms_ceiling),
+                result
             );
             for b in &breaches {
                 eprintln!("ENVELOPE BREACH at scale {}: {b}", r.scale);
@@ -407,13 +616,48 @@ fn run() -> Result<(), String> {
         }
     }
 
+    // Envelope-free p95 gate (BENCH_ASSERT_P95_MS): the CI concurrency step's
+    // assert. Applies to the merged p95 at every scale.
+    if let Some(limit) = assert_p95_ms() {
+        let mut breached = false;
+        for r in &rows {
+            if r.p95_ms > limit {
+                breached = true;
+                eprintln!(
+                    "P95 ASSERT BREACH at scale {}: merged p95 {:.0} ms > {limit} ms",
+                    r.scale, r.p95_ms
+                );
+            }
+        }
+        if breached {
+            return Err(format!(
+                "BENCH_ASSERT_P95_MS breached ({limit} ms) — concurrent p95 regressed"
+            ));
+        }
+    }
+
     Ok(())
 }
 
-fn print_report(base: &str, searches: usize, rows: &[Row], rss_after_batches: &[Vec<u64>]) {
+fn print_report(
+    base: &str,
+    searches: usize,
+    clients: usize,
+    seed: u64,
+    rows: &[Row],
+    rss_after_batches: &[Vec<u64>],
+    merges: &[Option<MergedSearch>],
+) {
     println!("## Brain Server benchmark\n");
     println!("Target: `{base}`");
-    println!("Searches per scale: {searches}\n");
+    println!("Searches per client per scale: {searches}");
+    println!("Clients: {clients} · seed: {seed} (mix = `topic {{(q + seed) % 50}}`)");
+    if clients > 1 {
+        println!(
+            "Merge: pooled samples across clients; p50/p95/p99 below are the MERGED percentiles (the concurrent truth)."
+        );
+    }
+    println!();
 
     println!("### Latency & resources\n");
     println!(
@@ -454,6 +698,32 @@ fn print_report(base: &str, searches: usize, rows: &[Row], rss_after_batches: &[
                 line.push_str(" - |");
             }
             println!("{line}");
+        }
+    }
+
+    // Concurrent breakdown (BENCH_CLIENTS >= 2 only): the merged tail + the
+    // per-client skew, printed not hidden.
+    for (r, m) in rows.iter().zip(merges.iter()) {
+        let Some(m) = m else { continue };
+        println!(
+            "\n### Concurrent /search — scale {} (clients = {}, merged)\n",
+            r.scale, clients
+        );
+        println!(
+            "| total ops ok | failures (non-2xx + transport) | p50 (ms) | p95 (ms) | p99 (ms) | max (ms) |"
+        );
+        println!("|---|---|---|---|---|---|");
+        println!(
+            "| {} | {} | {:.2} | {:.2} | {:.2} | {:.2} |",
+            m.total_ops, m.failures, m.p50_ms, m.p95_ms, m.p99_ms, m.max_ms
+        );
+        println!(
+            "\nPer-client skew (deterministic mix — divergence is server-side queuing, not query luck):\n"
+        );
+        println!("| client | ops ok | failures | p50 (ms) | p95 (ms) |");
+        println!("|---|---|---|---|---|");
+        for (client, ops, failures, p50, p95) in &m.per_client {
+            println!("| {client} | {ops} | {failures} | {p50:.2} | {p95:.2} |");
         }
     }
 }
@@ -596,7 +866,7 @@ fn run_eval() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{percentile, scaffold_from_export};
+    use super::{ClientSearchResult, merge_search_results, percentile, scaffold_from_export};
     use std::time::Duration;
 
     fn ms(n: u64) -> Duration {
@@ -653,5 +923,46 @@ mod tests {
     fn scaffold_handles_missing_knowledge_array() {
         let body = serde_json::json!({"export_format_version": 2});
         assert!(scaffold_from_export(&body).is_empty());
+    }
+
+    // Throughput pin: the merged report is deterministic — the same seeded
+    // fixture merged twice yields byte-identical output. The merge sorts its
+    // pooled samples, so client arrival order cannot leak into the report;
+    // a floor breach printed from this report is reproducible from the seed.
+    #[test]
+    fn bench_clients_merge_is_deterministic() {
+        let fixture = || {
+            vec![
+                ClientSearchResult {
+                    client: 0,
+                    lats: vec![ms(10), ms(30), ms(20), ms(40), ms(50)],
+                    failures: 1,
+                },
+                ClientSearchResult {
+                    client: 1,
+                    lats: vec![ms(15), ms(25), ms(35), ms(45), ms(55)],
+                    failures: 0,
+                },
+                ClientSearchResult {
+                    client: 2,
+                    lats: vec![ms(12), ms(22), ms(32), ms(42), ms(52)],
+                    failures: 2,
+                },
+            ]
+        };
+        let a = merge_search_results(&fixture());
+        let b = merge_search_results(&fixture());
+        assert_eq!(a, b, "same seed ⇒ identical merged report");
+        // And the aggregate is the honest pool of all samples + failures:
+        assert_eq!(a.total_ops, 15);
+        assert_eq!(a.failures, 3);
+        // Pooled p50: 15 sorted samples (10,12,15,20,22,25,30,32,35,40,42,
+        // 45,50,52,55), index round(0.5·14) = 7 → 32 ms.
+        assert_eq!(a.p50_ms, 32.0);
+        // Per-client blocks stay in client order (skew is attributable).
+        assert_eq!(
+            a.per_client.iter().map(|c| c.0).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
     }
 }

@@ -244,6 +244,45 @@ jobs:
           curl -fsS -H "Authorization: Bearer $BRAIN_TOKEN" \
             http://127.0.0.1:$BIND_PORT/audit/verify | grep -q '"ok":true'
 
+  bench-concurrency:
+    # v1.28.58 "Throughput" — the concurrent-truth gate: boot a scratch
+    # release instance and drive it with 8 parallel bench clients over the
+    # seeded mix. Desktop (x86 runner) ONLY — the jetson floor is asserted
+    # locally on the device (no ARM runner: the known repo CI gap). The
+    # BENCH_ASSERT_P95_MS bound is deliberately generous (release build on
+    # shared CI runners): this gate fails on catastrophic contention
+    # serialization (e.g. a lock that serializes recall), not on runner
+    # noise. Retry-once policy: on breach, re-run once before investigating;
+    # two consecutive breaches are a regression, never weather.
+    name: bench concurrency (desktop, 8 clients)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: cargo build --release --features bench (server + bench)
+        run: cargo build --release --features bench --bin brain-server --bin bench
+      - name: concurrent bench (BENCH_CLIENTS=8)
+        run: |
+          SCRATCH="$(mktemp -d)"
+          printf 'bench-concurrency-ci-token' > "$SCRATCH/token"
+          chmod 600 "$SCRATCH/token"
+          BIND_PORT=18485 BRAIN_DB_PATH="$SCRATCH/brain.db" AUTH_TOKEN_FILE="$SCRATCH/token" \
+            "$GITHUB_WORKSPACE/target/release/brain-server" &
+          SRV=$!
+          trap 'kill $SRV 2>/dev/null || true' EXIT
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:18485/health >/dev/null 2>&1 && break
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18485/health
+          export BRAIN_URL="http://127.0.0.1:18485" BRAIN_TOKEN="bench-concurrency-ci-token"
+          BENCH_CLIENTS=8 BENCH_SEARCHES=200 BENCH_SCALES=100 BENCH_ASSERT_P95_MS=10000 \
+            "$GITHUB_WORKSPACE/target/release/bench"
+          # the concurrent run must also leave the scrape surface intact:
+          curl -fsS -H "Authorization: Bearer $BRAIN_TOKEN" \
+            http://127.0.0.1:18485/metrics | grep -q 'brain_pool_timeouts_total'
+
   integration:
     # ONE release-profile build serves three gates that used to be three jobs
     # (release-build, ump-conformance, recall-gate) compiling the same
