@@ -19,6 +19,121 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.57] — 2026-09-05 — "Capstone": the enforcing flip + the audit — the Spire Line closes
+
+The Spire Line's fin. No behavior change of any kind: no new routes, no
+removed routes, no wire edits (openapi.yaml diff-empty vs v1.28.56), no
+schema movement (1.28.45 stands). Capstone makes the line's end state
+IMPOSSIBLE TO UNDO QUIETLY: main.rs is a ≤ 300-line wiring file (the
+whole 12k-line test region moved verbatim to `tests/main_suite.rs`),
+two grep gates born hard enforce the router law and the protocol-free
+bootstrap, the dead ceilings retire, and the whole line's measured
+before/after lands in `docs/AUDIT.md`.
+
+### Release notes
+
+**Bug fixes**
+- None. (Nothing behavioral moved — by design; the release's whole point
+  is proving exactly that with a wire-diff-empty gate.)
+
+**Improvements**
+- **main.rs 12,471 → 124 lines** (wiring only: bootstrap → compose →
+  serve, with a header comment pointing at the router law). The whole
+  cfg(test) region — 12,294 lines, 109 plain + 60 tokio test fns — moved
+  VERBATIM to `tests/main_suite.rs`: identical verdicts (163 passed + 6
+  ignored), nothing deleted; the only edits are the `include_str!`
+  anchors (now `CARGO_MANIFEST_DIR`-absolute) and the root use-block that
+  traveled with the region so `use super::*` resolves exactly as before.
+- **The grep gates join the family** (`src/spire_inventory.rs`), hard
+  errors from birth, each RED-PROOFED against a planted violation before
+  its green commit and self-pinned inline forever (the Cornerstone
+  lesson — a scanner that cannot fire guards nothing):
+  `route_registrations_live_only_under_router` — a route registration
+  anywhere under src/ outside `src/server/router/**` (production, test,
+  or comment residue) fails CI, with ONE fenced carve-out:
+  `src/bin/mcp.rs`, a separate binary's single-endpoint /mcp protocol
+  edge, pinned at EXACTLY one site; and `bootstrap_stays_protocol_free`
+  — no axum types in `src/server/bootstrap.rs` (word-boundary needles so
+  a comment's "takes an axum type" or "RequestBodyLimitLayer" never
+  fires; the type names do).
+- **The ledger's final posture** — ceilings retire where violations are
+  structurally impossible (the Cornerstone precedent), floors survive:
+  `MAIN_RS_LINES_CEIL` → `MAIN_RS_LINES_MAX ≤ 300` (the pin IS the
+  ceiling); the test region retired via a region-ABSENCE pin; `MAIN_RS`
+  `_TEST_FLOOR` retired per its own relocation convention (its 109 pins
+  moved this release); `ROUTE_CALL_SITES` retired early (main.rs routes
+  pinned to 0); `TOTAL_SRC_TEST_FLOOR` → `CRATE_TEST_FLOOR` over src/ +
+  tests/ (re-measured 1,196 at the move; 1,198 at close — the gates
+  added two); `ROUTER_SITES_FLOOR` 199 and guard-table rows 161/145
+  survive.
+- `src/route_guards.rs` re-homed to `src/server/router/route_guards.rs`
+  beside the registrations it tables (decl moves; content unchanged —
+  100% rename). `spire_inventory.rs` stays beside main.rs — its subject.
+- The Spire Line close-out report appended to `docs/AUDIT.md` (per the
+  Foundation pattern): the measured before/after (main.rs 19,906 → 124;
+  region 13,342 → absent; main.rs route sites 234 → 0; router sites
+  199 floored; crate pins 1,178 → 1,198), the module map (what moved
+  where across all four milestones), and the enforcement map (which gate
+  guards which law).
+
+**Security fixes**
+- None. (The enforcement ADDITION is the security story: the router law
+  and the protocol-free bootstrap are now machine-checked, so the
+  end state cannot be undone quietly — every scanner red-proofed and
+  self-pinned.)
+
+### Engineering record
+
+**Order of landing (four commits, gate + proof per commit):**
+
+1. THE EVACUATION — the test mass moves out; main.rs 124 lines; the
+   ledger's posture edited in the same commit (the Scaffold law). The
+   new pin bit during development exactly as designed: it caught the
+   main.rs header comment's own route-needle literal and a one-off
+   floor miscount (the needle counts doc-comment literals too — the
+   substring lock, measured identically every time) before the commit.
+2. THE GATES — born hard, red-proof shown before the green commit:
+   a planted route-registration comment in src/config.rs turned the
+   route gate red naming the file; a planted axum-type comment in
+   bootstrap.rs turned the protocol gate red (`[axum::, Router]`);
+   both plants reverted. En route the route gate flagged its OWN doc
+   comment carrying the needle literal — rewritten; the gate polices
+   even its documentation.
+3. THE RE-HOME — route_guards beside the families; consumers
+   re-pathed (spire_inventory, tests/authz_matrix.rs,
+   tests/main_suite.rs).
+4. THE RECORD — docs/AUDIT.md Spire close-out, this changelog, the
+   version bump, badges from the real build.
+
+**Ledger (spire), Vaulting → Capstone:** main.rs 12,471 → 124; region
+12,294 → absent (absence-pinned); main.rs route sites 35 → 0 (pinned);
+router sites 199 (floor held); crate `#[test]` 1,185 (src needle) →
+1,198 (src + tests needle; floor 1,196 never decreases); guard rows
+161 / 145 held.
+
+**Validation:** full suite 1,265 passed / 7 ignored (--features bench)
+at the tip, green at every commit; clippy `-D warnings` (bench) clean;
+fmt clean; lipstyk diff-strict green vs the v1.28.56 tip; CI dry-run
+green (default lint+test, engine-crates, steward-harness, otel lint +
+test); wire artifacts byte-identical (openapi.yaml diff-empty;
+route-coverage + route-authz verdicts identical; x-api-version moves
+with the release stamp only); live smoke on the COPY instance green
+(`/health`, `/audit/verify ok`, the 413 + 408 paths, one ingest →
+recall round-trip).
+
+**Ceilings (honest):** `src/bin/mcp.rs` keeps its own router (a separate
+binary's protocol edge, fenced at exactly one site — folding it under
+the families would be a behavior-adjacent refactor the line's standing
+rule forbids); `tests/main_suite.rs` is one ~12k-line file (the mass
+moved as ONE verbatim block; splitting is churn without a subject); the
+≤ 300 pin is a pin, not a proof of minimalism — the route gate is the
+tooth. The Spire Line is CLOSED; the Enterprise Line (`.58+`) inherits a
+thin binary, a pinned router, and contention gauges.
+
+Predecessor: [1.28.56] — "Vaulting": the lib flip.
+
+---
+
 ## [1.28.56] — 2026-09-04 — "Vaulting": the lib flip — bootstrap + router decomposition
 
 Third milestone of the Spire Line. No behavior change of any kind: no new

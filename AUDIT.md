@@ -378,3 +378,109 @@ green with the new architecture sections.
 - The maxLength parity pin (above) is a follow-up.
 - The line proves pattern singularity, not schema evolution readiness: the
   storage-adapter deadline trigger (pre-v2.x) is the next forcing function.
+
+## 2026-09-05 — v1.28.57 "Capstone" — the Spire Line close-out report
+
+The Spire Line (v1.28.54 "Scaffold" → v1.28.55 "Buttress" → v1.28.56
+"Vaulting" → v1.28.57 "Capstone") set out to dismantle the 19,906-line
+main.rs without changing a byte of behavior, and to make the end state
+IMPOSSIBLE TO UNDO QUIETLY. This report is the line's measured
+before/after, re-measured at the tip with `wc`/`grep` — not from memory.
+
+### The before/after table
+
+| Measure (needle, measured the same way every time) | Scaffold open (freeze) | Buttress close | Vaulting close | **Capstone close (this audit)** |
+|---|---|---|---|---|
+| `wc -l src/main.rs` | 19,906 | 18,291 | 12,471 | **124** |
+| test region (lines from `#[cfg(test)] mod tests` to EOF) | 13,342 | 12,302 | 12,294 | **absent** (absence-pinned) |
+| route-registration sites in main.rs | 234 | 234 | 35 (test stubs) | **0** (pinned) |
+| route-registration sites under src/server/router/** | — (n/a) | — (n/a) | 199 (floor gained) | **199** (floor held) |
+| crate `#[test]` needle | 1,178 (src) | 1,185 (src) | 1,185 (src) | **1,198 = 1,076 src + 122 tests** (floor 1,196 over the widened subject) |
+| guard-table rows (coverage / authz) | 151 / 141 | 161 / 145 | 161 / 145 | **161 / 145** (floored) |
+| schema version | 1.28.45 | 1.28.45 | 1.28.45 | **1.28.45** (untouched across all 13 releases) |
+| wire artifacts | diff-empty | diff-empty | diff-empty | **openapi.yaml diff-empty vs v1.28.56**; x-api-version moves with the release stamp |
+
+Per-milestone deltas (net main.rs lines): Scaffold −624, Buttress −1,191,
+Vaulting −5,820, Capstone −12,347. Nothing deleted: every test that ever
+lived in main.rs lives in the tree today — relocated, never removed.
+
+### What moved where (the module map)
+
+- **Scaffold (1.28.54):** the ledger (`src/spire_inventory.rs`) + the
+  route tables (`src/route_guards.rs`, born from arrays at main.rs ~L12k)
+  + ten pure-unit pin families relocated verbatim to their subjects.
+- **Buttress (1.28.55):** the pre-main library code stops pretending to
+  be an entrypoint — `src/http_limit.rs` (RateLimiter, ConnectionTracker
+  + RAII, connection/RSS watchdogs), the layer-1 blocklist + quarantine
+  read-seam (`src/screen.rs`), the graph read mappers
+  (`src/graph_read.rs`), the boot guards (`src/boot.rs`, folded into
+  bootstrap at Vaulting) — each fn moved with its pins, ledger lowered
+  same-commit.
+- **Vaulting (1.28.56):** the monolith becomes the thin bin — middleware
+  stack + auth middlewares → `src/server/router/{mod,auth}.rs`; `app(state)`
+  → `src/server/router/mod.rs` as a pure function of `AppState`; the whole
+  boot region → `src/server/bootstrap.rs` (protocol-free); six family
+  builders (core 17 / memory 56+3 legacy+1 GiB import / ump 12 / compliance
+  10+5 gated / workflow 82 / auth 9); THE LIB FLIP (the server tree behind
+  `lib.rs`, main.rs consumes `brain_server::server::…`); the law-9 authz
+  matrix → `tests/authz_matrix.rs` driving the lib from OUTSIDE the crate;
+  law-13 contention gauges on /metrics + /health.
+- **Capstone (1.28.57):** the test mass (12,294 lines, 109 plain + 60
+  tokio fns) → `tests/main_suite.rs` verbatim (include_str anchors
+  re-pointed CARGO_MANIFEST_DIR-absolute; the root use-block traveled with
+  it so `use super::*` resolves exactly as before); `route_guards.rs`
+  re-homed to `src/server/router/` (100% rename, content unchanged);
+  `spire_inventory.rs` stays beside main.rs — its subject.
+
+### The enforcement map (which gate guards which law)
+
+| Law | Enforcing test | Home |
+|---|---|---|
+| routes register ONLY under src/server/router/** | `route_registrations_live_only_under_router` (hard gate; red-proofed against a planted registration in src/config.rs; mcp.rs fenced at exactly 1 site) | `src/spire_inventory.rs` |
+| server::bootstrap stays protocol-free | `bootstrap_stays_protocol_free` (hard gate; word-boundary needles; red-proofed against a planted axum type in bootstrap.rs) | `src/spire_inventory.rs` |
+| main.rs is wiring-only: ≤ 300 lines, no cfg(test) region | `spire_inventory_freezes_the_thin_binary` (MAIN_RS_LINES_MAX = 300 + the region-absence pin) | `src/spire_inventory.rs` |
+| the crate's test mass never shrinks | `CRATE_TEST_FLOOR` over src/ + tests/ (1,196, never decreases) | `src/spire_inventory.rs` |
+| the router's registrations never silently disappear | `ROUTER_SITES_FLOOR` (199) | `src/spire_inventory.rs` |
+| the wire tables never shrink without their wire change | `OPENAPI_ROUTE_ROWS_FLOOR` (161) + `AUTHZ_TABLE_ROWS_FLOOR` (145) | `src/spire_inventory.rs` |
+| every AUTHZ_GATES row × principal class through the composed app | the law-9 matrix | `tests/authz_matrix.rs` |
+| zero SQL in handlers | `no_sql_in_handlers_enforced` (the Foundation flip) | `src/service/mod.rs` |
+| read seam + wire-contract + docs truth | docs_truth + the route-coverage/authz pins + lipstyk (CI, diff-strict) | lib + CI |
+
+Every scanner is self-pinned inline (the Cornerstone lesson: a counter
+that cannot fire guards nothing) — each gate proves, inside its own test,
+that it counts a planted violation string in a comment and stays quiet on
+clean source.
+
+### Capstone gates + validation
+
+Two grep gates born hard (no warning phase, the Foundation precedent),
+each red-proofed against a planted violation BEFORE its green commit:
+the route gate caught a planted registration comment in src/config.rs
+naming the file; the protocol gate reported `[axum::, Router]` on a
+planted axum comment in bootstrap.rs. Both plants reverted. En route the
+route gate flagged its own doc comment carrying the needle literal —
+rewritten; the gate polices even its documentation.
+
+Full suite 1,265 passed / 7 ignored (--features bench) at the tip, green
+at every commit; clippy `-D warnings` (bench) clean; fmt clean; CI
+dry-run green (default lint+test, engine-crates, steward-harness, otel
+lint+test); lipstyk diff-strict green vs the v1.28.56 tip; live smoke on
+the COPY instance green (/health, /audit/verify ok, the 413 + 408 paths,
+one ingest → recall round-trip).
+
+### Ceilings (honest)
+
+- `src/bin/mcp.rs` keeps its own router: the MCP binary is a separate
+  protocol edge, not the server's composition. The carve-out is fenced
+  (exactly one site) and recorded here; folding it under
+  src/server/router/** would be a behavior-adjacent refactor the line's
+  no-behavior-change rule forbids.
+- `tests/main_suite.rs` is one ~12k-line file: the mass moved as ONE
+  verbatim block (exact-text relocation, zero churn in the pins);
+  splitting it per-subject is churn without a forcing function.
+- The ≤ 300 pin is a pin, not a proof of minimalism: main.rs could grow
+  to 299 lines of wiring noise and pass. The gate that matters is the
+  route gate — registrations cannot come back.
+- The Capstone ledger numbers (124 lines, 1,198 pins) drift by
+  doc-comment literals under the substring needles — the needles are
+  measured identically every time; that is what a freeze needs.

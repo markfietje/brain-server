@@ -36,7 +36,7 @@ use std::path::{Path, PathBuf};
 // ── the thin binary (v1.28.57 "Capstone") ───────────────────────────────
 
 /// `wc -l src/main.rs`: 19,906 at the Scaffold freeze → 12,471 at the
-/// Vaulting tip → 113 at the Capstone flip (wiring only: bootstrap →
+/// Vaulting tip → 124 at the Capstone flip (wiring only: bootstrap →
 /// compose → serve). Pin: main.rs never regrows beyond a thin wiring shell.
 const MAIN_RS_LINES_MAX: usize = 300;
 /// Route-registration sites under src/server/router/** (the composed chain).

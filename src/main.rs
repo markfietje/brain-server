@@ -12,7 +12,7 @@
 //!     suites), and the crate-wide `#[test]` floor never decreases.
 //!
 //! Architecture Law: `docs/architecture.md` · the Spire Line's measured
-//! before/after: `docs/SPIRE_AUDIT.md`.
+//! before/after: `docs/AUDIT.md` (the Spire Line close-out report).
 
 use anyhow::Result;
 use std::net::SocketAddr;
