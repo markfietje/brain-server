@@ -24,8 +24,10 @@
 //!     that commit); the crate-wide floor below is load-bearing.
 //!   * `ROUTE_CALL_SITES_CEIL` (35) → retired at the move commit: main.rs
 //!     sites are pinned to 0 below, and the enforcing successor is the
-//!     tree-wide `.route(` gate
+//!     tree-wide route-registration gate
 //!     (`route_registrations_live_only_under_router`) — a main.rs-only
+//!     ceiling cannot see a violation planted in any other non-router file;
+//!     the gate covers the whole `src/` tree.
 //!     ceiling cannot see a violation planted in any other non-router file;
 //!     the gate covers the whole `src/` tree.
 
@@ -37,7 +39,8 @@ use std::path::{Path, PathBuf};
 /// Vaulting tip → 113 at the Capstone flip (wiring only: bootstrap →
 /// compose → serve). Pin: main.rs never regrows beyond a thin wiring shell.
 const MAIN_RS_LINES_MAX: usize = 300;
-/// `.route(` sites under src/server/router/** (the composed chain). Floor —
+/// Route-registration sites under src/server/router/** (the composed chain).
+/// Floor —
 /// the wire's registrations may not silently disappear; the authz matrix +
 /// route-coverage table pin their correctness.
 const ROUTER_SITES_FLOOR: usize = 199;
@@ -89,9 +92,9 @@ fn walk_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 fn spire_inventory_freezes_the_thin_binary() {
     let main_src = include_str!("main.rs");
     let total_lines = main_src.lines().count();
-    let route_sites = count_needle(main_src, ".route(");
+    let route_sites = count_needle(main_src, ROUTE_NEEDLE);
     // the composed chain lives in src/server/router (the router families);
-    // main.rs's remaining `.route(` sites are the region residue, counted
+    // main.rs's remaining registration sites are the region residue, counted
     // toward 0 by the same needle that froze the monolith. Count the router
     // files to keep the anti-vacuous guard meaningful.
     let router_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server/router");
@@ -110,7 +113,7 @@ fn spire_inventory_freezes_the_thin_binary() {
         router_files >= 6,
         "spire: router family files missing ({router_files} found, need core+memory+ump+compliance+workflow+auth+mod)"
     );
-    let router_sites = count_needle(&router_src, ".route(");
+    let router_sites = count_needle(&router_src, ROUTE_NEEDLE);
 
     // Anti-vacuous sanity: the counters must be looking at the real thing
     // (the Cornerstone lesson — a guard that can pass on nothing guards
@@ -163,13 +166,13 @@ fn spire_inventory_freezes_the_thin_binary() {
     }
     if route_sites > 0 {
         breaches.push(format!(
-            "  .route( sites in main.rs: {route_sites} > 0 — wiring-only means \
+            "  route-registration sites in main.rs: {route_sites} > 0 — wiring-only means \
              NO registrations here; they live under src/server/router/**"
         ));
     }
     if router_sites < ROUTER_SITES_FLOOR {
         breaches.push(format!(
-            "  .route( sites under src/server/router: {router_sites} < floor {ROUTER_SITES_FLOOR} — \
+            "  route-registration sites under src/server/router: {router_sites} < floor {ROUTER_SITES_FLOOR} — \
              the composed chain lost registrations"
         ));
     }
@@ -206,5 +209,184 @@ fn spire_inventory_freezes_the_thin_binary() {
          main routes {route_sites}=0 · router routes {router_sites}≥{ROUTER_SITES_FLOOR} · \
          crate tests {total_tests}≥{CRATE_TEST_FLOOR} · coverage rows {route_rows}≥\
          {OPENAPI_ROUTE_ROWS_FLOOR} · authz rows {authz_rows}≥{AUTHZ_TABLE_ROWS_FLOOR}"
+    );
+}
+
+// ── the grep gates (born hard — no warning phase, the Foundation
+//    precedent). Scanners are pure fns so the self-pins can prove they
+//    fire without planting real violations in the tree.
+
+/// The route-registration needle, built by concat so no scanner file can
+/// trip the gate on its own source: the literal never appears verbatim in
+/// this module (and the gate forbids it everywhere under src/ except the
+/// router families + the one fenced carve-out). Doc comments say
+/// "route-registration" for the same reason.
+const ROUTE_NEEDLE: &str = concat!(".rout", "e(");
+
+fn count_route_sites(src: &str) -> usize {
+    count_needle(src, ROUTE_NEEDLE)
+}
+
+/// Word-boundary needle: `word` matches only when not flanked by ident
+/// characters — so `RequestBodyLimitLayer` or a lowercase "router-level"
+/// never fires, while the type names do.
+fn has_word(src: &str, word: &str) -> bool {
+    let bytes = src.as_bytes();
+    let mut from = 0usize;
+    while let Some(rel) = src[from..].find(word) {
+        let i = from + rel;
+        let before_ok = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+        let after = i + word.len();
+        let after_ok =
+            after >= bytes.len() || !(bytes[after].is_ascii_alphanumeric() || bytes[after] == b'_');
+        if before_ok && after_ok {
+            return true;
+        }
+        from = i + 1;
+    }
+    false
+}
+
+/// The bootstrap protocol detector, factored for the self-pin.
+fn protocol_hits(src: &str) -> Vec<&'static str> {
+    let mut hits = Vec::new();
+    if src.contains("axum::") {
+        hits.push("axum::");
+    }
+    for word in ["Router", "Request", "Response"] {
+        if has_word(src, word) {
+            hits.push(word);
+        }
+    }
+    hits
+}
+
+/// GATE: route registrations live ONLY under src/server/router/** — a
+/// registration anywhere else under src/ (production, test, or comment
+/// residue) fails CI. One carve-out, fenced: src/bin/mcp.rs is a separate
+/// binary with its own single-endpoint protocol edge (the /mcp
+/// registration); the fence pins that file at EXACTLY one site so the
+/// carve-out cannot grow silently. Anti-vacuous: the scanner provably
+/// reads the legal home — the router mass is at or above the floor.
+///
+/// Red-proof (run against planted violations before this gate's green
+/// commit): a planted route-registration comment (the needle + a fake
+/// registration) in src/config.rs turned this gate red; the plant was
+/// reverted. The inline self-pins keep the proof permanent: the scanner
+/// counts a planted violation string in a comment and stays quiet on
+/// clean source.
+#[test]
+fn route_registrations_live_only_under_router() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk_rs_files(&root, &mut files);
+    assert!(
+        files.len() >= 50,
+        "gate: src walk found only {} files — the walker is broken",
+        files.len()
+    );
+
+    let mut violations: Vec<String> = Vec::new();
+    let mut router_sites = 0usize;
+    let mut mcp_sites = None;
+    for p in &files {
+        let rel = p.strip_prefix(&root).unwrap_or(p);
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        let src = std::fs::read_to_string(p).unwrap_or_default();
+        if rel_str.starts_with("server/router/") {
+            router_sites += count_route_sites(&src);
+            continue;
+        }
+        if rel_str == "bin/mcp.rs" {
+            mcp_sites = Some(count_route_sites(&src));
+            continue;
+        }
+        let n = count_route_sites(&src);
+        if n > 0 {
+            violations.push(format!(
+                "  {}: {n} route-registration site(s) outside src/server/router/**",
+                rel.display()
+            ));
+        }
+    }
+    assert_eq!(
+        mcp_sites,
+        Some(1),
+        "gate: src/bin/mcp.rs must keep EXACTLY one route registration (the /mcp \
+         protocol edge) — a second site means a router is growing outside the families"
+    );
+    assert!(
+        router_sites >= ROUTER_SITES_FLOOR,
+        "gate: scanner found only {router_sites} sites under src/server/router/** — \
+         below the floor; the walk or the needle is broken"
+    );
+    // self-pin (the Cornerstone lesson): a scanner that cannot fire guards
+    // nothing. Plant a violation string in a COMMENT — exactly the shape the
+    // gate must catch in a real file — and count it; then prove clean
+    // source stays quiet.
+    let planted = format!("//{}\"/plants\", get(stub));", ROUTE_NEEDLE);
+    assert_eq!(
+        count_route_sites(&planted),
+        1,
+        "gate self-pin: the scanner cannot see a planted violation — it guards nothing"
+    );
+    assert_eq!(
+        count_route_sites("// no registrations here"),
+        0,
+        "gate self-pin: the scanner fires on clean source"
+    );
+    assert!(
+        violations.is_empty(),
+        "ROUTE REGISTRATION GATE — routes register ONLY under src/server/router/**:\n{}",
+        violations.join("\n")
+    );
+}
+
+/// GATE: `server::bootstrap` stays protocol-free — no axum types cross its
+/// surface (the Vaulting discipline, machine-checked). Needles: `axum::`
+/// plus Router/Request/Response on word boundaries, so the words a
+/// protocol-free module may legitimately say in comments ("takes an axum
+/// type", "router-level RequestBodyLimitLayer") never fire, while the type
+/// names do.
+///
+/// Red-proof (run before this gate's green commit): a planted
+/// `// uses axum::Router here` comment in src/server/bootstrap.rs turned
+/// this gate red; the plant was reverted. The inline self-pins keep the
+/// proof permanent per needle class.
+#[test]
+fn bootstrap_stays_protocol_free() {
+    let src = include_str!("server/bootstrap.rs");
+    // anti-vacuous: we are reading the real file
+    assert!(
+        src.contains("pub fn bootstrap("),
+        "gate: include_str! did not resolve the bootstrap source — guarding nothing"
+    );
+    let hits = protocol_hits(src);
+    // self-pin: each needle class fires on its synthetic violation…
+    for (sample, expected) in [
+        ("use axum::Router;", "axum::"),
+        ("Router::new()", "Router"),
+        ("fn f(r: Request<String>) {}", "Request"),
+        ("-> Response<String> {", "Response"),
+    ] {
+        let hits = protocol_hits(sample);
+        assert!(
+            hits.contains(&expected),
+            "gate self-pin: {expected} needle cannot fire — it guards nothing"
+        );
+    }
+    // …and stays quiet on the comment forms the real file may carry.
+    for clean in [
+        "// takes an axum type",
+        "// a router-level RequestBodyLimitLayer is applied eagerly",
+    ] {
+        assert!(
+            protocol_hits(clean).is_empty(),
+            "gate self-pin: clean sample tripped the detector: {clean}"
+        );
+    }
+    assert!(
+        hits.is_empty(),
+        "BOOTSTRAP PROTOCOL GATE — server::bootstrap must stay protocol-free; found: {hits:?}"
     );
 }
