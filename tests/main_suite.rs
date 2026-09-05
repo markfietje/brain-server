@@ -5119,7 +5119,7 @@ Final paragraph after the rule.";
             })
             .collect();
 
-        let registered = brain_server::route_guards::OPENAPI_ROUTES;
+        let registered = brain_server::server::router::route_guards::OPENAPI_ROUTES;
         let missing: Vec<&str> = registered
             .iter()
             .copied()
@@ -6044,7 +6044,7 @@ Final paragraph after the rule.";
         // middleware now enforces presentation, which is its one requirement.
         // /webhooks/* verifies its own HMAC inside the handler (GitHub cannot
         // present a brain bearer token) — no authorize() by design.
-        let table = brain_server::route_guards::AUTHZ_GATES;
+        let table = brain_server::server::router::route_guards::AUTHZ_GATES;
 
         let main_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
         // the composed chain lives in server/router/mod.rs (C3a): the

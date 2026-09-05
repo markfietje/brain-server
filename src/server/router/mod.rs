@@ -11,6 +11,10 @@ pub mod core;
 pub mod memory;
 pub(crate) mod ump;
 pub(crate) mod workflow;
+// the route-coverage + route-authz guard tables (the wire's data): re-homed
+// beside the registrations they table at the Capstone flip; content
+// unchanged. `spire_inventory` floors their row counts.
+pub mod route_guards;
 
 use axum::{
     Json, Router,

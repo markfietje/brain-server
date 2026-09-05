@@ -30,9 +30,9 @@
 //! as the pass cell everywhere, with the literal-200 list as the positive
 //! anchor.
 
-use brain_server::route_guards::AUTHZ_GATES;
 use brain_server::server::router::app;
 use brain_server::server::router::auth::JwtMiddlewareState;
+use brain_server::server::router::route_guards::AUTHZ_GATES;
 
 use axum::{body::Body, http::Request, http::StatusCode};
 use r2d2_sqlite::SqliteConnectionManager;

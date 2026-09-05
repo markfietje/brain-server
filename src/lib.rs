@@ -162,7 +162,6 @@ pub mod otel;
 pub mod docs_truth;
 #[cfg(test)]
 pub mod dup_guard;
-pub mod route_guards;
 #[cfg(test)]
 pub mod spire_inventory;
 

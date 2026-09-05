@@ -182,8 +182,8 @@ fn spire_inventory_freezes_the_thin_binary() {
              load-bearing total-test floor dropped; tests may not be deleted, only moved"
         ));
     }
-    let route_rows = crate::route_guards::OPENAPI_ROUTES.len();
-    let authz_rows = crate::route_guards::AUTHZ_GATES.len();
+    let route_rows = crate::server::router::route_guards::OPENAPI_ROUTES.len();
+    let authz_rows = crate::server::router::route_guards::AUTHZ_GATES.len();
     if route_rows < OPENAPI_ROUTE_ROWS_FLOOR {
         breaches.push(format!(
             "  route-coverage rows: {route_rows} < floor {OPENAPI_ROUTE_ROWS_FLOOR} — a \
