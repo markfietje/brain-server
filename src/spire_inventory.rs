@@ -64,7 +64,11 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// math, frame arithmetic, sig-after-copy, follower tamper, no-key refusal,
 /// the roundtrip proptest, resume-cycle), the cli-reference law, and the
 /// dated drill-record watch.
-const CRATE_TEST_FLOOR: usize = 1_244;
+/// 1,244 → 1,256 at the Attestation open: the two revocation pins, the
+/// four-class provenance meta-test + tamper/unit/round-trip/human set, the
+/// uniformity parity + fetch-mirror pair, the flipped deliverable watches +
+/// clock self-test, and the revocation-drill record watch.
+const CRATE_TEST_FLOOR: usize = 1_256;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), re-measured to 161 at the Buttress open. Rows join
 /// only with the wire change that earns them, in the same commit.

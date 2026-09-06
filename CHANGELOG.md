@@ -19,6 +19,144 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.62] — 2026-09-06 — "Attestation": provenance marks, the principal kill-switch, the crypto inventory — the Enterprise Line closes
+
+The Enterprise Line's finale. Three verified gaps close — Art 50(2)-style
+provenance on engine-generated artifacts, agent credential lifecycle
+(ASI03/07), and the cryptographic inventory/agility seam — plus the
+approval-fatigue signal becomes DPO-visible on the scoreboard. Additive
+only: no breaking wire change, no new crypto primitive, no C2PA claim.
+
+### Release notes
+
+**Security fixes**
+- **The principal kill-switch (ASI03/07).** A compromised or offboarded
+  agent principal can now be revoked in one call (`POST /ops/agents/revoke`,
+  Admin on `global`). Every card use, delegation dispatch, and result
+  submission re-checks the new `revoked_principals` table BEFORE signature
+  verification and refuses `403 principal_revoked` — including re-signed
+  cards (revocation outlives re-provisioning). In the same transaction, every
+  ACTIVE run where the principal owns in-flight delegation work drains
+  through the existing run-cancel path, and the revoke plus every drain land
+  on the hash-chained audit chain. Revocation is fail-closed and probe-blind:
+  a revoked principal's card lookup refuses before any signature work.
+- **Provenance marks on every engine-generated text artifact (Art 50(2)
+  posture).** Complaint remedy drafts, ADR packets, outreach export packets,
+  and KB build manifests now carry a machine-readable
+  `{"provenance": {"mark": "AIGEN", "generator": "brain-server/<version>",
+  "generated_at", "signed_by", "sig"}}` object, Ed25519-signed over a
+  canonical wrapper that binds the artifact body to the mark claim — flip the
+  mark OR one body byte and verification refuses. Human-authored artifacts
+  mark `HUMAN` with the actor principal. Without an operator key the mark is
+  present but visibly unsigned (never silently unmarked). Honest scope: text
+  artifacts riding existing envelopes — NOT C2PA, no media signing.
+
+**Improvements**
+- **Approval-fatigue telemetry on the scoreboard (ASI09).** The console's
+  rubber-stamp detector arithmetic now runs server-side:
+  `GET /workflow/scoreboard` (DPO/admin, role gate unchanged) carries
+  `review_independence_risk` (0|1), `approval_uniformity_ratio` (integer
+  ten-thousandths), and `review_decisions_window` — over the same window and
+  sample cap the client fetch uses, pinned verdict-identical to the client
+  detector by `scoreboard_uniformity_matches_client_math`. docs/metrics.md
+  and metrics/metrics.json gained the three entries in the same commit (the
+  parity meta-test enforces the twins).
+- **Cryptographic inventory + algorithm-agility seams**
+  (`docs/crypto-inventory.md`, NCCoE SP 1800-38B shape): every shipped
+  algorithm (Ed25519, HMAC-SHA256, SHA-256, BLAKE3, the RS256/ES/EdDSA JWT
+  family, AES-256-GCM, Argon2id) with its real call sites, what it protects,
+  its harvest-now-decrypt-later verdict, and its swap path. The two agility
+  seams are documented against the real code: the JWT ML-DSA landing
+  procedure (the `auth/jwt.rs::ALLOWED_ALGS` whitelist is the one gate) and
+  the UMP did:key multicodec version-prefix rule. No PQC is deployed — the
+  classical-signature ceiling is printed, owned.
+- **The kill-switch runbook + executed drill** (docs/runbooks.md): the
+  four-step procedure with its dated 2026-09-06 record — executed against a
+  copy of the live DB: agent revocation → cards list 403, dispatch 403;
+  owner revocation → `runs_drained:1`, run cancelled via the existing CAS
+  path, `delegation/revoked` lineage event observed, `/audit/verify` ok.
+- **Nightly fuzz schedule**: the committed brain-fuzz corpus replays every
+  night in CI (plus a compile check of the libFuzzer targets); corpus
+  replay stays in the per-push CI too. The schedule's compile check caught
+  and fixed a latent `libfuzzer`-feature warning under `-D warnings`.
+- **SOC 2 trust kit refreshed**: docs/trust/proof-map.md carries the
+  Attestation evidence rows (provenance, kill-switch, crypto inventory,
+  uniformity telemetry, calendar-as-code watches).
+
+### Engineering record
+
+- **M1 provenance** (`src/provenance.rs`): one attach, one verify. The
+  signature reuses the parcels/standby convention
+  (`ump_integrity::sign_manifest_bytes`), but the signed message is a
+  canonical wrapper binding body to CLAIM — `{artifact, claim: mark /
+  generator / generated_at / actor}` — because the naive body-only design
+  let a flipped mark verify (caught by the tamper pin in development).
+  Sealing rides the REAL emission shapes: the remedy-response assembly and
+  the two post-read-seam seal fns in handlers/workflow.rs, and the KB writer
+  (`kb::sealed_manifest_json` inside `write_artifact` — the pure
+  `manifest_json` digest rule is byte-unchanged, the seal adds one field).
+  Pins: `provenance_marks_present_on_all_four_classes` (drives the real
+  producer fns end-to-end), `tampered_provenance_fails_verify` (flipped sig,
+  flipped mark, tampered body × every class), unsigned-degradation,
+  HUMAN-actor, round-trip. reg_watch `ai_act_art50_marking_watch` flipped
+  WATCH → `ai_act_art50_marking_deliverable`: the 2026-12-02 horizon stays
+  stamped; the pin asserts the module, the four wiring points, and the
+  meta-tests exist. openapi response schemas carry the additive
+  `provenance` property (x-api-version UNCHANGED); api.md rows in-step.
+- **M2 kill-switch**: additive migration `revoked_principals` (schema stamp
+  → 1.28.62, `SCHEMA_VERSION_V1_28_62` in storage_layout). Enforcement
+  points: `verify_card` (pre-signature, pre-lookup), `request_delegation`
+  (revoked dispatcher refuses before any write; revoked target via
+  verify_card), `submit_result` (decision-time re-check). The drain: the
+  revocation upsert + hash-chained `auth` audit row + a bounded sweep of
+  active runs owning in-flight delegations, cancelled via
+  `workflow::state::cas_update` (the EXISTING path `PUT
+  /workflow/runs/{id}/state` serves) with per-run audit rows and
+  `delegation/revoked` lineage events; CAS-stale races skip (the
+  decision-time re-checks still refuse). Routes: `POST /ops/agents/revoke`
+  (Admin on global — identity-wide, not domain-scoped) + `GET
+  /ops/agents/revocations` (Read); openapi + both guard tables + api.md in
+  the same commit. Pins: `revoked_principal_cards_fail_closed`,
+  `revoked_owner_no_new_dispatch`; the authz matrix gained the route's body
+  template. `reg_watch::revocation_drill_recorded` green.
+- **M3 uniformity**: `workflow::scoreboard::approval_uniformity` — the
+  verdict expression is the client's f64 form verbatim (same divide, same
+  compare; the exactly-0.9 boundary resolves identically); the ratio is the
+  house integer ten-thousandths. The data fn mirrors the client's fetch
+  (trailing 7 days on created_at, latest 200 per status, decided-only).
+  Scoreboard visibility NOT widened (inherits the existing DPO/admin pair).
+  Dictionary twins (docs/metrics.md ASI09 section + metrics.json, full
+  attribution) landed in the same commit — the meta-test reds otherwise.
+- **M4 crypto inventory**: see the Improvements row;
+  reg_watch `pqc_inventory_seam_watch` flipped WATCH →
+  `pqc_inventory_seam_deliverable` (horizon 2030-12-31 stamped; the pin
+  asserts the SP 1800-38B anchors, all seven algorithm families, and that
+  both seams still name their real files). The watch module's clock
+  machinery (Hinnant civil-date conversion) keeps a self-test pin for the
+  next WATCH-form deadline.
+- **Live proof** (COPY of the live 50.6 MB db, drill token, spare port):
+  kill-switch drill as recorded in docs/runbooks.md; the ADR packet and the
+  KB build manifest carried valid signed AIGEN marks (digests unmoved); 21
+  digest-bound approvals through the real approve verb flipped the scoreboard
+  from risk 0 / ratio 0 / 0 decisions to risk 1 / ratio 10000 / 21. The M1
+  tamper refusal is pinned by tests (the live capture shows the sealed
+  artifacts).
+- **Validation**: full suite 1,256 `#[test]` (CRATE_TEST_FLOOR 1,244 →
+  1,256); clippy `-D warnings` clean on default/bench/otel; engine crates +
+  steward-harness green; lipstyk diff-strict clean; openapi coverage +
+  authz-matrix + docs-truth guards green. main.rs untouched (net delta 0);
+  wire/schema additive only.
+- **Ceilings (honest)**: provenance marks are TEXT-artifact marking, not
+  C2PA/media signing; unsigned marks verify-fail by design (an operator
+  without an operator key ships visibly unsealed artifacts); the kill-switch
+  gates the mesh decision paths, not the JWT layer (that is
+  `auth/revocation.rs`, separate machinery); the drain covers runs the
+  principal OWNS in-flight work on, not historical participation; no PQC
+  primitive is deployed — JWT ML-DSA waits on the IdP, UMP signatures land
+  via the did:key multicodec prefix; the uniformity detector is a heuristic
+  (a reviewer-baseline cohort tooling remains v2.x); the drill binary was
+  built pre-version-bump (stamped 1.28.61 — the drill record notes it).
+
 ## [1.28.61] — 2026-09-06 — "Standby": the warm-standby core; the seven open CodeQL alerts closed
 
 Two lines land together. The warm-standby core (ship cycle, signed follower
