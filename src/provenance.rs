@@ -32,7 +32,7 @@
 //!
 //! Degradation is VISIBLE, never silent: without an operator key the mark is
 //! still present (`mark`/`generator`/`generated_at` always) but `signed_by`
-//! and `sig` are `null` and [`verify`] fails — an unsigned mark reads as
+//! and `sig` are `null` and [`verify_artifact`] fails — an unsigned mark reads as
 //! unverified, the L2 hash-only posture the UMP already models. The
 //! deliverable pin (`provenance_marks_present_on_all_four_classes`) proves
 //! the SIGNED form on all four classes; absence of a key is a deployment
@@ -147,7 +147,7 @@ fn unsigned_mark(mark: &str, actor: Option<&str>, now: i64) -> Value {
 /// claim itself — see [`signed_message`]). Any malformation, missing field,
 /// flipped mark, or one flipped byte anywhere in the body → `false` (never
 /// errors).
-pub fn verify(value: &Value) -> bool {
+pub fn verify_artifact(value: &Value) -> bool {
     let Some(obj) = value.as_object() else {
         return false;
     };
@@ -233,29 +233,29 @@ mod tests {
         );
         assert!(p["signed_by"].as_str().unwrap().starts_with("did:key:z"));
         assert_eq!(p["sig"].as_str().unwrap().len(), 128, "ed25519 hex");
-        assert!(verify(&a), "the honest artifact verifies");
+        assert!(verify_artifact(&a), "the honest artifact verifies");
 
         // One flipped body byte → refuse. (Tamper the BODY, not the sig —
         // the sig then mismatches the canonical bytes.)
         let mut b = a.clone();
         b["run_id"] = serde_json::json!(2);
-        assert!(!verify(&b), "tampered body fails verify");
+        assert!(!verify_artifact(&b), "tampered body fails verify");
 
         // Tamper the MARK itself → refuse (the executed drill flips the sig).
         let mut c = a.clone();
         c[FIELD]["mark"] = serde_json::json!("HUMAN");
-        assert!(!verify(&c), "a flipped mark fails verify");
+        assert!(!verify_artifact(&c), "a flipped mark fails verify");
         let mut d = a.clone();
         d[FIELD]["sig"] =
             serde_json::json!(&format!("00{}", &d[FIELD]["sig"].as_str().unwrap()[2..]));
-        assert!(!verify(&d), "a flipped signature fails verify");
+        assert!(!verify_artifact(&d), "a flipped signature fails verify");
 
         // Remarking is idempotent and re-binds: sign, mutate, re-attach —
         // the new mark describes the new body and verifies again.
         let mut e = a.clone();
         e["adr_body"] = serde_json::json!("other body");
         assert!(attach_aigen(&mut e, 1790000001));
-        assert!(verify(&e));
+        assert!(verify_artifact(&e));
     }
 
     /// unsigned_mark_present_but_unverifiable — no operator key: the mark is
@@ -275,7 +275,7 @@ mod tests {
         let p = &a[FIELD];
         assert_eq!(p["mark"], MARK_AIGEN, "the mark is still present");
         assert!(p["sig"].is_null());
-        assert!(!verify(&a), "unsigned marks do not verify");
+        assert!(!verify_artifact(&a), "unsigned marks do not verify");
         // SAFETY: single-threaded under ENV_LOCK.
         unsafe { std::env::remove_var("BRAIN_UMP_KEY_DIR") };
     }
@@ -290,7 +290,7 @@ mod tests {
         assert!(attach_human(&mut h, "user:maria", 1790000000));
         assert_eq!(h[FIELD]["mark"], MARK_HUMAN);
         assert_eq!(h[FIELD]["actor"], "user:maria");
-        assert!(verify(&h));
+        assert!(verify_artifact(&h));
     }
 
     /// provenance_marks_present_on_all_four_classes — THE deliverable pin
@@ -326,7 +326,7 @@ mod tests {
         };
         let remedy = crate::handlers::workflow::remedy_response(&proposal, now);
         assert_eq!(remedy[FIELD]["mark"], MARK_AIGEN);
-        assert!(verify(&remedy), "the remedy draft's mark verifies");
+        assert!(verify_artifact(&remedy), "the remedy draft's mark verifies");
 
         // ── 2. the ADR packet (the GET response shape, post read-seam) ───
         conn.execute(
@@ -337,7 +337,7 @@ mod tests {
         let packet = crate::workflow::complaint::adr_packet(&conn, 1, "DE").expect("packet");
         let adr = crate::handlers::workflow::seal_adr_packet(packet, &viewer, now);
         assert_eq!(adr[FIELD]["mark"], MARK_AIGEN);
-        assert!(verify(&adr), "the ADR packet's mark verifies");
+        assert!(verify_artifact(&adr), "the ADR packet's mark verifies");
 
         // ── 3. the outreach export packet (approved campaign) ────────────
         conn.execute(
@@ -354,7 +354,7 @@ mod tests {
             crate::workflow::outreach::campaign_packet(&conn, campaign_id).expect("campaign");
         let sealed = crate::handlers::workflow::seal_campaign_packet(campaign, &viewer, now);
         assert_eq!(sealed[FIELD]["mark"], MARK_AIGEN);
-        assert!(verify(&sealed), "the export packet's mark verifies");
+        assert!(verify_artifact(&sealed), "the export packet's mark verifies");
 
         // ── 4. the KB build manifest (the real writer, disk round-trip) ──
         let mut files = std::collections::BTreeMap::new();
@@ -374,7 +374,7 @@ mod tests {
         let manifest: serde_json::Value = serde_json::from_str(&written).unwrap();
         assert_eq!(manifest[FIELD]["mark"], MARK_AIGEN);
         assert!(
-            verify(&manifest),
+            verify_artifact(&manifest),
             "the build manifest's seal verifies over the digests body"
         );
         // The digests the operator verifies are byte-unchanged by the seal.
@@ -464,7 +464,7 @@ mod tests {
             let sig = tampered[FIELD]["sig"].as_str().unwrap().to_string();
             let flipped = if sig.starts_with('0') { "1" } else { "0" };
             tampered[FIELD]["sig"] = serde_json::json!(format!("{flipped}{}", &sig[1..]));
-            assert!(!verify(&tampered), "{class}: flipped sig must refuse");
+            assert!(!verify_artifact(&tampered), "{class}: flipped sig must refuse");
 
             // Flip the mark: same signature, wrong claim.
             let mut tampered = artifact.clone();
@@ -474,10 +474,10 @@ mod tests {
                 MARK_AIGEN
             };
             tampered[FIELD]["mark"] = serde_json::json!(other);
-            assert!(!verify(&tampered), "{class}: flipped mark must refuse");
+            assert!(!verify_artifact(&tampered), "{class}: flipped mark must refuse");
 
             // And the honest form verifies (the control).
-            assert!(verify(&artifact), "{class}: honest artifact verifies");
+            assert!(verify_artifact(&artifact), "{class}: honest artifact verifies");
         }
     }
 
