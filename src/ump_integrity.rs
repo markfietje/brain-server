@@ -210,7 +210,7 @@ pub fn sign_hash(hash: &[u8; 32], sk: &SigningKey) -> Vec<u8> {
 
 /// Sign arbitrary manifest bytes under the parcels convention: Ed25519 over
 /// the lowercase-hex SHA-256 digest STRING of the bytes — the 64-char hex text
-/// is the signed message, not the raw digest. Extracted in v1.28.61 from
+/// is the signed message, not the raw digest. Extracted from
 /// parcels' export path so the warm-standby cycle manifests sign under the
 /// exact same scheme (`src/standby.rs`); parcels consumes this helper and its
 /// bundle output is pinned byte-identical by
@@ -519,7 +519,7 @@ mod tests {
         assert!(!verify_hash_string(&h, &pk, &raw_bytes_sig));
     }
 
-    /// The parcels-convention manifest signature (v1.28.61): deterministic
+    /// The parcels-convention manifest signature: deterministic
     /// over the bytes, bound to the signer did, and equal to the
     /// pre-extraction formula (Ed25519 over the hex SHA-256 string)
     /// recomputed inline with raw dalek calls — the helper is a pure move.

@@ -234,7 +234,7 @@ pub fn build_parcel(
     });
     let manifest_json =
         serde_json::to_string(&manifest).map_err(|e| ParcelError::Database(e.to_string()))?;
-    // v1.28.61: the signature formula moved to the shared
+    // The signature formula lives in the shared
     // `ump_integrity::sign_manifest_bytes` (the warm-standby manifests sign
     // under the same scheme) — output pinned byte-identical by
     // `parcel_signature_bytes_unchanged`.
@@ -689,7 +689,7 @@ mod tests {
         drop(_key);
     }
 
-    /// parcel_signature_bytes_unchanged — the v1.28.61 extraction of the
+    /// parcel_signature_bytes_unchanged — the extraction of the
     /// signature formula into `ump_integrity::sign_manifest_bytes` (shared
     /// with the warm-standby manifests) moved NOTHING: the bundle's
     /// signature must equal the pre-extraction formula — Ed25519 over the

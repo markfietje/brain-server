@@ -779,7 +779,7 @@ fn decrypt_bundle_v1(ciphertext: &[u8], passphrase: &[u8], created_at: &str) -> 
 }
 
 /// Wrap an arbitrary sidecar blob in the v3 envelope — same Argon2id KDF,
-/// same AES-256-GCM, header-bytes-as-AAD. v1.28.61 warm standby: the WAL
+/// same AES-256-GCM, header-bytes-as-AAD. Warm standby: the WAL
 /// frame chunks ship through this so EVERY byte at rest on the follower is
 /// encrypted (the no-unencrypted-follower law) — no new crypto, the exact
 /// writer `brain backup` uses. `component` labels the payload in the

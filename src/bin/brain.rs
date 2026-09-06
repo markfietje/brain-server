@@ -3287,7 +3287,7 @@ fn brain_server_reachable() -> bool {
         .is_some_and(|a| TcpStream::connect_timeout(&a, Duration::from_millis(500)).is_ok())
 }
 
-// ── warm standby (v1.28.61) ──────────────────────────────
+// ── warm standby ─────────────────────────────────────────
 // CLI-only surface over brain_server::standby: an operator-run shipper
 // process, NOT a server thread (a shipper inside the server it protects is
 // a correlated failure). Warm, never hot: promote is a rehearsed manual
