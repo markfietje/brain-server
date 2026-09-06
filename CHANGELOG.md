@@ -28,7 +28,7 @@ open GitHub code-scanning alert, three families across six sink sites.
 
 ### Release notes
 
-#### Security fixes
+**Security fixes**
 - **Path injection (×3 alerts, high) — the DB-size probes no longer touch the
   filesystem at all.** The three capacity surfaces (`guard_capacity`, the
   shared `measure_capacity`, the `/health/db` detail probe) measured the
@@ -53,7 +53,7 @@ open GitHub code-scanning alert, three families across six sink sites.
   carries personal-data handling detail; failing asserts now reference the
   fixture row ids instead. Assertion behavior is unchanged.
 
-#### Improvements
+**Improvements**
 - **The warm standby, end to end** (`brain standby start|status|promote-check`):
   the shipper cycles a PASSIVE checkpoint, the encrypted base (the backup v3
   writer), and the WAL chunk — every byte at rest on the follower is
@@ -71,7 +71,7 @@ open GitHub code-scanning alert, three families across six sink sites.
   `ropa` had shipped with no reference rows) and now guards every future
   command.
 
-#### Bug fixes
+**Bug fixes**
 - None.
 
 ### Engineering record — the CodeQL security triage
