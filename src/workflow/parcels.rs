@@ -234,12 +234,16 @@ pub fn build_parcel(
     });
     let manifest_json =
         serde_json::to_string(&manifest).map_err(|e| ParcelError::Database(e.to_string()))?;
-    let sig = ed25519_dalek::Signer::sign(&sk, sha256_hex(manifest_json.as_bytes()).as_bytes());
-    let signed_by = crate::ump_integrity::did_key_from_ed25519(&sk.verifying_key().to_bytes());
+    // v1.28.61: the signature formula moved to the shared
+    // `ump_integrity::sign_manifest_bytes` (the warm-standby manifests sign
+    // under the same scheme) — output pinned byte-identical by
+    // `parcel_signature_bytes_unchanged`.
+    let (signature_hex, signed_by) =
+        crate::ump_integrity::sign_manifest_bytes(&sk, manifest_json.as_bytes());
     Ok(ParcelBundle {
         parcel_hash: sha256_hex(manifest_json.as_bytes()),
         manifest_json,
-        signature_hex: hex::encode(sig.to_bytes()),
+        signature_hex,
         signed_by,
         source_domain: domain.to_string(),
         region,
@@ -683,6 +687,46 @@ mod tests {
             Err(ParcelError::NoOperatorKey)
         ));
         drop(_key);
+    }
+
+    /// parcel_signature_bytes_unchanged — the v1.28.61 extraction of the
+    /// signature formula into `ump_integrity::sign_manifest_bytes` (shared
+    /// with the warm-standby manifests) moved NOTHING: the bundle's
+    /// signature must equal the pre-extraction formula — Ed25519 over the
+    /// lowercase-hex SHA-256 string of the exact manifest bytes — recomputed
+    /// INLINE here with raw dalek calls, never via the shared helper. Ed25519
+    /// is deterministic, so equal inputs must yield equal signatures.
+    #[test]
+    fn parcel_signature_bytes_unchanged() {
+        let _guard = lock_env();
+        let _key = OperatorKey::new();
+        let conn = db();
+        seed_knowledge(
+            &conn,
+            "acme",
+            "Signature fixture",
+            "the bytes the signature must cover, unchanged",
+            0,
+        );
+        let bundle = build_parcel(&conn, "acme", None, 2000).expect("exported");
+        let (_, sk) = crate::handlers::ump::operator_signing_key().unwrap();
+        let mut h = Sha256::new();
+        h.update(bundle.manifest_json.as_bytes());
+        let expected = ed25519_dalek::Signer::sign(&sk, hex::encode(h.finalize()).as_bytes());
+        assert_eq!(
+            bundle.signature_hex,
+            hex::encode(expected.to_bytes()),
+            "parcel export signature changed under the shared-helper refactor"
+        );
+        assert_eq!(
+            bundle.signed_by,
+            crate::ump_integrity::did_key_from_ed25519(&sk.verifying_key().to_bytes())
+        );
+        // And the shared helper itself agrees with the same formula.
+        let (helper_sig, helper_did) =
+            crate::ump_integrity::sign_manifest_bytes(&sk, bundle.manifest_json.as_bytes());
+        assert_eq!(helper_sig, bundle.signature_hex);
+        assert_eq!(helper_did, bundle.signed_by);
     }
 
     /// import_creates_proposals_never_direct_writes — a verified parcel lands

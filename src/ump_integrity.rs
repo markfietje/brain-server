@@ -174,6 +174,28 @@ pub fn sign_hash(hash: &[u8; 32], sk: &SigningKey) -> Vec<u8> {
     sk.sign(hash).to_bytes().to_vec()
 }
 
+/// Sign arbitrary manifest bytes under the parcels convention: Ed25519 over
+/// the lowercase-hex SHA-256 digest STRING of the bytes — the 64-char hex text
+/// is the signed message, not the raw digest. Extracted in v1.28.61 from
+/// parcels' export path so the warm-standby cycle manifests sign under the
+/// exact same scheme (`src/standby.rs`); parcels consumes this helper and its
+/// bundle output is pinned byte-identical by
+/// `parcel_signature_bytes_unchanged` (Ed25519 is deterministic, so equal
+/// inputs must yield equal signatures — the pin recomputes the pre-extraction
+/// formula inline with raw dalek calls).
+/// Returns `(signature_hex, signed_by did:key)`.
+pub fn sign_manifest_bytes(sk: &SigningKey, bytes: &[u8]) -> (String, String) {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let digest_hex = hex::encode(h.finalize());
+    let sig = sk.sign(digest_hex.as_bytes());
+    (
+        hex::encode(sig.to_bytes()),
+        did_key_from_ed25519(&sk.verifying_key().to_bytes()),
+    )
+}
+
 /// Verify a record hash signature. Returns false (never errors) on any
 /// malformed input — the read path drops unverifiable records (§5.3).
 pub fn verify_hash(pk_bytes: &[u8; 32], hash: &[u8; 32], sig: &[u8]) -> bool {
@@ -461,6 +483,30 @@ mod tests {
         use ed25519_dalek::Signer;
         let raw_bytes_sig = sk.sign(b"blake3:abc123").to_bytes().to_vec();
         assert!(!verify_hash_string(&h, &pk, &raw_bytes_sig));
+    }
+
+    /// The parcels-convention manifest signature (v1.28.61): deterministic
+    /// over the bytes, bound to the signer did, and equal to the
+    /// pre-extraction formula (Ed25519 over the hex SHA-256 string)
+    /// recomputed inline with raw dalek calls — the helper is a pure move.
+    #[test]
+    fn sign_manifest_bytes_matches_parcels_convention() {
+        let (sk, pk) = keypair();
+        let bytes = b"manifest bytes 123";
+        let (sig_hex, signed_by) = sign_manifest_bytes(&sk, bytes);
+        assert_eq!(signed_by, did_key_from_ed25519(&pk));
+        // Deterministic: same key + same bytes → same signature.
+        let (sig_hex_2, _) = sign_manifest_bytes(&sk, bytes);
+        assert_eq!(sig_hex, sig_hex_2);
+        // Recomputed pre-extraction formula, inline (not via the helper).
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(bytes);
+        let expected = sk.sign(hex::encode(h.finalize()).as_bytes());
+        assert_eq!(sig_hex, hex::encode(expected.to_bytes()));
+        // A one-bit content change changes the signature.
+        let (sig_hex_3, _) = sign_manifest_bytes(&sk, b"manifest bytes 124");
+        assert_ne!(sig_hex, sig_hex_3);
     }
 
     #[test]
