@@ -774,6 +774,34 @@ fn decrypt_bundle_v1(ciphertext: &[u8], passphrase: &[u8], created_at: &str) -> 
         .map_err(|e| anyhow::anyhow!("AES-256-GCM decrypt failed (wrong passphrase?): {e}"))
 }
 
+/// Wrap an arbitrary sidecar blob in the v3 envelope — same Argon2id KDF,
+/// same AES-256-GCM, header-bytes-as-AAD. v1.28.61 warm standby: the WAL
+/// frame chunks ship through this so EVERY byte at rest on the follower is
+/// encrypted (the no-unencrypted-follower law) — no new crypto, the exact
+/// writer `brain backup` uses. `component` labels the payload in the
+/// embedded manifest; the result is a legitimate v3 file that
+/// [`decrypt_v3_blob`] (and nothing else) is meant to read back.
+pub fn encrypt_v3_blob(component: &str, bytes: &[u8], passphrase: &[u8]) -> Result<Vec<u8>> {
+    let created_at = now_iso();
+    let manifest = Manifest {
+        created_at: created_at.clone(),
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        components: vec![ManifestComponent {
+            name: component.to_string(),
+            xxh3: format!("{:016x}", xxh3_64(bytes)),
+            size: bytes.len() as u64,
+            secret: false,
+        }],
+    };
+    encrypt_versioned(&manifest, bytes, passphrase, &created_at, VERSION_V3)
+}
+
+/// Read back an [`encrypt_v3_blob`] payload — full KDF + GCM-auth path, so a
+/// tampered byte fails here before any plaintext exists.
+pub fn decrypt_v3_blob(cipher: &[u8], passphrase: &[u8]) -> Result<Vec<u8>> {
+    Ok(decrypt_backup(cipher, passphrase)?.1)
+}
+
 /// Restore a backup into `db_path`. Takes a safety `VACUUM INTO` snapshot of
 /// the current DB to `<db_path>.bak` first so the operation is reversible.
 pub fn restore(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Result<()> {

@@ -150,6 +150,7 @@ pub mod search;
 pub mod secrets;
 pub mod service;
 pub mod sources;
+pub mod standby;
 pub mod temporal;
 pub mod trace;
 pub mod transfers;

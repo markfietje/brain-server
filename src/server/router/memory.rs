@@ -257,6 +257,14 @@ fn default_source() -> String {
     "manual".to_string()
 }
 
+/// Log-injection seam: scrub control characters from a request-derived value
+/// before it reaches a log line. Newlines would let a crafted payload forge
+/// log entries; NUL corrupts line-oriented consumers. The returned value is
+/// for LOGGING only — never a substitute for validating the stored value.
+pub(crate) fn sanitize_log_value(v: &str) -> String {
+    v.replace(['\n', '\r'], " ").replace('\0', "")
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum EmbeddingsInput {
@@ -1916,7 +1924,13 @@ pub(crate) async fn ingest_markdown(
     // was `let _ =` — a failed refresh silently left
     // stale routing. Post-commit; log.
     if let Err(e) = domain_router::recompute_centroid(&state.pool, &domain, &state.pool) {
-        eprintln!("⚠️ centroid refresh failed for domain {domain}: {e}");
+        // Log-injection seam: `domain` rides the request payload, so control
+        // characters are scrubbed before the value reaches a log line — a
+        // crafted `\n` would otherwise forge entries in the journald/launchd
+        // log stream. The DB write above uses the unscrubbed value (bound,
+        // not interpolated).
+        let logged = sanitize_log_value(&domain);
+        eprintln!("⚠️ centroid refresh failed for domain {logged}: {e}");
     }
 
     Ok(Json(serde_json::json!({
@@ -3391,4 +3405,25 @@ pub fn import_router() -> Router<Arc<AppState>> {
         .layer(tower_http::limit::RequestBodyLimitLayer::new(
             1024 * 1024 * 1024,
         ))
+}
+
+#[cfg(test)]
+mod log_injection_seam_tests {
+    use super::sanitize_log_value;
+
+    /// The log-injection pin: a request-derived value must not carry control
+    /// characters into a log line — a crafted `\n` would forge entries in the
+    /// journald/launchd stream the operator reads.
+    #[test]
+    fn sanitize_log_value_strips_line_forging_characters() {
+        assert_eq!(
+            sanitize_log_value("work\n⚠️ FORGED ENTRY"),
+            "work  ⚠️ FORGED ENTRY"
+        );
+        assert_eq!(sanitize_log_value("a\r\nb"), "a  b");
+        assert_eq!(sanitize_log_value("nul\0byte"), "nulbyte");
+        // benign values pass through untouched
+        assert_eq!(sanitize_log_value("my-domain_2"), "my-domain_2");
+        assert_eq!(sanitize_log_value(""), "");
+    }
 }

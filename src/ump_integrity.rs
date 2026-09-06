@@ -57,6 +57,40 @@ pub fn did_key_from_ed25519(pk: &[u8; 32]) -> String {
     format!("did:key:z{}", bs58::encode(buf).into_string())
 }
 
+/// Parse a `did:key:z…` Ed25519 did back into its verifying key — the inverse
+/// of [`did_key_from_ed25519`]. `None` on any malformed form (wrong prefix,
+/// wrong multicodec, wrong length, undecodable base58).
+pub fn verifying_key_from_did(did: &str) -> Option<VerifyingKey> {
+    let b58 = did.strip_prefix("did:key:z")?;
+    let buf = bs58::decode(b58).into_vec().ok()?;
+    if buf.len() != 34 || buf[0] != 0xed || buf[1] != 0x01 {
+        return None;
+    }
+    let mut pk = [0u8; 32];
+    pk.copy_from_slice(&buf[2..]);
+    VerifyingKey::from_bytes(&pk).ok()
+}
+
+/// Verify a [`sign_manifest_bytes`] signature over the exact bytes. False
+/// (never errors) on any malformed did/signature — the standby status path
+/// fails closed on this.
+pub fn verify_manifest_bytes(did: &str, sig_hex: &str, bytes: &[u8]) -> bool {
+    let Some(vk) = verifying_key_from_did(did) else {
+        return false;
+    };
+    let Ok(sig_bytes) = hex::decode(sig_hex) else {
+        return false;
+    };
+    let Ok(sig) = Signature::from_slice(&sig_bytes) else {
+        return false;
+    };
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(bytes);
+    vk.verify(hex::encode(h.finalize()).as_bytes(), &sig)
+        .is_ok()
+}
+
 /// Spec §6.1: JCS (RFC 8785) canonicalization.
 ///
 /// `serde_json`'s default `Map` is a `BTreeMap`, so `to_vec` already emits
@@ -507,6 +541,31 @@ mod tests {
         // A one-bit content change changes the signature.
         let (sig_hex_3, _) = sign_manifest_bytes(&sk, b"manifest bytes 124");
         assert_ne!(sig_hex, sig_hex_3);
+    }
+
+    /// verify_manifest_bytes is the fail-closed twin: true for a genuine
+    /// sign_manifest_bytes signature over the same bytes, false for a
+    /// tampered payload, a foreign did, or malformed input.
+    #[test]
+    fn verify_manifest_bytes_round_trip_and_tamper() {
+        let (sk, pk) = keypair();
+        let bytes = b"standby manifest json";
+        let (sig_hex, did) = sign_manifest_bytes(&sk, bytes);
+        assert!(did.starts_with("did:key:z"));
+        assert!(verify_manifest_bytes(&did, &sig_hex, bytes));
+        assert!(!verify_manifest_bytes(&did, &sig_hex, b"tampered bytes"));
+        let (_, other_pk) = keypair();
+        assert!(
+            !verify_manifest_bytes(&did_key_from_ed25519(&other_pk), &sig_hex, bytes),
+            "a different signer's did must not verify the signature"
+        );
+        assert!(!verify_manifest_bytes(&did, "zz", bytes));
+        assert!(!verify_manifest_bytes("not-a-did", &sig_hex, bytes));
+        assert!(verify_manifest_bytes(
+            &did_key_from_ed25519(&pk),
+            &sig_hex,
+            bytes
+        ));
     }
 
     #[test]

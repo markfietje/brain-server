@@ -10493,13 +10493,16 @@ Final paragraph after the rule.";
         let listed: Vec<i64> = held_ids.iter().filter_map(|h| h["id"].as_i64()).collect();
         assert!(
             listed.contains(&held_id),
-            "certificate must list the held id: {cert}"
+            "certificate must list the held id {held_id}"
         );
         let entry = held_ids
             .iter()
             .find(|h| h["id"] == held_id)
             .expect("held id listed");
-        assert_eq!(entry["reasons"][0], "litigation 2026-118", "{cert}");
+        assert_eq!(
+            entry["reasons"][0], "litigation 2026-118",
+            "hold reason must surface on the held entry {held_id}"
+        );
         let purged = cert["purged_ids"].as_array().cloned().unwrap_or_default();
         assert!(
             purged.iter().all(|p| p.as_i64() != Some(held_id)),
@@ -10507,7 +10510,7 @@ Final paragraph after the rule.";
         );
         assert!(
             purged.iter().any(|p| p.as_i64() == Some(free_id)),
-            "the free id was purged by the DSAR: {cert}"
+            "the free id {free_id} was purged by the DSAR"
         );
         // The held row survives in the DB.
         let conn = pool.get()?;

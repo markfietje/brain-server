@@ -296,6 +296,14 @@ impl StorageLayout {
     ) -> Result<Self, StorageLayoutError> {
         if let Some(raw) = data_root {
             let raw = raw.trim();
+            // Traversal-carrying roots are refused (the fail-closed posture):
+            // an env var is operator input, and a `..` component would let it
+            // escape the layout the rest of the code trusts.
+            if raw.contains("..") {
+                return Err(StorageLayoutError::InvalidRoot(format!(
+                    "BRAIN_DATA_ROOT must not contain path traversal, got {raw:?}"
+                )));
+            }
             let p = PathBuf::from(raw);
             if !p.is_absolute() {
                 return Err(StorageLayoutError::InvalidRoot(format!(
@@ -305,14 +313,21 @@ impl StorageLayout {
             return Ok(Self::new(p));
         }
         if let Some(raw) = db_path {
-            let p = PathBuf::from(raw.trim());
-            if let Some(parent) = p.parent()
-                && !parent.as_os_str().is_empty()
-                && parent.is_absolute()
-            {
-                return Ok(Self::new(parent.to_path_buf()));
+            let raw = raw.trim();
+            if raw.contains("..") {
+                // Traversal-carrying values are refused; fall through to the
+                // layout default (the relative-path fallback already present).
+            } else {
+                let p = PathBuf::from(raw);
+                if let Some(parent) = p.parent()
+                    && !parent.as_os_str().is_empty()
+                    && parent.is_absolute()
+                {
+                    return Ok(Self::new(parent.to_path_buf()));
+                }
             }
-            // BRAIN_DB_PATH was relative or bare — fall through to default.
+            // BRAIN_DB_PATH was relative, bare, or traversal-carrying — fall
+            // through to default.
         }
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         Ok(Self::new(home.join(".openclaw/workspace")))
@@ -323,13 +338,23 @@ impl StorageLayout {
     /// cutover renames this file to `global.db` and points the runtime at
     /// [`StorageLayout::global_domain_db`] instead.
     pub fn legacy_db(&self) -> PathBuf {
-        if let Ok(raw) = std::env::var("BRAIN_DB_PATH") {
+        Self::legacy_db_from(std::env::var("BRAIN_DB_PATH").ok().as_deref(), &self.root)
+    }
+
+    /// Pure core of [`StorageLayout::legacy_db`] (the env read lives in the
+    /// caller so tests don't mutate process env). Traversal-carrying env
+    /// values are refused — a `..` component would point the DB outside the
+    /// layout — and the value falls back to the layout default.
+    fn legacy_db_from(raw: Option<&str>, root: &Path) -> PathBuf {
+        if let Some(raw) = raw {
             let raw = raw.trim();
-            if !raw.is_empty() {
+            if raw.contains("..") {
+                // refused; fall to the layout default
+            } else if !raw.is_empty() {
                 return PathBuf::from(raw);
             }
         }
-        self.root.join("brain.db")
+        root.join("brain.db")
     }
 
     /// The global domain file (the multi-db target's shared pool). Historically
@@ -413,6 +438,60 @@ mod tests {
     fn resolve_root_rejects_relative_data_root() {
         let err = StorageLayout::resolve_root(Some("relative/path"), None).unwrap_err();
         assert!(matches!(err, StorageLayoutError::InvalidRoot(_)));
+    }
+
+    #[test]
+    fn resolve_root_rejects_traversal_data_root() {
+        // The fail-closed hardening: a `..` component in BRAIN_DATA_ROOT must
+        // refuse resolution (falling back to the layout default), never
+        // resolve to a root outside the operator's stated tree.
+        for root in ["/tmp/escape/../evil", "/tmp/../evil", ".."] {
+            let err = StorageLayout::resolve_root(Some(root), None).unwrap_err();
+            assert!(
+                matches!(err, StorageLayoutError::InvalidRoot(_)),
+                "{root:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_root_refuses_traversal_db_path_and_falls_back() {
+        // A traversal-carrying BRAIN_DB_PATH falls back to the layout default
+        // (same shape as the relative-path fallback), never to its parent.
+        let layout = StorageLayout::resolve_root(None, Some("/tmp/escape/../evil/brain.db"))
+            .expect("fallback resolution succeeds");
+        assert!(
+            !layout.root().starts_with("/tmp/escape"),
+            "the traversal parent must not become the root: {:?}",
+            layout.root()
+        );
+        assert!(layout.root().ends_with(".openclaw/workspace"));
+    }
+
+    #[test]
+    fn legacy_db_from_refuses_traversal_values() {
+        let root = Path::new("/tmp/layout-root");
+        assert_eq!(
+            StorageLayout::legacy_db_from(Some("/tmp/ok/brain.db"), root),
+            PathBuf::from("/tmp/ok/brain.db")
+        );
+        assert_eq!(
+            StorageLayout::legacy_db_from(Some("/tmp/escape/../evil.db"), root),
+            PathBuf::from("/tmp/layout-root/brain.db"),
+            "a traversal-carrying value falls back to the layout default"
+        );
+        assert_eq!(
+            StorageLayout::legacy_db_from(Some("../evil.db"), root),
+            PathBuf::from("/tmp/layout-root/brain.db")
+        );
+        assert_eq!(
+            StorageLayout::legacy_db_from(Some("  /tmp/spaced/brain.db  "), root),
+            PathBuf::from("/tmp/spaced/brain.db")
+        );
+        assert_eq!(
+            StorageLayout::legacy_db_from(None, root),
+            PathBuf::from("/tmp/layout-root/brain.db")
+        );
     }
 
     #[test]
