@@ -59,7 +59,12 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// 1,221 → 1,228 at the Loom open: the seven loom pins (fail-closed parse,
 /// thread cap, the Jetson resolution matrix, fan-out order, the pool-vs-
 /// serial pin, the proptest order invariant, `loom_preserves_fused_ranks`).
-const CRATE_TEST_FLOOR: usize = 1_228;
+/// 1,228 → 1,244 at the Standby open: the parcels signature-unchanged pin,
+/// the manifest-sign/verify convention pair, the seven standby pins (RPO
+/// math, frame arithmetic, sig-after-copy, follower tamper, no-key refusal,
+/// the roundtrip proptest, resume-cycle), the cli-reference law, and the
+/// dated drill-record watch.
+const CRATE_TEST_FLOOR: usize = 1_244;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), re-measured to 161 at the Buttress open. Rows join
 /// only with the wire change that earns them, in the same commit.

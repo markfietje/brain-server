@@ -115,6 +115,113 @@ Use a **procedure** when there is an order and a repeatable outcome. Use a
 human approves it. Both are retrievable by `memory_kind`; they answer different
 questions.
 
+## Warm standby (v1.28.61)
+
+Single-node SQLite is the doctrine; losing the box loses the memory. The
+honest enterprise answer at this scale is a **warm** standby built from
+shipped mechanisms — the encrypted backup v3 writer, a shipped WAL-chunk
+copy, and a REHEARSED promote. There is no hot failover, no consensus, no
+replication protocol, and no RPO=0 claim anywhere in this product; the
+shipper is an operator-run process (launchd/systemd — snippets in
+[deployment.md](./deployment.md)), never a server thread, because a
+shipper inside the server it protects is a correlated failure.
+
+### Setup
+
+1. The follower dir must live on a **different disk or different box** than
+   the primary (`--to <dir>`; default `~/.local/share/brain-server/standby`,
+   override `BRAIN_STANDBY_DIR`).
+2. A UMP operator signing key must resolve (`~/.config/brain-server/ump/`,
+   0600 seed file) — manifests are Ed25519-signed and an unsigned follower
+   refuses to ship.
+3. A backup passphrase file (the same one `brain backup` uses — there is no
+   unencrypted follower option; the base AND every WAL chunk are AES-GCM
+   sealed at rest).
+4. Start the shipper: `brain standby start --to <dir> [--interval-secs 30]`.
+   Each cycle: PASSIVE checkpoint → encrypted base via the backup v3 writer
+   → the WAL chunk (copied AFTER the base — the writer truncates the WAL) →
+   the signed manifest, written last. An interrupted cycle self-heals on the
+   next one; `status` fails closed until then.
+
+### Monitoring
+
+`brain standby status [--to <dir>]` prints cycle, last-cycle age, cycles
+behind, `rpo_max = interval + checkpoint lag`, and the integrity self-check
+(signature + recomputed artifact hashes). Alarm on **age**: from cron, flag
+when `last cycle` exceeds `2 × interval` — that means the shipper is dead
+(the exact scenario the standby exists for). Any integrity line other than
+OK is a page, not a warning: a tampered or torn follower must not be
+trusted until a fresh cycle verifies.
+
+### Promote procedure (warm — manual, rehearsed)
+
+1. **Stop the primary** (or confirm it is dead). Restoring over a running
+   server is the split-brain scenario `brain restore`'s port guard exists to
+   refuse — never `--force` past it against the live DB.
+2. `brain standby promote-check --from <dir> --passphrase-file PATH` — the
+   rehearsal: restores into a temp dir, replays the chunk, runs
+   `PRAGMA integrity_check`, prints RTO/RPO. It never touches the live DB.
+3. Promote for real: `BRAIN_DB_PATH=<target> brain restore <dir>/base.v3
+   --passphrase-file PATH`. Note `restore`'s target is the DB path from
+   `BRAIN_DB_PATH`/default — the positional is the backup source. The
+   pre-restore state is saved to `<target>.bak` automatically (that
+   snapshot has already saved the memory once — see the incident note
+   below).
+4. Restart the server against the promoted DB; clients reconnect manually.
+5. Re-point the shipper at the new primary and start a fresh follower.
+
+### Ceilings (honest)
+
+- **RPO is bounded, not zero**: at most `interval + checkpoint lag` of
+  commits after the last chunk can be lost (plus a sub-second race: a write
+  that lands, gets fully checkpointed, and has its WAL reset inside the
+  cycle's millisecond copy window self-heals in the NEXT cycle's base but
+  is lost if the primary dies inside that window and you promote the stale
+  cycle).
+- **Warm, not hot**: promote is a manual, rehearsed procedure; measured RTO
+  on this box is sub-second (drill record below), but nothing fails over by
+  itself.
+- **Single-region**: the follower is a file copy; there is no cross-region
+  story beyond pointing `--to` at a mounted remote volume.
+- **Client reconnect is manual** — no session draining, no read-proxy.
+- Chunk history (`wal/NNNN.frame-chunk`) accumulates; each is the full
+  current WAL encrypted, so disk grows by roughly `wal_size × cycles`.
+- `status` verifies the LATEST cycle only; a torn interrupted cycle fails
+  closed until the next cycle lands (by design).
+
+### Drill record — 2026-09-06
+
+Executed against a **copy** of the live DB (48.8 MB, 8,790 knowledge rows,
+online-backup API; the live server kept serving), release build, real UMP
+operator key, `--interval-secs 10`:
+
+```text
+shipper : 3 cycles @10s — lag 425/406/414 ms (two Argon2id + 48 MB VACUUM
+          INTO per cycle); rpo_max 10.4s per cycle
+burst   : 301 rows mid-drill — carried visibly (base 48,824,639 →
+          48,910,655 B at cycle 0003)
+status  : cycle 0003, 0 cycles behind, integrity OK (sig + hashes), exit 0
+promote : RTO 0.55s (restore 0.37s / open+integrity 0.18s) — PASS, exit 0
+          RPO 10.4s (interval 10 + lag 0.414)
+fidelity: promoted db = 9,091 rows (8,790 original + 301 burst);
+          the row committed AFTER the last cycle is absent — inside the
+          RPO window, exactly as the ceilings say
+tamper  : one flipped byte in wal/0003.frame-chunk → status exit 1
+          (fails closed); byte restored → status exit 0
+```
+
+### Incident note — 2026-09-06 (the .bak mechanism, live)
+
+During development rehearsal, a `brain restore --force` was mis-aimed at
+the LIVE DB (its target is `BRAIN_DB_PATH`/default, not the positional).
+The port guard was bypassed with `--force`, but restore's automatic safety
+snapshot did exactly what it is designed to do: the pre-restore memory
+(48 MB, 8,790 rows) survived in `<db>.bak`, the server was stopped, the
+`.bak` swapped back, and the service re-verified healthy (integrity ok,
+full row counts). Lessons encoded above: the promote procedure names the
+target explicitly via `BRAIN_DB_PATH`, and `--force` against a live server
+is the one step that must never be routine.
+
 ## Next steps
 
 - **[One Brain for the Whole Team](./team-workflow.md)** — where procedures fit in the shared-store workflow.

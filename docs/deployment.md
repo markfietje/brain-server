@@ -169,6 +169,65 @@ brain restore <in-path>
 
 ---
 
+## Warm standby shipper (v1.28.61)
+
+A warm standby = encrypted base + shipped WAL chunks + a rehearsed promote.
+The shipper is an **operator-run process**, never a server thread (a
+shipper inside the server it protects is a correlated failure). Runbook:
+[runbooks.md](./runbooks.md) — promote procedure, ceilings, and the dated
+drill record.
+
+macOS launchd (`~/Library/LaunchAgents/com.brain.server.standby.plist`):
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.brain.server.standby</string>
+  <key>ProgramArguments</key><array>
+    <string>/usr/local/bin/brain</string>
+    <string>standby</string>
+    <string>start</string>
+    <string>--to</string><string>/Volumes/standby/brain-follower</string>
+    <string>--interval-secs</string><string>30</string>
+    <string>--passphrase-file</string><string>/usr/local/etc/brain-server/backup.pass</string>
+  </array>
+  <key>EnvironmentVariables</key><dict>
+    <key>BRAIN_DB_PATH</key><string>/Users/you/.openclaw/workspace/brain.db</string>
+  </dict>
+  <key>KeepAlive</key><true/>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/usr/local/var/log/brain-standby.log</string>
+  <key>StandardErrorPath</key><string>/usr/local/var/log/brain-standby.log</string>
+</dict></plist>
+```
+
+Linux systemd (`/etc/systemd/system/brain-standby.service`):
+
+```ini
+[Unit]
+Description=brain-server warm standby shipper
+After=brain-server.service
+
+[Service]
+ExecStart=/usr/local/bin/brain standby start --to /srv/standby/brain-follower \
+  --interval-secs 30 --passphrase-file /etc/brain-server/backup.pass
+Environment=BRAIN_DB_PATH=/var/lib/brain-server/brain.db
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Monitor with cron: `brain standby status --to <dir>` and alarm when
+`last cycle` age exceeds `2 × interval` — that is the shipper being dead.
+Rehearse the promote with `brain standby promote-check --from <dir>` and
+record the timings in the runbook.
+
+---
+
 ## The client GUI
 
 The Dioxus control surface (`client/`) runs as a web app served by the server at

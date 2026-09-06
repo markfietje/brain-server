@@ -142,3 +142,34 @@ fn pqc_inventory_seam_watch() {
          or re-map with a source URL in the same change"
     );
 }
+
+/// standby_drill_recorded — a warm standby that has never rehearsed its
+/// promote is a rumor, not a capability (the CRA-drill precedent). The pin
+/// goes GREEN only when the runbook carries the DATED drill record with its
+/// measured timings: the baseline record from 2026-09-06 (a copy of the
+/// live DB — RTO 0.55s, RPO 10.4s, tamper probe fail-closed). A future
+/// re-drill appends a new dated subsection; the baseline anchors stay.
+#[test]
+fn standby_drill_recorded() {
+    let runbook = doc("docs/runbooks.md");
+    for anchor in [
+        "## Warm standby (v1.28.61)",
+        "### Promote procedure (warm — manual, rehearsed)",
+        "### Ceilings (honest)",
+        "### Drill record — 2026-09-06",
+        "### Incident note — 2026-09-06",
+    ] {
+        assert!(
+            runbook.contains(anchor),
+            "warm-standby runbook is missing `{anchor}` — the rehearsed promote \
+             and its dated record are the deliverable"
+        );
+    }
+    for measured in ["RTO 0.55s", "RPO 10.4s", "9,091 rows", "fails closed"] {
+        assert!(
+            runbook.contains(measured),
+            "drill record must carry the measured number/verdict `{measured}` — \
+             a record without timings is not a rehearsal"
+        );
+    }
+}
