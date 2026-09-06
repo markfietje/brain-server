@@ -59,6 +59,26 @@ pub struct Bootstrap {
 /// `State<Arc<AppState>>`. Fields are `pub`: the same-workspace binaries
 /// (brain-server) + integration tests construct/read it; nothing outside
 /// the workspace links this crate.
+/// Per-connection init for the MAIN database pool — the durability policy seam
+/// (Headroom). Named fn as of Headroom: this was a one-line inline closure
+/// (`PRAGMA busy_timeout=5000;`) until the envelope-backed policy grew it past
+/// inline shape, and the Spire law wants the boot file's inline mass
+/// shrinking, not growing.
+///
+/// Applied to EVERY pooled connection: `synchronous` and `wal_autocheckpoint`
+/// are per-connection settings that reset on reconnect, so the policy must be
+/// re-asserted at init — a pragma set on one connection (the migration's) never
+/// covered the pool. Defaults equal the pre-Headroom effective behavior
+/// (FULL / 1000 — the SQLite compile defaults, measured), so this changes
+/// nothing until an operator overrides via env. `journal_mode=WAL` stays
+/// migration-owned (persistent in the DB file; deliberately not duplicated
+/// here).
+fn main_pool_connection_init(
+    durability: crate::capacity::Durability,
+) -> impl Fn(&mut Connection) -> rusqlite::Result<()> {
+    move |c| durability.apply(c)
+}
+
 pub struct AppState {
     // The embedding model behind the `Embedder` trait so the
     // active profile (edge-default potion / enterprise bge-m3 / …) is selected
@@ -86,6 +106,13 @@ pub struct AppState {
     /// reported on the next TTL boundary, not instantly. Ponytail ceiling:
     /// adequate for monitoring; an operator wanting a fresh answer hits
     /// `/audit/verify`.
+    ///
+    /// Lock bounds (Headroom): the critical section is copy/replace of one
+    /// `Option<(Instant, bool)>`; the O(n) chain scan runs OUTSIDE the lock
+    /// (between release and re-acquire). No I/O, no nesting, no SQL under
+    /// the guard. Poison: fail-open (a poisoned cache reads as a miss and
+    /// the write is skipped — the scan just runs every scrape). Holder is
+    /// the `/metrics` scrape (inside spawn_blocking), wait-measured.
     pub audit_chain_cache: Arc<std::sync::Mutex<Option<(std::time::Instant, bool)>>>,
     // ── JWT fields ─────────────────────────────────────
     /// Which auth mode the server resolved at startup. `Opaque` (v1.1 back-
@@ -122,6 +149,12 @@ pub struct AppState {
     /// of `concurrency::CONCURRENCY` — the same object the deep write-path
     /// error arms increment without state plumbing.
     pub concurrency: &'static crate::concurrency::Concurrency,
+    /// The durability + checkpoint policy resolved at boot (Headroom): the
+    /// envelope's per-target defaults ⊕ the fail-closed env overrides,
+    /// applied to every pooled connection at init and echoed verbatim by
+    /// `/health/db` so an operator can see exactly what the running server
+    /// Static boot-time config — not a per-request pragma read.
+    pub durability: crate::capacity::Durability,
     // ── middleware-stack inputs (Vaulting: app(state) reads them here so
     // the composition is a pure function of state) ────────────────────
     /// The cached bearer-token store; `auth_middleware`'s from_fn state.
@@ -286,6 +319,29 @@ pub fn bootstrap() -> Result<BootOutcome> {
         return Err(anyhow::anyhow!("fatal write posture: {e}"));
     }
 
+    // ── fail-closed durability policy (Headroom) ──────
+    // The envelope's per-target defaults ⊕ the optional BRAIN_SYNCHRONOUS /
+    // BRAIN_WAL_AUTOCHECKPOINT overrides. An unknown value refuses the boot
+    // rather than silently degrading (the BRAIN_WRITE_POSTURE pattern). The
+    // resolved policy feeds the pool's per-connection init below and the
+    // /health/db echo — one resolution, one truth.
+    let envelope =
+        crate::capacity::CapacityEnvelope::for_target(crate::capacity::capacity_target());
+    let durability = crate::capacity::Durability {
+        synchronous_mode: config::resolve_synchronous(envelope.synchronous_mode)
+            .map_err(|e| anyhow::anyhow!("fatal durability config: {e}"))?,
+        wal_autocheckpoint_pages: config::resolve_wal_autocheckpoint(
+            envelope.wal_autocheckpoint_pages,
+        )
+        .map_err(|e| anyhow::anyhow!("fatal durability config: {e}"))?,
+    };
+    info!(
+        "Durability policy: synchronous={}, wal_autocheckpoint={} pages (target: {:?})",
+        durability.synchronous_mode.as_str(),
+        durability.wal_autocheckpoint_pages,
+        crate::capacity::capacity_target()
+    );
+
     // ── fail-closed model-artifact pinning ─────────────
     // When BRAIN_MODEL_MANIFEST is set, every pinned artifact must match its
     // SHA-256 or the server refuses to start — a model file must never
@@ -374,7 +430,7 @@ pub fn bootstrap() -> Result<BootOutcome> {
         .test_on_check_out(true)
         .build(
             SqliteConnectionManager::file(&db_path)
-                .with_init(|c| c.execute_batch("PRAGMA busy_timeout=5000;")),
+                .with_init(main_pool_connection_init(durability)),
         )?;
 
     // Offline `--re-embed <profile>` — the fail-closed dim
@@ -462,7 +518,7 @@ pub fn bootstrap() -> Result<BootOutcome> {
         // the model download inside the request path (observed: first-query 503
         // `recall timed out` while the reranker downloaded).
         #[cfg(feature = "rerank-tier")]
-        search::rerank::warmup();
+        crate::search::rerank::warmup();
         info!("rerank tier ready (profile={profile})");
     }
 
@@ -817,6 +873,7 @@ pub fn bootstrap() -> Result<BootOutcome> {
         alert_seq: std::sync::atomic::AtomicU64::new(0),
         chain_watch: alert::ChainWatchState::default(),
         concurrency: &crate::concurrency::CONCURRENCY,
+        durability,
         token_store,
         jwt_middleware_state,
         cors,

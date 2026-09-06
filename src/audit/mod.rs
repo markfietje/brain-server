@@ -326,6 +326,14 @@ fn chain_link_hmac(key: &[u8], row: &ChainRowFull) -> String {
 /// (server `main_inner`, `brain` CLI) — never env-sniffed lazily, so unit
 /// tests and library consumers stay deterministic-legacy unless they
 /// explicitly opt in.
+///
+/// Lock bounds (Headroom): the critical sections are one `Option` replace
+/// (boot write) and one `Arc` clone (read). No I/O, no nesting, no SQL —
+/// the env parse + key-file read/persist all happen BEFORE the write.
+/// Poison: fail-open at the lock (skip / `None`) — but `None` makes hmac256
+/// writes FAIL CLOSED downstream (documented posture), so the posture is
+/// preserved. Request-path holder (the per-write HMAC settle reads this),
+/// so acquires are wait-measured.
 static CHAIN_KEY: RwLock<Option<Arc<[u8; 32]>>> = RwLock::new(None);
 
 /// Failures of [`init_chain_key`] — all refuse the key (the caller decides
@@ -395,7 +403,7 @@ pub fn init_chain_key(default_dir: &Path) -> Result<(), ChainKeyError> {
             key
         }
     };
-    if let Ok(mut slot) = CHAIN_KEY.write() {
+    if let Ok(mut slot) = crate::concurrency::rwlock_write_measured(&CHAIN_KEY) {
         *slot = Some(Arc::new(key));
     }
     Ok(())
@@ -403,7 +411,9 @@ pub fn init_chain_key(default_dir: &Path) -> Result<(), ChainKeyError> {
 
 /// The installed process chain key, if any.
 pub fn chain_key() -> Option<Arc<[u8; 32]>> {
-    CHAIN_KEY.read().ok().and_then(|k| k.clone())
+    crate::concurrency::rwlock_read_measured(&CHAIN_KEY)
+        .ok()
+        .and_then(|k| k.clone())
 }
 
 fn parse_key_hex(s: &str) -> Result<[u8; 32], ChainKeyError> {

@@ -70,12 +70,29 @@ pub struct DomainRegistry {
     /// When false, all domains resolve to `global_pool` (legacy single-DB).
     multi_db: bool,
     /// Lazily-opened non-global pools (multi-db mode only).
+    ///
+    /// Lock bounds (Headroom): the WARM path under the lock is map arithmetic
+    /// (get + `Arc` clone) — no I/O, no nesting. The DELIBERATE EXCEPTION is
+    /// the cold first-open of a domain: `open_with_migration` (create_dir_all,
+    /// pool build, PRAGMA batch, migration) runs UNDER the guard so two
+    /// concurrent resolves cannot race the same file into existence twice.
+    /// That hold is one-shot per domain per process and is exactly the
+    /// contention the lock-wait gauge is expected to surface. `register`
+    /// drops `registered` BEFORE taking this lock (never both). Poison:
+    /// fail-CLOSED (`Poisoned`). Request-path holder, so acquires are
+    /// wait-measured.
     pools: Mutex<HashMap<String, BrainPool>>,
     /// The registered set (multi-db mode only): domains that may be opened —
     /// seeded from the on-disk `brain-<domain>.db` files at [`Self::new`] and
     /// grown exclusively via [`Self::register`] (cap-bounded) or the
     /// clients-table boot seed. `pool_for` REFUSES anything outside it, so an
     /// unauthenticated-probeable surface can never create a DB file.
+    ///
+    /// Lock bounds (Headroom): contains + cap-check + insert / contains.
+    /// No I/O, no nesting, no SQL (the DISK scan happens at `Self::new`,
+    /// unguarded). Poison: fail-CLOSED (seed errors, `is_registered` reads
+    /// false → `Unknown` → refused, no DB file created). Request-path
+    /// holder, so acquires are wait-measured.
     registered: Mutex<HashSet<String>>,
 }
 
@@ -129,9 +146,7 @@ impl DomainRegistry {
         if !self.is_registered(domain) {
             return Err(DomainRegistryError::Unknown(domain.to_string()));
         }
-        let mut pools = self
-            .pools
-            .lock()
+        let mut pools = crate::concurrency::mutex_guard_measured(&self.pools)
             .map_err(|_| DomainRegistryError::Poisoned)?;
         if let Some(p) = pools.get(domain) {
             return Ok(p.clone());
@@ -175,9 +190,7 @@ impl DomainRegistry {
         if !self.multi_db {
             return Ok(());
         }
-        let mut registered = self
-            .registered
-            .lock()
+        let mut registered = crate::concurrency::mutex_guard_measured(&self.registered)
             .map_err(|_| DomainRegistryError::Poisoned)?;
         if !registered.contains(domain) {
             let cap = config::max_domain_dbs();
@@ -195,8 +208,7 @@ impl DomainRegistry {
         if !self.multi_db || domain == "global" {
             return true;
         }
-        self.registered
-            .lock()
+        crate::concurrency::mutex_guard_measured(&self.registered)
             .map(|r| r.contains(domain))
             .unwrap_or(false)
     }

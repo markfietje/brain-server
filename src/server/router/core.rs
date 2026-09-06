@@ -312,6 +312,21 @@ pub async fn health_db(
                         "wal_pages_pending": serde_json::Value::Object(wal),
                     }),
                 );
+                // Headroom: static boot-time config echo — the durability
+                // policy every pooled connection was initialized with. A
+                // snapshot of boot decisions, never a per-request pragma
+                // read, so the Read-gated cold path stays cold.
+                m.insert(
+                    "durability".to_string(),
+                    serde_json::json!({
+                        "synchronous": s.durability.synchronous_mode.as_str(),
+                        "wal_autocheckpoint_pages": s.durability.wal_autocheckpoint_pages,
+                        "capacity_target": match crate::capacity::capacity_target() {
+                            crate::capacity::CapacityTarget::Desktop => "desktop",
+                            crate::capacity::CapacityTarget::Jetson => "jetson",
+                        },
+                    }),
+                );
             }
             Ok(Json(body))
         }
@@ -480,16 +495,19 @@ pub(crate) async fn metrics(
             // full O(n) chain scan (now × N domains). /audit/verify bypasses
             // this for the authoritative answer.
             let now = std::time::Instant::now();
-            let cached = audit_cache.lock().ok().and_then(|g| *g).filter(|(ts, _)| {
-                now.duration_since(*ts).as_secs() < config::AUDIT_CHAIN_CACHE_TTL_SECS
-            });
+            let cached = crate::concurrency::mutex_guard_measured(&audit_cache)
+                .ok()
+                .and_then(|g| *g)
+                .filter(|(ts, _)| {
+                    now.duration_since(*ts).as_secs() < config::AUDIT_CHAIN_CACHE_TTL_SECS
+                });
             match cached {
                 Some((_, ok)) => ok,
                 None => {
                     let fresh = crate::handlers::verify_domain_targets(chain_targets)
                         .iter()
                         .all(|(_, ok)| *ok);
-                    if let Ok(mut g) = audit_cache.lock() {
+                    if let Ok(mut g) = crate::concurrency::mutex_guard_measured(&audit_cache) {
                         *g = Some((now, fresh));
                     }
                     fresh
@@ -532,6 +550,24 @@ pub(crate) async fn metrics(
                 "brain_wal_pages_pending{{domain=\"{domain}\"}} {pending}\n"
             ));
         }
+        // Headroom: lock-wait bucket-quantiles. Only CONTENDED acquisitions
+        // are recorded (try_lock fast path costs nothing), so 0 means "no
+        // contention observed", never "gauge wired off". The values are
+        // bucket lower edges in µs — deterministic read of the histogram, not
+        // an interpolated percentile.
+        let lock_hist = crate::concurrency::CONCURRENCY.lock_wait_histogram();
+        out.push_str("# HELP brain_lock_wait_micros_p50 Bucket-quantile (lower edge, µs) of contended lock-acquire waits across the instrumented request-path locks; 0 = no contention observed.\n");
+        out.push_str("# TYPE brain_lock_wait_micros_p50 gauge\n");
+        out.push_str(&format!(
+            "brain_lock_wait_micros_p50 {}\n",
+            lock_hist.quantile_edge_us(0.50)
+        ));
+        out.push_str("# HELP brain_lock_wait_micros_p95 Bucket-quantile (lower edge, µs) of contended lock-acquire waits across the instrumented request-path locks; 0 = no contention observed.\n");
+        out.push_str("# TYPE brain_lock_wait_micros_p95 gauge\n");
+        out.push_str(&format!(
+            "brain_lock_wait_micros_p95 {}\n",
+            lock_hist.quantile_edge_us(0.95)
+        ));
         out.push_str("# HELP brain_capacity_status 1=ok 2=warning 3=exceeded.\n");
         out.push_str("# TYPE brain_capacity_status gauge\n");
         let cap_num = match cap_status {

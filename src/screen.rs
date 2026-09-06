@@ -246,6 +246,13 @@ mod onnx {
         /// threaded axum runtime, so a Mutex is the honest shared-ownership
         /// primitive. A single scorer is held for the process lifetime
         /// (`OnceLock`), so contention is negligible.
+        ///
+        /// Lock bounds (Headroom): the critical section is the ONNX
+        /// inference + logits sigmoid — CPU-bound, no I/O, no nesting, no
+        /// SQL (tokenization runs BEFORE acquisition). Poison: fail-OPEN
+        /// (`score 0.0` = clean — the one screening lock that fails open; a
+        /// dead classifier must not eat every ingest). Request-path holder
+        /// (every screened write), wait-measured.
         session: std::sync::Mutex<Session>,
         tokenizer: tokenizers::Tokenizer,
         max_len: usize,
@@ -316,7 +323,7 @@ mod onnx {
                 Ok(t) => t,
                 Err(_) => return 0.0,
             };
-            let mut guard = match self.session.lock() {
+            let mut guard = match crate::concurrency::mutex_guard_measured(&self.session) {
                 Ok(g) => g,
                 Err(_) => return 0.0,
             };

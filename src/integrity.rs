@@ -49,6 +49,12 @@ impl Snapshot {
 
 /// Shared handle to the latest snapshot result. Clone cheaply; the writer is
 /// the scheduler task, the readers are `/health` calls.
+///
+/// Lock bounds (Headroom): the critical sections are one struct clone (read)
+/// / one assignment (set). No I/O, no nesting, no SQL. Poison: the read
+/// falls back to the default snapshot (honest "not checked"), the write is
+/// skipped. Readers are the `/health` scrape (request, wait-measured); the
+/// writer is the background scheduler.
 #[derive(Clone, Default)]
 pub struct SnapshotState {
     inner: Arc<RwLock<Snapshot>>,
@@ -56,10 +62,12 @@ pub struct SnapshotState {
 
 impl SnapshotState {
     pub fn read(&self) -> Snapshot {
-        self.inner.read().map(|s| s.clone()).unwrap_or_default()
+        crate::concurrency::rwlock_read_measured(&self.inner)
+            .map(|s| s.clone())
+            .unwrap_or_default()
     }
     fn set(&self, snap: Snapshot) {
-        if let Ok(mut g) = self.inner.write() {
+        if let Ok(mut g) = crate::concurrency::rwlock_write_measured(&self.inner) {
             *g = snap;
         }
     }

@@ -250,6 +250,12 @@ impl CapabilityToken {
 /// replay and is refused — lateral movement stays closed.
 #[derive(Default)]
 pub struct ReplayCache {
+    /// Lock bounds (Headroom): the critical section is vec arithmetic —
+    /// cap check + expiry retain (the extreme-flood `clear`), a linear scan
+    /// pinning jti→(method, path), one push. No I/O, no nesting, no SQL.
+    /// Poison: fail-CLOSED (`false` = replay = refused). Request-hot holder
+    /// (the capability middleware on every cap-token-bearing request), so
+    /// the acquire is wait-measured.
     seen: std::sync::Mutex<Vec<(ReplayKey, u64)>>,
 }
 
@@ -267,7 +273,9 @@ impl ReplayCache {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        let Ok(mut list) = self.seen.lock() else {
+        let Ok(mut list) = crate::concurrency::mutex_guard_measured(&self.seen) else {
+            // Poison ⇒ fail CLOSED (a replay-cache read failure must read as
+            // "replay", never as "fresh") — unchanged.
             return false;
         };
         if list.len() >= CAP_REPLAY_CAP {

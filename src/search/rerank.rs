@@ -118,6 +118,11 @@ pub fn warmup() {
 /// uncontended under brain-server's pooled-connection, one-embed-per-task model
 /// (same pattern as `embed::NeuralEmbedder` and `screen::onnx::OnnxScorer`).
 pub struct Reranker {
+    /// Lock bounds (Headroom): the critical section is the cross-encoder
+    /// scoring pass — CPU-bound, long hold, no I/O, no nesting, no SQL. The
+    /// acquire wait is the rerank-tier's model-queue signal. Poison:
+    /// fail-OPEN (RRF order stands — a reranker fault never propagates to
+    /// recall). Request-path holder, wait-measured.
     inner: Mutex<TextRerank>,
     /// The model id actually loaded (mxbai-rerank-large-v1 or bge-reranker-v2-m3).
     model_id: std::sync::Arc<str>,
@@ -207,7 +212,7 @@ impl Reranker {
         let truncated = fused.len() > self.top_n;
         let n = fused.len().min(self.top_n);
 
-        let mut guard = match self.inner.lock() {
+        let mut guard = match crate::concurrency::mutex_guard_measured(&self.inner) {
             Ok(g) => g,
             Err(_) => return Ok(()), // poisoned — fail open
         };

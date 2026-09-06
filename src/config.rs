@@ -153,6 +153,75 @@ pub fn validate_write_posture() -> Result<(), String> {
     }
 }
 
+// ── durability policy (Headroom) ─────────────────────────────────────────
+// The write path's pragma policy becomes explicit, per-capacity-target, and
+// fail-closed: the envelope carries the per-target defaults (pinned equal to
+// the pre-Headroom effective behavior), and these resolvers layer the
+// optional env overrides on top — refusing the boot on an unknown value
+// rather than silently degrading, exactly like `BRAIN_WRITE_POSTURE` above.
+
+/// Resolve `BRAIN_SYNCHRONOUS` (full|normal, case-insensitive) against the
+/// envelope's per-target default. Unset/empty → the default. Anything else is
+/// a boot refusal (`validate_durability_env`).
+pub fn resolve_synchronous(
+    default: crate::capacity::SynchronousMode,
+) -> Result<crate::capacity::SynchronousMode, String> {
+    match std::env::var("BRAIN_SYNCHRONOUS")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "" => Ok(default),
+        "full" => Ok(crate::capacity::SynchronousMode::Full),
+        "normal" => Ok(crate::capacity::SynchronousMode::Normal),
+        other => Err(format!(
+            "BRAIN_SYNCHRONOUS='{other}' is invalid; must be full or normal"
+        )),
+    }
+}
+
+/// Accepted `BRAIN_WAL_AUTOCHECKPOINT` page range. Bounded both ways by the
+/// bounds law: `0` would DISABLE autocheckpoint entirely (an unbounded WAL is
+/// a disk-fill footgun this surface refuses rather than documents), and the
+/// upper bound keeps a typo'd value from effectively doing the same.
+pub const WAL_AUTOCHECKPOINT_MIN_PAGES: u32 = 1;
+pub const WAL_AUTOCHECKPOINT_MAX_PAGES: u32 = 65_536;
+
+/// Resolve `BRAIN_WAL_AUTOCHECKPOINT` (pages, 1..=65 536) against the
+/// envelope's per-target default. Unset/empty → the default.
+pub fn resolve_wal_autocheckpoint(default: u32) -> Result<u32, String> {
+    let raw = std::env::var("BRAIN_WAL_AUTOCHECKPOINT")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if raw.is_empty() {
+        return Ok(default);
+    }
+    let pages: u32 = raw
+        .parse()
+        .map_err(|_| format!("BRAIN_WAL_AUTOCHECKPOINT='{raw}' is not an integer"))?;
+    if (WAL_AUTOCHECKPOINT_MIN_PAGES..=WAL_AUTOCHECKPOINT_MAX_PAGES).contains(&pages) {
+        Ok(pages)
+    } else {
+        Err(format!(
+            "BRAIN_WAL_AUTOCHECKPOINT='{raw}' is out of range; must be \
+             {WAL_AUTOCHECKPOINT_MIN_PAGES}..={WAL_AUTOCHECKPOINT_MAX_PAGES} pages"
+        ))
+    }
+}
+
+/// Startup validation for both durability overrides: resolves against the
+/// active envelope's defaults and refuses the boot on any invalid value.
+/// Called from the bootstrap beside `validate_write_posture`.
+pub fn validate_durability_env() -> Result<(), String> {
+    let envelope =
+        crate::capacity::CapacityEnvelope::for_target(crate::capacity::capacity_target());
+    resolve_synchronous(envelope.synchronous_mode)?;
+    resolve_wal_autocheckpoint(envelope.wal_autocheckpoint_pages)?;
+    Ok(())
+}
+
 /// the GDPR Art 17/12 DSAR response window (days). How
 /// long after a request's `created_at` the erosive-erasure deadline lapses.
 /// This is a *commitment the ledger shows*, not an enforced bound — a
@@ -1003,6 +1072,83 @@ mod tests {
             unsafe { std::env::set_var("BRAIN_WRITE_POSTURE", v) };
         } else {
             unsafe { std::env::remove_var("BRAIN_WRITE_POSTURE") };
+        }
+    }
+
+    /// Headroom: the durability resolvers mirror the write-posture ladder —
+    /// unset reads the envelope default, known values resolve, unknown values
+    /// REFUSE (resolve returns Err, and `validate_durability_env` propagates
+    /// it to a boot refusal). Save/restore pattern (parallel-runner safe).
+    #[test]
+    fn synchronous_mode_resolves_and_refuses_unknown() {
+        let prev = std::env::var("BRAIN_SYNCHRONOUS").ok();
+        unsafe { std::env::remove_var("BRAIN_SYNCHRONOUS") };
+        assert_eq!(
+            resolve_synchronous(crate::capacity::SynchronousMode::Full).ok(),
+            Some(crate::capacity::SynchronousMode::Full),
+            "unset reads the envelope default"
+        );
+        for (raw, want) in [
+            ("normal", crate::capacity::SynchronousMode::Normal),
+            ("NORMAL", crate::capacity::SynchronousMode::Normal),
+            (" full ", crate::capacity::SynchronousMode::Full),
+        ] {
+            unsafe { std::env::set_var("BRAIN_SYNCHRONOUS", raw) };
+            assert_eq!(
+                resolve_synchronous(crate::capacity::SynchronousMode::Full).ok(),
+                Some(want),
+                "'{raw}' must resolve"
+            );
+        }
+        unsafe { std::env::set_var("BRAIN_SYNCHRONOUS", "yolo") };
+        assert!(
+            resolve_synchronous(crate::capacity::SynchronousMode::Full).is_err(),
+            "unknown value must refuse (fail-closed, BRAIN_WRITE_POSTURE pattern)"
+        );
+        assert!(validate_durability_env().is_err(), "validation propagates");
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("BRAIN_SYNCHRONOUS", v) };
+        } else {
+            unsafe { std::env::remove_var("BRAIN_SYNCHRONOUS") };
+        }
+    }
+
+    /// Headroom bounds pin: the autocheckpoint override is an integer in
+    /// 1..=65 536; 0 (autocheckpoint OFF — unbounded WAL), negatives, garbage,
+    /// and over-range all refuse.
+    #[test]
+    fn wal_autocheckpoint_resolves_and_bounds() {
+        let prev = std::env::var("BRAIN_WAL_AUTOCHECKPOINT").ok();
+        unsafe { std::env::remove_var("BRAIN_WAL_AUTOCHECKPOINT") };
+        assert_eq!(
+            resolve_wal_autocheckpoint(1_000).ok(),
+            Some(1_000),
+            "unset reads the envelope default"
+        );
+        for raw in ["1", "256", "65536", "", "  "] {
+            unsafe { std::env::set_var("BRAIN_WAL_AUTOCHECKPOINT", raw) };
+            let r = resolve_wal_autocheckpoint(1_000);
+            if raw.trim().is_empty() {
+                assert_eq!(
+                    r.ok(),
+                    Some(1_000),
+                    "empty-but-set reads as unset (default)"
+                );
+            } else {
+                assert!(r.is_ok(), "'{raw}' is inside the accepted range");
+            }
+        }
+        for raw in ["0", "-1", "65537", "abc", "3.5"] {
+            unsafe { std::env::set_var("BRAIN_WAL_AUTOCHECKPOINT", raw) };
+            assert!(
+                resolve_wal_autocheckpoint(1_000).is_err(),
+                "'{raw}' must refuse (0 disables autocheckpoint; the rest are invalid)"
+            );
+        }
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("BRAIN_WAL_AUTOCHECKPOINT", v) };
+        } else {
+            unsafe { std::env::remove_var("BRAIN_WAL_AUTOCHECKPOINT") };
         }
     }
 

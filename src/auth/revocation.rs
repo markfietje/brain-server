@@ -45,6 +45,14 @@ pub const PURGE_INTERVAL_SECS: u64 = 300;
 #[derive(Default)]
 pub struct RevocationCache {
     /// `(jti, iss)` → when the negative lookup was performed.
+    ///
+    /// Lock bounds (Headroom): the critical sections are map arithmetic only
+    /// — get+TTL compare, insert, remove, retain-by-expiry. No I/O, no
+    /// nesting, no SQL under the lock (the authoritative `EXISTS` runs
+    /// BETWEEN acquisitions with the lock released). Poison: fail-open — a
+    /// poisoned cache reads as a miss and falls through to the SQL truth.
+    /// Request-path holder (bearer auth + refresh), so acquires are
+    /// wait-measured.
     negatives: Mutex<HashMap<(String, String), CacheEntry>>,
 }
 
@@ -70,13 +78,15 @@ impl RevocationCache {
     ) -> Result<bool, rusqlite::Error> {
         let key = (jti.to_string(), iss.to_string());
         // Fast path: negative cache hit.
-        if let Ok(g) = self.negatives.lock()
-            && let Some(entry) = g.get(&key)
-            && SystemTime::now()
-                .duration_since(entry.checked_at)
-                .map(|d| d < Duration::from_secs(NEG_CACHE_TTL_SECS))
-                .unwrap_or(false)
-        {
+        let fast = crate::concurrency::mutex_guard_measured(&self.negatives).map(|g| {
+            g.get(&key).is_some_and(|entry| {
+                SystemTime::now()
+                    .duration_since(entry.checked_at)
+                    .map(|d| d < Duration::from_secs(NEG_CACHE_TTL_SECS))
+                    .unwrap_or(false)
+            })
+        });
+        if fast.unwrap_or(false) {
             return Ok(false);
         }
         // Slow path: SQL lookup. Parameterized — jti/iss come from a verified
@@ -91,7 +101,7 @@ impl RevocationCache {
         )?;
         if !revoked {
             // Cache the negative result.
-            if let Ok(mut g) = self.negatives.lock() {
+            if let Ok(mut g) = crate::concurrency::mutex_guard_measured(&self.negatives) {
                 g.insert(
                     key,
                     CacheEntry {
@@ -106,7 +116,7 @@ impl RevocationCache {
     /// Invalidate the negative cache for `(jti, iss)`. Called after a revoke
     /// so the very next request from the same process sees the new state.
     pub fn invalidate(&self, jti: &str, iss: &str) {
-        if let Ok(mut g) = self.negatives.lock() {
+        if let Ok(mut g) = crate::concurrency::mutex_guard_measured(&self.negatives) {
             g.remove(&(jti.to_string(), iss.to_string()));
         }
     }
@@ -116,7 +126,7 @@ impl RevocationCache {
     /// it's a single mutex lock + retain.
     pub fn purge_negatives(&self) {
         let now = SystemTime::now();
-        if let Ok(mut g) = self.negatives.lock() {
+        if let Ok(mut g) = crate::concurrency::mutex_guard_measured(&self.negatives) {
             g.retain(|_, entry| {
                 now.duration_since(entry.checked_at)
                     .map(|d| d < Duration::from_secs(NEG_CACHE_TTL_SECS))

@@ -141,6 +141,14 @@ pub mod neural {
     pub struct NeuralEmbedder {
         // `Bgem3Embedding::embed` takes `&mut self` (ONNX scratch buffers);
         // the Mutex lets the dense path stay `&self` for `Arc<dyn Embedder>`.
+        /// Lock bounds (Headroom): the critical section is the full ONNX
+        /// forward pass (dense+sparse+colbert) — CPU-bound, long hold, but
+        /// no I/O, no nesting, no SQL. THE known serialization point of the
+        /// enterprise tier: concurrent ingests queue here, and the acquire
+        /// wait gauge is exactly what makes that queue visible. Poison:
+        /// fail-closed-for-data (warn + empty output — the row is dropped,
+        /// never a corrupt embedding). Request-path holder (embed seam),
+        /// wait-measured.
         inner: Mutex<fastembed::Bgem3Embedding>,
         id: String,
         dim: usize,
@@ -184,7 +192,7 @@ pub mod neural {
         /// the row rather than writing a corrupt embedding.
         pub fn embed_multi(&self, texts: &[&str]) -> MultiOutput {
             let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
-            let mut m = match self.inner.lock() {
+            let mut m = match crate::concurrency::mutex_guard_measured(&self.inner) {
                 Ok(m) => m,
                 Err(_) => {
                     tracing::warn!("embedder mutex poisoned; skipping encode (model outage)");
@@ -239,6 +247,10 @@ pub mod neural {
     /// the in-enum variant that ships the desktop tier with zero custom-ONNX
     /// risk; gte-modernbert-base is the verified-future upgrade.
     pub struct GteEmbedder {
+        /// Lock bounds (Headroom): same shape as [`NeuralEmbedder::inner`] —
+        /// CPU-bound ONNX inference under the lock (long hold, no I/O, no
+        /// nesting, no SQL); poison fails closed-for-data (empty vec). The
+        /// acquire wait is the desktop tier's model-queue signal.
         inner: Mutex<fastembed::TextEmbedding>,
         id: String,
     }
@@ -260,7 +272,7 @@ pub mod neural {
     impl Embedder for GteEmbedder {
         fn encode(&self, texts: &[&str]) -> Vec<Vec<f32>> {
             let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
-            let mut m = match self.inner.lock() {
+            let mut m = match crate::concurrency::mutex_guard_measured(&self.inner) {
                 Ok(m) => m,
                 Err(_) => {
                     tracing::warn!("embedder mutex poisoned; skipping encode (model outage)");

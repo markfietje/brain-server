@@ -74,6 +74,13 @@ pub struct ChainStatus {
 
 /// Shared handle to the watcher's latest result (writer = watcher, readers = `/health`).
 /// Mirrors `integrity::SnapshotState`.
+///
+/// Lock bounds (Headroom): the critical sections are one struct clone (read)
+/// / one assignment (set). No I/O, no nesting, no SQL (the chain verify runs
+/// OUTSIDE the guard in the watcher). Poison: the read fails CLOSED to the
+/// default `chain_ok: false` posture; the write is skipped. Readers are the
+/// `/health/db` scrape (request, wait-measured); the writer is the
+/// background chain watcher.
 #[derive(Clone, Default)]
 pub struct ChainWatchState {
     inner: Arc<RwLock<ChainStatus>>,
@@ -81,10 +88,12 @@ pub struct ChainWatchState {
 
 impl ChainWatchState {
     pub fn read(&self) -> ChainStatus {
-        self.inner.read().map(|s| s.clone()).unwrap_or_default()
+        crate::concurrency::rwlock_read_measured(&self.inner)
+            .map(|s| s.clone())
+            .unwrap_or_default()
     }
     fn set(&self, status: ChainStatus) {
-        if let Ok(mut g) = self.inner.write() {
+        if let Ok(mut g) = crate::concurrency::rwlock_write_measured(&self.inner) {
             *g = status;
         }
     }
@@ -740,6 +749,7 @@ mod tests {
                 ),
             ),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             model: Arc::new(
                 crate::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
             ),

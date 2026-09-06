@@ -110,6 +110,7 @@ fn build_server() -> TestServer {
         token_store: brain_server::auth::TokenStore::new(),
         jwt_middleware_state,
         cors: tower_http::cors::CorsLayer::new(),
+        durability: Default::default(),
         model,
         registry: brain_server::domain_registry::DomainRegistry::new(
             pool.clone(),
@@ -760,6 +761,7 @@ async fn authz_matrix_opaque_mode_superuser_and_none() {
         token_store,
         jwt_middleware_state,
         cors: tower_http::cors::CorsLayer::new(),
+        durability: Default::default(),
         model,
         registry: brain_server::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
         pool,

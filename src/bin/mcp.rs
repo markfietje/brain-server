@@ -1066,6 +1066,12 @@ impl McpLimiter {
 }
 
 use std::sync::Mutex;
+// Lock bounds (Headroom): the critical sections are limiter construction /
+// window arithmetic + map insert-evict — pure memory, no I/O, no nesting,
+// no SQL. Poison: init fail-open; the request path treats a `None` limiter
+// as LIMITED (fail-closed). Deliberately NOT wait-instrumented: this is the
+// mcp binary's /mcp protocol edge (the Spire fence's one carve-out) — the
+// binary has no /metrics scrape, so recorded waits would be invisible.
 static MCP_LIMITER: Mutex<Option<McpLimiter>> = Mutex::new(None);
 
 /// Run the HTTP transport until interrupted. Never returns under normal

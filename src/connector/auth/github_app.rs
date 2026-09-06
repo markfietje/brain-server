@@ -179,6 +179,13 @@ pub struct GitHubAppProvider {
     // In-memory cache of the last installation token. Refreshed transparently
     // when within REFRESH_SKEW of expiry.
     // ponytail: single-slot cache; we never have multiple concurrent tokens.
+    //
+    // Lock bounds (Headroom): the critical sections are expiry check / token
+    // clone / single-slot replace — pure memory. The blocking HTTPS token
+    // fetch runs OUTSIDE the lock by design (see `access_token`). Poison:
+    // tolerant (`into_inner`) — worst case a double fetch. Deliberately NOT
+    // wait-instrumented: connector sync runs on blocking threads off the
+    // axum request path; waits here are invisible to /metrics consumers.
     cached: std::sync::Mutex<Option<CachedToken>>,
 }
 

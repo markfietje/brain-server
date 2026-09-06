@@ -73,6 +73,13 @@ pub struct DecisionInput<'a> {
 
 struct ChainKey(Option<SigningKey>);
 
+/// Lock bounds (Headroom): the critical section is one `Option<SigningKey>`
+/// clone (read) / replace (test install). No I/O, no nesting, no SQL — the
+/// env read + key-file load happen at cell INIT, before any guard. Poison:
+/// recover-and-continue (`into_inner`) — an unsigned decision is honest
+/// provenance, and wedging every compliance write behind a sibling's panic
+/// buys nothing. Request-path holder (`record_decision`), so acquires are
+/// wait-measured.
 static CHAIN_KEY: OnceLock<std::sync::RwLock<ChainKey>> = OnceLock::new();
 
 fn chain_key_cell() -> &'static std::sync::RwLock<ChainKey> {
@@ -146,9 +153,7 @@ pub mod tests_seed {
 }
 
 fn signing_key() -> Option<SigningKey> {
-    chain_key_cell()
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
+    crate::concurrency::rwlock_read_recovered(chain_key_cell())
         .0
         .clone()
 }

@@ -13,7 +13,7 @@ use std::time::{Duration as StdDuration, Instant};
 use sysinfo::System;
 use tracing::error;
 
-use crate::config;
+use crate::{concurrency, config};
 
 #[derive(Debug, Clone)]
 pub struct ConnectionInfo {
@@ -23,6 +23,12 @@ pub struct ConnectionInfo {
 }
 
 pub struct ConnectionTracker {
+    /// Lock bounds (Headroom): the critical section touches ONLY this map —
+    /// insert / remove / clone-filter of long-running entries. No I/O, no
+    /// nesting, no SQL, no blocking calls. Poison: fail-open (the insert or
+    /// remove is skipped; a poisoned scan reads as empty). Request-path
+    /// holder (`TrackerEntry` RAII on every ingest), so the acquire is
+    /// wait-measured.
     connections: Mutex<HashMap<usize, ConnectionInfo>>,
     next_id: AtomicUsize,
 }
@@ -48,28 +54,28 @@ impl ConnectionTracker {
             acquired_at: Instant::now(),
             location: location.to_string(),
         };
-        if let Ok(mut conns) = self.connections.lock() {
+        if let Ok(mut conns) = concurrency::mutex_guard_measured(&self.connections) {
             conns.insert(id, info);
         }
         id
     }
 
     pub fn release(&self, id: usize) {
-        if let Ok(mut conns) = self.connections.lock() {
+        if let Ok(mut conns) = concurrency::mutex_guard_measured(&self.connections) {
             conns.remove(&id);
         }
     }
 
     pub fn get_long_running(&self, threshold: std::time::Duration) -> Vec<ConnectionInfo> {
-        if let Ok(conns) = self.connections.lock() {
-            conns
-                .values()
-                .filter(|info| info.acquired_at.elapsed() > threshold)
-                .cloned()
-                .collect()
-        } else {
-            Vec::new()
-        }
+        concurrency::mutex_guard_measured(&self.connections)
+            .map(|conns| {
+                conns
+                    .values()
+                    .filter(|info| info.acquired_at.elapsed() > threshold)
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Slot count — test-only introspection for the RAII/watchdog pins.
@@ -109,6 +115,14 @@ impl Drop for TrackerEntry {
 }
 
 pub struct RateLimiter {
+    /// Lock bounds (Headroom): the critical section is pure in-memory
+    /// arithmetic — window retain, the cap-hit eviction scan (O(n) keys only
+    /// on the rare cap path), one timestamp push. No I/O, no nesting, no SQL;
+    /// the clock is read BEFORE acquisition (`now`), so the decision under
+    /// the lock is pure arithmetic on recorded timestamps. Poison:
+    /// fail-CLOSED (deny — the request-bound must never silently vanish).
+    /// Request-hot holder (every request through the middleware), so the
+    /// acquire is wait-measured.
     requests: Mutex<HashMap<String, Vec<Instant>>>,
     max_requests: usize,
     window: StdDuration,
@@ -142,36 +156,38 @@ impl RateLimiter {
 
     pub(crate) fn is_allowed(&self, ip: &str) -> bool {
         let now = Instant::now();
-        if let Ok(mut requests) = self.requests.lock() {
-            // Bounded memory: if the bucket count is at the cap, evict the
-            // oldest 25% by their newest request timestamp. We pay an O(n)
-            // scan only on the rare cap-hit path, not on every request.
-            if requests.len() >= self.max_keys {
-                let quarter = (self.max_keys / 4).max(1);
-                let mut sizes: Vec<(Instant, String)> = requests
-                    .iter()
-                    .filter_map(|(k, v)| v.last().map(|t| (*t, k.clone())))
-                    .collect();
-                sizes.sort_unstable();
-                for (_, k) in sizes.into_iter().take(quarter) {
-                    requests.remove(&k);
+        concurrency::mutex_guard_measured(&self.requests)
+            .map(|mut requests| {
+                // Bounded memory: if the bucket count is at the cap, evict the
+                // oldest 25% by their newest request timestamp. We pay an O(n)
+                // scan only on the rare cap-hit path, not on every request.
+                if requests.len() >= self.max_keys {
+                    let quarter = (self.max_keys / 4).max(1);
+                    let mut sizes: Vec<(Instant, String)> = requests
+                        .iter()
+                        .filter_map(|(k, v)| v.last().map(|t| (*t, k.clone())))
+                        .collect();
+                    sizes.sort_unstable();
+                    for (_, k) in sizes.into_iter().take(quarter) {
+                        requests.remove(&k);
+                    }
                 }
-            }
-            let entry = requests.entry(ip.to_string()).or_insert_with(Vec::new);
-            entry.retain(|t| *t > now - self.window);
-            if entry.len() >= self.max_requests {
-                return false;
-            }
-            entry.push(now);
-            true
-        } else {
-            // Fail CLOSED on a poisoned lock — the same
-            // posture applied to the token/role
-            // stores. A poisoned limiter mutex means a panic raced the hot
-            // path; letting everything through would silently disable the
-            // only request-bound this side of authN.
-            false
-        }
+                let entry = requests.entry(ip.to_string()).or_insert_with(Vec::new);
+                entry.retain(|t| *t > now - self.window);
+                if entry.len() >= self.max_requests {
+                    return false;
+                }
+                entry.push(now);
+                true
+            })
+            .unwrap_or_else(|_| {
+                // Fail CLOSED on a poisoned lock — the same
+                // posture applied to the token/role
+                // stores. A poisoned limiter mutex means a panic raced the hot
+                // path; letting everything through would silently disable the
+                // only request-bound this side of authN.
+                false
+            })
     }
 }
 
@@ -376,6 +392,49 @@ mod tests {
         }
         assert!(!l2.is_allowed("10.1.1.1"), "same user exhausted → denied");
         assert!(l2.is_allowed("10.1.1.2"), "other user untouched");
+    }
+
+    /// Headroom pin: the limiter's decision under the lock is PURE — the
+    /// same request sequence on two fresh limiters yields the identical
+    /// decision vector, including through the cap-hit eviction path. No I/O,
+    /// no nesting, no call-outs: the critical section is arithmetic on the
+    /// recorded timestamps (the clock is read before acquisition).
+    #[test]
+    fn rate_limiter_decision_is_pure_under_lock() {
+        // A deterministic script: fill to the cap with distinct IPs, then
+        // drive one IP past its budget (exhaustion → deny), then confirm a
+        // fresh IP is still allowed.
+        let script = |limiter: &RateLimiter| -> Vec<bool> {
+            let mut decisions = Vec::new();
+            for i in 0..config::RATE_LIMIT_MAX_KEYS {
+                decisions.push(limiter.is_allowed(&format!(
+                    "10.100.{:03}.{:03}",
+                    i / 256,
+                    i % 256
+                )));
+            }
+            // One IP driven to exhaustion (budget 10 000).
+            for _ in 0..limiter.max_requests {
+                decisions.push(limiter.is_allowed("10.99.99.99"));
+            }
+            decisions.push(limiter.is_allowed("10.99.99.99")); // deny
+            decisions.push(limiter.is_allowed("10.99.99.98")); // fresh → allow
+            decisions
+        };
+        let a = script(&RateLimiter::new());
+        let b = script(&RateLimiter::new());
+        assert_eq!(
+            a, b,
+            "identical sequences must produce identical decisions — \
+             the critical section is pure arithmetic"
+        );
+        assert!(!a[a.len() - 2], "exhausted-budget deny is deterministic");
+        assert!(
+            a.last().copied().unwrap_or(false),
+            "a fresh IP still passes"
+        );
+        // A seeded limiter's poisoned lock still denies (the fail-closed arm
+        // is exercised in the poison-contract pin in concurrency.rs).
     }
 
     // ── F-53: the connection-tracker slot is RAII — released on Drop, on

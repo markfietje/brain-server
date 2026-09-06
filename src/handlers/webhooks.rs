@@ -865,6 +865,7 @@ mod valet_tests {
                 ),
             ),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             model: std::sync::Arc::new(
                 crate::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
             ),

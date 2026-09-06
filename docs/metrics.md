@@ -108,6 +108,8 @@ aggregation remains Parcels federation). Gauges are scrape-time snapshots.
 | `brain_pool_timeouts_total` | counter | Pool checkouts that timed out (r2d2 `get()` failure) — counted at the existing handler error seam (`HandlerError::db_down`) and the workflow lane's checkout arm; zero cost on success paths | `concurrency::CONCURRENCY` |
 | `brain_busy_errors_total` | counter | SQLITE_BUSY-family errors observed at the governed-write BEGIN sites (`WorkflowTx::begin` + the workflow lane's `BEGIN IMMEDIATE`) — write contention after the 5 s `busy_timeout` burn, counted where the error arm already propagates | `concurrency::CONCURRENCY` |
 | `brain_wal_pages_pending` | gauge | WAL frames not yet checkpointed, per domain (`log − checkpointed` from the PASSIVE checkpoint row). The PRAGMA runs ONLY inside `/health/db` (cold path); `/metrics` reports the last snapshot — absent domains have no snapshot yet | `/health/db` WAL sweep → `concurrency::CONCURRENCY` |
+| `brain_lock_wait_micros_p50` | gauge | Bucket-quantile (lower edge, µs) of contended lock-acquire waits across the instrumented request-path `Mutex`/`RwLock` holders (token store, rate limiter, replay cache, audit chain keys, domain registry, embed/rerank/screen models, the workflow lane, …). Only CONTENDED acquires are recorded (`try_lock` fast path costs nothing), so `0` = no contention observed, never "gauge wired off". The value is a histogram bucket lower edge over the fixed µs edges in `concurrency::LOCK_WAIT_BUCKET_EDGES_US` — a deterministic read, not an interpolated percentile; moving an edge is a dictionary-visible change | `concurrency::CONCURRENCY.lock_wait_histogram()` |
+| `brain_lock_wait_micros_p95` | gauge | The p95 twin of `brain_lock_wait_micros_p50` — same histogram, same edges, same contended-only recording | `concurrency::CONCURRENCY.lock_wait_histogram()` |
 | `brain_capacity_status` | gauge | Capacity posture: 1=ok 2=warning 3=exceeded | `capacity::classify` |
 | `brain_audit_chain_ok` | gauge | 1 = every registered domain's audit chain verifies; 0 = tamper detected (TTL-cached; authoritative answer on `/audit/verify`) | `audit::verify_chain` |
 | `brain_db_busy_total` | counter | SQLITE_BUSY events surfaced at the audit seam specifically (audit-tx settle failures after busy_timeout burn-through) — the narrower audit-seam twin of `brain_busy_errors_total` | `audit::busy_hits()` |
@@ -115,6 +117,12 @@ aggregation remains Parcels federation). Gauges are scrape-time snapshots.
 `/health/db` JSON additive keys (v1.28.58): `concurrency.pool_timeouts_total`,
 `concurrency.busy_errors_total`, and `concurrency.wal_pages_pending` (a
 `{domain: frames}` object) — the same numbers as the series above.
+`/health/db` additive keys (v1.28.59): `durability.synchronous`
+(`full`|`normal`), `durability.wal_autocheckpoint_pages`, and
+`durability.capacity_target` (`desktop`|`jetson`) — the static boot-time
+echo of the connection-init policy (envelope defaults ⊕ the fail-closed
+`BRAIN_SYNCHRONOUS` / `BRAIN_WAL_AUTOCHECKPOINT` overrides), never a
+per-request pragma read.
 
 ## Deliberately absent (scope guards)
 

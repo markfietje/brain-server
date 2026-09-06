@@ -50,9 +50,104 @@ pub fn capacity_target() -> CapacityTarget {
     }
 }
 
+/// Per-connection SQLite durability posture for the MAIN pool (the Headroom
+/// milestone). `Full` is the SQLite compile default — and therefore the
+/// behavior every pool connection exhibited before Headroom (measured
+/// 2026-09-05: a fresh connection to the WAL database reports
+/// `PRAGMA synchronous` = 2/FULL, because only the one-shot migration
+/// connection ever set NORMAL, and `PRAGMA synchronous` is per-connection).
+/// `Normal` is the WAL-mode recommendation operators can opt into via
+/// `BRAIN_SYNCHRONOUS=normal` — commit fsyncs move to checkpoint time; on
+/// power loss the last commits may roll back but the database stays
+/// uncorrupted. Available, documented, NOT a default (defaults equal today's
+/// behavior by construction; the envelope pin enforces).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SynchronousMode {
+    /// `PRAGMA synchronous=FULL` — fsync on every commit. Today's behavior.
+    #[default]
+    Full,
+    /// `PRAGMA synchronous=NORMAL` — the WAL-mode tuning posture.
+    Normal,
+}
+
+impl SynchronousMode {
+    /// The literal token the pragma batch interpolates.
+    pub fn pragma_value(self) -> &'static str {
+        match self {
+            Self::Full => "FULL",
+            Self::Normal => "NORMAL",
+        }
+    }
+
+    /// The lowercase echo form surfaced by `/health/db`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Normal => "normal",
+        }
+    }
+}
+
+/// The durability + checkpoint policy applied at EVERY main-pool connection's
+/// init beside `busy_timeout` (the Headroom seam). Resolved once at boot
+/// (envelope default ⊕ fail-closed env override — `config::validate_durability_env`)
+/// and carried on `AppState` so `/health/db` can echo exactly what was applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Durability {
+    pub synchronous_mode: SynchronousMode,
+    pub wal_autocheckpoint_pages: u32,
+}
+
+impl Default for Durability {
+    fn default() -> Self {
+        Self {
+            synchronous_mode: SynchronousMode::default(),
+            wal_autocheckpoint_pages: DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
+        }
+    }
+}
+
+/// SQLite's compile-time `wal_autocheckpoint` default — 1 000 pages — which
+/// is ALSO the live effective value: nothing in the server ever changed it
+/// before Headroom (measured 2026-09-05, fresh-connection readback).
+pub const DEFAULT_WAL_AUTOCHECKPOINT_PAGES: u32 = 1_000;
+
+/// The `busy_timeout` the pool has set per-connection since v1.10. Kept in
+/// the same batch so the connection-init contract stays one string.
+pub const POOL_BUSY_TIMEOUT_MS: u32 = 5_000;
+
+impl Durability {
+    /// The per-connection pragma batch. Applied by the named pool-init fn in
+    /// `server::bootstrap`; byte-stable so the readback pin can assert on it.
+    pub fn pragma_batch(&self) -> String {
+        format!(
+            "PRAGMA busy_timeout={}; \
+             PRAGMA synchronous={}; \
+             PRAGMA wal_autocheckpoint={};",
+            POOL_BUSY_TIMEOUT_MS,
+            self.synchronous_mode.pragma_value(),
+            self.wal_autocheckpoint_pages
+        )
+    }
+
+    /// Apply the batch to a connection (the pool-init body, here so the
+    /// readback pin exercises the exact production code path).
+    pub fn apply(&self, conn: &mut rusqlite::Connection) -> rusqlite::Result<()> {
+        conn.execute_batch(&self.pragma_batch())
+    }
+}
+
 /// The envelope for the active target. Defaults can be tightened via env vars
 /// (`CAPACITY_MAX_DOCS`, `CAPACITY_MAX_DB_MIB`, `CAPACITY_MAX_RSS_MIB`) for
 /// testing or constrained deployments.
+///
+/// The durability fields are DELIBERATELY not env-overridable here: the other
+/// knobs default silently on a bad value, which is acceptable for capacity
+/// ceilings but not for durability policy — those two resolve through
+/// `config::resolve_synchronous` / `config::resolve_wal_autocheckpoint`, where
+/// an unknown value REFUSES BOOT (the `BRAIN_WRITE_POSTURE` pattern). The
+/// envelope fields are the per-target defaults, pinned by
+/// `envelope_defaults_equal_current_behavior`.
 pub struct CapacityEnvelope {
     pub max_docs: usize,
     pub max_db_mib: u64,
@@ -63,6 +158,12 @@ pub struct CapacityEnvelope {
     /// from live runs minus margin — see the consts below and
     /// docs/THROUGHPUT_PROOF_20260905.md.
     pub search_p95_ms_ceiling: u64,
+    /// Per-connection durability default (Headroom). `Full` — the measured
+    /// pre-Headroom effective behavior; see [`SynchronousMode`].
+    pub synchronous_mode: SynchronousMode,
+    /// Per-connection autocheckpoint default (Headroom): SQLite's compile
+    /// default 1 000 pages, again the measured pre-Headroom behavior.
+    pub wal_autocheckpoint_pages: u32,
 }
 
 impl CapacityEnvelope {
@@ -81,13 +182,30 @@ impl CapacityEnvelope {
             CapacityTarget::Desktop => (50_000, 2_048, 1024, P95_CEILING_DESKTOP),
             CapacityTarget::Jetson => (10_000, 512, 512, P95_CEILING_JETSON),
         };
-        Self::from_env(max_docs, max_db_mib, max_rss_mib, search_p95_ms_ceiling)
+        // Durability defaults do NOT vary by target: both envelopes ran the
+        // SQLite compile defaults before Headroom (nothing ever set them
+        // per-connection), so the behavior-neutral value is the same constant.
+        Self::from_env(
+            max_docs,
+            max_db_mib,
+            max_rss_mib,
+            search_p95_ms_ceiling,
+            SynchronousMode::Full,
+            DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
+        )
     }
 
     /// Layer env-var overrides on top of the built-in defaults. Tests use this
     /// to drive the envelope below the live corpus so they can exercise the
     /// 507 path without ingesting 10k real docs.
-    fn from_env(d_docs: usize, d_db: u64, d_rss: u64, d_p95: u64) -> Self {
+    fn from_env(
+        d_docs: usize,
+        d_db: u64,
+        d_rss: u64,
+        d_p95: u64,
+        d_sync: SynchronousMode,
+        d_wac: u32,
+    ) -> Self {
         let parse_usize = |k: &str, d: usize| {
             std::env::var(k)
                 .ok()
@@ -105,6 +223,10 @@ impl CapacityEnvelope {
             max_db_mib: parse_u64("CAPACITY_MAX_DB_MIB", d_db),
             max_rss_mib: parse_u64("CAPACITY_MAX_RSS_MIB", d_rss),
             search_p95_ms_ceiling: parse_u64("CAPACITY_MAX_P95_MS", d_p95),
+            // Passed through untouched: durability resolves fail-closed at
+            // boot (config.rs), never silently here — see the struct docs.
+            synchronous_mode: d_sync,
+            wal_autocheckpoint_pages: d_wac,
         }
     }
 }
@@ -191,7 +313,102 @@ mod tests {
             max_db_mib: db,
             max_rss_mib: rss,
             search_p95_ms_ceiling: u64::MAX,
+            synchronous_mode: SynchronousMode::Full,
+            wal_autocheckpoint_pages: DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
         }
+    }
+
+    // ── Headroom pins ──────────────────────────────────────────────────
+
+    /// The release's thesis, pinned: the new envelope fields equal the
+    /// PRE-CHANGE effective behavior for every target. Measured 2026-09-05
+    /// against the bundled rusqlite 0.40.1: a fresh connection to the WAL
+    /// database (the exact shape of a pooled connection — only
+    /// `busy_timeout=5000` in its init) reports `PRAGMA synchronous` = 2
+    /// (FULL) and `PRAGMA wal_autocheckpoint` = 1000, because synchronous
+    /// is per-connection and nothing ever set it. Changing either default is
+    /// a BEHAVIOR change: it needs its own release, its own bench table,
+    /// and this pin's deliberate edit — never a drive-by.
+    #[test]
+    fn envelope_defaults_equal_current_behavior() {
+        for (target, name) in [
+            (CapacityTarget::Desktop, "desktop"),
+            (CapacityTarget::Jetson, "jetson"),
+        ] {
+            let e = CapacityEnvelope::for_target(target);
+            assert_eq!(
+                e.synchronous_mode,
+                SynchronousMode::Full,
+                "{name}: envelope synchronous default drifted from the pre-Headroom \
+                 effective behavior (FULL, the SQLite compile default)"
+            );
+            assert_eq!(
+                e.wal_autocheckpoint_pages, 1_000,
+                "{name}: envelope wal_autocheckpoint default drifted from the pre-Headroom \
+                 effective behavior (1000 pages, the SQLite compile default)"
+            );
+        }
+    }
+
+    /// The pragma batch reads back on a real connection through the exact
+    /// production path (`Durability::apply`): FULL/1000 by default, and a
+    /// tuned NORMAL/256 round-trips too — proving the env-override seam can
+    /// actually move the connection's policy when an operator sets it.
+    #[test]
+    fn pool_init_pragmas_read_back() {
+        let dir = std::env::temp_dir().join("brain_headroom_readback");
+        std::fs::create_dir_all(&dir).expect("scratch dir");
+        let path = dir.join("readback.db");
+        let _ = std::fs::remove_file(&path);
+        // WAL is persistent: stamp it once so the connection is in the same
+        // journal mode the live DB is (synchronous semantics do not differ by
+        // journal mode here, but the readback should mirror production).
+        {
+            let c = rusqlite::Connection::open(&path).expect("open");
+            c.execute_batch("PRAGMA journal_mode=WAL;").expect("wal");
+        }
+        let mut conn = rusqlite::Connection::open(&path).expect("open 2");
+        Durability::default()
+            .apply(&mut conn)
+            .expect("pragma batch applies");
+        let sync: i64 = conn
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .expect("synchronous readback");
+        let wac: i64 = conn
+            .query_row("PRAGMA wal_autocheckpoint", [], |r| r.get(0))
+            .expect("autocheckpoint readback");
+        assert_eq!(sync, 2, "default durability reads back FULL (=2)");
+        assert_eq!(wac, 1_000, "default autocheckpoint reads back 1000");
+
+        // The tuned posture round-trips (what BRAIN_SYNCHRONOUS=normal +
+        // BRAIN_WAL_AUTOCHECKPOINT=256 produce at boot).
+        let tuned = Durability {
+            synchronous_mode: SynchronousMode::Normal,
+            wal_autocheckpoint_pages: 256,
+        };
+        tuned.apply(&mut conn).expect("tuned batch applies");
+        let sync: i64 = conn
+            .query_row("PRAGMA synchronous", [], |r| r.get(0))
+            .expect("synchronous readback 2");
+        let wac: i64 = conn
+            .query_row("PRAGMA wal_autocheckpoint", [], |r| r.get(0))
+            .expect("autocheckpoint readback 2");
+        assert_eq!(sync, 1, "NORMAL reads back (=1)");
+        assert_eq!(wac, 256, "tuned autocheckpoint reads back 256");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// The batch carries the unchanged busy_timeout alongside the new policy
+    /// — the connection-init contract stays one string, one seam.
+    #[test]
+    fn pragma_batch_keeps_busy_timeout() {
+        let b = Durability::default().pragma_batch();
+        assert!(
+            b.contains(&format!("PRAGMA busy_timeout={}", POOL_BUSY_TIMEOUT_MS)),
+            "batch must keep the historical 5000 ms busy_timeout: {b}"
+        );
+        assert!(b.contains("PRAGMA synchronous=FULL"), "{b}");
+        assert!(b.contains("PRAGMA wal_autocheckpoint=1000"), "{b}");
     }
 
     // ponytail: classify is the one non-trivial bit in the capacity surface —

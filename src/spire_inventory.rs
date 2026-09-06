@@ -51,9 +51,12 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// over the widened subject (1,074 src + 122 tests) in the move commit
 /// (1,207 at the Throughput open — the calendar pins, the concurrency
 /// proptests, the merge determinism pin, and the metrics-dictionary parity
-/// test earned the raise). (The needle counts doc-comment literals too —
-/// a deliberate substring lock, measured the same way every time.)
-const CRATE_TEST_FLOOR: usize = 1_207;
+/// test earned the raise; 1,221 at the Headroom open — the durability
+/// envelope pins, the fail-closed resolver pins, the lock-wait histogram
+/// pins, the limiter-purity + token-swap pins, and the write-discipline
+/// gate trio earned the raise). (The needle counts doc-comment literals
+/// too — a deliberate substring lock, measured the same way every time.)
+const CRATE_TEST_FLOOR: usize = 1_221;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), re-measured to 161 at the Buttress open. Rows join
 /// only with the wire change that earns them, in the same commit.

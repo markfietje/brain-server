@@ -31,6 +31,15 @@ pub(crate) struct SqliteWorkflowHost {
 
 struct HostInner {
     pool: Pool,
+    /// Lock bounds (Headroom): the single-flight write lane. The guard is
+    /// held across the lane's WHOLE unit-of-work — including the r2d2
+    /// checkout and the `BEGIN IMMEDIATE` in `tx()` (the deliberate
+    /// serialization point; only SQL runs under it, never engine code) — so
+    /// its wait gauge is expected to be the loudest of the instrumented
+    /// locks under governed-write load. No nesting, no I/O, no channel
+    /// sends. Poison: recover-and-continue (`into_inner`) — SQL-only holds
+    /// mean poison cannot hide a logic error, and wedging every future
+    /// workflow write buys nothing. Request-path holder, wait-measured.
     lane: Mutex<Lane>,
 }
 
@@ -47,8 +56,9 @@ impl SqliteWorkflowHost {
     fn lock(&self) -> MutexGuard<'_, Lane> {
         // Only SQL runs under this lock (no engine code), so poison cannot be
         // a swallowed logic error; recover and continue rather than wedge
-        // every future workflow write.
-        self.inner.lane.lock().unwrap_or_else(|e| e.into_inner())
+        // every future workflow write. (Acquire is wait-measured — see the
+        // lane's Lock bounds note above.)
+        crate::concurrency::mutex_guard_recovered(&self.inner.lane)
     }
 
     /// Run `f` on the unit's connection when a unit is open, else on a
@@ -94,7 +104,7 @@ impl HostTxHandle for SqliteUnitHandle {
         // the pool clean; on failure it drops (closing it), so a broken
         // transaction can never leak to another caller.
         let conn = {
-            let mut guard = self.inner.lane.lock().unwrap_or_else(|e| e.into_inner());
+            let mut guard = crate::concurrency::mutex_guard_recovered(&self.inner.lane);
             match std::mem::replace(&mut *guard, Lane::Idle) {
                 Lane::Active(c) => *c,
                 Lane::Idle => {

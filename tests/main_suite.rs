@@ -241,6 +241,8 @@ mod tests {
             max_db_mib: 512,
             max_rss_mib: 320,
             search_p95_ms_ceiling: u64::MAX,
+            synchronous_mode: brain_server::capacity::SynchronousMode::Full,
+            wal_autocheckpoint_pages: brain_server::capacity::DEFAULT_WAL_AUTOCHECKPOINT_PAGES,
         };
         // Even with docs exceeding the limit, Exceeded only blocks writes.
         assert_eq!(
@@ -1039,6 +1041,7 @@ mod tests {
                 tmp.path().to_path_buf(),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -5403,6 +5406,7 @@ Final paragraph after the rule.";
                 global_path.clone(),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             model: Arc::new(
                 brain_server::embed::StaticEmbedder::new(brain_server::config::MODEL_ID)
                     .expect("model"),
@@ -5993,6 +5997,7 @@ Final paragraph after the rule.";
                 tmp.path().to_path_buf(),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -7057,6 +7062,7 @@ Final paragraph after the rule.";
                 tmp.path().to_path_buf(),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -8387,6 +8393,7 @@ Final paragraph after the rule.";
                 global_path.clone(),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             pool: global_pool,
             registry: reg,
             model: Arc::new(
@@ -8496,6 +8503,7 @@ Final paragraph after the rule.";
                 global_path.clone(),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             pool: global_pool,
             registry: reg,
             model: Arc::new(
@@ -9141,6 +9149,7 @@ Final paragraph after the rule.";
                 db_path.clone(),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             pool: pool.clone(),
             registry: domain_registry::DomainRegistry::new(pool.clone(), &db_path, true),
             model: Arc::new(
@@ -9282,6 +9291,7 @@ Final paragraph after the rule.";
                 tmp.path().to_path_buf(),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -9463,6 +9473,7 @@ Final paragraph after the rule.";
                 tmp.path().to_path_buf(),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -9717,6 +9728,7 @@ Final paragraph after the rule.";
                 tmp.path().to_path_buf(),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -9857,6 +9869,7 @@ Final paragraph after the rule.";
                 tmp.path().to_path_buf(),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -10017,6 +10030,7 @@ Final paragraph after the rule.";
                 tmp.path().to_path_buf(),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -10315,6 +10329,7 @@ Final paragraph after the rule.";
                 tmp.path().to_path_buf(),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool: pool.clone(),
@@ -10545,6 +10560,7 @@ Final paragraph after the rule.";
                 tmp.path().to_path_buf(),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             model,
             registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
             pool,
@@ -12400,6 +12416,7 @@ Final paragraph after the rule.";
                 PathBuf::from(":memory:"),
             )),
             cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
             model: Arc::new(
                 brain_server::embed::StaticEmbedder::new(brain_server::config::MODEL_ID)
                     .expect("model"),

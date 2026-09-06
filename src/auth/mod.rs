@@ -90,6 +90,16 @@ impl AuthMode {
 /// Cached accepted-token set + the file metadata that produced it. Cloning the
 /// `Arc` is the cheap clone in the hot path; the inner write happens at most
 /// once per rotation.
+///
+/// Lock bounds (Headroom): the critical sections are set/tuple arithmetic
+/// only — a `HashSet` clone (read), an mtime/`HashSet` compare (read), a
+/// single-assignment swap of `tokens` + `mtime` (write). No I/O inside the
+/// lock (`fs::metadata` runs BEFORE acquisition; the audit write after
+/// rotation runs on a fresh connection AFTER release), no nesting, no SQL.
+/// Poison: the hot read FAILS CLOSED (`TokenRead::ReadFailed` → deny), the
+/// rotation watcher reads fail-open and its write is skipped (the stale cache
+/// keeps serving the last good tokens). Request-hot holder (every request),
+/// so acquires are wait-measured.
 #[derive(Clone)]
 pub struct TokenStore {
     inner: Arc<RwLock<TokenState>>,
@@ -169,7 +179,7 @@ impl TokenStore {
     /// the lock is poisoned (deny — never an allow-all empty set). This is
     /// the hot-path call.
     pub fn tokens(&self) -> TokenRead {
-        match self.inner.read() {
+        match crate::concurrency::rwlock_read_measured(&self.inner) {
             Ok(g) if !g.initialized => TokenRead::NotConfigured,
             Ok(g) => TokenRead::Active(g.tokens.clone()),
             Err(_) => TokenRead::ReadFailed,
@@ -199,7 +209,9 @@ impl TokenStore {
             Ok(m) => m,
             Err(_) => return false, // fail-safe: keep cache
         };
-        let prev_mtime = self.inner.read().ok().and_then(|s| s.mtime);
+        let prev_mtime = crate::concurrency::rwlock_read_measured(&self.inner)
+            .ok()
+            .and_then(|s| s.mtime);
         if Some(new_mtime) == prev_mtime {
             return false;
         }
@@ -207,12 +219,13 @@ impl TokenStore {
             return false; // fail-safe: file became empty
         }
         let fresh_set: HashSet<String> = fresh_tokens.into_iter().collect();
-        let changed = self
-            .inner
-            .read()
+        let changed = crate::concurrency::rwlock_read_measured(&self.inner)
             .map(|g| g.tokens != fresh_set)
             .unwrap_or(true);
-        if let Ok(mut guard) = self.inner.write() {
+        if let Ok(mut guard) = crate::concurrency::rwlock_write_measured(&self.inner) {
+            // The swap is TWO single assignments under one exclusive guard —
+            // no await, no call-outs (sync fn, compile-level). Pinned at
+            // runtime by `token_rotation_swap_is_single_assignment` below.
             guard.tokens = fresh_set;
             guard.mtime = Some(new_mtime);
         }
@@ -388,6 +401,88 @@ mod tests {
             file: Some(PathBuf::from("/nonexistent/token-file")),
         };
         assert_eq!(store.tokens(), TokenRead::ReadFailed);
+    }
+
+    /// Headroom pin: the rotation swap is SINGLE-ASSIGNMENT at runtime — a
+    /// reader hammering `tokens()` while a writer rotates between two sets
+    /// only ever observes one of the two valid sets, never a torn state
+    /// (empty, merged, or partial). The sync write guard makes an await
+    /// inside the swap impossible at compile time; this is the runtime twin.
+    /// Runs through the REAL reload path (a temp token file whose mtime
+    /// advances each write) so the swap actually executes.
+    #[test]
+    fn token_rotation_swap_is_single_assignment() {
+        let set_a: HashSet<String> = ["token-a"].iter().map(|s| s.to_string()).collect();
+        let set_b: HashSet<String> = ["token-b"].iter().map(|s| s.to_string()).collect();
+        let f = write_token_file("token-a\n");
+        let store = std::sync::Arc::new(store_for(
+            f.path().to_path_buf(),
+            vec!["token-a".to_string()],
+        ));
+
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut readers = Vec::new();
+        for _ in 0..4 {
+            let store = std::sync::Arc::clone(&store);
+            let stop = Arc::clone(&stop);
+            let a = set_a.clone();
+            let b = set_b.clone();
+            readers.push(std::thread::spawn(move || {
+                let mut torn = 0usize;
+                let mut reads = 0usize;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    reads += 1;
+                    match store.tokens() {
+                        TokenRead::Active(t) => {
+                            if t != a && t != b {
+                                torn += 1; // neither the old nor the new set
+                            }
+                        }
+                        // Auth unconfigured/failed mid-swap would ALSO be a
+                        // tear for a store known to be initialized.
+                        _ => torn += 1,
+                    }
+                }
+                (reads, torn)
+            }));
+        }
+
+        // Rotate A→B→A … while the readers hammer the hot read. The file
+        // write advances the mtime so reload_if_changed_from takes the swap
+        // path; the 1 ms pacing gives the concurrent window real width.
+        let mut flipped_to_b = false;
+        let mut swaps = 0usize;
+        for _ in 0..200 {
+            let (content, tokens) = if flipped_to_b {
+                ("token-a\n", vec!["token-a".to_string()])
+            } else {
+                ("token-b\n", vec!["token-b".to_string()])
+            };
+            std::fs::write(f.path(), content).expect("rotate token file");
+            if store.reload_if_changed_from(tokens) {
+                swaps += 1;
+            }
+            flipped_to_b = !flipped_to_b;
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(
+            swaps > 50,
+            "the rotation must actually execute the swap path ({swaps} swaps)"
+        );
+
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        let (total_reads, total_torn): (usize, usize) = readers
+            .into_iter()
+            .map(|h| h.join().expect("reader thread"))
+            .fold((0, 0), |(r, t), (r2, t2)| (r + r2, t + t2));
+        assert!(
+            total_reads > 1_000,
+            "the readers must have actually exercised the hot path ({total_reads} reads)"
+        );
+        assert_eq!(
+            total_torn, 0,
+            "every read must observe exactly one of the two valid sets"
+        );
     }
 
     /// a secret file with group/world bits is refused —
