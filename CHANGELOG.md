@@ -19,6 +19,85 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.60] — 2026-09-06 — "Loom": CPU parallelism as an opt-in, determinism-proven tier
+
+The Enterprise Line's third milestone. Batch ingest embed + the near-dup
+scan's preprocessing were serial CPU work inside `spawn_blocking`; on
+desktop-class targets with the CPU-bound neural profile that leaves real
+throughput unclaimed, while the Jetson memory doctrine forbids spending
+cores at all. Loom adds rayon behind THREE gates (the `loom` cargo feature
+compiled, the capacity target != jetson, and `BRAIN_LOOM=1` with a
+fail-closed parse — unknown values refuse boot, the WRITE_POSTURE/durability
+pattern), a pool capped at `min(cores-1, 4)` so ingest never starves the
+tokio blocking pool, and EXACTLY two fan-out sites enumerated in the plan
+file so a third cannot arrive without an amendment. Every fan-out is an
+ordered per-item map — no cross-chunk reduction exists, pinned — so results
+are byte-identical to serial in both feature states. No routes, no schema
+movement, no default-behavior change of any kind (default build: zero new
+dependencies, rayon is optional and uncompiled).
+
+### Release notes
+
+**Bug fixes**
+
+None.
+
+**Improvements**
+- **Opt-in CPU parallelism** (`BRAIN_LOOM=1`, feature `loom`): the batch
+  ingest embed stage (UMP `?format=ump` / `ump-md` multi-record batches) and
+  the consolidate near-dup scan's pure-CPU preprocessing (dequantize +
+  serialize; the KNN loop stays serial on the shared `&Connection` by
+  design) fan out across a capped rayon pool when ALL THREE gates hold.
+  Default: off in every dimension — the serial path is byte-identical to
+  v1.28.59's. `/health/db` echoes the boot decision (`loom: active (N
+  threads)` | `off:no-feature` / `off:jetson` / `off:env`).
+- **Determinism, proven at three levels**: unit pins (`loom_preserves_fused_ranks`
+  over a frozen gold corpus through the real cosine/eval paths,
+  `loom_batch_order_invariant` as a proptest over shuffled batches,
+  `jetson_never_looms`, `loom_thread_cap_respected`, fail-closed parse) AND
+  live byte-equality — the stored vector index hashes identically across
+  loom/serial postures after both proof bursts — AND eval floors identical
+  to three decimals in both postures (r@5 0.976, r@10 0.991, mrr 0.956).
+
+### Engineering record
+
+- M1: `src/loom.rs` — `decide`/`resolve` (pure resolution core, unit-pinned
+  over the full matrix; the parse refuses before any other gate so a typo
+  never slides), `cap_from` (`min(cores-1, 4)`, floored 1),
+  `install`/`pool` (once-only boot install; failed build degrades to serial,
+  the safe direction), `fan_out` (the one ordered seam) +
+  `fan_out_with_pool` (the test seam). AppState carries the resolved
+  `LoomState`; bootstrap resolves beside durability and installs the pool.
+- M2 site 1 (81249ea): the multi-record ingest loop pre-computes every
+  lowered record's embedding in ONE `spawn_blocking` via `loom::fan_out`
+  when active; `ingest_one` gains `precomputed_embedding: Option<Vec<f32>>`
+  (None = today's encode exactly — the degradation direction on any miss is
+  serial, never blocked). Store order, dedup, audit untouched.
+- M2 site 2 (68687e3): `find_near_duplicates` collects raw int8 blobs, then
+  fans the dequantize + little-endian serialize pass out; row order ==
+  `ORDER BY k.id` preserved by the ordered collect. The KNN loop stays
+  serial: rusqlite `Connection` is `!Sync` and the plan sanctions no pool
+  restructure.
+- Proof: `docs/LOOM_PROOF_20260906.md` + BENCHMARKS §v1.28.60 — echo in all
+  four states, live boot refusal, byte-identical vec index (sha256) across
+  postures after both bursts (9 291 / 9 371 vectors), wall-clock + RSS
+  deltas. Honest finding: the static potion tier is too cheap for the
+  fan-out to pay (neutral-to-slightly-negative); the value case is the
+  neural enterprise profile, unmeasured here. CRATE_TEST_FLOOR
+  1,221 → 1,228 (the seven loom pins). main.rs untouched (net delta 0).
+- Gates: clippy + tests green in BOTH feature states (default tree and
+  `--features loom`); eval floor after each fan-out commit; CI dry-run set
+  green (default clippy/test, engine-crates, steward-harness, otel);
+  lipstyk diff-strict.
+- Ceilings (honest): the ratchet's speed story is determinism-first — the
+  static profile gains nothing (opt-in by design, so nobody pays);
+  Jetson hardware unmeasured (no ARM runner — standing CI gap); run order
+  in the proof pairs not randomized; the neural-tier win is asserted from
+  per-item cost shape, not measured; site 2's live run is via the shared
+  byte-identity check, not a dedicated scan benchmark.
+
+---
+
 ## [1.28.59] — 2026-09-05 — "Headroom": the write-path policy made explicit, pinned, and machine-guarded
 
 Documentation-first release wearing a test harness. The write path was

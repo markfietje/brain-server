@@ -264,6 +264,52 @@ corpora, not durability effects, and are not reported as findings. Full
 session log (raw captures, both mid-burst trajectories, the durability
 echoes): `docs/HEADROOM_PROOF_20260905.md`.
 
+### v1.28.60 "Loom" — opt-in parallel fan-out, determinism first (2026-09-06)
+
+Loom adds CPU parallelism as an opt-in tier (`loom` feature + non-jetson
+target + `BRAIN_LOOM=1`, fail-closed parse; pool capped `min(cores-1, 4)`)
+with EXACTLY two fan-out sites: the batch-ingest embed stage (UMP
+`?format=ump` multi-record pre-pass) and the consolidate near-dup scan's
+pure-CPU preprocessing (the KNN loop itself stays serial on the shared
+connection). The load-bearing claim is determinism, not speed: ordered
+per-item maps, no cross-chunk reduction — so the live proof measures
+byte-equality FIRST, then wall-clock.
+
+Machine: Apple M1 Pro (10 cores), 16 GB, macOS 25.6.0 (Darwin), arm64.
+Release build `cargo build --release --features bench,loom --bin
+brain-server --bin brain` (rayon 1.12.0). COPY instances on
+`127.0.0.1:18765-18767`, each a fresh `cp` of the live DB (8 790 docs) so
+both postures started byte-identical. Load: `POST /ingest?format=ump` UMP
+batches (the site-1 path). Full session log: `docs/LOOM_PROOF_20260906.md`.
+
+| Metric | LOOM=1 (active, 4 threads) | LOOM=0 (off:env, serial) |
+|---|---|---|
+| Burst A wall: 500 rec × 450 B | 1.60 s | 1.06 s |
+| Burst A RSS delta during burst | +5.4 MiB | +10.5 MiB |
+| Burst B wall: 80 rec × 4.5 KB | 0.48 s | 0.49 s |
+| Burst B RSS delta during burst | +4.9 MiB | +2.5 MiB |
+| vec index sha256 after A (9 291 vectors) | `ea8bb05299c3e1bf…` | **identical** |
+| vec index sha256 after B (9 371 vectors) | `8c47ce74ff83bad241bb…` | **identical** |
+| Eval floor (25-doc corpus, 106 queries) | r@5 0.976 / mrr 0.956 | r@5 0.976 / mrr 0.956 |
+
+**Finding (honest): determinism is byte-exact; throughput is neutral on the
+static tier.** The stored vector index hashes identically across postures
+after every burst — the ordered fan-out preserves chunk sequence exactly,
+and the eval floors land identical to three decimals in both postures. On
+throughput: the potion model's per-item encode is µs-scale, so the pre-pass
+overheads roughly cancel the parallel gain (burst A's gap is confounded by
+run order — loom ran first on a cold page cache; burst B, same order, even).
+The tier's value case is the CPU-bound enterprise neural profile (bge-m3),
+unmeasured here. Echo verified live in all four states (`active (4
+threads)` / `off:env` / `off:jetson` / `off:no-feature`) plus the fail-closed
+boot refusal (`BRAIN_LOOM=yolo` refuses with `fatal loom config`).
+
+Ceilings: static-profile speed is neutral-to-slightly-negative — expected,
+and why the tier is opt-in (feature + target + env, default all off); site 2
+is covered by the unit pins + scan-input byte-identity, not a dedicated live
+run; Jetson hardware unmeasured (no ARM runner — the standing CI gap); run
+order not randomized.
+
 > - **Latency & RSS**: `cargo run --release --features bench --bin bench` against a running server (`brain`). Run on target hardware and paste the output here.
 > - **Recall quality**: `cargo test --release -- --ignored --nocapture eval_recall_harness` (loads the model2vec weights; directional signal on the 10-doc smoke set). Expand to ≥100 judged queries before drawing release-blocking conclusions.
 

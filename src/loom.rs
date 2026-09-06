@@ -1,4 +1,4 @@
-//! Loom (v1.28.60) — CPU parallelism as an opt-in, profile-gated tier.
+//! Loom — CPU parallelism as an opt-in, profile-gated tier.
 //!
 //! WHY GATED: the Jetson memory doctrine forbids spending cores on the edge
 //! default, so parallelism is never a default. Activation requires ALL THREE:
@@ -14,8 +14,8 @@
 //! vectors are pure fns of their input, so results are byte-identical to the
 //! serial loop. Adding ANY cross-item reduction (a batched encode, a shared
 //! accumulator, a parallel fold) breaks `loom_preserves_fused_ranks`; the
-//! plan file (`IMPLEMENTATION_PLAN_v1.28.60_Loom.md`) enumerates the fan-out
-//! sites exhaustively so a third site cannot arrive without amending it.
+//! milestone plan file enumerates the fan-out sites exhaustively so a third
+//! site cannot arrive without amending it.
 //!
 //! NO ASYNC MIXING: the fan-out lives INSIDE a `spawn_blocking` body — rayon
 //! never touches the tokio runtime's threads, and the tokio runtime never
