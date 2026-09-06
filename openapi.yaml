@@ -5116,6 +5116,7 @@ paths:
                   legal_basis: { type: string }
                   conflicts: { type: array, items: { type: string } }
                   contradicts_published_code: { type: boolean }
+                  provenance: { type: object, description: "Attestation v1.28.62 — Art 50(2) AIGEN mark: {mark, generator, generated_at, signed_by, sig}; ed25519 over the canonical claim-bound body bytes (provenance::verify refuses any tampering); sig/signed_by null when no operator key is configured (visibly unsigned)" }
         "400":
           description: remedy_kind_invalid | amount_unbounded | clause_id_unbounded | complaint_invalid (missing citation | non-complaint run)
           content:
@@ -5159,6 +5160,7 @@ paths:
                   member_state: { type: string }
                   odr_note: { type: string }
                   filing: { type: string }
+                  provenance: { type: object, description: "Attestation v1.28.62 — Art 50(2) AIGEN mark over the post-read-seam boundary bytes; see /complaint/remedy for the shape" }
         "400":
           description: complaint_invalid (non-complaint run | member_state unbounded)
           content:
@@ -5303,6 +5305,7 @@ paths:
                   recipients: { type: array, items: { type: object } }
                   excluded: { type: array, items: { type: object } }
                   execution: { type: string }
+                  provenance: { type: object, description: "Attestation v1.28.62 — Art 50(2) AIGEN mark over the post-read-seam boundary bytes; see /complaint/remedy for the shape" }
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Campaign not found or not approved }

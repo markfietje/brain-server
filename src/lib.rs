@@ -80,6 +80,12 @@ pub mod fence;
 pub mod kb;
 pub mod pii_mask;
 
+// Provenance marks (Art 50(2) posture): the signed AIGEN|HUMAN object on
+// engine-generated TEXT artifacts that leave a boundary — complaint remedy
+// drafts, ADR packets, outreach export packets, KB build manifests. Pure
+// module; signs via the shared `ump_integrity::sign_manifest_bytes`.
+pub mod provenance;
+
 // The embedding abstraction: the trait + the static
 // (default) backend + the feature-gated neural (bge-m3) backend. Lives in the
 // lib so `bench` consumes it without a #[path] include, same pattern as

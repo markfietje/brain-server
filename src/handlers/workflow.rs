@@ -1400,23 +1400,38 @@ pub async fn get_outreach_campaign(
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     crate::handlers::authorize_role(&principal, &pool, "workflow")?;
     type OErr = crate::workflow::outreach::OutreachError;
-    let mut packet = tokio::task::spawn_blocking(move || -> Result<_, OErr> {
+    let packet = tokio::task::spawn_blocking(move || -> Result<_, OErr> {
         let conn = pool.get().map_err(|e| OErr::Database(e.to_string()))?;
         crate::workflow::outreach::campaign_packet(&conn, id)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(outreach_err)?;
-    // The read seam covers every operator-supplied text field.
+    // The read seam covers every operator-supplied text field, then the Art
+    // 50(2) seal rides LAST — after the read-seam shaping — so the
+    // signature covers the exact boundary bytes (v1.28.62).
+    let now = chrono::Utc::now().timestamp();
+    Ok(Json(seal_campaign_packet(packet, &principal, now)))
+}
+
+/// The outreach export-packet emission shape: read-seam shaping THEN the
+/// provenance seal (the mark signs the exact boundary bytes). The handler
+/// delegates; the four-class provenance meta-test drives this fn directly.
+pub(crate) fn seal_campaign_packet(
+    mut packet: serde_json::Value,
+    viewer: &Option<crate::auth::Principal>,
+    now: i64,
+) -> serde_json::Value {
     for key in ["template_id", "execution"] {
         if let Some(v) = packet
             .get_mut(key)
             .and_then(|v| v.as_str().map(String::from))
         {
-            packet[key] = serde_json::json!(crate::gate::sanitize_read(&v, false, &principal));
+            packet[key] = serde_json::json!(crate::gate::sanitize_read(&v, false, viewer));
         }
     }
-    Ok(Json(packet))
+    crate::provenance::attach_aigen(&mut packet, now);
+    packet
 }
 
 #[derive(serde::Deserialize)]
@@ -1701,13 +1716,27 @@ pub async fn post_complaint_remedy(
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(complaint_err)?;
-    Ok(Json(serde_json::json!({
+    let now = chrono::Utc::now().timestamp();
+    Ok(Json(remedy_response(&result, now)))
+}
+
+/// The remedy-draft response: assembly + the Art 50(2) provenance seal —
+/// the ONE emission shape for `POST /workflow/runs/{id}/complaint/remedy`.
+/// The seal signs the canonical bytes of exactly this object (the handler
+/// delegates so the meta-test drives the real shape, not a parallel one).
+pub(crate) fn remedy_response(
+    result: &crate::workflow::complaint::RemedyProposal,
+    now: i64,
+) -> serde_json::Value {
+    let mut resp = serde_json::json!({
         "proposal_id": result.proposal_id,
         "status": "pending",
         "legal_basis": result.legal_basis,
         "conflicts": result.conflicts.iter().map(|c| format!("{c:?}")).collect::<Vec<_>>(),
         "contradicts_published_code": !result.conflicts.is_empty(),
-    })))
+    });
+    crate::provenance::attach_aigen(&mut resp, now);
+    resp
 }
 
 #[derive(serde::Deserialize)]
@@ -1730,22 +1759,37 @@ pub async fn get_complaint_adr_packet(
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     crate::handlers::authorize_role(&principal, &pool, "workflow")?;
     type CErr = crate::workflow::complaint::ComplaintError;
-    let mut packet = tokio::task::spawn_blocking(move || -> Result<_, CErr> {
+    let packet = tokio::task::spawn_blocking(move || -> Result<_, CErr> {
         let conn = pool.get().map_err(|e| CErr::Database(e.to_string()))?;
         crate::workflow::complaint::adr_packet(&conn, id, &q.member_state)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(complaint_err)?;
-    // The read seam covers every KB-sourced text field.
+    // The read seam covers every KB-sourced text field, then the Art 50(2)
+    // seal rides LAST — after the read-seam shaping — so the signature
+    // covers the exact boundary bytes (v1.28.62).
+    let now = chrono::Utc::now().timestamp();
+    Ok(Json(seal_adr_packet(packet, &principal, now)))
+}
+
+/// The ADR-packet emission shape: read-seam shaping THEN the provenance
+/// seal — the mark signs the exact boundary bytes. The handler delegates;
+/// the four-class provenance meta-test drives this fn directly (no parallel
+/// test path).
+pub(crate) fn seal_adr_packet(
+    mut packet: serde_json::Value,
+    viewer: &Option<crate::auth::Principal>,
+    now: i64,
+) -> serde_json::Value {
     if let Some(body) = packet
         .get_mut("adr_body")
         .and_then(|v| v.as_str().map(String::from))
     {
-        packet["adr_body"] =
-            serde_json::json!(crate::gate::sanitize_read(&body, false, &principal));
+        packet["adr_body"] = serde_json::json!(crate::gate::sanitize_read(&body, false, viewer));
     }
-    Ok(Json(packet))
+    crate::provenance::attach_aigen(&mut packet, now);
+    packet
 }
 
 /// `POST /workflow/runs/{id}/complaint/ack` — acknowledge the complaint:

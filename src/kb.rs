@@ -785,7 +785,9 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 /// The content-addressed manifest over every artifact file except itself.
 /// Sorted keys (serde_json preserves BTreeMap order) — the Anchor discipline
-/// applied to the KB: an operator verifies what they host.
+/// applied to the KB: an operator verifies what they host. PURE and pinned
+/// byte-deterministic: same inputs ⇒ identical string. The WRITTEN manifest
+/// carries the provenance seal on top — see [`sealed_manifest_json`].
 pub fn manifest_json(files: &BTreeMap<String, String>) -> String {
     let digests: BTreeMap<&String, String> = files
         .iter()
@@ -795,9 +797,34 @@ pub fn manifest_json(files: &BTreeMap<String, String>) -> String {
     serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".into())
 }
 
+/// The manifest as WRITTEN: the pure content-addressed body plus the Art
+/// 50(2) provenance seal (`provenance::attach_aigen`, v1.28.62). The
+/// signature covers the canonical bytes of the `{"files": …}` body, so the
+/// operator's sha256-each-file-vs-digests verification is byte-unchanged —
+/// the seal adds WHO/WHAT/WHEN generated the build on top. Without an
+/// operator key the mark is present but visibly unsigned (the documented
+/// degradation; `provenance::verify` refuses it).
+pub fn sealed_manifest_json(files: &BTreeMap<String, String>, now: i64) -> String {
+    let body: serde_json::Value =
+        serde_json::from_str(&manifest_json(files)).unwrap_or(serde_json::json!({}));
+    let mut sealed = body;
+    crate::provenance::attach_aigen(&mut sealed, now);
+    serde_json::to_string_pretty(&sealed).unwrap_or_else(|_| "{}".into())
+}
+
 /// Write the artifact (including `kb_manifest.json`) under `out_dir`,
 /// creating parent directories. Returns the number of files written.
 pub fn write_artifact(out_dir: &Path, files: &BTreeMap<String, String>) -> std::io::Result<usize> {
+    write_artifact_at(out_dir, files, now_unix())
+}
+
+/// `write_artifact` with the clock injected — the testable form; the public
+/// entry passes the real wall clock.
+pub fn write_artifact_at(
+    out_dir: &Path,
+    files: &BTreeMap<String, String>,
+    now: i64,
+) -> std::io::Result<usize> {
     std::fs::create_dir_all(out_dir)?;
     let articles_dir = out_dir.join("articles");
     std::fs::create_dir_all(&articles_dir)?;
@@ -810,8 +837,20 @@ pub fn write_artifact(out_dir: &Path, files: &BTreeMap<String, String>) -> std::
         std::fs::write(dest, content)?;
         n += 1;
     }
-    std::fs::write(out_dir.join(MANIFEST_NAME), manifest_json(files))?;
+    std::fs::write(
+        out_dir.join(MANIFEST_NAME),
+        sealed_manifest_json(files, now),
+    )?;
     Ok(n + 1)
+}
+
+/// Wall-clock seconds — the KB build's only clock read (the provenance
+/// stamp; kept in one fn so tests inject instead).
+fn now_unix() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]

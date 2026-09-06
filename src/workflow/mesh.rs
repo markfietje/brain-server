@@ -91,7 +91,10 @@ impl std::fmt::Display for MeshError {
             MeshError::NotDelegatee(p) => write!(f, "only the delegated agent may submit: {p}"),
             MeshError::AlreadyCompleted => write!(f, "result already submitted"),
             MeshError::PrincipalRevoked(p) => {
-                write!(f, "principal {p} is revoked — card and delegation refuse closed")
+                write!(
+                    f,
+                    "principal {p} is revoked — card and delegation refuse closed"
+                )
             }
             MeshError::Database(m) => write!(f, "{m}"),
         }
@@ -489,7 +492,9 @@ pub(crate) fn request_delegation(
     // before anything is written; a revoked TARGET refuses via verify_card's
     // pre-signature revocation check below.
     if is_revoked(conn, draft.from_principal)? {
-        return Err(MeshError::PrincipalRevoked(draft.from_principal.to_string()));
+        return Err(MeshError::PrincipalRevoked(
+            draft.from_principal.to_string(),
+        ));
     }
     let card = verify_card(conn, draft.domain, draft.to_principal)?;
     let n: i64 = conn
@@ -970,7 +975,10 @@ mod tests {
         let drained = revoke_principal(tx.tx(), "atlas", "compromised agent", "operator", 1200)
             .expect("revoked");
         tx.commit().unwrap();
-        assert_eq!(drained, 0, "atlas OWNS no in-flight work here (it owes some)");
+        assert_eq!(
+            drained, 0,
+            "atlas OWNS no in-flight work here (it owes some)"
+        );
 
         // Card use: revoked, BEFORE any signature work — and probe-blind
         // (revoked wins even though the card row still exists).

@@ -113,19 +113,71 @@ fn reg_watch_cra_pin_is_green() {
     );
 }
 
-/// AI Act Art 50(2) machine-readable marking — WATCH form until 2026-12-02.
-/// The deliverable (signed provenance fields riding engine-generated exports,
-/// the parcels-signing pattern) lands with the Enterprise Line's attestation
-/// milestone; until then this pin only asserts the clock hasn't run out. The
-/// day the date passes without the deliverable, CI goes red HERE.
+/// AI Act Art 50(2) machine-readable marking — DELIVERABLE form (flipped
+/// from WATCH in v1.28.62, the Attestation milestone). The deadline
+/// (2026-12-02) stays pinned as the compliance horizon, but the pin now
+/// asserts the deliverable EXISTS: the provenance module is wired on all
+/// four engine-generated artifact classes (remedy drafts, ADR packets,
+/// outreach export packets, KB build manifests), the meta-test
+/// `provenance_marks_present_on_all_four_classes` proves valid marks through
+/// the real emission shapes, and the honest-scope boundaries are stated.
+/// Removing any wiring fails HERE, not at the next audit.
 #[test]
-fn ai_act_art50_marking_watch() {
+fn ai_act_art50_marking_deliverable() {
+    // The horizon stays stamped (the calendar keeps its source URL).
+    assert_eq!(
+        AI_ACT_ART50_MARKING,
+        deadline(2026, 12, 2),
+        "the Art 50 marking horizon is 2026-12-02 — re-mapping it requires a \
+         source URL in the same change"
+    );
+    // The deliverable: the provenance module exists and names its law.
+    let provenance = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/provenance.rs"),
+    )
+    .expect("src/provenance.rs must exist — the Art 50(2) marking module");
+    for anchor in [
+        "pub const MARK_AIGEN",
+        "pub const MARK_HUMAN",
+        "pub fn attach_aigen",
+        "pub fn verify",
+        "NOT C2PA",
+    ] {
+        assert!(
+            provenance.contains(anchor),
+            "the provenance module is missing `{anchor}` — the marking deliverable \
+             is the signed AIGEN|HUMAN object with its honest scope"
+        );
+    }
+    // The four classes wire the seal (the emission points, by file). A class
+    // that stops carrying its mark fails this scan before any user sees it.
+    let wiring: &[(&str, &str)] = &[
+        ("src/handlers/workflow.rs", "fn remedy_response"),
+        ("src/handlers/workflow.rs", "fn seal_adr_packet"),
+        ("src/handlers/workflow.rs", "fn seal_campaign_packet"),
+        ("src/kb.rs", "pub fn sealed_manifest_json"),
+    ];
+    for (file, anchor) in wiring {
+        let src =
+            std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(file))
+                .unwrap_or_else(|e| panic!("{file} must exist: {e}"));
+        assert!(
+            src.contains(anchor),
+            "{file} is missing `{anchor}` — all four artifact classes carry the \
+             Art 50(2) mark"
+        );
+        assert!(
+            src.contains("attach_aigen"),
+            "{file} lost its `attach_aigen` seal — the Art 50(2) mark rides \
+             EVERY boundary artifact"
+        );
+    }
+    // The meta-test exists by name (the deliverable's proof, discoverable).
     assert!(
-        today() < AI_ACT_ART50_MARKING,
-        "AI Act Art 50 marking deadline (2026-12-02) has passed and the \
-         provenance-mark deliverable is not yet pinned — ship it (the \
-         Enterprise Line's attestation milestone) \
-         or re-map the deadline with a source URL in the same change"
+        provenance.contains("fn provenance_marks_present_on_all_four_classes")
+            && provenance.contains("fn tampered_provenance_fails_verify"),
+        "the four-class meta-test + tamper pin are the Art 50 deliverable's \
+         proof — they cannot be dropped silently"
     );
 }
 
