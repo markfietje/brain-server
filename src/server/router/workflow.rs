@@ -204,6 +204,13 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
         // Mesh: agents as named colleagues — signed cards + delegation.
         .route("/ops/agents/cards", post(handlers::mesh::post_card))
         .route("/ops/agents/cards", get(handlers::mesh::get_cards))
+        // The ASI03/07 kill-switch: revoke a principal; every card use,
+        // dispatch, and result refuses closed; in-flight runs drain.
+        .route("/ops/agents/revoke", post(handlers::mesh::post_revoke))
+        .route(
+            "/ops/agents/revocations",
+            get(handlers::mesh::get_revocations),
+        )
         .route(
             "/workflow/runs/{id}/delegations",
             post(handlers::mesh::post_delegation),

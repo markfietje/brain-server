@@ -56,6 +56,17 @@ fn mesh_err(e: MeshError) -> HandlerError {
         MeshError::AlreadyCompleted => {
             HandlerError::conflict("this delegation already returned its result")
         }
+        MeshError::PrincipalRevoked(p) => HandlerError {
+            status: axum::http::StatusCode::FORBIDDEN,
+            inner: crate::handlers::ApiError::new(
+                "principal_revoked",
+                "this principal is revoked — cards, dispatches, and results refuse closed"
+                    .to_string(),
+            )
+            .with_details(serde_json::json!({
+                "principal": crate::gate::sanitize_read(&p, false, &None),
+            })),
+        },
         MeshError::Database(m) => HandlerError::internal(m),
     }
 }
@@ -341,5 +352,89 @@ pub async fn post_delegation_result(
         "delegation_id": delegation_id,
         "event_id": event_id?,
         "state": mesh::STATE_COMPLETED,
+    })))
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RevokeRequest {
+    pub principal: String,
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// `POST /ops/agents/revoke` — the ASI03/07 kill-switch. Revokes a
+/// principal: cards fail closed at every use point, no new dispatch either
+/// direction, results from revoked agents refuse at decision time, and every
+/// ACTIVE run where the principal owns in-flight delegation work drains
+/// through the existing run-cancel path — revocation + audit + drain in ONE
+/// transaction. Admin on `global`: revocation is identity-wide, not
+/// domain-scoped (cards may be per-domain; the identity is not).
+pub async fn post_revoke(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Json(body): Json<RevokeRequest>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    super::authorize(&principal, crate::auth::Action::Admin, "", "global")?;
+    let reason = crate::workflow::channel::screen_content(&body.reason)
+        .map_err(super::channel::channel_err)?;
+    let actor = super::recall::principal_label(&principal);
+    let now = chrono::Utc::now().timestamp();
+    let outcome = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
+        let pool = super::resolve_domain_pool(&state.registry, None)?;
+        let mut conn = pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("{e}")))?;
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn)
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        let drained = mesh::revoke_principal(tx.tx(), &body.principal, &reason, &actor, now)
+            .map_err(mesh_err)?;
+        tx.commit()
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        Ok((body.principal.clone(), drained))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?;
+    let (principal_label, drained) = outcome?;
+    Ok(Json(serde_json::json!({
+        "principal": crate::gate::sanitize_read(&principal_label, false, &principal),
+        "revoked": true,
+        "runs_drained": drained,
+    })))
+}
+
+/// `GET /ops/agents/revocations` — the kill-switch register (the drill's
+/// "who is revoked" read; the hash-chained audit chain carries the story).
+pub async fn get_revocations(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    super::authorize(&principal, crate::auth::Action::Read, "", "global")?;
+    let rows = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
+        let pool = super::resolve_domain_pool(&state.registry, None)?;
+        let conn = pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("{e}")))?;
+        mesh::list_revocations(&conn).map_err(mesh_err)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?;
+    let rows: Vec<serde_json::Value> = rows?
+        .into_iter()
+        .map(|r| {
+            let mut r = r;
+            for key in ["principal", "reason", "revoked_by"] {
+                if let Some(v) = r.get(key).and_then(|v| v.as_str().map(String::from)) {
+                    r[key] = serde_json::json!(crate::gate::sanitize_read(&v, false, &principal));
+                }
+            }
+            r
+        })
+        .collect();
+    Ok(Json(serde_json::json!({
+        "count": rows.len(),
+        "revocations": rows,
     })))
 }

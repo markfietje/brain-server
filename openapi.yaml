@@ -5899,6 +5899,68 @@ paths:
         "400": { description: card_tampered | agent_unknown }
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
+  /ops/agents/revoke:
+    post:
+      summary: Revoke a principal — the ASI03/07 kill-switch (Admin on global)
+      description: >
+        Attestation v1.28.62: revokes an identity. Every card use, delegation
+        dispatch, and result submission re-checks revocation and refuses
+        closed (403 `principal_revoked`); every ACTIVE run where the
+        principal owns in-flight delegation work drains through the existing
+        run-cancel path. Revocation, hash-chained audit row, and drain commit
+        or roll back together. Identity-wide (not domain-scoped).
+      operationId: postAgentRevoke
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [principal]
+              properties:
+                principal: { type: string, maxLength: 256 }
+                reason: { type: string, maxLength: 500 }
+      responses:
+        "200":
+          description: Revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  principal: { type: string }
+                  revoked: { type: boolean }
+                  runs_drained: { type: integer }
+        "400": { description: input_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Admin required) }
+  /ops/agents/revocations:
+    get:
+      summary: The revocation register (Read on global)
+      description: >
+        Attestation v1.28.62: newest-first register of revoked principals.
+        The hash-chained audit chain carries the full story (revoke, drain).
+      operationId: getAgentRevocations
+      responses:
+        "200":
+          description: Revocations
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  revocations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        principal: { type: string }
+                        revoked_at: { type: integer }
+                        reason: { type: string }
+                        revoked_by: { type: string }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
   /workflow/runs/{id}/delegations:
     post:
       summary: Delegate a task to a named agent on this run (Write on domain)

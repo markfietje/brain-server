@@ -21,9 +21,23 @@ use sha2::{Digest, Sha256};
 
 pub const TOPIC_REQUEST: &str = "delegation/request";
 pub const TOPIC_RESULT: &str = "delegation/result";
+/// v1.28.62: the revocation-drain lineage marker — evidence the in-flight
+/// run was cancelled BECAUSE its owning principal was revoked (the drill's
+/// "drain observed in events" reading rides this topic).
+pub const TOPIC_REVOKED: &str = "delegation/revoked";
 
 pub const STATE_REQUESTED: &str = "requested";
 pub const STATE_COMPLETED: &str = "completed";
+
+/// The terminal status the EXISTING cancel path writes
+/// (`workflow::state::cas_update` with this status — the same path
+/// `PUT /workflow/runs/{id}/state` serves; relay handover already refuses
+/// any non-`active` run, so a cancelled run is drained for real).
+pub const STATE_CANCELLED: &str = "cancelled";
+
+/// Bounds for the revocation reason (the bounds law). Screened at the
+/// handler seam like every operator free-text field.
+pub const MAX_REVOKE_REASON_LEN: usize = 500;
 
 pub const MAX_NAME_LEN: usize = 200;
 pub const MAX_DESCRIPTION_LEN: usize = 1000;
@@ -55,6 +69,9 @@ pub enum MeshError {
     NotDelegatee(String),
     /// The result was already submitted (CAS replay).
     AlreadyCompleted,
+    /// The principal is revoked (ASI03/07 kill-switch): the card, the
+    /// delegation, or the result is refused BEFORE anything else runs.
+    PrincipalRevoked(String),
     Database(String),
 }
 
@@ -73,6 +90,9 @@ impl std::fmt::Display for MeshError {
             MeshError::NotFound(w) => write!(f, "{w} not found"),
             MeshError::NotDelegatee(p) => write!(f, "only the delegated agent may submit: {p}"),
             MeshError::AlreadyCompleted => write!(f, "result already submitted"),
+            MeshError::PrincipalRevoked(p) => {
+                write!(f, "principal {p} is revoked — card and delegation refuse closed")
+            }
             MeshError::Database(m) => write!(f, "{m}"),
         }
     }
@@ -82,6 +102,141 @@ impl From<rusqlite::Error> for MeshError {
     fn from(e: rusqlite::Error) -> Self {
         MeshError::Database(e.to_string())
     }
+}
+
+/// True when `principal` sits in `revoked_principals` — the kill-switch
+/// read every identity decision consults. Pure table read; errors read as
+/// NOT revoked only for a genuinely missing table (fresh DB), never for a
+/// query failure (those propagate — silence is never certified).
+pub(crate) fn is_revoked(conn: &Connection, principal: &str) -> Result<bool, MeshError> {
+    let hit: Option<String> = conn
+        .query_row(
+            "SELECT principal FROM revoked_principals WHERE principal = ?1",
+            params![principal],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| MeshError::Database(e.to_string()))?;
+    Ok(hit.is_some())
+}
+
+/// Revoke a principal: the ASI03/07 kill-switch. One upsert (latest
+/// revocation wins), one hash-chained global audit row, and the drain —
+/// every ACTIVE run where the principal owns in-flight (`requested`)
+/// delegation work is cancelled through the EXISTING cancel path
+/// ([`crate::workflow::state::cas_update`] → status `cancelled`), each with
+/// its own run-scoped audit row + `delegation/revoked` lineage event. All of
+/// it inside the CALLER's transaction: a revocation and its evidence commit
+/// or roll back together. Returns the number of runs drained.
+///
+/// A drain whose CAS races a concurrent state advance skips that run (the
+/// decision-time revocation re-checks below still refuse every later step) —
+/// the revocation itself is the primary act and never rolls back for it.
+pub(crate) fn revoke_principal(
+    conn: &Connection,
+    principal: &str,
+    reason: &str,
+    revoked_by: &str,
+    now: i64,
+) -> Result<usize, MeshError> {
+    if principal.is_empty() || principal.len() > MAX_PRINCIPAL_LEN {
+        return Err(MeshError::InvalidInput("principal", "1..=256 chars"));
+    }
+    if reason.len() > MAX_REVOKE_REASON_LEN {
+        return Err(MeshError::InvalidInput("reason", "≤500 chars"));
+    }
+    conn.execute(
+        "INSERT INTO revoked_principals(principal, revoked_at, reason, revoked_by)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(principal) DO UPDATE SET
+             revoked_at = excluded.revoked_at,
+             reason = excluded.reason,
+             revoked_by = excluded.revoked_by",
+        params![principal, now, reason, revoked_by],
+    )
+    .map_err(|e| MeshError::Database(e.to_string()))?;
+    crate::audit::record(
+        conn,
+        crate::audit::AuditKind::Auth,
+        revoked_by,
+        &format!("principal:{principal}"),
+        crate::audit::AuditStatus::Ok,
+        &format!("revoke:{reason}"),
+    );
+    // The drain: active runs whose in-flight delegations this principal owns.
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT d.run_id, r.state_json, r.state_revision
+               FROM delegations d JOIN workflow_runs r ON r.id = d.run_id
+              WHERE d.from_principal = ?1 AND d.state = ?2 AND r.status = 'active'
+              ORDER BY d.run_id LIMIT 200",
+        )
+        .map_err(|e| MeshError::Database(e.to_string()))?;
+    let victims: Vec<(i64, String, i64)> = stmt
+        .query_map(params![principal, STATE_REQUESTED], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .map_err(|e| MeshError::Database(e.to_string()))?
+        .collect::<Result<_, _>>()
+        .map_err(|e| MeshError::Database(e.to_string()))?;
+    drop(stmt);
+    let mut drained = 0usize;
+    for (run_id, state_json, revision) in victims {
+        let cancelled = crate::workflow::state::cas_update(
+            conn,
+            run_id,
+            revision,
+            &state_json,
+            STATE_CANCELLED,
+            now,
+        );
+        if cancelled.is_err() {
+            // CAS-stale: the run advanced concurrently. Leave it — every
+            // later delegation/result decision still re-checks revocation.
+            continue;
+        }
+        let _ = super::outbox::append_lineage(
+            conn,
+            run_id,
+            TOPIC_REVOKED,
+            &serde_json::json!({
+                "action": "revocation_drain",
+                "principal": principal,
+            })
+            .to_string(),
+            &format!("revoked:{principal}:{run_id}"),
+            now,
+        );
+        super::audit_write(
+            conn,
+            run_id,
+            &format!("run:{run_id}"),
+            crate::audit::AuditStatus::Ok,
+            &format!("revocation drain (owner {principal})"),
+        );
+        drained += 1;
+    }
+    Ok(drained)
+}
+
+/// The revocation register for the operator surface (bounded, newest first).
+pub(crate) fn list_revocations(conn: &Connection) -> Result<Vec<serde_json::Value>, MeshError> {
+    conn.prepare(
+        "SELECT principal, revoked_at, reason, revoked_by
+           FROM revoked_principals ORDER BY revoked_at DESC, principal LIMIT 500",
+    )
+    .map_err(|e| MeshError::Database(e.to_string()))?
+    .query_map([], |r| {
+        Ok(serde_json::json!({
+            "principal": r.get::<_, String>(0)?,
+            "revoked_at": r.get::<_, i64>(1)?,
+            "reason": r.get::<_, String>(2)?,
+            "revoked_by": r.get::<_, String>(3)?,
+        }))
+    })
+    .map_err(|e| MeshError::Database(e.to_string()))?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| MeshError::Database(e.to_string()))
 }
 
 /// The provisioning draft. `capabilities_json` must be a JSON object — it is
@@ -217,6 +372,14 @@ pub(crate) fn verify_card(
     domain: &str,
     principal: &str,
 ) -> Result<AgentCard, MeshError> {
+    // Revocation FIRST (ASI03/07): a revoked principal's card fails closed
+    // before any signature work — and before the row lookup, so revocation
+    // stays probe-blind (no card-existence oracle for a revoked identity).
+    // The signature check that follows is fail-closed either way; the order
+    // only decides WHICH loud refusal a revoked principal sees.
+    if is_revoked(conn, principal)? {
+        return Err(MeshError::PrincipalRevoked(principal.to_string()));
+    }
     let row = conn
         .query_row(
             "SELECT id, principal, name, description, capabilities_json, card_json,
@@ -322,6 +485,12 @@ pub(crate) fn request_delegation(
     conn: &Connection,
     draft: &DelegationDraft,
 ) -> Result<DelegationOutcome, MeshError> {
+    // No new work dispatch post-revocation: a revoked DISPATCHER refuses
+    // before anything is written; a revoked TARGET refuses via verify_card's
+    // pre-signature revocation check below.
+    if is_revoked(conn, draft.from_principal)? {
+        return Err(MeshError::PrincipalRevoked(draft.from_principal.to_string()));
+    }
     let card = verify_card(conn, draft.domain, draft.to_principal)?;
     let n: i64 = conn
         .query_row(
@@ -399,6 +568,12 @@ pub(crate) fn submit_result(
     let (to, state) = row.ok_or(MeshError::NotFound("delegation"))?;
     if actor != to {
         return Err(MeshError::NotDelegatee(actor.to_string()));
+    }
+    // Decision-time re-check (ASI03/07): a delegation accepted before its
+    // agent was revoked can never return a result afterwards. The row
+    // persists (evidence), the verdict is always refusal.
+    if is_revoked(conn, actor)? {
+        return Err(MeshError::PrincipalRevoked(actor.to_string()));
     }
     if state != STATE_REQUESTED {
         return Err(MeshError::AlreadyCompleted);
@@ -755,8 +930,180 @@ mod tests {
         );
         // And an agent-authored hit's label survives PII-mode shaping too.
         assert_eq!(
-            crate::gate::sanitize_read_opt(Some("agent".into()), true, &peer),
-            Some("agent".into())
+            crate::gate::sanitize_read_opt(Some("agent:atlas".into()), true, &peer),
+            Some("agent:atlas".into())
         );
+    }
+
+    /// revoked_principal_cards_fail_closed — the ASI03/07 kill-switch read
+    /// side: after revocation, the card refuses BEFORE signature work
+    /// (probe-blind: the refusal is `PrincipalRevoked`, not
+    /// `CardUnknown`/`CardTampered`), list refuses closed, a dispatch to the
+    /// revoked agent refuses, and a result the revoked agent owes refuses at
+    /// decision time even though the delegation was accepted pre-revocation.
+    #[test]
+    fn revoked_principal_cards_fail_closed() {
+        let _guard = lock_env();
+        let _key = OperatorKey::new();
+        let mut conn = db();
+
+        provision_card(&conn, &card("atlas"), 1000).unwrap();
+        verify_card(&conn, "acme", "atlas").expect("verified pre-revocation");
+
+        // Dispatch a delegation to atlas, then revoke atlas.
+        let draft = DelegationDraft {
+            domain: "acme",
+            run_id: 1,
+            from_principal: "human",
+            to_principal: "atlas",
+            screened_task: "check the router logs",
+            key_suffix: "k1",
+            now: 1100,
+        };
+        {
+            let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+            request_delegation(tx.tx(), &draft).expect("delegated pre-revocation");
+            tx.commit().unwrap();
+        }
+
+        let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+        let drained = revoke_principal(tx.tx(), "atlas", "compromised agent", "operator", 1200)
+            .expect("revoked");
+        tx.commit().unwrap();
+        assert_eq!(drained, 0, "atlas OWNS no in-flight work here (it owes some)");
+
+        // Card use: revoked, BEFORE any signature work — and probe-blind
+        // (revoked wins even though the card row still exists).
+        assert!(matches!(
+            verify_card(&conn, "acme", "atlas"),
+            Err(MeshError::PrincipalRevoked(_))
+        ));
+        // list_cards fails CLOSED on a revoked card — no partial roster.
+        assert!(matches!(
+            list_cards(&conn, "acme"),
+            Err(MeshError::PrincipalRevoked(_))
+        ));
+        // A revoked agent cannot return its result (decision-time re-check).
+        let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+        let err = submit_result(tx.tx(), 1, 1, "atlas", "the result", 1300).unwrap_err();
+        tx.commit().unwrap();
+        assert!(
+            matches!(err, MeshError::PrincipalRevoked(_)),
+            "result after revocation must refuse closed, got {err:?}"
+        );
+
+        // Re-provisioning the card does NOT resurrect the identity: the
+        // revocation row outlives any re-signed manifest.
+        provision_card(&conn, &card("atlas"), 1400).unwrap();
+        assert!(matches!(
+            verify_card(&conn, "acme", "atlas"),
+            Err(MeshError::PrincipalRevoked(_))
+        ));
+
+        // The audit chain carries the revocation (kind auth, target principal).
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events
+                  WHERE kind='auth' AND target_hash = ?1 AND detail_hash = ?2",
+                params![
+                    crate::audit::hash("principal:atlas"),
+                    crate::audit::hash("revoke:compromised agent")
+                ],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the revocation is hash-chained evidence");
+    }
+
+    /// revoked_owner_no_new_dispatch — the drain: revoking a principal
+    /// cancels every ACTIVE run where they own in-flight (`requested`)
+    /// delegation work through the EXISTING cancel path (status
+    /// `cancelled` via the run CAS), leaves the lineage marker, and any
+    /// further dispatch BY the revoked owner refuses before anything is
+    /// written. A COMPLETED owner-delegation does not cancel the run (the
+    /// run has no in-flight work of theirs left to drain).
+    #[test]
+    fn revoked_owner_no_new_dispatch() {
+        let _guard = lock_env();
+        let _key = OperatorKey::new();
+        let mut conn = db();
+
+        provision_card(&conn, &card("atlas"), 1000).unwrap();
+        // Run 1 is active (fixture); the owner `human` holds in-flight work.
+        let draft = DelegationDraft {
+            domain: "acme",
+            run_id: 1,
+            from_principal: "human",
+            to_principal: "atlas",
+            screened_task: "check the router logs",
+            key_suffix: "k1",
+            now: 1100,
+        };
+        {
+            let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+            request_delegation(tx.tx(), &draft).expect("delegated");
+            tx.commit().unwrap();
+        }
+
+        let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+        let drained =
+            revoke_principal(tx.tx(), "human", "offboarded operator", "dpo", 1200).expect("ok");
+        tx.commit().unwrap();
+        assert_eq!(drained, 1, "the owner's one in-flight run drains");
+
+        // The EXISTING cancel path did the write: status is `cancelled`,
+        // state_revision advanced by the CAS, state_json untouched.
+        let (status, revision): (String, i64) = conn
+            .query_row(
+                "SELECT status, state_revision FROM workflow_runs WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, STATE_CANCELLED);
+        assert_eq!(revision, 1, "the CAS advanced exactly once");
+
+        // The drain is observed in events (the drill's evidence read).
+        let (topic, payload): (String, String) = conn
+            .query_row(
+                "SELECT topic, payload_json FROM outbox
+                  WHERE idempotency_key = 'revoked:human:1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(topic, TOPIC_REVOKED);
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["action"], "revocation_drain");
+        assert_eq!(v["principal"], "human");
+
+        // No NEW dispatch post-revocation: the revoked owner refuses before
+        // any row is written.
+        let draft2 = DelegationDraft {
+            key_suffix: "k2",
+            now: 1300,
+            ..draft
+        };
+        {
+            let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+            let err = request_delegation(tx.tx(), &draft2).unwrap_err();
+            tx.commit().unwrap();
+            assert!(matches!(err, MeshError::PrincipalRevoked(_)));
+        }
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM delegations", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "no new delegation row post-revocation");
+
+        // And the run-scoped audit row marks the drain.
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events
+                  WHERE kind='workflow' AND detail_hash = ?1",
+                params![crate::audit::hash("revocation drain (owner human)")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }

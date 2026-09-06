@@ -1914,6 +1914,25 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.28.62 "Attestation": agent identity lifecycle (ASI03/07). ─────
+    // The principal kill-switch: one row per revoked principal, latest
+    // revocation wins (a re-revocation updates reason/ts). EVERY card use,
+    // delegation dispatch, and result submission re-checks this table BEFORE
+    // signature verification (order stays fail-closed either way); the
+    // revocation write drains the principal's in-flight runs through the
+    // EXISTING run-cancel path (state.rs cas_update → status 'cancelled')
+    // inside the same transaction as the audit row. The audit chain carries
+    // the whole story (revoke → drain), hash-chained in-tx.
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS revoked_principals(
+            principal  TEXT PRIMARY KEY,
+            revoked_at INTEGER NOT NULL,
+            reason     TEXT NOT NULL DEFAULT '',
+            revoked_by TEXT NOT NULL DEFAULT ''
+         );",
+        [],
+    )?;
+
     // ── v1.28.30 "Parcels": sites share knowledge, governed. ─────────────
     // One row per parcel crossing a site boundary: `direction` is `out`
     // (signed export) or `in` (imported as pending proposals — never direct
@@ -2158,6 +2177,7 @@ pub fn run_migration_with_store_dim(
     )?;
 
     // Bumped once per release that changes this function.
+    // v1.28.62 "Attestation": revoked_principals table → 1.28.62.
     // v1.28.53 "Triage": proposals.domain + proposals.title + the
     // (status, domain) index → 1.28.53.
     // v1.28.45 "Herald": channel_user_map table → 1.28.45.
@@ -2183,8 +2203,8 @@ pub fn run_migration_with_store_dim(
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.53')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.53';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.62')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.62';",
         [],
     )?;
 
