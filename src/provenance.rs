@@ -354,7 +354,10 @@ mod tests {
             crate::workflow::outreach::campaign_packet(&conn, campaign_id).expect("campaign");
         let sealed = crate::handlers::workflow::seal_campaign_packet(campaign, &viewer, now);
         assert_eq!(sealed[FIELD]["mark"], MARK_AIGEN);
-        assert!(verify_artifact(&sealed), "the export packet's mark verifies");
+        assert!(
+            verify_artifact(&sealed),
+            "the export packet's mark verifies"
+        );
 
         // ── 4. the KB build manifest (the real writer, disk round-trip) ──
         let mut files = std::collections::BTreeMap::new();
@@ -464,7 +467,10 @@ mod tests {
             let sig = tampered[FIELD]["sig"].as_str().unwrap().to_string();
             let flipped = if sig.starts_with('0') { "1" } else { "0" };
             tampered[FIELD]["sig"] = serde_json::json!(format!("{flipped}{}", &sig[1..]));
-            assert!(!verify_artifact(&tampered), "{class}: flipped sig must refuse");
+            assert!(
+                !verify_artifact(&tampered),
+                "{class}: flipped sig must refuse"
+            );
 
             // Flip the mark: same signature, wrong claim.
             let mut tampered = artifact.clone();
@@ -474,10 +480,16 @@ mod tests {
                 MARK_AIGEN
             };
             tampered[FIELD]["mark"] = serde_json::json!(other);
-            assert!(!verify_artifact(&tampered), "{class}: flipped mark must refuse");
+            assert!(
+                !verify_artifact(&tampered),
+                "{class}: flipped mark must refuse"
+            );
 
             // And the honest form verifies (the control).
-            assert!(verify_artifact(&artifact), "{class}: honest artifact verifies");
+            assert!(
+                verify_artifact(&artifact),
+                "{class}: honest artifact verifies"
+            );
         }
     }
 

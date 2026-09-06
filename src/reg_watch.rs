@@ -263,7 +263,10 @@ fn watch_clock_still_tells_time() {
     // pinned deadlines live in (a broken civil conversion would desync every
     // future WATCH pin from the calendar it guards).
     let (y, m, d) = today();
-    assert!((2024..=2040).contains(&y), "implausible year {y} from today()");
+    assert!(
+        (2024..=2040).contains(&y),
+        "implausible year {y} from today()"
+    );
     assert!((1..=12).contains(&m) && (1..=31).contains(&d));
 }
 
