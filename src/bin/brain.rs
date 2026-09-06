@@ -3329,11 +3329,11 @@ fn cmd_standby_start(args: &[String]) -> Result<(), String> {
         );
     }
     let dir = standby_dir_flag(&flags, "to");
-    let interval: u64 = match flags.get("interval-secs").and_then(|o| o.clone()) {
-        None => 30,
-        Some(v) => v
-            .parse()
-            .map_err(|_| format!("--interval-secs must be a whole number of seconds, got {v:?}"))?,
+    let interval: u64 = if let Some(Some(v)) = flags.get("interval-secs") {
+        v.parse()
+            .map_err(|_| format!("--interval-secs must be a whole number of seconds, got {v:?}"))?
+    } else {
+        30
     };
     if interval < 5 {
         return Err(
