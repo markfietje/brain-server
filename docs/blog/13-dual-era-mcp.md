@@ -1,6 +1,6 @@
 # Dual-era MCP without the handshake tax
 
-*2026. Two live MCP spec generations, one stdio binary — and neither generation pays for the other's ceremony.*
+*2026. Two live MCP spec generations, one binary — and neither generation pays for the other's ceremony.*
 
 The Model Context Protocol ecosystem currently lives across two spec eras.
 The 2026-07-28 revision made servers **stateless**: no `initialize` handshake,
@@ -89,3 +89,11 @@ two grammars means twice the injection surface.
 tool-level docs live in the [MCP server guide](../mcp.md), and the OpenClaw
 plugin wiring that uses it is covered in
 [OpenClaw integration](../openclaw-integration.md).*
+
+---
+
+*Update (2026-09-06): the binary now also serves a first Streamable HTTP
+transport (`MCP_TRANSPORT=http`), so "stdio binary" is history — the
+2026-07-28 stateless core answers over both transports. The full remote
+surface (header routing, MRTR, Tasks, CIMD auth) remains the documented
+v2.2.0 milestone. See docs/mcp.md for the HTTP flags.*

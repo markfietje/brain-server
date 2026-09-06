@@ -17,7 +17,7 @@ Brain Server authenticates in two ways today (verified in code, Round 26):
 
 The server is a token **validator**, not an OIDC **relying party**: there is no
 login redirect, no PKCE exchange, no external JWKS fetch, no SAML, no SCIM.
-Native OIDC RP is the 100% answer and is queued as **v1.20 B2**. Proxy SSO is
+Native OIDC RP is the 100% answer and remains a documented v2.x roadmap item. Proxy SSO is
 the 80% answer **shipped now, no server code changes**: an identity-aware
 reverse proxy terminates the IdP login and forwards authenticated requests.
 

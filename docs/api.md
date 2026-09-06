@@ -12,6 +12,7 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 
 | Method | Path | Purpose |
 |---|---|---|
+| GET | `/` · `/app/*` | The Dioxus console SPA, served from `BRAIN_CLIENT_DIST` when built and mounted (static asset surface — the JSON API routes are unaffected) |
 | GET | `/health` | Liveness probe (minimal `{status, version}`; detail on `/health/db`) |
 | GET | `/ready` | Readiness probe for load balancers |
 | GET | `/health/db` | Read-gated detail — capacity, pool, hardening, model, otel, DPO, concurrency (pool timeouts, busy errors, WAL pages pending), durability (Headroom boot-time echo: `synchronous`, `wal_autocheckpoint_pages`, `capacity_target`) |

@@ -278,7 +278,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
         name: "sync",
         json: false,
         run: cmd_sync,
-        usage: "brain sync [github] [--config PATH]",
+        usage: "brain sync [github] [--config PATH | --instance NAME]",
     },
     Subcommand {
         name: "connector-status",
@@ -308,7 +308,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
         name: "key",
         json: false,
         run: cmd_key,
-        usage: "brain key generate [--kid ID] [--alg RS256] [--dir PATH]\n  brain key list [--dir PATH]\n  brain key prune [--dir PATH] [--keep N]",
+        usage: "brain key generate [--kid ID] [--dir PATH]\n  brain key list [--dir PATH]\n  brain key prune [--dir PATH] [--keep N]",
     },
     Subcommand {
         name: "ump",

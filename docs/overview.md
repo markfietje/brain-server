@@ -1,14 +1,21 @@
 # Overview
 
-Brain Server is a **local-first semantic-memory and knowledge-graph server for AI
-agents**. It gives an agent a second brain that lives on the operator's own
-device — private, offline-capable, and deterministic.
+Brain Server is a **deterministic knowledge server for teams and their AI
+agents**. It is one Rust binary that stores what a team knows — past
+resolutions, runbooks, KB articles, decisions, customer context — and recalls
+it **the same way every time**, on the operator's own hardware: private,
+offline-capable, no per-query cost, and with a human gate on everything that
+becomes permanent knowledge.
 
-The core idea is simple: **recall that never has to think.** Instead of asking a
-language model whether to recall, and instead of paying an embedding API on every
-read and write, Brain Server uses a **static, local embedding model** (default
-profile: `model2vec` / `minishlab/potion-retrieval-32M`) and a **deterministic
-retrieval pipeline**. No LLM decides, no token is spent, no data leaves the device.
+The core idea is simple: **recall that never has to think.** Instead of asking
+a language model whether to recall, and instead of paying an embedding API on
+every read and write, Brain Server uses a **static, local embedding model**
+(default profile: `model2vec` / `minishlab/potion-retrieval-32M`) and a
+**deterministic retrieval pipeline**. No LLM decides, no token is spent, no
+data leaves the device. That determinism is what makes it a *knowledge*
+server and not another AI black box: the same query against the same store
+returns the same evidence, every shift, for every agent — which is exactly
+what a team needs when the answer goes to a customer.
 
 ---
 
@@ -29,12 +36,17 @@ Nano, Raspberry Pi 5, a small mini PC) drawing under 5 watts.
 
 ## Who it is for
 
-1. **Edge / privacy-first agent builders** — people who can't or won't use an
+1. **Support, helpdesk & contact-center teams** whose agents must give
+   customers the same grounded answer every time — past resolutions and KB
+   articles recalled deterministically, with the review queue turning every
+   solved case into reviewed knowledge (the KCS loop, as data).
+2. **Teams that share one brain** — domains, roles, procedures, case rooms,
+   and handovers, so knowledge lives in one governed place instead of ten
+   inboxes; agents join the same store under the same rules.
+3. **Edge / privacy-first agent builders** — people who can't or won't use an
    embedding API, and want the memory to live on the device.
-2. **OpenClaw users who want memory without token cost** — a deterministic drop-in
-   for the `active-memory` sub-agent, in the same memory slot.
-3. **Knowledge-workers who think in domains** — health, business, code, and more as
-   separate brains that cross-reference on a miss.
+4. **Knowledge-workers who think in domains** — health, business, code, and
+   more as separate brains that cross-reference on a miss.
 
 The full audience map — including **BPOs, in-house contact & support centers,
 regulated enterprises (finance, healthcare, legal, government), edge/field
@@ -92,9 +104,9 @@ verdict on every card, with every decision written to a tamper-evident audit cha
 
 ## One-line positioning
 
-> **Brain Server is the offline, deterministic, domain-graphed second brain for AI
-> agents on the edge — zero embedding-API cost, zero decision tokens, one Rust
-> binary, and a human gate on every write.**
+> **Brain Server is a deterministic, self-hosted knowledge server for teams
+> and their AI agents — one binary that stores what your team knows, recalls
+> it the same way every time, and never lets a write bypass a human.**
 
 ---
 

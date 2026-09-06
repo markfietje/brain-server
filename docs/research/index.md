@@ -17,8 +17,15 @@ cites, the **deterministic** way brain-server implements it, and the **ceiling**
 - [Structure-Aware Markdown Chunking](./10-chunking.md) — CommonMark split, Lewis 2020 RAG framing
 - [Centroid Domain Auto-Routing](./11-domain-routing.md) — the nearest-centroid classifier, carving the store by domain
 - [Deterministic Consolidation](./12-consolidation.md) — record-linkage duplicates/conflicts/stale-source sweep, reviewable not autonomous
+- [The Memory-Benchmark Landscape 2026](./13-benchmark-landscape-2026.md) — LoCoMo / LongMemEval / BEAM, contested self-reported scores, and the reproducibility answer
 
 Every mechanism is a deterministic implementation of *specific* published
 techniques over a local store — no LLM in the retrieval loop, no data egress.
+The 2026 survey wave (arXiv 2512.13564, 2603.07670, 2605.06716, 2602.06052)
+taxonomizes exactly this design space; the graph-memory direction this repo
+ships (04/05) is institutionalized by arXiv 2602.05665, and the deterministic
+conflict-resolution posture (01/12) is independently argued for by Memanto
+(arXiv 2606.01435). A full method-by-method audit is maintained in the project's research
+records.
 The [proof map](../trust/proof-map.md) ties each to a shipped release and a live
 `curl`/`brain` verification.

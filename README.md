@@ -1,8 +1,8 @@
 # 🧠 Brain Server
 
-**A local-first semantic memory and knowledge-graph server for AI agents. No cloud, no per-query cost, no LLM in the loop.**
+**A deterministic knowledge server for teams and their AI agents. One Rust binary that stores what your team knows, recalls it the same way every time, and never lets a write bypass a human.**
 
-Brain Server gives your agent a second brain that lives on your own device. It is written in Rust and wraps a deterministic retrieval engine, a static local embedding model (with optional neural tiers), and a knowledge graph behind a versioned HTTP API. Recall never calls an LLM or an embedding API, so every query costs nothing and the data never leaves the machine.
+Brain Server gives a support team, a helpdesk, or any knowledge-working team one shared, searchable brain: past resolutions, runbooks, policies, and customer context that come back the *same way every time* — hybrid retrieval over a local knowledge graph, with calibrated abstention instead of a confident guess, and a human gate on everything that becomes permanent knowledge. Your agents (MCP, UMP, OpenClaw, plain HTTP) consume the same memory your reviewers curate. It is written in Rust and wraps a deterministic retrieval engine, a static local embedding model (with optional neural tiers), and a knowledge graph behind a versioned HTTP API. Recall never calls an LLM or an embedding API, so every query costs nothing and the data never leaves the machine.
 
 ---
 
@@ -14,10 +14,6 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
 [![Cost](https://img.shields.io/badge/cost-%240%20per%20query-success.svg)](#)
 [![Tests](https://img.shields.io/badge/tests-1330%20passed-brightgreen.svg)](#)
-  [![EU AI Act](https://img.shields.io/badge/EU%20AI%20Act-Art%2050%20transparency-6f42c1.svg)](COMPLIANCE.md)
-  [![CoP Notice](https://img.shields.io/badge/CoP%20notice-self--attested-6f42c1.svg)](COMPLIANCE.md)
-  [![GDPR](https://img.shields.io/badge/GDPR-DSAR%20ready-6f42c1.svg)](COMPLIANCE.md)
-  [![Audit](https://img.shields.io/badge/audit-SHA--256%20hash%20chain-blue.svg)](COMPLIANCE.md)
 
 </p>
 
@@ -26,6 +22,14 @@ Brain Server gives your agent a second brain that lives on your own device. It i
 </p>
 
 ---
+
+## Who it's for
+
+- **Support & contact-center teams** whose agents must give customers the *same* grounded answer every time — past resolutions, KB articles, and policies recalled deterministically, with a review queue that turns every solved case into reviewed knowledge (the KCS loop, as data).
+- **Teams that share one brain** — domains, roles, procedures, case rooms, and handovers, so knowledge lives in one governed place instead of ten inboxes.
+- **Agent builders** who want memory that never improvises, never calls an embedding API, and never leaks instructions into the model — on the edge or in the datacenter.
+
+Enterprise rails (audit chain, DSAR erasure, provenance marks, retention) are built in and documented — expected for this class of tool, not the headline. See [COMPLIANCE.md](./COMPLIANCE.md) if procurement asks.
 
 ## Why not a cloud memory service
 

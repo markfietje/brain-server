@@ -31,8 +31,9 @@ we provide but don't run for you. We don't claim a measured SOTA recall number.
 **The security matrix is 100% coverage, not 100% risk elimination.**
 OWASP 2026 itself says LLM01 (prompt injection) has no prevention. What
 survives an adaptive attack is segregation + gates + least privilege. At-rest
-encryption, mTLS, A2A federation, OIDC authorization-code, multi-team tenancy —
-all owned v2.x ceilings. We don't claim what we haven't built.
+encryption, mTLS, A2A federation, native OIDC relying-party, multi-team
+tenancy — all owned v2.x ceilings (the identity-aware-proxy SSO edge ships
+today as the documented 80% answer). We don't claim what we haven't built.
 
 **Multi-process audit, local-first storage.**
 The audit chain is single-process today; distributed audit is a named future
