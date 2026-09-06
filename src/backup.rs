@@ -742,7 +742,11 @@ pub fn verify(cipher_path: &Path, passphrase: &[u8]) -> Result<Manifest> {
 /// truncated in-place overwrite. The temp name is derived from the
 /// target; leftover temps from a killed restore on a read-only-overwrite
 /// failure are reclaimed by the next `write_atomic` on the same target.
-fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
+/// temp-write + fsync + rename + directory-fsync — an interrupted write
+/// never leaves a half artifact where a manifest (or a previous good one)
+/// expects whole bytes. Shared: the standby ship cycle lands its follower
+/// artifacts through the same helper (the dup guard enforces ONE).
+pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("mkdir {parent:?}"))?;
     }

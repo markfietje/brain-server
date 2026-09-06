@@ -50,9 +50,22 @@ open GitHub code-scanning alert, three families across six sink sites.
   fixture row ids instead. Assertion behavior is unchanged.
 
 #### Improvements
-- The warm-standby core itself (library-only: ship cycle, follower manifest
-  verify, promote-check drill) — full narrative in the standby section of
-  this release's close-out.
+- **The warm standby, end to end** (`brain standby start|status|promote-check`):
+  the shipper cycles a PASSIVE checkpoint, the encrypted base (the backup v3
+  writer), and the WAL chunk — every byte at rest on the follower is
+  AES-256-GCM sealed, manifests are Ed25519-signed and verified with
+  recomputed artifact hashes, and `status` fails closed on any tamper or torn
+  cycle. `promote-check` is the rehearsed drill: the shipped restore path
+  into a temp dir, `PRAGMA integrity_check`, measured RTO and computed RPO
+  (interval + checkpoint lag) on the exit code. The shipper is an
+  operator-run process (launchd/systemd snippets in deployment.md) — never a
+  server thread. Full narrative + the dated drill record in the engineering
+  record below.
+- **The CLI reference law**: `cli_reference_covers_subcommands` parses the
+  SUBCOMMANDS table and fails when any command lacks a cli-reference.md row —
+  it closed four pre-existing gaps (`brain parcel`, `wfm-import`, `valet`,
+  `ropa` had shipped with no reference rows) and now guards every future
+  command.
 
 #### Bug fixes
 - None.
@@ -94,7 +107,7 @@ Pins: `resolve_root_rejects_traversal_data_root`,
 `legacy_db_from_refuses_traversal_values` (the refusal matrix incl. the
 trimmed-value back-compat case), and
 `sanitize_log_value_strips_line_forging_characters`. The code fixes rode the
-standby-m1 commit (8fda740) for landing; this entry is their record.
+standby-m1 commit (41c67c9) for landing; this entry is their record.
 
 Ceilings (honest): the traversal guard is lexical — it refuses `..`
 components but does not canonicalize symlinks, and the storage env vars
@@ -102,6 +115,74 @@ remain operator-controlled knobs (the stat sites are read-only size probes);
 the log scrub is applied at the flagged seam, not swept across every log
 site (the unflagged sites log server-generated identifiers or numerics);
 the analyzer's alert closure is verified on the post-push re-scan.
+
+### Engineering record — the warm standby
+
+M1 in five commits. The shared signing primitive came first:
+`ump_integrity::sign_manifest_bytes` (Ed25519 over the lowercase-hex SHA-256
+STRING of the bytes — the parcels convention), with parcels refactored onto
+it and pinned byte-identical by `parcel_signature_bytes_unchanged`, which
+recomputes the pre-extraction formula inline with raw dalek calls (Ed25519
+is deterministic; equal inputs, equal signatures). Then the core
+(`src/standby.rs`): `ship_cycle` — PASSIVE checkpoint → base.v3 via the
+SHIPPED backup v3 writer (Argon2id/AES-256-GCM, no new crypto) →
+`wal/NNNN.frame-chunk` copied AFTER the base, because the writer's snapshot
+step TRUNCATEs the WAL and an earlier-copied chunk would replay pre-base
+frames over the newer restore (the load-bearing order, commented at the
+site) → the manifest signed and written LAST so artifacts are always whole;
+chunks ride `backup::encrypt_v3_blob` (the same v3 envelope) so NO
+unencrypted byte sits at rest on the follower. `verify_follower` verifies
+the signature over the exact manifest bytes and recomputes every artifact
+hash — any mismatch is `Err` (fail closed). `promote_check` reuses the
+shipped restore path, decrypts the chunk into the restored db's WAL (SQLite
+recovery folds it in on open; sqlite-vec is registered process-wide first —
+the real corpus carries vec0 tables), runs `PRAGMA integrity_check`, and
+times restore/open/verify. RPO is the pinned arithmetic
+`promote_check_rpo_math`: interval + measured checkpoint lag — the
+follower-side twin of the v1.28.58 `brain_wal_pages_pending` gauge, which
+is the primary-side view of the same pending work.
+
+CLI surface through THE SUBCOMMANDS table (help cannot drift from
+dispatch): `start` (interval floor 5s — two Argon2id derivations per
+cycle; resumes the cycle counter from the verified manifest else the
+highest chunk, `resume_cycle`-pinned; stops after 3 consecutive failed
+cycles), `status` (the integrity self-check IS the command — tamper exits
+1), `promote-check --from` (PASS/FAIL gates the exit code). New spire pin
+`cli_reference_covers_subcommands` (≥40-name anti-vacuous floor).
+
+**The drill, executed** (2026-09-06, against a COPY of the live 48.8 MB db
+— online-backup API, live server kept serving; release build; real operator
+key): 3 cycles @10s, lag 425/406/414 ms, rpo_max 10.4s; a 301-row burst
+carried visibly (base 48,824,639 → 48,910,655 B); status integrity OK;
+promote-check RTO 0.55s (restore 0.37s / open+integrity 0.18s), RPO 10.4s,
+PASS; promoted fidelity 9,091 rows (8,790 + 301) with the row committed
+after the last cycle honestly ABSENT (inside the RPO window); one flipped
+byte in the shipped chunk failed status closed (exit 1) and a byte-restore
+healed it. The record lives in docs/runbooks.md, watched by the reg_watch
+pin `standby_drill_recorded` (green only when the dated record with
+measured timings exists — the CRA-drill precedent).
+
+**The .bak mechanism proved itself in anger** (disclosed): during
+development rehearsal, a `brain restore --force` was mis-aimed at the LIVE
+db (restore's target is `BRAIN_DB_PATH`/default, not its positional). The
+port guard was bypassed, but restore's automatic pre-restore safety
+snapshot preserved the full memory; the server was stopped, the snapshot
+swapped back, and the service re-verified healthy (integrity ok, full row
+counts). The promote procedure in the runbook now encodes the lesson —
+target named explicitly via `BRAIN_DB_PATH`, and `--force` against a live
+server is the one step that must never be routine.
+
+Ceilings (honest): RPO is BOUNDED, not zero — at most interval + checkpoint
+lag after the last chunk can be lost, plus a sub-second race (a commit that
+lands, gets fully checkpointed, and has its WAL reset inside the cycle's
+copy window self-heals in the next cycle's base but is lost if the primary
+dies inside that window and you promote the stale cycle). Warm, not hot:
+promote is manual and rehearsed; nothing fails over by itself.
+Single-region; client reconnect is manual. Chunk history accumulates
+(≈ wal_size × cycles of disk). A torn interrupted cycle fails status
+closed until the next cycle lands. The interval floor exists because each
+cycle runs two Argon2id derivations. main.rs untouched (net delta 0);
+wire/schema unchanged; CRATE_TEST_FLOOR 1,228 → 1,244.
 
 ---
 

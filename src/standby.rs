@@ -46,7 +46,6 @@ use crate::backup::BackupFormat;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -172,22 +171,6 @@ fn unix_now() -> i64 {
         .unwrap_or(0)
 }
 
-/// temp-write + rename + fsync — an interrupted write never lands half an
-/// artifact where a manifest (or a previous good one) expects whole bytes.
-fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    let tmp = path.with_extension("tmp");
-    {
-        let mut f =
-            std::fs::File::create(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
-        f.write_all(bytes)
-            .map_err(|e| format!("write {}: {e}", tmp.display()))?;
-        f.sync_all()
-            .map_err(|e| format!("fsync {}: {e}", tmp.display()))?;
-    }
-    std::fs::rename(&tmp, path).map_err(|e| format!("rename {}: {e}", path.display()))?;
-    Ok(())
-}
-
 /// One ship cycle: PASSIVE checkpoint → base.v3 via the shipped backup v3
 /// writer → encrypted WAL chunk → signed manifest, written LAST. Refuses
 /// before ANY write when the operator signing key is absent (a follower
@@ -258,7 +241,8 @@ pub fn ship_cycle(
     let chunk_name = format!("wal/{cycle:04}.frame-chunk");
     let chunk_bytes = crate::backup::encrypt_v3_blob("wal-chunk", &wal_plain, passphrase)
         .map_err(|e| format!("encrypt wal chunk: {e:#}"))?;
-    write_atomic(&dir.join(&chunk_name), &chunk_bytes)?;
+    crate::backup::write_atomic(&dir.join(&chunk_name), &chunk_bytes)
+        .map_err(|e| format!("write wal chunk: {e:#}"))?;
     let checkpoint_lag_ms = t0.elapsed().as_millis() as u64;
 
     // 4. Manifest, signed over its exact bytes, written LAST.
@@ -293,13 +277,15 @@ pub fn ship_cycle(
         serde_json::to_string(&manifest).map_err(|e| format!("serialize manifest: {e}"))?;
     let (sig_hex, signed_by) =
         crate::ump_integrity::sign_manifest_bytes(&sk, manifest_json.as_bytes());
-    write_atomic(&dir.join(MANIFEST_FILE), manifest_json.as_bytes())?;
+    crate::backup::write_atomic(&dir.join(MANIFEST_FILE), manifest_json.as_bytes())
+        .map_err(|e| format!("write manifest: {e:#}"))?;
     let sig = ManifestSig {
         signature: sig_hex,
         signed_by,
     };
     let sig_json = serde_json::to_string(&sig).map_err(|e| format!("serialize sig: {e}"))?;
-    write_atomic(&dir.join(MANIFEST_SIG_FILE), sig_json.as_bytes())?;
+    crate::backup::write_atomic(&dir.join(MANIFEST_SIG_FILE), sig_json.as_bytes())
+        .map_err(|e| format!("write manifest signature: {e:#}"))?;
     Ok(manifest)
 }
 
