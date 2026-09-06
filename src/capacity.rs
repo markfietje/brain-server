@@ -303,6 +303,24 @@ pub fn knowledge_docs(conn: &rusqlite::Connection) -> usize {
         .max(0) as usize
 }
 
+/// The open database's size in bytes, measured from SQLite itself
+/// (`page_count × page_size`) rather than from a filesystem stat of a
+/// state-derived path. The path-injection seam: the capacity surfaces used
+/// to `fs::metadata(&state.db_path)`, which put an axum-State-derived path
+/// into a path expression; measuring through the open connection leaves NO
+/// path expression on the surface at all. Equals the main DB file's size
+/// (WAL excluded from both). Best-effort: 0 when the pragma read fails —
+/// the same fail-open posture as the stat it replaces.
+pub fn db_size_bytes(conn: &rusqlite::Connection) -> u64 {
+    let pages: i64 = conn
+        .query_row("PRAGMA page_count", [], |r| r.get(0))
+        .unwrap_or(0);
+    let page_size: i64 = conn
+        .query_row("PRAGMA page_size", [], |r| r.get(0))
+        .unwrap_or(0);
+    (pages.max(0) as u64).saturating_mul(page_size.max(0) as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +372,26 @@ mod tests {
     /// production path (`Durability::apply`): FULL/1000 by default, and a
     /// tuned NORMAL/256 round-trips too — proving the env-override seam can
     /// actually move the connection's policy when an operator sets it.
+    #[test]
+    fn db_size_bytes_measures_through_the_open_connection() {
+        // The path-injection closure: the capacity surfaces take NO filesystem
+        // path argument — the size comes from the open database itself, so no
+        // axum-State-derived path ever reaches a path expression.
+        let conn = rusqlite::Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch("CREATE TABLE t (v TEXT); INSERT INTO t VALUES ('x');")
+            .expect("seed");
+        let size = db_size_bytes(&conn);
+        let page_size: i64 = conn
+            .query_row("PRAGMA page_size", [], |r| r.get(0))
+            .expect("page_size");
+        assert!(size > 0, "a seeded db must measure non-zero");
+        assert_eq!(
+            size as i64 % page_size,
+            0,
+            "the measurement is page-aligned: {size} vs page_size {page_size}"
+        );
+    }
+
     #[test]
     fn pool_init_pragmas_read_back() {
         let dir = std::env::temp_dir().join("brain_headroom_readback");

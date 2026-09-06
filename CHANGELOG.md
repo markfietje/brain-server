@@ -29,15 +29,19 @@ open GitHub code-scanning alert, three families across six sink sites.
 ### Release notes
 
 #### Security fixes
-- **Path injection (×3 alerts, high) — traversal-carrying storage env values
-  are now refused.** `BRAIN_DATA_ROOT` containing a `..` component fails
-  layout resolution; a traversal-carrying `BRAIN_DB_PATH` falls back to the
-  layout default instead of being honored verbatim (previously any value was
-  used as-is). This closes the environment→`fs::metadata` flow the analyzer
-  flagged on the three DB-size stat sites (`guard_capacity`, the shared
-  `measure_capacity`, and the `/health/db` detail probe). All paths the
-  runtime derives from the layout (legacy DB, domain DBs, backups, registry)
-  inherit the refusal.
+- **Path injection (×3 alerts, high) — the DB-size probes no longer touch the
+  filesystem at all.** The three capacity surfaces (`guard_capacity`, the
+  shared `measure_capacity`, the `/health/db` detail probe) measured the
+  database by statting a state-derived path (`fs::metadata(&state.db_path)`);
+  they now read the size through the open SQLite connection
+  (`PRAGMA page_count × page_size`), so no request- or config-derived path
+  expression remains on the surface (the same fix landed on the handlers-side
+  twin whose alert had been dismissed earlier). Additionally, a `..`
+  component in `BRAIN_DATA_ROOT` now fails layout resolution and in
+  `BRAIN_DB_PATH` falls back to the layout default instead of being honored
+  verbatim — a hostile storage-env knob can no longer move the database
+  outside the stated tree (every derived path — legacy DB, domain DBs,
+  backups, registry — inherits the refusal).
 - **Log injection (×1 alert, medium) — request-derived values are scrubbed
   before they reach a log line.** The markdown-ingest handler's post-commit
   failure logs now pass the payload-supplied domain through
@@ -76,20 +80,29 @@ All seven open alerts were raised by the `security-extended` suite against
 commit 1d313e3 (the Loom feature commit). Triaged and closed in the same
 release:
 
-- **Path injection** (`rust/path-injection`, CWE-22): the untrusted sources
-  are the three `std::env::var` reads in `storage_layout` (`BRAIN_DATA_ROOT`
-  in `resolve_root`; `BRAIN_DB_PATH` in `resolve_root` and again in
-  `legacy_db`) — CodeQL models environment variables as user-provided. The
-  fix places the analyzer-recognized `contains("..")` sanitizer guard at each
-  read, BEFORE any `PathBuf` is constructed, so every downstream sink (the
-  three flagged `fs::metadata` stats and every unflagged derived path) is
-  cut from all three flows. `resolve_root` returns
-  `StorageLayoutError::InvalidRoot` for a traversal-carrying data root
-  (fail-closed, the same shape as the existing non-absolute refusal);
-  `legacy_db` moved onto a pure env-independent core (`legacy_db_from`) so
-  the fallback is unit-pinned without process-env mutation. Behavior change,
-  deliberate: a `BRAIN_DB_PATH` like `/data/../evil/brain.db` now resolves to
-  the layout default instead of being honored.
+- **Path injection** (`rust/path-injection`, CWE-22): the analyzer's flows
+  do NOT originate in the storage env vars — the SARIF code flows run from
+  the axum handler `State` extraction (route registration → handler body →
+  the `state` parameter entering the guard) into the three flagged
+  `fs::metadata(&state.db_path)` size probes (`guard_capacity`, the shared
+  `measure_capacity`, and the `/health/db` detail stat). Two-part closure:
+  (1) the sink is ELIMINATED — the DB size is now measured through the open
+  connection (`PRAGMA page_count × page_size`, the new
+  `capacity::db_size_bytes`), so no path argument exists on the capacity
+  surfaces at all; `measure_capacity` lost its `&Path` parameter and the
+  `/health/db` + `/metrics` handlers no longer clone `state.db_path`. The
+  handlers-side twin got the same fix (its alert had been operator-dismissed
+  earlier — same shape). (2) The env reads in `storage_layout` gained
+  fail-closed traversal refusal anyway (a `..` component in
+  `BRAIN_DATA_ROOT`/`BRAIN_DB_PATH` now falls back to the layout default —
+  real hardening against a hostile env knob, independent of the analyzer):
+  `resolve_root` returns `StorageLayoutError::InvalidRoot` for a
+  traversal-carrying data root (the same shape as the existing non-absolute
+  refusal), and `legacy_db` moved onto a pure env-independent core
+  (`legacy_db_from`) so the fallback is unit-pinned without process-env
+  mutation. Behavior change, deliberate: a `BRAIN_DB_PATH` like
+  `/data/../evil/brain.db` now resolves to the layout default instead of
+  being honored.
 - **Log injection** (`rust/log-injection`, CWE-117): the flagged sink is the
   centroid-refresh failure `eprintln!` in the markdown ingest handler; the
   source is the payload-supplied `domain` (the sibling `document_id` log is
@@ -105,16 +118,19 @@ release:
 Pins: `resolve_root_rejects_traversal_data_root`,
 `resolve_root_refuses_traversal_db_path_and_falls_back`,
 `legacy_db_from_refuses_traversal_values` (the refusal matrix incl. the
-trimmed-value back-compat case), and
+trimmed-value back-compat case), `db_size_bytes_measures_through_the_open_connection`
+(the path-free measurement contract), and
 `sanitize_log_value_strips_line_forging_characters`. The code fixes rode the
 standby-m1 commit (41c67c9) for landing; this entry is their record.
 
 Ceilings (honest): the traversal guard is lexical — it refuses `..`
 components but does not canonicalize symlinks, and the storage env vars
-remain operator-controlled knobs (the stat sites are read-only size probes);
-the log scrub is applied at the flagged seam, not swept across every log
-site (the unflagged sites log server-generated identifiers or numerics);
-the analyzer's alert closure is verified on the post-push re-scan.
+remain operator-controlled knobs; the page-count measurement equals the main
+DB file's size (WAL excluded from both shapes), so the envelope's `db_mib`
+input shifts only by page-alignment; the log scrub is applied at the flagged
+seam, not swept across every log site (the unflagged sites log
+server-generated identifiers or numerics); the analyzer's alert closure is
+verified on the post-push re-scan.
 
 ### Engineering record — the warm standby
 

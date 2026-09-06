@@ -428,9 +428,7 @@ pub(crate) fn guard_capacity(state: &AppState) -> Result<(), AppError> {
         .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get::<_, i64>(0))
         .unwrap_or(0)
         .max(0) as usize;
-    let db_mib: u64 = std::fs::metadata(&state.db_path)
-        .map(|m| m.len() / 1_000_000)
-        .unwrap_or(0);
+    let db_mib: u64 = crate::capacity::db_size_bytes(&conn) / 1_000_000;
     // CRITICAL: process RSS, not system-wide (see measure_capacity).
     let rss_mib = process_rss_mib();
     let env = CapacityEnvelope::for_target(capacity_target());
@@ -1395,19 +1393,22 @@ pub(crate) fn parse_memory_content(text: &str) -> Vec<(String, Option<String>)> 
 /// the ingest handlers (reject with 507 when `Exceeded`). Returns the measured
 /// counts + the classification so callers don't re-query.
 ///
-/// All three inputs are read in the caller's `spawn_blocking` context; this fn
-/// is pure and side-effect-free so it composes cleanly with the existing
-/// health/stats query patterns.
-pub fn measure_capacity(conn: &Connection, db_path: &std::path::Path) -> serde_json::Value {
+/// The DB size is measured through the open connection (`page_count ×
+/// page_size`, see `capacity::db_size_bytes`) — no filesystem path argument
+/// exists on this surface, closing the path-injection seam the analyzer
+/// flagged on the previous `fs::metadata(db_path)` shape.
+///
+/// Read in the caller's `spawn_blocking` context; this fn is pure and
+/// side-effect-free so it composes cleanly with the existing health/stats
+/// query patterns.
+pub fn measure_capacity(conn: &Connection) -> serde_json::Value {
     let target = crate::capacity::capacity_target();
     let envelope = crate::capacity::CapacityEnvelope::for_target(target);
     let docs: usize = conn
         .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get::<_, i64>(0))
         .unwrap_or(0)
         .max(0) as usize;
-    let db_mib: u64 = std::fs::metadata(db_path)
-        .map(|m| m.len() / 1_000_000)
-        .unwrap_or(0);
+    let db_mib: u64 = crate::capacity::db_size_bytes(conn) / 1_000_000;
     // CRITICAL: measure the *process's own* RSS, not system-wide memory.
     // The envelope's max_rss_mib (320 MB) is a per-process ceiling; using
     // System::used_memory() (system-wide) would always exceed it on any

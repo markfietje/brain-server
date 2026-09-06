@@ -405,9 +405,7 @@ pub fn guard_capacity(state: &crate::AppState) -> Result<(), HandlerError> {
         return Ok(());
     };
     let docs: usize = crate::capacity::knowledge_docs(&conn);
-    let db_mib: u64 = std::fs::metadata(&state.db_path)
-        .map(|m| m.len() / 1_000_000)
-        .unwrap_or(0);
+    let db_mib: u64 = crate::capacity::db_size_bytes(&conn) / 1_000_000;
     // CRITICAL: measure the process's own RSS, not system-wide memory.
     // System::used_memory() is the whole-host figure; on any machine with a
     // real workload it would always exceed the 320 MB per-process ceiling and

@@ -219,7 +219,6 @@ pub async fn health_db(
     // deployment.
     crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
     let pool = s.pool.clone();
-    let db_path = s.db_path.clone();
     let snapshot = s.snapshot.clone();
     // Throughput: the WAL sweep covers EVERY registered domain (same target
     // list the audit chain verify uses). Collected owned so the blocking
@@ -233,9 +232,13 @@ pub async fn health_db(
         // capacity measurement needs a connection. Best-effort — if the
         // pool is exhausted, capacity is omitted rather than failing the probe.
         let conn = pool.get().ok();
-        let capacity = conn.as_ref().map(|c| measure_capacity(c, &db_path));
-        let metadata = std::fs::metadata(&db_path).ok();
-        let db_size = metadata.map(|m| m.len()).unwrap_or(0);
+        let capacity = conn.as_ref().map(|c| measure_capacity(c));
+        // DB size measured through the open connection (see
+        // `capacity::db_size_bytes`) — no state-derived path expression.
+        let db_size = conn
+            .as_ref()
+            .map(|c| crate::capacity::db_size_bytes(c))
+            .unwrap_or(0);
         let last_write: Option<String> = conn.as_ref().and_then(|c| {
             c.query_row("SELECT MAX(created_at) FROM knowledge", [], |r| r.get(0))
                 .ok()
@@ -451,7 +454,6 @@ pub(crate) async fn metrics(
         return (axum::http::StatusCode::FORBIDDEN, e.inner.message);
     }
     let pool = s.pool.clone();
-    let db_path = s.db_path.to_owned();
     let audit_cache = std::sync::Arc::clone(&s.audit_chain_cache);
     // The gauge aggregates EVERY registered domain's chain —
     // collected here (owned) so the blocking closure stays 'static.
@@ -465,7 +467,7 @@ pub(crate) async fn metrics(
             .connections
             .saturating_sub(pool_state.idle_connections);
         // Reuse the capacity measurement so `/metrics` and `/health` agree.
-        let cap = pool.get().ok().map(|c| measure_capacity(&c, &db_path));
+        let cap = pool.get().ok().map(|c| measure_capacity(&c));
         // report THIS process's RSS, not system-wide used memory.
         // `System::used_memory()` is the whole-host figure; the gauge's HELP
         // says "Process RSS in MiB" and must match the per-process 320 MB
