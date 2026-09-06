@@ -56,6 +56,19 @@ injection-classifier = ["dep:ort", "dep:tokenizers"]
 # activates them at boot via `embed::embedder_for_profile`. FastEmbed-rs pulls its
 # own `ort` — re-verify no version conflict with the `injection-classifier` ort at impl time.
 neural-embed = ["dep:fastembed", "fastembed/hf-hub-native-tls", "fastembed/ort-download-binaries-native-tls"]
+# v1.28.60 "Loom": opt-in CPU parallelism for the plan's two named fan-out
+# sites (the batch-ingest embed stage; the consolidate near-dup scan's
+# pure-CPU preprocessing). OFF by default — the Jetson memory doctrine
+# forbids spending cores, so activation requires ALL THREE: the feature
+# compiled, the capacity target != jetson, and `BRAIN_LOOM=1` (fail-closed
+# parse: an unknown value refuses boot). The pool is capped at
+# min(cores-1, 4) so ingest never starves the tokio blocking pool on a
+# shared box. INVARIANT — no cross-chunk reduction: every fan-out is an
+# ordered per-item map collected in input order; adding one (a batched
+# encode, a shared accumulator, any reduction across items) breaks
+# `loom_preserves_fused_ranks`. Rayon 1.12.0 (current stable, verified on
+# crates.io 2026-09-06).
+loom = ["dep:rayon"]
 rerank-tier = ["dep:fastembed", "fastembed/hf-hub-native-tls", "fastembed/ort-download-binaries-native-tls"]
 # v1.20.7 "Telemetry" (M1): optional OTLP/HTTP OpenTelemetry trace export. OFF by
 # default so the default build stays byte-for-byte unchanged (zero new deps, no
@@ -222,6 +235,9 @@ url = "2"
 # classifier's `Session` API is stable across rc.12/rc.13; re-verify on bump.
 ort = { version = "2.0.0-rc.13", optional = true, default-features = true }
 tokenizers = { version = "0.23", optional = true, default-features = true }
+# Loom's ordered fan-out engine (feature `loom`). Doc-comment on the feature
+# above carries the invariant + the version-verification date.
+rayon = { version = "1.12", optional = true }
 
 [dev-dependencies]
 tempfile = "3.27"

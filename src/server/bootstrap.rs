@@ -155,6 +155,11 @@ pub struct AppState {
     /// `/health/db` so an operator can see exactly what the running server
     /// Static boot-time config — not a per-request pragma read.
     pub durability: crate::capacity::Durability,
+    /// The loom decision resolved at boot (Loom): the opt-in CPU-parallelism
+    /// tier — feature-compiled AND target != Jetson AND `BRAIN_LOOM=1`.
+    /// Carried for the `/health/db` echo (`active (N threads)` |
+    /// `off:<reason>`); the fan-out sites read the installed pool, not this.
+    pub loom: crate::loom::LoomState,
     // ── middleware-stack inputs (Vaulting: app(state) reads them here so
     // the composition is a pure function of state) ────────────────────
     /// The cached bearer-token store; `auth_middleware`'s from_fn state.
@@ -341,6 +346,18 @@ pub fn bootstrap() -> Result<BootOutcome> {
         durability.wal_autocheckpoint_pages,
         crate::capacity::capacity_target()
     );
+
+    // ── loom resolution (Loom) ─────────────────────────
+    // CPU parallelism as an opt-in tier: the `loom` feature compiled AND the
+    // capacity target != Jetson AND `BRAIN_LOOM=1`. An unknown BRAIN_LOOM
+    // value refuses the boot rather than silently meaning "off" (the
+    // durability/BRAIN_WRITE_POSTURE pattern). The resolved state drives the
+    // capped pool install below and the /health/db echo — one resolution,
+    // one truth. The pool cap (min(cores-1, 4)) keeps ingest from starving
+    // the tokio blocking pool on a shared box.
+    let loom = crate::loom::resolve().map_err(|e| anyhow::anyhow!("fatal loom config: {e}"))?;
+    crate::loom::install(&loom);
+    info!("Loom: {}", loom.describe());
 
     // ── fail-closed model-artifact pinning ─────────────
     // When BRAIN_MODEL_MANIFEST is set, every pinned artifact must match its
@@ -874,6 +891,7 @@ pub fn bootstrap() -> Result<BootOutcome> {
         chain_watch: alert::ChainWatchState::default(),
         concurrency: &crate::concurrency::CONCURRENCY,
         durability,
+        loom,
         token_store,
         jwt_middleware_state,
         cors,

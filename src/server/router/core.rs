@@ -327,6 +327,10 @@ pub async fn health_db(
                         },
                     }),
                 );
+                // Loom: the boot-resolved parallelism decision, same class as
+                // the durability echo — a snapshot of a boot decision, never
+                // a per-request read. `active (N threads)` | `off:<reason>`.
+                m.insert("loom".to_string(), serde_json::json!(s.loom.describe()));
             }
             Ok(Json(body))
         }

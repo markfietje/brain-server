@@ -141,6 +141,7 @@ pub mod hygiene;
 pub mod integrity;
 pub mod legal_hold;
 pub mod linker;
+pub mod loom;
 pub mod ph;
 pub mod procedural;
 pub mod qa;

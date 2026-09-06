@@ -2682,6 +2682,7 @@ mod valet_lint_tests {
             ),
             cors: tower_http::cors::CorsLayer::new(),
             durability: Default::default(),
+            loom: Default::default(),
             model: Arc::new(
                 crate::embed::StaticEmbedder::new(crate::config::MODEL_ID).expect("model"),
             ),

@@ -416,6 +416,7 @@ dependencies = [
  "r2d2",
  "r2d2_sqlite",
  "rand 0.10.2",
+ "rayon",
  "reqwest 0.13.4",
  "rsa 0.10.0-rc.18",
  "rusqlite",

@@ -11,6 +11,7 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 - **Calibrated abstention** (v1.5) — when retrieval quality is too low, `/recall` returns `{decision: "low_confidence", hits: []}` instead of top-1 garbage. No magic score cutoff — a calibrated multi-signal recommendation drives it.
 - **Span verification** (v1.5) — `POST /verify` checks whether a claim is supported by a chunk's actual text (deterministic lexical match, no LLM).
 - **Recall-gate QA** (`qa.rs`) — a pure scorecard that weighs in-scope / cited / confident / has-trace signals so an agent can decide when it has enough evidence to answer.
+- **Opt-in CPU parallelism** (v1.28.60) — `--features loom` + `BRAIN_LOOM=1` fans the batch-ingest embed stage and the near-dup scan's pure-CPU preprocessing across a capped rayon pool (`min(cores-1, 4)`, never on Jetson); ordered per-item maps only, so results are byte-identical to serial (`loom_preserves_fused_ranks`).
 
 ## Temporal & knowledge
 

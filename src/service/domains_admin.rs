@@ -789,6 +789,7 @@ mod tests {
             ),
             cors: tower_http::cors::CorsLayer::new(),
             durability: Default::default(),
+            loom: Default::default(),
             model,
             registry: DomainRegistry::new(pool.clone(), &path, multi_db),
             pool,
