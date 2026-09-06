@@ -299,6 +299,12 @@ const SUBCOMMANDS: &[Subcommand] = &[
         usage: "brain restore <in-path> [--passphrase-file PATH]",
     },
     Subcommand {
+        name: "standby",
+        json: false,
+        run: cmd_standby,
+        usage: "brain standby start --to <dir> [--interval-secs 30] [--passphrase-file PATH]\n  brain standby status [--to <dir>]\n  brain standby promote-check --from <dir> [--passphrase-file PATH]\n                 (warm standby: encrypted base + WAL chunks + a rehearsed\n                  promote — operator-run, never a server daemon; NO hot failover)",
+    },
+    Subcommand {
         name: "key",
         json: false,
         run: cmd_key,
@@ -588,9 +594,11 @@ const VALUE_FLAGS: &[&str] = &[
     "file",
     "floor",
     "format",
+    "from",
     "install-id",
     "instance",
     "intent",
+    "interval-secs",
     "jurisdiction",
     "k",
     "keep",
@@ -3277,6 +3285,168 @@ fn brain_server_reachable() -> bool {
         .ok()
         .and_then(|mut addrs| addrs.next())
         .is_some_and(|a| TcpStream::connect_timeout(&a, Duration::from_millis(500)).is_ok())
+}
+
+// ── warm standby (v1.28.61) ──────────────────────────────
+// CLI-only surface over brain_server::standby: an operator-run shipper
+// process, NOT a server thread (a shipper inside the server it protects is
+// a correlated failure). Warm, never hot: promote is a rehearsed manual
+// step with printed RTO/RPO, no failover logic anywhere.
+
+/// `brain standby <start|status|promote-check>`
+fn cmd_standby(args: &[String]) -> Result<(), String> {
+    if args.is_empty() {
+        return Err("usage: brain standby <start|status|promote-check> — try \
+             'brain standby start --to <dir>'"
+            .to_string());
+    }
+    match args[0].as_str() {
+        "start" => cmd_standby_start(&args[1..]),
+        "status" => cmd_standby_status(&args[1..]),
+        "promote-check" => cmd_standby_promote_check(&args[1..]),
+        other => Err(format!(
+            "unknown 'brain standby' subcommand: '{other}' \
+             (try start, status or promote-check)"
+        )),
+    }
+}
+
+fn standby_dir_flag(flags: &FlagMap, key: &str) -> PathBuf {
+    flags
+        .get(key)
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(brain_server::standby::default_standby_dir)
+}
+
+fn cmd_standby_start(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    if !positionals.is_empty() {
+        return Err(
+            "usage: brain standby start --to <dir> [--interval-secs 30] \
+             [--passphrase-file PATH]"
+                .to_string(),
+        );
+    }
+    let dir = standby_dir_flag(&flags, "to");
+    let interval: u64 = match flags.get("interval-secs").and_then(|o| o.clone()) {
+        None => 30,
+        Some(v) => v
+            .parse()
+            .map_err(|_| format!("--interval-secs must be a whole number of seconds, got {v:?}"))?,
+    };
+    if interval < 5 {
+        return Err(
+            "--interval-secs must be >= 5: each cycle runs two Argon2id \
+             derivations (base + chunk); a faster cadence just burns CPU"
+                .to_string(),
+        );
+    }
+    let pass = resolve_passphrase(&flags)?;
+    let db = default_db_path();
+    let mut cycle = brain_server::standby::resume_cycle(&dir);
+    println!(
+        "standby shipper: {} → {} every {interval}s (Ctrl-C stops; an \
+         interrupted cycle self-heals on the next one)",
+        db.display(),
+        dir.display()
+    );
+    let mut consecutive_failures = 0u32;
+    loop {
+        cycle += 1;
+        match brain_server::standby::ship_cycle(&db, &dir, &pass, interval, cycle) {
+            Ok(m) => {
+                consecutive_failures = 0;
+                println!(
+                    "[cycle {:04}] base {} B, {} wal frame(s) ({} B), lag {} ms — \
+                     rpo_max {:.1}s",
+                    m.cycle,
+                    m.base.bytes,
+                    m.wal.frames,
+                    m.wal.bytes,
+                    m.checkpoint_lag_ms,
+                    brain_server::standby::rpo_max_secs(m.interval_secs, m.checkpoint_lag_ms)
+                );
+            }
+            Err(e) => {
+                consecutive_failures += 1;
+                eprintln!("[cycle {cycle:04}] FAILED: {e}");
+                if consecutive_failures >= 3 {
+                    return Err("3 consecutive failed cycles — stopping the shipper".to_string());
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_secs(interval));
+    }
+}
+
+fn cmd_standby_status(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    if !positionals.is_empty() {
+        return Err("usage: brain standby status [--to <dir>]".to_string());
+    }
+    let dir = standby_dir_flag(&flags, "to");
+    // verify_follower IS the integrity self-check: signature over the exact
+    // manifest bytes + recomputed artifact hashes. Any mismatch errors out
+    // of here (exit 1) — status never certifies a tampered follower.
+    let m = brain_server::standby::verify_follower(&dir)?;
+    let age = brain_server::standby::follower_age_secs(&m);
+    println!("follower                : {}", dir.display());
+    println!("cycle                   : {:04}", m.cycle);
+    println!("last cycle              : {age}s ago");
+    println!(
+        "cycles behind           : {}",
+        brain_server::standby::cycles_behind(&m)
+    );
+    println!(
+        "rpo_max (interval + lag): {:.1}s",
+        brain_server::standby::rpo_max_secs(m.interval_secs, m.checkpoint_lag_ms)
+    );
+    println!(
+        "base                    : {} ({} B)",
+        m.base.file, m.base.bytes
+    );
+    println!(
+        "wal chunk               : {} ({} frame(s), {} B)",
+        m.wal.file, m.wal.frames, m.wal.bytes
+    );
+    println!("checkpoint lag          : {} ms", m.checkpoint_lag_ms);
+    println!("integrity               : OK (signature + artifact hashes verified)");
+    Ok(())
+}
+
+fn cmd_standby_promote_check(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    if !positionals.is_empty() {
+        return Err(
+            "usage: brain standby promote-check --from <dir> [--passphrase-file PATH]".to_string(),
+        );
+    }
+    let dir = match flags.get("from").and_then(|o| o.clone()) {
+        Some(d) => PathBuf::from(d),
+        None => {
+            return Err(
+                "promote-check is the rehearsal — name the follower explicitly: \
+                 brain standby promote-check --from <dir> [--passphrase-file PATH]"
+                    .to_string(),
+            );
+        }
+    };
+    let pass = resolve_passphrase(&flags)?;
+    let r = brain_server::standby::promote_check(&dir, &pass, false)?;
+    println!("standby promote-check — follower cycle {:04}", r.cycle);
+    println!(
+        "  RTO  restore + open + verify : {:.2}s (restore {:.2}s / verify {:.2}s)",
+        r.rto_secs, r.restore_secs, r.verify_secs
+    );
+    println!(
+        "  RPO  interval + checkpoint-lag max : {:.1}s",
+        r.rpo_max_secs
+    );
+    println!("  follower age                 : {}s", r.follower_age_secs);
+    println!("  integrity_check              : {}", r.integrity);
+    println!("  PASS — the follower promotes.");
+    Ok(())
 }
 
 // ── JWT signing key management ──────────────────────────────

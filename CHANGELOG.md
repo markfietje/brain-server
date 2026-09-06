@@ -19,6 +19,92 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.61] — 2026-09-06 — "Standby": the warm-standby core; the seven open CodeQL alerts closed
+
+Two lines land together. The warm-standby core (ship cycle, signed follower
+manifests, rehearsed promote-check) rides the standby-m1 commits; this section's
+scope is the **security half** — the full CodeQL triage and closure of every
+open GitHub code-scanning alert, three families across six sink sites.
+
+### Release notes
+
+#### Security fixes
+- **Path injection (×3 alerts, high) — traversal-carrying storage env values
+  are now refused.** `BRAIN_DATA_ROOT` containing a `..` component fails
+  layout resolution; a traversal-carrying `BRAIN_DB_PATH` falls back to the
+  layout default instead of being honored verbatim (previously any value was
+  used as-is). This closes the environment→`fs::metadata` flow the analyzer
+  flagged on the three DB-size stat sites (`guard_capacity`, the shared
+  `measure_capacity`, and the `/health/db` detail probe). All paths the
+  runtime derives from the layout (legacy DB, domain DBs, backups, registry)
+  inherit the refusal.
+- **Log injection (×1 alert, medium) — request-derived values are scrubbed
+  before they reach a log line.** The markdown-ingest handler's post-commit
+  failure logs now pass the payload-supplied domain through
+  `sanitize_log_value` (control characters → space/removed); a crafted
+  newline in a request could otherwise forge entries in the journald/launchd
+  log stream. The stored value is unchanged — the scrub is logging-only.
+- **Cleartext logging (×3 alerts, high) — the DSAR deletion certificate is no
+  longer interpolated into test assertion failure messages.** The certificate
+  carries personal-data handling detail; failing asserts now reference the
+  fixture row ids instead. Assertion behavior is unchanged.
+
+#### Improvements
+- The warm-standby core itself (library-only: ship cycle, follower manifest
+  verify, promote-check drill) — full narrative in the standby section of
+  this release's close-out.
+
+#### Bug fixes
+- None.
+
+### Engineering record — the CodeQL security triage
+
+All seven open alerts were raised by the `security-extended` suite against
+commit 1d313e3 (the Loom feature commit). Triaged and closed in the same
+release:
+
+- **Path injection** (`rust/path-injection`, CWE-22): the untrusted sources
+  are the three `std::env::var` reads in `storage_layout` (`BRAIN_DATA_ROOT`
+  in `resolve_root`; `BRAIN_DB_PATH` in `resolve_root` and again in
+  `legacy_db`) — CodeQL models environment variables as user-provided. The
+  fix places the analyzer-recognized `contains("..")` sanitizer guard at each
+  read, BEFORE any `PathBuf` is constructed, so every downstream sink (the
+  three flagged `fs::metadata` stats and every unflagged derived path) is
+  cut from all three flows. `resolve_root` returns
+  `StorageLayoutError::InvalidRoot` for a traversal-carrying data root
+  (fail-closed, the same shape as the existing non-absolute refusal);
+  `legacy_db` moved onto a pure env-independent core (`legacy_db_from`) so
+  the fallback is unit-pinned without process-env mutation. Behavior change,
+  deliberate: a `BRAIN_DB_PATH` like `/data/../evil/brain.db` now resolves to
+  the layout default instead of being honored.
+- **Log injection** (`rust/log-injection`, CWE-117): the flagged sink is the
+  centroid-refresh failure `eprintln!` in the markdown ingest handler; the
+  source is the payload-supplied `domain` (the sibling `document_id` log is
+  server-generated and untouched). `sanitize_log_value` (in
+  `server/router/memory.rs`) strips the line-forging characters at the log
+  seam; the DB write above it keeps the bound, unscrubbed value.
+- **Cleartext logging** (`rust/cleartext-logging`, CWE-532): the DSAR
+  certificate variable is sensitive by name heuristic; the three flagged
+  sites were `assert!`/`assert_eq!` failure messages in the legal-hold/DSAR
+  integration test interpolating it wholesale. Messages now carry the fixture
+  ids (`held_id`/`free_id`); the asserted predicates are byte-identical.
+
+Pins: `resolve_root_rejects_traversal_data_root`,
+`resolve_root_refuses_traversal_db_path_and_falls_back`,
+`legacy_db_from_refuses_traversal_values` (the refusal matrix incl. the
+trimmed-value back-compat case), and
+`sanitize_log_value_strips_line_forging_characters`. The code fixes rode the
+standby-m1 commit (8fda740) for landing; this entry is their record.
+
+Ceilings (honest): the traversal guard is lexical — it refuses `..`
+components but does not canonicalize symlinks, and the storage env vars
+remain operator-controlled knobs (the stat sites are read-only size probes);
+the log scrub is applied at the flagged seam, not swept across every log
+site (the unflagged sites log server-generated identifiers or numerics);
+the analyzer's alert closure is verified on the post-push re-scan.
+
+---
+
 ## [1.28.60] — 2026-09-06 — "Loom": CPU parallelism as an opt-in, determinism-proven tier
 
 The Enterprise Line's third milestone. Batch ingest embed + the near-dup

@@ -101,6 +101,7 @@ on the HTTP API or the client console.
 | `brain workflow approve <run> <step>` | Approve a step gated on human approval. |
 | `brain workflow crank <run> [steps]` | Advance the engine loop up to `[steps]` transitions. |
 | `brain workflow handoff <run>` | Emit the I-PASS handoff packet for a run (read-seam sanitized). Supports `--json`. |
+| `brain wfm-import <file.csv\|file.json>` `[--domain D]` `[--dry-run]` | Import WFM shifts (POST `/ops/shifts`) and skills (they land as HITL `crew_skills_update` proposals — never direct writes) |
 
 ## UMP (Universal Memory Protocol)
 
@@ -109,6 +110,17 @@ on the HTTP API or the client console.
 | `brain ump export [--format md\|ump] [--out FILE]` | Export the memory corpus |
 | `brain ump import <file>` | Import a UMP export |
 | `brain ump keygen [--dir PATH]` | Generate the UMP operator (Ed25519) signing key |
+| `brain parcel export --domain <d> [--since <ts>] --out <file>` | Export approved knowledge rows as a signed parcel (quarantined rows never leave) |
+| `brain parcel import --file <file> --domain <d> [--expected-signer <did>]` | Verify + import a parcel; rows land as pending proposals, never direct writes |
+| `brain parcel ledger [--domain <d>]` | Show the parcel crossing ledger |
+
+## Personal assistant & compliance register (v1.28.42+)
+
+| Command | Purpose |
+|---|---|
+| `brain valet add "what" --at <iso\|HH:MM\|unix>` `[--repeat none\|daily\|weekly]` `[--domain D]` | Add a valet reminder |
+| `brain valet due [--now <unix>]` \| `brain valet brief` \| `brain valet consent grant\|revoke` | Due items, the brief, and consent state |
+| `brain ropa list` \| `brain ropa add --activity A --controller C --processor P --lawful-basis B` `[--categories S] [--recipients S] [--retention-days N] [--security-measures S] [--transfers S]` | Records-of-processing register (read + propose an activity row) |
 
 ## Backup & restore
 
@@ -116,6 +128,18 @@ on the HTTP API or the client console.
 |---|---|
 | `brain backup <out-path>` [`--passphrase-file PATH`] | Encrypted AES-256-GCM backup (checksummed, excludes secrets). DB path is taken from `BRAIN_DB_PATH`/default, not a positional. A passphrase is required. |
 | `brain restore <in-path>` [`--passphrase-file PATH`] | Restore from an encrypted backup |
+
+## Warm standby (v1.28.61)
+
+Warm, never hot: the shipper is an operator-run process (launchd/systemd —
+see deployment.md), NOT a server thread, and promote is a rehearsed manual
+step. There is NO hot failover and NO RPO=0 claim anywhere.
+
+| Command | Purpose |
+|---|---|
+| `brain standby start --to <dir>` `[--interval-secs 30]` `[--passphrase-file PATH]` | Long-running shipper: per cycle a PASSIVE wal_checkpoint, then the encrypted base via the backup v3 writer, the WAL chunk (same v3 encryption — no plaintext at rest), and the signed manifest (written last). An interrupted cycle self-heals on the next one. |
+| `brain standby status [--to <dir>]` | Integrity self-check of the follower: verifies the manifest's Ed25519 signature and recomputes artifact hashes — any tamper or torn cycle FAILS (exit 1). Prints cycle, age, cycles behind, and `rpo_max = interval + checkpoint lag`. |
+| `brain standby promote-check --from <dir>` `[--passphrase-file PATH]` | THE DRILL: restores the follower into a temp dir (the shipped restore path), replays the WAL chunk, runs `PRAGMA integrity_check`, and prints measured RTO plus computed RPO. Exit code gates. |
 
 ## Examples
 

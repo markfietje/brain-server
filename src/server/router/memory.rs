@@ -3418,7 +3418,7 @@ mod log_injection_seam_tests {
     fn sanitize_log_value_strips_line_forging_characters() {
         assert_eq!(
             sanitize_log_value("work\n⚠️ FORGED ENTRY"),
-            "work  ⚠️ FORGED ENTRY"
+            "work ⚠️ FORGED ENTRY"
         );
         assert_eq!(sanitize_log_value("a\r\nb"), "a  b");
         assert_eq!(sanitize_log_value("nul\0byte"), "nulbyte");

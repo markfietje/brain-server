@@ -375,6 +375,30 @@ pub fn cycles_behind(manifest: &StandbyManifest) -> u64 {
     (follower_age_secs(manifest).max(0) as u64) / manifest.interval_secs
 }
 
+/// The cycle id a (re)starting shipper resumes from: the verified manifest's
+/// cycle, else the highest chunk number on disk (a torn/missing manifest
+/// must not reset the counter — chunk names would collide), else 0.
+pub fn resume_cycle(dir: &Path) -> u32 {
+    if let Ok(m) = verify_follower(dir) {
+        return m.cycle;
+    }
+    std::fs::read_dir(dir.join("wal"))
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter_map(|e| {
+                    e.file_name()
+                        .to_str()?
+                        .split('.')
+                        .next()?
+                        .parse::<u32>()
+                        .ok()
+                })
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+}
+
 /// THE DRILL: verify the follower, restore its base into a fresh temp dir,
 /// replay the chunk as the restored db's WAL (SQLite recovery folds it in on
 /// open), run `PRAGMA integrity_check`, and time every step. Prints nothing —
@@ -549,6 +573,29 @@ mod tests {
             "torn tail"
         );
         assert_eq!(wal_frame_count(32 + 24, 0), 0, "degenerate page size");
+    }
+
+    /// A restarting shipper resumes the cycle counter: from the verified
+    /// manifest when the follower is whole, from the highest chunk number
+    /// when the manifest is torn (a reset to 0 would collide chunk names),
+    /// from 0 on an empty dir.
+    #[test]
+    fn resume_cycle_reads_manifest_then_chunks() {
+        let _guard = lock_env();
+        let _key = OperatorKey::new();
+        let work = tmp_dir("resume");
+        let db_path = work.join("brain.db");
+        make_wal_db(&db_path, 2);
+        let follower = work.join("follower");
+        assert_eq!(resume_cycle(&follower), 0, "empty dir");
+        ship_cycle(&db_path, &follower, b"p", 30, 1).unwrap();
+        assert_eq!(resume_cycle(&follower), 1, "whole manifest");
+        // Tear the manifest: the highest chunk number carries the counter.
+        std::fs::write(follower.join(MANIFEST_FILE), b"{ torn").unwrap();
+        ship_cycle(&db_path, &follower, b"p", 30, 7).unwrap();
+        std::fs::write(follower.join(MANIFEST_FILE), b"{ torn").unwrap();
+        assert_eq!(resume_cycle(&follower), 7, "highest chunk wins");
+        let _ = std::fs::remove_dir_all(&work);
     }
 
     // ── the cycle, end to end ─────────────────────────────────────────

@@ -398,3 +398,57 @@ fn bootstrap_stays_protocol_free() {
         "BOOTSTRAP PROTOCOL GATE — server::bootstrap must stay protocol-free; found: {hits:?}"
     );
 }
+
+// ── the CLI help law (v1.28.61 "Standby") ────────────────────────────────
+
+/// cli_reference_covers_subcommands — every name in the `brain` binary's
+/// SUBCOMMANDS table must appear in docs/cli-reference.md. This closes the
+/// gap that let `brain parcel` (and wfm-import, valet, ropa after it) ship
+/// with no reference row: the help text can never drift from the dispatch
+/// table (the table generates it), but NOTHING pinned the docs — until now.
+/// The pin parses the same table the dispatcher consumes, so a new command
+/// is incomplete until its doc row lands in the same commit.
+#[test]
+fn cli_reference_covers_subcommands() {
+    let brain_src =
+        std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/brain.rs"))
+            .expect("src/bin/brain.rs must be readable");
+    let doc = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/cli-reference.md"),
+    )
+    .expect("docs/cli-reference.md must be readable");
+    // Extract the ONE dispatch/help table (lines from `const SUBCOMMANDS` to
+    // the closing `];`) and pull every `name: "…"` out of it.
+    let table = brain_src
+        .split("const SUBCOMMANDS")
+        .nth(1)
+        .expect("SUBCOMMANDS table missing from brain.rs — the dispatch law is broken");
+    let table = &table[..table.find("\n];").expect("SUBCOMMANDS table never closes")];
+    let names: Vec<&str> = table
+        .lines()
+        .filter_map(|l| {
+            let idx = l.find("name: \"")?;
+            let rest = &l[idx + "name: \"".len()..];
+            let end = rest.find('"')?;
+            Some(&rest[..end])
+        })
+        .collect();
+    // Anti-vacuous: the parser must be looking at the real table (40 named
+    // subcommands at the Standby open — a floor, so new commands only raise it).
+    assert!(
+        names.len() >= 40,
+        "cli-reference pin parsed {} subcommand names — the table \
+         extractor is broken and guards nothing",
+        names.len()
+    );
+    let missing: Vec<&str> = names
+        .iter()
+        .filter(|n| !doc.contains(&format!("brain {n}")))
+        .copied()
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "cli-reference.md is missing rows for: {missing:?} — every SUBCOMMANDS \
+         entry ships its doc row in the same commit"
+    );
+}
