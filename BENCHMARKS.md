@@ -208,6 +208,62 @@ Each dated subsection below is a real captured run; the protocol above makes it
 repeatable. Where a row predates the current release it is labeled with its
 run date and commit — re-run before comparing across releases.
 
+### v1.28.59 "Headroom" — checkpoint-lag before/after (2026-09-05)
+
+The durability-policy knobs became explicit, per-capacity-target, and
+env-overridable (`BRAIN_SYNCHRONOUS`, `BRAIN_WAL_AUTOCHECKPOINT`) with defaults
+== the pre-change effective behavior (synchronous=FULL — the measured SQLite
+compile default on a fresh pooled connection; autocheckpoint=1000 pages). The
+live proof measures whether TUNING them moves the checkpoint-lag trajectory
+(`brain_wal_pages_pending`), per the execution prompt: gauges first, tuning
+later if the numbers ask.
+
+Machine: Apple M1 Pro (10 cores), 16 GB, macOS 25.6.0 (Darwin), arm64.
+Release build `cargo build --release --features bench --bin brain-server --bin
+brain --bin bench` at v1.28.59. COPY instance on `127.0.0.1:18765`, fresh
+scratch DB per run, opaque-token auth (0600 token file). The live deployment
+was untouched.
+
+Protocol per cell: fresh DB → server up → 30 × `/health/db` scrapes at
+150 ms (the ONLY place the WAL PRAGMA runs — each scrape reads
+`concurrency.wal_pages_pending`) while `BENCH_SCALES=2000 BENCH_SEARCHES=200
+BENCH_CLIENTS=8 ./target/release/bench` ingests 2 000 docs and drives the
+8×200 concurrent search. Identical corpus and load in both cells; only the
+env differs.
+
+| Metric | BEFORE (`full` / `1000`) | AFTER (`normal` / `256`) |
+|---|---|---|
+| WAL pending trajectory (30 scrapes mid-burst) | 0 ×30 | 0 ×30 |
+| Concurrent merged ops ok / failures | 1600 / 0 | 1600 / 0 |
+| p50 / p95 / p99 (ms) | 21.28 / 24.52 / 93.33 | 21.20 / 24.19 / 90.00 |
+| Ingest rate (docs/s) | 1182 | 1155 |
+| `brain_lock_wait_micros_p50` / `p95` (µs) | 0 / 10 | 10 / 10 |
+| `brain_pool_timeouts_total` / `brain_busy_errors_total` | 0 / 0 | 0 / 0 |
+
+**Finding (honest): at this scale, tuning moves nothing measurable — and that
+is the result.** The 1000-page autocheckpoint never accumulates visible WAL
+lag on a 2 000-doc burst (both trajectories flat 0), and p95 moves 24.52 →
+24.19 ms (within run noise; searches read and never fsync, so
+`synchronous=normal` has no mechanism to touch them). The lock-wait gauges'
+first live readings are the milestone's real product: p50/p95 in the lowest
+bucket (≤10 µs) on BOTH runs means the request-path locks carry no
+meaningful contention at desktop load — headroom demonstrated, not assumed.
+
+One mechanistic delta WAS observed under a heavier write burst (6 000-doc
+ingest, single client, same harness): under `full`/`1000` the trajectory
+showed a transient **34-page** peak mid-burst before draining to 0; under
+`normal`/`256` it stayed flat **0** across all 40 scrapes (150 ms cadence).
+So the 256-page ceiling bounds the WAL tighter under sustained writes —
+available for operators who want it, at an unmeasured-on-Jetson cost
+(checkpoint I/O fires ~4× more often).
+
+Ceilings: single-site desktop run — the Jetson envelope is unmeasured (no
+ARM runner, the standing repo CI gap); the 6000-doc transient is one sample;
+RSS differences between early runs were dev-box artifacts of differing
+corpora, not durability effects, and are not reported as findings. Full
+session log (raw captures, both mid-burst trajectories, the durability
+echoes): `docs/HEADROOM_PROOF_20260905.md`.
+
 > - **Latency & RSS**: `cargo run --release --features bench --bin bench` against a running server (`brain`). Run on target hardware and paste the output here.
 > - **Recall quality**: `cargo test --release -- --ignored --nocapture eval_recall_harness` (loads the model2vec weights; directional signal on the 10-doc smoke set). Expand to ≥100 judged queries before drawing release-blocking conclusions.
 

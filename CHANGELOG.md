@@ -19,6 +19,158 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.59] — 2026-09-05 — "Headroom": the write-path policy made explicit, pinned, and machine-guarded
+
+Documentation-first release wearing a test harness. The write path was
+correct (BEGIN IMMEDIATE via WorkflowTx since the lane's founding) but its
+POLICY was implicit: the pragma set lived in a one-line inline closure,
+durability was whatever SQLite's compile defaults turned out to be, and lock
+critical sections were documented only in prose. Headroom makes all three
+explicit — per-capacity-target envelope fields with defaults equal to the
+measured pre-change behavior (behavior-neutral by construction, pinned), a
+fail-closed env override pair, per-connection application where it actually
+takes effect, a boot-time echo, lock-bounds comments on every production
+`Mutex`/`RwLock` site, acquire-wait telemetry, and the write-discipline
+ratchet. No route changes, no schema movement; main.rs untouched (net delta
+0, the thin binary stands); x-api-version moves with the release stamp only.
+
+### Release notes
+
+**Bug fixes**
+- `--features rerank-tier` builds again: `server::bootstrap` named
+  `search::rerank::warmup()` without the `search` module in scope (pre-
+  existing break — the feature is not in any CI job, which is why it went
+  unnoticed). One-line path fix; no behavior change on any default build.
+
+**Improvements**
+- **Durability policy as configuration** (`BRAIN_SYNCHRONOUS`,
+  `BRAIN_WAL_AUTOCHECKPOINT`): per-connection SQLite pragmas on the MAIN
+  pool are now envelope fields (`synchronous_mode`,
+  `wal_autocheckpoint_pages`) applied at EVERY pooled connection's init
+  beside `busy_timeout` — previously only `busy_timeout` was per-connection
+  and `synchronous` silently reset to the compile default (FULL) on every
+  reconnect while `NORMAL` from the migration connection never propagated.
+  Defaults equal the measured pre-change behavior; `normal` (the WAL-mode
+  tuning posture) and any page threshold 1..=65536 are one env var away;
+  unknown values refuse boot (the `BRAIN_WRITE_POSTURE` pattern). The
+  applied policy is echoed by `/health/db` under `durability`.
+- **Lock-wait telemetry**: 15 request-path lock holders (token store, rate
+  limiter, replay cache, revocation cache, audit chain keys, domain
+  registry, embed/rerank/screen models, the workflow lane, …) now record
+  acquire-wait into a fixed integer bucket histogram — only on the
+  CONTENDED path (`try_lock` fast path costs zero clock reads). Two new
+  `/metrics` gauges, `brain_lock_wait_micros_p50` / `p95`, derive
+  bucket-quantiles at scrape. First live readings: ≤10 µs at desktop load —
+  headroom demonstrated, not assumed.
+- **Write-discipline ratchet** (`tests/write_discipline.rs`): the deferred-
+  transaction inventory (38 sites across 21 files) is frozen as per-file
+  ceilings with a file:line-list failure on growth; the IMMEDIATE
+  discipline (20 sites) is floored. New read-modify-write transitions must
+  route through `WorkflowTx::begin` or edit the baseline deliberately.
+- **Lock-bounds audit**: every production `Mutex`/`RwLock` site (19 fields)
+  carries a bounds comment — what the critical section may touch, its poison
+  posture, and whether the holder is request-path. The two deliberate
+  exceptions (domain-registry cold open, the single-flight lane) are named
+  as such.
+
+**Security fixes**
+- None (no behavior change on any default target; the envelope-defaults pin
+  enforces).
+
+### Engineering record
+
+Milestones (per `IMPLEMENTATION_PLAN_v1.28.59_Headroom.md` + execution
+prompt):
+
+- **M1 — `write_paths_are_immediate`**: the plan claimed "the allowlist is
+  empty on arrival — write discipline already routes through tx.rs". The
+  claim did not survive re-verification (the prompt's own stale-cite rule):
+  production transaction construction is a REAL, established pattern here —
+  handlers construct transactions but delegate every statement to service
+  cores (the no-SQL gate counts statements, not BEGINs), plus sanctioned
+  seams (the lane, the audit settle, revocation rotation). Shipped instead:
+  the Plumb debt-lock pattern as a ratchet — DEFERRED inventory frozen at
+  38 sites / 21 files (down-only, unlisted-file hits fail, below-baseline
+  progress prints deltas), IMMEDIATE inventory floored at 20 sites (up-
+  only), cfg(test) stripped via the house split idiom, positive controls on
+  `workflow/tx.rs`, a fence pinning the whole-file-test exclusion
+  (`src/search/tests.rs`), and a RED-PROOF: a planted `conn.transaction()`
+  in production `config.rs` failed the gate with the exact file:line before
+  reverting green. Documented ceiling: code hidden behind a MID-FILE test
+  block escapes the split idiom (the house convention of trailing test
+  regions is the fence — same as the transport-free gate).
+- **M2 — durability + checkpoint policy**: `CapacityEnvelope` gains
+  `synchronous_mode: SynchronousMode` (Full|Normal) +
+  `wal_autocheckpoint_pages: u32`; `capacity::Durability` carries the
+  resolved pair and builds the pragma batch
+  (`busy_timeout=5000; synchronous=…; wal_autocheckpoint=…`). Defaults are
+  the MEASURED pre-Headroom behavior (empirically verified, not assumed: a
+  fresh pooled connection to the WAL DB reported `synchronous=2` (FULL) and
+  `wal_autocheckpoint=1000` — the compile defaults, because the migration
+  connection's NORMAL never covered the pool). Pins:
+  `envelope_defaults_equal_current_behavior` (exhaustive over targets),
+  `pool_init_pragmas_read_back` (temp-file DB through the production apply
+  path — FULL/1000 default AND NORMAL/256 override),
+  `pragma_batch_keeps_busy_timeout`, `unknown_synchronous_value_refuses`
+  (via the resolver pin), `wal_autocheckpoint_resolves_and_bounds` (0 =
+  autocheckpoint-off refused; 1..=65536 accepted). The inline pool-init
+  closure moved to a named fn (`main_pool_connection_init`) — the Spire
+  law's shrink applied to the boot file. journal_mode stays migration-owned
+  (persistent; deliberately not duplicated).
+- **M3 — lock bounds + contention completion**: bounds comments on all 19
+  production lock fields (2 found beyond the plan's list:
+  `ump_integrity::ReplayCache`, `connector::GitHubAppProvider` — the latter
+  comment-only, off the request path). 15 request-path holders rewire their
+  acquisitions through `concurrency::{mutex_guard_recovered,
+  mutex_guard_measured, rwlock_read_recovered, rwlock_read_measured,
+  rwlock_write_measured}` — each site's poison posture preserved verbatim
+  (fail-closed limiter/registry/token-store, fail-open tracker/cache,
+  recover-and-continue lane/decision-key). Histogram: 11 fixed µs edges
+  (`LOCK_WAIT_BUCKET_EDGES_US`, 12 buckets) in `concurrency.rs`;
+  `LockWaitHistogram::quantile_edge_us` is the deterministic scrape read.
+  Named pins: `rate_limiter_decision_is_pure_under_lock` (identical
+  decision vectors across fresh limiters through cap-hit eviction and
+  budget exhaustion), `token_rotation_swap_is_single_assignment` (4 reader
+  threads × 200 real file-mtime rotations through `reload_if_changed_from`:
+  >1 000 hot reads, >50 swaps, ZERO torn observations),
+  `lock_helpers_record_only_on_contention` (fast path records NOTHING;
+  contended acquire records), `poison_flavors_keep_their_contracts`.
+- **M4 — live proof** (`docs/HEADROOM_PROOF_20260905.md`, summary table in
+  `BENCHMARKS.md` §v1.28.59): COPY instance, identical-corpus paired runs.
+  WAL trajectory flat 0 in both cells (2000-doc burst; the 6000-doc burst
+  showed the one mechanistic delta: a transient 34-page peak under
+  full/1000 vs flat 0 under 256). p95 24.52 → 24.19 ms (noise — searches
+  never fsync). Durability echo verified in both postures. Lock-wait
+  gauges' first live readings ≤10 µs. Machine: M1 Pro/16 GB/arm64.
+- **Docs parity (same-commit law)**: configuration.md rows for both env
+  vars; docs/metrics.md rows for `brain_lock_wait_micros_p50`/`p95` + the
+  `/health/db` `durability.*` keys; docs/api.md `/health/db` row;
+  BENCHMARKS.md dated subsection.
+
+Spire ledger: `CRATE_TEST_FLOOR` 1,207 → 1,221 (the new pins, re-measured
+by the same substring method). main.rs untouched. Wire: no route changes;
+`/health/db` additive JSON keys + `/metrics` additive series only;
+x-api-version moves with the release stamp.
+
+Validation: full suite `cargo test --features bench` 1,275 passed / 0
+failed / 1 ignored (plus the write-discipline trio and feature-gated
+modules under `neural-embed,rerank-tier,injection-classifier`); the full
+clippy/fmt/CI-dry-run gate ran at close (see AGENTS.md).
+
+Ceilings (honest): the M1 ratchet is not the plan's zero-allowlist — the
+plan's verification was empirically wrong and the ratchet is the honest
+deposit (the burn is follow-up work); the split idiom's mid-file blind spot
+is shared with every house gate; lock-wait coverage is request-path holders
+only (the mcp binary, the connector token cache, and the /health/db-scrape
+locks are comment-only, with reasons); quantiles are bucket edges, not
+interpolated percentiles (the dictionary says so); Jetson durability
+envelope unmeasured (no ARM runner); the 6000-doc WAL transient is one
+sample.
+
+See docs/HEADROOM_PROOF_20260905.md for the raw captures.
+
+---
+
 ## [1.28.58] — 2026-09-05 — "Throughput": concurrent truth, visible contention, the calendar as code — the Enterprise Line opens
 
 Two deadlines make the milestone non-slottable: CRA Art 14 reporting goes

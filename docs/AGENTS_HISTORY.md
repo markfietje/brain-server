@@ -8266,4 +8266,158 @@ Agent 16 landed the M2 integration: `mod sources;`, `/ingest/markdown` +
 ### 3. Historical plaintext token leak (openclaw-side, not brain-server)
 The brain-server bearer token (`8893e7ce…`) is baked into **21 rows** of `~/.openclaw/agents/main/agent/openclaw-agent.sqlite` (`transcript_events` × 5, `trajectory_runtime_events` × 16) from a 2026-07-15 debug session. brain-server's own DB is clean — the leak is entirely in openclaw's memory log. **Purge is paused**: the DB is live (the openclaw gateway process holds it, WAL active — verify with `pgrep -f openclaw/dist/index.js` before touching it). Safe purge requires stopping openclaw → backup → redact → VACUUM → restart. The same token is also in `~/.openclaw/openclaw.json`'s `authToken` field (still live config, not yet remediated).
 
+
+
+## v1.28.58 "Throughput" (2026-09-05) — retired from AGENTS.md at the Headroom open
+
+> Predecessor: v1.28.58 "Throughput" — THE ENTERPRISE LINE OPENS.
+> Concurrent truth, visible contention, the calendar as code; nothing
+> behavioral changes on any request path (no route changes, x-api-version
+> untouched, main.rs untouched — net delta 0). (1) CALENDAR AS CODE:
+> `src/reg_watch.rs` (cfg(test), law 13) — dated pins with source URLs;
+> `reg_watch_cra_pin_is_green` asserts the CRA runbook with its three
+> clock anchors (landed RED, flipped GREEN same release; the deadline
+> constant is load-bearing — it derives the date stamp the runbook must
+> carry); AI Act Art 50 (2026-12-02) + PQC seam (2030-12-31) in watch
+> form. (2) CONCURRENT BENCH: `BENCH_CLIENTS` (default 1,
+> byte-compatible) fans out N threads over the SAME seeded mix
+> (`BENCH_SEED` printed; no RNG crate); merged p50/p95/p99/max + failure
+> counts + per-client skew; ingest stays single-client;
+> `BENCH_ASSERT_P95_MS` env gate; `BENCH_ENVELOPE` gains per-target
+> `search_p95_ms_ceiling` (desktop 60 ms measured from 3 live runs
+> 22.28/22.86/23.07; jetson 150 UNMEASURED); merge pinned deterministic.
+> (3) CONTENTION TELEMETRY: `src/concurrency.rs` process-local counters
+> (audit-static precedent) — `brain_pool_timeouts_total` wired at the
+> NEW shared checkout-error seam `HandlerError::db_down` (92 identical
+> `pool.get().map_err` sites collapsed, wire-identical) + the lane;
+> `brain_busy_errors_total` at the governed-write BEGIN sites
+> (`WorkflowTx::begin` inspect_err + lane); `brain_pool_in_use/idle
+> {domain}` from r2d2::State at scrape; `brain_wal_pages_pending
+> {domain}` refreshed ONLY by /health/db (PASSIVE checkpoint pragma lives
+> there, nowhere else); /health/db JSON gains additive `concurrency.*`
+> keys; proptest pins Relaxed monotonicity (2 cases). (4) DICTIONARY:
+> docs/metrics.md gains the ops series table — every `brain_*` series
+> has a row, pinned by `metrics_series_have_dictionary_rows` (docs_truth
+> source-scan, anti-vacuous ≥ 10); docs/api.md + openapi.yaml additive
+> same change. (5) CRA RUNBOOK + DRILL: `docs/cra-reporting-runbook.md`
+> (taxonomy, three clocks, ENISA+CSIRT channel table with deploy-time
+> operator blank, artifact checklist, role call) +
+> `scripts/cra-report-drill.sh` (tabletop; fills the 24 h template,
+> stamps every step); baseline in `docs/THROUGHPUT_PROOF_20260905.md`
+> with the bench runs, the same-seed structural diff, and the three
+> /metrics captures (in_use 0 → 5 → 0 across a 6 400-search burst).
+> (6) CI: `bench-concurrency` job, desktop-x86 only
+> (BENCH_CLIENTS=8 BENCH_SEARCHES=200 BENCH_ASSERT_P95_MS=10000,
+> generous on purpose; retry-once documented). CRATE_TEST_FLOOR
+> 1,196 → 1,207 (the new pins). Ceilings (honest): counters process-local;
+> busy series distinct by site (write-BEGIN vs audit-settle); some
+> non-seam checkout arms (AddResponse/anyhow-context) don't bump the
+> timeout counter; WAL gauge is a /health/db-cached snapshot; jetson
+> floor unmeasured (no ARM runner); drill timings are machine-fast by
+> nature (the walk is the rehearsal). See CHANGELOG.md §[1.28.58].
+> Predecessor: v1.28.57 "Capstone" — THE FIN. The Spire Line
+> closes with the enforcing flip + the audit; nothing landed that isn't a
+> gate or a leftover. main.rs 12,471 → **124 lines** (wiring only:
+> bootstrap → compose → serve, router-law header): the whole cfg(test)
+> region (12,294 lines, 109 plain + 60 tokio fns) moved VERBATIM to
+> `tests/main_suite.rs` (163 passed + 6 ignored, identical; include_str!
+> anchors re-pointed CARGO_MANIFEST_DIR-absolute; the root use-block
+> traveled with it so `use super::*` resolves exactly as before). TWO
+> GREP GATES born hard in `src/spire_inventory.rs`, each RED-PROOFED
+> against a planted violation before its green commit:
+> `route_registrations_live_only_under_router` (a registration anywhere
+> under src/ outside router/** fails CI — production, test, or comment
+> residue; ONE fenced carve-out: `src/bin/mcp.rs`, a separate binary's
+> /mcp protocol edge, pinned at EXACTLY one site) and
+> `bootstrap_stays_protocol_free` (no axum types in server/bootstrap.rs;
+> word-boundary needles so comments never fire). Both self-pinned inline
+> (the Cornerstone lesson). Ledger final posture (ceilings retire where
+> violations are structurally impossible — the Cornerstone precedent):
+> `MAIN_RS_LINES_CEIL` → `MAIN_RS_LINES_MAX ≤ 300` (the pin IS the
+> ceiling); `TEST_REGION_LINES` retired via the region-ABSENCE pin;
+> `MAIN_RS_TEST_FLOOR` retired per its own relocation convention (its 109
+> pins moved this release); `ROUTE_CALL_SITES` retired early (main.rs
+> routes pinned to 0); `TOTAL_SRC_TEST_FLOOR` → `CRATE_TEST_FLOOR` over
+> src/ + tests/, re-measured 1,196 in the move commit (1,198 at close —
+> the gates added two); `ROUTER_SITES_FLOOR` 199 and rows 161/145
+> survive. `route_guards.rs` re-homed to `src/server/router/` (decl
+> moves, content unchanged — 100% rename); `spire_inventory.rs` stays
+> beside main.rs. The line's audit report appended to `docs/AUDIT.md`
+> (per the Foundation pattern): the measured before/after (19,906 → 124),
+> the module map, the enforcement map. The Architecture Law gains THE
+> THIN BINARY. Wire byte-identical (openapi.yaml diff-empty);
+> x-api-version moves with the release stamp only. Full suite 1,265
+> passed / 7 ignored per commit; clippy -D warnings (bench) clean; CI
+> dry-run green (default, crates, steward-harness, otel); lipstyk
+> diff-strict green; live smoke on the COPY instance green (/health,
+> /audit/verify ok, the 413 + 408 paths, one ingest → recall round-trip).
+> Ceilings (honest): mcp.rs keeps its own router (fenced at one site);
+> tests/main_suite.rs is one ~12k-line file (the mass moved as one
+> verbatim block; splitting is churn without a subject); the ≤ 300 pin is
+> a pin, not a proof of minimalism — the route gate is the tooth.
+> See CHANGELOG.md §[1.28.57]. Predecessor: v1.28.56 "Vaulting" — THE LIB
+> FLIP. The monolith
+> becomes the thin bin. Order of landing: middleware fns stage in
+> `server/router/{mod,auth}.rs`; `app(state)` lifts out of main_inner with
+> the middleware inputs on `AppState` (token store, JWT state, CORS — the
+> composition is a pure function of state); `server/bootstrap.rs` takes
+> the whole boot region (argv → fail-closed checks → pool/offline modes →
+> model → migration → watchdogs → JWT wiring → `AppState` → watchers →
+> bind guard) and `boot.rs` folds in; `app()` moves to
+> `server/router/mod.rs` and the chain partitions into SIX family
+> builders — core 17 / memory 56+3-legacy+1GiB-import / ump 12 /
+> compliance 10+5-gated / workflow 82 / auth 9 — the Deprecation
+> route_layer's application set preserved byte-for-byte (core ∪ legacy
+> fragment); THE LIB FLIP puts the whole server tree in lib.rs behind
+> `pub mod server { bootstrap, router }` with main.rs consuming
+> `brain_server::server::...`; the law-9 matrix (every AUTHZ_GATES row ×
+> 7 principal classes + opaque superuser + literal-200 anchors) moved to
+> `tests/authz_matrix.rs` driving `brain_server::server::router::app`
+> from OUTSIDE the crate; law-13 gauges ship (`brain_db_busy_total` on
+> /metrics, `db_busy_hits` on /health, ceiling marked: busy-handler hit
+> counts need a busy-handler change law 13 freezes). Ledger Buttress →
+> Vaulting: main.rs 18,291 → 12,470 lines; region 12,302 → 12,294; main.rs
+> route sites 234 → 35 (test stubs; 0 production registrations outside
+> src/server/router/**, floor 199); ROUTER_SITES_FLOOR 199 gained (≥6
+> family files). Wire byte-identical to v1.28.55 (openapi.yaml diff-empty).
+> Ceilings: main.rs keeps the 12k-line non-router test mass (Capstone);
+> busy-HANDLER counts unobservable under frozen concurrency (failures
+> observed instead); /consolidate/propose stays layout-conditional.
+> See CHANGELOG.md §[1.28.56]. Predecessor: v1.28.55 "Buttress" — THE
+> HELPERS COME HOME. The
+> pre-main library code stops pretending to be an entrypoint. Selection
+> rule = the service-layer rule sideways: a fn moves iff its signature is
+> already free of transport types. Five move commits, fn + pins together,
+> ledger lowered same-commit: `src/http_limit.rs` (RateLimiter,
+> ConnectionTracker + RAII TrackerEntry, connection/RSS watchdogs,
+> process_rss_mib + 9 pins — two more than the roadmap census;
+> move-with-pins outranks the census); `screen.rs` gains the layer-1
+> blocklist (contains_suspicious_pattern + 7 pins) and the quarantine
+> read-seam pair (flag_if_quarantined, suppress_flagged_evidence +
+> snippet pin; the test_db()-driven quarantine pin stays, repointed);
+> `src/graph_read.rs` (clamp_graph_limit, traverse_row_mapper,
+> build_explanation_paths + 2 explanation pins); `src/boot.rs` staged
+> (argv gate, worker_threads, bind predicates + fail-closed guard, ct_eq
+> + 2 pins; NOT src/server/** — born at Vaulting). Landed truth:
+> main.rs 19,282 → 18,291 lines; test region 12,712 → 12,302; route
+> ceiling frozen at 234; crate test floor re-measured 1,178 → 1,185 and
+> guard-table floors 151/141 → 161/145 at the open (rows joined with
+> their wire changes since extraction) — the ledger bit twice en route
+> (the #[tokio::test] needle gap, and a botched insertion that consumed
+> the screen_folds pin; repaired before commit — the design working).
+> Ceilings (honest): the ingest write core (write_markdown_ingest,
+> link_vault_source, parse_memory_content) did NOT move — the write fns
+> return Result<_, AppError> and AppError is IntoResponse-shaped, so the
+> family rides with Vaulting's memory family and the three source-scan
+> pins stay pointed at main.rs, verdicts unchanged; html_escape +
+> parse_annotations stayed (axum-handler consumers per the scope gate);
+> measure_capacity stayed (executor default); entity_relations +
+> relations_for stayed (AppError signatures — Vaulting). Full suite
+> 1,031 bin passed / 6 ignored per commit, identical every commit;
+> clippy -D warnings (bench) clean; wire artifacts diff-empty; /health +
+> /audit/verify ok on the rebuilt binary.
+> See CHANGELOG.md §[1.28.55]. Predecessor: v1.28.54 "Scaffold" — the
+> ledger, the data tables, the pins that came home (full note in
+> CHANGELOG §[1.28.54]).
+
 # END — historical agent execution log
