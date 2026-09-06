@@ -181,18 +181,90 @@ fn ai_act_art50_marking_deliverable() {
     );
 }
 
-/// PQC inventory + algorithm-agility seam — WATCH form until 2030-12-31
-/// (NIST IR 8547 key-establishment deadline). The deliverable lands with
-/// Enterprise Line's attestation milestone; the watch only asserts the horizon.
+/// PQC inventory + algorithm-agility seam — DELIVERABLE form (flipped from
+/// WATCH in v1.28.62, the Attestation milestone). The 2030-12-31 horizon
+/// stays pinned as the planning input, but the pin now asserts the
+/// deliverable EXISTS: docs/crypto-inventory.md in SP 1800-38B shape (every
+/// algorithm + HNDL verdict + swap path) and BOTH agility seams it names —
+/// the JWT ML-DSA landing procedure against the auth/jwt.rs enum whitelist,
+/// and the UMP did:key multicodec version-prefix rule. The inventory
+/// rotting (a shipped algorithm vanishing from the doc, or a seam losing
+/// its named file) fails HERE.
 #[test]
-fn pqc_inventory_seam_watch() {
-    assert!(
-        today() < PQC_INVENTORY_SEAM,
-        "PQC key-establishment deadline (2030-12-31) has passed and the \
-         crypto inventory + alg-agility seam is not pinned — deliver it \
-         (the Enterprise Line's attestation milestone) \
-         or re-map with a source URL in the same change"
+fn pqc_inventory_seam_deliverable() {
+    // The horizon stays stamped (the calendar keeps its source URL).
+    assert_eq!(
+        PQC_INVENTORY_SEAM,
+        deadline(2030, 12, 31),
+        "the PQC key-establishment horizon is 2030-12-31 — re-mapping it \
+         requires a source URL in the same change"
     );
+    let inventory = doc("docs/crypto-inventory.md");
+    for anchor in [
+        "## Algorithm inventory",
+        "## HNDL exposure verdicts",
+        "### JWT: the ML-DSA landing procedure",
+        "### UMP signatures: the algorithm version-prefix rule",
+        "What this file does NOT claim",
+    ] {
+        assert!(
+            inventory.contains(anchor),
+            "crypto-inventory.md is missing `{anchor}` — the SP 1800-38B shape \
+             is the deliverable"
+        );
+    }
+    // Every shipped algorithm family is still inventoried (the doc cannot
+    // silently drop a primitive the code ships).
+    for alg in [
+        "Ed25519",
+        "HMAC-SHA256",
+        "SHA-256",
+        "BLAKE3",
+        "AES-256-GCM",
+        "Argon2id",
+        "RS256",
+    ] {
+        assert!(
+            inventory.contains(alg),
+            "crypto-inventory.md no longer inventories {alg} — the inventory \
+             must cover every shipped algorithm"
+        );
+    }
+    // The two agility seams name their REAL files (a seam that stops
+    // pointing at code is prose, not a seam).
+    assert!(
+        inventory.contains("auth/jwt.rs") && inventory.contains("ALLOWED_ALGS"),
+        "the JWT seam must name the actual whitelist (auth/jwt.rs ALLOWED_ALGS)"
+    );
+    assert!(
+        inventory.contains("did_key_from_ed25519") && inventory.contains("verifying_key_from_did"),
+        "the UMP seam must name the actual did:key machinery in ump_integrity"
+    );
+    // The JWT whitelist still exists at the named seam (the enum isolation
+    // the ML-DSA procedure leans on).
+    let jwt = doc("src/auth/jwt.rs");
+    assert!(
+        jwt.contains("pub const ALLOWED_ALGS"),
+        "auth/jwt.rs lost ALLOWED_ALGS — the ML-DSA landing procedure's seam \
+         moved; update the inventory in the same change"
+    );
+}
+
+/// The watch's clock machinery, kept alive by its own pin: both 2026 watch
+/// pins flipped to DELIVERABLE form, but every future deadline re-uses this
+/// clock — so it stays TESTED (Hinnant's known vectors + a sane `today`),
+/// not merely compiled.
+#[test]
+fn watch_clock_still_tells_time() {
+    // Howard Hinnant's published civil_from_days vectors.
+    assert_eq!(civil_from_days(0), (1970, 1, 1));
+    assert_eq!(civil_from_days(19_000), (2022, 1, 8));
+    // today() is the real clock: the epoch math must land in the decade the
+    // pinned deadlines live in (a broken civil conversion would desync every
+    // future WATCH pin from the calendar it guards).
+    let (y, m, d) = today();
+    assert!((2024..=2040).contains(&y), "implausible year {y} from today()");
+    assert!((1..=12).contains(&m) && (1..=31).contains(&d));
 }
 
 /// standby_drill_recorded — a warm standby that has never rehearsed its

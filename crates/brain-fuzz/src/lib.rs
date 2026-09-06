@@ -102,8 +102,10 @@ mod libfuzzer_targets {
     use super::*;
     use libfuzzer_sys::fuzz_target;
 
-    /// One entry point dispatching on the first byte — cargo-fuzz wants a
-    /// single target per binary; the dispatcher keeps all four surfaces live.
+    // One entry point dispatching on the first byte — cargo-fuzz wants a
+    // single target per binary; the dispatcher keeps all four surfaces live.
+    // (A `///` here is an unused doc comment — rustdoc does not document
+    // macro invocations — and the nightly compile check runs -D warnings.)
     fuzz_target!(|data: &[u8]| match data.first().map(|b| b % 4) {
         Some(0) => fuzz_evidence(data),
         Some(1) => fuzz_meta(data),

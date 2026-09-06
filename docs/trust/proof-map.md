@@ -39,6 +39,11 @@ are assumed; swap `BRAIN_TOKEN_FILE`/`-H 'authorization: Bearer …'` as needed.
 | **Origin provenance (`human`/`model`/`imported`)** | v1.18.2 | `/export` returns `provenance_summary {total, by_origin, by_source}` |
 | **Standard Webhooks signed timestamp** | v1.20.4 | `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1`; `/webhooks/{kind}` verifies `v1,<base64>` HMAC |
 | **SNI/zero-telemetry** | v1.16.0+ | nothing collects data; the grep guard `credentials_stay_in_memory` passes in CI |
+| **Art 50(2) provenance marks on engine-generated artifacts** (Attestation) | v1.28.62 | a remedy draft / ADR packet / outreach export / `kb_manifest.json` carries `"provenance": {mark: AIGEN, generator, generated_at, signed_by, sig}`; flip one byte anywhere → `provenance::verify` refuses (pinned by `provenance_marks_present_on_all_four_classes` + `tampered_provenance_fails_verify`) |
+| **Principal kill-switch (ASI03/07)** (Attestation) | v1.28.62 | `POST /ops/agents/revoke {principal, reason}` (Admin) → every card use / dispatch / result refuses `403 principal_revoked`; in-flight runs drain to `cancelled` with `delegation/revoked` lineage events; `GET /ops/agents/revocations` lists the register; the audit chain carries revoke + drain in one tx |
+| **Crypto inventory + algorithm-agility seams (PQC)** (Attestation) | v1.28.62 | `docs/crypto-inventory.md` — SP 1800-38B-shaped table (algorithm · what it protects · HNDL verdict · swap path) + the JWT ML-DSA landing procedure (`auth/jwt.rs::ALLOWED_ALGS` seam) + the UMP did:key multicodec version-prefix rule; pinned by `pqc_inventory_seam_deliverable` |
+| **Approval-fatigue telemetry (ASI09)** (Attestation) | v1.28.62 | `GET /workflow/scoreboard` (DPO/admin) → `review_independence_risk` + `approval_uniformity_ratio` + `review_decisions_window`; pinned to the client detector's arithmetic by `scoreboard_uniformity_matches_client_math` |
+| **Calendar-as-code regulatory watches** (CRA/AI Act/PQC) | v1.28.58–.62 | `cargo test --lib reg_watch` — CRA Art 14 runbook + standby/revocation drill records + the Art 50 marking deliverable + the PQC inventory, each a CI gate |
 
 ## Claims that are ceilings (owned, not shipped)
 
@@ -50,8 +55,13 @@ These are stated in the docs as **honest ceilings** — check them in
 - Multi-team **tenancy + per-tenant limits** — planned v2.0/v2.1, no code yet.
 - **At-rest encryption, mTLS, A2A federation, OIDC authorization-code** — v2.x
   ceilings, named owners in the matrix.
+- **Classical signatures until a PQC stack lands** — the crypto inventory
+  (v1.28.62) maps every primitive's swap path; JWT ML-DSA waits on the IdP,
+  UMP signatures land via the did:key multicodec prefix. Printed ceiling,
+  owned.
 - **SOC 2 Type II evidence program** — v1.20.10 + the operator runs it; this
-  map is the raw material.
+  map is the raw material (refreshed against the current surface in
+  v1.28.62 — the Attestation rows above).
 
 ## Reproduce end to end
 
