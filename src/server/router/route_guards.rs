@@ -176,7 +176,7 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/workflow/channel/user-map",
     // Mesh: agents as named colleagues — signed cards + delegation.
     "/ops/agents/cards",
-    // v1.28.62 Attestation: the ASI03/07 principal kill-switch.
+    // The Attestation line: the ASI03/07 principal kill-switch.
     "/ops/agents/revoke",
     "/ops/agents/revocations",
     "/workflow/runs/{id}/delegations",
@@ -423,7 +423,7 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     // Mesh: provisioning/re-signing a card is governance over the
     // agent's identity → Admin; the verified card views are Reads.
     ("/ops/agents/cards", "Read"),
-    // v1.28.62 Attestation: the kill-switch revokes an IDENTITY (not a
+    // Attestation: the kill-switch revokes an IDENTITY (not a
     // domain row) → Admin on global; the register view is a Read.
     ("/ops/agents/revoke", "Admin"),
     ("/ops/agents/revocations", "Read"),

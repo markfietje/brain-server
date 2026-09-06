@@ -798,7 +798,7 @@ pub fn manifest_json(files: &BTreeMap<String, String>) -> String {
 }
 
 /// The manifest as WRITTEN: the pure content-addressed body plus the Art
-/// 50(2) provenance seal (`provenance::attach_aigen`, v1.28.62). The
+/// 50(2) provenance seal (`provenance::attach_aigen`). The
 /// signature covers the canonical bytes of the `{"files": …}` body, so the
 /// operator's sha256-each-file-vs-digests verification is byte-unchanged —
 /// the seal adds WHO/WHAT/WHEN generated the build on top. Without an

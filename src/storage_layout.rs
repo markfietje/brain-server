@@ -174,6 +174,12 @@ pub const SCHEMA_VERSION_V1_28_45: &str = "1.28.45";
 /// documented no-op.
 pub const SCHEMA_VERSION_V1_28_53: &str = "1.28.53";
 
+/// Attestation: `revoked_principals` (principal PK, revoked_at, reason,
+/// revoked_by) — the ASI03/07 identity kill-switch store. Additive and
+/// one-way; empty on every existing deployment until a revocation is filed;
+/// the down-migration is a documented no-op.
+pub const SCHEMA_VERSION_V1_28_62: &str = "1.28.62";
+
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
 pub const SCHEMA_VERSION_V1_4_0: &str = "1.4.0";

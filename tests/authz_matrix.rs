@@ -385,6 +385,12 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
             ),
             // the gate row pins the GET side; POST is handler-source-pinned.
             "/ops/agents/cards" => ("GET", ""),
+            // the kill-switch carries a typed body — the matrix probe names
+            // a throwaway principal so the pass cell exercises the real
+            // revocation path (isolated test app).
+            "/ops/agents/revoke" => {
+                ("POST", r#"{"principal":"matrix-agent","reason":"matrix"}"#)
+            }
             "/parcels/export" => ("POST", r#"{"domain":"global"}"#),
             "/parcels/import" => (
                 "POST",

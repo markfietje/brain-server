@@ -165,7 +165,7 @@ pub(crate) fn score_units_now(conn: &Connection) -> i32 {
     }
 }
 
-// ── v1.28.62 "Attestation": the approval-fatigue telemetry (ASI09) ──────
+// ── Attestation: the approval-fatigue telemetry (ASI09) ────────────────
 // The client's rubber-stamp detector (client/src/panels/review.rs:192
 // `rubber_stamp()` over calibration_stats) computed SERVER-SIDE so the DPO
 // sees the signal on the scoreboard, not only in one reviewer's console.
@@ -491,7 +491,7 @@ mod scoreboard_tests {
         "voc_complaints_per_thousand_contacts_units",
         // v1.28.36 Keystone: the re-ask is now counted.
         "reask_rate",
-        // v1.28.62 Attestation: ASI09 approval-fatigue telemetry (the client
+        // Attestation: ASI09 approval-fatigue telemetry (the client
         // detector's arithmetic, server-side).
         "review_independence_risk",
         "approval_uniformity_ratio",

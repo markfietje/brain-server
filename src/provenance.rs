@@ -1,5 +1,5 @@
 //! Provenance marks — the Art 50(2) posture for engine-generated TEXT
-//! artifacts that leave a boundary (Enterprise Line M5, v1.28.62).
+//! artifacts that leave a boundary (the Attestation milestone).
 //!
 //! Every artifact carries one machine-readable object:
 //!

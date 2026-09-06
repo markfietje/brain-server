@@ -3752,7 +3752,7 @@ Final paragraph after the rule.";
         // domain-scoped review queue).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_53),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_62),
             "schema_version must be recorded as the current release after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×

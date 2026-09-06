@@ -114,7 +114,7 @@ fn reg_watch_cra_pin_is_green() {
 }
 
 /// AI Act Art 50(2) machine-readable marking — DELIVERABLE form (flipped
-/// from WATCH in v1.28.62, the Attestation milestone). The deadline
+/// from WATCH at the Attestation milestone). The deadline
 /// (2026-12-02) stays pinned as the compliance horizon, but the pin now
 /// asserts the deliverable EXISTS: the provenance module is wired on all
 /// four engine-generated artifact classes (remedy drafts, ADR packets,
@@ -182,7 +182,7 @@ fn ai_act_art50_marking_deliverable() {
 }
 
 /// PQC inventory + algorithm-agility seam — DELIVERABLE form (flipped from
-/// WATCH in v1.28.62, the Attestation milestone). The 2030-12-31 horizon
+/// WATCH at the Attestation milestone). The 2030-12-31 horizon
 /// stays pinned as the planning input, but the pin now asserts the
 /// deliverable EXISTS: docs/crypto-inventory.md in SP 1800-38B shape (every
 /// algorithm + HNDL verdict + swap path) and BOTH agility seams it names —

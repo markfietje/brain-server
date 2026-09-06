@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 
 pub const TOPIC_REQUEST: &str = "delegation/request";
 pub const TOPIC_RESULT: &str = "delegation/result";
-/// v1.28.62: the revocation-drain lineage marker — evidence the in-flight
+/// The revocation-drain lineage marker — evidence the in-flight
 /// run was cancelled BECAUSE its owning principal was revoked (the drill's
 /// "drain observed in events" reading rides this topic).
 pub const TOPIC_REVOKED: &str = "delegation/revoked";

@@ -431,7 +431,7 @@ pub async fn get_scoreboard(
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(HandlerError::internal)?;
-    // ASI09 approval-fatigue telemetry (v1.28.62): the client's rubber-stamp
+    // ASI09 approval-fatigue telemetry: the client's rubber-stamp
     // arithmetic computed server-side over the same window/cap — DPO
     // visibility on the board, docs/metrics.md is the normative dictionary.
     let pool_ri = super::resolve_domain_pool(&state.registry, None)?;
@@ -491,7 +491,7 @@ pub async fn get_scoreboard(
         "voc_contacts_total": voc.contacts_total,
         "voc_complaints_total": voc.complaints_total,
         "voc_complaints_per_thousand_contacts_units": voc.complaints_per_thousand_units,
-        // ASI09 approval-fatigue telemetry (v1.28.62): the client detector's
+        // ASI09 approval-fatigue telemetry: the client detector's
         // verdict + the approval rate itself (integer ten-thousandths).
         "review_independence_risk": risk,
         "approval_uniformity_ratio": uniformity,
@@ -1429,7 +1429,7 @@ pub async fn get_outreach_campaign(
     .map_err(outreach_err)?;
     // The read seam covers every operator-supplied text field, then the Art
     // 50(2) seal rides LAST — after the read-seam shaping — so the
-    // signature covers the exact boundary bytes (v1.28.62).
+    // signature covers the exact boundary bytes.
     let now = chrono::Utc::now().timestamp();
     Ok(Json(seal_campaign_packet(packet, &principal, now)))
 }
@@ -1788,7 +1788,7 @@ pub async fn get_complaint_adr_packet(
     .map_err(complaint_err)?;
     // The read seam covers every KB-sourced text field, then the Art 50(2)
     // seal rides LAST — after the read-seam shaping — so the signature
-    // covers the exact boundary bytes (v1.28.62).
+    // covers the exact boundary bytes.
     let now = chrono::Utc::now().timestamp();
     Ok(Json(seal_adr_packet(packet, &principal, now)))
 }
