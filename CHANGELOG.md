@@ -19,6 +19,121 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.63] — 2026-09-06 — "Wardline": reserved vocabulary at the workflow input seam — the SEAM LINE opens
+
+One milestone, one law made true in code: kernel-only outbox topics can no
+longer be forged through the agent-facing events route. **The honest
+disclosure first: between v1.28.43 (when the events route shipped) and this
+release, the three-gate channel law was CODE-FALSE at the outbox seam —
+`POST /workflow/runs/{id}/events` could mint `channel/out`, `channel/ping`,
+`steering`, and `workflow/valet*` rows with none of the gates those topics
+promise, and the drains trusted the table.** Found in the 2026-09-06
+security audit (§4.1 X-W1…X-W5); verified live against a DB copy before the
+fix (the forged envelope was delivered by the real HMAC bridge drain), and
+verified dead the same way after.
+
+### Release notes
+
+**Security fixes**
+- **Reserved outbox topics (`channel/*`, `steering`, `workflow/valet*`) are
+  kernel-only.** The single gate lives in `enqueue_child` (the shared
+  function, not a per-caller check) behind `RESERVED_OUTBOX_TOPICS` — one
+  `pub const` in `workflow::outbox` — with a `pub(crate)`-constructor
+  `KernelOrigin` token held by exactly four kernel writers (`enqueue_out`,
+  `enqueue_ping`, the steering inbox write, the valet crank). The events
+  route now refuses reserved topics with `400 topic_reserved` + a `denied`
+  audit row on the workflow chain (`outbox_reserved_refused topic=…`) —
+  error paths deny loudly, never a silent drop.
+- **The run-status vocabulary is closed.** `PUT /workflow/runs/{id}/state`
+  accepts only `active | cancelled | closed | completed | fired | resolved`
+  (frozen from the observed writers/readers: open_run, the revocation
+  drain, the valet crank, the workload acceptance; kcs capture, scoreboard,
+  relay's run guard). Unknown values refuse `400 unknown_status` + audit
+  row. CAS semantics untouched.
+- **The valet label fence is function-held.** The injection screen moved
+  INTO `stamp_state` (and the new open-path vet): a `valet/%` run opened
+  over HTTP with a screen-Reject or Quarantine label refuses
+  `400 screen_rejected`; a state that is not a readable valet envelope
+  refuses `400 valet_state_invalid`. Both screen verdicts refuse — an
+  operator-channel label has no quarantine destination.
+- **The alert bus authenticates the `valet/due` kind.** A
+  `workflow/valet*` row publishes under the trusted `valet/due` kind only
+  when its idempotency key carries the crank's `valet-` prefix (no new
+  provenance column — the prefix IS the kernel signature today); anything
+  else publishes as the generic workflow kind.
+
+**Bug fixes**
+- None reported.
+
+**Improvements**
+- `openapi.yaml` documents the two new 400 shapes and the status `enum`;
+  `docs/api.md` notes the reserved-topic and closed-status contracts. No
+  route additions (route-coverage / route-authz tables unchanged); no
+  schema change; `x-api-version` unchanged.
+
+**Behavior-change ledger** (previously-accepted requests that now refuse —
+documented, not silent)
+
+| Change | Before → After |
+|---|---|
+| `POST /workflow/runs/{id}/events` with topic `channel/*`, `steering`, `workflow/valet*` | accepted (forge) → `400 topic_reserved` + audit row |
+| `PUT /workflow/runs/{id}/state` with an unknown `status` | accepted → `400 unknown_status` + audit row |
+| `POST /workflow/runs` with `kind=valet/%` + screen-Reject/Quarantine `what` | stored unscreened → `400 screen_rejected` |
+| `POST /workflow/runs` with `kind=valet/%` and non-envelope state | stored (inert, drifted) → `400 valet_state_invalid` |
+| alert-bus `valet/due` kind | any `workflow/valet*` row → only `valet-`-keyed rows |
+
+### Engineering record
+
+- **Live drill, DB copies only** (the live DB was never touched; copies
+  destroyed after). BEFORE (v1.28.62 binary, `ad4ede8`): forged
+  `channel/out` → row landed → the real HMAC drain
+  (`POST /webhooks/channel/signal/drain`) delivered the forged envelope to
+  the bridge; forged `channel/ping` → claimed+delivered; `steering` with
+  injection text → landed in the inbox read; `status="zzz_arbitrary"` →
+  written to the run row; forged `workflow/valet-due` → drained and
+  published by the trusted alert worker within one 2 s tick. AFTER (this
+  release): all four forgery shapes → `400 topic_reserved`; arbitrary
+  status → `400 unknown_status`; injected valet label →
+  `400 screen_rejected`; five `denied` audit rows on the workflow chain;
+  the drain returns an empty batch (nothing forged exists to deliver);
+  `/ump/audit/verify` ok; positive controls (workflow/log enqueue, clean
+  CLI-shaped valet open) still 200.
+- Pins (11 new; CRATE_TEST_FLOOR 1,256 → 1,267): `reserved_vocabulary_
+  semantics`, `enqueue_child_refuses_reserved_topics`,
+  `kernel_writers_still_mint_reserved_rows`,
+  `kernel_steering_still_enqueues`,
+  `reserved_refusal_converts_to_loud_sql_error`,
+  `kernel_enqueue_out_still_lands_channel_rows`,
+  `forged_valet_due_publishes_as_generic_not_valet_kind`,
+  `stamp_state_screens_like_ingest`,
+  `valet_crank_still_fires_clean_reminders`, `vet_open_state_holds_the_
+  fence`, and the M4 meta-pin `reserved_topics_are_declared_in_one_place`
+  (a dup-guard grep: reserved-topic literals in production source fail
+  outside the const + the four kernel writers' files). Handler-level:
+  `post_event_cannot_forge_channel_out/ping/steering_topic`,
+  `reserved_refusal_writes_audit_row` (exact-detail digest),
+  `put_state_rejects_unknown_status`,
+  `put_state_accepts_every_observed_status` (the freeze — any new status
+  is a deliberate test edit),
+  `run_open_with_injection_what_is_refused`.
+- Full suite green with `--features bench` (lib 1,086 + main_suite 171 +
+  the rest; zero failures); clippy `-D warnings` on default/bench/otel;
+  CI dry-run set green (default-features build, engine-crates,
+  steward-harness, otel); lipstyk diff-strict green; `cargo fmt --check`
+  clean.
+- Ceilings (honest): `steering` is reserved EXACTLY — a hypothetical
+  `steering/x` sub-topic is not reserved (no consumer exists; extend the
+  const only with a kernel writer that owns the gate). `KernelOrigin` is a
+  `pub(crate)` review-and-grep-enforced marker, not a memory-safety
+  boundary — a crate-internal caller COULD mint one, visibly. The
+  alert-bus kind authentication trusts the idempotency-key prefix; a real
+  provenance column stays a non-goal until a second kernel valet writer
+  needs distinguishing. The closed status vocabulary freezes the observed
+  set — a legitimately new status requires the const extension in the same
+  commit as its writer/reader.
+
+---
+
 ## [1.28.62] — 2026-09-06 — "Attestation": provenance marks, the principal kill-switch, the crypto inventory — the Enterprise Line closes
 
 The Enterprise Line's finale. Three verified gaps close — Art 50(2)-style

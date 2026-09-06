@@ -613,6 +613,9 @@ pub(crate) fn ack_sweep(conn: &Connection, now: i64) -> Result<Vec<i64>, Complai
             )
             .optional()?
             .flatten();
+        // The topic is a fixed non-reserved literal; the conversion keeps
+        // the (unreachable) reserved refusal loud inside the rusqlite
+        // mapping ComplaintError already carries.
         let (inserted, _) = super::outbox::enqueue_child(
             conn,
             id,
@@ -621,7 +624,8 @@ pub(crate) fn ack_sweep(conn: &Connection, now: i64) -> Result<Vec<i64>, Complai
             &payload,
             &format!("ack_overdue:{id}"),
             now,
-        )?;
+        )
+        .map_err(rusqlite::Error::from)?;
         if inserted {
             // enqueue_child already wrote the audit row inside the caller's
             // tx (a replayed enqueue is deliberately not audited).

@@ -4755,7 +4755,7 @@ paths:
                 kind: { type: string }
                 state_json:
                   type: string
-                  description: Opaque engine state; valid JSON, <= 256 KiB.
+                  description: Opaque engine state; valid JSON, <= 256 KiB. For `valet/%` kinds this MUST be a readable valet envelope whose `what` passes the injection screen (v1.28.63 Wardline).
       responses:
         "200":
           description: The opened run
@@ -4766,7 +4766,7 @@ paths:
                 properties:
                   run_id: { type: integer }
                   revision: { type: integer }
-        "400": { description: domain_invalid | kind_invalid | state_invalid | state_too_large }
+        "400": { description: domain_invalid | kind_invalid | state_invalid | state_too_large | screen_rejected (valet/% kind, label tripped the injection screen) | valet_state_invalid (valet/% kind, state is not a readable valet envelope) }
         "401": { description: Not authenticated }
         "403": { description: Not authorized (domain Write or workflow role gate) }
   /workflow/runs/{id}/state:
@@ -4813,7 +4813,14 @@ paths:
               properties:
                 expected_rev: { type: integer }
                 state_json: { type: string, maxLength: 262144 }
-                status: { type: string }
+                status:
+                  type: string
+                  enum: [active, cancelled, closed, completed, fired, resolved]
+                  default: active
+                  description: >
+                    CLOSED vocabulary (v1.28.63 Wardline) — exactly the statuses
+                    the kernel writes and the shipped readers distinguish; an
+                    unknown value refuses with `unknown_status`.
       responses:
         "200":
           description: Advanced
@@ -4823,6 +4830,7 @@ paths:
                 type: object
                 properties:
                   revision: { type: integer }
+        "400": { description: unknown_status — status outside the closed vocabulary (active | cancelled | closed | completed | fired | resolved) }
         "409":
           description: cas_stale — the body carries `actual_revision`
           content:
@@ -4853,7 +4861,13 @@ paths:
               type: object
               required: [topic, payload_json, idempotency_key]
               properties:
-                topic: { type: string }
+                topic:
+                  type: string
+                  description: >
+                    1..=64 lowercase alnum/`/`/`-`. RESERVED vocabulary
+                    (v1.28.63 Wardline): `channel/*`, `steering`,
+                    `workflow/valet*` are kernel-only — the route refuses them
+                    with `topic_reserved` (audited).
                 payload_json: { type: string }
                 idempotency_key: { type: string, maxLength: 128 }
                 parent_event_id: { type: integer, description: "optional outbox id this event follows (lineage)" }
@@ -4867,7 +4881,7 @@ paths:
                 properties:
                   first: { type: boolean }
                   event_id: { type: integer }
-        "400": { description: topic_invalid | payload_invalid | payload_too_large | key_invalid | parent_invalid }
+        "400": { description: "topic_invalid | topic_reserved (kernel-only vocabulary: channel/* | steering | workflow/valet*) | payload_invalid | payload_too_large | key_invalid | parent_invalid" }
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Workflow run not found }

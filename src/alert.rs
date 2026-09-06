@@ -363,9 +363,9 @@ pub(crate) fn drain_workflow_events(state: &Arc<AppState>) -> usize {
         let Ok(conn) = pool.get() else {
             continue;
         };
-        let rows: Vec<(i64, i64, String, String, Option<i64>)> = conn
+        let rows: Vec<(i64, i64, String, String, Option<i64>, String)> = conn
             .prepare(
-                "SELECT id, run_id, topic, payload_json, parent_id FROM outbox
+                "SELECT id, run_id, topic, payload_json, parent_id, idempotency_key FROM outbox
                   WHERE status = 'pending' AND (topic LIKE 'workflow/%' OR topic LIKE 'case/%')
                   ORDER BY id ASC LIMIT ?1",
             )
@@ -377,12 +377,13 @@ pub(crate) fn drain_workflow_events(state: &Arc<AppState>) -> usize {
                         r.get::<_, String>(2)?,
                         r.get::<_, String>(3)?,
                         r.get::<_, Option<i64>>(4)?,
+                        r.get::<_, String>(5)?,
                     ))
                 })
                 .and_then(|it| it.collect())
             })
             .unwrap_or_default();
-        for (id, run_id, topic, payload_json, parent_event_id) in rows {
+        for (id, run_id, topic, payload_json, parent_event_id, idempotency_key) in rows {
             // Deliver first (audit row in its tx); a failed delivery skips the
             // publish — an undrained event reads as lag, never as a phantom.
             if crate::workflow::outbox::deliver(&conn, id, chrono::Utc::now().timestamp()).is_err()
@@ -392,12 +393,20 @@ pub(crate) fn drain_workflow_events(state: &Arc<AppState>) -> usize {
             let payload_json = crate::gate::sanitize_stored(&payload_json, false, &None);
             // Valet due-envelopes get their own curated kind so a Signal
             // relay (or any subscriber) can opt into JUST the assistant's
-            // pings without the full engine lineage stream.
-            let kind = if topic.starts_with("workflow/valet") {
-                ALERT_KIND_VALET
-            } else {
-                ALERT_KIND_WORKFLOW
-            };
+            // pings without the full engine lineage stream. The kind is
+            // AUTHENTICATED by the crank's idempotency-key prefix
+            // (`valet-{run}-{due}` — the kernel signature today; ponytail: no
+            // provenance column, and the enqueue gate means a forged
+            // `workflow/valet*` row can no longer exist at all — this read-
+            // side check is defense in depth for rows predating it). A
+            // `workflow/valet*` row NOT keyed `valet-` publishes as the
+            // generic workflow kind, never the trusted one.
+            let kind =
+                if topic.starts_with("workflow/valet") && idempotency_key.starts_with("valet-") {
+                    ALERT_KIND_VALET
+                } else {
+                    ALERT_KIND_WORKFLOW
+                };
             publish(
                 state,
                 kind,
@@ -812,18 +821,53 @@ mod tests {
             [],
         )
         .expect("run");
-        crate::workflow::outbox::enqueue(
+        // Kernel-shaped seed: the valet crank mints `workflow/valet-due`
+        // rows through the reserved-vocabulary token (v1.28.63 Wardline).
+        crate::workflow::outbox::enqueue_child_kernel(
             &conn,
             1,
+            None,
             "workflow/valet-due",
             r#"{"what":"draft pillar post #12","due_at":100,"channel":"signal"}"#,
             "valet-1-100",
             1,
+            crate::workflow::outbox::KernelOrigin::kernel(),
         )
         .expect("enqueue");
         assert_eq!(drain_workflow_events(&state), 1);
         let ev = rx.try_recv().expect("published");
         assert_eq!(ev["kind"], crate::config::ALERT_KIND_VALET);
+        assert_eq!(ev["payload"]["topic"], "workflow/valet-due");
+    }
+
+    /// A `workflow/valet*` row NOT keyed by the crank's `valet-` prefix
+    /// publishes as the GENERIC workflow kind, never the trusted `valet/due`
+    /// kind (X-W5 — the key prefix is the kernel signature on the bus). The
+    /// row is seeded by direct INSERT: the enqueue gate refuses such a forge
+    /// outright; this covers rows that predate the gate.
+    #[test]
+    fn forged_valet_due_publishes_as_generic_not_valet_kind() {
+        let (_dir, state, mut rx) = witness_state();
+        let conn = state.pool.get().expect("conn");
+        conn.execute(
+            "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+             VALUES ('personal', 'valet/reminder', '{}', 0, 'active', 1, 1)",
+            [],
+        )
+        .expect("run");
+        conn.execute(
+            "INSERT INTO outbox(run_id, topic, payload_json, status, idempotency_key, created_at)
+             VALUES (1, 'workflow/valet-due', '{\"what\":\"FORGED\",\"due_at\":1}', 'pending', 'agent-forge-1', 1)",
+            [],
+        )
+        .expect("seed the forged-shaped row");
+        assert_eq!(drain_workflow_events(&state), 1);
+        let ev = rx.try_recv().expect("published");
+        assert_eq!(
+            ev["kind"],
+            crate::config::ALERT_KIND_WORKFLOW,
+            "a non-valet-keyed row must not ride the trusted valet kind"
+        );
         assert_eq!(ev["payload"]["topic"], "workflow/valet-due");
     }
 
@@ -853,10 +897,20 @@ mod tests {
         assert_eq!(status, "delivered");
         // Idempotent: a second tick finds nothing pending.
         assert_eq!(drain_workflow_events(&state), 0);
-        // Non-workflow topics are never drained by this worker.
+        // Non-workflow topics are never drained by this worker. Kernel-shaped
+        // seed: only the steering write may mint the reserved topic.
         let conn = state.pool.get().unwrap();
-        crate::workflow::outbox::enqueue_child(&conn, 1, None, "steering", "{}", "st-1", 2)
-            .unwrap();
+        crate::workflow::outbox::enqueue_child_kernel(
+            &conn,
+            1,
+            None,
+            "steering",
+            "{}",
+            "st-1",
+            2,
+            crate::workflow::outbox::KernelOrigin::kernel(),
+        )
+        .unwrap();
         drop(conn);
         assert_eq!(
             drain_workflow_events(&state),

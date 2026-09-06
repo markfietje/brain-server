@@ -13,6 +13,25 @@ use super::audit_write;
 use crate::audit::AuditStatus;
 use rusqlite::{Connection, OptionalExtension, params};
 
+/// The CLOSED run-status vocabulary: the exact set the codebase observes,
+/// frozen. Kernel writers: `active` (open_run and
+/// every resume path), `cancelled` (the mesh revocation drain), `fired` (the
+/// valet crank's terminal), `resolved` (the workload suggestion acceptance).
+/// Engine-written through the CAS seam, with shipped readers that
+/// distinguish them: `completed` (kcs capture, scoreboard, relay's
+/// run-not-active guard), `closed` (the scoreboard aftersales cohort).
+/// `PUT /workflow/runs/{id}/state` accepts ONLY these — nothing speculative
+/// may enter a run row's status. Extend this const in the same commit as the
+/// kernel writer or reader that needs the new value.
+pub const RUN_STATUSES: &[&str] = &[
+    "active",
+    "cancelled",
+    "closed",
+    "completed",
+    "fired",
+    "resolved",
+];
+
 fn db_err(e: rusqlite::Error) -> CasError {
     CasError::Database(e.to_string())
 }

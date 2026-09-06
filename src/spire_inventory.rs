@@ -68,7 +68,11 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// four-class provenance meta-test + tamper/unit/round-trip/human set, the
 /// uniformity parity + fetch-mirror pair, the flipped deliverable watches +
 /// clock self-test, and the revocation-drill record watch.
-const CRATE_TEST_FLOOR: usize = 1_256;
+/// 1,256 → 1,267 at the Wardline open: the reserved-vocabulary semantics +
+/// refusal/convert/kernel-mint set, the kernel steering + channel-writer
+/// pins, the forged-valet-kind bus pin, the vet-fence parity/crank/open
+/// set, and the one-place vocabulary grep.
+const CRATE_TEST_FLOOR: usize = 1_267;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), re-measured to 161 at the Buttress open. Rows join
 /// only with the wire change that earns them, in the same commit.

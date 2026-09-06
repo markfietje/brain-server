@@ -1225,7 +1225,18 @@ pub(crate) fn enqueue_handover_ping(
     })
     .to_string();
     let key = format!("chan-ping-{offer_id}");
-    outbox::enqueue(conn, run_id, TOPIC_CHANNEL_PING, &payload, &key, now)?;
+    // Kernel writer: `channel/ping` is reserved vocabulary — minted
+    // only here, never through the agent-facing events route.
+    outbox::enqueue_child_kernel(
+        conn,
+        run_id,
+        None,
+        TOPIC_CHANNEL_PING,
+        &payload,
+        &key,
+        now,
+        outbox::KernelOrigin::kernel(),
+    )?;
     Ok(())
 }
 
@@ -1452,7 +1463,19 @@ pub(crate) fn enqueue_out(
         "source_payload": source_payload,
     })
     .to_string();
-    outbox::enqueue(conn, case_run_id, TOPIC_CHANNEL_OUT, &payload, &key, now)?;
+    // Kernel writer: `channel/out` is reserved vocabulary — the
+    // three-gate law (consent + reply-window + approved proposal, verified
+    // ABOVE this line) is the only legitimate minter of the topic.
+    outbox::enqueue_child_kernel(
+        conn,
+        case_run_id,
+        None,
+        TOPIC_CHANNEL_OUT,
+        &payload,
+        &key,
+        now,
+        outbox::KernelOrigin::kernel(),
+    )?;
     Ok(OutboundDecision::Enqueued)
 }
 
@@ -2074,6 +2097,47 @@ mod tests {
         // Determinism: pure inputs → identical outputs across calls.
         let f = |lt| reply_window_allows(lt, now, w);
         assert_eq!(f(Some(123)), f(Some(123)));
+    }
+
+    // ── WARDLINE PIN: the kernel writer still mints `channel/out`
+    //    rows after the reserved-topic gate — the fence surrounds the
+    //    vocabulary, it does not ban it.
+    #[test]
+    fn kernel_enqueue_out_still_lands_channel_rows() {
+        let conn = db();
+        let c = wa_cfg("acme");
+        let t_in = 10_000i64;
+        let th = land_inbound_message(&conn, &c, &envelope("+1555", "price please", "m1"), t_in)
+            .unwrap();
+        let thread_row: i64 = conn
+            .query_row(
+                "SELECT id FROM channel_threads WHERE case_run_id = ?1",
+                params![th.case_run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let pid: i64 = insert_proposal(&conn, "fact", "approved", "free body");
+        let d = enqueue_out(
+            &conn,
+            thread_row,
+            OutboundSource::Approved {
+                proposal_id: pid,
+                digest: &"a".repeat(64),
+                template_name: None,
+            },
+            "free body",
+            t_in + 60,
+        )
+        .unwrap();
+        assert!(matches!(d, OutboundDecision::Enqueued));
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM outbox WHERE topic = 'channel/out' AND status = 'pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the kernel writer's channel/out row must land");
     }
 
     // ── CARAVEL PIN: the 24h window maps onto the seam EXACTLY — free-form

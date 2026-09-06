@@ -15,45 +15,110 @@ use super::audit_write;
 use crate::audit::AuditStatus;
 use rusqlite::{Connection, OptionalExtension, params};
 
-/// Enqueue a payload for a topic. Returns the event id plus `true` if a new
-/// row was created, `(existing_id, false)` when the key already replayed
-/// (idempotent no-op receipt — the id is still resolved so callers can link
-/// against the surviving row).
-pub(crate) fn enqueue(
-    conn: &Connection,
-    run_id: i64,
-    topic: &str,
-    payload_json: &str,
-    idempotency_key: &str,
-    now: i64,
-) -> rusqlite::Result<(bool, i64)> {
-    let n = conn.execute(
-        "INSERT OR IGNORE INTO outbox(run_id, topic, payload_json, status, idempotency_key, created_at)
-         VALUES (?1, ?2, ?3, 'pending', ?4, ?5)",
-        params![run_id, topic, payload_json, idempotency_key, now],
-    )?;
-    let id: i64 = conn.query_row(
-        "SELECT id FROM outbox WHERE idempotency_key = ?1",
-        params![idempotency_key],
-        |r| r.get(0),
-    )?;
-    if n == 1 {
-        audit_write(
-            conn,
-            run_id,
-            &format!("outbox:{idempotency_key}"),
-            AuditStatus::Ok,
-            &format!("enqueue:{topic}"),
-        );
-    }
-    Ok((n == 1, id))
+// ── the reserved vocabulary ────────────────────────────────────────────────
+//
+// RESERVED: only kernel paths may enqueue these. `channel/*` re-verifies
+// consent + reply-window + approved-proposal inside `enqueue_out`; `steering`
+// carries the approve role gate + screen + 4000-char bound in `post_steering`;
+// `workflow/valet*` is minted only by the valet crank. The events route is
+// AGENT-facing and may not forge any of them — before this gate existed it
+// could, which made the three-gate channel law code-false at this seam.
+//
+// (ponytail: not a general ACL — a closed vocabulary, extend only with a
+// kernel writer that owns the gate.)
+//
+// Per-entry semantics: `channel/` and `workflow/valet` are PREFIX families
+// (`channel/out`, `workflow/valet-due`); `steering` is EXACT — the steering
+// inbox read spells that literal. New entries default to PREFIX (the stricter
+// side); [`topic_is_reserved`] is the single matcher and the
+// `reserved_topics_are_declared_in_one_place` pin guards the declaration site.
+pub const RESERVED_OUTBOX_TOPICS: &[&str] = &["channel/", "steering", "workflow/valet"];
+
+/// True when a topic carries kernel-only vocabulary. The ONE matcher over
+/// [`RESERVED_OUTBOX_TOPICS`] — both the enqueue gate and the handler's
+/// 400-mapping read it, so the two can never disagree.
+pub fn topic_is_reserved(topic: &str) -> bool {
+    RESERVED_OUTBOX_TOPICS
+        .iter()
+        .any(|reserved| match *reserved {
+            // the one declared EXACT entry
+            "steering" => topic == *reserved,
+            // everything else — today `channel/`, `workflow/valet` — is a PREFIX
+            prefix => topic.starts_with(prefix),
+        })
 }
 
-/// Enqueue a CHILD event parented at `parent_id` — the Lineage release.
-/// Same exactly-once discipline as [`enqueue`] (INSERT OR IGNORE + audit only
-/// on first insert); the parent is recorded verbatim. Parent validity is the
-/// caller's contract; [`verify_outbox_lineage`] is the integrity check.
-pub(crate) fn enqueue_child(
+/// The outbox write error: a reserved-topic refusal is a TYPED outcome (the
+/// events route maps it to `400 topic_reserved` + audit row), everything else
+/// is the underlying failure's message (rusqlite or the pool).
+#[derive(Debug)]
+pub enum OutboxError {
+    ReservedTopic { topic: String },
+    Database(String),
+}
+
+impl From<rusqlite::Error> for OutboxError {
+    fn from(e: rusqlite::Error) -> Self {
+        OutboxError::Database(e.to_string())
+    }
+}
+
+/// Kernel call sites (append_lineage and the fixed-topic service cores) keep
+/// their `rusqlite::Result` plumbing: the reserved branch is unreachable for
+/// their hard-coded topics, and this conversion keeps that fact fail-closed —
+/// a refusal surfaces as a loud SQLITE-shaped error, never a silent drop.
+impl From<OutboxError> for rusqlite::Error {
+    fn from(e: OutboxError) -> Self {
+        match e {
+            OutboxError::Database(msg) => rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+                Some(msg),
+            ),
+            OutboxError::ReservedTopic { topic } => rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+                Some(format!(
+                    "reserved topic `{topic}` — only kernel writers may enqueue it"
+                )),
+            ),
+        }
+    }
+}
+
+impl std::fmt::Display for OutboxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OutboxError::ReservedTopic { topic } => {
+                write!(f, "reserved outbox topic `{topic}`")
+            }
+            OutboxError::Database(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for OutboxError {}
+
+/// Capability token proving the caller is a KERNEL writer (enqueue_out,
+/// enqueue_ping, the steering inbox write, the valet crank) — the only
+/// constructors of reserved-topic rows. Zero-sized; the `pub(crate)`
+/// constructor means any crate-internal caller COULD mint one, but doing so
+/// is a visible, reviewable claim (and the
+/// `reserved_topics_are_declared_in_one_place` pin holds the literals to
+/// the declared kernel paths). External crates cannot construct it at all.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy)]
+pub struct KernelOrigin {
+    _priv: (),
+}
+
+impl KernelOrigin {
+    pub(crate) fn kernel() -> Self {
+        Self { _priv: () }
+    }
+}
+
+/// The shared insert behind every enqueue flavor: exactly-once by key
+/// (INSERT OR IGNORE), audit row on first insert only.
+fn insert_row(
     conn: &Connection,
     run_id: i64,
     parent_id: Option<i64>,
@@ -82,6 +147,95 @@ pub(crate) fn enqueue_child(
         );
     }
     Ok((n == 1, id))
+}
+
+/// Enqueue a payload for a topic. Returns the event id plus `true` if a new
+/// row was created, `(existing_id, false)` when the key already replayed
+/// (idempotent no-op receipt — the id is still resolved so callers can link
+/// against the surviving row). A reserved topic refuses here — this wrapper
+/// carries NO [`KernelOrigin`], so non-kernel callers can never mint
+/// reserved rows even by accident.
+pub(crate) fn enqueue(
+    conn: &Connection,
+    run_id: i64,
+    topic: &str,
+    payload_json: &str,
+    idempotency_key: &str,
+    now: i64,
+) -> rusqlite::Result<(bool, i64)> {
+    enqueue_child(
+        conn,
+        run_id,
+        None,
+        topic,
+        payload_json,
+        idempotency_key,
+        now,
+    )
+    .map_err(rusqlite::Error::from)
+}
+
+/// Enqueue a CHILD event parented at `parent_id` — the Lineage release.
+/// Same exactly-once discipline as [`enqueue`] (INSERT OR IGNORE + audit only
+/// on first insert); the parent is recorded verbatim. Parent validity is the
+/// caller's contract; [`verify_outbox_lineage`] is the integrity check.
+///
+/// THE RESERVED-TOPIC GATE: any topic matching
+/// [`RESERVED_OUTBOX_TOPICS`] refuses with [`OutboxError::ReservedTopic`]
+/// unless the caller holds [`KernelOrigin`] — use [`enqueue_child_kernel`].
+/// This is the one guard at the shared function, not a per-caller patch:
+/// every enqueue flavor funnels through here.
+pub(crate) fn enqueue_child(
+    conn: &Connection,
+    run_id: i64,
+    parent_id: Option<i64>,
+    topic: &str,
+    payload_json: &str,
+    idempotency_key: &str,
+    now: i64,
+) -> Result<(bool, i64), OutboxError> {
+    if topic_is_reserved(topic) {
+        return Err(OutboxError::ReservedTopic {
+            topic: topic.to_string(),
+        });
+    }
+    insert_row(
+        conn,
+        run_id,
+        parent_id,
+        topic,
+        payload_json,
+        idempotency_key,
+        now,
+    )
+    .map_err(|e| OutboxError::Database(e.to_string()))
+}
+
+/// The KERNEL writers' enqueue: identical row discipline, but reserved
+/// vocabulary is mintable. `origin` must come from [`KernelOrigin::kernel`];
+/// the four holders are `enqueue_out` / `enqueue_ping` (channels.rs), the
+/// steering inbox write (`enqueue_steering_tx`), and the valet crank.
+#[allow(clippy::too_many_arguments)] // mirrors enqueue_child + the origin token; a params struct would hide the capability
+pub(crate) fn enqueue_child_kernel(
+    conn: &Connection,
+    run_id: i64,
+    parent_id: Option<i64>,
+    topic: &str,
+    payload_json: &str,
+    idempotency_key: &str,
+    now: i64,
+    _origin: KernelOrigin,
+) -> Result<(bool, i64), OutboxError> {
+    insert_row(
+        conn,
+        run_id,
+        parent_id,
+        topic,
+        payload_json,
+        idempotency_key,
+        now,
+    )
+    .map_err(|e| OutboxError::Database(e.to_string()))
 }
 
 /// Append a lineage event at the run's CURRENT tip: the child-parent idiom
@@ -228,7 +382,20 @@ pub(crate) fn enqueue_steering_tx(
     }
     let now = chrono::Utc::now().timestamp();
     let key = format!("steering-{id}-{now}-{}", rand::random::<u32>());
-    enqueue(tx, id, "steering", payload, &key, now).map_err(|e| format!("{e}"))?;
+    // Kernel writer (the `steering` topic is reserved vocabulary):
+    // the approve-role gate + screen + bound live at the HTTP seam; this fn
+    // is the only other legitimate minter of the topic.
+    enqueue_child_kernel(
+        tx,
+        id,
+        None,
+        "steering",
+        payload,
+        &key,
+        now,
+        KernelOrigin::kernel(),
+    )
+    .map_err(|e| format!("{e}"))?;
     super::crew::touch_cranking(tx, domain, actor, Some(&format!("run:{id}")));
     Ok(())
 }
@@ -551,5 +718,115 @@ mod tests {
             |r| r.get(0),
         )
         .unwrap()
+    }
+
+    // ── v1.28.63 "Wardline": the reserved-topic gate (X-W1/X-W2) ───────────
+
+    /// The vocabulary semantics the const comment declares: `channel/` and
+    /// `workflow/valet` match as prefixes, `steering` EXACTLY, and the
+    /// engine-facing topics stay unreserved.
+    #[test]
+    fn reserved_vocabulary_semantics() {
+        assert!(topic_is_reserved("channel/out"));
+        assert!(topic_is_reserved("channel/ping"));
+        assert!(topic_is_reserved("channel/anything-new"));
+        assert!(topic_is_reserved("workflow/valet-due"));
+        assert!(topic_is_reserved("workflow/valet/other"));
+        assert!(topic_is_reserved("steering"));
+        // steering is EXACT — spelled only as the inbox literal.
+        assert!(!topic_is_reserved("steering-archive"));
+        // The agent-facing families stay open.
+        assert!(!topic_is_reserved("workflow/log"));
+        assert!(!topic_is_reserved("workflow/checkpoint"));
+        assert!(!topic_is_reserved("crm/case/closed"));
+        assert!(!topic_is_reserved("intake"));
+    }
+
+    /// The events-route shape: enqueue_child refuses every reserved family
+    /// with the TYPED error and lands no row (the forge paths are dead).
+    #[test]
+    fn enqueue_child_refuses_reserved_topics() {
+        let conn = db();
+        for topic in [
+            "channel/out",
+            "channel/ping",
+            "steering",
+            "workflow/valet-due",
+        ] {
+            let err = enqueue_child(&conn, 1, None, topic, "{}", "forge-1", 1).unwrap_err();
+            assert!(
+                matches!(
+                    err,
+                    OutboxError::ReservedTopic { topic: ref t } if t == topic
+                ),
+                "{topic} must refuse typed: {err:?}"
+            );
+        }
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "a refused forge lands no row");
+    }
+
+    /// The kernel writers still mint reserved rows through the token — the
+    /// gate is a fence around the vocabulary, not a ban on it.
+    #[test]
+    fn kernel_writers_still_mint_reserved_rows() {
+        let conn = db();
+        for (topic, key) in [
+            ("channel/out", "k-out"),
+            ("steering", "k-steer"),
+            ("workflow/valet-due", "k-valet"),
+        ] {
+            let (created, _) =
+                enqueue_child_kernel(&conn, 1, None, topic, "{}", key, 1, KernelOrigin::kernel())
+                    .unwrap();
+            assert!(created, "kernel mint of {topic} must land");
+        }
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 3);
+    }
+
+    /// The kernel steering writer still lands its reserved-topic rows after
+    /// the gate (X-W2): the approve-role gate + screen + bound live at the
+    /// HTTP seam; this fn is the topic's only other legitimate minter.
+    #[test]
+    fn kernel_steering_still_enqueues() {
+        let conn = db();
+        enqueue_steering_tx(
+            &conn,
+            7,
+            "global",
+            r#"{"message":"prefer the cheaper SKU when specs match"}"#,
+            "operator",
+        )
+        .unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM outbox WHERE run_id = 7 AND topic = 'steering'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "the kernel steering write must land");
+    }
+
+    /// The rusqlite-facing conversion (append_lineage + fixed-topic service
+    /// cores keep `rusqlite::Result` plumbing): a reserved refusal converts
+    /// to a LOUD constraint error, never a silent drop. For a hard-coded
+    /// non-reserved topic the branch is unreachable — exercised here through
+    /// the raw wrapper a future caller would misuse.
+    #[test]
+    fn reserved_refusal_converts_to_loud_sql_error() {
+        let conn = db();
+        let err = enqueue(&conn, 1, "steering", "{}", "loud-1", 1).unwrap_err();
+        match err {
+            rusqlite::Error::SqliteFailure(_, msg) => {
+                assert!(msg.unwrap_or_default().contains("reserved topic"));
+            }
+            other => panic!("expected a loud SQL-shaped refusal, got {other:?}"),
+        }
     }
 }

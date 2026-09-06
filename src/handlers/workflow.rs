@@ -856,6 +856,22 @@ pub async fn post_run(
         ));
     }
     let _ = parsed;
+    // Valet-kind runs vet their envelope AT THE FENCE: a readable
+    // valet state whose `what` passed the same bounds + injection screen the
+    // stamp holds. The screen asymmetry (Quarantine refuses here) lives on
+    // the error type in workflow::valet.
+    if body.kind.starts_with("valet/") {
+        crate::workflow::valet::vet_open_state(&body.state_json).map_err(|e| match e {
+            crate::workflow::valet::ValetError::ScreenReject => HandlerError::bad_request(
+                "screen_rejected",
+                "valet label matches a blocked prompt-injection pattern",
+            ),
+            other => HandlerError::bad_request(
+                "valet_state_invalid",
+                format!("valet state refused: {other}"),
+            ),
+        })?;
+    }
     super::authorize(&principal, crate::auth::Action::Write, "", &body.domain)?;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     crate::handlers::authorize_role(&principal, &pool, "workflow")?;
@@ -968,10 +984,29 @@ pub async fn put_run_state(
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     crate::handlers::authorize_role(&principal, &pool, "workflow")?;
     let status = body.status.clone().unwrap_or_else(|| "active".to_string());
-    if !status.bytes().all(|b| b.is_ascii_lowercase() || b == b'_') || status.len() > 24 {
+    // CLOSED vocabulary: a run's status is kernel/engine vocabulary
+    // with downstream readers (kcs capture, scoreboard, relay's guard) — an
+    // arbitrary engine-coined string corrupts that evidence shape. Unknown
+    // values refuse loudly with their own audit row; CAS semantics untouched.
+    if !crate::workflow::state::RUN_STATUSES.contains(&status.as_str()) {
+        let actor = super::recall::principal_label(&principal);
+        if let Ok(conn) = pool.get() {
+            crate::audit::record_tenant(
+                &conn,
+                crate::audit::AuditKind::Workflow,
+                &actor,
+                &format!("run:{id}"),
+                crate::audit::AuditStatus::Denied,
+                &format!("unknown_status status={status}"),
+                &domain,
+            );
+        }
         return Err(HandlerError::bad_request(
-            "status_invalid",
-            "status must be lowercase, ≤24 chars",
+            "unknown_status",
+            format!(
+                "status must be one of: {}",
+                crate::workflow::state::RUN_STATUSES.join(", ")
+            ),
         ));
     }
     valid_state_body(&body.state_json)?;
@@ -1100,32 +1135,69 @@ pub async fn post_event(
     let payload_json = body.payload_json.clone();
     let idempotency_key = body.idempotency_key.clone();
     let parent_event_id = body.parent_event_id;
-    let outcome: (bool, i64) = tokio::task::spawn_blocking(move || -> Result<_, String> {
-        let mut conn = pool.get().map_err(|e| format!("{e}"))?;
-        let mut tx =
-            crate::workflow::tx::WorkflowTx::begin(&mut conn).map_err(|e| format!("{e}"))?;
-        let now = chrono::Utc::now().timestamp();
-        let outcome = crate::workflow::outbox::enqueue_child(
-            tx.tx(),
-            id,
-            parent_event_id,
-            &topic,
-            &payload_json,
-            &idempotency_key,
-            now,
-        )
-        .map_err(|e| format!("{e}"))?;
-        crate::workflow::crew::touch_cranking(tx.tx(), &domain, &actor, Some(&format!("run:{id}")));
-        tx.commit().map_err(|e| format!("{e}"))?;
-        Ok(outcome)
-    })
-    .await
-    .map_err(|e| HandlerError::internal(format!("{e}")))?
-    .map_err(HandlerError::internal)?;
+    let actor_label = actor.clone();
+    let domain_label = domain.clone();
+    let refusal_pool = pool.clone();
+    let outcome: Result<(bool, i64), crate::workflow::outbox::OutboxError> =
+        tokio::task::spawn_blocking(move || -> Result<_, crate::workflow::outbox::OutboxError> {
+            let mut conn = pool
+                .get()
+                .map_err(|e| crate::workflow::outbox::OutboxError::Database(e.to_string()))?;
+            let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn)
+                .map_err(crate::workflow::outbox::OutboxError::from)?;
+            let now = chrono::Utc::now().timestamp();
+            let outcome = crate::workflow::outbox::enqueue_child(
+                tx.tx(),
+                id,
+                parent_event_id,
+                &topic,
+                &payload_json,
+                &idempotency_key,
+                now,
+            )?;
+            crate::workflow::crew::touch_cranking(
+                tx.tx(),
+                &domain,
+                &actor,
+                Some(&format!("run:{id}")),
+            );
+            tx.commit()
+                .map_err(crate::workflow::outbox::OutboxError::from)?;
+            Ok(outcome)
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("{e}")))?;
+    let (first, event_id) = match outcome {
+        Ok(o) => o,
+        Err(crate::workflow::outbox::OutboxError::ReservedTopic { topic }) => {
+            // Refusal evidence — error paths deny loudly, never a silent
+            // drop. The enqueue tx rolled back on drop (nothing was
+            // written), so the audit row rides a fresh pooled connection
+            // with its own committed chain link.
+            if let Ok(conn) = refusal_pool.get() {
+                crate::audit::record_tenant(
+                    &conn,
+                    crate::audit::AuditKind::Workflow,
+                    &actor_label,
+                    &format!("run:{id}"),
+                    crate::audit::AuditStatus::Denied,
+                    &format!("outbox_reserved_refused topic={topic}"),
+                    &domain_label,
+                );
+            }
+            return Err(HandlerError::bad_request(
+                "topic_reserved",
+                "topic is kernel-reserved vocabulary; the events route may not enqueue it",
+            ));
+        }
+        Err(crate::workflow::outbox::OutboxError::Database(m)) => {
+            return Err(HandlerError::internal(m));
+        }
+    };
     // Evolve trigger: a FIRST `crm/case/closed` event fires the deterministic
     // KCS capture generator (exactly-once via the outbox marker). Best-effort:
     // a failed capture is announced; the case-close itself already committed.
-    if topic_check == crate::connector::crm::TOPIC_CASE_CLOSED && outcome.0 {
+    if topic_check == crate::connector::crm::TOPIC_CASE_CLOSED && first {
         let pool_cap = super::resolve_domain_pool(&state.registry, None)?;
         tokio::task::spawn_blocking(move || -> Result<(), String> {
             let mut conn = pool_cap.get().map_err(|e| format!("{e}"))?;
@@ -1145,7 +1217,7 @@ pub async fn post_event(
         .ok();
     }
     Ok(Json(
-        serde_json::json!({"first": outcome.0, "event_id": outcome.1}),
+        serde_json::json!({"first": first, "event_id": event_id}),
     ))
 }
 
