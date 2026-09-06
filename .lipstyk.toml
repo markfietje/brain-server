@@ -18,6 +18,16 @@ exclude_tests = true
 [rules.cross-file-duplicate]
 enabled = false
 
+# The prose-structure rule shows the same unscoped behavior in --diff mode:
+# it attributes a whole-document paragraph-rhythm finding at file:1 and fires
+# on UNTOUCHED baseline files (observed: a hint on plugin/README.md while the
+# diff touched only src/bin/brain.rs) — failing the gate on code nobody
+# touched, the exact false-positive class documented above. Disabled with the
+# same rationale; run the prose review manually with:
+#   lipstyk --config /dev/null --exclude-tests src client plugin
+[rules.prose-structure]
+enabled = false
+
 [rules.cross-file-error-pattern]
 enabled = false
 
