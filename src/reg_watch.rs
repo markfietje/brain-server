@@ -297,3 +297,41 @@ fn standby_drill_recorded() {
         );
     }
 }
+
+/// revocation_drill_recorded — a kill-switch that has never been pulled is a
+/// rumor, not a capability (the standby-drill precedent). The pin goes GREEN
+/// only when the runbook carries the kill-switch section AND its dated drill
+/// record with the measured verdicts: the 2026-09-06 baseline (a copy of the
+/// live DB — cards fail closed, the owner's run drained through the existing
+/// cancel path, the drain observed in events, the audit chain verified). A
+/// future re-drill appends a new dated subsection; the baseline anchors stay.
+#[test]
+fn revocation_drill_recorded() {
+    let runbook = doc("docs/runbooks.md");
+    for anchor in [
+        "## Principal kill-switch (v1.28.62)",
+        "### What revocation does, in one transaction",
+        "### Procedure",
+        "### Ceilings (honest)",
+        "### Drill record — 2026-09-06",
+    ] {
+        assert!(
+            runbook.contains(anchor),
+            "kill-switch runbook is missing `{anchor}` — the rehearsed revocation \
+             and its dated record are the deliverable"
+        );
+    }
+    for measured in [
+        "403 principal_revoked",
+        "\"runs_drained\":1",
+        "status = cancelled",
+        "delegation/revoked",
+        "{\"ok\":true}",
+    ] {
+        assert!(
+            runbook.contains(measured),
+            "drill record must carry the measured verdict `{measured}` — a record \
+             without observed behavior is not a rehearsal"
+        );
+    }
+}

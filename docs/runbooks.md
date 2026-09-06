@@ -222,6 +222,77 @@ full row counts). Lessons encoded above: the promote procedure names the
 target explicitly via `BRAIN_DB_PATH`, and `--force` against a live server
 is the one step that must never be routine.
 
+## Principal kill-switch (v1.28.62)
+
+An agent (or operator principal) that is compromised, offboarded, or
+misbehaving has ONE switch: `POST /ops/agents/revoke {principal, reason}`
+(Admin on `global`). Revocation is identity-wide, and the machinery is
+already shipped — the procedure below is the whole story, no new tooling.
+
+### What revocation does, in one transaction
+
+1. The `revoked_principals` row upserts (latest revocation wins) and a
+   hash-chained audit row lands (`kind=auth`, target
+   `principal:<name>`, detail `revoke:<reason>`).
+2. Every card use, delegation dispatch, and result submission re-checks
+   the table BEFORE signature verification and refuses `403
+   principal_revoked` — including cards already provisioned
+   (re-provisioning does NOT resurrect the identity).
+3. Every ACTIVE run where the principal OWNS in-flight (`requested`)
+   delegation work drains through the EXISTING cancel path (the run CAS →
+   status `cancelled`), each with a `delegation/revoked` lineage event and
+   a run-scoped audit row. The response reports `runs_drained: <n>`.
+
+### Procedure
+
+1. Revoke: `curl -X POST -H 'authorization: Bearer …' -d '{"principal":
+   "agent:atlas", "reason": "<why>"}' …/ops/agents/revoke` — record
+   `runs_drained`.
+2. Verify fail-closed: `GET /ops/agents/cards?domain=…` (any domain the
+   agent has a card in) must answer `403 principal_revoked`; a dispatch
+   naming the principal must refuse the same way.
+3. Verify the drain: the drained runs read `status = cancelled`
+   (`GET /workflow/runs/{id}`), and their event log carries the
+   `delegation/revoked` lineage event.
+4. Verify the story: `GET /ops/agents/revocations` shows the register;
+   `GET /audit/verify` stays `{"ok":true}` — the revoke and every drain
+   are hash-chained rows in the same transaction that did the work.
+
+### Ceilings (honest)
+
+- Revocation gates the MESH decision paths (cards, dispatch, results) —
+  it is NOT a JWT revocation (that is `auth/revocation.rs`, the token
+  layer, separate machinery with its own runbook).
+- A revoked AGENT's already-`requested` delegations stay in that state
+  (evidence), they just can never complete; the owning run's remaining
+  work is the operator's to re-dispatch to a healthy agent.
+- The drain covers runs where the principal owns in-flight work; a run
+  they merely participated in historically is untouched.
+
+### Drill record — 2026-09-06 (Attestation milestone)
+
+Executed against a COPY of the live DB (50.6 MB, 8,790 knowledge rows),
+server on a spare port, drill token only. Binary built from the
+attestation line (version stamp bumps with the release commit).
+
+```
+revoke agent : drill-agent (card holder) → {"revoked":true,"runs_drained":0}
+cards list   : 403 principal_revoked (fails CLOSED on the revoked card)
+dispatch     : 403 principal_revoked (no new work to a revoked agent)
+revoke owner : loopback (holds in-flight work) → {"revoked":true,
+               "runs_drained":1}
+drain        : run 1 status = cancelled, state_revision 0 → 1 (the CAS
+               advanced exactly once; state_json untouched)
+events       : delegation/revoked {"action":"revocation_drain",
+               "principal":"loopback"} present in the run's lineage
+no new disp. : 403 principal_revoked BEFORE any row was written
+register     : 2 rows (loopback, drill-agent), newest first, reasons kept
+audit chain  : /audit/verify {"ok":true}; two kind=auth rows (revoke) +
+               one kind=workflow row (drain), all hash-chained
+same-tx law  : revocation + audit + drain committed atomically (the pin
+               revoked_owner_no_new_dispatch asserts the rollback twin)
+```
+
 ## Next steps
 
 - **[One Brain for the Whole Team](./team-workflow.md)** — where procedures fit in the shared-store workflow.
