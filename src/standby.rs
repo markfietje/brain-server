@@ -410,6 +410,13 @@ pub fn promote_check(
     passphrase: &[u8],
     preserve_workdir: bool,
 ) -> Result<PromoteReport, String> {
+    // The promoted db must open the way the SERVER would open it: the real
+    // memory carries vec0 virtual tables, and `PRAGMA integrity_check`
+    // walks every table — without the sqlite-vec module registered the
+    // rehearsal would fail on the real corpus while passing on fixtures.
+    // The CLI binary registers nothing itself (only server bootstrap does).
+    static VEC_ONCE: std::sync::Once = std::sync::Once::new();
+    VEC_ONCE.call_once(crate::register_sqlite_vec::register_sqlite_vec);
     let manifest = verify_follower(dir)?;
     let workdir = std::env::temp_dir().join(format!(
         "brain-standby-promote-{}-{}",
