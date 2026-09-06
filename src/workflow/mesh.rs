@@ -483,15 +483,11 @@ mod tests {
     use crate::register_sqlite_vec::register_sqlite_vec;
     use crate::workflow::tx::WorkflowTx;
     use rusqlite::Connection;
-    use std::sync::{Mutex, MutexGuard, PoisonError};
-
-    /// Env-var config is process-global: every test that points
-    /// `BRAIN_UMP_KEY_DIR` at a temp seed takes the shared lock, tolerantly.
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn lock_env() -> MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
-    }
+    // Env-var config is process-global: every test that points
+    // `BRAIN_UMP_KEY_DIR` at a temp seed takes THE shared lock — per-module
+    // locks guarded nothing across modules (the standby proptest flaked on
+    // CI exactly that way).
+    use crate::test_support::lock_env;
 
     fn db() -> Connection {
         register_sqlite_vec();

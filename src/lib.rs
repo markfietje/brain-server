@@ -165,6 +165,20 @@ pub mod otel;
 pub mod docs_truth;
 #[cfg(test)]
 pub mod dup_guard;
+/// Test-only shared process-env lock. Several suites point
+/// `BRAIN_UMP_KEY_DIR` (and friends) at fixture dirs, and cargo runs test
+/// threads in parallel — per-module locks guarded nothing ACROSS modules:
+/// one module's Drop removed the env var while another module's test was
+/// mid-read, and the standby roundtrip proptest flaked on CI exactly that
+/// way. Every test that mutates a process env var takes THIS lock.
+#[cfg(test)]
+pub mod test_support {
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    pub(crate) fn lock_env() -> MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
 // The regulation-date watch (Enterprise law 13): the calendar as code. Test-only
 // by construction — every pin is a #[test].
 #[cfg(test)]

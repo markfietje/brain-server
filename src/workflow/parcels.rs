@@ -526,15 +526,9 @@ mod tests {
     use super::*;
     use crate::migration::run_migration;
     use crate::register_sqlite_vec::register_sqlite_vec;
+    use crate::test_support::lock_env;
     use crate::workflow::tx::WorkflowTx;
     use rusqlite::Connection;
-    use std::sync::{Mutex, MutexGuard, PoisonError};
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn lock_env() -> MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
-    }
 
     fn db() -> Connection {
         register_sqlite_vec();

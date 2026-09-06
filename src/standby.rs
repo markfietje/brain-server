@@ -473,14 +473,8 @@ pub fn promote_check(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::lock_env;
     use rusqlite::params;
-    use std::sync::{Mutex, MutexGuard, PoisonError};
-
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
-
-    fn lock_env() -> MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
-    }
 
     /// A fixture operator key in a 0600 seed file (the OperatorKey idiom
     /// from parcels) — signing requires the operator key, fail closed.
