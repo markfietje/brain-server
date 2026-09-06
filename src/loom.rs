@@ -175,6 +175,21 @@ fn pool() -> Option<&'static rayon::ThreadPool> {
     POOL.get().and_then(|p| p.as_ref())
 }
 
+/// Whether the fan-out seam will actually parallelize (feature compiled +
+/// pool installed at boot + build succeeded). The fan-out SITES consult this
+/// to decide whether a pre-pass is worth building; being wrong in either
+/// direction is only a performance question, never a correctness one.
+pub fn active() -> bool {
+    #[cfg(feature = "loom")]
+    {
+        pool().is_some()
+    }
+    #[cfg(not(feature = "loom"))]
+    {
+        false
+    }
+}
+
 /// The one fan-out seam: an ORDERED per-item map, run on the capped loom pool
 /// when active, serially otherwise. The collect is order-preserving in both
 /// arms (rayon's `par_iter` over a slice is indexed) — that is the invariant

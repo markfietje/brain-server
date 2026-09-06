@@ -197,13 +197,41 @@ pub async fn ingest(
         if crate::config::write_posture() == "review" {
             return Err(propose_structured(&_state, &principal.0, req).await);
         }
-        let r = ingest_one(&_state, &principal.0, req).await?;
+        let r = ingest_one(&_state, &principal.0, req, None).await?;
         return Ok(Json(serde_json::to_value(r).unwrap_or_default()));
+    }
+
+    // Loom site 1 (the batch-ingest embed stage, the plan's named fan-out):
+    // when the parallel tier is active, every lowered record's embedding is
+    // computed in ONE spawn_blocking via an ordered per-item fan-out.
+    // Embeddings are pure fns of text + model, so the per-record values are
+    // byte-identical to the serial encode inside `ingest_one`
+    // (`loom_preserves_fused_ranks`); store order, dedup, and audit are
+    // untouched. When loom is off — or this pre-pass join fails — the vec
+    // stays all-`None` and every record encodes exactly as before (the
+    // degradation direction is serial, never blocked).
+    let mut precomputed: Vec<Option<Vec<f32>>> = vec![None; lowered.len()];
+    if crate::loom::active() && crate::config::write_posture() != "review" {
+        let contents: Vec<(usize, String)> = lowered
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| r.as_ref().ok().map(|(req, _)| (i, req.content.clone())))
+            .collect();
+        let model = Arc::clone(&_state.model);
+        let embs = tokio::task::spawn_blocking(move || {
+            crate::loom::fan_out(&contents, |(i, text)| (*i, model.encode_one(text)))
+        })
+        .await;
+        if let Ok(embs) = embs {
+            for (i, emb) in embs {
+                precomputed[i] = Some(emb);
+            }
+        }
     }
 
     // Multi-record UMP batch: per-record status, one failure never aborts.
     let mut results = Vec::with_capacity(lowered.len());
-    for lowered_req in lowered {
+    for (idx, lowered_req) in lowered.into_iter().enumerate() {
         if let Err(e) = &lowered_req {
             results.push(err_envelope(e));
             continue;
@@ -215,7 +243,8 @@ pub async fn ingest(
         let outcome = if crate::config::write_posture() == "review" {
             Err(propose_structured(&_state, &principal.0, req).await)
         } else {
-            ingest_one(&_state, &principal.0, req).await
+            // `take` so a record never clones its embedding.
+            ingest_one(&_state, &principal.0, req, precomputed[idx].take()).await
         };
         results.push(
             outcome
@@ -329,6 +358,7 @@ pub(crate) async fn ingest_one(
     state: &Arc<AppState>,
     principal: &Option<crate::auth::Principal>,
     mut req: IngestRequest,
+    precomputed_embedding: Option<Vec<f32>>,
 ) -> Result<IngestResponse, HandlerError> {
     // refuse new writes when over the capacity envelope (HTTP 507).
     // Read routes do not call this guard; an over-capacity brain still answers.
@@ -521,15 +551,23 @@ pub(crate) async fn ingest_one(
     // resolved domain (forced, else auto-routed via centroids), and insert
     // knowledge + vec0 + legacy embedding + entities + relations in a single
     // SQLite transaction.
-    let model = Arc::clone(&state.model);
     let entities_norm = entities;
     let relations_norm = relations;
     let content_for_embed = content.clone();
     let title_for_store = title.clone();
 
-    let embedding = tokio::task::spawn_blocking(move || model.encode_one(&content_for_embed))
-        .await
-        .map_err(|e| HandlerError::internal(format!("embedding task failed: {e}")))?;
+    // A precomputed embedding (the loom batch fan-out, site 1) skips this
+    // record's own spawn_blocking encode — the value is byte-identical, the
+    // embedder being a pure fn of text + model (`loom_preserves_fused_ranks`).
+    let embedding = match precomputed_embedding {
+        Some(v) => v,
+        None => {
+            let model = Arc::clone(&state.model);
+            tokio::task::spawn_blocking(move || model.encode_one(&content_for_embed))
+                .await
+                .map_err(|e| HandlerError::internal(format!("embedding task failed: {e}")))?
+        }
+    };
     if embedding.is_empty() {
         return Err(HandlerError::internal("embedding produced no vector"));
     }

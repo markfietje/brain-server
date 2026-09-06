@@ -149,7 +149,7 @@ pub async fn remember(
             json!({ "proposal_id": p.id, "status": "pending", "result": "proposed" }),
         ));
     }
-    let resp = ingest_one(&state, &principal.0, req).await?;
+    let resp = ingest_one(&state, &principal.0, req, None).await?;
     // §3.3 `created | merged | rejected` — brain's dedup reports "duplicate".
     let result = match resp.status {
         "created" => "created",
@@ -667,7 +667,7 @@ pub async fn revise(
             }),
         ));
     }
-    let resp = ingest_one(&state, &principal.0, new_req).await?;
+    let resp = ingest_one(&state, &principal.0, new_req, None).await?;
     let new_id = resp.id;
     if new_id != old_id {
         // Expire the old chunk so current recall returns the new revision.
