@@ -263,15 +263,37 @@ pub fn find_near_duplicates(
          WHERE k.valid_to IS NULL
          ORDER BY k.id",
     )?;
-    let rows: Vec<(i64, Vec<f32>)> = stmt
+    // Collect raw (id, int8-blob) rows. This originally read the legacy
+    // `embeddings` JSON table, but that table froze when vec0 became the
+    // store — production ingests write only vec_knowledge, so the scan
+    // silently covered ~0% of chunks on a live DB. Skip chunks already
+    // expired via valid_to (being forgotten, not consolidated).
+    let raw: Vec<(i64, Vec<u8>)> = stmt
         .query_map([], |r| {
             let id: i64 = r.get(0)?;
             let blob: Vec<u8> = r.get(1)?;
-            Ok((id, decode_embedding(&blob)))
+            Ok((id, blob))
         })?
         .filter_map(|r| r.ok())
         .collect();
     drop(stmt);
+
+    // Loom site 2 (the reconcile near-dup scan's pure-CPU preprocessing, the
+    // plan's second named fan-out): dequantize + little-endian serialization
+    // runs across the capped pool when loom is active. `decode_embedding` is
+    // a pure fn of the blob and the ordered collect keeps row order ==
+    // `ORDER BY k.id`, so the pairs below are byte-identical to the serial
+    // scan (`loom_preserves_fused_ranks`). The KNN loop itself STAYS SERIAL
+    // by design: it queries sqlite-vec MATCH through the ONE shared
+    // `&Connection` (rusqlite is `!Sync`) — fanning the query loop out would
+    // need a pool restructure the plan does not sanction.
+    let rows: Vec<(i64, Vec<u8>)> = crate::loom::fan_out(&raw, |(id, blob)| {
+        let bytes: Vec<u8> = decode_embedding(blob)
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect();
+        (*id, bytes)
+    });
 
     // the KNN statement is hoisted out of the
     // per-chunk loop (was re-prepared once per chunk scanned).
@@ -286,18 +308,16 @@ pub fn find_near_duplicates(
 
     let mut seen: std::collections::HashSet<(i64, i64)> = std::collections::HashSet::new();
     let mut pairs: Vec<NearDupPair> = Vec::new();
-    for (id, emb) in &rows {
+    for (id, emb_bytes) in &rows {
         if pairs.len() >= max_pairs {
             break;
         }
         // KNN: find this chunk's 2 nearest neighbors. vec_quantize_int8 is a
         // SQLite function provided by sqlite-vec (called in-SQL); ?1 binds the
-        // raw Vec<f32> query embedding, which the function quantizes. This is
-        // the same pattern vec0_knn uses (search/mod.rs:1064).
-        // Bind the embedding as raw bytes (4 bytes per f32) — same pattern as
-        // vec0_knn (search/mod.rs:1073). vec_quantize_int8 is the sqlite-vec
-        // SQLite function that quantizes the raw f32 input in-SQL.
-        let emb_bytes: Vec<u8> = emb.iter().flat_map(|f| f.to_le_bytes()).collect();
+        // dequantized-then-re-serialized f32 bytes (built in the loom fan-out
+        // above). This is the same pattern vec0_knn uses (search/mod.rs:1064)
+        // — vec_quantize_int8 is the sqlite-vec SQLite function that
+        // quantizes the raw f32 input in-SQL.
         let neighbors = knn.query_map(rusqlite::params![emb_bytes, id], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
