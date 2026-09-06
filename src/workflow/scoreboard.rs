@@ -165,6 +165,78 @@ pub(crate) fn score_units_now(conn: &Connection) -> i32 {
     }
 }
 
+// ── v1.28.62 "Attestation": the approval-fatigue telemetry (ASI09) ──────
+// The client's rubber-stamp detector (client/src/panels/review.rs:192
+// `rubber_stamp()` over calibration_stats) computed SERVER-SIDE so the DPO
+// sees the signal on the scoreboard, not only in one reviewer's console.
+// The window and the sample cap mirror the client's fetch exactly
+// (calibration_strip: `now - 7*24*3600`, `limit=200` per status, created_at
+// window — service::review::pending_page's predicate).
+
+/// The detector's look-back window — the client's `since` (7 days).
+pub const UNIFORMITY_WINDOW_SECS: i64 = 7 * 24 * 3600;
+
+/// The detector's per-status sample cap — the client's `limit=200` fetch.
+pub const UNIFORMITY_SAMPLE_CAP: i64 = 200;
+
+/// The pure arbiter, one function so the parity pin can hold it against the
+/// client's arithmetic. Inputs are the windowed decision counts; outputs are
+/// the scoreboard pair:
+/// - `review_independence_risk` (0|1): the client's rubber_stamp verdict —
+///   `approve_rate > 0.9 && decisions >= 20` — a near-uniform approval rate
+///   over a meaningful decision count. The rate expression is the client's
+///   f64 form VERBATIM (same divide, same compare) so the boundary
+///   (18/20 = exactly 0.9 → no risk) resolves identically both sides.
+/// - `approval_uniformity_ratio` (integer ten-thousandths, truncating — the
+///   house convention): the approval rate itself, so the DPO sees HOW near
+///   uniform, not just the binary risk.
+pub fn approval_uniformity(approved: i64, rejected: i64) -> (i64, i64) {
+    let decisions = approved + rejected;
+    let approve_rate = if decisions == 0 {
+        0.0
+    } else {
+        approved as f64 / decisions as f64
+    };
+    let risk = if approve_rate > 0.9 && decisions >= 20 {
+        1
+    } else {
+        0
+    };
+    let ratio = if decisions == 0 {
+        0
+    } else {
+        approved * 10_000 / decisions
+    };
+    (risk, ratio)
+}
+
+/// The windowed decision counts feeding the arbiter — the SAME fetch the
+/// client makes (per status: `created_at >= since`, latest-N page). Mirrors
+/// `service::review::pending_page`'s window predicate; `decided_at` is NOT
+/// the window key (the client filters created_at; the review queue pages by
+/// created_at — one definition everywhere).
+pub(crate) fn review_independence_measures(
+    conn: &Connection,
+    now: i64,
+) -> Result<(i64, i64, i64, i64), String> {
+    let since = now - UNIFORMITY_WINDOW_SECS;
+    let count = |status: &str| -> Result<i64, rusqlite::Error> {
+        conn.query_row(
+            "SELECT COUNT(*) FROM (
+                 SELECT id FROM proposals
+                  WHERE status = ?1 AND created_at >= ?2
+                  ORDER BY created_at DESC LIMIT ?3
+             )",
+            rusqlite::params![status, since, UNIFORMITY_SAMPLE_CAP],
+            |r| r.get(0),
+        )
+    };
+    let approved = count("approved").map_err(|e| e.to_string())?;
+    let rejected = count("rejected").map_err(|e| e.to_string())?;
+    let (risk, ratio) = approval_uniformity(approved, rejected);
+    Ok((risk, ratio, approved, rejected))
+}
+
 fn artifacts_from_row(
     status: &str,
     v: &serde_json::Value,
@@ -419,6 +491,11 @@ mod scoreboard_tests {
         "voc_complaints_per_thousand_contacts_units",
         // v1.28.36 Keystone: the re-ask is now counted.
         "reask_rate",
+        // v1.28.62 Attestation: ASI09 approval-fatigue telemetry (the client
+        // detector's arithmetic, server-side).
+        "review_independence_risk",
+        "approval_uniformity_ratio",
+        "review_decisions_window",
     ];
 
     /// Dictionary fields defined but deliberately not yet emitted by code
@@ -673,5 +750,105 @@ mod scoreboard_tests {
         assert_eq!(crate::connector::crm::reask_window_days(), 3);
         unsafe { std::env::remove_var("BRAIN_REASK_WINDOW_DAYS") };
         assert_eq!(crate::connector::crm::reask_window_days(), 3);
+    }
+
+    /// scoreboard_uniformity_matches_client_math — the ASI09 parity pin:
+    /// the server arbiter MUST return the same verdict the client's
+    /// rubber_stamp detector returns on the same fixture. The client fn
+    /// (client/src/panels/review.rs:192, verbatim arithmetic) is recomputed
+    /// inline here — if the two ever drift, this fails BEFORE the DPO sees
+    /// a scoreboard that disagrees with the reviewer's own console.
+    #[test]
+    fn scoreboard_uniformity_matches_client_math() {
+        // The client's fn, verbatim: `c.approve_rate > 0.9 && c.decisions >= 20`
+        // where approve_rate = approved / (approved + rejected), 0.0 on an
+        // empty window (client/src/panels/review.rs calibration_stats).
+        let client_rubber_stamp = |approved: usize, rejected: usize| -> bool {
+            let decisions = approved + rejected;
+            let approve_rate = if decisions == 0 {
+                0.0
+            } else {
+                approved as f64 / decisions as f64
+            };
+            approve_rate > 0.9 && decisions >= 20
+        };
+        let cases: &[(usize, usize)] = &[
+            (0, 0),  // empty window: no risk, ratio 0 (no invented signal)
+            (0, 20), // all-rejections: risk 0, ratio 0
+            (19, 0), // perfect rate but UNDER the decision floor
+            (20, 0), // exactly at the floor + perfect rate → risk 1
+            (18, 2), // 0.9 exactly → NOT > 0.9 (the boundary both sides)
+            (19, 1), // 0.95 over ≥20 → risk 1
+            (19, 3), // 19/22 ≈ 0.8636 → risk 0
+            (18, 0), // 1.0 but under the floor
+            (2, 0),  // tiny window: never a risk
+            (10_000, 500),
+        ];
+        for &(approved, rejected) in cases {
+            let (risk, ratio) = approval_uniformity(approved as i64, rejected as i64);
+            assert_eq!(
+                risk,
+                client_rubber_stamp(approved, rejected) as i64,
+                "verdict drift at approved={approved} rejected={rejected}"
+            );
+            // The ratio is the integer ten-thousandths of the same rate.
+            let decisions = approved + rejected;
+            let expected_ratio = if decisions == 0 {
+                0
+            } else {
+                approved as i64 * 10_000 / decisions as i64
+            };
+            assert_eq!(ratio, expected_ratio);
+        }
+    }
+
+    /// review_independence_measures_mirror_the_client_fetch — the data side
+    /// of the parity pin: same window (created_at >= now-7d), same per-status
+    /// latest-200 cap, only decided statuses count (a PENDING proposal is
+    /// not a decision).
+    #[test]
+    fn review_independence_measures_mirror_the_client_fetch() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::migration::run_migration(&mut conn, 1).unwrap();
+        let now = 1_800_000_000i64;
+        let insert = |status: &str, created_at: i64| {
+            conn.execute(
+                "INSERT INTO proposals(kind, content, novelty, salience, status, created_at)
+                 VALUES ('fact', 'x', 1.0, 0.5, ?1, ?2)",
+                rusqlite::params![status, created_at],
+            )
+            .unwrap();
+        };
+        // In-window: 19 approved + 1 rejected → 0.95 over 20 → risk 1.
+        for _ in 0..19 {
+            insert("approved", now - 100);
+        }
+        insert("rejected", now - 90);
+        // Out-of-window decisions are invisible (the client's `since`).
+        insert("approved", now - UNIFORMITY_WINDOW_SECS - 10);
+        // Pending is NOT a decision.
+        insert("pending", now - 50);
+
+        let (risk, ratio, approved, rejected) =
+            review_independence_measures(&conn, now).expect("measures");
+        assert_eq!(approved, 19);
+        assert_eq!(rejected, 1);
+        assert_eq!(risk, 1, "0.95 over 20 decisions is the client's warn zone");
+        assert_eq!(ratio, 9_500);
+
+        // The per-status cap mirrors the client's limit=200 fetch: the 201st
+        // newest decision is out of the sample in BOTH implementations.
+        for _ in 0..300 {
+            insert("approved", now - 10);
+        }
+        let (risk, ratio, approved, _) =
+            review_independence_measures(&conn, now).expect("measures");
+        assert_eq!(approved, UNIFORMITY_SAMPLE_CAP, "capped like the client");
+        assert_eq!(risk, 1);
+        // 200 sampled approvals + the 1 in-window rejection = 201 decisions:
+        // the ratio is the truncated ten-thousandths of that rate, exactly
+        // what the client's fetch would feed its own calibration.
+        assert_eq!(ratio, 9_950);
     }
 }

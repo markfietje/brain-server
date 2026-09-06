@@ -67,6 +67,23 @@ telephony/CRM numbers) — see "Deliberately absent" at the end.
 | `kb_hot_topics` | top slugs by feedback count above `KB_HOT_TOPIC_THRESHOLD`. | `kcs::kb_hot_topics` | rolling | KCS v6 Evolve (content-defect queue) |
 | `reask_rate` | re-ask events (`case/reask`) ÷ closed cases, in hundredths. Three deterministic sources emit the event: `crm_merge` (Zendesk/Salesforce merges, Genesys reopens via the Bridges sync), `marked` (operator `reask` note / `brain workflow note --reask`), `derived` (duplicate-open heuristic — exact hashed-subject match within `BRAIN_REASK_WINDOW_DAYS`, default 3 days, HITL-gated as `case_merge_suggested`; the approved merge emits). No fuzzy matching; no surveys. | `outbox topic='case/reask'`, `workflow_runs.status` | rolling; window semantics per `BRAIN_REASK_WINDOW_DAYS` | CXC customer-effort canon (effort-proxy dimension); Keystone v1.28.36 |
 
+## Approval-fatigue telemetry (ASI09, Attestation v1.28.62)
+
+The reviewer's own anti-rubber-stamp detector (the console's calibration
+strip, `client/src/panels/review.rs` `rubber_stamp()`) computed SERVER-SIDE
+so the DPO sees the signal on the scoreboard, not only in one reviewer's
+console. The window and the sample cap mirror the client's fetch exactly
+(trailing 7 days on `created_at`, latest 200 per status), and the verdict is
+pinned against the client arithmetic by
+`scoreboard_uniformity_matches_client_math` — the scoreboard and the
+reviewer's console can never disagree.
+
+| Field | Definition / formula | Source (lineage) | Window | Citation |
+|---|---|---|---|---|
+| `review_independence_risk` | 1 when `approve_rate > 0.9 AND decisions >= 20` over the windowed sample (the client detector's verdict, verbatim arithmetic); else 0. An empty window scores 0 — absence is never dressed up as either safety or risk. | `proposals.status`, `proposals.created_at` (decided proposals only) | trailing 7 days, latest 200 decisions per status | ASI09 approval-fatigue posture; COPC R8.0 QA calibration discipline |
+| `approval_uniformity_ratio` | `approved ÷ (approved + rejected)` over the same sample, integer ten-thousandths (truncating; 10000 = 100%). Shows HOW near uniform, not just the binary risk. | same sample as `review_independence_risk` | same window | ASI09 (Attestation v1.28.62); parity-pinned to the client arithmetic |
+| `review_decisions_window` | `approved + rejected` in the uniformity sample — the denominator context that makes the two signals above interpretable. | same sample | same window | ASI09 (Attestation v1.28.62) |
+
 ## Derived proxy (planned scorer integration)
 
 **`customer_effort_events`** — a deterministic CES *proxy* per case computed

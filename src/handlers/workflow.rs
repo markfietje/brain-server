@@ -431,6 +431,21 @@ pub async fn get_scoreboard(
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(HandlerError::internal)?;
+    // ASI09 approval-fatigue telemetry (v1.28.62): the client's rubber-stamp
+    // arithmetic computed server-side over the same window/cap — DPO
+    // visibility on the board, docs/metrics.md is the normative dictionary.
+    let pool_ri = super::resolve_domain_pool(&state.registry, None)?;
+    let (risk, uniformity, ri_decisions) =
+        tokio::task::spawn_blocking(move || -> Result<_, String> {
+            let conn = pool_ri.get().map_err(|e| format!("{e}"))?;
+            let now = chrono::Utc::now().timestamp();
+            let (risk, ratio, approved, rejected) =
+                crate::workflow::scoreboard::review_independence_measures(&conn, now)?;
+            Ok((risk, ratio, approved + rejected))
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("{e}")))?
+        .map_err(HandlerError::internal)?;
     let hot_topics: Vec<serde_json::Value> = hot
         .into_iter()
         .map(|(slug, n)| serde_json::json!({ "slug": slug, "feedback_count": n }))
@@ -476,6 +491,11 @@ pub async fn get_scoreboard(
         "voc_contacts_total": voc.contacts_total,
         "voc_complaints_total": voc.complaints_total,
         "voc_complaints_per_thousand_contacts_units": voc.complaints_per_thousand_units,
+        // ASI09 approval-fatigue telemetry (v1.28.62): the client detector's
+        // verdict + the approval rate itself (integer ten-thousandths).
+        "review_independence_risk": risk,
+        "approval_uniformity_ratio": uniformity,
+        "review_decisions_window": ri_decisions,
     })))
 }
 

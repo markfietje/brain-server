@@ -27,7 +27,7 @@
     {
       "name": "repeat_contact_rate_units",
       "unit": "ten-thousandths",
-      "formula": "runs_with_repeat / runs_scored — complement of FCR",
+      "formula": "runs_with_repeat / runs_scored \u2014 complement of FCR",
       "sources": [
         {
           "table": "workflow_runs",
@@ -85,7 +85,7 @@
           "column": "kind"
         }
       ],
-      "window": "—",
+      "window": "\u2014",
       "inclusion": "future: gap-class proposals over closed runs",
       "exclusion": "never inferred from run outcomes alone",
       "citation": "KCS v6 Solve-loop gap capture",
@@ -104,7 +104,7 @@
       ],
       "window": "last 1000 runs",
       "inclusion": "all derived steps",
-      "exclusion": "none — higher abstention is honesty, never penalized",
+      "exclusion": "none \u2014 higher abstention is honesty, never penalized",
       "citation": "AI Act Art.14 human-oversight posture",
       "tier_availability": "all tiers",
       "status": "emitted"
@@ -190,7 +190,7 @@
       "window": "most recent 1000 by id",
       "inclusion": "all runs in the window regardless of kind",
       "exclusion": "older runs beyond the cap",
-      "citation": "—",
+      "citation": "\u2014",
       "tier_availability": "all tiers",
       "status": "emitted"
     },
@@ -206,7 +206,7 @@
       ],
       "window": "last 1000 runs",
       "inclusion": "kind = 'return'",
-      "exclusion": "—",
+      "exclusion": "\u2014",
       "citation": "returns/warranty KPI set (ClaimLane canon)",
       "tier_availability": "all tiers",
       "status": "emitted"
@@ -223,7 +223,7 @@
       ],
       "window": "last 1000 runs",
       "inclusion": "kind = 'warranty_claim'",
-      "exclusion": "—",
+      "exclusion": "\u2014",
       "citation": "returns/warranty KPI set",
       "tier_availability": "all tiers",
       "status": "emitted"
@@ -252,7 +252,7 @@
     {
       "name": "refund_cycle_time_median_secs",
       "unit": "seconds (median)",
-      "formula": "median(created_at → updated_at) over resolved return/warranty runs; 0 when none resolved",
+      "formula": "median(created_at \u2192 updated_at) over resolved return/warranty runs; 0 when none resolved",
       "sources": [
         {
           "table": "workflow_runs",
@@ -311,7 +311,7 @@
       ],
       "window": "last 1000 runs",
       "inclusion": "kind = 'return' with state_json.fraud_flagged",
-      "exclusion": "signals inform HITL only — they never auto-deny",
+      "exclusion": "signals inform HITL only \u2014 they never auto-deny",
       "citation": "fraud-signals-feed-HITL posture",
       "tier_availability": "all tiers",
       "status": "emitted"
@@ -354,7 +354,7 @@
       "window": "trailing 30 days",
       "inclusion": "same scan as goodwill_total_cents_30d",
       "exclusion": "same exclusions",
-      "citation": "—",
+      "citation": "\u2014",
       "tier_availability": "all tiers",
       "status": "emitted"
     },
@@ -369,8 +369,8 @@
         }
       ],
       "window": "trailing 30 days",
-      "inclusion": "approved remedies without verifiable audit rows — surfaced, never folded away",
-      "exclusion": "—",
+      "inclusion": "approved remedies without verifiable audit rows \u2014 surfaced, never folded away",
+      "exclusion": "\u2014",
       "citation": "fail-closed evidence law",
       "tier_availability": "all tiers",
       "status": "emitted"
@@ -378,7 +378,7 @@
     {
       "name": "voc_contacts_total",
       "unit": "count",
-      "formula": "count of workflow runs — the contact volume the VoC ratio denominates",
+      "formula": "count of workflow runs \u2014 the contact volume the VoC ratio denominates",
       "sources": [
         {
           "table": "workflow_runs",
@@ -404,14 +404,14 @@
       ],
       "window": "rolling (all runs)",
       "inclusion": "complaint-kind runs (the ISO 10002 register posture)",
-      "exclusion": "—",
+      "exclusion": "\u2014",
       "citation": "ISO 10002 register posture",
       "tier_availability": "all tiers",
       "status": "emitted"
     },
     {
       "name": "voc_complaints_per_thousand_contacts_units",
-      "unit": "hundredths (per-thousand × 100)",
+      "unit": "hundredths (per-thousand \u00d7 100)",
       "formula": "complaints * 100000 / max(contacts, 1); zero contacts score 0",
       "sources": [
         {
@@ -501,7 +501,7 @@
     {
       "name": "self_service_deflection_units",
       "unit": "ten-thousandths",
-      "formula": "solved-proof feedback / total on-page KB feedback — INDICATIVE only",
+      "formula": "solved-proof feedback / total on-page KB feedback \u2014 INDICATIVE only",
       "sources": [
         {
           "table": "findings",
@@ -527,8 +527,8 @@
       ],
       "window": "rolling",
       "inclusion": "claim = 'kb_feedback'",
-      "exclusion": "—",
-      "citation": "—",
+      "exclusion": "\u2014",
+      "citation": "\u2014",
       "tier_availability": "all tiers",
       "status": "emitted"
     },
@@ -573,7 +573,7 @@
     {
       "name": "customer_effort_events",
       "unit": "points per case",
-      "formula": "repeats×2 + switches×1 + handovers×3 + re_asks×2 (frontdesk::effort_proxy) — deterministic CES proxy from lineage",
+      "formula": "repeats\u00d72 + switches\u00d71 + handovers\u00d73 + re_asks\u00d72 (frontdesk::effort_proxy) \u2014 deterministic CES proxy from lineage",
       "sources": [
         {
           "table": "workflow_runs",
@@ -586,10 +586,73 @@
       ],
       "window": "per case lifetime",
       "inclusion": "lineage-recorded repeats, channel switches, handovers, re-asks",
-      "exclusion": "no survey instrument exists here (VoC surveys stay CRM-side per ISO 10004); lands as a scored dimension in the next scorer version with gold-set families extended — defined here so the formula is fixed before any code emits it",
+      "exclusion": "no survey instrument exists here (VoC surveys stay CRM-side per ISO 10004); lands as a scored dimension in the next scorer version with gold-set families extended \u2014 defined here so the formula is fixed before any code emits it",
       "citation": "CES lineage-derived twin; CXC customer-effort canon",
       "tier_availability": "all tiers",
       "status": "planned"
+    },
+    {
+      "name": "review_independence_risk",
+      "unit": "boolean (0|1)",
+      "formula": "1 when approval_rate > 0.9 AND decisions >= 20 over the window (the client detector's rubber_stamp verdict, server-side); else 0",
+      "sources": [
+        {
+          "table": "proposals",
+          "column": "status"
+        },
+        {
+          "table": "proposals",
+          "column": "created_at"
+        }
+      ],
+      "window": "trailing 7 days (created_at), latest 200 decisions per status (approved/rejected) \u2014 the client fetch mirrored exactly (client/src/panels/review.rs calibration_strip)",
+      "inclusion": "decided proposals only (status approved|rejected); both statuses count toward decisions; empty window scores 0 (never an invented signal)",
+      "exclusion": "pending proposals (not decisions); decisions outside the window; per-status sample beyond the 200 newest (the same cap the client applies)",
+      "citation": "ASI09 approval-fatigue posture; COPC R8.0 QA calibration discipline (Attestation v1.28.62)",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "approval_uniformity_ratio",
+      "unit": "integer ten-thousandths (10000 = 100%)",
+      "formula": "approved / (approved + rejected) over the same windowed sample as review_independence_risk, truncated to ten-thousandths",
+      "sources": [
+        {
+          "table": "proposals",
+          "column": "status"
+        },
+        {
+          "table": "proposals",
+          "column": "created_at"
+        }
+      ],
+      "window": "trailing 7 days (created_at), latest 200 decisions per status (approved/rejected)",
+      "inclusion": "decided proposals only (status approved|rejected); 0 on an empty window",
+      "exclusion": "pending proposals; decisions outside the window; per-status sample beyond the 200 newest",
+      "citation": "ASI09 approval-fatigue posture (Attestation v1.28.62); pinned against the client arithmetic by scoreboard_uniformity_matches_client_math",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "review_decisions_window",
+      "unit": "count",
+      "formula": "approved + rejected in the uniformity sample (the denominator context for the two signals above)",
+      "sources": [
+        {
+          "table": "proposals",
+          "column": "status"
+        },
+        {
+          "table": "proposals",
+          "column": "created_at"
+        }
+      ],
+      "window": "trailing 7 days (created_at), latest 200 decisions per status (approved/rejected)",
+      "inclusion": "decided proposals only (status approved|rejected), after the per-status cap",
+      "exclusion": "pending proposals; decisions outside the window",
+      "citation": "ASI09 approval-fatigue posture (Attestation v1.28.62)",
+      "tier_availability": "all tiers",
+      "status": "emitted"
     }
   ]
 }
