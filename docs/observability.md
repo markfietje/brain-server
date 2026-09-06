@@ -8,25 +8,48 @@ OpenTelemetry is feature-gated — a build without `--features otel` compiles no
 exporter at all; on otel builds export is **enabled by default** and
 `BRAIN_OTEL_ENABLED` (`0`/`false`/`no`/`off`) is the kill switch.
 
-This page is verified against `src/main.rs` (`metrics`, `list_audit`,
-`verify_audit_chain`, `health`, `stats`, `version`), `src/audit.rs`, and
-`src/otel.rs`.
+This page is verified against `src/server/router/core.rs` (the `/metrics`,
+`/health/*`, `/audit*` surfaces), `src/audit/mod.rs`, and `src/otel.rs`. The
+`/metrics` series list is machine-pinned to the metrics dictionary
+(`src/docs_truth.rs` — a series cannot ship without a dictionary row).
 
 ## Metrics (`GET /metrics`)
 
 Prometheus text exposition, **auth-gated** (a `Read` principal is required —
-a `403` with the reason keeps the non-JSON contract). The gauges, verified from
-source:
+a `403` with the reason keeps the non-JSON contract). All twelve series,
+verified from source:
 
-| Gauge | Meaning |
-|---|---|
-| `brain_rss_mib` | **This process's** RSS in MiB (not host-wide). Matches the capacity envelope `/health` reports. |
-| `brain_pool_connections{state="idle"}` / `{state="busy"}` | SQLite connection-pool idle/busy counts. |
-| `brain_capacity_status` | `1`=ok, `2`=warning, `3`=exceeded (mirrors the capacity envelope). |
-| `brain_audit_chain_ok` | `1` = audit chain verifies, `0` = tamper detected. |
+| Series | Kind | Meaning |
+|---|---|---|
+| `brain_rss_mib` | gauge | **This process's** RSS in MiB (not host-wide). Matches the capacity envelope `/health` reports. |
+| `brain_pool_connections{state="idle"}` / `{state="busy"}` | gauge | SQLite connection-pool idle/busy counts. |
+| `brain_pool_in_use{domain}` | gauge | Connections currently checked out, per domain DB. |
+| `brain_pool_idle{domain}` | gauge | Connections parked in the pool, per domain DB. |
+| `brain_pool_timeouts_total` | counter | Acquire attempts that hit the pool timeout (visible contention). |
+| `brain_busy_errors_total` | counter | SQLite `SQLITE_BUSY` errors returned to callers. |
+| `brain_wal_pages_pending{domain}` | gauge | WAL frames not yet checkpointed, per domain DB — the write-pressure gauge. |
+| `brain_lock_wait_micros_p50` | gauge | p50 of contended mutex/RwLock acquire waits (Headroom telemetry; try_lock fast paths read zero clock). |
+| `brain_lock_wait_micros_p95` | gauge | p95 of the same histogram (fixed-bucket edges, no histograms crate). |
+| `brain_db_busy_total` | counter | Busy-handler sleeps on the write path. |
+| `brain_capacity_status` | gauge | `1`=ok, `2`=warning, `3`=exceeded (mirrors the capacity envelope). |
+| `brain_audit_chain_ok` | gauge | `1` = audit chain verifies, `0` = tamper detected. |
+
+Formulas, sources, and citations for every series live in the metrics
+dictionary (`docs/metrics.md`, the "Server telemetry series" section).
 
 The audit-chain gauge uses a short-TTL cache so a scrape doesn't trigger a full
 O(n) chain scan; `/audit/verify` (below) always gives the authoritative answer.
+
+### `/health/db` — the operator's detail read (Read-gated)
+
+Beyond reachability, `/health/db` echoes the operating posture: the capacity
+block, the hardening/concurrency block (`pool_timeouts_total`,
+`busy_errors_total`, per-domain `wal_pages_pending`), the static boot-time
+**durability echo** (`synchronous`, `wal_autocheckpoint_pages`,
+`capacity_target` — what the write-posture envelope resolved to), and the
+**loom boot decision** (whether the opt-in CPU-parallelism tier engaged, and
+why or why not). Use it alongside `/metrics`: gauges are the trend,
+`/health/db` is the configuration truth.
 
 ## Audit chain
 

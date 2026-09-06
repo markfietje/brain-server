@@ -26,8 +26,10 @@ Brain Server is the tamper-evident, human-gated memory store that defuses it.**
    human approves. The injection screen (blocklist + optional local classifier)
     quarantines adversarial input before it reaches the gate. See v1.14–v1.20,
     extended since then by the v1.28 governed loop — lineage events on every
-    workflow step, an outcome scoreboard with signed calibration, and the
-    complaint/aftersales lifecycle through v1.28.34 "Goodwill".
+    workflow step, an outcome scoreboard with signed calibration, the
+    complaint/aftersales lifecycle, and — closing the Enterprise Line at
+    v1.28.62 "Attestation" — signed provenance marks on every engine-generated
+    artifact, the principal kill-switch, and the cryptographic inventory.
 3. **Tamper-evident audit** — every decision (and, opt-in, every read) lands in
    a SHA-256 hash chain you can verify end to end. DSARs produce chain-
    verifiable deletion certificates. Every security/compliance claim in the

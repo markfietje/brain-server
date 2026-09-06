@@ -3996,6 +3996,33 @@ paths:
                   aftersales_fraud_flag_rate_units:
                     type: integer
                     description: Share of return runs flagged by deterministic fraud signals (ten-thousandths).
+                  goodwill_total_cents_30d:
+                    type: integer
+                    description: Total goodwill amount over the trailing 30 days (cents), aggregated only over audited remedies.
+                  goodwill_entries_30d:
+                    type: integer
+                    description: Count of goodwill entries over the trailing 30 days.
+                  goodwill_unaudited_excluded_30d:
+                    type: integer
+                    description: Count of goodwill rows EXCLUDED for missing audit linkage (the honest gap signal).
+                  voc_contacts_total:
+                    type: integer
+                    description: Contact volume (workflow runs) — the ISO 10004 VoC denominator.
+                  voc_complaints_total:
+                    type: integer
+                    description: Complaint-run count — the ISO 10004 VoC numerator.
+                  voc_complaints_per_thousand_contacts_units:
+                    type: integer
+                    description: Complaints per thousand contacts (hundredths, lineage-derived).
+                  review_independence_risk:
+                    type: integer
+                    description: ASI09 approval-fatigue telemetry (v1.28.62) — 1 when the windowed approval rate exceeds 0.9 over >= 20 decisions (the client detector's verdict, server-side); else 0.
+                  approval_uniformity_ratio:
+                    type: integer
+                    description: The windowed approval rate in integer ten-thousandths (truncating; 10000 = 100%) over the same sample.
+                  review_decisions_window:
+                    type: integer
+                    description: approved + rejected decisions in the uniformity sample (the denominator context).
         "401":
           description: Not authenticated
         "403":

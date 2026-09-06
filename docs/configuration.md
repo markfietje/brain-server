@@ -134,6 +134,26 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 |---|---|---|
 | `CAPACITY_MAX_DOCS` / `CAPACITY_MAX_DB_MIB` / `CAPACITY_MAX_RSS_MIB` | capacity profile | Tighten the `/health` capacity envelope. Writes over the envelope return HTTP 507; reads are never blocked. |
 
+## Webhooks, standby, keys & misc (the unglamorous but real knobs)
+
+| Variable | Default | Description |
+|---|---|---|
+| `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED` | off | Enforce the Standard-Webhooks timestamp tolerance on webhook receivers (replay-window hardening). |
+| `BRAIN_SIGNAL_WEBHOOK_SECRET_FILE` / `BRAIN_KB_FEEDBACK_SECRET_FILE` | — | Per-surface HMAC secrets (Signal gateway; KB feedback relay). |
+| `BRAIN_STANDBY_DIR` | `~/.local/share/brain-server/standby` | Warm-standby follower directory (`brain standby start/status/promote-check`). |
+| `BRAIN_CAPACITY_TARGET` | `desktop` (`jetson` when unset on unknown hosts — unknown values fail closed to jetson) | The capacity envelope tier (`desktop`\|`jetson`); also gates the loom CPU-parallelism tier. |
+| `BRAIN_RSS_RESTART` | — | RSS watchdog restart threshold (breach → graceful self-restart request). |
+| `BRAIN_CONNECTOR_CONFIG_DIR` | platform config dir | Connector config dir; included in backups. |
+| `BRAIN_AUDIT_CHAIN_KEY` / `_FILE` | — | Key for the hmac256 audit-chain epoch (absent = SHA-256 links; keyed chains refuse to write without the key). |
+| `BRAIN_AUDIT_SIGNING_KEY` / `_FILE` | — | Art.12 decision-record signing key. |
+| `BRAIN_BACKUP_PASSPHRASE` / `BRAIN_BACKUP_PASSPHRASE_FILE` | — | The backup/restore passphrase ladder (the `--passphrase-file` flag reads the same seam). |
+| `BRAIN_TOKEN` / `BRAIN_TOKEN_FILE` | `~/.config/brain-server/auth-token` | The `brain` CLI's bearer resolution ladder (server side: `AUTH_TOKEN_FILE` → `AUTH_TOKEN`). |
+| `BRAIN_DPO_CONTACT` / `BRAIN_SECURITY_CONTACT` | — | DPO + security contact strings surfaced on `/health/db` and `/.well-known/security.txt`. |
+| `BRAIN_ENGINE_EXEC_ALLOWLIST` / `BRAIN_ENGINE_HTTP_ALLOWLIST` / `BRAIN_ENGINE_WORKDIR` | — | The hostcall door's allowlists + workdir (the engine's tool-effect boundary). |
+| `MCP_TRANSPORT` / `MCP_HTTP_PORT` / `MCP_HTTP_ADDR` / `MCP_HTTP_TOKEN` | stdio | The MCP binary's transport: stdio (default) or Streamable HTTP + SSE. See docs/mcp.md. |
+| `PACKING_WEIGHTS` | built-in | Evidence-packing weight overrides (advanced). |
+| `BRAIN_STEWARD_BIN` | — | Override the workflow-crank harness binary (dev/testing). |
+
 > **The single source of truth** for every tunable is `src/config.rs` in the repository.
 
 ## Next steps

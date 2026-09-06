@@ -4,7 +4,15 @@ The Dioxus control surface for brain-server — **one Rust codebase → web +
 desktop + iOS + Android**. See `../IMPLEMENTATION_PLAN_v1.16.0_Client.md` and
 `../DESIGN_v1.16.0_Client.md` for the full architecture and UX.
 
-## Status — v1.20.20
+## Status — v1.28.23 (client crate; pairs with server v1.28.62)
+
+The console tracks the server line release-by-release: the v1.20.x polish era
+(offline queue, calibration strip, replay surface) is long shipped; since then
+the client gained the workflow/board surfaces for the governed loop, the
+channel/valet panels, and the drift-proof i18n + a11y gates (see
+`client/a11y-checklist.md` and the server CHANGELOG for the paired releases).
+Run `cargo test --manifest-path client/Cargo.toml` for the current client test
+count (the historical counts quoted below are from the v1.17–v1.20 era).
 
 The v1.20.20 "Replay" release — **the decision-path replay surface**. The
 decision path the server already records (v1.15.0 "Observe" M2) becomes a

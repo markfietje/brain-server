@@ -10,7 +10,7 @@ knowledge-graph server for AI agents**. This page maps the product's **shipped**
 capabilities to the **concrete people and teams** who use them, so you can tell
 at a glance whether it fits your job — and exactly what you'd get.
 
-Every claim below is **reverse-checked against the current source** (v1.28.34): a
+Every claim below is **reverse-checked against the current source** (v1.28.62): a
 "Shipped" row names a real route, role preset, or test that exists in this
 repository today. "Planned" means a documented roadmap ceiling. Nothing here is a
 promise dressed as a feature — the honest ceiling is stated plainly at the end,
@@ -54,7 +54,7 @@ roadmap the product is building toward, not its current single-node form.
 In plain terms:
 
 - **What it is:** your own private memory server for an AI agent — no cloud, no
-  embedding API fees, no telemetry. One Rust binary (v1.28.34) + one SQLite file.
+  embedding API fees, no telemetry. One Rust binary (v1.28.62) + one SQLite file.
 - **What it costs to run:** local static embeddings (model2vec), so recall costs
   **zero embedding tokens and zero decision tokens**; fits a Jetson/Raspberry Pi.
 - **What it gives an agent:** deterministic hybrid recall (vector + full-text +
@@ -99,7 +99,7 @@ DSAR, PII, human-gated writes); the *shared-tenant packaging* is the planned par
 
 | Who you are | What you need | What Brain Server gives you | Status |
 |---|---|---|---|
-| **BPO (Business Process Outsourcer)** | Serve multiple client accounts with hard isolation; per-client agent-assist memory; per-client audit + DSAR; PII containment | Per-domain isolation, per-tenant audit chain, DSAR + deletion certificates, PII redaction, human write-gate | Per-client domains, DSAR, holds, termination, QA queue and the complaint lifecycle ship today (v1.27–1.28.34); shared-backend multi-team tenancy remains v2.0 Cortex |
+| **BPO (Business Process Outsourcer)** | Serve multiple client accounts with hard isolation; per-client agent-assist memory; per-client audit + DSAR; PII containment | Per-domain isolation, per-tenant audit chain, DSAR + deletion certificates, PII redaction, human write-gate | Per-client domains, DSAR, holds, termination, QA queue and the complaint lifecycle ship today (v1.27–1.28.62, including warm standby and the Attestation line's provenance marks + kill-switch); shared-backend multi-team tenancy remains v2.0 Cortex |
 | **In-house contact / call center** | One org, many teams; agent memory that recalls past resolutions, policies, customer context; supervision + audit | Deterministic recall, knowledge graphs, temporal evidence, HITL write gate, audit chain, reviewer-calibration strip | **Shipped** (single-org form); multi-team packaging in v2.0 |
 | **Customer-support team / helpdesk** | Faster, grounded answers; "how did we resolve this before?"; no fabricated answers | Calibrated abstention, span verification (`/verify`), recall traces, resolution knowledge graph | **Shipped** |
 | **Managed-service / shared-services support** | Standardized knowledge across internal teams with per-team scope | Domains + centroid routing, per-agent opt-in, chat-type gating | **Shipped** |

@@ -3,7 +3,8 @@
 The `brain` binary is the operator command-line surface. This page is the command reference.
 The CLI covers retrieval, ingest (directories), self-correction, domain/retention/backup/key
 management, UMP, clients, and health — the commands it ships in `src/bin/brain.rs` (hand-rolled argument
-parsing, no clap). Per-client DSAR and legal hold are exposed here via `brain client`; the actions
+parsing, no clap). Global flags on every invocation: `--json` (machine-readable envelope for the
+commands that support it) and `-V/--version`. Per-client DSAR and legal hold are exposed here via `brain client`; the actions
 the CLI does **not** expose (erasure of a bare chunk, proposal approval, the global audit log) live
 on the HTTP API or the client console.
 
@@ -12,7 +13,7 @@ on the HTTP API or the client console.
 | Command | Purpose |
 |---|---|
 | `brain doctor` [`--backup <path> [--passphrase-file PATH]`] | Health + readiness; optionally verify a backup file |
-| `brain kb build --domain <d> --out <dir> [--db <path>] [--base-url <url>]` | Build the public KB as a static artifact from published articles (deterministic bytes + SHA-256 manifest; sign before hosting) |
+| `brain kb build --domain <d> --out <dir> [--db <path>] [--base-url <url>] [--with-case-status] [--locales en,de,fr,es,nl]` | Build the public KB as a static artifact from published articles (deterministic bytes + SHA-256 manifest carrying the Art 50(2) provenance seal; sign before hosting). `--with-case-status` also emits the live `status/{ref}.json|.html` case-status pages; `--locales` emits per-locale pages with hreflang alternates |
 | `brain status` | Counts, model, version |
 | `brain check-consistency` | Report duplicates, conflicts, stale sources, near-duplicates |
 | `brain snapshot-status` | Show the point-in-time snapshot state |
@@ -36,7 +37,7 @@ on the HTTP API or the client console.
 |---|---|
 | `brain ingest-dir <path>` [`--dry-run`] [`--replace`] [`--source S`] [`--domain D`] | Ingest a vault directory |
 | `brain reconcile <path>` [`--dry-run`] [`--kind vault`] | Sweep deleted sources |
-| `brain source-delete <id>` | Retire a source |
+| `brain source-delete <id> [--yes]` | Retire a source (`--yes` skips the confirmation prompt) |
 
 ## Domains & retention
 
@@ -101,6 +102,7 @@ on the HTTP API or the client console.
 | `brain workflow approve <run> <step>` | Approve a step gated on human approval. |
 | `brain workflow crank <run> [steps]` | Advance the engine loop up to `[steps]` transitions. |
 | `brain workflow handoff <run>` | Emit the I-PASS handoff packet for a run (read-seam sanitized). Supports `--json`. |
+| `brain workflow note <run> <text> [--reask]` | Post a screened case note on the run (`@skill:`/`@principal` mentions resolve into swarm invites); `--reask` additionally marks the operator re-ask (the `case/reask` effort-proxy source). |
 | `brain wfm-import <file.csv\|file.json>` `[--domain D]` `[--dry-run]` | Import WFM shifts (POST `/ops/shifts`) and skills (they land as HITL `crew_skills_update` proposals — never direct writes) |
 
 ## UMP (Universal Memory Protocol)
@@ -126,7 +128,7 @@ on the HTTP API or the client console.
 
 | Command | Purpose |
 |---|---|
-| `brain backup <out-path>` [`--passphrase-file PATH`] | Encrypted AES-256-GCM backup (checksummed, excludes secrets). DB path is taken from `BRAIN_DB_PATH`/default, not a positional. A passphrase is required. |
+| `brain backup <out-path>` [`--passphrase-file PATH`] [`--format v1\|v2\|v3`] | Encrypted AES-256-GCM backup (checksummed, excludes secrets; v3 is the current format — header bytes are GCM AAD). DB path is taken from `BRAIN_DB_PATH`/default, not a positional. A passphrase is required. |
 | `brain restore <in-path>` [`--passphrase-file PATH`] | Restore from an encrypted backup |
 
 ## Warm standby (v1.28.61)

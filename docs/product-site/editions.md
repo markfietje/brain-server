@@ -26,9 +26,9 @@ tokens, Standard Webhooks).
 | Support SLA | community | best-effort | contract |
 
 Rows map to shipped releases:
-- ✓ **shipped**: v1.2 AuthN, v1.14 gate, v1.15 DSAR/audit, v1.17 UMP L3, v1.18–1.20 console/hardening line — and since then the profiles/connectors/BPO-controls arc and the governed-loop line (workflow harness, lineage, scoreboard, complaints/aftersales/frontdesk) through **v1.28.34 "Goodwill"**.
+- ✓ **shipped**: v1.2 AuthN, v1.14 gate, v1.15 DSAR/audit, v1.17 UMP L3, v1.18–1.20 console/hardening line — and since then the profiles/connectors/BPO-controls arc and the governed-loop line (workflow harness, lineage, scoreboard, complaints/aftersales/frontdesk) through **v1.28.62 "Attestation"** (which added Art 50(2) provenance marks on engine-generated artifacts, the principal kill-switch, approval-fatigue telemetry, and the cryptographic inventory — the Enterprise Line is complete).
 - **v2.0/v2.1**: multi-team tenancy + per-tenant limits (roadmap, no code yet) — the enabler for **BPO / multi-client contact-center** deployments. The controls those buyers need (isolation, audit, DSAR, PII, human-gated writes) are shipped today; the shared-tenant packaging is the roadmap. See **[Who it's for — target audiences](../audiences.md)**.
-- **OTel** shipped feature-gated in v1.20.7 (`--features otel`, opt-in via `BRAIN_OTEL_ENABLED`/`BRAIN_OTEL_ENDPOINT`), with the SSE alert feed shipped alongside it. See **[Observability](../observability.md)**.
+- **OTel** shipped feature-gated in v1.20.7 (`--features otel`); on otel builds export is ON by default and `BRAIN_OTEL_ENABLED` is the kill switch (there is no exporter at all without the feature), with the SSE alert feed shipped alongside it. See **[Observability](../observability.md)**.
 - **SOC 2 evidence kit** shipped in v1.20.10 + the v1.20.12 trust tier.
 - **Use-case Profiles** shipped in v1.21.0 and are part of the OSS line.
 

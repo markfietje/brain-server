@@ -48,8 +48,11 @@ memory after approval:
 ```sh
 # Find the pending proposal id (empty = the write passed the gate directly).
 curl -s 'http://localhost:8765/proposals?status=pending'
-# Approve it (one tx, optional ?supersedes=<old_chunk_id>).
-curl -s -X POST 'http://localhost:8765/proposals/1/approve'
+# Approve it (one tx, optional ?supersedes=<old_chunk_id>). ReviewArmour binds
+# the decision to the bytes you reviewed: the approve verb REQUIRES the
+# content_digest the queue returned, so fetch it from the same response.
+D=$(curl -s 'http://localhost:8765/proposals?status=pending' | jq -r '.[0].content_digest')
+curl -s -X POST "http://localhost:8765/proposals/1/approve?digest=$D"
 ```
 
 ## 5. Verify the audit chain
