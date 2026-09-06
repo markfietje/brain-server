@@ -36,7 +36,7 @@
 //!
 //! The manifest carries: cycle id, ts, interval, checkpoint_lag_ms (the
 //! measured checkpoint→chunk-copy window — the follower-side twin of the
-//! v1.28.58 `brain_wal_pages_pending` gauge, which is the primary-side view
+//! `brain_wal_pages_pending` gauge, which is the primary-side view
 //! of the same pending work), the source db page-file sha256 (informational
 //! identity), and sha256+size of the two shipped artifacts. `wal.frames`
 //! counts the frames the chunk carries (positions 0..N of the post-truncate
