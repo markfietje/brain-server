@@ -148,28 +148,98 @@ fn unsigned_mark(mark: &str, actor: Option<&str>, now: i64) -> Value {
 /// flipped mark, or one flipped byte anywhere in the body → `false` (never
 /// errors).
 pub fn verify_artifact(value: &Value) -> bool {
+    matches!(verify_artifact_detailed(value, None), ProvenanceVerify::Ok)
+}
+
+/// The outcome of a provenance verification — machine-readable, never
+/// silent about WHY: a well-formed, signature-valid
+/// mark minted by a key OTHER than the pinned operator did is
+/// [`ProvenanceVerify::ForeignSigner`] — visible, not a bare `false`.
+/// Attribution was self-asserted until .67; the pin is what makes
+/// third-party minting distinguishable from the operator's own.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProvenanceVerify {
+    /// Well-formed, signature verifies, and (when pinned) the signer IS the
+    /// pinned did.
+    Ok,
+    /// Cryptographically VALID but `signed_by` is not the pinned did — the
+    /// mark is well-formed and third-party.
+    ForeignSigner { signed_by: String },
+    /// The mark is present but unsigned (the documented L2 degradation).
+    Unsigned,
+    /// The body, mark, or signature fails verification.
+    Tampered,
+    /// No provenance object / not fully shaped.
+    Malformed,
+}
+
+/// [`verify_artifact`] with the reason surfaced and the optional operator
+/// pin (X-C1): when `pinned_did` is `Some`, a cryptographically valid mark
+/// signed by any OTHER did fails with [`ProvenanceVerify::ForeignSigner`].
+/// `None` (no operator key configured — the L2 posture) keeps the pre-.67
+/// behavior exactly: self-asserted signatures are accepted, visibly.
+pub fn verify_artifact_detailed(value: &Value, pinned_did: Option<&str>) -> ProvenanceVerify {
     let Some(obj) = value.as_object() else {
-        return false;
+        return ProvenanceVerify::Malformed;
     };
     let Some(p) = obj.get(FIELD) else {
-        return false;
+        return ProvenanceVerify::Malformed;
     };
     let Some(mark) = p.get("mark").and_then(|v| v.as_str()) else {
-        return false;
+        return ProvenanceVerify::Malformed;
     };
     if mark != MARK_AIGEN && mark != MARK_HUMAN {
-        return false;
+        return ProvenanceVerify::Malformed;
     }
     let (Some(signed_by), Some(sig)) = (
         p.get("signed_by").and_then(|v| v.as_str()),
         p.get("sig").and_then(|v| v.as_str()),
     ) else {
-        return false; // unsigned marks do not verify — by design
+        return ProvenanceVerify::Unsigned; // unsigned marks do not verify — by design
     };
     let Ok(message) = signed_message(value, &claim_of(p)) else {
-        return false;
+        return ProvenanceVerify::Tampered;
     };
-    crate::ump_integrity::verify_manifest_bytes(signed_by, sig, &message)
+    if !crate::ump_integrity::verify_manifest_bytes(signed_by, sig, &message) {
+        return ProvenanceVerify::Tampered;
+    }
+    // The pin check runs LAST and ONLY on a cryptographically valid mark:
+    // tampering reports Tampered even under a pin (the pin never masks it).
+    if let Some(pin) = pinned_did
+        && signed_by != pin
+    {
+        return ProvenanceVerify::ForeignSigner {
+            signed_by: signed_by.to_string(),
+        };
+    }
+    ProvenanceVerify::Ok
+}
+
+/// The additive verify-result JSON (X-C1): `signed_by` ALWAYS surfaces so
+/// consumers can see self-assertion when no pin is configured — and see
+/// WHO minted a foreign mark when the pin refuses it. Shape:
+/// `{ok, mark, signed_by, pinned, reason}` with reason ∈
+/// `ok | foreign_signer | unsigned | tampered | malformed`.
+pub fn verify_artifact_json(value: &Value, pinned_did: Option<&str>) -> Value {
+    let outcome = verify_artifact_detailed(value, pinned_did);
+    let p = value.as_object().and_then(|o| o.get(FIELD));
+    let reason = match &outcome {
+        ProvenanceVerify::Ok => "ok",
+        ProvenanceVerify::ForeignSigner { .. } => "foreign_signer",
+        ProvenanceVerify::Unsigned => "unsigned",
+        ProvenanceVerify::Tampered => "tampered",
+        ProvenanceVerify::Malformed => "malformed",
+    };
+    serde_json::json!({
+        "ok": matches!(outcome, ProvenanceVerify::Ok),
+        "mark": p.and_then(|p| p.get("mark")).cloned().unwrap_or(Value::Null),
+        "signed_by": p
+            .and_then(|p| p.get("signed_by"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "pinned": pinned_did.is_some(),
+        "reason": reason,
+    })
 }
 
 #[cfg(test)]
@@ -306,6 +376,11 @@ mod tests {
         let _key = OperatorKey::new();
         let now = 1_790_000_000;
         let viewer: Option<crate::auth::Principal> = None;
+        // The .67 Pin wiring: every class is verified through the PINNED
+        // variant against the operator did — the marks these shapes mint
+        // are the operator's own, so the pin must admit exactly them.
+        let (operator_did, _) =
+            crate::handlers::ump::operator_signing_key().expect("fixture operator key");
 
         // ── 1. the complaint remedy draft (the POST response shape) ──────
         let mut conn = complaint_fixture();
@@ -327,6 +402,11 @@ mod tests {
         let remedy = crate::handlers::workflow::remedy_response(&proposal, now);
         assert_eq!(remedy[FIELD]["mark"], MARK_AIGEN);
         assert!(verify_artifact(&remedy), "the remedy draft's mark verifies");
+        assert_eq!(
+            verify_artifact_detailed(&remedy, Some(&operator_did)),
+            ProvenanceVerify::Ok,
+            "the remedy draft's mark pins to the operator did"
+        );
 
         // ── 2. the ADR packet (the GET response shape, post read-seam) ───
         conn.execute(
@@ -338,6 +418,11 @@ mod tests {
         let adr = crate::handlers::workflow::seal_adr_packet(packet, &viewer, now);
         assert_eq!(adr[FIELD]["mark"], MARK_AIGEN);
         assert!(verify_artifact(&adr), "the ADR packet's mark verifies");
+        assert_eq!(
+            verify_artifact_detailed(&adr, Some(&operator_did)),
+            ProvenanceVerify::Ok,
+            "the ADR packet's mark pins to the operator did"
+        );
 
         // ── 3. the outreach export packet (approved campaign) ────────────
         conn.execute(
@@ -357,6 +442,11 @@ mod tests {
         assert!(
             verify_artifact(&sealed),
             "the export packet's mark verifies"
+        );
+        assert_eq!(
+            verify_artifact_detailed(&sealed, Some(&operator_did)),
+            ProvenanceVerify::Ok,
+            "the export packet's mark pins to the operator did"
         );
 
         // ── 4. the KB build manifest (the real writer, disk round-trip) ──
@@ -379,6 +469,11 @@ mod tests {
         assert!(
             verify_artifact(&manifest),
             "the build manifest's seal verifies over the digests body"
+        );
+        assert_eq!(
+            verify_artifact_detailed(&manifest, Some(&operator_did)),
+            ProvenanceVerify::Ok,
+            "the build manifest's seal pins to the operator did"
         );
         // The digests the operator verifies are byte-unchanged by the seal.
         let digests: serde_json::Value =
@@ -506,5 +601,196 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    // --- signer pinning: the operator did is the trust anchor ---------------
+
+    /// foreign_signer_mark_fails_pinned_verify — a mark minted by a
+    /// THIRD-PARTY key is well-formed and cryptographically valid, but under
+    /// a configured operator pin it must refuse with the visible
+    /// `ForeignSigner` outcome (never a bare `false`): attribution was
+    /// self-asserted until .67. The drill shape: attach under a throwaway
+    /// key, re-aim the operator key, pinned verify refuses.
+    #[test]
+    fn foreign_signer_mark_fails_pinned_verify() {
+        let _guard = lock_env();
+        // 1. mint the mark under a THROWAWAY operator key
+        let throwaway = OperatorKey::new();
+        let mut a = artifact();
+        assert!(attach_aigen(&mut a, 1_790_000_000), "throwaway key signs");
+        let foreign_did = a[FIELD]["signed_by"].as_str().unwrap().to_string();
+
+        // 2. the REAL operator config takes over (different key material)
+        drop(throwaway);
+        let operator = ForeignKeyDir::new(&[7u8; 32]);
+        let pinned = operator.did();
+        assert_ne!(pinned, foreign_did, "fixture: two distinct keys");
+
+        // 3. unpinned verify (L2 posture): the mark still verifies — the
+        // signature IS valid; self-assertion is accepted, visibly.
+        assert!(
+            verify_artifact(&a),
+            "no pin configured → behavior unchanged (self-asserted)"
+        );
+        // 4. pinned verify refuses with the NAMED outcome.
+        assert_eq!(
+            verify_artifact_detailed(&a, Some(&pinned)),
+            ProvenanceVerify::ForeignSigner {
+                signed_by: foreign_did.clone()
+            },
+            "a well-formed third-party mark fails the pin, visibly"
+        );
+        // Tampering is still Tampered even under a pin (pin never masks it).
+        let mut b = a.clone();
+        b["run_id"] = serde_json::json!(99);
+        assert_eq!(
+            verify_artifact_detailed(&b, Some(&pinned)),
+            ProvenanceVerify::Tampered,
+            "a tampered body reports tampered, not foreign_signer"
+        );
+        // The operator's OWN mark passes the pin.
+        let mut own = artifact();
+        assert!(attach_aigen(&mut own, 1_790_000_001));
+        assert_eq!(
+            verify_artifact_detailed(&own, Some(&pinned)),
+            ProvenanceVerify::Ok,
+            "the pinned operator's own mark verifies"
+        );
+    }
+
+    /// no_operator_key_mark_verification_unchanged — without a configured
+    /// operator key there is no pin: verification behavior is exactly the
+    /// pre-.67 L2 posture (unsigned marks refuse; valid marks verify), and
+    /// the detailed outcome still says WHY.
+    #[test]
+    fn no_operator_key_mark_verification_unchanged() {
+        let _guard = lock_env();
+        let empty = tempfile::TempDir::new().unwrap();
+        // SAFETY: single-threaded under ENV_LOCK — the documented posture.
+        unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", empty.path()) };
+        // A mark signed elsewhere is still cryptographically checked with no
+        // pin: it verifies (self-assertion, the L2 acceptance)…
+        let signed_elsewhere = ForeignSignerFixture::mark(&[9u8; 32], &artifact());
+        assert!(verify_artifact(&signed_elsewhere));
+        assert_eq!(
+            verify_artifact_detailed(&signed_elsewhere, None),
+            ProvenanceVerify::Ok
+        );
+        // …and an unsigned mark refuses, as always.
+        let mut unsigned = artifact();
+        unsigned[FIELD] = unsigned_mark(MARK_AIGEN, None, 1_790_000_000);
+        assert!(!verify_artifact(&unsigned));
+        assert_eq!(
+            verify_artifact_detailed(&unsigned, None),
+            ProvenanceVerify::Unsigned
+        );
+        // A malformed body (no provenance field at all) is Malformed.
+        assert_eq!(
+            verify_artifact_detailed(&serde_json::json!({"x": 1}), None),
+            ProvenanceVerify::Malformed
+        );
+        // SAFETY: single-threaded under ENV_LOCK.
+        unsafe { std::env::remove_var("BRAIN_UMP_KEY_DIR") };
+    }
+
+    /// signer_did_surfaced_in_verify_json — the additive verify-result JSON
+    /// ALWAYS surfaces `signed_by` (so consumers can see self-assertion when
+    /// no pin is configured) plus the machine-readable reason.
+    #[test]
+    fn signer_did_surfaced_in_verify_json() {
+        let _guard = lock_env();
+        let operator = ForeignKeyDir::new(&[9u8; 32]);
+        let did = operator.did();
+        let mut a = artifact();
+        assert!(attach_aigen(&mut a, 1_790_000_000));
+
+        // Unpinned: ok, reason "ok", signed_by = the self-asserted did.
+        let report = verify_artifact_json(&a, None);
+        assert_eq!(report["ok"], serde_json::json!(true));
+        assert_eq!(report["reason"], "ok");
+        assert_eq!(report["signed_by"], serde_json::json!(did));
+        assert_eq!(report["pinned"], serde_json::json!(false));
+        assert_eq!(report["mark"], MARK_AIGEN);
+
+        // Pinned against the right key: same shape, pinned=true.
+        let report = verify_artifact_json(&a, Some(&did));
+        assert_eq!(report["ok"], serde_json::json!(true));
+        assert_eq!(report["pinned"], serde_json::json!(true));
+
+        // Pinned against a foreign key: ok=false, reason foreign_signer,
+        // and signed_by STILL surfaces (the third-party identity is the
+        // finding — hiding it would be the silent failure .67 closes).
+        let foreign = ForeignSignerFixture::mark(&[5u8; 32], &artifact());
+        let report = verify_artifact_json(&foreign, Some(&did));
+        assert_eq!(report["ok"], serde_json::json!(false));
+        assert_eq!(report["reason"], "foreign_signer");
+        assert!(
+            report["signed_by"]
+                .as_str()
+                .unwrap()
+                .starts_with("did:key:z")
+        );
+    }
+
+    /// A second key-dir fixture (distinct seed material) so a test can hold
+    /// BOTH a throwaway signer and the operator pin. Same env law.
+    struct ForeignKeyDir(#[allow(dead_code)] tempfile::TempDir);
+    impl ForeignKeyDir {
+        fn new(seed: &[u8; 32]) -> ForeignKeyDir {
+            let dir = tempfile::TempDir::new().unwrap();
+            std::fs::write(dir.path().join("operator.key"), seed).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    dir.path().join("operator.key"),
+                    std::fs::Permissions::from_mode(0o600),
+                )
+                .unwrap();
+            }
+            // SAFETY: single-threaded under ENV_LOCK — the documented posture.
+            unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", dir.path()) };
+            ForeignKeyDir(dir)
+        }
+        fn did(&self) -> String {
+            let (_, sk) = crate::handlers::ump::operator_signing_key().unwrap();
+            crate::ump_integrity::did_key_from_ed25519(&sk.verifying_key().to_bytes())
+        }
+    }
+    impl Drop for ForeignKeyDir {
+        fn drop(&mut self) {
+            // SAFETY: single-threaded under ENV_LOCK.
+            unsafe { std::env::remove_var("BRAIN_UMP_KEY_DIR") };
+        }
+    }
+
+    /// Mint a well-formed mark signed by an ARBITRARY key without touching
+    /// the process env — the forge-drill shape (the .67 drill: a throwaway
+    /// key minting against a configured operator).
+    struct ForeignSignerFixture;
+    impl ForeignSignerFixture {
+        fn mark(seed: &[u8; 32], body: &Value) -> Value {
+            let sk = ed25519_dalek::SigningKey::from_bytes(seed);
+            let did = crate::ump_integrity::did_key_from_ed25519(&sk.verifying_key().to_bytes());
+            let mut v = body.clone();
+            let claim = serde_json::json!({
+                "mark": MARK_AIGEN,
+                "generator": generator(),
+                "generated_at": 1_790_000_000,
+                "actor": Value::Null,
+            });
+            let message = signed_message(&v, &claim).expect("canonical artifact");
+            let (sig_hex, signed_by) = crate::ump_integrity::sign_manifest_bytes(&sk, &message);
+            v[FIELD] = serde_json::json!({
+                "mark": MARK_AIGEN,
+                "generator": generator(),
+                "generated_at": 1_790_000_000,
+                "signed_by": signed_by,
+                "sig": sig_hex,
+                "actor": Value::Null,
+            });
+            let _ = did;
+            v
+        }
     }
 }

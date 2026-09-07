@@ -75,6 +75,18 @@ pub(crate) fn superseded_by_for(conn: &Connection, id: i64) -> rusqlite::Result<
     rows.collect()
 }
 
+/// The UMP record population for `/ump/audit/verify`'s `integrity` census
+/// every row carrying a content hash — the rows the
+/// §5.3 read seam can emit as verifiable records. Rows without one never
+/// verify, so the census skips them exactly as serve does.
+pub(crate) fn ump_row_ids_with_content_hash(conn: &Connection) -> rusqlite::Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM knowledge WHERE content_hash IS NOT NULL AND content_hash != ''",
+    )?;
+    let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+    rows.collect()
+}
+
 /// One graph relation as a raw (from-name, to-name, relation-type) triple.
 pub(crate) type RelationTriple = (String, String, String);
 
@@ -174,8 +186,32 @@ pub(crate) fn record_forbidden_scope(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// The integrity-census fixture: two hash-bearing rows (the
+    /// UMP record population) + one hashless row (never a verifiable
+    /// record). Lives HERE because the INSERT is storage — handlers tests
+    /// import it (`crate::service::ump_ops::tests::pin_fixture_db`); the
+    /// zero-SQL-in-handlers guard is absolute, test residue included.
+    pub(crate) fn pin_fixture_db() -> rusqlite::Connection {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::migration::run_migration(&mut conn, 1).unwrap();
+        for (title, content, hash) in [
+            ("kept", "a record with integrity", "blake3:aaaa"),
+            ("kept2", "another record with integrity", "blake3:bbbb"),
+            ("hashless", "no content hash at all", ""),
+        ] {
+            conn.execute(
+                "INSERT INTO knowledge(title, content, content_hash, origin, domain, flagged, created_at)
+                 VALUES (?1, ?2, ?3, 'operator', 'global', 0, datetime('now'))",
+                rusqlite::params![title, content, hash],
+            )
+            .unwrap();
+        }
+        conn
+    }
 
     /// a §3.7 consent mismatch is audited as a `Denied` auth
     /// event on the read-event-capable audit chain (COMPLIANCE.md §3.5

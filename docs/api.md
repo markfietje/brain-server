@@ -147,7 +147,7 @@ reviewed act.
 | Method | Path | Purpose |
 |---|---|---|
 | POST | `/parcels/export` | Build + sign a parcel of a domain's approved knowledge (Admin). Only promoted (non-quarantined) rows leave; residency stamps are copied read-only; signed with the UMP operator key; the export crossing is ledgered + audited in-tx. `400 parcel_too_large` over the 500-row cap; `409 operator_key_missing` without a key |
-| POST | `/parcels/import` | Verify-then-import: signature checked BEFORE any write (`400 parcel_unsigned` / `parcel_tampered`; optional `expected_signer` refuses publisher mismatch). Rows land as PENDING proposals stamped with the TARGET domain — never direct knowledge writes — deduplicated by content hash against the domain's knowledge plus its own and global pendings; injection-screened rows refused and counted. Ledger + audit in-tx |
+| POST | `/parcels/import` | Verify-then-import: signature checked BEFORE any write (`400 parcel_unsigned` / `parcel_tampered`). Since v1.28.67 "Pin" the publisher is NAMED, always: `expected_signer` is REQUIRED (missing → `400 signer_required`), and with a local operator key an `expected_signer` aliasing OUR did on a foreign-produced parcel refuses `409 signer_alias` — no one imports parcels "from us" that we did not produce. Rows land as PENDING proposals stamped with the TARGET domain — never direct knowledge writes — deduplicated by content hash against the domain's knowledge plus its own and global pendings; injection-screened rows refused and counted. Ledger + audit in-tx |
 | GET | `/parcels` | The parcel ledger: direction (in/out), hash, signer did, row count, reviewer — bounded (`limit` ≤ 200) |
 
 CLI: `brain parcel export --domain <d> [--since <ts>] --out <file>` ·
@@ -174,7 +174,7 @@ packs do not ride the envelope.
 | POST | `/ump/recall` | Ranked recall with per-result signals |
 | GET | `/ump/memory/{id}` | Read one record with on-read integrity re-verification |
 | GET | `/ump/subscribe` | SSE broadcast of memory events |
-| POST | `/ump/audit` · GET `/ump/audit/verify` | UMP-scoped audit row family + chain verification |
+| POST | `/ump/audit` · GET `/ump/audit/verify` | UMP-scoped audit row family + chain verification. Since v1.28.67 "Pin" the verify response carries the additive `integrity` census `{verified, signed, hash_only}` over the UMP record population under the current serve posture, plus `note: hash_only_records_present` when the operator key exists and hash-only records were seen (visibility, not gating) |
 
 ---
 

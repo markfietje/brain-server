@@ -120,6 +120,10 @@ pub struct ParcelWire {
 pub struct ImportRequest {
     pub domain: String,
     pub parcel: ParcelWire,
+    /// The named publisher. REQUIRED on the wire —
+    /// the serde default stays only so a missing field reaches request
+    /// validation and speaks the named 400 `signer_required` (a serde-level
+    /// required-field rejection would be an anonymous 422).
     #[serde(default)]
     pub expected_signer: Option<String>,
 }
@@ -132,6 +136,28 @@ pub async fn post_import(
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     let principal = principal.0;
     super::authorize(&principal, crate::auth::Action::Write, "", &body.domain)?;
+    // The publisher is NAMED, always — the identity gate the wire requires.
+    let Some(expected_signer) = body.expected_signer.as_deref() else {
+        return Err(HandlerError::bad_request(
+            "signer_required",
+            "parcels import requires expected_signer — name the publisher you expect",
+        ));
+    };
+    // Anti-aliasing: with a local operator key, nobody imports a
+    // FOREIGN-produced parcel "from us" — an expected_signer aliasing OUR
+    // did for a parcel signed by a different did refuses before any byte is
+    // trusted. A parcel genuinely produced by the local did (the export →
+    // import roundtrip) passes this gate and verifies on its own signature.
+    if let Some((local_did, _)) = crate::handlers::ump::operator_signing_key()
+        && expected_signer == local_did
+        && body.parcel.signed_by != local_did
+    {
+        return Err(HandlerError::conflict_with(
+            "signer_alias",
+            "expected_signer aliases this operator's did for a foreign-produced parcel",
+            serde_json::json!({ "expected": expected_signer, "local_did": local_did }),
+        ));
+    }
     let reviewer = super::recall::principal_label(&principal);
     let now = chrono::Utc::now().timestamp();
     let manifest_json = body.parcel.manifest.to_string();

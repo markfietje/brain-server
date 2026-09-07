@@ -17,7 +17,148 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
----
+
+## [1.28.67] — 2026-09-07 — "Pin": MCP catalog fingerprints, verb scoping, signer pinning, hash-only visibility
+
+One breaking wire change (parcel `expected_signer` becomes required — the
+migration note is the point: **name your counterparty**), one env seam
+(`BRAIN_MCP_SCOPE`), one additive unsigned counter (`/ump/audit/verify`
+`integrity`), and one fork feature (MCP catalog pins). Fixes the 2026-09-06
+audit's X-M1, X-M3 (HIGH), X-C1 (HIGH), X-C2. Theme: identity is pinned —
+tool catalogs stop being re-trusted sight-unseen every run, the MCP binary's
+destructive verbs become scopeable, and signatures verify against pinned
+signers instead of self-asserted ones. **Honest disclosure: attribution was
+self-asserted until .67** — provenance marks verified only that SOMETHING
+signed the bytes, never WHO; a third-party key's mark verified identically
+to the operator's own. `.67` closes that wherever an operator key exists.
+
+### Release notes
+
+**Bug fixes**
+
+- None.
+
+**Improvements**
+
+- The `mcp` binary accepts `BRAIN_MCP_SCOPE=read`: the four write verbs
+  (`brain_ingest`, `ump.remember`, `ump.revise`, `ump.forget`) refuse at
+  dispatch with `tool_out_of_scope`, and `tools/list` annotates them
+  `"x-brain-scope": "read-denied"` so recall-only hosts can render or hide
+  them. Default `full` is byte-identical compat; an unknown value refuses to
+  start (fail-closed parse, WRITE_POSTURE pattern); the scope logs at startup.
+- `/ump/audit/verify` responses carry the additive `integrity` census
+  `{verified, signed, hash_only}` — the UMP record population under the
+  current serve posture — plus `note: "hash_only_records_present"` when the
+  operator key exists and hash-only records were seen. Visibility, not
+  gating: serve behavior is unchanged.
+
+**Security fixes**
+
+- MCP catalog pins (openclaw fork): tool definitions are fingerprinted
+  (sha256 over name + description + canonicalized schema) and diffed against
+  operator-acknowledged pins every run; a rug pull — a server mutating a
+  description between approval and use — now SURFACES (notification with
+  old→new fingerprint prefix; drifted tools carry `pendingAck`). Surfacing,
+  not gating (no ack UX yet); pin-file corruption rebuilds loudly.
+- Parcels import requires `expected_signer` (`400 signer_required` when
+  missing) and, with a local operator key, refuses an `expected_signer`
+  aliasing THIS operator's did on a foreign-produced parcel (`409
+  signer_alias`) — nobody imports parcels "from us" that we did not produce.
+- Provenance verify accepts the operator pin: a cryptographically valid mark
+  minted by any OTHER key fails with `foreign_signer` (visible, never a bare
+  false). Without a configured key the L2 posture is byte-unchanged, and the
+  verify-result JSON always surfaces `signed_by` so self-assertion is
+  visible.
+
+**Breaking changes (migration)**
+
+- `POST /parcels/import`: `expected_signer` is REQUIRED. Clients that
+  imported without naming a counterparty now get `400 signer_required`. The
+  migration is one line — **name your counterparty**: pass the did:key of
+  the publisher you expect in `expected_signer`. Reverting restores the
+  default-empty signer and REOPENS X-C1.
+
+### Engineering record
+
+- **M2 (X-M1, brain):** `McpScope` fail-closed parse; dispatch-time scope
+  gate BEFORE any network seam; the gate reads a boot-once `OnceLock` (the
+  stdio single-parent model makes process-lifetime scope correct); startup
+  logs `mcp: scope=<s>`. Pins: `unknown_scope_refuses_boot`,
+  `read_scope_refuses_write_tools`, `read_scope_serves_read_tools`,
+  `full_scope_unchanged` (no annotation key on the default wire),
+  `tools_list_annotates_denied_tools`. Verified live: `BRAIN_MCP_SCOPE=bogus`
+  exits 1 with the hex-escaped value; `read` boots and logs the scope.
+  `ponytail:` per-tool allowlists are YAGNI — two scopes match the two real
+  consumers; `BRAIN_MCP_SCOPE` is the only env seam this line adds.
+- **M3.1 (X-C1, brain):** the alias gate runs handler-side BEFORE the tx
+  (it is request policy, not storage); the serde default stays ONLY so the
+  refusal speaks the named 400 (a serde-level required-field rejection would
+  be an anonymous 422). A parcel genuinely produced by the local did passes
+  the gate and verifies on its own signature (the export → import roundtrip
+  is legitimate). Pins: `parcel_import_requires_signer` (wire, through the
+  composed app), `signer_alias_refused` (+ the self-parcel control).
+- **M3.2 (X-C1, brain):** `verify_artifact_detailed(value, pinned_did)` —
+  `Ok | ForeignSigner{signed_by} | Unsigned | Tampered | Malformed`; the pin
+  check runs LAST so tampering reports Tampered even under a pin (the pin
+  never masks it). `verify_artifact_json` is the additive verify-result JSON
+  (`ok, mark, signed_by, pinned, reason`). The four emission-adjacent verify
+  sites (remedy draft, ADR packet, campaign packet, KB manifest — the
+  v1.28.62 shapes, all inside `provenance_marks_present_on_all_four_classes`)
+  now ALSO verify through the pinned variant against the operator did. Pins:
+  `foreign_signer_mark_fails_pinned_verify` (the forge-drill shape: mark
+  minted under a throwaway key, pinned verify refuses),
+  `no_operator_key_mark_verification_unchanged`,
+  `signer_did_surfaced_in_verify_json`. DRILL 2026-09-07: transcript at
+  `/tmp/forge_drill.txt` (throwaway seed [9u8;32] mints; operator seed
+  [7u8;32] pins; `ForeignSigner{signed_by: did:key:z6Mk…}` — copies only,
+  the live key dir untouched).
+- **M4 (X-C2, brain):** the census emits every hash-bearing row the way the
+  §5.3 read seam does and verifies it — `verified` = what serve would
+  release, `signed` = carrying a signature under the current serve posture
+  (present iff the operator key resolved). The `note` fires ONLY for the
+  transitional combination (key exists AND hash-only seen). Serve behavior
+  unchanged — visibility, not gating. The fixture lives in
+  `service::ump_ops::tests` (the INSERT is storage; the zero-SQL guard is
+  absolute, test residue included — it caught the first placement in
+  development, exactly as designed). Pins: `hash_only_counts_surface_in_verify`,
+  `all_signed_shows_zero_hash_only`, `key_absent_all_hash_only`.
+- **M1 (X-M3, openclaw fork):** `agent-bundle-mcp-catalog-pins.ts` —
+  per-tool `sha256(name + \0 + description + \0 + stableStringify(schema))`,
+  per-server digest over name-ordered fingerprints; pins file
+  `mcp-catalog-pins.json` beside the agent bundle (agentDir discipline,
+  0644, not a secret); colliding display renames feed the ORIGINAL
+  server-side name into the fingerprint. `materializeBundleMcpToolsForRun`
+  reconciles per run (openclaw materializes per RUN — per-run re-hash IS the
+  per-execution cadence; OWASP MCP cheat sheet §2/§7 mapping). Drift
+  notifies; the model-visible description renders UNCHANGED (the operator
+  sees drift, not the agent). Acknowledgment is an explicit operator touch;
+  corruption reads as empty (loud rebuild — every tool re-notifies; it can
+  never silence drift). Rug-pull demo GREEN (`scripts/rug-pull-demo.mts`,
+  transcript 2026-09-07). Residuals: tool shadowing stays a MODEL-level
+  residual (mitigated by Truthglass args-visibility + this drift surface,
+  not closed); `mcp-scan` named as third-party operator tooling in
+  docs/mcp.md, NOT a dependency.
+- **Gates:** full suite green (1,373 passed / 7 ignored across binaries);
+  clippy bench/default/otel clean; fmt clean; lipstyk diff-strict green;
+  CI dry-run set green; openclaw fork suite green (agents-core shard + full
+  local suite), rug-pull demo green. CRATE_TEST_FLOOR 1,267 → 1,278 (the
+  eleven in-crate pins above; the two parcels wire tests ride tests/, which
+  the floor also walks).
+- **Ceilings (honest):** drift is surfaced, not gated — first use of an
+  un-acked tool is NOT blocked (`ponytail:` the ack UX does not exist; .73's
+  key-rotation machinery owns the follow-on). The MCP scope is
+  process-lifetime (correct for stdio's single parent; an HTTP mode serving
+  multiple clients with different scopes would need per-request scope — not
+  built). The alias gate requires the local key: keyless operators get
+  signer_mismatch instead of signer_alias (the L2 posture unchanged). The
+  census is serve-posture, not at-rest forensics: signatures mint at serve
+  time, so `signed == verified` whenever the key resolves; the `note` is
+  dead code today by design (it lights the day a per-record at-rest
+  signature path lands). The fork's committed pnpm lockfile disagrees with
+  its own typebox catalog (upstream drift predating this line) — `pnpm
+  install` reconciles it and the npm package-lock guard flags the churn;
+  the committed lockfile was left untouched.
+
 
 ## [1.28.66] — 2026-09-07 — "Truthglass": the approver sees the truth
 

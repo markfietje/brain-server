@@ -49,6 +49,70 @@ const DEFAULT_URL: &str = "http://127.0.0.1:8765";
 /// JSON-RPC message; the WS equivalent (`maxPayload: 64 KiB`) is tighter.
 const MAX_LINE_BYTES: usize = 1 << 20;
 
+/// The MCP tool scope: `read` refuses the write verbs at dispatch and
+/// annotates them in `tools/list`; `full` (default)
+/// is byte-identical compat. Parsed fail-closed (the WRITE_POSTURE
+/// pattern) — an unknown or empty `BRAIN_MCP_SCOPE` value refuses to start;
+/// silence is never certified.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum McpScope {
+    Read,
+    Full,
+}
+
+impl McpScope {
+    /// Parse `BRAIN_MCP_SCOPE` fail-closed: unset → `full` (compat);
+    /// anything but `read`/`full` is an error the caller turns into a
+    /// loud exit.
+    fn from_env() -> Result<McpScope, String> {
+        let Ok(value) = std::env::var("BRAIN_MCP_SCOPE") else {
+            return Ok(McpScope::Full); // unset → default, byte-identical compat
+        };
+        match value.as_str() {
+            "full" => Ok(McpScope::Full),
+            "read" => Ok(McpScope::Read),
+            other => Err(format!(
+                "unknown BRAIN_MCP_SCOPE value: {} (expected `read` or `full`)",
+                sanitize_echo(other)
+            )),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            McpScope::Read => "read",
+            McpScope::Full => "full",
+        }
+    }
+}
+
+/// The boot-time scope. Set exactly once by `main`; until then (pre-boot
+/// calls) the default is `full`.
+static SCOPE: std::sync::OnceLock<McpScope> = std::sync::OnceLock::new();
+
+fn scope() -> McpScope {
+    *SCOPE.get().unwrap_or(&McpScope::Full)
+}
+
+/// The write verbs the scope gate denies: destructive under a read-only token.
+/// Read tools (search/recall/get/capabilities/feedback/audit) stay served.
+/// `ponytail:` per-tool allowlists are YAGNI — two scopes match the two
+/// real consumers (recall-only hosts vs full stewards); revisit with evidence.
+const WRITE_TOOLS: [&str; 4] = ["brain_ingest", "ump.remember", "ump.revise", "ump.forget"];
+
+/// Scope gate (pure): under `read`, a write verb refuses with the
+/// `tool_out_of_scope` message on the existing error seam (the tool name is
+/// client-controlled — hex-escaped like every echo; bodies never leak).
+fn check_tool_scope(s: McpScope, name: &str) -> Result<(), String> {
+    if s == McpScope::Read && WRITE_TOOLS.contains(&name) {
+        return Err(format!(
+            "tool_out_of_scope: {} is denied under BRAIN_MCP_SCOPE=read",
+            sanitize_echo(name)
+        ));
+    }
+    Ok(())
+}
+
 /// sanitize a client-controlled string before reflecting it into an
 /// error message. MCP hosts inject `error.message` into the calling LLM's
 /// context as part of the tool-call result, so an attacker-supplied tool name
@@ -102,6 +166,18 @@ fn dirs_home() -> std::path::PathBuf {
 }
 
 fn main() {
+    // Fail-closed scope parse FIRST (X-M1): an invalid BRAIN_MCP_SCOPE
+    // refuses to start — the scope must never silently degrade to either
+    // posture. The startup line logs the resolved scope.
+    let boot_scope = match McpScope::from_env() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("mcp: {e}");
+            std::process::exit(1);
+        }
+    };
+    let _ = SCOPE.set(boot_scope);
+    eprintln!("mcp: scope={}", boot_scope.name());
     if http_mode_requested() {
         if let Err(e) = run_http() {
             eprintln!("mcp: {e}");
@@ -448,7 +524,11 @@ fn method_discover() -> Result<serde_json::Value, String> {
 }
 
 fn method_tools_list() -> Result<serde_json::Value, String> {
-    let tools = serde_json::json!([
+    method_tools_list_scoped(scope())
+}
+
+fn method_tools_list_scoped(s: McpScope) -> Result<serde_json::Value, String> {
+    let mut tools = serde_json::json!([
         {
             "name": "brain_search",
             "description": "Hybrid semantic + lexical search over the brain memory store (v0.9.5 structured query).",
@@ -637,6 +717,25 @@ fn method_tools_list() -> Result<serde_json::Value, String> {
             "inputSchema": { "type": "object", "properties": {} }
         }
     ]);
+    // Read-scope annotation (additive): out-of-scope tools carry
+    // `x-brain-scope: "read-denied"` so hosts can render or hide them.
+    // The default (`full`) list stays byte-identical — no key is added.
+    if s == McpScope::Read
+        && let Some(arr) = tools.as_array_mut()
+    {
+        for tool in arr.iter_mut() {
+            let denied = tool
+                .get("name")
+                .and_then(|n| n.as_str())
+                .is_some_and(|n| WRITE_TOOLS.contains(&n));
+            if denied && let Some(obj) = tool.as_object_mut() {
+                obj.insert(
+                    "x-brain-scope".to_string(),
+                    serde_json::json!("read-denied"),
+                );
+            }
+        }
+    }
     Ok(serde_json::json!({
         "tools": tools,
         "ttlMs": TOOLS_TTL_MS,
@@ -645,6 +744,13 @@ fn method_tools_list() -> Result<serde_json::Value, String> {
 }
 
 fn method_tools_call(params: &serde_json::Value) -> Result<serde_json::Value, String> {
+    method_tools_call_scoped(scope(), params)
+}
+
+fn method_tools_call_scoped(
+    s: McpScope,
+    params: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let name = params
         .get("name")
         .and_then(|n| n.as_str())
@@ -654,6 +760,9 @@ fn method_tools_call(params: &serde_json::Value) -> Result<serde_json::Value, St
         .get("arguments")
         .cloned()
         .unwrap_or(serde_json::Value::Null);
+    // The scope gate fires BEFORE any dispatch — a refused verb never
+    // reaches the network seam.
+    check_tool_scope(s, &name)?;
 
     let payload: String = match name.as_str() {
         // the §4.1 PRIMARY binding. Dispatch is derived from
@@ -2012,5 +2121,99 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ok.status(), 200);
+    }
+
+    // --- BRAIN_MCP_SCOPE: the tool scope gate -------------------------------
+    // The mcp bin cannot use the lib's cfg(test) env-lock helper, so the
+    // env-touching test serializes on a local mutex.
+
+    fn mcp_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    #[test]
+    fn unknown_scope_refuses_boot() {
+        let _g = mcp_env_lock();
+        unsafe { std::env::set_var("BRAIN_MCP_SCOPE", "bogus") };
+        assert!(
+            McpScope::from_env().is_err(),
+            "an unknown scope value must refuse to start (fail-closed parse)"
+        );
+        unsafe { std::env::set_var("BRAIN_MCP_SCOPE", "") };
+        assert!(
+            McpScope::from_env().is_err(),
+            "a set-but-empty scope value is invalid — refuse loudly"
+        );
+        unsafe { std::env::remove_var("BRAIN_MCP_SCOPE") };
+        assert!(
+            matches!(McpScope::from_env(), Ok(McpScope::Full)),
+            "unset scope defaults to full (compat)"
+        );
+    }
+
+    #[test]
+    fn read_scope_refuses_write_tools() {
+        for name in ["brain_ingest", "ump.remember", "ump.revise", "ump.forget"] {
+            let err = check_tool_scope(McpScope::Read, name)
+                .expect_err("write verbs refuse under read scope");
+            assert!(
+                err.contains("tool_out_of_scope"),
+                "the refusal names the error seam: {err}"
+            );
+        }
+        // Through the dispatcher: the gate fires before any network call.
+        let params = serde_json::json!({ "name": "ump.forget", "arguments": { "id": 1 } });
+        assert!(method_tools_call_scoped(McpScope::Read, &params).is_err());
+    }
+
+    #[test]
+    fn read_scope_serves_read_tools() {
+        for name in [
+            "brain_search",
+            "brain_recall",
+            "ump.capabilities",
+            "ump.get",
+            "ump.recall",
+            "ump.feedback",
+            "ump.audit",
+            "ump.audit.verify",
+        ] {
+            assert!(
+                check_tool_scope(McpScope::Read, name).is_ok(),
+                "{name} stays served under read scope"
+            );
+        }
+    }
+
+    #[test]
+    fn full_scope_unchanged() {
+        for name in ["brain_ingest", "ump.remember", "ump.revise", "ump.forget"] {
+            assert!(
+                check_tool_scope(McpScope::Full, name).is_ok(),
+                "default scope serves every tool (byte-identical compat)"
+            );
+        }
+        let list = method_tools_list_scoped(McpScope::Full).expect("tools/list");
+        assert!(
+            !list.to_string().contains("x-brain-scope"),
+            "the default scope must not add annotation keys to the wire"
+        );
+    }
+
+    #[test]
+    fn tools_list_annotates_denied_tools() {
+        let list = method_tools_list_scoped(McpScope::Read).expect("tools/list");
+        let tools = list["tools"].as_array().expect("tools array");
+        let denied = tools
+            .iter()
+            .filter(|t| t.get("x-brain-scope").and_then(|v| v.as_str()) == Some("read-denied"))
+            .count();
+        assert_eq!(denied, 4, "exactly the four write verbs are annotated");
+        let clean = tools
+            .iter()
+            .filter(|t| t.get("x-brain-scope").is_none())
+            .count();
+        assert_eq!(clean, tools.len() - 4, "every other tool is untouched");
     }
 }

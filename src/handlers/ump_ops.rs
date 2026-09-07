@@ -936,16 +936,117 @@ pub async fn audit_verify(
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     // Admin surface: capability tokens can never grant it.
     super::cap_gate(&cap.0, "admin")?;
+    // The integrity census rides the chain verify —
+    // the serve posture (signer + pk when the operator key resolves) decides
+    // signed vs hash-only. Visibility, not gating: serve behavior unchanged.
+    let signer = ump::operator_signing_key();
+    let key_present = signer.is_some();
+    let pk = signer.as_ref().map(|(_, sk)| sk.verifying_key().to_bytes());
     let targets = super::domain_pools(&state.registry, &state.pool);
-    let results = tokio::task::spawn_blocking(move || super::verify_domain_targets(targets))
+    let scan_targets = targets.clone();
+    let (results, (verified, signed)) =
+        tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
+            let results = super::verify_domain_targets(targets);
+            let mut verified = 0u64;
+            let mut signed = 0u64;
+            for (domain, pool) in &scan_targets {
+                let Some(pool) = pool else { continue };
+                let conn = pool
+                    .get()
+                    .map_err(|e| HandlerError::internal(e.to_string()))?;
+                let (v, s) = ump_integrity_counts_for_target(
+                    &conn,
+                    domain,
+                    signer.as_ref().map(|(d, sk)| (d.as_str(), sk)),
+                    pk.as_ref(),
+                )
+                .map_err(|e| HandlerError::internal(e.to_string()))?;
+                verified += v;
+                signed += s;
+            }
+            Ok((results, (verified, signed)))
+        })
         .await
-        .map_err(|e| HandlerError::internal(format!("task join error: {e}")))?;
+        .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
     let ok = results.iter().all(|(_, ok)| *ok);
     let domains: serde_json::Map<String, Value> = results
         .into_iter()
         .map(|(d, ok)| (d, Value::Bool(ok)))
         .collect();
-    Ok(Json(json!({ "ok": ok, "domains": domains })))
+    Ok(Json(audit_verify_payload(
+        ok,
+        domains,
+        verified,
+        signed,
+        key_present,
+    )))
+}
+
+/// The per-domain integrity census (X-C2): emit every hash-bearing row the
+/// way the §5.3 read seam does and verify it — `verified` counts what serve
+/// would release, `signed` counts records carrying a signature on their
+/// emitted form (present iff the operator key was passed). Raw-row census
+/// posture: emit recomputes the integrity over its own output, so the
+/// verdict is variant-independent.
+fn ump_integrity_counts_for_target(
+    conn: &rusqlite::Connection,
+    domain: &str,
+    signer: Option<(&str, &ed25519_dalek::SigningKey)>,
+    pk: Option<&[u8; 32]>,
+) -> rusqlite::Result<(u64, u64)> {
+    let ids = crate::service::ump_ops::ump_row_ids_with_content_hash(conn)?;
+    let mut verified = 0u64;
+    let mut signed = 0u64;
+    for id in ids {
+        let Ok(Some(row)) = load_knowledge_row(conn, id) else {
+            continue;
+        };
+        let meta = UmpMeta::parse(row["ump_meta"].as_str());
+        let rec = ump::emit_record(
+            &row,
+            domain,
+            &json!([]),
+            &json!([]),
+            &meta,
+            false,
+            &[],
+            signer,
+        );
+        if !ump::verify_record(&rec, pk) {
+            continue;
+        }
+        verified += 1;
+        if rec["integrity"]["signature"].is_string() {
+            signed += 1;
+        }
+    }
+    Ok((verified, signed))
+}
+
+/// The `/ump/audit/verify` response shape: the chain verdict + the additive
+/// `integrity` block. `note` appears ONLY when the operator key exists AND
+/// hash-only records were seen — the one combination an operator must act on.
+fn audit_verify_payload(
+    ok: bool,
+    domains: serde_json::Map<String, Value>,
+    verified: u64,
+    signed: u64,
+    operator_key_present: bool,
+) -> Value {
+    let hash_only = verified.saturating_sub(signed);
+    let mut payload = json!({
+        "ok": ok,
+        "domains": domains,
+        "integrity": {
+            "verified": verified,
+            "signed": signed,
+            "hash_only": hash_only,
+        },
+    });
+    if operator_key_present && hash_only > 0 {
+        payload["note"] = json!("hash_only_records_present");
+    }
+    payload
 }
 
 #[cfg(test)]
@@ -1041,5 +1142,102 @@ mod tests {
             !crate::service::ump_ops::record_forbidden_scope(&conn, "alice", "eve"),
             "an un-migrated chain refuses the write — evidence is never faked"
         );
+    }
+
+    // --- hash-only visibility: the integrity census -------------------------
+
+    /// A 0600 operator seed dir + env, the shared fixture shape.
+    struct PinKey(#[allow(dead_code)] tempfile::TempDir);
+    impl PinKey {
+        fn new() -> PinKey {
+            let dir = tempfile::TempDir::new().unwrap();
+            std::fs::write(dir.path().join("operator.key"), [7u8; 32]).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(
+                    dir.path().join("operator.key"),
+                    std::fs::Permissions::from_mode(0o600),
+                )
+                .unwrap();
+            }
+            // SAFETY: single-threaded under ENV_LOCK — the documented posture.
+            unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", dir.path()) };
+            PinKey(dir)
+        }
+    }
+    impl Drop for PinKey {
+        fn drop(&mut self) {
+            // SAFETY: single-threaded under ENV_LOCK.
+            unsafe { std::env::remove_var("BRAIN_UMP_KEY_DIR") };
+        }
+    }
+
+    /// hash_only_counts_surface_in_verify — no operator key: every
+    /// verifiable record is hash-only, and the additive `integrity` block
+    /// surfaces the counts (with NO note — the key itself is absent, which
+    /// IS the explanation).
+    #[test]
+    fn hash_only_counts_surface_in_verify() {
+        let conn = crate::service::ump_ops::tests::pin_fixture_db();
+        let (verified, signed) =
+            ump_integrity_counts_for_target(&conn, "global", None, None).unwrap();
+        assert_eq!(verified, 2, "the two hash-bearing records verify");
+        assert_eq!(signed, 0, "no key → nothing signed");
+        let payload = audit_verify_payload(true, serde_json::Map::new(), verified, signed, false);
+        assert_eq!(payload["integrity"]["verified"], json!(2));
+        assert_eq!(payload["integrity"]["signed"], json!(0));
+        assert_eq!(payload["integrity"]["hash_only"], json!(2));
+        assert!(
+            payload.get("note").is_none(),
+            "no key configured → no note (the absence IS the posture)"
+        );
+    }
+
+    /// all_signed_shows_zero_hash_only — with the operator key configured,
+    /// the census runs the L3 serve posture: every verified record carries
+    /// the operator signature, hash_only is 0.
+    #[test]
+    fn all_signed_shows_zero_hash_only() {
+        let _key = PinKey::new();
+        let conn = crate::service::ump_ops::tests::pin_fixture_db();
+        let signer = crate::handlers::ump::operator_signing_key();
+        let pk = signer.as_ref().map(|(_, sk)| sk.verifying_key().to_bytes());
+        let Ok((verified, signed)) = ump_integrity_counts_for_target(
+            &conn,
+            "global",
+            signer.as_ref().map(|(d, sk)| (d.as_str(), sk)),
+            pk.as_ref(),
+        ) else {
+            panic!("census failed");
+        };
+        assert_eq!(verified, 2);
+        assert_eq!(signed, 2, "key configured → every served record signs");
+        let payload = audit_verify_payload(true, serde_json::Map::new(), verified, signed, true);
+        assert_eq!(payload["integrity"]["hash_only"], json!(0));
+        assert!(payload.get("note").is_none(), "nothing hash-only → no note");
+    }
+
+    /// key_absent_all_hash_only — the L2 posture end to end: key absent,
+    /// the full verified population is hash-only; and the transitional
+    /// combination (key present BUT hash-only records seen) lights the note.
+    #[test]
+    fn key_absent_all_hash_only() {
+        let conn = crate::service::ump_ops::tests::pin_fixture_db();
+        let (verified, signed) =
+            ump_integrity_counts_for_target(&conn, "global", None, None).unwrap();
+        assert_eq!(signed, 0, "key absent → zero signed");
+        assert_eq!(verified, 2, "the full record population still verifies");
+        let payload = audit_verify_payload(true, serde_json::Map::new(), verified, signed, false);
+        assert_eq!(
+            payload["integrity"]["hash_only"],
+            json!(verified),
+            "every verified record is hash-only when the key is absent"
+        );
+        // The plan's transitional note: key EXISTS but hash-only records
+        // were seen — the response says so, loudly.
+        let payload = audit_verify_payload(true, serde_json::Map::new(), 5, 3, true);
+        assert_eq!(payload["integrity"]["hash_only"], json!(2));
+        assert_eq!(payload["note"], "hash_only_records_present");
     }
 }

@@ -39,10 +39,27 @@ What you need to run it:
 3. **An MCP-capable host** (Claude Desktop, an IDE, an agent framework). Point
    it at the `stdin`/`stdout` of the `mcp` process — it's a stdio server, so
    there is nothing to install into the OS; the host spawns it.
+4. **Scope (optional, v1.28.67 "Pin").** `BRAIN_MCP_SCOPE` ∈ `read` | `full`
+   (default `full`). Under `read`, the write verbs — `brain_ingest`,
+   `ump.remember`, `ump.revise`, `ump.forget` — refuse at dispatch with
+   `tool_out_of_scope` and `tools/list` annotates them
+   `"x-brain-scope": "read-denied"` so recall-only hosts can render or hide
+   them. Parsed fail-closed: an unknown value refuses to start (the startup
+   line logs the resolved scope). Installer guidance flips recall-only hosts
+   to `read`.
 
 You can smoke-test it from a shell (a modern, stateless request is the example
 further down): pipe one JSON-RPC line into `./target/release/mcp` and read the
 JSON-RPC response on stdout.
+
+## Third-party scanning (optional)
+
+[`mcp-scan`](https://github.com/invariantlabs-ai/mcp-scan) (Invariant Labs)
+exists as operator tooling for auditing MCP servers — tool-description
+poisoning, cross-server shadowing, schema drift. brain-server ships no
+dependency on it; the openclaw fork's catalog pins (v1.28.67) close the
+rug-pull class at materialization time, and mcp-scan remains a useful
+periodic second opinion.
 
 ## Protocol surface
 
@@ -53,7 +70,10 @@ JSON-RPC response on stdout.
   request selects the legacy semantics. The server name is `brain-server-mcp`;
   the version is `env!("CARGO_PKG_VERSION")`.
 - **`tools/list`** is static and identical for every caller (compile-time
-  constant — no external calls, no per-request query).
+  constant — no external calls, no per-request query). The ONE exception is
+  the `read` scope (above), which adds the additive `x-brain-scope:
+  "read-denied"` annotation on the four write verbs; the default `full`
+  list is byte-identical to the pre-1.28.67 wire.
 - **Errors:** unknown tool names / bad params come back as JSON-RPC errors with
   a `message` the host injects into the calling LLM's context, so a bad call is
   surfaceable rather than silently swallowed.

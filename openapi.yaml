@@ -2919,16 +2919,23 @@ paths:
         Authoritative full scan of the audit hash chain (unlike the TTL-cached
         `/metrics` signal). Admin. v1.27.31 "AuditRepair" (M4/F-22): verifies
         EVERY registered domain's chain — `ok` is the all-domains aggregate
-        and `domains` names each chain.
+        and `domains` names each chain. Since v1.28.67 "Pin" (X-C2) the
+        response carries the additive `integrity` census over the UMP record
+        population: `verified` = records that verify (the ones serve would
+        release), `signed` = carrying an operator signature under the current
+        serve posture, `hash_only` = verified − signed. When the operator key
+        EXISTS and `hash_only > 0`, a `note:
+        hash_only_records_present` lights (the one combination an operator
+        must act on). Visibility, not gating — serve behavior is unchanged.
       responses:
         "200":
-          description: "{ok: bool, domains: {name: bool}}"
+          description: "{ok, domains: {name: bool}, integrity: {verified, signed, hash_only}, note?}"
           content:
             application/json:
               schema:
                 type: object
-                example: {"ok": true, "domains": {"global": true}}
-                description: 'authoritative full scan of every registered domain''s audit hash chain'
+                example: {"ok": true, "domains": {"global": true}, "integrity": {"verified": 410, "signed": 410, "hash_only": 0}}
+                description: 'authoritative full scan of every registered domain''s audit hash chain + the record-integrity census'
   /.well-known/ump.json:
     get:
       summary: UMP discovery document (v1.17.3 M2)
@@ -6145,11 +6152,16 @@ paths:
       description: >
         v1.28.30 "Parcels". The signature is verified BEFORE any write; an
         unsigned or tampered parcel refuses (`400 parcel_unsigned` /
-        `parcel_tampered`), and `expected_signer` (recommended) refuses a
-        publisher mismatch. Surviving rows land as PENDING proposals in the
-        target domain (HITL), deduplicated by content hash against knowledge
-        and pending proposals; injection-screened rows are refused and counted.
-        Ledger + audit ride the same transaction.
+        `parcel_tampered`). Since v1.28.67 "Pin" the publisher is NAMED,
+        always: `expected_signer` is REQUIRED (missing → `400
+        signer_required` — name your counterparty), and when the local
+        operator key exists an `expected_signer` aliasing THIS operator's
+        did on a foreign-produced parcel refuses (`409 signer_alias`) — no
+        one imports parcels "from us" that we did not produce. Surviving
+        rows land as PENDING proposals in the target domain (HITL),
+        deduplicated by content hash against knowledge and pending
+        proposals; injection-screened rows are refused and counted. Ledger +
+        audit ride the same transaction.
       operationId: postParcelsImport
       requestBody:
         required: true
@@ -6157,13 +6169,17 @@ paths:
           application/json:
             schema:
               type: object
-              required: [domain, parcel]
+              required: [domain, parcel, expected_signer]
               properties:
                 domain: { type: string }
                 expected_signer:
                   type: string
-                  nullable: true
-                  description: Out-of-band expected signer did:key.
+                  description: |
+                    REQUIRED (v1.28.67 "Pin"): the out-of-band expected
+                    publisher did:key. A parcel whose signer differs refuses
+                    `400 signer_mismatch`; an expected_signer equal to the
+                    local operator did on a parcel signed by a DIFFERENT did
+                    refuses `409 signer_alias`.
                 parcel:
                   type: object
                   required: [manifest, signature, signed_by]
@@ -6185,9 +6201,10 @@ paths:
                   duplicates: { type: integer }
                   screened_out: { type: integer }
                   status: { type: string }
-        "400": { description: input_invalid | parcel_unsigned | parcel_tampered | signer_mismatch | parcel_too_large }
+        "400": { description: signer_required | input_invalid | parcel_unsigned | parcel_tampered | signer_mismatch | parcel_too_large }
         "401": { description: Not authenticated }
         "403": { description: Write on domain required }
+        "409": { description: signer_alias — expected_signer aliases the local operator did for a foreign-produced parcel }
   /parcels:
     get:
       summary: The parcel ledger for a domain — every signed crossing (Read)

@@ -80,7 +80,13 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// the public-path/security.txt pair.
 /// 1,281 → 1,290 at the Truthglass open: the CLI operator-truth set — the
 /// dsar action/prompt pins, the restore interlocks, the passphrase mode.
-const CRATE_TEST_FLOOR: usize = 1_290;
+/// 1,290 → 1,303 at the Pin open (re-measured on the rebased tree): the
+/// MCP scope gate set (fail-closed parse, read refusals, read serves, full
+/// compat, tools/list annotation), the signer-pinning provenance set
+/// (foreign-signer refusal, L2-unchanged, signed_by-surfaced verify JSON),
+/// and the hash-only census set — eleven in-crate pins plus the two
+/// parcels wire tests the floor's tests/ walk absorbs.
+const CRATE_TEST_FLOOR: usize = 1_303;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows (security.txt + the
