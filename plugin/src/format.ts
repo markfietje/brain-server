@@ -135,12 +135,12 @@ export function normalizeRecallQuery(text: string, maxChars: number): string {
 
 /**
  * Minimal sanitization for block rendering: collapse whitespace, drop control
- * chars, and strip the invisible-Unicode smuggling class (zero-width set
- * U+200B–200F, Unicode bidi controls U+202A–202E / U+2066–2069, BOM FEFF, and
- * the U+E0000–U+E007F Language Tag block) that the server screen + wasm client
- * already strip (v1.20.24 "Sweep" closed the bidi/zero-width set; v1.20.28
- * "Fencepost" adds the tag block + the markdown image/link ref strip + the
- * unforgeable-fence sentinel strip on the LLM-facing path). This is NOT a
+ * chars, and strip the invisible-Unicode smuggling class (INVISIBLE_CLASSES
+ * below — v1.28.65 "Meridian": synced to the Rust canonical set in
+ * `src/strip_invisible.rs`) that the server screen + wasm client already strip
+ * (v1.20.24 "Sweep" closed the bidi/zero-width set; v1.20.28 "Fencepost" adds
+ * the tag block + the markdown image/link ref strip + the unforgeable-fence
+ * sentinel strip on the LLM-facing path). This is NOT a
  * security boundary on its own (the fence + model discipline is): it keeps
  * injected text tidy, reduces prompt noise, and guarantees the fence
  * unforgeability invariant.
@@ -159,6 +159,24 @@ function stripSentinels(s: string): string {
   return s.split(UNTRUSTED_BEGIN).join("").split(UNTRUSTED_END).join("");
 }
 
+/**
+ * v1.28.65 "Meridian" (X-R5): the invisible-Unicode smuggling class, synced to
+ * the Rust canonical set (`src/strip_invisible.rs` `is_invisible`) — the ONE
+ * definition both trees pin. Tag block U+E0000–E007F, variation selectors
+ * U+FE00–FE0F + supplemental U+E0100–E01EF, zero-width set (U+200B/200C/200D +
+ * word joiner U+2060–2063), the bidi controls (U+200E/200F, U+202A–202E,
+ * U+2066–2069, U+061C), and the legacy/residual members (BOM U+FEFF, soft
+ * hyphen U+00AD, combining grapheme joiner U+034F, Mongolian vowel separator
+ * U+180E, Hangul fillers U+115F/U+1160, interlinear annotation U+FFF9–FFFB).
+ * The parity fixture in `format.test.ts` (`plugin_invisible_set_matches_rust_canonical`)
+ * is the drift pin: if either set changes without the other, CI fails on one
+ * side or the other. The `u` flag is REQUIRED: without it `\uE0000` parses as
+ * `\uE000` + literal `0` (JS `\uXXXX` is BMP-only); `\u{...}` is the ES6
+ * supplementary-plane form.
+ */
+export const INVISIBLE_CLASSES =
+  /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}\uFE00-\uFE0F\u061C\u2060-\u2063\u00AD\u034F\u180E\u115F\u1160\uFFF9-\uFFFB]/gu;
+
 export function sanitizeForBlock(text: string): string {
   let out = text
     // A. Invisible/zero-width class FIRST — must precede the whitespace
@@ -170,10 +188,9 @@ export function sanitizeForBlock(text: string): string {
     //    v1.20.28: includes the U+E0000–U+E007F Language Tag block (the one set
     //    the v1.20.24 regex omitted). Release B's server strip is the primary
     //    path; this is belt-and-braces defense-in-depth for when this code runs
-    //    first. The `u` flag is REQUIRED: without it `\uE0000` parses as
-    //    `\uE000` + literal `0` (JS `\uXXXX` is BMP-only); `\u{...}` is the
-    //    ES6 supplementary-plane form.
-    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}]/gu, "")
+    //    first. The set itself lives in INVISIBLE_CLASSES above (v1.28.65
+    //    sync to the Rust canonical set).
+    .replace(INVISIBLE_CLASSES, "")
     // B. Normalize: controls → space, collapse all whitespace (JS `\s` covers
     //    TAB/NBSP/VT — the chars this release shows can forge a marker).
     // eslint-disable-next-line no-control-regex -- explicit C0/C1 class above

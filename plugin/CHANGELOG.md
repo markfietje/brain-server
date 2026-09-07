@@ -4,6 +4,22 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.5.1] — 2026-09-07
+
+**Meridian M2 (X-R5)** — strip-set sync; shipped with brain-server v1.28.65.
+
+- `sanitizeForBlock`'s invisible-Unicode class is now the Rust canonical set
+  (`src/strip_invisible.rs` `is_invisible`), exported as `INVISIBLE_CLASSES`
+  so the next sync is a one-line diff. Adds the members the old set lacked:
+  U+061C (ALM), U+E0100–E01EF (supplemental variation selectors), U+FE00–FE0F
+  (BMP variation selectors), U+180E, U+115F/U+1160, U+FFF9–FFFB, and the
+  U+2060–2063 / U+00AD / U+034F legacy members.
+- Parity fixture `plugin_invisible_set_matches_rust_canonical` in
+  `format.test.ts`: one probe char per Rust-set class + the survivor vectors —
+  the drift pin (either side changing without the other fails CI).
+- Zero deps; prompt-bytes change is invisible-class only. Server strip is the
+  primary path; this is belt-and-braces when the plugin runs first.
+
 ## [0.5.0] — 2026-08-26
 
 **Team Bridge** — mirror OpenClaw agent activity onto brain-server's governed

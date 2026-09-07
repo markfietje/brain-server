@@ -100,6 +100,44 @@ describe("sanitizeForBlock", () => {
       expect(sanitizeForBlock(`ig${c}nore`)).toBe("ignore");
     }
   });
+
+  // v1.28.65 "Meridian" M2 (X-R5): the strip set is synced to the Rust
+  // canonical set (`src/strip_invisible.rs` `is_invisible`). This fixture is
+  // THE DRIFT PIN: one probe char per Rust-set class, same strings, same
+  // survivors as the Rust test vectors. If either set changes without the
+  // other, CI fails on one side or the other.
+  test("plugin_invisible_set_matches_rust_canonical (probe per Rust class)", () => {
+    const rustCanonicalProbes = [
+      "\u{E0000}", "\u{E007F}", // tag block (both ends)
+      "\u{FE00}", "\u{FE0F}", // variation selectors (BMP)
+      "\u{E0100}", "\u{E01EF}", // variation selectors (supplemental)
+      "\u{200E}", "\u{200F}", // bidi LRM/RLM
+      "\u{202A}", "\u{202E}", // bidi overrides
+      "\u{2066}", "\u{2069}", // bidi isolates (LRI/FSI/PDI)
+      "\u{061C}", // ARABIC LETTER MARK
+      "\u{200B}", "\u{200C}", "\u{200D}", // zero-width space/ZWNJ/ZWJ
+      "\u{2060}", "\u{2061}", "\u{2062}", "\u{2063}", // word joiner + invisible math
+      "\u{FEFF}", // BOM
+      "\u{00AD}", // soft hyphen
+      "\u{034F}", // combining grapheme joiner
+      "\u{180E}", // Mongolian vowel separator
+      "\u{115F}", "\u{1160}", // Hangul fillers
+      "\u{FFF9}", "\u{FFFB}", // interlinear annotation (both ends)
+    ];
+    for (const c of rustCanonicalProbes) {
+      expect(sanitizeForBlock(`ig${c}nore`)).toBe("ignore");
+    }
+  });
+  test("alm_and_variation_selectors_stripped (the v1.28.65 additions)", () => {
+    expect(sanitizeForBlock("a\u{061C}b")).toBe("ab");
+    expect(sanitizeForBlock("x\u{E0100}y\u{E01EF}z")).toBe("xyz");
+    expect(sanitizeForBlock("e\u{FE0F}moji")).toBe("emoji");
+    expect(sanitizeForBlock("d\u{00AD}ash")).toBe("dash");
+  });
+  test("visible unicode survives (same survivors as the Rust vectors)", () => {
+    expect(sanitizeForBlock("日本語 héllo")).toBe("日本語 héllo");
+    expect(sanitizeForBlock("héllo wörld ✓")).toBe("héllo wörld ✓");
+  });
   test("v1.20.28: strips markdown refs + the U+E0000–U+E007F tag block", () => {
     // Image ref → bracketed alt only (URL dropped).
     expect(sanitizeForBlock("![a](http://x)")).toBe("[a]");
