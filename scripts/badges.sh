@@ -29,7 +29,17 @@ if [[ "${1:-}" == "--selfcheck" ]]; then
     echo "ERR: badges version '$VERSION' drifts from Cargo.toml '$CARGO_VERSION'" >&2
     exit 1
   fi
-  # 2. the release-checklist names all six wrap artifacts (self-completeness guard).
+  # 2. the README carries the DERIVED version, not a stale hand-typed one
+  #    (v1.28.65 lesson: the version badge sat two releases behind while
+  #    selfcheck passed — nothing compared README to the derivation).
+  README="$REPO/README.md"
+  if ! grep -q "badge/version-${CARGO_VERSION}-blue.svg" "$README"; then
+    echo "ERR: README version badge drifts from Cargo.toml '$CARGO_VERSION' — run scripts/badges.sh and paste the block" >&2
+    exit 1
+  fi
+  # The test-count badge can't be verified without a full cargo run; the
+  # release checklist carries that step instead.
+  # 3. the release-checklist names all six wrap artifacts (self-completeness guard).
   CK="$REPO/docs/release-checklist.md"
   if [[ ! -f "$CK" ]]; then
     echo "ERR: docs/release-checklist.md missing" >&2

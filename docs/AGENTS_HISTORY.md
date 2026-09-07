@@ -8,6 +8,52 @@
 
 ## Release version notes
 
+> **Version note:** **v1.28.64 "Blackout" shipped 2026-09-07** — revocation
+> and surface identity, completed. Closes the identity/authority findings
+> from the 2026-09-06 audit: X-A1 (HIGH), X-A2, X-A3a, X-A6, X-A7, X-A8,
+> X-A9. (1) THE KILL-SWITCH AT AUTHN: a revoked identity is refused `401
+> identity_revoked` on EVERY route — checked inside the JWT middleware's
+> verify block after the jti read (the same `mesh::is_revoked` keyed read;
+> store failure denies) and on the capability pass-through of BOTH
+> middlewares via the issuer principal (`ensure_cap_principal_alive`; the
+> opaque middleware now carries `OpaqueAuthState {tokens, pool, db_path}`
+> so the seam works in the live opaque posture). Probe-blind byte-identical
+> denials (no provisioning lookup), audited path-only, decision-time (no
+> liveness cache); the mesh.rs "identity-wide" claim is now code-true —
+> before this release it was mesh-only (cards/dispatch/result) while valid
+> JWTs kept every non-mesh route. Opaque-loopback bearers have no principal
+> id to revoke (Twokeys owns the split). (2) DENYLIST REAL-EXP: logout/
+> revoke rows live exactly as long as the token's verified `exp`
+> (`AccessTokenExp` extension), clamped min(exp, now+24h); server-minted
+> 15-min tokens byte-identical. (3) PER-KID ALG PINNING: key record's
+> declared alg vs header alg before signature work → `401
+> alg_mismatch_for_kid`; RS-family slack closed; unpinned records keep
+> family behavior (additive, no re-import). (4) ONE PUBLIC-PATH LIST:
+> `route_guards::PUBLIC_PATHS` + `is_public_path` consumed by both
+> middlewares; security.txt joined both guard tables as `public`. (5) THE
+> REVERSE-DIRECTION GUARD: method-keyed `(Method, Path)` registration scan
+> (`strip_cfg_test_regions` keeps middleware test routes out) demands every
+> registered route in BOTH tables; rows ADDED for /workflow/scoreboard,
+> /workflow/calibration/sign, /workflow/plugins/mount, /stats (table debt —
+> gates verified correct at the audit); declared allowlist (8 SPA + 5
+> compliance-pack + 2 presentation carve-outs) is anti-rot-checked;
+> red-proof counter-pins for a missing row and a gate-less POST on a shared
+> path. (6) INJECTION_POLICY=allow never silent: boot warn once + the
+> /health/db hardening echo; no refuse path (trusted-local-sources is a
+> real posture). openapi additive (`IdentityRevoked` component, health
+> field); x-api-version moves with the wire; schema untouched. spire floors:
+> guard tables 163 → 167 / 147 → 152; CRATE_TEST_FLOOR 1,269 → 1,281.
+> DRILL 2026-09-07 vs a COPY of the live 51.6 MB db: revoke via the real
+> route → victim bearer 401 `identity_revoked` on the next request (two
+> route classes), operator unaffected, /audit/verify green, revocation +
+> path-only denial rows chained; copies only, live DB never touched.
+> Ceilings: hot-reload rotation stays register (X-A3b); /metrics scoping
+> stays Twokeys (X-A5); no revocation worker, no per-route granularity;
+> the connector-stub spawn test raced once in the gate (live-server
+> contention from the parallel Meridian line, pre-existing test-infra).
+> See CHANGELOG §[1.28.64]. Full note retired from AGENTS.md at the
+> v1.28.65 release.
+
 > **Version note:** **v1.28.63 "Wardline" shipped 2026-09-06** — the SEAM LINE
 > OPENS. Older release notes are retired to `docs/AGENTS_HISTORY.md` —
 > this file keeps only the operational contract, the architecture law, and

@@ -4,22 +4,25 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 
 ## Current status
 
-- **Latest server version:** 1.28.35 "Outreach" (2026-08-26) — proactive care, consent-first: a hashed-subject consent registry (revocation-wins, fail-closed verdicts), campaigns as HITL proposals gated per recipient BEFORE filing with consent proof riding every included recipient, approved campaigns export for CRM-side execution only (no send engine exists anywhere), the consent-gated Order-of-Care post-close follow-up, DSAR sweep erasing consent rows by re-hashing the subject, and ISO 10004 VoC fields on the scoreboard. Its predecessor 1.28.34 "Goodwill" shipped the full ISO
-  10002/10003 complaint lifecycle: the closed state chain as lineage events on
-  the audit chain, the remedy matrix as HITL proposals citing legal basis +
-  published conduct clause with role-tier approval caps that escalate exactly
-  one level over cap, a goodwill ledger aggregated only from audited remedies,
-  and the national-body ADR packet per Reg. 2024/3228 (the EU ODR platform is
-  discontinued). Financial execution never happens here — every remedy is a
-  decision record. Earlier in the line, v1.28 FirstLight → Settle
-  (1.28.15–17) shipped the real governed workflow loop itself: role-gated
-  run/state/events/answer/steering routes, AskHuman answers digest-bound to
-  the live question, all four mediated hostcall kinds
-  (`exec`/`http`/`events`/`ui`), and the repaired fail-closed
-  `/workflow/scoreboard`.
+- **Latest server version:** 1.28.65 "Meridian" (2026-09-07) — content hygiene
+  across the model seam, shipped across three trees the same day: `/suggest`
+  joins the untrusted-evidence contract (`untrusted: true` on every hit,
+  recall/search parity); the openclaw plugin's invisible-Unicode strip is
+  pinned to the server's canonical set by a cross-tree drift fixture; the
+  openclaw host strips smuggled Unicode + neutralizes forged host markers at
+  the one plugin-merge seam; MCP tool results ride the untrusted-content
+  envelope. The line's first live end-to-end proof (poisoned memory → real
+  recall → host merge → composed prompt, forgeries absent) is retained in
+  `docs/MERIDIAN_PROOF_20260907.md`.
 - **Latest client version:** 1.28.23 — ships alongside the server.
-- **Latest plugin version:** 0.4.7 (2026-08-23) — drift reconciliation + hardening; rides brain-server `v1.28.14` and later.
-- **Next milestone:** v1.29 "Acuity", then v2.0.0 "Cortex".
+- **Latest plugin version:** 0.5.1 (2026-09-07) — the Meridian strip-set
+  parity sync; rides brain-server v1.28.14 and later.
+- **Active line:** the SEAM LINE (v1.28.63 → v1.28.69, one theme per release,
+  closing every code-closeable finding of the 2026-09-06 joint
+  brain-server × openclaw security audit) followed by the REGISTER LINE
+  (v1.28.70 → v1.28.75). Next releases: .66 Truthglass (the approver sees
+  the truth), .67 Pin (tool + signer identity pinned), .68 Shutter (image +
+  beacon egress), .69 Deadbolt (egress + process boundary).
 - **v2.0.0 "Cortex"** (multi-team tenancy) remains the first externally-pilotable release — it consumes the v1.2 AuthN/AuthZ foundation.
 
 ## The release line (v0.9 → v1.17)
@@ -73,7 +76,7 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 | v1.26.x | Cross-Border | Transfer register + jurisdiction rules + TIA/DPA templates |
 | v1.27.x | Harden/Console/Review | Fail-closed erasure + fence forgeability, backup v3, console `--json`, i18n truth, client reviewer calibration, silent-failure sweep, recall-cost + PRF weights, client console dashboard, edge supersession + history (1.27.22 "Cascade") |
 
-## The 1.28 harness → conformance lines (v1.28.15 → v1.28.34)
+## The 1.28 harness → conformance lines (v1.28.15 → v1.28.35)
 
 | Release | Name | What shipped |
 |---|---|---|
@@ -98,6 +101,41 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 | 1.28.33 | Returns | Aftersales dispositions: deterministic return/RMA ranker citing its basis, GPSR recall mode, returnless/fraud KPIs |
 | 1.28.34 | Goodwill | The full ISO 10002/10003 complaint lifecycle: lineage-event state machine, HITL remedy matrix with escalating approval caps, national-body ADR packet, goodwill ledger |
 | 1.28.35 | Outreach | Consent-first proactive care: hashed-subject consent registry, per-recipient-gated campaign proposals (export-only), Order-of-Care follow-up, ISO 10004 VoC scoreboard fields |
+
+## The post-sale → seam lines (v1.28.36 → v1.28.65)
+
+| Release | Name | What shipped |
+|---|---|---|
+| 1.28.36 | Keystone | Public case-status pages (unguessable refs, fixed vocabulary), governed multilingual KB, the counted re-ask |
+| 1.28.37 | Advocate | The whole ISO 10002 complaint lifecycle on shipped machinery — the register IS the audit chain; public `how-to-complain` page; audited ack SLA |
+| 1.28.38 | Lexicon | The normative metric dictionary (G2) — metrics defined once, cited everywhere |
+| 1.28.39 | Access | WCAG 2.2 AA as hard release gates over the console (the six 2.2-new criteria), logical-property RTL mirroring, pseudolocale budgets |
+| 1.28.40 | Handshake | The versioned WFM seam (`wfm/1`, additive-only, `brain wfm-import`) + workload/coverage views (alert, never reassign) |
+| 1.28.41 | Terrain | Tested tier profiles (t1–t4 checked in, CI-booted) + the T1–T4 deployment guide — the Conformance Line closes |
+| 1.28.42 | Valet | The personal AI assistant, dogfooded: consent-gated, metadata-only reminders riding the governed loop |
+| 1.28.43 | Switchboard | The channel bridge framework (`/webhooks/channel/{kind}` + `/drain`, Standard-Webhooks HMAC); `channel_threads`; Signal promoted first-class |
+| 1.28.44 | Caravel | WhatsApp for Business as a governed edge: template + consent + approved proposal ALL THREE for business-initiated contact; the 24h window binds kernel-side |
+| 1.28.45 | Herald | Slack + Teams as operator annexes: proposals render as Blocks/Cards with digest-bound approve actions (bridge refuses, kernel re-verifies) |
+| 1.28.46 | Plumb | The Foundation Line opens: the service layer (`src/service/`) + the SQL debt lock; zero product surface by design |
+| 1.28.47 | Quarry | Rights-surface service cores extracted (DSAR/legal-hold/UMP ops) |
+| 1.28.48 | Masonry | Lifecycle-surface service cores (kcs articles, procedures, consolidate) |
+| 1.28.49 | Terrace | Register-surface service cores (clients, profiles, connectors) |
+| 1.28.50 | Aqueduct | Retrieval-surface service cores (recall/search/suggest) |
+| 1.28.51 | Confluence | The long tail: sixteen handler files drained to zero embedded SQL |
+| 1.28.52 | Cornerstone | The Foundation Line closes: zero SQL in handlers MACHINE-ENFORCED (no allowlist) |
+| 1.28.53 | Triage | The review queue is domain-scoped for real — rows carry domains, CAS re-checks the row's domain |
+| 1.28.54 | Scaffold | The Spire Line opens: the thin-binary ledger (ceilings frozen over main.rs), guard tables as data |
+| 1.28.55 | Buttress | Pre-main library code promoted with its pins (bootstrap/helpers come home) |
+| 1.28.56 | Vaulting | The lib flip: bootstrap + router decomposition; route registrations live only under `server/router/**` |
+| 1.28.57 | Capstone | main.rs pinned ≤ 300 lines of wiring, machine-checked — the Spire Line closes |
+| 1.28.58 | Throughput | Concurrent truth (BENCH_CLIENTS fan-out, same-seed determinism), contention gauges, the compliance calendar as code — the Enterprise Line opens |
+| 1.28.59 | Headroom | Durability policy explicit + echoed, lock-wait telemetry, the write-discipline ratchet |
+| 1.28.60 | Loom | Opt-in CPU parallelism (rayon), determinism-proven: byte-identical vec index across loom/serial postures |
+| 1.28.61 | Standby | Warm standby (encrypted follower, signed manifest, rehearsed promote with measured RTO/RPO) + the seven CodeQL alerts closed |
+| 1.28.62 | Attestation | Claim-bound provenance marks (AI Act Art 50 posture), the principal kill-switch, approval-fatigue telemetry, the crypto inventory — the Enterprise Line closes |
+| 1.28.63 | Wardline | Reserved vocabulary at the workflow input seam: kernel-only outbox topics, closed run statuses, the valet fence — the SEAM LINE opens (the only code-false security law in repo history, made true) |
+| 1.28.64 | Blackout | Revocation at the authentication seam (`401 identity_revoked` everywhere), denylist real-exp, per-kid alg pinning, one public-path list + the reverse-direction guard |
+| 1.28.65 | Meridian | Content hygiene across the model seam, three trees: `/suggest` untrusted labels, plugin strip-set parity fixture, the openclaw merge-seam strip/neutralize, MCP results in the untrusted envelope; the line's first live end-to-end proof |
 
 ## Milestone themes
 
