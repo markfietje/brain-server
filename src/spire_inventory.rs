@@ -78,7 +78,9 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// pins, the denylist TTL trio, the per-kid alg pair, the INJECTION_POLICY
 /// visibility pair, the method-keyed scan and reverse-guard quartet, and
 /// the public-path/security.txt pair.
-const CRATE_TEST_FLOOR: usize = 1_281;
+/// 1,281 → 1,290 at the Truthglass open: the CLI operator-truth set — the
+/// dsar action/prompt pins, the restore interlocks, the passphrase mode.
+const CRATE_TEST_FLOOR: usize = 1_290;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows (security.txt + the

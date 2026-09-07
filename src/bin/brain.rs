@@ -2147,7 +2147,7 @@ fn cmd_client(args: &[String]) -> Result<(), String> {
         Some("qa") => cmd_client_qa(&args[1..]),
         Some("end") => cmd_client_end(&args[1..]),
         _ => Err(
-            "usage: brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]\n       brain client dpa get <name> | set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S\n       brain client dsar <name> <subject> [--action purge|export|both] [--dry-run]\n       brain client hold add <name> <id> [<id> ...] --reason R | list <name>\n       brain client qa list <name> | coach <name> <id> --note N [--flag]\n       brain client end <name> [--purge|--return] [--dataset D] [--yes]"
+            "usage: brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]\n       brain client dpa get <name> | set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S\n       brain client dsar <name> <subject> --action purge|export|both [--dry-run] [--yes]\n       brain client hold add <name> <id> [<id> ...] --reason R | list <name>\n       brain client qa list <name> | coach <name> <id> --note N [--flag]\n       brain client end <name> [--purge|--return] [--dataset D] [--yes]"
                 .into(),
         ),
     }
@@ -2301,14 +2301,23 @@ fn cmd_client_dsar(args: &[String]) -> Result<(), String> {
     let subject = positionals
         .get(1)
         .ok_or_else(|| "missing required argument: subject".to_string())?;
-    let action = flags
-        .get("action")
-        .and_then(|o| o.clone())
-        .unwrap_or_else(|| "purge".to_string());
+    let action = dsar_action_from_flags(&flags)?;
     let dry_run = match flags.get("dry-run").and_then(|o| o.as_deref()) {
         Some("false") | Some("0") => false,
         _ => flags.contains_key("dry-run"),
     };
+    // Purge-shaped actions are irreversible: this command used to
+    // fire one on a bare invocation. Confirm with the blast radius on the
+    // line, unless --yes — the automation seam. A dry-run is the preview
+    // mechanism itself; there is nothing to confirm.
+    if dsar_needs_confirmation(&action, flags.contains_key("yes")) && !dry_run {
+        let domains = dsar_domains_for_client(&name)?;
+        let answer = read_line(&dsar_purge_prompt(&subject_digest(subject), &domains))?;
+        if !answer.eq_ignore_ascii_case("y") {
+            println!("aborted (nothing changed)");
+            return Ok(());
+        }
+    }
     let body = serde_json::json!({
         "subject": subject,
         "action": action,
@@ -2332,6 +2341,73 @@ fn cmd_client_dsar(args: &[String]) -> Result<(), String> {
     }
     println!("{}", resp.body);
     Ok(())
+}
+
+/// The closed DSAR action vocabulary — the server's shared vocab
+/// (`purge|export|both`; `handlers::observe::post_dsar` treats purge|both as
+/// purge-shaped). `--action` is REQUIRED. The old silent `purge`
+/// default was the no-conscience purge; omission and unknown
+/// values both error with the full choice list.
+const DSAR_ACTIONS: [&str; 3] = ["purge", "export", "both"];
+
+fn dsar_action_from_flags(flags: &FlagMap) -> Result<String, String> {
+    match flags.get("action").and_then(|o| o.clone()) {
+        None => Err(format!(
+            "--action is required: choose one of {} (the old silent purge default is gone — a purge must be explicit)",
+            DSAR_ACTIONS.join(" | ")
+        )),
+        Some(a) if DSAR_ACTIONS.contains(&a.as_str()) => Ok(a),
+        Some(a) => Err(format!(
+            "unknown --action '{a}' (choose one of {})",
+            DSAR_ACTIONS.join(" | ")
+        )),
+    }
+}
+
+/// Only purge-shaped actions confirm; `--yes` is the automation seam.
+fn dsar_needs_confirmation(action: &str, yes: bool) -> bool {
+    !yes && matches!(action, "purge" | "both")
+}
+
+/// The digest form the operator sees: `sha256:<12 hex>` prefix of the RAW
+/// subject — the dock's digest-display convention, CLI side. The server
+/// still acts on the raw subject; the digest is what the human verifies.
+fn subject_digest(subject: &str) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(subject.as_bytes());
+    let hex: String = digest[..6].iter().map(|b| format!("{b:02x}")).collect();
+    format!("sha256:{hex}")
+}
+
+/// The confirmation line: subject digest + domain count + irreversibility,
+/// prompting exactly like `source-delete`.
+fn dsar_purge_prompt(subject_hash: &str, domains: &[String]) -> String {
+    format!(
+        "Purge subject {subject_hash} across {} domain(s) ({}): IRREVERSIBLE — erased data cannot be recovered. Continue? [y/N]",
+        domains.len(),
+        domains.join(", ")
+    )
+}
+
+/// Resolve the client's registered domain for the confirmation prompt.
+/// Fail-loud on purpose: a purge prompt that cannot name its blast radius
+/// is no prompt at all.
+fn dsar_domains_for_client(name: &str) -> Result<Vec<String>, String> {
+    let path = format!("/clients/{}", url_encode(name));
+    let resp = get(&base_url(), &path, &[], auth_token().as_deref())?;
+    if resp.status != 200 {
+        return Err(format!(
+            "cannot resolve client '{name}' (status {}) — refusing to prompt a purge with an unknown blast radius",
+            resp.status
+        ));
+    }
+    let v: serde_json::Value = serde_json::from_str(&resp.body)
+        .map_err(|e| format!("client '{name}' response unreadable: {e}"))?;
+    let domain = v["domain"].as_str().unwrap_or_default().trim().to_string();
+    if domain.is_empty() {
+        return Err(format!("client '{name}' has no registered domain"));
+    }
+    Ok(vec![domain])
 }
 
 fn cmd_client_end(args: &[String]) -> Result<(), String> {
@@ -3193,6 +3269,26 @@ fn cmd_sync(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Fail-closed secret-file hygiene shared by every CLI consumer of a secret
+/// file: refuse group/world-readable modes before the secret is read or
+/// rewritten (mirrors the server's `check_secret_permissions`; the token
+/// rotator's rule, extracted so passphrase files get the same fence).
+#[cfg(unix)]
+fn check_secret_file_mode(path: &Path, what: &str, verb: &str) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(path)
+        .map_err(|e| format!("stat {path:?}: {e}"))?
+        .permissions()
+        .mode();
+    if mode & 0o077 != 0 {
+        return Err(format!(
+            "{what} file {path:?} is group/world-accessible (mode {:o}) — chmod 0600 before {verb}",
+            mode & 0o777
+        ));
+    }
+    Ok(())
+}
+
 /// Resolve the backup passphrase from `--passphrase-file` / `-flag`, then the
 /// `BRAIN_BACKUP_PASSPHRASE_FILE` env var. Errors clearly if none is given.
 fn resolve_passphrase(
@@ -3206,6 +3302,12 @@ fn resolve_passphrase(
             "a passphrase file is required: pass --passphrase-file PATH or set BRAIN_BACKUP_PASSPHRASE_FILE"
                 .to_string()
         })?;
+    // Parity with the token rotator: never read a secret that sits
+    // group/world-readable — the passphrase unlocks every backup image.
+    #[cfg(unix)]
+    if std::fs::metadata(&path).is_ok() {
+        check_secret_file_mode(Path::new(&path), "passphrase", "use")?;
+    }
     std::fs::read(&path).map_err(|e| format!("cannot read passphrase file {path}: {e}"))
 }
 
@@ -3235,19 +3337,20 @@ fn cmd_backup(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `brain restore <in-path> [--passphrase-file PATH]`
+/// `brain restore <in-path> [--passphrase-file PATH] [--force] [--yes]`
 fn cmd_restore(args: &[String]) -> Result<(), String> {
     let (positionals, flags) = parse_flags(args)?;
     let in_path = positionals.first().cloned().ok_or_else(|| {
-        "usage: brain restore <in-path> [--passphrase-file PATH] [--force]".to_string()
+        "usage: brain restore <in-path> [--passphrase-file PATH] [--force] [--yes]".to_string()
     })?;
     let pass = resolve_passphrase(&flags)?;
     let db = default_db_path();
+    let force = flags.contains_key("force");
     // Split-brain guard: restoring while the launchd service holds the DB
     // open leaves the server writing the OLD inode — new connections see the
-    // restored file, existing ones keep the pre-restore world. Refuse unless
-    // the operator says --force.
-    if !flags.contains_key("force") && brain_server_reachable() {
+    // restored file, existing ones keep the pre-restore world. --force skips
+    // this LIVENESS PROBE only — it never skips the human.
+    if !force && brain_server_reachable() {
         return Err(
             "brain-server appears to be RUNNING (a listener answered on its port). \
              Stop it first: launchctl unload ~/Library/LaunchAgents/com.brain.server.plist \
@@ -3255,10 +3358,65 @@ fn cmd_restore(args: &[String]) -> Result<(), String> {
                 .to_string(),
         );
     }
+    if !force {
+        // The probe found nothing — disclose its blind spot while its negative
+        // result is the thing we are relying on.
+        eprintln!(
+            "note: the liveness probe covers {} only — a server on another port/host is not detected",
+            base_url()
+        );
+    }
+    // The human gate, ALWAYS: print the blast radius and prompt
+    // unless --yes. `ponytail:` this deliberately does NOT probe the DB file
+    // for a lock — SQLite locks are advisory and racy; the .bak safety
+    // snapshot (written by the restore itself) remains the real net — the
+    // mis-aimed --force restore proved the prompt is the seatbelt.
+    if restore_needs_confirmation(force, flags.contains_key("yes")) {
+        println!("{}", restore_target_summary(&db));
+        let answer = read_line("Overwrite it with the backup image? [y/N]")?;
+        if !answer.eq_ignore_ascii_case("y") {
+            println!("aborted (nothing changed)");
+            return Ok(());
+        }
+    }
     brain_server::backup::restore(Path::new(&in_path), &db, &pass)
         .map_err(|e| format!("restore failed: {e:#}"))?;
     println!("restored: {db:?} (safety snapshot saved as <db>.bak)");
     Ok(())
+}
+
+/// `--force` narrows the restore to the liveness probe; ONLY `--yes`
+/// automates the human gate. `force` is carried in the signature so the pin
+/// can assert exactly that (restore_prompts_even_with_force).
+fn restore_needs_confirmation(_force: bool, yes: bool) -> bool {
+    !yes
+}
+
+/// The blast-radius line: resolved ABSOLUTE target path, on-disk size, and
+/// the audit chain head the overwrite destroys — the mis-aimed restore hit
+/// the live db once because the target was never shown.
+fn restore_target_summary(db: &Path) -> String {
+    let resolved = std::fs::canonicalize(db).unwrap_or_else(|_| db.to_path_buf());
+    let size = match std::fs::metadata(&resolved) {
+        Ok(m) => format!("{} B", m.len()),
+        Err(_) => "no existing db".to_string(),
+    };
+    let head = read_target_chain_head(&resolved);
+    format!(
+        "About to overwrite: {} ({size}, chain head {head})",
+        resolved.display()
+    )
+}
+
+/// Best-effort: the pinned audit chain head of the db being overwritten.
+/// Read-only connection; any failure (fresh db, not a db, unreadable) reads
+/// "none" — the pin is a display, not a gate.
+fn read_target_chain_head(db: &Path) -> String {
+    rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .ok()
+        .and_then(|conn| brain_server::audit::read_head_pin(&conn))
+        .map(|pin| pin.id.to_string())
+        .unwrap_or_else(|| "none".to_string())
 }
 
 /// Best-effort liveness probe for the split-brain guard: a TCP connect to
@@ -3525,19 +3683,7 @@ fn rotate_token_file_at(path: &Path) -> Result<(), String> {
     }
     // Fail-closed: never rewrite a secret with group/world bits.
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(path)
-            .map_err(|e| format!("stat {path:?}: {e}"))?
-            .permissions()
-            .mode();
-        if mode & 0o077 != 0 {
-            return Err(format!(
-                "token file {path:?} is group/world-accessible (mode {:o}) — chmod 0600 before rotating",
-                mode & 0o777
-            ));
-        }
-    }
+    check_secret_file_mode(path, "token", "rotating")?;
     let new_token = random_hex_token();
     // Atomic replace: create a sibling temp already at 0600 (never umask-
     // dependent — the secret must not exist with broader perms for even a
@@ -4731,6 +4877,201 @@ mod tests {
         assert!(
             cmd_ump_keygen(&["--dir".to_string(), dir.path().to_string_lossy().into()]).is_err(),
             "refuses to overwrite an existing key"
+        );
+    }
+
+    // ── Truthglass: the operator sees the truth ──────────────────────────
+
+    /// `brain client dsar` requires an explicit `--action`: the
+    /// silent `purge` default fired an irreversible multi-domain erasure on
+    /// a bare invocation. The flag error NAMES the choices.
+    #[test]
+    fn dsar_requires_explicit_action() {
+        let (_, flags) = parse_flags(&[]).expect("no flags parse");
+        let err = dsar_action_from_flags(&flags).expect_err("omission must error");
+        assert!(err.contains("--action"), "error names the flag: {err}");
+        for choice in ["purge", "export", "both"] {
+            assert!(err.contains(choice), "error names choice {choice}: {err}");
+        }
+    }
+
+    /// An unknown `--action` errors naming the choices too (same shape as
+    /// the backup format error).
+    #[test]
+    fn dsar_unknown_action_names_choices() {
+        let (_, flags) =
+            parse_flags(&["--action".to_string(), "rectify".to_string()]).expect("flags parse");
+        let err = dsar_action_from_flags(&flags).expect_err("unknown action must error");
+        assert!(err.contains("rectify"), "error echoes the bad value: {err}");
+        for choice in ["purge", "export", "both"] {
+            assert!(err.contains(choice), "error names choice {choice}: {err}");
+        }
+        // the accepted vocabulary parses clean
+        for ok in ["purge", "export", "both"] {
+            let (_, flags) =
+                parse_flags(&["--action".to_string(), ok.to_string()]).expect("flags parse");
+            assert_eq!(
+                dsar_action_from_flags(&flags).expect("accepted"),
+                ok,
+                "vocabulary round-trips"
+            );
+        }
+    }
+
+    /// Only purge-shaped actions confirm; `both` = export + purge, so it
+    /// prompts too (the server treats `both` as purge-shaped: post_dsar's
+    /// `action_did_purge`).
+    #[test]
+    fn dsar_purge_prompts_without_yes() {
+        assert!(dsar_needs_confirmation("purge", false), "purge prompts");
+        assert!(
+            dsar_needs_confirmation("both", false),
+            "both purges as well — it prompts"
+        );
+        assert!(
+            !dsar_needs_confirmation("export", false),
+            "export is read-only — no prompt"
+        );
+    }
+
+    /// `--yes` is the automation seam: it skips the prompt for every action.
+    #[test]
+    fn dsar_yes_skips_prompt() {
+        assert!(!dsar_needs_confirmation("purge", true));
+        assert!(!dsar_needs_confirmation("both", true));
+        assert!(!dsar_needs_confirmation("export", true));
+    }
+
+    /// The confirmation line shows the subject digest and the domain count —
+    /// the same digest form the server acts on, and the blast radius.
+    #[test]
+    fn dsar_prompt_shows_domain_count() {
+        let prompt = dsar_purge_prompt("sha256:ff8d9819fc0e", &["support".to_string()]);
+        assert!(
+            prompt.contains("sha256:ff8d9819fc0e"),
+            "subject digest: {prompt}"
+        );
+        assert!(prompt.contains("1 domain(s)"), "domain count: {prompt}");
+        assert!(prompt.contains("support"), "domain name: {prompt}");
+        assert!(
+            prompt.contains("IRREVERSIBLE"),
+            "irreversibility line: {prompt}"
+        );
+        assert!(prompt.ends_with("[y/N]"), "prompt convention: {prompt}");
+        let two = dsar_purge_prompt(
+            "sha256:ff8d9819fc0e",
+            &["support".to_string(), "billing".to_string()],
+        );
+        assert!(two.contains("2 domain(s)"), "count tracks the list: {two}");
+    }
+
+    /// The digest is the 12-hex sha256 prefix of the RAW subject (known
+    /// vector pinned so the display form can never drift surfaces).
+    #[test]
+    fn dsar_subject_digest_is_sha256_prefix() {
+        assert_eq!(subject_digest("alice@example.com"), "sha256:ff8d9819fc0e");
+    }
+
+    /// `--force` skips the LIVENESS PROBE only — the human gate needs `--yes`
+    /// (force used to bypass the only guard standing between a
+    /// restore and the live db).
+    #[test]
+    fn restore_prompts_even_with_force() {
+        assert!(
+            restore_needs_confirmation(true, false),
+            "force still prompts"
+        );
+        assert!(restore_needs_confirmation(false, false), "no flags prompts");
+    }
+
+    /// `--yes` is the automation seam for restore (parity with dsar).
+    #[test]
+    fn restore_yes_flag_is_the_automation_seam() {
+        assert!(!restore_needs_confirmation(false, true));
+        assert!(
+            !restore_needs_confirmation(true, true),
+            "force does not re-add the prompt"
+        );
+    }
+
+    /// The confirmation line names the RESOLVED ABSOLUTE target, its size,
+    /// and the chain head the overwrite destroys: the
+    /// mis-aimed restore hit the live db because the target was never shown).
+    #[test]
+    fn restore_prompt_shows_resolved_target() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("brain.db");
+        std::fs::write(&db, vec![0u8; 2048]).expect("seed bytes");
+        let summary = restore_target_summary(&db);
+        assert!(
+            summary.starts_with("About to overwrite: "),
+            "mandated prefix: {summary}"
+        );
+        let canonical = std::fs::canonicalize(&db).expect("canonical");
+        assert!(
+            summary.contains(&canonical.display().to_string()),
+            "resolved absolute path: {summary}"
+        );
+        assert!(summary.contains("2048 B"), "on-disk size: {summary}");
+        assert!(
+            summary.contains("chain head none"),
+            "a plain file has no chain: {summary}"
+        );
+        assert!(
+            restore_target_summary(&dir.path().join("absent.db")).contains("no existing db"),
+            "absent target says so: {summary}"
+        );
+    }
+
+    /// A db WITH a pinned head shows the pin id the overwrite destroys —
+    /// the number the operator can check against `/audit/verify` first.
+    #[test]
+    fn restore_prompt_shows_chain_head_when_pinned() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("brain.db");
+        let conn = rusqlite::Connection::open(&db).expect("open target db");
+        conn.execute_batch("CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT);")
+            .expect("schema_meta");
+        let pin = brain_server::audit::HeadPin {
+            id: 42,
+            hash: "aa".into(),
+            epoch: "hmac256".into(),
+        };
+        conn.execute(
+            "INSERT INTO schema_meta(key, value) VALUES (?1, ?2)",
+            rusqlite::params![
+                brain_server::audit::HEAD_PIN_META_KEY,
+                serde_json::to_string(&pin).expect("pin json")
+            ],
+        )
+        .expect("pin row");
+        drop(conn);
+        let summary = restore_target_summary(&db);
+        assert!(summary.contains("chain head 42"), "pin id: {summary}");
+    }
+
+    /// `resolve_passphrase` refuses a group/world-readable passphrase file —
+    /// parity with the token rotator (the passphrase unlocks every
+    /// backup image, it is exactly as sensitive as the token).
+    #[test]
+    #[cfg(unix)]
+    fn wide_passphrase_file_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("passphrase-wide");
+        std::fs::write(&path, "secret").expect("write");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("0644");
+        let mut flags = FlagMap::new();
+        flags.insert(
+            "passphrase-file".to_string(),
+            Some(path.display().to_string()),
+        );
+        let err = resolve_passphrase(&flags).expect_err("wide secret must refuse");
+        assert!(err.contains("0600"), "refusal names the fix: {err}");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("0600");
+        assert!(
+            resolve_passphrase(&flags).is_ok(),
+            "owner-only passphrase file reads"
         );
     }
 }

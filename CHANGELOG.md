@@ -19,6 +19,146 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.66] — 2026-09-07 — "Truthglass": the approver sees the truth
+
+**Theme:** action descriptions carry the action's arguments, destructive CLI
+verbs prompt consistently, restore names its target, and truncation
+accounting is honest. Fixes the 2026-09-06 audit's Lies-in-the-Loop
+findings X-L1 (HIGH — plugin approvals launder descriptions), X-L2
+(truncation shaping), X-L3 (CLI `dsar` no-prompt purge), X-L5 (restore
+interlocks).
+**Trees:** openclaw fork (M1, M2) + brain CLI (M3, M4). M2 initially rode
+behind Meridian's fork half (it re-cuts the same content Meridian wraps in
+markers) and shipped the moment that half landed on fork main.
+**Parallel-base disclosure:** this branch was cut from v1.28.63, built in
+parallel with Blackout (.64) and Meridian (.65), and rebased onto the
+v1.28.65 main (floor/version/changelog reconciled in the rebase).
+
+### Release notes
+
+**Security fixes**
+- **Plugin approvals now carry the tool-call arguments (openclaw fork).**
+  Both approval transports (embedded broker + gateway) include `args`: the
+  EFFECTIVE arguments (base merged with approval overrides — what will
+  actually run) serialized as display JSON, redacted with the same
+  tools-mode redaction persistence applies, capped at 2000 chars with a
+  visible `[…truncated N chars]` marker. The gateway sanitizes + re-caps at
+  its boundary (the same discipline as `detail`); the protocol schema
+  (TypeBox, closed object) gates the field, and the generated Swift/Kotlin
+  models are regenerated in-commit. The plugin's `title`/`description` stay —
+  the operator sees the prose claim AND the raw act. OWASP MCP Security
+  Cheat Sheet §4 ("display full tool call parameters — not just a summary
+  name") is now true at this surface.
+- **Tool-result truncation keeps head AND tail, with exact counts (openclaw
+  fork).** The keyword-gated "important tail" heuristic is gone — the last
+  400 chars ride UNCONDITIONALLY (caveats and disclaimers live at the end
+  of real output; guessing which tails matter is the laundering shape), the
+  middle elision marker states the exact elided count
+  (`[... N chars elided between head and tail ...]`), and the aggregate
+  elision marker is count-first (`[tool result elided: N chars elided;
+  ...]`) so a crushed budget costs the rerun guidance before the count.
+  The 16k cap and budget discipline are untouched. The audit's shaping
+  scenario is the fixture: 100k result, injection at char 500, disclaimer
+  at 99k — the disclaimer survives, the injection stays visible (visibility,
+  not removal, is the contract).
+
+**Breaking changes (CLI, scripted-use migration)**
+- **`brain client dsar` requires an explicit `--action`.** The old silent
+  `purge` default — an irreversible multi-domain erasure on a bare
+  invocation — is gone. Omission and unknown values error naming the
+  choices (`purge | export | both`; `both` is purge-shaped and prompts too).
+  Without `--yes`, purge/both print the subject digest (`sha256:<12-hex>` of
+  the raw subject), the resolved domain, and the irreversibility line, then
+  prompt `[y/N]` exactly like `source-delete`. **Migration: scripted purge
+  adds `--action purge --yes`.** Export and `--dry-run` stay prompt-free.
+- **`brain restore` always prompts unless `--yes`.** `--force` now skips
+  ONLY the liveness probe, never the human gate; the prompt prints the
+  resolved ABSOLUTE target path, its on-disk size, and the audit chain head
+  the overwrite destroys (read-only, best-effort). When the probe is
+  skipped-or-negative its blind spot is disclosed on stderr. **Migration:
+  scripted restore adds `--yes`.** The `.bak` safety snapshot is unchanged.
+
+**Improvements**
+- `resolve_passphrase` refuses group/world-readable passphrase files
+  (mode 0600, mirroring the token rotator) — the passphrase unlocks every
+  backup image.
+
+### Engineering record
+
+- M3/M4 land in `src/bin/brain.rs`: `DSAR_ACTIONS` closed vocab +
+  `dsar_action_from_flags` (omission/unknown both error with the choice
+  list), `dsar_needs_confirmation` (purge|both, `--yes` seam, dry-run
+  exempt), `subject_digest` (SHA-256 12-hex prefix of the raw subject — the
+  server still acts on the raw subject), `dsar_domains_for_client` (live
+  `GET /clients/{name}` resolve; fail-loud — a purge prompt that cannot name
+  its blast radius refuses), `restore_needs_confirmation` (`force` carried in
+  the signature so the pin asserts --force ≠ --yes),
+  `restore_target_summary` + `read_target_chain_head` (read-only connection;
+  `audit::read_head_pin` display), and `check_secret_file_mode` extracted
+  from the rotator and shared with `resolve_passphrase`.
+- M1 lands in the fork across five files: the TypeBox schema field
+  (closed object — unknown fields are REJECTED, so the schema IS the
+  registration), `PluginApprovalRequestPayload.args` + the exported
+  `truncatePluginApprovalArgs` (code-point-safe, exact-count marker),
+  `buildApprovalArgs` in the approval transport (computed ONCE; both
+  surfaces see the identical truth; unserializable params render as
+  `"<unserializable arguments>"` — silent omission is the laundering shape),
+  and the gateway pass-through (sanitize once at the boundary like `detail`,
+  then cap). Protocol models regenerated (`protocol:gen`, `:gen:swift`,
+  `:gen:kotlin`); `protocol:check:swift` green.
+- 9 new CLI tests (red-first): action-required shape, unknown-action
+  choices, purge/both prompt matrix, `--yes` seam, prompt content (digest +
+  domain count + IRREVERSIBLE), pinned sha256 vector, restore
+  prompts-even-with-force, `--yes` seam, target summary (resolved absolute
+  path + size + chain head, pinned via a seeded `schema_meta` pin row), wide
+  passphrase refused. 5 new fork approval tests: payload-includes-args
+  (embedded broker, end-to-end with resolve), redaction parity with
+  persistence, visible truncation with exact counts, embedded/gateway
+  parity, exec-transport unchanged. Fork truncation suite: the four M2
+  pins (head+tail unconditional, exact-count arithmetic — marker count
+  equals original minus kept head minus kept tail, compact-suffix shape
+  drift pin, the audit's shaping-scenario fixture) + the two legacy
+  strategy tests rewritten to the unconditional contract + the surrogate
+  code-point test re-pinned (the old byte-exact expectation described the
+  head-only output; the new invariants: both ends ride, marker counted, no
+  U+FFFD, emoji never split). CRATE_TEST_FLOOR 1,267 → 1,276 on the
+  original branch; **1,281 → 1,290 at the rebase onto v1.28.65 main**
+  (Blackout's 1,281 + the 9).
+- M2 implementation notes: the tail reservation is bounded to half the
+  budget minus the marker's widest form (the marker at `text.length` is the
+  exact upper bound — the count only shrinks toward it), so a tight budget
+  shrinks the tail instead of falling back to head-only; a bounded fit loop
+  (≤4 rounds, each strictly shrinking the head) absorbs marker digit-width
+  drift so the baked count stays exact within the budget. The aggregate
+  marker is count-first: under a crushed budget the marker is sliced from
+  the tail, costing the rerun guidance before the count. A notice larger
+  than the result it replaces is a net increase and the budget loop skips
+  it — elision notices ride only when they actually save budget.
+- Scripted drills: the OLD `brain client dsar <name> <subject>` →
+  `--action is required: choose one of purge | export | both …` (exit 1,
+  before any network touch); purge without `--yes` against a dead server →
+  client resolve error (no request fired — the prompt runs pre-POST).
+- Gates: brain full suite + clippy `-D warnings` + fmt clean; fork
+  agents/gateway/unit-support lanes green, the FULL embedded-agent lane
+  green after M2 (1,771 tests / 85 files), full lint green after a clean
+  reinstall (the worktree's first `--frozen-lockfile` install silently
+  failed on committed drift — `extensions/brain-server` typebox
+  1.3.15-lock vs 1.3.18-manifest; repaired with a 2-line lockfile sync
+  riding the fork commit), Swift drift check green.
+- Honest ceilings: the manual approval-surface screenshot (fork DoD) is
+  still pending a human run — the payload contract is what's
+  machine-verified. The TUI/card renderer displays `args` as a plain field;
+  a dedicated monospace block is a cosmetic follow-up. Under a crushed
+  aggregate budget the elision marker is still sliced (count-first, so the
+  count outlives the guidance, but a ~25-char budget cannot fit any honest
+  notice) — the protected-entry notice floor is the real path's guard. The
+  compact recovery suffix and default truncation notice already carried
+  counts; they are pinned unchanged by source drift locks rather than
+  behavioral tests. No server route, schema, or wire change (openapi.yaml
+  untouched; x-api-version unchanged).
+
+---
+
 ## [1.28.65] — 2026-09-07 — "Meridian": content hygiene across the model seam — three trees, four doors
 
 Nothing enters model context unstripped and unlabeled, regardless of which
