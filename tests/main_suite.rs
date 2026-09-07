@@ -80,6 +80,32 @@ mod tests {
     pub(crate) use brain_server::register_sqlite_vec::register_sqlite_vec;
     pub(crate) use brain_server::server::router::auth::capability_accepted;
     pub(crate) use brain_server::server::router::auth::{auth_middleware, jwt_auth_middleware};
+
+    /// The opaque middleware's state bundle for middleware-level tests: the
+    /// store under test + a memory pool (the capability seam is never
+    /// exercised here, so the pool is never read) + a throwaway DB path for
+    /// the best-effort denial audit. Returns the TempDir so the audit path
+    /// outlives the state.
+    fn opaque_mw_state(
+        store: TokenStore,
+    ) -> (
+        brain_server::server::router::auth::OpaqueAuthState,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let pool: Pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(SqliteConnectionManager::memory())
+            .expect("memory pool");
+        (
+            brain_server::server::router::auth::OpaqueAuthState {
+                tokens: store,
+                pool,
+                db_path: dir.path().join("audit.db"),
+            },
+            dir,
+        )
+    }
     pub(crate) use brain_server::server::router::core::{
         OPENAPI_YAML, health, health_body, health_db, verify_audit_chain,
     };
@@ -6038,11 +6064,414 @@ Final paragraph after the rule.";
         assert_eq!(err.code, "revoke_failed");
     }
 
+    // ── the composed-chain scan (shared by the authz scan + the reverse
+    // ── direction guard added with it) ─────────────────────────────────────
+
+    /// Strip every `#[cfg(test)] mod … { … }` region from a source text.
+    /// The chain files carry middleware/router test modules whose own route
+    /// registrations (`/private`, `/webhooks/gh` stubs) are not the shipped
+    /// wire — they must neither satisfy nor pollute the guard scans. A
+    /// string/comment-aware brace scan: a region starts at the code-state
+    /// `#[cfg(test` and ends when the brace depth opened by its next `{`
+    /// returns to zero.
+    fn strip_cfg_test_regions(src: &str) -> String {
+        #[derive(PartialEq, Clone, Copy)]
+        enum St {
+            Code,
+            Str,
+            Raw,
+            Char,
+            Line,
+            Block,
+        }
+        let chars: Vec<char> = src.chars().collect();
+        let mut st = St::Code;
+        let mut raw_hashes = 0usize;
+        let mut out = String::with_capacity(src.len());
+        let mut i = 0usize;
+        let mut pending_cfg = false; // saw `#[cfg(test`, awaiting the region brace
+        let mut cut_depth: i32 = 0; // >0 = inside a stripped region
+        while i < chars.len() {
+            let c = chars[i];
+            match st {
+                St::Code => {
+                    if cut_depth > 0 {
+                        match c {
+                            '{' => {
+                                cut_depth += 1;
+                                i += 1;
+                            }
+                            '}' => {
+                                cut_depth -= 1;
+                                i += 1;
+                            }
+                            '"' => {
+                                st = St::Str;
+                                i += 1;
+                            }
+                            '/' if i + 1 < chars.len() && chars[i + 1] == '/' => {
+                                st = St::Line;
+                                i += 2;
+                            }
+                            '/' if i + 1 < chars.len() && chars[i + 1] == '*' => {
+                                st = St::Block;
+                                i += 2;
+                            }
+                            _ => i += 1,
+                        }
+                        continue;
+                    }
+                    if pending_cfg {
+                        if c == '{' {
+                            cut_depth = 1;
+                            pending_cfg = false;
+                            i += 1;
+                            continue;
+                        }
+                        if !c.is_whitespace()
+                            && c != '#'
+                            && c != '['
+                            && c != '('
+                            && c != ')'
+                            && c != ':'
+                        {
+                            // attribute payload chars (cfg(test) itself) — keep waiting
+                            i += 1;
+                            continue;
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    const CFG_NEEDLE: &[char] = &['#', '[', 'c', 'f', 'g', '(', 't', 'e', 's', 't'];
+                    if c == '#' && chars[i..].starts_with(CFG_NEEDLE) {
+                        pending_cfg = true;
+                        i += CFG_NEEDLE.len();
+                        // skip the rest of the attribute (…)] on this line)
+                        while i < chars.len() && chars[i] != ']' && chars[i] != '\n' {
+                            i += 1;
+                        }
+                        if i < chars.len() && chars[i] == ']' {
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    match c {
+                        '"' => {
+                            st = St::Str;
+                            out.push(c);
+                            i += 1;
+                        }
+                        'r' if i + 1 < chars.len() && chars[i + 1] == '#' => {
+                            raw_hashes = 1;
+                            let mut j = i + 2;
+                            while j < chars.len() && chars[j] == '#' {
+                                raw_hashes += 1;
+                                j += 1;
+                            }
+                            if j < chars.len() && chars[j] == '"' {
+                                st = St::Raw;
+                                i = j + 1;
+                            } else {
+                                out.push(c);
+                                i += 1;
+                            }
+                        }
+                        '\'' if i + 2 < chars.len()
+                            && (chars[i + 1] == '\\' || chars[i + 2] == '\'') =>
+                        {
+                            st = St::Char;
+                            out.push(c);
+                            i += 1;
+                        }
+                        '/' if i + 1 < chars.len() && chars[i + 1] == '/' => {
+                            st = St::Line;
+                            out.push(c);
+                            i += 1;
+                        }
+                        '/' if i + 1 < chars.len() && chars[i + 1] == '*' => {
+                            st = St::Block;
+                            out.push(c);
+                            i += 1;
+                        }
+                        _ => {
+                            out.push(c);
+                            i += 1;
+                        }
+                    }
+                }
+                St::Str => {
+                    if c == '\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if c == '"' {
+                        st = St::Code;
+                    }
+                    if cut_depth > 0 {
+                        i += 1;
+                    } else {
+                        out.push(c);
+                        i += 1;
+                    }
+                }
+                St::Raw => {
+                    if c == '"' {
+                        // only closes when followed by exactly raw_hashes '#'
+                        let mut j = i + 1;
+                        let mut h = 0;
+                        while j < chars.len() && chars[j] == '#' {
+                            h += 1;
+                            j += 1;
+                        }
+                        if h == raw_hashes {
+                            st = St::Code;
+                        }
+                    }
+                    if cut_depth > 0 {
+                        i += 1;
+                    } else {
+                        out.push(c);
+                        i += 1;
+                    }
+                }
+                St::Char => {
+                    if c == '\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if c == '\'' {
+                        st = St::Code;
+                    }
+                    if cut_depth > 0 {
+                        i += 1;
+                    } else {
+                        out.push(c);
+                        i += 1;
+                    }
+                }
+                St::Line => {
+                    if c == '\n' {
+                        st = St::Code;
+                    }
+                    if cut_depth > 0 {
+                        i += 1;
+                    } else {
+                        out.push(c);
+                        i += 1;
+                    }
+                }
+                St::Block => {
+                    if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+                        // nested block comments are not a thing in Rust; treat
+                        // the inner `/*` as content
+                    }
+                    if c == '/' && i + 1 < chars.len() && chars[i + 1] == '*' {
+                        i += 2;
+                        continue;
+                    }
+                    if c == '*' && i + 1 < chars.len() && chars[i + 1] == '/' {
+                        st = St::Code;
+                        if cut_depth > 0 {
+                            i += 2;
+                        } else {
+                            out.push(c);
+                            i += 1;
+                        }
+                        continue;
+                    }
+                    if cut_depth > 0 {
+                        i += 1;
+                    } else {
+                        out.push(c);
+                        i += 1;
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// (method, path, handler) from every `.route(...)` registration in the
+    /// composed chain, `#[cfg(test)]` regions stripped. Chained registrations
+    /// (`get(a).post(b)` on one path) yield one entry per method, so a shared
+    /// path keeps EVERY method's handler — the method-blind last-insert-wins
+    /// map was the scan's one-eyed spot.
+    fn collect_registrations(chain_src: &str) -> Vec<(String, String, String)> {
+        let src = strip_cfg_test_regions(chain_src);
+        // flatten whitespace so multi-line registrations scan like one-liners
+        let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut out = Vec::new();
+        let mut rest = flat.as_str();
+        while let Some(rel) = rest.find(".route(") {
+            let after = &rest[rel + 7..];
+            let after = after.trim_start();
+            if !after.starts_with('"') {
+                break;
+            }
+            let Some(close) = after[1..].find('"') else {
+                break;
+            };
+            let path = &after[1..1 + close];
+            // The route call's matching close paren (depth-aware): the
+            // segment holds every chained method registration.
+            let seg_bytes = after.as_bytes();
+            let mut depth = 1i32; // the paren opened by `.route(`
+            let mut end = seg_bytes.len();
+            let mut k = 0usize;
+            while k < seg_bytes.len() {
+                match seg_bytes[k] {
+                    b'"' => {
+                        k += 1;
+                        while k < seg_bytes.len() {
+                            if seg_bytes[k] == b'\\' {
+                                k += 2;
+                                continue;
+                            }
+                            if seg_bytes[k] == b'"' {
+                                break;
+                            }
+                            k += 1;
+                        }
+                    }
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = k;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+                k += 1;
+            }
+            let seg = &after[close + 2..end];
+            let mut seg_rest = seg;
+            while let Some((idx, method)) = ["get(", "post(", "delete(", "put(", "patch("]
+                .iter()
+                .filter_map(|p| seg_rest.find(p).map(|i| (i, p.trim_end_matches('('))))
+                .min_by_key(|(i, _)| *i)
+            {
+                let after_method = &seg_rest[idx + method.len() + 1..];
+                let handler = match after_method.find(')') {
+                    Some(h_end) => &after_method[..h_end],
+                    None => after_method,
+                }
+                .trim()
+                .trim_start_matches("axum::handler::");
+                out.push((method.to_string(), path.to_string(), handler.to_string()));
+                seg_rest = &after_method[handler.len().min(after_method.len())..];
+                if let Some(rel2) = seg_rest.find(')') {
+                    seg_rest = &seg_rest[rel2..];
+                } else {
+                    break;
+                }
+            }
+            rest = &after[end..];
+        }
+        out
+    }
+
+    /// The reverse-direction guard's core, pure over the collected
+    /// registrations: every registered (method, path) must be documented in
+    /// `OPENAPI_ROUTES` and — unless it is public or explicitly allowlisted —
+    /// gated in `AUTHZ_GATES`. Returns human-readable failures; pure so the
+    /// counter-self-pins can red-proof it against synthetic inputs.
+    fn reverse_guard_failures(pairs: &[(String, String, String)]) -> Vec<String> {
+        use brain_server::server::router::route_guards::{AUTHZ_GATES, OPENAPI_ROUTES};
+        // Declared exemptions (path, why): the tables are the API surface's
+        // contract; these are registered routes that are deliberately not
+        // API rows.
+        const ALLOWLIST: &[(&str, &str)] = &[
+            // The SPA seat: public static assets behind the /app prefix rule
+            // (and the root redirect). Not API surface — openapi.yaml does
+            // not document static files. Listed to keep the seat's exemption
+            // explicit and anti-rot-checked below.
+            ("/", "public static SPA seat (root redirect)"),
+            ("/app/", "public static SPA seat"),
+            ("/app/{*path}", "public static SPA seat"),
+            (
+                "/app/boot.json",
+                "public static SPA seat (signed boot chain)",
+            ),
+            ("/app/boot.js", "public static SPA seat (signed boot chain)"),
+            (
+                "/app/boot.pub",
+                "public static SPA seat (signed boot chain)",
+            ),
+            ("/app/sw.js", "public static SPA seat (service worker)"),
+            (
+                "/app/sw-register.js",
+                "public static SPA seat (service worker)",
+            ),
+            // The compliance pack: registered only under the feature flag, so
+            // table rows would be vacuous in default builds — the handlers
+            // carry their own gates (verified at the same audit that closed
+            // the table debt).
+            ("/audit/export", "feature-gated: compliance-pack"),
+            (
+                "/compliance/evaluation-record",
+                "feature-gated: compliance-pack",
+            ),
+            ("/compliance/inventory", "feature-gated: compliance-pack"),
+            ("/ropa", "feature-gated: compliance-pack"),
+            ("/ropa/{id}", "feature-gated: compliance-pack"),
+            // Presentation-gated only: the middleware's verified bearer IS
+            // the gate (the Drawbridge carve-out); the handlers carry no
+            // authorize() literal by design — /health/db is the documented
+            // carve-out, /auth/logout revokes the presented token (a public
+            // logout could revoke nothing) and 401s without a principal.
+            (
+                "/health/db",
+                "middleware-presentation-gated (the Drawbridge carve-out)",
+            ),
+            (
+                "/auth/logout",
+                "middleware-presentation-gated (logout revokes the bearer)",
+            ),
+        ];
+        let allowlisted: std::collections::HashSet<&str> =
+            ALLOWLIST.iter().map(|(p, _)| *p).collect();
+        let openapi: std::collections::HashSet<&str> = OPENAPI_ROUTES.iter().copied().collect();
+        let authz: std::collections::HashSet<&str> = AUTHZ_GATES.iter().map(|(p, _)| *p).collect();
+        let mut failures = Vec::new();
+        for (method, path, _) in pairs {
+            let exempt = allowlisted.contains(path.as_str());
+            if !exempt && !openapi.contains(path.as_str()) {
+                failures.push(format!(
+                    "{method} {path} is registered but missing from OPENAPI_ROUTES"
+                ));
+            }
+            let public = brain_server::server::router::route_guards::is_public_path(path);
+            if !exempt && !public && !authz.contains(path.as_str()) {
+                failures.push(format!(
+                    "{method} {path} is registered, not public, and missing from AUTHZ_GATES"
+                ));
+            }
+        }
+        // Anti-rot: an exemption whose route disappears is dead weight hiding
+        // nothing — demand each allowlisted path still be registered.
+        let registered: std::collections::HashSet<&str> =
+            pairs.iter().map(|(_, p, _)| p.as_str()).collect();
+        for (path, why) in ALLOWLIST {
+            if !registered.contains(path) {
+                failures.push(format!(
+                    "allowlisted route {path} ({why}) is no longer registered — drop the row"
+                ));
+            }
+        }
+        failures
+    }
+
     /// every non-public route's handler must
     /// call `authorize()` with the v1.2-matrix action. Mirrors
     /// `test_openapi_covers_routes` (hardcoded contract table). A route that
     /// ships without a gate fails here — this is the test Agent 38's S1
-    /// finding would have caught.
+    /// finding would have caught. Rows marked "public" are middleware-exempt
+    /// (PUBLIC_PATHS) and carry no authorize() by design. The scan keys on
+    /// (method, path), so EVERY method's handler on a shared path is checked
+    /// for its gate — removing the POST side's gate on a GET+POST path fails
+    /// here (the old last-insert-wins map only ever saw one of them).
     #[test]
     fn authz_gates_cover_every_non_public_route() {
         // (route, expected `Action::X` literal in the handler body)
@@ -6058,10 +6487,6 @@ Final paragraph after the rule.";
         // present a brain bearer token) — no authorize() by design.
         let table = brain_server::server::router::route_guards::AUTHZ_GATES;
 
-        let main_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"));
-        // the composed chain lives in server/router/mod.rs (C3a): the
-        // registration scan follows it; handler bodies for main.rs-resident
-        // handlers still resolve via main_src below.
         let chain_src = concat!(
             include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
@@ -6092,220 +6517,210 @@ Final paragraph after the rule.";
                 "/src/server/router/auth.rs"
             )),
         );
-        // (path, (method, handler)) from every `.route(...)` registration in
-        // build_app. Hand-rolled scan (no regex dep): `.route("/path",
-        // [axum::handler::](get|post|delete|put)(handler))` — one- or two-line.
-        let mut handler_for: std::collections::HashMap<&str, (&str, &str)> =
+        let mut handlers_for: std::collections::HashMap<(String, String), Vec<String>> =
             std::collections::HashMap::new();
-        let mut rest = chain_src;
-        while let Some(rel) = rest.find(".route(") {
-            let after = &rest[rel + 7..];
-            let after = after.trim_start(); // tolerate multi-line registrations
-            if !after.starts_with('"') {
-                break;
-            }
-            // after[0] is the opening quote; find the closing one.
-            let Some(close) = after[1..].find('"') else {
-                break;
-            };
-            let path = &after[1..1 + close];
-            let Some(h_end) = after.find(')') else { break };
-            let call = after[1 + close + 1..h_end]
-                .trim_start_matches(',')
-                .trim()
-                .trim_start_matches("axum::handler::");
-            let (method, handler) = match call.split_once('(') {
-                Some((m, h)) if ["get", "post", "delete", "put", "patch"].contains(&m) => (m, h),
-                _ => {
-                    rest = &after[h_end..];
-                    continue;
-                }
-            };
-            handler_for.insert(path, (method, handler));
-            rest = &after[h_end..];
+        for (method, path, handler) in collect_registrations(chain_src) {
+            handlers_for
+                .entry((method, path))
+                .or_default()
+                .push(handler);
         }
 
         for (route, action) in table {
-            let (method, handler) = handler_for
-                .get(route)
-                .unwrap_or_else(|| panic!("route {route} not found in build_app registration"));
-            let handler_name = handler.rsplit(':').next().expect("handler name");
-            let src = if handler.contains("::") {
-                let module = handler.rsplit("::").nth(1).expect("module");
-                match module {
-                    "recall" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/recall.rs"
-                    )),
-                    "consolidate" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/consolidate.rs"
-                    )),
-                    "sources" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/sources.rs"
-                    )),
-                    "verify" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/verify.rs"
-                    )),
-                    "connectors" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/connectors.rs"
-                    )),
-                    "procedure" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/procedure.rs"
-                    )),
-                    "suggest" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/suggest.rs"
-                    )),
-                    "domains" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/domains.rs"
-                    )),
-                    "forget" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/forget.rs"
-                    )),
-                    "webhooks" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/webhooks.rs"
-                    )),
-                    "well_known" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/well_known.rs"
-                    )),
-                    "auth" => {
-                        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/handlers/auth.rs"))
-                    }
-                    "ingest" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/ingest.rs"
-                    )),
-                    "gate" => {
-                        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/handlers/gate.rs"))
-                    }
-                    "observe" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/observe.rs"
-                    )),
-                    "govern" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/govern.rs"
-                    )),
-                    "holds" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/holds.rs"
-                    )),
-                    "breaches" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/breaches.rs"
-                    )),
-                    "workflow" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/workflow.rs"
-                    )),
-                    "workflow_lineage" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/workflow_lineage.rs"
-                    )),
-                    "kcs" => {
-                        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/handlers/kcs.rs"))
-                    }
-                    "shifts" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/shifts.rs"
-                    )),
-                    "relay" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/relay.rs"
-                    )),
-                    "crew" => {
-                        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/handlers/crew.rs"))
-                    }
-                    "workload" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/workload.rs"
-                    )),
-                    "channel" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/channel.rs"
-                    )),
-                    "mesh" => {
-                        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/handlers/mesh.rs"))
-                    }
-                    "parcels" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/parcels.rs"
-                    )),
-                    "transfers" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/transfers.rs"
-                    )),
-                    "clients" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/clients.rs"
-                    )),
-                    "profiles" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/profiles.rs"
-                    )),
-                    "roles" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/roles.rs"
-                    )),
-                    "ump_ops" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/ump_ops.rs"
-                    )),
-                    "valet" => include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/handlers/valet.rs"
-                    )),
-                    "alert" => include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/alert.rs")),
-                    m => panic!("no source mapping for handlers module {m}"),
-                }
-            } else if handler.contains("handlers::") {
-                main_src
-            } else {
-                // bare-name handlers are main.rs-resident no more: they
-                // live in the memory/core family files (Vaulting C3b).
-                concat!(
-                    include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/server/router/memory.rs"
-                    )),
-                    include_str!(concat!(
-                        env!("CARGO_MANIFEST_DIR"),
-                        "/src/server/router/core.rs"
-                    )),
-                )
-            };
-            let body = handler_body(src, handler_name)
-                .unwrap_or_else(|| panic!("handler `fn {handler_name}` not found in source"));
-            // some handlers delegate their whole body to a
-            // shared `run_*`/`*_one` core (the `/recall` + `/ingest` bindings
-            // route through `run_recall`/`ingest_one`), so the scan follows
-            // the delegation when the handler itself delegates.
-            let delegated_gate = [
-                "run_recall(",
-                "ingest_one(",
-                "post_legal_hold_for_domain(",
-                "create_proposal(",
-            ]
-            .into_iter()
-            .find(|d| body.contains(d))
-            .and_then(|core| handler_body(src, &core[..core.len() - 1]))
-            .is_some_and(|b| b.contains("authorize"));
+            if *action == "public" {
+                // the middleware exempts it; no handler gate exists or should.
+                continue;
+            }
+            let regs: Vec<(&(String, String), &Vec<String>)> = handlers_for
+                .iter()
+                .filter(|((_, p), _)| p == *route)
+                .collect();
             assert!(
-                body.contains("authorize") || delegated_gate,
-                "{method} {route} (`{handler_name}`) has no authorize() gate"
+                !regs.is_empty(),
+                "route {route} not found in build_app registration"
             );
-            let action_ok = body.contains(&format!("Action::{action}"))
-                || (delegated_gate
-                    && [
+            let mut action_seen = false;
+            for ((method, _), handlers) in regs {
+                for handler in handlers {
+                    let handler_name = handler.rsplit(':').next().expect("handler name");
+                    let src = if handler.contains("::") {
+                        let module = handler.rsplit("::").nth(1).expect("module");
+                        match module {
+                            "recall" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/recall.rs"
+                            )),
+                            "consolidate" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/consolidate.rs"
+                            )),
+                            "sources" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/sources.rs"
+                            )),
+                            "verify" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/verify.rs"
+                            )),
+                            "connectors" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/connectors.rs"
+                            )),
+                            "procedure" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/procedure.rs"
+                            )),
+                            "suggest" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/suggest.rs"
+                            )),
+                            "domains" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/domains.rs"
+                            )),
+                            "forget" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/forget.rs"
+                            )),
+                            "webhooks" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/webhooks.rs"
+                            )),
+                            "well_known" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/well_known.rs"
+                            )),
+                            "auth" => {
+                                include_str!(concat!(
+                                    env!("CARGO_MANIFEST_DIR"),
+                                    "/src/handlers/auth.rs"
+                                ))
+                            }
+                            "ingest" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/ingest.rs"
+                            )),
+                            "gate" => {
+                                include_str!(concat!(
+                                    env!("CARGO_MANIFEST_DIR"),
+                                    "/src/handlers/gate.rs"
+                                ))
+                            }
+                            "observe" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/observe.rs"
+                            )),
+                            "govern" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/govern.rs"
+                            )),
+                            "holds" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/holds.rs"
+                            )),
+                            "breaches" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/breaches.rs"
+                            )),
+                            "workflow" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/workflow.rs"
+                            )),
+                            "workflow_lineage" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/workflow_lineage.rs"
+                            )),
+                            "kcs" => {
+                                include_str!(concat!(
+                                    env!("CARGO_MANIFEST_DIR"),
+                                    "/src/handlers/kcs.rs"
+                                ))
+                            }
+                            "shifts" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/shifts.rs"
+                            )),
+                            "relay" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/relay.rs"
+                            )),
+                            "crew" => {
+                                include_str!(concat!(
+                                    env!("CARGO_MANIFEST_DIR"),
+                                    "/src/handlers/crew.rs"
+                                ))
+                            }
+                            "workload" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/workload.rs"
+                            )),
+                            "channel" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/channel.rs"
+                            )),
+                            "mesh" => {
+                                include_str!(concat!(
+                                    env!("CARGO_MANIFEST_DIR"),
+                                    "/src/handlers/mesh.rs"
+                                ))
+                            }
+                            "parcels" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/parcels.rs"
+                            )),
+                            "transfers" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/transfers.rs"
+                            )),
+                            "clients" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/clients.rs"
+                            )),
+                            "profiles" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/profiles.rs"
+                            )),
+                            "roles" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/roles.rs"
+                            )),
+                            "ump_ops" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/ump_ops.rs"
+                            )),
+                            "valet" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/valet.rs"
+                            )),
+                            "alert" => {
+                                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/alert.rs"))
+                            }
+                            m => panic!("no source mapping for handlers module {m}"),
+                        }
+                    } else if handler.contains("handlers::") {
+                        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/main.rs"))
+                    } else {
+                        // bare-name handlers are main.rs-resident no more: they
+                        // live in the memory/core family files (Vaulting C3b).
+                        concat!(
+                            include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/server/router/memory.rs"
+                            )),
+                            include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/server/router/core.rs"
+                            )),
+                        )
+                    };
+                    let body = handler_body(src, handler_name).unwrap_or_else(|| {
+                        panic!("handler `fn {handler_name}` not found in source")
+                    });
+                    // some handlers delegate their whole body to a
+                    // shared `run_*`/`*_one` core (the `/recall` + `/ingest` bindings
+                    // route through `run_recall`/`ingest_one`), so the scan follows
+                    // the delegation when the handler itself delegates.
+                    let delegated_gate = [
                         "run_recall(",
                         "ingest_one(",
                         "post_legal_hold_for_domain(",
@@ -6314,12 +6729,248 @@ Final paragraph after the rule.";
                     .into_iter()
                     .find(|d| body.contains(d))
                     .and_then(|core| handler_body(src, &core[..core.len() - 1]))
-                    .is_some_and(|b| b.contains(&format!("Action::{action}"))));
+                    .is_some_and(|b| b.contains("authorize"));
+                    assert!(
+                        body.contains("authorize") || delegated_gate,
+                        "{method} {route} (`{handler_name}`) has no authorize() gate"
+                    );
+                    if body.contains(&format!("Action::{action}"))
+                        || (delegated_gate
+                            && [
+                                "run_recall(",
+                                "ingest_one(",
+                                "post_legal_hold_for_domain(",
+                                "create_proposal(",
+                            ]
+                            .into_iter()
+                            .find(|d| body.contains(d))
+                            .and_then(|core| handler_body(src, &core[..core.len() - 1]))
+                            .is_some_and(|b| b.contains(&format!("Action::{action}"))))
+                    {
+                        action_seen = true;
+                    }
+                }
+            }
             assert!(
-                action_ok,
-                "{method} {route} (`{handler_name}`) does not enforce Action::{action}"
+                action_seen,
+                "{route} does not enforce Action::{action} in any of its method handlers"
             );
         }
+    }
+
+    /// The reverse-direction guard: walk the composed router's registrations
+    /// and demand every one appears in BOTH guard tables — `OPENAPI_ROUTES`
+    /// (the wire contract) and, unless public or explicitly allowlisted,
+    /// `AUTHZ_GATES` (the gate table). The forward direction (table →
+    /// handler) was the only check until now; 17 registered paths could sit
+    /// outside both tables with nothing noticing. Pure helper
+    /// `reverse_guard_failures` does the walk; the counter-self-pin below
+    /// red-proofs it.
+    #[test]
+    fn every_registered_route_appears_in_both_guard_tables() {
+        let chain_src = concat!(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/mod.rs"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/core.rs"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/memory.rs"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/ump.rs"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/compliance.rs"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/workflow.rs"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/auth.rs"
+            )),
+        );
+        let pairs = collect_registrations(chain_src);
+        assert!(
+            pairs.len() > 150,
+            "the scan must see the real registrations, got {}",
+            pairs.len()
+        );
+        let failures = reverse_guard_failures(&pairs);
+        assert!(
+            failures.is_empty(),
+            "registered routes missing from the guard tables: {failures:#?}"
+        );
+    }
+
+    /// Counter-self-pin (red-proof): feed the guard a synthetic registration
+    /// that is in neither table and not public — the guard must name it.
+    #[test]
+    fn reverse_guard_finds_missing_table_row() {
+        let synthetic = vec![(
+            "POST".to_string(),
+            "/blackout/synthetic/route".to_string(),
+            "some_handler".to_string(),
+        )];
+        let failures = reverse_guard_failures(&synthetic);
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.contains("/blackout/synthetic/route") && f.contains("OPENAPI_ROUTES")),
+            "the guard must catch a missing OPENAPI_ROUTES row, got {failures:?}"
+        );
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.contains("/blackout/synthetic/route") && f.contains("AUTHZ_GATES")),
+            "the guard must catch a missing AUTHZ_GATES row, got {failures:?}"
+        );
+    }
+
+    /// Counter-self-pin (red-proof): the authz scan is method-aware. A
+    /// synthetic shared path whose POST handler carries NO gate must fail the
+    /// gate scan even though its GET handler is fully gated — the old
+    /// last-insert-wins map would have scanned only the GET side.
+    #[test]
+    fn shared_path_scans_every_method() {
+        let chain_src = r#"
+            let base = Router::new()
+                .route("/widget", get(widget_get))
+                .route("/widget", post(widget_post));
+        "#;
+        let pairs = collect_registrations(chain_src);
+        assert_eq!(pairs.len(), 2, "both methods must be collected");
+        let methods: std::collections::HashSet<&str> =
+            pairs.iter().map(|(m, _, _)| m.as_str()).collect();
+        assert!(methods.contains("get") && methods.contains("post"));
+        // And the real-chain property that pins the fix: a known shared path
+        // yields BOTH method handlers, so the per-method gate scan sees the
+        // POST side (whose authorize() the old last-insert-wins map hid).
+        let real = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/server/router/workflow.rs"
+        ));
+        let real_pairs = collect_registrations(real);
+        let notes: Vec<_> = real_pairs
+            .iter()
+            .filter(|(_, p, _)| p == "/workflow/runs/{id}/notes")
+            .collect();
+        assert_eq!(
+            notes.len(),
+            2,
+            "the shared /notes path must yield both method handlers, got {notes:?}"
+        );
+    }
+
+    /// The public-path list is ONE source: both middlewares consume
+    /// `route_guards::is_public_path`, so no second copy can drift (the old
+    /// duplicate `matches!` blocks asserted equal by nothing). Structural pin
+    /// against a future second copy: the middlewares' source carries only the
+    /// shared call, and every declared entry plus the seat rules behave.
+    #[test]
+    fn public_path_lists_are_identical() {
+        use brain_server::server::router::route_guards::{PUBLIC_PATHS, is_public_path};
+        let auth_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/server/router/auth.rs"
+        ));
+        assert!(
+            auth_src.matches("is_public_path").count() >= 2,
+            "both auth middlewares must consume the shared public-path decision"
+        );
+        // The exact entries + the prefix/seat rules, as the middlewares see them.
+        for p in PUBLIC_PATHS {
+            assert!(is_public_path(p), "{p} must be public by declaration");
+        }
+        for p in ["/webhooks/gh", "/", "/app/", "/app/boot.js"] {
+            assert!(is_public_path(p), "{p} must be public by seat rule");
+        }
+        for p in [
+            "/health/db",
+            "/recall",
+            "/stats",
+            "/auth/logout",
+            "/healthz",
+        ] {
+            assert!(!is_public_path(p), "{p} must NOT be public");
+        }
+        // No duplicates in the declaration (a second copy hiding in the const).
+        let mut sorted = PUBLIC_PATHS.to_vec();
+        sorted.sort_unstable();
+        let n = sorted.len();
+        sorted.dedup();
+        assert_eq!(n, sorted.len(), "PUBLIC_PATHS carries duplicate entries");
+        // Every declared entry is really registered (no dead declarations).
+        let chain_src = concat!(
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/mod.rs"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/core.rs"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/memory.rs"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/ump.rs"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/compliance.rs"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/workflow.rs"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/src/server/router/auth.rs"
+            )),
+        );
+        let flat_chain: String = chain_src
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .replace("( ", "(");
+        for p in PUBLIC_PATHS {
+            assert!(
+                flat_chain.contains(&format!(".route(\"{p}\"")),
+                "declared public path {p} is not registered anywhere in the chain",
+            );
+        }
+    }
+
+    /// security.txt is public and present in BOTH guard tables — the
+    /// well-known disclosure endpoint used to sit outside the route-coverage
+    /// table (the one row gap between the middleware's public list and the
+    /// tables).
+    #[test]
+    fn security_txt_is_in_both_tables() {
+        use brain_server::server::router::route_guards::{
+            AUTHZ_GATES, OPENAPI_ROUTES, is_public_path,
+        };
+        assert!(is_public_path("/.well-known/security.txt"));
+        assert!(
+            OPENAPI_ROUTES.contains(&"/.well-known/security.txt"),
+            "security.txt missing from OPENAPI_ROUTES"
+        );
+        let row = AUTHZ_GATES
+            .iter()
+            .find(|(p, _)| *p == "/.well-known/security.txt")
+            .expect("security.txt missing from AUTHZ_GATES");
+        assert_eq!(row.1, "public", "the row marks the middleware exemption");
     }
 
     /// Comment hygiene: a non-test comment under `src/` may not reference a
@@ -8855,12 +9506,10 @@ Final paragraph after the rule.";
         std::thread::sleep(std::time::Duration::from_millis(1100));
         std::fs::write(f.path(), "test-tok-1\n").unwrap();
         assert!(store.reload_if_changed_from(vec!["test-tok-1".to_string()]));
+        let (state, _dir) = opaque_mw_state(store);
         let app = axum::Router::new()
             .route("/protected", get(stub))
-            .layer(middleware::from_fn_with_state(
-                store.clone(),
-                auth_middleware,
-            ))
+            .layer(middleware::from_fn_with_state(state, auth_middleware))
             .layer(middleware::from_fn(security_headers_middleware));
         let res = app
             .clone()
@@ -8973,17 +9622,24 @@ Final paragraph after the rule.";
             key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent")).unwrap(),
             jwt_issuer: "https://issuer.test".to_string(),
             jwt_audience: "brain".to_string(),
-            pool,
+            pool: pool.clone(),
             revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
             db_path: std::path::PathBuf::from("/nonexistent/brain.db"),
             principal_rate_limiter: Arc::new(RateLimiter::new()),
         });
         let store = TokenStore::from_file(None);
+        let opaque_state = brain_server::server::router::auth::OpaqueAuthState {
+            tokens: store.clone(),
+            pool,
+            db_path: std::path::PathBuf::from("/nonexistent/brain.db"),
+        };
         let app = axum::Router::new()
             .route("/private", get(stub))
             .route("/health", get(stub))
-            .with_state((store.clone(), jwt_state.clone()))
-            .layer(middleware::from_fn_with_state(store, auth_middleware))
+            .layer(middleware::from_fn_with_state(
+                opaque_state,
+                auth_middleware,
+            ))
             .layer(middleware::from_fn_with_state(
                 jwt_state,
                 jwt_auth_middleware,
@@ -9049,6 +9705,14 @@ Final paragraph after the rule.";
         // hardening block; the value passed in is echoed untouched.
         let hardening = obj["hardening"].as_object().expect("hardening object");
         assert_eq!(hardening["audit_commit_failures"], 7);
+        // the resolved INJECTION_POLICY echoes in the env vocabulary
+        // (`allow` = the screen is OFF — never silent).
+        assert!(
+            ["quarantine", "reject", "allow"]
+                .contains(&hardening["injection_policy"].as_str().expect("policy str")),
+            "injection_policy must echo the env vocabulary, got {:?}",
+            hardening["injection_policy"]
+        );
         // webhook posture is exposed for ops. The flag is
         // read from env, so this test only pins that the object is present with
         // the known default (legacy scheme, 300s window).
@@ -9193,13 +9857,11 @@ Final paragraph after the rule.";
             "token must register"
         );
 
+        let (mw_state, _mw_dir) = opaque_mw_state(store);
         let app = axum::Router::new()
             .route("/health", get(health))
             .route("/health/db", get(health_db))
-            .layer(middleware::from_fn_with_state(
-                store.clone(),
-                auth_middleware,
-            ))
+            .layer(middleware::from_fn_with_state(mw_state, auth_middleware))
             .with_state(app_state);
 
         let anon = app

@@ -314,15 +314,16 @@ impl std::error::Error for LoadError {}
 
 /// Parse a public PEM into a `VerifyingKey`. Auto-detects the algorithm from
 /// the PEM's SubjectPublicKeyInfo (RFC 5280). RSA PEMs → RS256 by default
-/// (the strongest RSA variant we accept; the alg is verified against the
-/// JWT's own alg claim during verification, so this default is only the
-/// "first guess" for the kid lookup).
+/// (the strongest RSA variant we accept; the record's alg is the PIN the
+/// header's `alg` must match at verification, so a key recorded here as
+/// RS256 refuses RS384 tokens signed with the same key).
 fn parse_public_pem(kid: &str, pem: &str) -> Result<(Algorithm, VerifyingKey), LoadError> {
     // Try as RSA-specific parsing.
     if let Ok(decoding_key) = DecodingKey::from_rsa_pem(pem.as_bytes()) {
         let verifying = VerifyingKey {
             kid: kid.to_string(),
             alg: Algorithm::RS256,
+            pinned_alg: Some(Algorithm::RS256),
             decoding_key,
         };
         return Ok((Algorithm::RS256, verifying));
@@ -337,6 +338,7 @@ fn parse_public_pem(kid: &str, pem: &str) -> Result<(Algorithm, VerifyingKey), L
             // ceiling: deployments needing ES384 can name the kid's alg
             // explicitly in a sidecar file; that's a v1.3 concern.
             alg: Algorithm::ES256,
+            pinned_alg: Some(Algorithm::ES256),
             decoding_key,
         };
         return Ok((Algorithm::ES256, verifying));
@@ -346,6 +348,7 @@ fn parse_public_pem(kid: &str, pem: &str) -> Result<(Algorithm, VerifyingKey), L
         let verifying = VerifyingKey {
             kid: kid.to_string(),
             alg: Algorithm::EdDSA,
+            pinned_alg: Some(Algorithm::EdDSA),
             decoding_key,
         };
         return Ok((Algorithm::EdDSA, verifying));

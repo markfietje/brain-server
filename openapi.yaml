@@ -93,6 +93,10 @@ paths:
                       memory_leaks_detected: { type: integer, example: 0 }
                       audit_commit_failures: { type: integer, example: 0 }
                       injection_classifier_loaded: { type: boolean }
+                      injection_policy:
+                        type: string
+                        enum: [quarantine, reject, allow]
+                        description: The resolved INJECTION_POLICY. `allow` disables the injection screen entirely (trusted-local-sources posture) — surfaced here and warned at boot, never silent.
                   capacity:
                     type: object
                     description: Present when the pool had a connection to measure; omitted otherwise.
@@ -6545,6 +6549,9 @@ components:
         (the authz-guard table) and API_CONTRACT.md. Most routes require auth;
         the exempt public set is /health, /ready, /version, /openapi.yaml,
         /.well-known/*, /ump/capabilities and the /auth refresh/logout surface.
+        A revoked identity (the principal kill-switch) is denied 401
+        `identity_revoked` on every route BEFORE authorization (see the
+        IdentityRevoked response).
   responses:
     BadRequest:
       description: Validation failure
@@ -6558,6 +6565,18 @@ components:
           schema: { $ref: "#/components/schemas/ApiError" }
     PayloadTooLarge:
       description: Body exceeded the size cap
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    IdentityRevoked:
+      description: >
+        401 `identity_revoked`: the bearer verified, but the identity it names
+        sits in the revocation table (the principal kill-switch). Returned on
+        EVERY route, ahead of authorization — the identity is dead, not
+        unauthorized for the route. Byte-identical for every revoked
+        principal (probe-blind: nothing about provisioning state leaks), and
+        the denial is audited path-only (never the token). Capability tokens
+        deny on their issuer principal.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }

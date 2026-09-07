@@ -47,6 +47,15 @@ pub use policy::{Action, Principal, Scope, client_authorized_domains, is_authori
 #[allow(unused_imports)]
 pub use revocation::{RevocationCache, purge_expired, revoke, revoke_chain};
 
+/// The verified access token's `exp` claim, injected into request extensions
+/// by the JWT auth middleware beside the [`Principal`]. Consumers: the
+/// logout/revoke denylist writes, which keep the row alive exactly as long
+/// as the token itself (clamped to a bounded TTL) instead of a fixed guess.
+/// `Copy` newtype so an extension collision is impossible and extraction is
+/// total.
+#[derive(Debug, Clone, Copy)]
+pub struct AccessTokenExp(pub u64);
+
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};

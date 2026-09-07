@@ -34,6 +34,26 @@ const ACCESS_LIFETIME_SECS: u64 = 15 * 60;
 /// rotate on every use (reuse detection revokes the chain).
 const REFRESH_LIFETIME_SECS: u64 = 24 * 60 * 60;
 
+/// Upper bound for a denylist row's lifetime. The row only needs to outlive
+/// the token it denies; a longer cap changes nothing observable, and without
+/// one a hostile or clock-wrong IdP token could pin rows to the bounded
+/// table forever. `purge_expired`'s cadence is unchanged.
+const DENYLIST_TTL_CAP_SECS: u64 = 24 * 60 * 60;
+
+/// The denylist row's `expires_at` for a token whose (verified) `exp` claim
+/// is `token_exp`, written at `now`. The row lives exactly as long as the
+/// token it denies — the silent revocation lapse (a fixed 15-minute row
+/// purged while an external-IdP token is still valid) is closed — clamped to
+/// [`DENYLIST_TTL_CAP_SECS`]. `None` (no verified expiry in scope: the
+/// operator-revoke route without an `expires_at`) keeps the old fixed-TTL
+/// default. Server-minted 15-minute tokens: `exp ≤ now + 15 min`, so the
+/// clamp never bites and the row dies with the token.
+fn denylist_expires_at(token_exp: Option<u64>, now: u64) -> u64 {
+    token_exp.map_or(now + ACCESS_LIFETIME_SECS, |exp| {
+        exp.min(now + DENYLIST_TTL_CAP_SECS)
+    })
+}
+
 /// Request body for `/auth/refresh`. The refresh token is the credential.
 #[derive(Debug, Deserialize)]
 pub struct RefreshRequest {
@@ -191,13 +211,18 @@ pub async fn refresh(
 /// `POST /auth/logout`. Adds the request's access-token `jti` to the denylist.
 /// The access token comes from the `Authorization: Bearer` header (verified by
 /// the middleware before this handler runs, so the principal is authenticated).
+/// The row's `expires_at` is the token's REAL `exp` (injected by the JWT
+/// middleware as [`crate::auth::AccessTokenExp`]), clamped — the row dies
+/// when the token dies, not at a fixed guess after presentation.
 pub async fn logout(
     State(s): State<Arc<AppState>>,
     principal: OptPrincipal,
+    token_exp: Option<axum::extract::Extension<crate::auth::AccessTokenExp>>,
 ) -> Result<StatusCode, AuthHandlerError> {
     let Some(p) = principal.0 else {
         return Ok(StatusCode::UNAUTHORIZED);
     };
+    let token_exp = token_exp.map(|ext| ext.0.0); // Option<u64>
     let pool = s.pool.clone();
     let cache = s.revocation_cache.clone();
     let issuer = s.jwt_issuer.clone();
@@ -213,7 +238,7 @@ pub async fn logout(
             &p.jti,
             &issuer,
             Some(&p.sub),
-            now_unix() + ACCESS_LIFETIME_SECS,
+            denylist_expires_at(token_exp, now_unix()),
             Some(&p.sub),
             "logout",
         )?;
@@ -253,9 +278,10 @@ pub async fn revoke_handler(
         .map_err(|e| AuthHandlerError::forbidden(e.inner.message))?;
     let pool = s.pool.clone();
     let cache = s.revocation_cache.clone();
-    let exp = req
-        .expires_at
-        .unwrap_or_else(|| now_unix() + ACCESS_LIFETIME_SECS);
+    // The operator supplies the target token's real `exp` when it is known;
+    // the clamp bounds the row either way (a hostile or clock-wrong value
+    // cannot pin the bounded table).
+    let exp = denylist_expires_at(req.expires_at, now_unix());
     let jti = req.jti.clone();
     let iss = req.iss.clone();
     let reason = req.reason.clone();
@@ -334,6 +360,7 @@ impl AuthHandlerError {
             | AuthError::Malformed
             | AuthError::MissingKeyId
             | AuthError::UnknownKeyId(_)
+            | AuthError::AlgMismatchForKid(_)
             | AuthError::BadSignature
             | AuthError::InvalidClaim(_)
             | AuthError::MissingJti
@@ -483,5 +510,55 @@ fn build_encoding_key(mk: &crate::auth::jwks::ManagedKey) -> Result<EncodingKey,
         _ => Err(AuthHandlerError::internal_msg(format!(
             "unsupported signing alg {alg:?}"
         ))),
+    }
+}
+
+// ── the denylist TTL pins (the row dies when the token dies) ────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A long-lived external-IdP token gets a denylist row that covers its
+    /// real validity window (clamped), not the old fixed 15-minute guess —
+    /// the silent revocation lapse is closed.
+    #[test]
+    fn logout_row_outlives_long_lived_idp_token() {
+        let now = 1_800_000_000u64;
+        let idp_exp = now + 30 * 24 * 3600; // an IdP token with a month of life
+        let row = denylist_expires_at(Some(idp_exp), now);
+        assert_eq!(row, now + DENYLIST_TTL_CAP_SECS);
+        assert!(
+            row > now + ACCESS_LIFETIME_SECS,
+            "the row must outlive the old fixed TTL"
+        );
+    }
+
+    /// The clamp: a hostile or clock-wrong `exp` cannot pin denylist rows to
+    /// the bounded table forever; the purge cadence stays meaningful.
+    #[test]
+    fn denylist_row_capped_at_24h() {
+        let now = 1_800_000_000u64;
+        assert_eq!(
+            denylist_expires_at(Some(now + 365 * 24 * 3600), now),
+            now + 24 * 3600
+        );
+        assert_eq!(denylist_expires_at(Some(u64::MAX), now), now + 24 * 3600);
+    }
+
+    /// Server-minted 15-minute access tokens: the clamp never bites, so the
+    /// row expires exactly at the token's real death — for a token presented
+    /// at mint time that is the old `now + 15min` byte-for-byte. A missing
+    /// expiry (the operator-revoke route without `expires_at`) keeps the old
+    /// fixed-TTL default.
+    #[test]
+    fn server_minted_logout_unchanged() {
+        let now = 1_800_000_000u64;
+        let exp = now + ACCESS_LIFETIME_SECS;
+        assert_eq!(denylist_expires_at(Some(exp), now), exp);
+        assert_eq!(
+            denylist_expires_at(Some(exp), now),
+            now + ACCESS_LIFETIME_SECS
+        );
+        assert_eq!(denylist_expires_at(None, now), now + ACCESS_LIFETIME_SECS);
     }
 }

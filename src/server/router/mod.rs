@@ -166,7 +166,6 @@ pub async fn rate_limit_middleware(
 }
 
 // ── the composed application (moved from main.rs verbatim at C3a) ──────
-
 /// The composed application: every route family, the shared middleware
 /// stack, and the state binding. THE WIRE: paths, methods, status
 /// vocabulary, and the layer order below are frozen (openapi.yaml +
@@ -223,7 +222,11 @@ pub fn app(state: Arc<AppState>) -> Router {
     // Security layers
     .layer(state.cors.clone())
     .layer(middleware::from_fn_with_state(
-        state.token_store.clone(),
+        auth::OpaqueAuthState {
+            tokens: state.token_store.clone(),
+            pool: state.pool.clone(),
+            db_path: state.db_path.clone(),
+        },
         auth_middleware,
     ))
     .layer(middleware::from_fn_with_state(

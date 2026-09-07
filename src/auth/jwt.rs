@@ -150,6 +150,9 @@ pub enum AuthError {
     MissingKeyId,
     /// `kid` did not match any key in the JWK set.
     UnknownKeyId(String),
+    /// The token's header `alg` differs from the alg the matched key record
+    /// declares (per-kid pinning — family slack closed).
+    AlgMismatchForKid(String),
     /// Signature did not verify under the picked key.
     BadSignature,
     /// A standard claim was missing or invalid (iss/aud/exp/nbf/sub).
@@ -171,6 +174,7 @@ impl AuthError {
             AuthError::Malformed => "malformed_token",
             AuthError::MissingKeyId => "missing_kid",
             AuthError::UnknownKeyId(_) => "unknown_kid",
+            AuthError::AlgMismatchForKid(_) => "alg_mismatch_for_kid",
             AuthError::BadSignature => "bad_signature",
             AuthError::InvalidClaim(c) => match *c {
                 "iss" => "invalid_issuer",
@@ -196,6 +200,12 @@ impl std::fmt::Display for AuthError {
             AuthError::Malformed => write!(f, "malformed token"),
             AuthError::MissingKeyId => write!(f, "header missing kid"),
             AuthError::UnknownKeyId(k) => write!(f, "unknown kid {k}"),
+            AuthError::AlgMismatchForKid(k) => {
+                write!(
+                    f,
+                    "alg mismatch for kid {k}: header alg differs from the key record's declared alg"
+                )
+            }
             AuthError::BadSignature => write!(f, "signature invalid"),
             AuthError::InvalidClaim(c) => write!(f, "claim {c} invalid or missing"),
             AuthError::MissingJti => write!(f, "missing jti"),
@@ -213,6 +223,15 @@ impl std::error::Error for AuthError {}
 pub struct VerifyingKey {
     pub kid: String,
     pub alg: Algorithm,
+    /// The alg this key record DECLARES, compared strictly against the JOSE
+    /// header's `alg` at verification (`alg_mismatch_for_kid` on a mismatch).
+    /// This closes the family slack where an RSA kid (recorded RS256) would
+    /// verify an RS384 token signed with the same key — a token's alg is
+    /// attacker-controlled, the record's is not. Every load-path record
+    /// declares its alg (auto-detected from the PEM's key shape), so no
+    /// re-import is needed; `None` is the additive escape hatch for a future
+    /// record without a declaration (it keeps the whitelist-only behavior).
+    pub pinned_alg: Option<Algorithm>,
     pub decoding_key: DecodingKey,
 }
 
@@ -260,6 +279,15 @@ pub fn verify_access_token(
     }
     let kid = header.kid.clone().ok_or(AuthError::MissingKeyId)?;
     let key = VerifyingKey::find(keys, &kid).ok_or_else(|| AuthError::UnknownKeyId(kid.clone()))?;
+    // Per-kid algorithm pinning: the key record's declared alg is the
+    // authority, the header's is attacker-controlled. A mismatch is refused
+    // BEFORE any signature work — the RS-family slack (an RS256 kid
+    // verifying an RS384 token) closes here.
+    if let Some(pinned) = key.pinned_alg
+        && pinned != header.alg
+    {
+        return Err(AuthError::AlgMismatchForKid(kid));
+    }
 
     // Phase 2: signature + standard-claim validation.
     // Build a Validation pinned to the header's alg (NOT a default — the
@@ -377,6 +405,7 @@ mod tests {
         VerifyingKey {
             kid: kid.to_string(),
             alg: Algorithm::RS256,
+            pinned_alg: Some(Algorithm::RS256),
             decoding_key: DecodingKey::from_rsa_pem(pem.as_bytes())
                 .expect("build decoding key from RSA PEM"),
         }
@@ -435,6 +464,43 @@ mod tests {
             verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).expect("valid token");
         assert_eq!(claims.sub, "user:test");
         assert_eq!(typ, TokenType::Access);
+    }
+
+    /// Per-kid algorithm pinning: an RSA kid whose record declares RS256
+    /// refuses an RS384 token signed with the SAME key — the family slack
+    /// (the whitelist accepted any RS*) is closed, because the header's alg
+    /// is attacker-chosen while the record's is not.
+    #[test]
+    fn rsa_kid_rejects_different_rs_variant() {
+        let (priv_key, _, keys) = setup();
+        let raw = sign(&priv_key, Algorithm::RS384, Some("test-kid-1"), |_| {});
+        let err = verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err();
+        assert!(
+            matches!(err, AuthError::AlgMismatchForKid(ref k) if k == "test-kid-1"),
+            "RS384 against an RS256-pinned kid must refuse as alg_mismatch_for_kid, got {err:?}"
+        );
+    }
+
+    /// The additive escape hatch: a key record WITHOUT a declared alg keeps
+    /// the whitelist-only family behavior (the per-kid comparison applies
+    /// only when the record declares an alg).
+    #[test]
+    fn unpinned_kid_keeps_family_behavior() {
+        let (priv_key, pub_key) = test_keypair();
+        let pem = pub_key
+            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+            .unwrap();
+        let unpinned = vec![VerifyingKey {
+            kid: "unpinned-kid".to_string(),
+            alg: Algorithm::RS256,
+            pinned_alg: None,
+            decoding_key: DecodingKey::from_rsa_pem(pem.as_bytes()).unwrap(),
+        }];
+        // RS384 with the same RSA key verifies (RS384 is whitelisted), and
+        // the pinning comparison never fires.
+        let raw = sign(&priv_key, Algorithm::RS384, Some("unpinned-kid"), |_| {});
+        verify_access_token(&raw, &unpinned, ISS, AUD, TokenType::Access)
+            .expect("an unpinned kid keeps family behavior");
     }
 
     #[test]

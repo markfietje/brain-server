@@ -451,6 +451,32 @@ pub fn injection_policy() -> InjectionPolicy {
     }
 }
 
+/// The one boot-time visibility seam for `INJECTION_POLICY=allow` — the env
+/// var that disables the injection screen entirely. `allow` is a REAL
+/// posture (trusted-local-sources deployments run it), so it gets a loud
+/// warning + the `/health/db` echo, not a refuse path: the operator must see
+/// the screen is off in the boot log and in every health scrape. Called once
+/// from the bootstrap (never per-request); the resolved value is the same
+/// `injection_policy()` read the ingest paths use, so warn and behavior
+/// cannot disagree.
+pub fn injection_policy_boot_warning() {
+    if injection_policy() == InjectionPolicy::Allow {
+        tracing::warn!(
+            "INJECTION_POLICY=allow: the injection screen is DISABLED — every ingest is stored unflagged. This is a trusted-local-sources posture; if untrusted content can reach ingest, set INJECTION_POLICY=quarantine (default) or reject."
+        );
+    }
+}
+
+/// The `/health/db` echo value for the resolved injection policy: the wire
+/// spelling of [`InjectionPolicy`], matching the env vocabulary.
+pub fn injection_policy_echo() -> &'static str {
+    match injection_policy() {
+        InjectionPolicy::Quarantine => "quarantine",
+        InjectionPolicy::Reject => "reject",
+        InjectionPolicy::Allow => "allow",
+    }
+}
+
 // ── layer-2 classifier config ─────────────────────
 
 /// Default reject threshold (score ≥ this → HTTP 400). Conservative: a false
@@ -1025,6 +1051,104 @@ impl QualityConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Counting WARN subscriber: the boot-warning pin scopes it with
+    /// `with_default`, so no global subscriber state is touched.
+    struct WarnCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+    impl tracing::Subscriber for WarnCounter {
+        fn enabled(&self, _: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            if event.metadata().level() == &tracing::Level::WARN {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        fn enter(&self, _: &tracing::span::Id) {}
+        fn exit(&self, _: &tracing::span::Id) {}
+    }
+
+    static IP_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_policy(v: Option<&str>, f: impl FnOnce()) {
+        let _guard = IP_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let set = |val: Option<&str>| {
+            if let Some(v) = val {
+                unsafe { std::env::set_var("INJECTION_POLICY", v) };
+            } else {
+                unsafe { std::env::remove_var("INJECTION_POLICY") };
+            }
+        };
+        let prev = std::env::var("INJECTION_POLICY").ok();
+        set(v);
+        f();
+        set(prev.as_deref());
+    }
+
+    /// `INJECTION_POLICY=allow` warns EXACTLY ONCE at the boot seam — the
+    /// screen-off posture is never silent. The quieter postures (quarantine
+    /// default, reject) warn never.
+    #[test]
+    fn injection_policy_allow_warns_once_at_boot() {
+        let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        with_policy(Some("allow"), || {
+            tracing::subscriber::with_default(Box::new(WarnCounter(counter.clone())), || {
+                injection_policy_boot_warning();
+                assert_eq!(
+                    counter.load(std::sync::atomic::Ordering::SeqCst),
+                    1,
+                    "allow must warn exactly once"
+                );
+                injection_policy_boot_warning();
+                assert_eq!(
+                    counter.load(std::sync::atomic::Ordering::SeqCst),
+                    2,
+                    "one CALL warns once; two calls warn twice (the bootstrap calls this once)"
+                );
+            });
+        });
+        // The quieter postures stay silent.
+        for quiet in [None, Some("quarantine"), Some("reject")] {
+            let c = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let c2 = c.clone();
+            with_policy(quiet, || {
+                tracing::subscriber::with_default(Box::new(WarnCounter(c2)), || {
+                    injection_policy_boot_warning();
+                });
+            });
+            assert_eq!(
+                c.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "{quiet:?} must not warn"
+            );
+        }
+    }
+
+    /// The `/health/db` echo speaks the env vocabulary and follows the env.
+    #[test]
+    fn health_db_echo_follows_injection_policy_env() {
+        with_policy(Some("allow"), || {
+            assert_eq!(injection_policy_echo(), "allow");
+        });
+        with_policy(Some("reject"), || {
+            assert_eq!(injection_policy_echo(), "reject");
+        });
+        with_policy(None, || {
+            assert_eq!(injection_policy_echo(), "quarantine", "the default echoes");
+        });
+        with_policy(Some("garbage"), || {
+            assert_eq!(
+                injection_policy_echo(),
+                "quarantine",
+                "an unknown value resolves (and echoes) as the default"
+            );
+        });
+    }
 
     #[test]
     fn sanitize_origins_drops_wildcard_and_empties() {

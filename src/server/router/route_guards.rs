@@ -10,6 +10,48 @@
 //! removed only in the same commit as the route/wire change that earns it.
 //! Test-only data: the module is compiled nowhere outside test builds.
 
+/// The ONE public-path list. Both auth middlewares consume it through
+/// [`is_public_path`] — there is no second copy to drift (the old
+/// duplicate-per-middleware `matches!` blocks are gone; the middlewares'
+/// sources carry only the `is_public_path` call). The list lives beside the
+/// tables it feeds: the reverse-direction guard exempts these paths from
+/// `AUTHZ_GATES`, so the exemption and the tables read from one place.
+pub const PUBLIC_PATHS: &[&str] = &[
+    "/health",
+    "/ready",
+    "/version",
+    "/openapi.yaml",
+    // OIDC discovery + JWKS are public by design (clients need them to
+    // verify tokens; can't require a token to learn how to verify tokens).
+    // `/auth/refresh` verifies its own refresh token. `/auth/logout` is NOT
+    // public: it revokes the presented access token, so the middleware must
+    // verify the bearer first — a public logout could revoke nothing and
+    // silently "succeed" (the handler reads the principal from the
+    // extension; with no principal it 401s unconditionally).
+    "/.well-known/openid-configuration",
+    "/.well-known/jwks.json",
+    "/.well-known/security.txt",
+    "/.well-known/ai-notice",
+    "/.well-known/ai-literacy",
+    "/.well-known/cop-notice",
+    "/.well-known/ump.json",
+    "/ump/capabilities",
+    "/auth/refresh",
+];
+
+/// The public-path decision both auth middlewares run: exact [`PUBLIC_PATHS`]
+/// entries, then the rules that can't be a const list — the webhook seams
+/// (authenticated by their own HMAC signature check inside the handler:
+/// GitHub cannot present a brain bearer token), the client SPA seat (static
+/// assets, no data), and the root redirect. Method-independent: CORS
+/// preflight (`OPTIONS`) is exempted separately in each middleware.
+pub fn is_public_path(path: &str) -> bool {
+    PUBLIC_PATHS.contains(&path)
+        || path.starts_with("/webhooks/")
+        || path == "/"
+        || path.starts_with("/app")
+}
+
 /// Every path registered by `build_app`, in registration order.
 /// Consumed by `test_openapi_covers_routes` (openapi.yaml coverage pin).
 pub const OPENAPI_ROUTES: &[&str] = &[
@@ -119,6 +161,7 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/auth/revoke",
     "/.well-known/openid-configuration",
     "/.well-known/jwks.json",
+    "/.well-known/security.txt",
     "/.well-known/ai-notice",
     "/.well-known/ai-literacy",
     "/.well-known/cop-notice",
@@ -176,9 +219,16 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/workflow/channel/user-map",
     // Mesh: agents as named colleagues — signed cards + delegation.
     "/ops/agents/cards",
-    // The Attestation line: the ASI03/07 principal kill-switch.
+    // The ASI03/07 principal kill-switch.
     "/ops/agents/revoke",
     "/ops/agents/revocations",
+    // The scoreboard + its sign-off, and the plugin mount seam — always-on
+    // registrations that were missing from this table (table debt; the
+    // handler gates were verified correct at the same audit that found the
+    // gap).
+    "/workflow/scoreboard",
+    "/workflow/calibration/sign",
+    "/workflow/plugins/mount",
     "/workflow/runs/{id}/delegations",
     "/workflow/runs/{id}/delegations/{delegation_id}/result",
     "/workflow/runs/{id}/complaint/lifecycle",
@@ -443,4 +493,15 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/parcels", "Read"),
     ("/parcels/export", "Admin"),
     ("/parcels/import", "Write"),
+    // ── rows the reverse-direction guard found missing (the scan walked the
+    // composed router and demanded every non-public route appear here) ──
+    // `/stats` is legacy-shaped (200-shell denial) but its handler carries a
+    // real `Action::Read` gate; the scoreboard + calibration sign are Admin
+    // (the handler then demands a DPO role); the mount seam is a Write whose
+    // bridge-identity HMAC check precedes the gate.
+    ("/.well-known/security.txt", "public"),
+    ("/stats", "Read"),
+    ("/workflow/scoreboard", "Admin"),
+    ("/workflow/calibration/sign", "Admin"),
+    ("/workflow/plugins/mount", "Write"),
 ];

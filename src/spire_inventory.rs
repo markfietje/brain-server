@@ -74,14 +74,22 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// set, and the one-place vocabulary grep.
 /// 1,267 → 1,269 at the Meridian open: the /suggest untrusted serialization
 /// pin + the three-surface label-parity source pin (X-R1).
-const CRATE_TEST_FLOOR: usize = 1_269;
+/// 1,269 → 1,281 at the Blackout open: the six authN kill-switch matrix
+/// pins, the denylist TTL trio, the per-kid alg pair, the INJECTION_POLICY
+/// visibility pair, the method-keyed scan and reverse-guard quartet, and
+/// the public-path/security.txt pair.
+const CRATE_TEST_FLOOR: usize = 1_281;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
-/// extraction (v1.28.54), re-measured to 161 at the Buttress open. Rows join
-/// only with the wire change that earns them, in the same commit.
-const OPENAPI_ROUTE_ROWS_FLOOR: usize = 161;
+/// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
+/// reverse-direction guard found the missing rows (security.txt + the
+/// scoreboard/calibration/mount trio). Rows join only with the wire change
+///   that earns them, in the same commit.
+const OPENAPI_ROUTE_ROWS_FLOOR: usize = 167;
 /// Route-authz table rows (`route_guards::AUTHZ_GATES`) — 141 gates at
-/// extraction (v1.28.54), re-measured to 145 at the Buttress open.
-const AUTHZ_TABLE_ROWS_FLOOR: usize = 145;
+/// extraction (v1.28.54), 147 at the Wardline gate, 152 when Blackout's
+/// reverse-direction guard closed the table debt (`/stats` + the trio +
+///   security.txt's public marker row).
+const AUTHZ_TABLE_ROWS_FLOOR: usize = 152;
 
 fn count_needle(hay: &str, needle: &str) -> usize {
     hay.matches(needle).count()

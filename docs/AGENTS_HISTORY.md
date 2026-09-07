@@ -8,6 +8,45 @@
 
 ## Release version notes
 
+> **Version note:** **v1.28.63 "Wardline" shipped 2026-09-06** — the SEAM LINE
+> OPENS. Older release notes are retired to `docs/AGENTS_HISTORY.md` —
+> this file keeps only the operational contract, the architecture law, and
+> OPEN issues. One milestone: reserved vocabulary at the workflow input
+> seam, closing the ONLY code-false security law in the repo's history —
+> between v1.28.43 and this release the events route could forge
+> `channel/out` / `channel/ping` / `steering` / `workflow/valet*` rows
+> (the three-gate channel law was table-trusted, not code-true; audit
+> X-W1..X-W5; premise verified live on a DB copy BEFORE the fix — the
+> forged envelope was delivered by the real HMAC drain — and dead the
+> same way after). (1) THE RESERVED-TOPIC GATE: `RESERVED_OUTBOX_TOPICS`
+> (one `pub const` in `workflow::outbox`) enforced at `enqueue_child` —
+> the SHARED function, not a per-caller check — behind a
+> `pub(crate)`-constructor `KernelOrigin` token held by exactly FOUR
+> kernel writers (`enqueue_out`, `enqueue_ping`, the steering inbox write,
+> the valet crank); the events route maps the typed refusal to
+> `400 topic_reserved` + a `denied` audit row (`outbox_reserved_refused
+> topic=…`) on the workflow chain. (2) CLOSED RUN STATUSES:
+> `RUN_STATUSES` in `workflow/state.rs` — `active | cancelled | closed |
+> completed | fired | resolved`, frozen from the OBSERVED writers/readers
+> (the plan's sample list was wrong; nothing writes done/failed/expired);
+> unknown → `400 unknown_status` + audit row; CAS untouched. (3) THE
+> VALET FENCE FUNCTION-HELD: the injection screen moved INTO
+> `stamp_state` (+ the open-path vet `vet_open_state`); Reject AND
+> Quarantine refuse (`400 screen_rejected` — an operator-channel label
+> has no quarantine destination); a non-envelope valet state refuses
+> `400 valet_state_invalid`. (4) ALERT-BUS KIND AUTH: the trusted
+> `valet/due` kind requires the crank's `valet-` idempotency-key prefix
+> (the prefix IS the kernel signature; ponytail: no provenance column).
+> openapi gains the two 400 shapes + the status enum; route tables
+> UNCHANGED; no schema change; x-api-version unchanged. M4 meta-pin
+> `reserved_topics_are_declared_in_one_place` (dup-guard grep over src/).
+> 11 crate pins + 8 handler pins; CRATE_TEST_FLOOR 1,256 → 1,267. DRILL
+> 2026-09-06 vs DB copies: before — forged channel/out DELIVERED by the
+> bridge drain, zzz_arbitrary written; after — all forge shapes 400 +
+> audited, drain empty, chain verifies, positive controls green. Run the
+> premises-verification/dry-run discipline: copies only, live DB never
+> touched. See CHANGELOG §[1.28.63].
+
 > **Version note:** **v1.28.50 "Aqueduct" shipped 2026-08-28** — the
 > retrieval surfaces (the performance-sensitive heart) converge onto the
 > service layer, EVAL-GATED PER COMMIT. `src/service/recall.rs` opens with

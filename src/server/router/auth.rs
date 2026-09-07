@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use crate::Pool;
 use crate::audit;
-use crate::auth::{self, TokenStore};
+use crate::auth::{self, AccessTokenExp, TokenStore};
 use crate::config;
 use crate::handlers;
 use crate::http_limit::RateLimiter;
@@ -89,29 +89,11 @@ pub async fn jwt_auth_middleware(
         return next.run(req).await;
     }
     let path = req.uri().path();
-    // Same public-path list as `auth_middleware`. Duplicate rather than share
-    // because the list is small + stable; a shared const would be one more
-    // indirection for no gain. ponytail ceiling: if the list grows, factor out.
-    let public = matches!(
-        path,
-        "/health"
-            | "/ready"
-            | "/version"
-            | "/openapi.yaml"
-            | "/.well-known/openid-configuration"
-            | "/.well-known/jwks.json"
-            | "/.well-known/security.txt"
-            | "/.well-known/ai-notice"
-            | "/.well-known/ai-literacy"
-            | "/.well-known/cop-notice"
-            | "/.well-known/ump.json"
-            | "/ump/capabilities"
-            | "/auth/refresh"
-    ) || path.starts_with("/webhooks/")
-        // the client SPA is public (static assets, no data).
-        || path == "/"
-        || path.starts_with("/app");
-    if public || req.method() == axum::http::Method::OPTIONS {
+    // The one public-path list (router::PUBLIC_PATHS + rules) — both
+    // middlewares consume the same decision; there is no second copy.
+    if crate::server::router::route_guards::is_public_path(path)
+        || req.method() == axum::http::Method::OPTIONS
+    {
         return next.run(req).await;
     }
     // Extract the bearer token.
@@ -138,43 +120,63 @@ pub async fn jwt_auth_middleware(
     let path_owned = path.to_string();
     // The capability fallback needs the raw bearer; clone before the move.
     let raw_for_fallback = raw.clone();
-    let result = tokio::task::spawn_blocking(move || -> Result<auth::Principal, String> {
-        let (claims, _) = auth::jwt::verify_access_token(
-            &raw,
-            &keys,
-            &issuer,
-            &audience,
-            auth::jwt::TokenType::Access,
-        )
-        .map_err(|e| e.code().to_string())?;
-        // Revocation check. Denial on ANY
-        // store failure — the old `if let Ok(conn)` + `unwrap_or(false)` let a
-        // pool/SQL error skip the check entirely, precisely during incident
-        // response (fail-open on the one path that must fail closed).
-        let conn = pool
-            .get()
-            .map_err(|e| format!("revocation store unavailable: {e}"))?;
-        if rev_cache
-            .is_revoked(&conn, &claims.jti, &claims.iss)
-            .map_err(|e| format!("revocation store error: {e}"))?
-        {
-            return Err("revoked".to_string());
-        }
-        // Build the principal from claims.
-        let scopes: Vec<auth::Scope> = claims
-            .scopes
-            .iter()
-            .filter_map(|s| auth::Scope::parse(s))
-            .collect();
-        Ok(auth::Principal {
-            sub: claims.sub,
-            tenant: claims.tenant,
-            scopes,
-            jti: claims.jti,
-            roles: claims.roles,
-            manages: claims.manages,
-        })
-    })
+    let result = tokio::task::spawn_blocking(
+        move || -> Result<(auth::Principal, AccessTokenExp), String> {
+            let (claims, _) = auth::jwt::verify_access_token(
+                &raw,
+                &keys,
+                &issuer,
+                &audience,
+                auth::jwt::TokenType::Access,
+            )
+            .map_err(|e| e.code().to_string())?;
+            // Revocation check. Denial on ANY
+            // store failure — the old `if let Ok(conn)` + `unwrap_or(false)` let a
+            // pool/SQL error skip the check entirely, precisely during incident
+            // response (fail-open on the one path that must fail closed).
+            let conn = pool
+                .get()
+                .map_err(|e| format!("revocation store unavailable: {e}"))?;
+            if rev_cache
+                .is_revoked(&conn, &claims.jti, &claims.iss)
+                .map_err(|e| format!("revocation store error: {e}"))?
+            {
+                return Err("revoked".to_string());
+            }
+            // The principal kill-switch at the authentication layer: a revoked
+            // IDENTITY dies here, before any route logic — not only at the mesh
+            // surfaces (verify_card / delegation dispatch / result submission)
+            // that re-check it at their decision points. A dead identity answers
+            // 401 `identity_revoked` (the identity is gone, not unauthorized for
+            // this route), on every route, ahead of authorize. The check is the
+            // same straight keyed read the mesh uses: one indexed SELECT, no
+            // provisioning lookup, so it adds no existence oracle — a live
+            // principal is untouched, a revoked one is denied identically
+            // whether it holds rows anywhere or not. Store failure denies
+            // (fail-closed), same posture as the jti check above.
+            if crate::workflow::mesh::is_revoked(&conn, &claims.sub)
+                .map_err(|e| format!("revocation store error: {e}"))?
+            {
+                return Err("identity_revoked".to_string());
+            }
+            // Build the principal from claims.
+            let scopes: Vec<auth::Scope> = claims
+                .scopes
+                .iter()
+                .filter_map(|s| auth::Scope::parse(s))
+                .collect();
+            let token_exp = claims.exp;
+            Ok(auth::Principal {
+                sub: claims.sub,
+                tenant: claims.tenant,
+                scopes,
+                jti: claims.jti,
+                roles: claims.roles,
+                manages: claims.manages,
+            })
+            .map(|principal| (principal, AccessTokenExp(token_exp)))
+        },
+    )
     .await;
     let result = match result {
         Ok(inner) => inner,
@@ -184,7 +186,7 @@ pub async fn jwt_auth_middleware(
         }
     };
     match result {
-        Ok(principal) => {
+        Ok((principal, token_exp)) => {
             // Second rate-limit dimension keyed on the verified principal:
             // agents sharing one egress IP each get their own budget, so one
             // agent's flood cannot exhaust (or hide behind) its neighbors.
@@ -198,9 +200,12 @@ pub async fn jwt_auth_middleware(
                 )
                     .into_response();
             }
-            // Inject the principal + pass through. The opaque auth_middleware
-            // will see it set and short-circuit to `next.run(req)`.
+            // Inject the principal + its access-token expiry (the denylist
+            // row's TTL source at logout) + pass through. The opaque
+            // auth_middleware will see the Principal set and short-circuit
+            // to `next.run(req)`.
             req.extensions_mut().insert(principal);
+            req.extensions_mut().insert(token_exp);
             next.run(req).await
         }
         Err(code) => {
@@ -208,6 +213,18 @@ pub async fn jwt_auth_middleware(
             // signed capability token rather than a JWS. Try it before
             // rejecting (the handler's cap_gate enforces verbs × scope).
             if capability_pass_through(&mut req, &raw_for_fallback, &path_owned) {
+                // The capability seam of the kill-switch: the token's `iss`
+                // is its identity anchor, so a revoked issuer's capabilities
+                // die with the identity. The JWT revocation above checked a
+                // JWS sub; this checks the credential that just passed.
+                if let Some(cap) = req
+                    .extensions()
+                    .get::<crate::ump_integrity::CapabilityToken>()
+                    && let Err(deny) = ensure_cap_principal_alive(&s.pool, &cap.iss.clone()).await
+                {
+                    audit_auth_failure(&s.db_path, &path_owned, &deny).await;
+                    return unauthorized_response(&deny);
+                }
                 return next.run(req).await;
             }
             audit_auth_failure(&s.db_path, &path_owned, &code).await;
@@ -257,6 +274,31 @@ pub fn capability_accepted(raw: &str, path: &str, pk: &[u8; 32]) -> bool {
         && crate::ump_integrity::parse_capability_token(raw, pk).is_ok()
 }
 
+/// The kill-switch read for capability credentials: is the token's issuer
+/// principal revoked? `Err(code)` denies the request with that code —
+/// `identity_revoked` for a revoked issuer, a descriptive store-error code
+/// for any revocation-store failure (fail-closed; a live issuer passes only
+/// through a clean read). Runs on `spawn_blocking` (pooled SQLite read); the
+/// cost profile matches `capability_pass_through`'s own per-request key read,
+/// which the UMP surface already accepts.
+async fn ensure_cap_principal_alive(pool: &Pool, iss: &str) -> Result<(), String> {
+    let pool = pool.clone();
+    let iss = iss.to_string();
+    tokio::task::spawn_blocking(move || {
+        let conn = pool
+            .get()
+            .map_err(|e| format!("revocation store unavailable: {e}"))?;
+        if crate::workflow::mesh::is_revoked(&conn, &iss)
+            .map_err(|e| format!("revocation store error: {e}"))?
+        {
+            return Err("identity_revoked".to_string());
+        }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("revocation store join error: {e}"))?
+}
+
 /// Write an audit row for a failed JWT verification. Best-effort (opens a
 /// fresh connection — failures are rare, the cost is negligible). Records the
 /// path + failure code; never the token.
@@ -291,38 +333,30 @@ pub(crate) fn unauthorized_response(code: &str) -> Response {
         .into_response()
 }
 
+/// The opaque-mode bundle for `auth_middleware`: the rotating bearer store
+/// plus the pool + DB path the middleware needs for the capability seam of
+/// the kill-switch — a revoked capability issuer must deny in opaque mode
+/// too (that is the live deployment posture) — and for its denial audit
+/// rows.
+#[derive(Clone)]
+pub struct OpaqueAuthState {
+    pub tokens: TokenStore,
+    pub pool: Pool,
+    pub db_path: PathBuf,
+}
+
 pub async fn auth_middleware(
-    State(tokens): State<TokenStore>,
+    State(s): State<OpaqueAuthState>,
     mut req: Request<Body>,
     next: Next,
 ) -> Response {
     let path = req.uri().path().to_string();
-    let public = matches!(
-        path.as_str(),
-        "/health" | "/ready" | "/version" | "/openapi.yaml"
-// OIDC discovery + JWKS are public by design (clients
-        // need them to verify tokens; can't require a token to learn how to
-        // verify tokens). `/auth/refresh` verifies its own refresh token.
-        // `/auth/logout` is NOT public: it
-        // revokes the presented access token, so the middleware must verify
-        // the bearer first — a public logout could revoke nothing and
-        // silently "succeed" (the handler reads the principal from the
-        // extension; with no principal it 401s unconditionally).
-        | "/.well-known/openid-configuration" | "/.well-known/jwks.json"
-        | "/.well-known/security.txt"
-        | "/.well-known/ai-notice"
-        | "/.well-known/ai-literacy"
-        | "/.well-known/cop-notice"
-        | "/.well-known/ump.json"
-        | "/ump/capabilities"
-        | "/auth/refresh"
-    ) || path.starts_with("/webhooks/")
-        // the client SPA is public (static assets, no data).
-        || path == "/"
-        || path.starts_with("/app");
+    // The one public-path list (router::PUBLIC_PATHS + rules) — both
+    // middlewares consume the same decision; there is no second copy.
     // Webhook endpoints are authenticated by their own HMAC signature check
     // (GitHub cannot present a brain bearer token), so they bypass the bearer
     // middleware but are verified inside the handler.
+    let public = crate::server::router::route_guards::is_public_path(&path);
     if public || req.method() == axum::http::Method::OPTIONS {
         return next.run(req).await;
     }
@@ -331,11 +365,9 @@ pub async fn auth_middleware(
     // Handlers that read the Principal (via `OptPrincipal` or `Extension`)
     // get the typed claims; handlers that don't see `None` and run as before.
     //
-    // The JWT state lives in AppState, but this middleware only has
-    // `TokenStore`. We pull the JWT config from extensions (set by the
-    // `with_state` on the AppState-aware layer below). ponytail ceiling:
-    // this dual-layer state is a temporary wart until the auth middleware is
-    // refactored to take AppState directly (v1.3 cleanup).
+    // The JWT state lives in the OpaqueAuthState bundle alongside the
+    // bearer store: the opaque middleware shares the JWT layer's
+    // kill-switch duty for capability credentials, which needs the pool.
     //
     // For now: if the request already has a Principal in extensions (set by
     // a prior middleware), pass through. Otherwise fall through to opaque.
@@ -347,7 +379,7 @@ pub async fn auth_middleware(
     // fail-closed and a configured-but-empty store denies (auth is ON with
     // no valid tokens). Only a truly unconfigured store keeps the loopback
     // pass-through.
-    let accepted: std::collections::HashSet<String> = match tokens.tokens() {
+    let accepted: std::collections::HashSet<String> = match s.tokens.tokens() {
         auth::TokenRead::NotConfigured => return next.run(req).await,
         auth::TokenRead::ReadFailed => {
             return (
@@ -389,6 +421,20 @@ pub async fn auth_middleware(
     } else if capability_pass_through(&mut req, &presented_owned, &path) {
         // the bearer verified as an operator-signed capability
         // token on the UMP surface; the handler's cap_gate enforces verbs.
+        // Before it passes: the capability seam of the kill-switch. The
+        // opaque-loopback bearers skip revocation entirely — there is no
+        // principal id to revoke in a static-token world (the opaque
+        // operator/agent split is Twokeys territory) — but a capability's
+        // `iss` names an identity, and a revoked identity's capabilities
+        // die with it, exactly as they do under JWT mode.
+        if let Some(cap) = req
+            .extensions()
+            .get::<crate::ump_integrity::CapabilityToken>()
+            && let Err(deny) = ensure_cap_principal_alive(&s.pool, &cap.iss.clone()).await
+        {
+            audit_auth_failure(&s.db_path, &path, &deny).await;
+            return unauthorized_response(&deny);
+        }
         next.run(req).await
     } else {
         // audit denied auth attempts at the trust boundary. The
@@ -462,6 +508,27 @@ pub(crate) mod tests {
     use axum::middleware;
     use std::net::SocketAddr;
 
+    /// The opaque middleware's state bundle for middleware-level tests: the
+    /// store under test + a memory pool (the kill-switch's capability seam
+    /// is never exercised here, so the pool is never read) + a throwaway DB
+    /// path for the best-effort denial audit. Returns the TempDir so the
+    /// audit path outlives the state.
+    fn opaque_state(store: TokenStore) -> (OpaqueAuthState, tempfile::TempDir) {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(r2d2_sqlite::SqliteConnectionManager::memory())
+            .expect("memory pool");
+        (
+            OpaqueAuthState {
+                tokens: store,
+                pool,
+                db_path: dir.path().join("audit.db"),
+            },
+            dir,
+        )
+    }
+
     /// auth presentation at the middleware layer. Non-public
     /// routes 401 without a token; public + webhook prefixes bypass; a valid
     /// opaque token passes. The per-handler action gates are pinned separately
@@ -485,12 +552,13 @@ pub(crate) mod tests {
         std::fs::write(f.path(), "test-tok-1\n").unwrap();
         assert!(store.reload_if_changed_from(vec!["test-tok-1".to_string()]));
 
+        let (state, _dir) = opaque_state(store);
         let app = axum::Router::new()
             .route("/health", get(stub))
             .route("/webhooks/gh", post(stub))
             .route("/private", get(stub))
-            .with_state(store.clone())
-            .layer(middleware::from_fn_with_state(store, auth_middleware));
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(state, auth_middleware));
 
         // No token on a non-public route -> 401.
         let resp = app
@@ -645,10 +713,11 @@ pub(crate) mod tests {
         std::fs::write(f.path(), b"").unwrap();
         let store = TokenStore::from_file(Some(f.path().to_path_buf()));
 
+        let (state, _dir) = opaque_state(store);
         let app = axum::Router::new()
             .route("/private", get(stub))
-            .with_state(store.clone())
-            .layer(middleware::from_fn_with_state(store, auth_middleware));
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(state, auth_middleware));
 
         let resp = app
             .oneshot(

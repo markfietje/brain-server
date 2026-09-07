@@ -412,6 +412,10 @@ pub fn bootstrap() -> Result<BootOutcome> {
 
     info!("Starting Brain Server v{}", SERVER_VERSION);
 
+    // INJECTION_POLICY visibility (once, at boot): `allow` disables the
+    // injection screen entirely — a real posture, but never a silent one.
+    config::injection_policy_boot_warning();
+
     // ── Register sqlite-vec before ANY connection opens ────────────────
     // sqlite3_auto_extension registers the vec0 module + vec_* functions on
     // every new connection. MUST be called before r2d2 builds the pool.

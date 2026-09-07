@@ -491,6 +491,7 @@ const SOFT_DENY_LEGACY: &[&str] = &[
     "/reindex",
     "/audit",
     "/audit/verify",
+    "/stats",
 ];
 
 /// Routes whose empty-corpus happy path is exactly 200 — the positive
@@ -595,6 +596,11 @@ async fn authz_matrix_rows_x_classes_through_composed_app() {
             .find(|(t, _)| *t == template)
             .map(|(_, a)| *a)
             .expect("template from the table");
+        if action == "public" {
+            // middleware-exempt (PUBLIC_PATHS): the class cells don't apply —
+            // every class, including none, reaches the handler.
+            continue;
+        }
 
         // ── none: unauthenticated is a middleware 401 on EVERY gated row ──
         let st = send(&srv, None, &path, method, body).await;
@@ -799,6 +805,14 @@ async fn authz_matrix_opaque_mode_superuser_and_none() {
     };
 
     for (template, path, method, body) in rows() {
+        // middleware-exempt rows (PUBLIC_PATHS) carry no class cells —
+        // every class, including none, reaches the handler.
+        if AUTHZ_GATES
+            .iter()
+            .any(|(t, a)| **t == *template && **a == *"public")
+        {
+            continue;
+        }
         // no token → the opaque presentation layer 401s
         let st = send(&srv, None, &path, method, body).await;
         assert_eq!(
@@ -813,4 +827,531 @@ async fn authz_matrix_opaque_mode_superuser_and_none() {
             "{method} {template} (opaque superuser) must pass the gate, got {st}"
         );
     }
+}
+
+// ── the authN kill-switch: a revoked identity dies at the middleware ────
+//
+// The kill-switch used to be mesh-scoped (cards/dispatch/result). These
+// pins hold its authentication-layer contract: revocation is consulted
+// AFTER the bearer verifies and BEFORE any route logic (authorize
+// included), the denial is `401 identity_revoked` (the identity is dead,
+// not unauthorized for the route), the body is byte-identical for every
+// revoked principal (no existence oracle), and capability tokens die with
+// their issuer principal.
+
+/// tokio mutex: the guard is held across `.await`s (the env var must stay
+/// aimed at the temp key dir for the whole scenario), which clippy rightly
+/// forbids for std guards.
+static BK_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Full-response variant of `send` for body-level pins (status + bytes).
+async fn send_body(
+    srv: &TestServer,
+    token: Option<&str>,
+    path: &str,
+    method: &str,
+    body: &str,
+) -> (StatusCode, String) {
+    let method = axum::http::Method::from_bytes(method.as_bytes()).unwrap();
+    let mut builder = Request::builder().method(method).uri(path);
+    if !body.is_empty() {
+        builder = builder.header("content-type", "application/json");
+    }
+    if let Some(t) = token {
+        builder = builder.header("authorization", format!("Bearer {t}"));
+    }
+    let req = builder.body(Body::from(body.to_owned())).unwrap();
+    let resp = app(srv.state.clone()).oneshot(req).await.expect("oneshot");
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .expect("body");
+    (status, String::from_utf8_lossy(&bytes).to_string())
+}
+
+/// Drive the real kill-switch route (Admin on global) so every test below
+/// exercises the shipped revocation path — upsert + audit row + drain —
+/// not a fixture shortcut.
+async fn revoke_via_route(srv: &TestServer, admin_tok: &str, principal: &str) {
+    let st = send(
+        srv,
+        Some(admin_tok),
+        "/ops/agents/revoke",
+        "POST",
+        &format!(r#"{{"principal":"{principal}","reason":"blackout test"}}"#),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "revocation of {principal} must succeed");
+}
+
+fn revoked_body(code: &str) -> String {
+    // serde_json's Map is alphabetically ordered, so `unauthorized_response`'s
+    // `json!({"error", "code"})` serializes code-first.
+    format!(r#"{{"code":"{code}","error":"unauthorized"}}"#)
+}
+
+/// A revoked JWT principal is denied on every route class — reads, admin
+/// surfaces, workflow — because the check sits in the middleware, ahead of
+/// every handler. Pre-revocation the same bearer passes authN.
+#[tokio::test]
+async fn revoked_jwt_principal_gets_401_on_every_route() {
+    let srv = build_server();
+    let tok = mint(
+        &srv,
+        "bk-every",
+        "user:every",
+        "team-a",
+        &["read:team-a/*"],
+        &[],
+    );
+    let admin = mint(
+        &srv,
+        "bk-every-admin",
+        "user:admin",
+        "team-a",
+        &["admin:*/*"],
+        &["admin", "matrix-role"],
+    );
+
+    // Pre-revocation: authN passes (handlers speak their own vocabulary).
+    let (st, _) = send_body(&srv, Some(&tok), "/recall", "POST", r#"{"query":"bk"}"#).await;
+    assert_ne!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "an unrevoked bearer must pass authentication"
+    );
+
+    revoke_via_route(&srv, &admin, "user:every").await;
+
+    // Route-class spread: read gate, admin gate, DPO-gated workflow view.
+    for (method, path, body) in [
+        ("GET", "/stats", ""),
+        ("POST", "/recall", r#"{"query":"bk"}"#),
+        ("GET", "/audit", ""),
+        ("GET", "/workflow/scoreboard", ""),
+    ] {
+        let (st, text) = send_body(&srv, Some(&tok), path, method, body).await;
+        assert_eq!(st, StatusCode::UNAUTHORIZED, "{method} {path}");
+        assert_eq!(text, revoked_body("identity_revoked"), "{method} {path}");
+    }
+}
+
+/// Ordering pin: the revocation check runs BEFORE authorize. A revoked
+/// principal whose scopes would fail an admin route gets the middleware's
+/// 401 (identity dead), never the route's 403 (permission missing).
+#[tokio::test]
+async fn revocation_checked_before_authorize() {
+    let srv = build_server();
+    let tok = mint(
+        &srv,
+        "bk-order",
+        "user:order",
+        "team-a",
+        &["read:team-a/*"],
+        &[],
+    );
+    let admin = mint(
+        &srv,
+        "bk-order-admin",
+        "user:admin",
+        "team-a",
+        &["admin:*/*"],
+        &["admin", "matrix-role"],
+    );
+    revoke_via_route(&srv, &admin, "user:order").await;
+
+    // /audit is Admin-gated: unrevoked read-class would see 403 here.
+    let (st, text) = send_body(&srv, Some(&tok), "/audit", "GET", "").await;
+    assert_eq!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "kill-switch precedes authorize"
+    );
+    assert_eq!(text, revoked_body("identity_revoked"));
+}
+
+/// The bearer an unrevoked principal holds is unaffected by SOMEONE ELSE's
+/// revocation — the check is a straight keyed read of the bearer's own sub,
+/// never a table-wide tripwire.
+#[tokio::test]
+async fn unrevoked_principal_unaffected() {
+    let srv = build_server();
+    let tok = mint(
+        &srv,
+        "bk-alive",
+        "user:alive",
+        "team-a",
+        &["read:team-a/*"],
+        &[],
+    );
+    let admin = mint(
+        &srv,
+        "bk-alive-admin",
+        "user:admin",
+        "team-a",
+        &["admin:*/*"],
+        &["admin", "matrix-role"],
+    );
+    revoke_via_route(&srv, &admin, "user:someone-else").await;
+
+    let (st, _) = send_body(&srv, Some(&tok), "/stats", "GET", "").await;
+    assert_ne!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "an unrelated revocation must not deny a live principal"
+    );
+}
+
+/// Probe-blindness: the denial depends on exactly one bit — the bearer's own
+/// revocation row. A revoked principal with rows everywhere (provisioned
+/// card) and a revoked principal with no rows at all get BYTE-IDENTICAL
+/// bodies, and nothing about any other principal's state leaks.
+#[tokio::test]
+async fn revoked_denial_is_probe_blind() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "bk-blind-admin",
+        "user:admin",
+        "team-a",
+        &["admin:*/*"],
+        &["admin", "matrix-role"],
+    );
+    // One revoked identity carries a provisioned card row; the other has
+    // never appeared in the store.
+    {
+        let conn = srv.state.pool.get().expect("conn");
+        conn.execute(
+            "INSERT INTO agent_cards(domain, principal, name, description, capabilities_json,
+                                     card_json, signature, signed_by, created_at)
+             VALUES ('acme', 'user:carded', 'carded', '', '{}', '{}', 'deadbeef', 'op', 1)",
+            [],
+        )
+        .expect("seed card row");
+    }
+    let tok_c = mint(
+        &srv,
+        "bk-blind-c",
+        "user:carded",
+        "team-a",
+        &["read:team-a/*"],
+        &[],
+    );
+    let tok_g = mint(
+        &srv,
+        "bk-blind-g",
+        "user:ghost",
+        "team-a",
+        &["read:team-a/*"],
+        &[],
+    );
+
+    revoke_via_route(&srv, &admin, "user:carded").await;
+    revoke_via_route(&srv, &admin, "user:ghost").await;
+
+    let (st_c, body_c) = send_body(&srv, Some(&tok_c), "/stats", "GET", "").await;
+    let (st_g, body_g) = send_body(&srv, Some(&tok_g), "/stats", "GET", "").await;
+    assert_eq!(st_c, StatusCode::UNAUTHORIZED);
+    assert_eq!(st_g, StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        body_c, body_g,
+        "revoked-vs-revoked denial must not leak provisioning state"
+    );
+}
+
+/// Capability tokens die with their issuer principal: the `iss` is the
+/// capability's identity anchor, so revoking it kills every capability it
+/// minted, on the UMP surface, at the middleware.
+#[tokio::test]
+async fn revoked_capability_token_denied() {
+    use brain_server::ump_integrity::{CapabilityToken, mint_capability_token};
+    let _env = BK_ENV_LOCK.lock().await;
+
+    // The operator signing key: one 32-byte seed, 0600, in a temp key dir.
+    let key_dir = tempfile::TempDir::new().expect("key dir");
+    let seed: [u8; 32] = rand::random();
+    let key_path = key_dir.path().join("op.seed");
+    std::fs::write(&key_path, seed).expect("seed file");
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).expect("0600");
+    let prev = std::env::var("BRAIN_UMP_KEY_DIR").ok();
+    unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", key_dir.path()) };
+
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "bk-cap-admin",
+        "user:admin",
+        "team-a",
+        &["admin:*/*"],
+        &["admin", "matrix-role"],
+    );
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let cap = mint_capability_token(
+        &CapabilityToken {
+            alg: "EdDSA".into(), // parse_capability_token pins the alg string
+            iss: "agent:capbearer".into(),
+            verbs: vec!["recall".into()],
+            scope: None,
+            exp: now + 600,
+            jti: None,
+        },
+        &sk,
+    )
+    .expect("mint cap");
+
+    // Pre-revocation: the capability passes authentication on the UMP
+    // surface (the handler's cap_gate may still speak its own vocabulary).
+    let (st, pre_body) = send_body(&srv, Some(&cap), "/ump/recall", "GET", "").await;
+    assert_ne!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "a live capability must pass authN, got {st} body={pre_body}"
+    );
+
+    revoke_via_route(&srv, &admin, "agent:capbearer").await;
+
+    let (st, text) = send_body(&srv, Some(&cap), "/ump/recall", "GET", "").await;
+    assert_eq!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "a revoked issuer's cap must die"
+    );
+    assert_eq!(text, revoked_body("identity_revoked"));
+
+    match prev {
+        Some(v) => unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", v) },
+        None => unsafe { std::env::remove_var("BRAIN_UMP_KEY_DIR") },
+    }
+}
+
+/// The kill-switch is decision-time: a principal that passes authN, then has
+/// its revocation committed, is denied on the NEXT request with the same
+/// token. No cache carries the stale liveness.
+#[tokio::test]
+async fn kill_switch_survives_dispatch_race() {
+    let srv = build_server();
+    let tok = mint(
+        &srv,
+        "bk-race",
+        "user:race",
+        "team-a",
+        &["read:team-a/*"],
+        &[],
+    );
+    let admin = mint(
+        &srv,
+        "bk-race-admin",
+        "user:admin",
+        "team-a",
+        &["admin:*/*"],
+        &["admin", "matrix-role"],
+    );
+
+    let (st, _) = send_body(&srv, Some(&tok), "/stats", "GET", "").await;
+    assert_ne!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "pre-revocation request passes"
+    );
+
+    revoke_via_route(&srv, &admin, "user:race").await;
+
+    let (st, text) = send_body(&srv, Some(&tok), "/stats", "GET", "").await;
+    assert_eq!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "post-revocation request denies"
+    );
+    assert_eq!(text, revoked_body("identity_revoked"));
+}
+
+/// One revoked-principal row per principal class: every JWT class the matrix
+/// drives (read / write / admin / cross-tenant / role-held / role-denied)
+/// dies at the middleware once its sub is revoked — the kill-switch is
+/// class-blind because it sits BEFORE the class machinery (authorize). The
+/// opaque class has no principal id to revoke (the split is Twokeys
+/// territory): a live opaque bearer is unaffected by revocation of anyone,
+/// which is its own pinned fact.
+#[tokio::test]
+async fn authz_matrix_revoked_principal_row_per_class() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "cls-admin",
+        "user:admin",
+        "team-a",
+        &["admin:*/*"],
+        &["admin", "matrix-role"],
+    );
+
+    let classes: Vec<(&str, String, &str)> = vec![
+        (
+            "read",
+            mint(
+                &srv,
+                "cls-read",
+                "user:cls-read",
+                "team-a",
+                &["read:team-a/*"],
+                &[],
+            ),
+            "user:cls-read",
+        ),
+        (
+            "write",
+            mint(
+                &srv,
+                "cls-write",
+                "user:cls-write",
+                "team-a",
+                &["write:team-a/*"],
+                &[],
+            ),
+            "user:cls-write",
+        ),
+        (
+            "admin",
+            mint(
+                &srv,
+                "cls-adm",
+                "user:cls-adm",
+                "team-a",
+                &["admin:*/*"],
+                &[],
+            ),
+            "user:cls-adm",
+        ),
+        (
+            "cross-tenant",
+            mint(
+                &srv,
+                "cls-xt",
+                "user:cls-xt",
+                "team-b",
+                &["read:team-a/*"],
+                &[],
+            ),
+            "user:cls-xt",
+        ),
+        (
+            "role-held",
+            mint(
+                &srv,
+                "cls-rh",
+                "user:cls-rh",
+                "team-a",
+                &["admin:*/*"],
+                &["matrix-role"],
+            ),
+            "user:cls-rh",
+        ),
+        (
+            "role-denied",
+            mint(
+                &srv,
+                "cls-rd",
+                "user:cls-rd",
+                "team-a",
+                &["admin:*/*"],
+                &["qa-specialist"],
+            ),
+            "user:cls-rd",
+        ),
+    ];
+
+    for (label, tok, sub) in &classes {
+        revoke_via_route(&srv, &admin, sub).await;
+        // A Read-class route: the identity question precedes the class
+        // question, so every class sees the same 401 shape.
+        let (st, text) = send_body(&srv, Some(tok), "/stats", "GET", "").await;
+        assert_eq!(
+            st,
+            StatusCode::UNAUTHORIZED,
+            "{label} must die at the middleware"
+        );
+        assert_eq!(text, revoked_body("identity_revoked"), "{label} body");
+    }
+
+    // Opaque mode: the bearer is a shared secret, not an identity — the
+    // kill-switch does not apply to it (documented scope, pre-Twokeys).
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let db_path = dir.path().join("brain.db");
+    brain_server::register_sqlite_vec::register_sqlite_vec();
+    let mgr = SqliteConnectionManager::file(&db_path);
+    let pool: brain_server::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+    brain_server::migration::run_migration(
+        &mut pool.get().expect("conn"),
+        brain_server::config::DB_MMAP_SIZE_MIB,
+    )
+    .expect("migration");
+    // Revoke a principal that an opaque deployment might share a name with:
+    // the bearer must still pass, because opaque mode has no principal.
+    {
+        let conn = pool.get().expect("conn");
+        conn.execute(
+            "INSERT INTO revoked_principals(principal, revoked_at, reason, revoked_by)
+             VALUES ('user:whatever', 1, 'matrix', 'op')",
+            [],
+        )
+        .expect("revoke row");
+    }
+    let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+        brain_server::embed::StaticEmbedder::new(brain_server::config::MODEL_ID).expect("model"),
+    );
+    let jwt_middleware_state = Arc::new(JwtMiddlewareState::opaque_for_tests(
+        pool.clone(),
+        db_path.clone(),
+    ));
+    let state = Arc::new(brain_server::AppState {
+        token_store: {
+            let f = tempfile::NamedTempFile::new().expect("token file");
+            std::fs::write(f.path(), b"opaque-cls-token\n").unwrap();
+            let ts = brain_server::auth::TokenStore::from_file(Some(f.path().to_path_buf()));
+            std::fs::write(f.path(), b"opaque-cls-token\n").unwrap();
+            assert!(ts.reload_if_changed_from(vec!["opaque-cls-token".to_string()]));
+            ts
+        },
+        jwt_middleware_state,
+        cors: tower_http::cors::CorsLayer::new(),
+        durability: Default::default(),
+        loom: Default::default(),
+        model,
+        registry: brain_server::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
+        pool,
+        db_path,
+        connection_tracker: Arc::new(brain_server::http_limit::ConnectionTracker::new()),
+        rate_limiter: Arc::new(brain_server::http_limit::RateLimiter::new()),
+        snapshot: brain_server::integrity::SnapshotState::default(),
+        audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+        auth_mode: brain_server::auth::AuthMode::Opaque,
+        key_store: brain_server::auth::jwks::KeyStore::default(),
+        revocation_cache: Arc::new(brain_server::auth::revocation::RevocationCache::new()),
+        jwt_issuer: String::new(),
+        jwt_audience: String::new(),
+        oidc_config: brain_server::handlers::well_known::OidcConfig::unconfigured(),
+        ump_events: tokio::sync::broadcast::channel(brain_server::config::UMP_EVENT_BUFFER).0,
+        alert_events: tokio::sync::broadcast::channel(brain_server::config::ALERT_EVENT_BUFFER).0,
+        alert_seq: std::sync::atomic::AtomicU64::new(0),
+        chain_watch: brain_server::alert::ChainWatchState::default(),
+        concurrency: &brain_server::concurrency::CONCURRENCY,
+    });
+    let opaque_srv = TestServer {
+        _dir: dir,
+        state,
+        priv_key: {
+            let mut rng = rand::rngs::ThreadRng::default();
+            rsa::RsaPrivateKey::new(&mut rng, 2048).expect("keypair")
+        },
+    };
+    let (st, _) = send_body(&opaque_srv, Some("opaque-cls-token"), "/stats", "GET", "").await;
+    assert_ne!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "an opaque bearer has no principal id to revoke — revocation rows cannot touch it"
+    );
 }

@@ -329,8 +329,19 @@ is empty — the paths return 404, they are not auth failures.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/auth/refresh` · `/logout` · `/revoke` | Token lifecycle |
+| POST | `/auth/refresh` · `/logout` · `/revoke` | Token lifecycle. Logout/revoke denylist rows live exactly as long as the token's real `exp` (clamped 24h) — the row dies when the token dies |
 | GET | `/.well-known/openid-configuration` · `/.well-known/jwks.json` | OIDC + JWKS |
+| GET | `/.well-known/security.txt` | RFC 9116 security disclosure (public) |
+
+**Identity revocation (the kill-switch at authN).** A JWT or capability
+bearer whose identity sits in `revoked_principals` is refused `401
+identity_revoked` on EVERY route, before authorization — the identity is
+dead, not unauthorized. Denials are byte-identical for every revoked
+principal (probe-blind) and audited path-only (never the token). Capability
+tokens deny on their issuer principal. Opaque-loopback bearers have no
+principal id to revoke (the opaque operator/agent split is a later line);
+JWT key records pin their algorithm per `kid` (`401 alg_mismatch_for_kid`
+on a header/record mismatch).
 
 ---
 

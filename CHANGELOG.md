@@ -115,6 +115,161 @@ sequence.** The line's first live end-to-end proof ran 2026-09-07:
 - **Wire:** openapi.yaml additive only; x-api-version UNCHANGED; schema
   untouched; no new deps in any tree.
 
+## [1.28.64] — 2026-09-07 — "Blackout": revocation and surface identity, completed
+
+The kill-switch becomes authN-wide for real, the denylist outlives the
+tokens it denies, and the server's public surface and guard tables become
+single-sourced and two-directional. Closes the identity/authority findings
+X-A1 (HIGH), X-A2, X-A3a, X-A6, X-A7, X-A8, X-A9 from the 2026-09-06 audit.
+No schema change; no new deps; wire additive only.
+
+### Release notes
+
+**Security fixes**
+- **The principal kill-switch now runs at the authentication layer
+  (X-A1).** Before this release, a revoked agent holding a still-valid JWT
+  or capability token kept recall/ingest/proposal/outbox access on every
+  non-mesh route — `handlers/mesh.rs` claimed "revocation is identity-wide"
+  but the claim was mesh-only (cards, delegation dispatch, result
+  submission). That scope disclosure is now honest: after a revocation, ANY
+  bearer naming the revoked identity is refused `401 identity_revoked` on
+  EVERY route, after the credential verifies and BEFORE authorization runs
+  (the identity is dead, not unauthorized for the route). The denial is
+  byte-identical for every revoked principal — a straight keyed read of the
+  bearer's own identity, no provisioning lookup, so no existence oracle is
+  added (probe-blind, same doctrine as the mesh check) — and the denial is
+  audited path-only (never the token). Capability tokens deny through their
+  issuer principal (the `iss` is the capability's identity anchor) in BOTH
+  auth middlewares; a revocation committed mid-flight denies the NEXT
+  request with the same bearer (decision-time, no liveness cache).
+  Documented scope: opaque-loopback bearers have no principal id to revoke
+  (the static-token world predates identities; the operator/agent split is
+  the Twokeys line).
+- **Logout/revoke denylist rows live exactly as long as the token they
+  deny (X-A2).** Rows were written `expires_at = now + 15 min` regardless
+  of the token's real `exp` — for a longer-lived external-IdP token the row
+  was purged while the token still verified: a silent revocation lapse. The
+  row's TTL is now the verified token `exp` (injected by the JWT middleware
+  beside the principal), clamped to 24h so a hostile or clock-wrong IdP
+  value cannot pin rows to the bounded table forever. Server-minted
+  15-minute tokens behave byte-identically (the clamp never bites).
+- **Per-`kid` algorithm pinning (X-A3a).** A key record's declared alg is
+  compared strictly against the JOSE header's alg BEFORE any signature
+  work; a mismatch refuses `401 alg_mismatch_for_kid`. The family slack is
+  closed (an RS256-recorded kid no longer verifies an RS384 token signed
+  with the same key — the header's alg is attacker-chosen, the record's is
+  not). Every load-path record declares its alg (auto-detected from the PEM
+  key shape), so no re-import is needed; the `None` escape hatch keeps the
+  whitelist-only behavior for a future undeclared record (additive).
+
+**Improvements**
+- **ONE public-path list (X-A6).** The two auth middlewares carried
+  duplicate `matches!` blocks asserted equal by nothing (and already
+  disagreeing with the coverage table). Both now consume a single
+  `route_guards::PUBLIC_PATHS` + `is_public_path` decision living beside
+  the tables it feeds; `/.well-known/security.txt` joined both guard tables
+  (the one row gap), marked `public` (the middleware exemption, spelled as
+  data).
+- **The guard tables verify BOTH directions (X-A7, X-A8).** A new
+  reverse-direction guard walks every `(method, path)` the composed router
+  registers and demands each appears in `OPENAPI_ROUTES` and — unless
+  public or explicitly allowlisted — in `AUTHZ_GATES`. The forward-only
+  check had let 17 registered paths sit outside both tables. Fixed by ADDING
+  rows (the handler gates were verified correct at the finding's audit —
+  table debt, not gate debt): `/workflow/scoreboard` (Admin),
+  `/workflow/calibration/sign` (Admin), `/workflow/plugins/mount` (Write),
+  `/stats` (Read — a legacy 200-shell route whose real gate was invisible
+  to the tables). The declared allowlist (8 SPA-seat routes, 5
+  feature-gated compliance-pack routes, 2 middleware-presentation
+  carve-outs) is anti-rot-checked: an exemption whose route disappears
+  fails the scan. The scan is also METHOD-keyed now — the old
+  last-insert-wins map scanned only one method's handler on shared paths;
+  every method's handler must carry its gate. Both counter-self-pins
+  red-proof the guard (a planted missing row fails; a planted gate-less
+  POST on a shared path fails).
+- **`INJECTION_POLICY=allow` is never silent (X-A9).** The one env var that
+  disables a security control entirely had no boot validation and no
+  warning. `allow` (a real trusted-local-sources posture — refuse-at-boot
+  deliberately NOT taken) now warns once at boot naming the env var and the
+  consequence, and `/health/db`'s hardening block echoes the resolved
+  policy (`quarantine|reject|allow`) so every health scrape shows the
+  screen's state. Additive JSON field; Read gate unchanged.
+
+### Engineering record
+
+- **M1 (authN kill-switch):** the check sits inside the JWT middleware's
+  existing `spawn_blocking` verify block (after the jti denylist read, one
+  more indexed SELECT — the same `workflow::mesh::is_revoked` the mesh
+  surfaces consult, so cost is the proven dispatch-path cost) and in a
+  shared `ensure_cap_principal_alive` helper on the capability pass-through
+  of BOTH middlewares. Store failure denies (fail-closed, the jti-check
+  posture). The opaque middleware's state grew from a bare `TokenStore` to
+  `OpaqueAuthState {tokens, pool, db_path}` — the pool is what makes the
+  capability seam reachable in opaque mode (the live deployment posture).
+  `handlers/mesh.rs`'s identity-wide claim is now code-true; the CHANGELOG
+  above discloses the pre-.64 mesh-only scope. Pins:
+  `revoked_jwt_principal_gets_401_on_every_route` (route-class spread),
+  `revocation_checked_before_authorize` (401-before-403 ordering),
+  `revoked_capability_token_denied` (real operator key, real route),
+  `unrevoked_principal_unaffected`, `revoked_denial_is_probe_blind`
+  (carded-vs-rowless revoked principals, byte-identical bodies),
+  `kill_switch_survives_dispatch_race`, plus the law-9 matrix extension
+  `authz_matrix_revoked_principal_row_per_class` (six JWT classes die at
+  the middleware; the opaque class pinned unaffected — no principal id).
+- **M2 (denylist TTL):** pure `denylist_expires_at(exp, now)` with the
+  `Option::None` escape keeping the operator-revoke default; the verified
+  `exp` rides request extensions as `AccessTokenExp` (Copy newtype). Pins:
+  `logout_row_outlives_long_lived_idp_token`, `denylist_row_capped_at_24h`,
+  `server_minted_logout_unchanged`.
+- **M3 (kid pinning):** `VerifyingKey.pinned_alg` (Some at every load-path
+  constructor + the jwt test factory), the strict compare after kid
+  lookup, `AuthError::AlgMismatchForKid` → `alg_mismatch_for_kid` wired
+  through the handler status map. Pins: `rsa_kid_rejects_different_rs_variant`,
+  `unpinned_kid_keeps_family_behavior`.
+- **M4/M5 (surface identity):** the scan helpers live in `tests/main_suite.rs`
+  (`strip_cfg_test_regions` — a string/comment-aware brace stripper so
+  middleware test modules' `/private` stubs never pollute the wire scans;
+  `collect_registrations`; the pure `reverse_guard_failures`).
+  `authz_gates_cover_every_non_public_route` was rebuilt on the method-keyed
+  scan (rows marked `public` skip the authorize-literal demand). spire
+  floors raised in-commit: guard tables 163 → 167 / 147 → 152 rows,
+  CRATE_TEST_FLOOR 1,269 → 1,281.
+- **M6 (injection-policy visibility):** `config::injection_policy_boot_warning`
+  called once from the bootstrap (a counting-subscriber pin proves
+  exactly-once for `allow` and never for quarantine/reject);
+  `config::injection_policy_echo` feeds the `/health/db` hardening block;
+  the health-body key pin extended.
+- **Live drill 2026-09-07 (COPY of the live 51.6 MB db — the live DB was
+  never touched):** release binary, JWT mode, spare port 18799, RSA kid on
+  disk. Pre-revocation: operator (`admin:*/*`) and victim (`read:*/*`)
+  both pass (200). `POST /ops/agents/revoke {principal: agent:drill-victim}`
+  → 200 `{revoked: true, runs_drained: 0}`. The victim's NEXT request with
+  the SAME bearer → `401 identity_revoked` (body
+  `{"code":"identity_revoked","error":"unauthorized"}`); a second route
+  (`/recall`) denies identically. The operator stays 200. `/audit/verify`
+  → `{"domains":{"global":true},"ok":true}`. The drill DB's audit chain
+  carries the revocation row (actor `user:drill-operator`, status ok) and
+  two `denied` rows keyed path-only (target = `/stats`, `/recall` hashes;
+  identical detail hash — the path-only, token-never law) chained into the
+  live-format hash chain. `/health/db` echoed `injection_policy:
+  "quarantine"` (default posture).
+- **Wire:** openapi.yaml additive (the `IdentityRevoked` 401 response
+  component, the `injection_policy` health field, the bearerAuth scheme
+  note); api.md gained the revocation paragraph + security.txt row;
+  route tables gained the four rows above; x-api-version moves with the
+  Cargo version (the wire contract moved additively); schema untouched.
+- **Honest ceilings / deviations:** the connector-stub spawn test (a
+  documented live-server integration test) raced ONCE during the gate —
+  the live server stalled 12.6s under the parallel Meridian line's load
+  and the stub's 15s read timeout fired; it passed on rerun and is
+  pre-existing test-infra (the AGENTS.md known-flaky class), untouched.
+  Hot-reload key rotation stays register (X-A3b — restart-rotation
+  documented); `/metrics` label scoping stays with Twokeys (X-A5); no
+  background revocation worker (decision-time checks only, the house
+  mantra); no per-route revocation granularity (identity-wide IS the
+  contract); legacy jti-less capability tokens stay expiry-only for
+  replay (documented ceiling, the identity check does not depend on jti).
+
 ## [1.28.63] — 2026-09-06 — "Wardline": reserved vocabulary at the workflow input seam — the SEAM LINE opens
 
 One milestone, one law made true in code: kernel-only outbox topics can no
