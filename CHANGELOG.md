@@ -19,6 +19,102 @@ been run, it is marked **pending** rather than asserted.
 
 ---
 
+## [1.28.65] — 2026-09-07 — "Meridian": content hygiene across the model seam — three trees, four doors
+
+Nothing enters model context unstripped and unlabeled, regardless of which
+door it used. The smallest structural layer at each of the four doors the
+2026-09-06 audit found open: X-R1 (`/suggest` untrusted label), X-R5
+(plugin strip-set drift), X-S1 (HIGH — openclaw plugin seam unfenced/
+unstripped), X-M2 (HIGH — openclaw MCP results verbatim). Ships across
+three trees the same day: brain-server (M1), `plugin/` (M2), the openclaw
+fork (M3, M4 — their changelog cross-references this release). **Ordering
+note: v1.28.64 "Blackout" runs in PARALLEL on the same day (per operator
+call) — it lands as its own release in this ledger when its tree commits;
+the SEAM LINE numbers here follow the audit's plan table, not commit
+sequence.** The line's first live end-to-end proof ran 2026-09-07:
+`docs/MERIDIAN_PROOF_20260907.md` (transcript retained).
+
+### Release notes
+
+**Security fixes**
+- **`/suggest` joins the untrusted contract (X-R1).** Every hit now carries
+  `untrusted: true` — recall/search parity. Suggested content is data, never
+  instructions. Additive JSON field; openapi.yaml schema entry added
+  additively; `docs/api.md` one-liner. Content itself already passed
+  `sanitize_read` — the label was the whole fix.
+- **The openclaw host merge seam strips and neutralizes (X-S1, fork).** Every
+  plugin-supplied prompt-context segment is invisible-Unicode-stripped and
+  host-marker-neutralized at `mergeBeforePromptBuild` — the ONE convergence
+  point both the embedded and CLI runners ride. Forged `⟦openclaw:ctx⟧`
+  markers and forged `<active_memory_plugin>` fence tags are ZWSP-split
+  (visually identical, mechanically unmatchable); the brain plugin's own
+  `UNTRUSTED_BEGIN/END` fence survives byte-identical (pinned).
+- **MCP tool results ride the external-content idiom (X-M2, fork).** Text
+  blocks are invisible-stripped; the joined result is wrapped ONCE (never per
+  block) in the same `wrapExternalContent` envelope web_fetch uses, with the
+  new `MCP Tool Result` source label — the `untrustedMcpOutput` flag finally
+  renders as prompt framing instead of a non-rendering metadata detail.
+- **Plugin strip set synced to the Rust canonical set (X-R5, plugin).**
+  `sanitizeForBlock` gains the members the old set lacked (U+061C,
+  U+E0100–E01EF, U+FE00–FE0F, U+180E, U+115F/U+1160, U+FFF9–FFFB, and the
+  U+2060–2063/U+00AD/U+034F legacy members), exported as `INVISIBLE_CLASSES`;
+  plugin 0.5.0 → 0.5.1. Behavior change is invisible-class-only prompt bytes.
+
+**Improvements**
+- The openclaw host's `stripInvisibleUnicode` widened to the Rust canonical
+  set (adds bidi isolates U+2066–2069, ALM U+061C, variation selectors,
+  legacy members) — the same drift class X-R5 flagged, closed host-side.
+- `wrapExternalContent` refactored onto an exported
+  `createExternalContentEnvelopeSegments` (byte-identical output) so the
+  multi-block MCP envelope shares the exact marker/metadata family.
+
+### Engineering record
+
+- **M1 (brain):** `SuggestionHit` gains `pub untrusted: bool` (plan-verbatim
+  doc comment), serialized `true` at the single construction site
+  (`handlers/suggest.rs:213` region). Pins: `suggest_hits_carry_untrusted_true`
+  (wire shape serializes) + `suggest_label_parity_with_recall_and_search`
+  (the three-surface source pin: recall.rs ≥5 sites, search/mod.rs, suggest.rs
+  each carry the declaration + the `untrusted: true` label). CRATE_TEST_FLOOR
+  1,267 → 1,269.
+- **M2 (plugin):** the parity fixture `plugin_invisible_set_matches_rust_canonical`
+  (one probe char per Rust-set class + survivor vectors) is THE DRIFT PIN —
+  either side changing without the other fails CI. 53 plugin tests green.
+- **M3 (fork):** new `src/plugins/context-hygiene.ts` — `sanitizePluginContext`
+  applied to the JOINED accumulator per merge pass (strip runs FIRST, so the
+  sanitizer is idempotent and a plugin-supplied pre-split marker re-forms and
+  re-splits). The built-in active-memory plugin's own emitted tags are split
+  too — deliberate and uniform (no per-plugin logic): the model reads the
+  rendered text identically while no literal tag can re-form from
+  plugin-supplied text. Eight tests incl. the pre-split re-neutralization and
+  the brain-fence-survives pins.
+- **M4 (fork):** `projectMcpCallToolResult` (the single top-level assembly
+  both MCP consumers share) wraps real content exactly once; the
+  host-authored empty placeholder stays unwrapped. Materialize fixtures
+  updated to unwrap the envelope before asserting (their projection intent
+  unchanged); the envelope itself is pinned by `mcp-content.wrap.test.ts`.
+- **Gates:** brain full suite green (cargo test --features bench), clippy
+  -D warnings clean, fmt clean; plugin vitest 53/53; fork typecheck + lint +
+  targeted vitest shards green (plugins/infra/security/materialize/code-mode/
+  new suites).
+- **Live proof (2026-09-07):** docs/MERIDIAN_PROOF_20260907.md — a memory
+  carrying the U+E0000 tag block + forged host markers, ingested into a TEST
+  server (fresh DB, test port, copies-only discipline), recalled through the
+  real plugin + host merge + CLI composition: all three forgeries absent from
+  the composed prompt, brain fence byte-identical. GREEN.
+- **Ceilings (honest):** X-R2/X-R3 stand — HTTP JSON is unfenced by design
+  (consumers fence); Meridian makes the two REAL consumers' hosts structural.
+  HTML strip is .72's call. No taint lattice / per-plugin origin
+  classification (X-S2 → .74 Origin); the `allowPromptInjection=false`
+  opt-out remains the stronger kill switch and no `stripContext` escape
+  hatch was added. MCP schema pinning is .67; truncation shaping is .66 —
+  a result wrapped BEFORE truncation can lose its end marker in model view
+  until Truthglass ships head+tail honesty. No server-side fence envelope on
+  HTTP JSON. The fork's `pnpm-lock.yaml` typebox bump present in the working
+  tree predates this line and is NOT part of these commits.
+- **Wire:** openapi.yaml additive only; x-api-version UNCHANGED; schema
+  untouched; no new deps in any tree.
+
 ## [1.28.63] — 2026-09-06 — "Wardline": reserved vocabulary at the workflow input seam — the SEAM LINE opens
 
 One milestone, one law made true in code: kernel-only outbox topics can no

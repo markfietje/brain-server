@@ -72,7 +72,9 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// refusal/convert/kernel-mint set, the kernel steering + channel-writer
 /// pins, the forged-valet-kind bus pin, the vet-fence parity/crank/open
 /// set, and the one-place vocabulary grep.
-const CRATE_TEST_FLOOR: usize = 1_267;
+/// 1,267 → 1,269 at the Meridian open: the /suggest untrusted serialization
+/// pin + the three-surface label-parity source pin (X-R1).
+const CRATE_TEST_FLOOR: usize = 1_269;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), re-measured to 161 at the Buttress open. Rows join
 /// only with the wire change that earns them, in the same commit.

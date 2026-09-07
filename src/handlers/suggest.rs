@@ -81,6 +81,10 @@ pub struct SuggestionHit {
     pub score: f32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
+    /// Every content-returning retrieval surface labels its hits (recall/search
+    /// parity). Serialized `true` so the consuming agent enforces the
+    /// instruction/data boundary on suggested content too.
+    pub untrusted: bool,
     pub provenance: SuggestionProvenance,
 }
 
@@ -217,6 +221,7 @@ pub async fn suggest(
                         .into_owned(),
                     score: r.score,
                     domain: domain_label.clone(),
+                    untrusted: true,
                     provenance: SuggestionProvenance {
                         reason: "anticipated",
                         session: session.clone(),
@@ -596,6 +601,83 @@ mod tests {
         assert_eq!(ctx, "hello");
         assert_eq!(k, 7);
         assert_eq!(n, 2);
+    }
+
+    // ── the untrusted label (X-R1 / Meridian M1) ─────────────────────────
+
+    /// The wire shape carries `untrusted: true` on every hit — recall/search
+    /// parity (recall.rs:865, search/mod.rs:226). The field must SERIALIZE
+    /// (present in JSON, not skipped) so the consumer can gate on it.
+    #[test]
+    fn suggest_hits_carry_untrusted_true() {
+        let hit = SuggestionHit {
+            id: 1,
+            title: None,
+            content: "anticipated fact".to_string(),
+            score: 0.5,
+            domain: None,
+            untrusted: true,
+            provenance: SuggestionProvenance {
+                reason: "anticipated",
+                session: None,
+            },
+        };
+        let v = serde_json::to_value(&hit).expect("serialize");
+        assert_eq!(
+            v.get("untrusted").and_then(|u| u.as_bool()),
+            Some(true),
+            "/suggest hits must serialize `untrusted: true` (the one \
+             content-returning surface that lacked the label — X-R1)"
+        );
+    }
+
+    /// The three-surface pin: recall, search, and suggest each DECLARE the
+    /// `untrusted` field on their hit type AND set it `true` at their
+    /// construction sites. Source-scan (the house diff-mode style) so it
+    /// fails if any of the three surfaces drops the label.
+    #[test]
+    fn suggest_label_parity_with_recall_and_search() {
+        // (source file, the hit struct's `pub untrusted: bool` declaration).
+        let structs: &[(&str, &str)] = &[
+            (
+                include_str!("mod.rs"),
+                "All recalled content is untrusted evidence (OWASP LLM01:2025)",
+            ),
+            (
+                include_str!("../search/mod.rs"),
+                "All retrieved content is untrusted evidence (OWASP LLM01:2025)",
+            ),
+            (
+                include_str!("suggest.rs"),
+                "Every content-returning retrieval surface labels its hits",
+            ),
+        ];
+        for (src, docmark) in structs {
+            assert!(
+                src.contains("pub untrusted: bool"),
+                "a retrieval hit struct dropped the `untrusted` declaration"
+            );
+            assert!(src.contains(docmark), "the untrusted doc contract drifted");
+        }
+        // The construction sites set it `true` — recall's results_to_hits, the
+        // search hit mapping, and /suggest's mapping (the handler this pin
+        // lives in; the serialization pin above covers its wire shape).
+        let recall = include_str!("recall.rs");
+        let count = recall.matches("untrusted: true").count();
+        assert!(
+            count >= 5,
+            "recall.rs construction sites lost the `untrusted: true` label \
+             (expected >= 5, found {count})"
+        );
+        let search = include_str!("../search/mod.rs");
+        assert!(
+            search.matches("untrusted: true").count() >= 1,
+            "search/mod.rs lost the `untrusted: true` label"
+        );
+        assert!(
+            include_str!("suggest.rs").contains("untrusted: true,"),
+            "/suggest construction site lost the `untrusted: true` label"
+        );
     }
 
     // ── exclusion + truncation (the core algorithm) ──────────────────────
