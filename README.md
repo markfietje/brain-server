@@ -8,7 +8,7 @@ Brain Server gives a support team, a helpdesk, or any knowledge-working team one
 
 <p align="center">
 
-  [![Version](https://img.shields.io/badge/version-1.28.67-blue.svg)](#)
+  [![Version](https://img.shields.io/badge/version-1.28.68-blue.svg)](#)
 [![Docs](https://img.shields.io/badge/docs-brain--server-1f6feb.svg)](https://markfietje.github.io/brain-server/)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg?logo=rust)](#)
 [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
