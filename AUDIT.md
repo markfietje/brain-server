@@ -148,7 +148,38 @@ operator prompt.
 | F-I3 residual unicode screen evasion | Bedrock (1.28.13) | closed (bounded) | added U+180E/115F/1160/FFF9–FFFB; matching-time fullwidth fold — general NFKC/homoglyph folding stays a documented ceiling (zero-dep rule) |
 | F-D1/D2/D3 doc drift | Bedrock (1.28.13) | down payment | THREAT_MODEL ↔ OWASP_AGENTIC cross-link; this register is the single findings view; full truth pass tracked separately |
 | F-W1 shared static token | partial | mitigated | installer provisions a second agent token under review posture; full workload identity stays v3.7 |
-| F-E1/E2 openclaw UI egress, F-M2 host fingerprint, F-M4 requiresToolAuthority | deferred-upstream (openclaw) | deferred | host/UI findings; not fixable in this repo |
+| F-E1/E2 openclaw UI egress, F-M2 host fingerprint, F-M4 requiresToolAuthority | closed via Shutter (1.28.68) for F-E1/E2; F-M2 host fingerprint closed via Pin (1.28.67, MCP catalog pins); F-M4 requiresToolAuthority closed via Truthglass (1.28.66, approval args + authority surface) | closed | see the 2026-09-06 joint register below — the deferred-upstream row is retired |
+
+---
+
+## Register — 2026-09-06 joint security audit (brain-server v1.28.62 × openclaw fork)
+
+Single live register for the joint audit (`BRAIN_OPENCLAW_SECURITY_AUDIT_2026-09-06.md`,
+operator-held copy; fresh namespace `X-`, 41 findings). Dispositions below are the
+shipped-closure view at HEAD (v1.28.68): SEAM LINE rows closed per their release
+CHANGELOG § + release gates; the v1.28.68 row re-verified in this session against the
+audit's cited source sites in the fork (the three §4.7 findings now carry the fixes at
+exactly the named seams) plus the e2e canary proof. Ship order .63 → .68 held.
+
+| Finding | Theme | Status | Closure |
+|---|---|---|---|
+| X-W1–X-W5 | workflow input seam (outbox forgery, steering laundering, status vocabulary, valet screen, alert-bus kind) | closed (1.28.63 Wardline) | reserved vocabulary at `enqueue_child` + closed statuses + valet fence function-held + `valet/due` kind auth — the only code-false security law made true |
+| X-A1, X-A2, X-A3a, X-A6–X-A9 | revocation + surface identity completeness | closed (1.28.64 Blackout) | kill-switch wired into authN; denylist TTL = token exp; per-kid `alg` compare; public-path single source; guard-table reverse scan; per-method authz; `INJECTION_POLICY` fail-closed |
+| X-R1, X-R5, X-S1, X-M2 | content hygiene across the model seam | closed (1.28.65 Meridian) | `/suggest` `untrusted:true`; plugin strip-set parity fixture; host merge seam strips + neutralizes; MCP results ride the external-content idiom |
+| X-L1, X-L2, X-L3, X-L5 | the approver sees the truth | closed (1.28.66 Truthglass) | approval `args` (effective, redacted, capped) on both transports; truncation keeps head+tail with exact counts; `dsar --action` + blast-radius prompts; restore interlocks + 0600 passphrase files |
+| X-M1, X-M3, X-C1, X-C2 | tool & signer identity pinned | closed (1.28.67 Pin) | `BRAIN_MCP_SCOPE` read\|full fail-closed; MCP catalog per-tool/server pins reconciled per run; parcels `expected_signer` REQUIRED + operator pin in verify; unsigned-served census in `/ump/audit/verify` |
+| X-E1, X-E2, X-E4 | image & beacon egress (§4.7) | closed (1.28.68 Shutter) | doc-mode remote images default OFF + operator host allowlist, gated at the renderer (the audit's `markdown-render-options.ts:36` now `?? false`); favicon proxy default OFF + allowlist + letter tile, SSRF guard pinned under the ON posture (the audit's `plugin-icon-http.ts` beacon gate now enable-AND-allowlisted); `data:` URIs ≤ 64 KiB decoded (the audit's always-render `INLINE_DATA_IMAGE_RE` path now budget-checked). Fork e2e: zero-fetch canary proof; brain docs half = THREAT_MODEL §5 + SECURITY reporter scope (audit §9's rider) |
+| X-E3, X-M4, X-M5, X-M6 | egress & process boundary | open → v1.28.69 "Deadbolt" | SSRF/IP validation on the shared egress client; crank harness PATH resolution; `kill_on_drop` timeout orphan; bridge `console_pending_action` role check |
+| X-A4a, X-A5 | opaque-mode operator/agent split + telemetry scoping | open → v1.28.70 "Twokeys" | |
+| X-R4, X-R6, X-R7 | the screen sees what the model sees | open → v1.28.71 "Pores" | |
+| X-R3, X-W6, X-L4, X-E5 | every emitted surface is shaped | open → v1.28.72 "Scrim" | |
+| X-C3, X-C4, X-W8 | key & evidence lifecycle | open → v1.28.73 "Keyring" | |
+| X-S2, X-F3 | taint labels survive the whole trip | open → v1.28.74 "Origin" | |
+| X-W7, X-A4b, X-C5, X-C6, X-C8 | Loop-line preconditions + posture docs + SBOM | open → v1.28.75 "Preflight" | |
+| X-A3b | JWT key store hot reload | register | rotation = PEM drop + restart; alg compare closed at .64 |
+| X-A10 | shared loopback rate-limit bucket | register | carried S2-40; matters at first non-loopback deploy |
+| X-C7 | `rsa 0.9.10` Marvin Attack | stands | documented `.cargo/audit.toml` ignore; no fixed upstream version |
+| X-S3, X-F1, X-F2 | channel framing / Loop line / WASM+payments+OpenRouter | accepted ceilings / forward | threat-model addenda are entry criteria (audit §8) |
 
 ---
 
