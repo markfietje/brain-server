@@ -70,12 +70,12 @@ to the operator's own. `.67` closes that wherever an operator key exists.
   verify-result JSON always surfaces `signed_by` so self-assertion is
   visible.
 
-**Breaking changes (migration)**
+**Changed**
 
-- `POST /parcels/import`: `expected_signer` is REQUIRED. Clients that
-  imported without naming a counterparty now get `400 signer_required`. The
-  migration is one line — **name your counterparty**: pass the did:key of
-  the publisher you expect in `expected_signer`. Reverting restores the
+- BREAKING — `POST /parcels/import`: `expected_signer` is REQUIRED. Clients
+  that imported without naming a counterparty now get `400 signer_required`.
+  The migration is one line — **name your counterparty**: pass the did:key
+  of the publisher you expect in `expected_signer`. Reverting restores the
   default-empty signer and REOPENS X-C1.
 
 ### Engineering record
