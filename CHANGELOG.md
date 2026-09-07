@@ -62,7 +62,7 @@ v1.28.65 main (floor/version/changelog reconciled in the rebase).
   at 99k — the disclaimer survives, the injection stays visible (visibility,
   not removal, is the contract).
 
-**Breaking changes (CLI, scripted-use migration)**
+**Changed** — breaking for scripted use (CLI):
 - **`brain client dsar` requires an explicit `--action`.** The old silent
   `purge` default — an irreversible multi-domain erasure on a bare
   invocation — is gone. Omission and unknown values error naming the
