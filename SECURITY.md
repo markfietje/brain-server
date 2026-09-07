@@ -38,6 +38,15 @@ at [`/.well-known/security.txt`](http://127.0.0.1:8765/.well-known/security.txt)
 - **SLA**: Acknowledgement within 48 hours; fix timeline within 5 business days;
   public disclosure coordinated with reporter (90-day default per Project Zero).
 
+**Image / beacon exfiltration is in scope.** If you find any surface that
+automatically FETCHES a remote URL that model-controlled content influenced —
+a rendered image, a favicon probe, a data-URI side channel, an auto-fetching
+preview of any kind — report it under this class (EchoLeak / CVE-2025-32711
+namesakes). The shipped posture is "no fetch without an operator-allowlisted
+host"; see `THREAT_MODEL.md` §5 (Exfiltration surfaces) for the closed seats
+and the documented ceilings (bare URLs in prose are linkified-but-inert by
+contract; allowlists are trust, not safety).
+
 ## SBOM (Software Bill of Materials)
 
 A CycloneDX SBOM is generated for each release by `scripts/sbom.sh` (requires

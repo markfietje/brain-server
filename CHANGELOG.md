@@ -18,6 +18,92 @@ measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
 
+## [1.28.68] — 2026-09-07 — "Shutter": image + beacon egress closed upstream — the two carried EchoLeak-class seats finally shut
+
+The docs half of a two-tree release. The code half lives in the openclaw
+fork and closes the two UI egress seats carried open since the 2026-08-23
+audit (F-E1/F-E2): **document-mode remote images and the favicon
+auto-fetch beacon, both default-ON since before the fork line began, are
+now default-OFF and host-allowlisted** — plus a 64 KiB decoded budget on
+`data:` image URIs (X-E4). brain-server's half is the server-side version
+stamp: THREAT_MODEL gains the "Exfiltration surfaces" section (§5) and
+SECURITY.md names the image/beacon class explicitly in reporter guidance.
+No code, no openapi, no schema in this tree — docs only, by design.
+Built in parallel from a v1.28.63 cut in the `brain-server-68` worktree,
+rebased onto the post-.67 main (ship order .64 → .65 → .66 → .67 → .68
+held). Plan: `IMPLEMENTATION_PLAN_v1.28.68_Shutter.md`.
+
+### Release notes
+
+**Security fixes**
+- **Document-mode remote images default OFF** (openclaw, X-E1/F-E1). A
+  poisoned memory rendering `![](https://attacker.example/x.png)` in a
+  recovered full message now renders the labeled not-loaded fallback and
+  fetches NOTHING. Opt-in requires BOTH the render flag AND the
+  operator's `gateway.controlUi.remoteImageHosts` allowlist (exact hosts;
+  subdomains never implied; empty list = fail-safe for all hosts).
+- **Favicon auto-fetch default OFF** (openclaw, X-E2/F-E2). The
+  authenticated same-origin favicon proxy 404s unless the operator sets
+  `gateway.controlUi.automaticallyFetchFavicons: true` AND lists the host
+  — one setting, two consumers (UI images + server route, the server
+  re-verifying as defense-in-depth). Unlisted hosts render a new letter
+  tile: no `src`, no fetch, first letter of the hostname.
+- **`data:` image URIs bounded** (openclaw, X-E4): only payloads ≤ 64 KiB
+  decoded render; larger ones degrade to the fallback. No fetch involved
+  — the budget caps render-time covert channels and pathological
+  payloads.
+- **SSRF guard regression-pinned under the new ON posture**: the
+  loopback/metadata/private-host refusal now runs with the adversarial
+  host deliberately ALLOWLISTED — the guard, byte/time caps, fixed-HTTPS
+  favicon path, and strict media validation all still enforce when
+  fetching is enabled.
+- **THREAT_MODEL.md §5 "Exfiltration surfaces"**: the closed seats
+  (server-side `strip_markdown_refs` from Cordon, the two default flips,
+  the data-URI budget) + the standing ceilings stated honestly — bare
+  URLs in prose remain linkified-but-inert (the documented `gate.rs`
+  ceiling, still open by design), and operator allowlists are trust, not
+  safety.
+
+**Improvements**
+- SECURITY.md reporter guidance names the image/beacon exfil class
+  explicitly, so the next reporter who finds a new auto-fetch seat knows
+  it is in scope (EchoLeak / CVE-2025-32711 namesakes).
+
+### Engineering record
+
+- **Operator migration (both flips are visible):** deployments that want
+  the old look set `gateway.controlUi.automaticallyFetchFavicons: true`
+  and curate `gateway.controlUi.remoteImageHosts` (exact hostnames,
+  e.g. `["docs.example.com"]`). The empty list is the fail-safe posture;
+  the fork's config UI exposes both keys with labels/help.
+- **End-to-end line proof** (fork e2e, `remote-images.e2e.test.ts`): a
+  recovered assistant message carrying
+  `![](https://attacker.example/x.png)` plus a bare
+  `https://attacker.example/canary` URL renders in document mode with
+  zero network requests to the attacker host, the labeled fallback span
+  visible, and the bare URL present as an inert link. Screenshot pair
+  captured via the UI-proof harness (`doc-render-untrusted-host-
+  fetches-nothing.png` / `doc-render-allowlisted-host-loads.png`,
+  committed in the fork's `.artifacts/shutter-proof/`).
+- **Validation:** 9/9 new+updated fork UI e2e tests green
+  (remote-images ×4, favicon-allowlist ×3, link-favicons ×2); markdown
+  component family 265/265; icon-route suite 66/66; control-ui bootstrap
+  160/160; config reload 455/455; schema regressions 48/48; oxlint +
+  oxfmt clean on all changed fork files; this tree: full gate at the
+  release commit. The agents' file markdown preview follows the same
+  rule (fallback) — one gate, no per-surface bypass.
+- `ponytail:` non-goals held — no proxy-side URL rewriting for images
+  (an egress component behind a product whose law is no egress), no
+  per-conversation image toggles (the operator sets the posture, not the
+  document), no blocked-image analytics (telemetry-is-untrusted cuts
+  both ways).
+- Ceilings (honest): bare URLs in prose are inert links, not removed —
+  opening that is the `gate.rs` ceiling; allowlists express operator
+  trust and cannot make a vouched host safe; the data-URI budget caps
+  render-size channels only.
+
+---
+
 ## [1.28.67] — 2026-09-07 — "Pin": MCP catalog fingerprints, verb scoping, signer pinning, hash-only visibility
 
 One breaking wire change (parcel `expected_signer` becomes required — the

