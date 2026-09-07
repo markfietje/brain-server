@@ -28,9 +28,12 @@ door it used. The smallest structural layer at each of the four doors the
 unstripped), X-M2 (HIGH — openclaw MCP results verbatim). Ships across
 three trees the same day: brain-server (M1), `plugin/` (M2), the openclaw
 fork (M3, M4 — their changelog cross-references this release). **Ordering
-note: v1.28.64 "Blackout" runs in PARALLEL on the same day (per operator
-call) — it lands as its own release in this ledger when its tree commits;
-the SEAM LINE numbers here follow the audit's plan table, not commit
+note (final): v1.28.64 "Blackout" ran in PARALLEL on the same day per
+operator call and SHIPPED FIRST — its release commit (ff7a8d9) rode the
+same main push as the two Meridian fix commits (0b66d3b, 03819bf), so
+keep-a-changelog order has §[1.28.65] above §[1.28.64]: the fixes landed
+on main before Blackout's version bump, and that is the honest history.
+The SEAM LINE numbers follow the audit's plan table, not commit
 sequence.** The line's first live end-to-end proof ran 2026-09-07:
 `docs/MERIDIAN_PROOF_20260907.md` (transcript retained).
 
@@ -96,7 +99,13 @@ sequence.** The line's first live end-to-end proof ran 2026-09-07:
 - **Gates:** brain full suite green (cargo test --features bench), clippy
   -D warnings clean, fmt clean; plugin vitest 53/53; fork typecheck + lint +
   targeted vitest shards green (plugins/infra/security/materialize/code-mode/
-  new suites).
+  new suites). Two disclosures from the shared release window: (1) the
+  pre-push lipstyk gate blocked on `plugin/src/format.ts` comment density
+  (66%) — resolved by a comment-only condensation (4e6c477), zero behavior
+  change; (2) the connector-stub spawn test (live-server integration, the
+  known pre-existing race disclosed in §[1.28.64]'s ceilings) fired once
+  under the parallel sessions' load — the live server stalled 12.6s and the
+  stub's 15s timeout tripped; passed on rerun, no code touched.
 - **Live proof (2026-09-07):** docs/MERIDIAN_PROOF_20260907.md — a memory
   carrying the U+E0000 tag block + forged host markers, ingested into a TEST
   server (fresh DB, test port, copies-only discipline), recalled through the
