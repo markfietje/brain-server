@@ -3778,7 +3778,7 @@ Final paragraph after the rule.";
         // domain-scoped review queue).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_62),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_73),
             "schema_version must be recorded as the current release after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×
@@ -3794,6 +3794,18 @@ Final paragraph after the rule.";
             )
             .expect("pragma probe");
         assert_eq!(consent_cols, 10, "consent_registry columns must exist");
+        // the key-lifecycle release: agent cards carry the signing epoch
+        // (additive column — old binaries ignore it, verify uses it to pick
+        // the operator key deterministically).
+        let epoch_cols: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('agent_cards')
+                  WHERE name = 'signing_epoch'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma probe");
+        assert_eq!(epoch_cols, 1, "agent_cards.signing_epoch must exist");
         // Keystone: one live status ref per run — UNIQUE on both sides, with
         // rotation/revocation timestamps; and per-locale translations pinned
         // to a source revision.

@@ -640,28 +640,148 @@ pub fn did_key(pk: &[u8; 32]) -> String {
 /// Returns `(did, key)`; `None` → L2 conformance (hash-only integrity).
 /// `ponytail:` raw-seed files only — no PKCS#8/PEM parsing (ed25519-dalek
 /// ships without the `pkcs8` feature here); `openssl genpkey` interop is an
-/// operator convenience, not a compat requirement. Read errors are swallowed —
-/// a missing/unreadable key degrades to L2, never a boot failure.
+/// operator convenience, not a compat requirement.
+///
+/// The resolution is DETERMINISTIC (the key-lifecycle release): the fixed
+/// filename [`OPERATOR_KEY_FILE`] inside the key dir. A legacy install
+/// (first-file scans wrote arbitrary names) migrates transparently ONCE —
+/// the first admissible existing seed is renamed to the fixed name, logged.
+/// A wrong-size or leaked file at the fixed name is a LOUD refusal (the
+/// historical silent skip degraded to L2 without a word — the degrade dies
+/// here; see [`resolve_operator_key`]).
 pub fn operator_signing_key() -> Option<(String, SigningKey)> {
+    match resolve_operator_key() {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("operator key resolution REFUSED: {e}");
+            None
+        }
+    }
+}
+
+/// The fixed operator-key filenames (one overlap window, ONE key deep).
+pub const OPERATOR_KEY_FILE: &str = "operator.ed25519";
+pub const OPERATOR_KEY_PREV_FILE: &str = "operator.ed25519.prev";
+const OPERATOR_KEY_SEED_LEN: usize = 32;
+
+/// The resolver proper: `Ok(None)` = no key (absent — the legitimate L2
+/// posture); `Ok(Some((did, key)))` = sign with this; `Err` = the file is
+/// THERE but unusable (wrong size, leaked perms, unreadable) — the caller
+/// must refuse loudly, never silently degrade. Callers that only have the
+/// [`operator_signing_key`] shape get the loud log for free.
+pub fn resolve_operator_key() -> Result<Option<(String, SigningKey)>, String> {
     let dir = crate::config::ump_key_dir();
-    let seed = std::fs::read_dir(&dir).ok()?.find_map(|e| {
-        let e = e.ok()?;
-        if !e.path().is_file() {
-            return None;
-        }
-        // the seed is a signing secret —
-        // same 0600 owner-only enforcement the JWT keys / token file /
-        // webhook secret get. A group/world-readable seed would let any local
-        // user mint capability tokens; refuse it (fail closed to L2
-        // hash-only integrity).
-        if crate::auth::check_secret_permissions(&e.path()).is_err() {
-            return None;
-        }
-        std::fs::read(e.path()).ok()
-    })?;
-    let bytes: [u8; 32] = seed.try_into().ok()?;
+    let path = dir.join(OPERATOR_KEY_FILE);
+    if !path.exists() {
+        migrate_legacy_first_file_key(&dir, &path)?;
+    }
+    if !path.exists() {
+        return Ok(None);
+    }
+    // the seed is a signing secret —
+    // same 0600 owner-only enforcement the JWT keys / token file /
+    // webhook secret get. A group/world-readable seed would let any local
+    // user mint capability tokens; refuse it LOUDLY (the legacy scan
+    // silently skipped leaked files — an operator with a leaked key never
+    // heard about it).
+    crate::auth::check_secret_permissions(&path)
+        .map_err(|e| format!("{OPERATOR_KEY_FILE} refuses: {e}"))?;
+    let seed = std::fs::read(&path).map_err(|e| format!("{OPERATOR_KEY_FILE} unreadable: {e}"))?;
+    if seed.len() != OPERATOR_KEY_SEED_LEN {
+        return Err(format!(
+            "{OPERATOR_KEY_FILE} is {} bytes; expected exactly {OPERATOR_KEY_SEED_LEN} — \
+             refusing (a wrong-size seed previously degraded SILENTLY to L2 hash-only \
+             integrity; that degrade is an operator error now)",
+            seed.len()
+        ));
+    }
+    let bytes: [u8; 32] = seed
+        .try_into()
+        .map_err(|_| format!("{OPERATOR_KEY_FILE} size check raced"))?;
     let key = SigningKey::from_bytes(&bytes);
-    Some((did_key(&key.verifying_key().to_bytes()), key))
+    Ok(Some((did_key(&key.verifying_key().to_bytes()), key)))
+}
+
+/// One-time transparent migration: legacy installs had their seed under an
+/// arbitrary filename (first-file readdir resolution). Rename the FIRST
+/// admissible seed to the fixed name so existing installs migrate in place.
+/// The rename is within one directory (atomic); the boot log names it.
+fn migrate_legacy_first_file_key(
+    dir: &std::path::Path,
+    fixed: &std::path::Path,
+) -> Result<(), String> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        // no dir = no key = legitimate L2; nothing to migrate.
+        Err(_) => return Ok(()),
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if !p.is_file() || p == fixed {
+            continue;
+        }
+        if p.file_name().is_some_and(|n| n == OPERATOR_KEY_PREV_FILE) {
+            continue;
+        }
+        if crate::auth::check_secret_permissions(&p).is_err() {
+            continue; // not admissible; leave it (it was never used either)
+        }
+        let Ok(seed) = std::fs::read(&p) else {
+            continue;
+        };
+        if seed.len() != OPERATOR_KEY_SEED_LEN {
+            continue;
+        }
+        std::fs::rename(&p, fixed)
+            .map_err(|e| format!("migrating legacy operator key {:?} → {fixed:?}: {e}", p))?;
+        tracing::info!(
+            "operator key migrated: {:?} → {:?} (the deterministic filename)",
+            p,
+            fixed
+        );
+        return Ok(());
+    }
+    Ok(())
+}
+
+/// The VERIFY key set: current first, then the ONE overlap generation
+/// (`operator.ed25519.prev`, verify-only). Signing ALWAYS uses the current
+/// ([`resolve_operator_key`]); verification accepts either — a card signed
+/// before `brain key rotate` keeps verifying through the window, and the
+/// window is ONE deep: a second rotate moves `.prev` to the middle
+/// generation and the first generation's cards fail (pinned). A wrong-size
+/// or leaked `.prev` is logged and IGNORED for verification (verify-only
+/// material must not fail operations; the loud log is the operator's cue).
+pub fn operator_verify_keys() -> Vec<SigningKey> {
+    let mut keys = Vec::new();
+    match resolve_operator_key() {
+        Ok(Some((_, sk))) => keys.push(sk),
+        Ok(None) => {}
+        Err(e) => tracing::error!("operator key resolution REFUSED: {e}"),
+    }
+    let prev = crate::config::ump_key_dir().join(OPERATOR_KEY_PREV_FILE);
+    if prev.exists() {
+        match (
+            crate::auth::check_secret_permissions(&prev),
+            std::fs::read(&prev),
+        ) {
+            (Ok(()), Ok(seed)) if seed.len() == OPERATOR_KEY_SEED_LEN => {
+                let bytes: [u8; 32] = seed.try_into().unwrap_or([0u8; 32]);
+                keys.push(SigningKey::from_bytes(&bytes));
+            }
+            (Err(e), _) => {
+                tracing::warn!("{OPERATOR_KEY_PREV_FILE} leaked; not used to verify: {e}")
+            }
+            (_, Err(e)) => {
+                tracing::warn!("{OPERATOR_KEY_PREV_FILE} unreadable; not used to verify: {e}")
+            }
+            (_, Ok(seed)) => tracing::warn!(
+                "{OPERATOR_KEY_PREV_FILE} is {} bytes (expected {OPERATOR_KEY_SEED_LEN}); ignored",
+                seed.len()
+            ),
+        }
+    }
+    keys
 }
 
 #[cfg(test)]
@@ -1073,6 +1193,84 @@ mod tests {
         assert_eq!(out, bytes);
         assert!(hex_decode("abc", &mut out).is_err(), "odd length");
         assert!(hex_decode("zzzz", &mut out).is_err(), "non-hex");
+    }
+
+    // ── the key-lifecycle release: deterministic key resolution ──────
+
+    /// 0600 for a seed file (the same law the mesh fixture uses).
+    fn write_seed_0600(path: &std::path::Path, seed: &[u8]) {
+        std::fs::write(path, seed).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
+    /// The fixed filename wins: two admissible seeds in the dir resolve to
+    /// `operator.ed25519` and nothing else (the first-file scan is gone).
+    #[test]
+    fn deterministic_filename_selected() {
+        use crate::test_support::lock_env;
+        let _guard = lock_env();
+        let dir = tempfile::TempDir::new().unwrap();
+        write_seed_0600(&dir.path().join("operator.ed25519"), &[1u8; 32]);
+        write_seed_0600(&dir.path().join("stray.key"), &[2u8; 32]);
+        // SAFETY: single-threaded under ENV_LOCK.
+        unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", dir.path()) };
+        let (did, _) = resolve_operator_key().expect("resolves").expect("some key");
+        let expected = {
+            let sk = SigningKey::from_bytes(&[1u8; 32]);
+            did_key(&sk.verifying_key().to_bytes())
+        };
+        assert_eq!(
+            did, expected,
+            "the FIXED filename resolves, not readdir order"
+        );
+        unsafe { std::env::remove_var("BRAIN_UMP_KEY_DIR") };
+    }
+
+    /// A wrong-size seed at the fixed name is a LOUD refusal — the silent
+    /// L2 degrade dies. The error names the file, the size, and the law.
+    #[test]
+    fn wrong_size_key_refuses_loudly() {
+        use crate::test_support::lock_env;
+        let _guard = lock_env();
+        let dir = tempfile::TempDir::new().unwrap();
+        write_seed_0600(&dir.path().join("operator.ed25519"), &[1u8; 16]);
+        unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", dir.path()) };
+        let err = resolve_operator_key().expect_err("wrong size refuses");
+        assert!(err.contains("operator.ed25519"), "names the file: {err}");
+        assert!(err.contains("16"), "names the size: {err}");
+        unsafe { std::env::remove_var("BRAIN_UMP_KEY_DIR") };
+    }
+
+    /// A legacy install (seed under an arbitrary filename) migrates
+    /// transparently: the first admissible file is RENAMED to the fixed
+    /// name and resolves.
+    #[test]
+    fn legacy_first_file_migrates_transparently() {
+        use crate::test_support::lock_env;
+        let _guard = lock_env();
+        let dir = tempfile::TempDir::new().unwrap();
+        let legacy = dir.path().join("operator.key");
+        write_seed_0600(&legacy, &[9u8; 32]);
+        unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", dir.path()) };
+        let (did, _) = resolve_operator_key().expect("resolves").expect("migrated");
+        let expected = {
+            let sk = SigningKey::from_bytes(&[9u8; 32]);
+            did_key(&sk.verifying_key().to_bytes())
+        };
+        assert_eq!(did, expected);
+        assert!(
+            dir.path().join("operator.ed25519").exists(),
+            "the fixed name now exists (one-time rename)"
+        );
+        assert!(
+            !legacy.exists(),
+            "the legacy name is gone (renamed, not copied)"
+        );
+        unsafe { std::env::remove_var("BRAIN_UMP_KEY_DIR") };
     }
 
     /// M2: did:key derivation matches the multibase/multicodec spec form

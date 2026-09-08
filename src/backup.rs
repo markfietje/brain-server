@@ -808,8 +808,35 @@ pub fn decrypt_v3_blob(cipher: &[u8], passphrase: &[u8]) -> Result<Vec<u8>> {
 
 /// Restore a backup into `db_path`. Takes a safety `VACUUM INTO` snapshot of
 /// the current DB to `<db_path>.bak` first so the operation is reversible.
-pub fn restore(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Result<()> {
-    let res = restore_inner(cipher_path, db_path, passphrase);
+/// What a restore wants the operator (and the CLI completion line) to know.
+#[derive(Debug, Clone, Default)]
+pub struct RestoreDisclosure {
+    /// The restored image predates keyed chains (no head pin / no audit
+    /// table): its chain is an unkeyed SHA-256 chain — forgeable by anyone
+    /// with the file until `--re-audit` re-anchors it to HMAC.
+    pub legacy_unkeyed_chain: bool,
+    /// The image carried NO audit_events table and was admitted only because
+    /// the operator passed the explicit disclosure flag.
+    pub chainless_admitted: bool,
+}
+
+/// Restore with the DEFAULT posture: a chain-less image REFUSES
+/// (the key-lifecycle release's disclosure law — the old certify-nothing
+/// silently path dies). See [`restore_with_options`].
+pub fn restore(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Result<RestoreDisclosure> {
+    restore_with_options(cipher_path, db_path, passphrase, false)
+}
+
+/// `allow_chainless = true` admits an image with NO audit_events table; the
+/// flag's use itself is written to the log stream loudly (the restored DB
+/// has no chain to carry the disclosure row — that absence is the finding).
+pub fn restore_with_options(
+    cipher_path: &Path,
+    db_path: &Path,
+    passphrase: &[u8],
+    allow_chainless: bool,
+) -> Result<RestoreDisclosure> {
+    let res = restore_inner(cipher_path, db_path, passphrase, allow_chainless);
     if let Err(e) = &res {
         audit_backup(
             db_path,
@@ -820,7 +847,12 @@ pub fn restore(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Result<
     res
 }
 
-fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Result<()> {
+fn restore_inner(
+    cipher_path: &Path,
+    db_path: &Path,
+    passphrase: &[u8],
+    allow_chainless: bool,
+) -> Result<RestoreDisclosure> {
     let full = fs::read(cipher_path).with_context(|| format!("read {cipher_path:?}"))?;
     verify_checksum(cipher_path, &full)?;
 
@@ -928,13 +960,43 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
     // chain), which is DISCLOSED loudly + recorded on the restore row, then
     // the `restore complete (head=…)` evidence row is written on the restored
     // chain (re-pinning it via `record_tenant`).
-    let restored = verify_restored_chain_and_pin(db_path, pre_pin.as_ref())?;
+    let restored = verify_restored_chain_and_pin(db_path, pre_pin.as_ref(), allow_chainless)?;
     let head_detail = match &restored.0 {
         Some(pin) => format!("restore complete (head={}:{}…)", pin.id, &pin.hash[..16]),
         None => "restore complete (head=unpinned)".to_string(),
     };
     audit_backup(db_path, AuditStatus::Ok, &head_detail);
-    Ok(())
+    // Legacy epoch = the restored chain's head is unkeyed: either NO pin at
+    // all (predates pinning) or a pin whose epoch is not the keyed scheme.
+    let legacy_epoch = restored.0.as_ref().is_none_or(|pin| pin.epoch != "hmac256");
+    let disclosure = RestoreDisclosure {
+        legacy_unkeyed_chain: legacy_epoch,
+        chainless_admitted: restored.2,
+    };
+    if disclosure.legacy_unkeyed_chain && !disclosure.chainless_admitted {
+        // Legacy-epoch image: the chain is an UNKEYED SHA-256 chain —
+        // forgeable by anyone holding the file until --re-audit re-anchors.
+        // The completion surfaces carry the mark + the re-anchor hint.
+        tracing::warn!(
+            "restore: legacy UNKEYED chain (pre-HMAC epoch) — forgeable until --re-audit \
+             re-anchors it; run the re-anchor before trusting the chain as evidence"
+        );
+        audit_backup(
+            db_path,
+            AuditStatus::Ok,
+            "legacy_unkeyed_chain: forgeable: true (re-anchor with --re-audit)",
+        );
+    }
+    if disclosure.chainless_admitted {
+        // The flag's own disclosure: there is NO chain in this image to
+        // certify anything — say so loudly, in the log stream (the DB has
+        // no audit table to carry a row; the absence IS the finding).
+        tracing::warn!(
+            "restore: chain-less image ADMITTED via the explicit disclosure flag — \
+             no audit_events table existed in the image; nothing was certified"
+        );
+    }
+    Ok(disclosure)
 }
 
 /// Post-restore chain attestation + head-pin comparison. Bails when the
@@ -944,7 +1006,8 @@ fn restore_inner(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Resul
 fn verify_restored_chain_and_pin(
     db_path: &Path,
     pre_pin: Option<&audit::HeadPin>,
-) -> Result<(Option<audit::HeadPin>, audit::HeadComparison)> {
+    allow_chainless: bool,
+) -> Result<(Option<audit::HeadPin>, audit::HeadComparison, bool)> {
     let conn = rusqlite::Connection::open(db_path)
         .with_context(|| format!("open restored DB {db_path:?}"))?;
     // A restored DB with no audit_events table predates the audit chain (pre-audit-schema
@@ -959,8 +1022,24 @@ fn verify_restored_chain_and_pin(
         .map(|n| n > 0)
         .unwrap_or(false);
     if !has_table {
-        tracing::info!("restore: DB predates the audit chain — nothing to verify");
-        return Ok((None, audit::HeadComparison::NoPostPin));
+        if !allow_chainless {
+            // The key-lifecycle disclosure law: an image with NO
+            // audit_events table certifies NOTHING about its contents —
+            // restoring one silently (the old "predates the chain" branch)
+            // was a smuggler's shape, not a legacy shape (no legitimate
+            // backup has been chain-less for years). REFUSE; the explicit
+            // flag is the operator's deliberate override.
+            anyhow::bail!(
+                "chainless_image_refused: the backup image carries NO audit_events table, \
+                 so the restore cannot attest anything about its contents; \
+                 pass --allow-chainless to admit it with a loud disclosure, \
+                 or re-generate the backup from a chained DB"
+            );
+        }
+        tracing::warn!(
+            "restore: chain-less image admitted via --allow-chainless — nothing certified"
+        );
+        return Ok((None, audit::HeadComparison::NoPostPin, true));
     }
     if !audit::verify_chain(&conn) {
         anyhow::bail!(
@@ -997,7 +1076,7 @@ fn verify_restored_chain_and_pin(
             )
         }
     }
-    Ok((post_pin, comparison))
+    Ok((post_pin, comparison, false))
 }
 
 /// Post-restore hold re-application + resurrection disclosure.
@@ -1086,7 +1165,7 @@ mod tests {
         make_db(&src, "hello world").unwrap();
 
         backup(&src, &out, b"pass".as_slice()).unwrap();
-        restore(&out, &dst, b"pass".as_slice()).unwrap();
+        restore_with_options(&out, &dst, b"pass".as_slice(), true).unwrap();
 
         let conn = rusqlite::Connection::open(&dst).unwrap();
         let count: i64 = conn
@@ -1158,7 +1237,7 @@ mod tests {
             conn.close().map_err(|(_, e)| e).unwrap();
         }
 
-        restore(&out, &dst, b"pass".as_slice()).unwrap();
+        restore_with_options(&out, &dst, b"pass".as_slice(), true).unwrap();
 
         let conn = rusqlite::Connection::open(&dst).unwrap();
         let active: i64 = conn
@@ -1258,7 +1337,7 @@ mod tests {
         make_db(&src, "empty host payload").unwrap();
 
         backup(&src, &out, b"pass".as_slice()).unwrap();
-        restore(&out, &dst, b"pass".as_slice()).unwrap();
+        restore_with_options(&out, &dst, b"pass".as_slice(), true).unwrap();
         assert!(dst.exists(), "restore must create the DB on an empty host");
 
         let conn = rusqlite::Connection::open(&dst).unwrap();
@@ -1355,7 +1434,7 @@ mod tests {
         ));
 
         backup(&src, &out, b"pass".as_slice()).unwrap();
-        restore(&out, &dst, b"pass".as_slice()).unwrap();
+        restore_with_options(&out, &dst, b"pass".as_slice(), true).unwrap();
 
         assert!(dst_bak.exists(), "safety snapshot (.bak) must be created");
         let conn = rusqlite::Connection::open(&dst).unwrap();
@@ -1384,7 +1463,7 @@ mod tests {
         make_db(&src, "v2 payload").unwrap();
 
         backup(&src, &out, b"pass".as_slice()).unwrap();
-        restore(&out, &dst, b"pass".as_slice()).unwrap();
+        restore_with_options(&out, &dst, b"pass".as_slice(), true).unwrap();
 
         let conn = rusqlite::Connection::open(&dst).unwrap();
         let text: String = conn
@@ -1429,7 +1508,7 @@ mod tests {
             !fs::read(&out).unwrap().starts_with(MAGIC),
             "v1 files must keep the legacy layout"
         );
-        restore(&out, &dst, b"pass".as_slice()).unwrap();
+        restore_with_options(&out, &dst, b"pass".as_slice(), true).unwrap();
 
         let conn = rusqlite::Connection::open(&dst).unwrap();
         let text: String = conn
@@ -1633,7 +1712,7 @@ mod tests {
         make_db(&dst, "original").unwrap();
 
         backup(&src, &out, b"pass".as_slice()).unwrap();
-        restore(&out, &dst, b"pass".as_slice()).unwrap();
+        restore_with_options(&out, &dst, b"pass".as_slice(), true).unwrap();
         let res = restore(&out, &dst, b"pass".as_slice());
         assert!(res.is_err(), "second restore must fail closed");
         let err = format!("{res:?}");
@@ -1690,6 +1769,116 @@ mod tests {
                 "d",
             );
         }
+    }
+
+    // ── the key-lifecycle release: chain-less restore tells the truth ──
+
+    /// A restored image with NO audit_events table REFUSES without the
+    /// explicit flag, and admits WITH it (the admission is marked).
+    #[test]
+    fn chainless_backup_refused_without_flag() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = dir.path().join("chainless.db");
+        // A real DB shape with no audit chain: any pre-chain fixture.
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch("CREATE TABLE t(x INTEGER); INSERT INTO t VALUES (1);")
+            .unwrap();
+        let err = verify_restored_chain_and_pin(&db, None, false)
+            .expect_err("chain-less image refuses without the flag");
+        assert!(
+            format!("{err:#}").contains("chainless_image_refused"),
+            "the refusal names the law: {err:#}"
+        );
+        let (_, comparison, admitted) =
+            verify_restored_chain_and_pin(&db, None, true).expect("admitted with the flag");
+        assert!(admitted, "the admission flag comes back to the caller");
+        assert!(matches!(comparison, audit::HeadComparison::NoPostPin));
+    }
+
+    /// A legacy-epoch image (chain present, NO head pin) restores but the
+    /// disclosure marks `legacy_unkeyed_chain` and the written disclosure
+    /// row names the re-anchor path. An hmac-epoch image is untouched.
+    #[test]
+    fn legacy_chain_marked_forgeable_until_reanchor() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = dir.path().join("legacy.db");
+        make_audit_db(&db, 3); // rows, but NO head pin = the legacy epoch
+        let out = dir.path().join("legacy.bk");
+        backup(&db, &out, b"passphrase").unwrap();
+        // The restore target must be a valid DB (the restore pre-checks
+        // checkpoint it) — simulate a live DB being restored over.
+        let work = dir.path().join("target.db");
+        make_audit_db(&work, 1);
+        let disclosure = restore_with_options(&out, &work, b"passphrase", false)
+            .expect("a legacy-epoch image restores without any flag");
+        assert!(
+            disclosure.legacy_unkeyed_chain,
+            "the disclosure marks the forgeable legacy chain"
+        );
+        assert!(!disclosure.chainless_admitted);
+        // The disclosure EVIDENCE ROW landed on the restored chain (audit
+        // details are hash-chained, so the pin is the row's presence — the
+        // human-visible text is the log stream + the returned struct).
+        let conn = rusqlite::Connection::open(&work).unwrap();
+        let backups: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'backup'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            backups >= 2,
+            "the restore evidence + the legacy disclosure row are on the chain: {backups}"
+        );
+    }
+
+    /// An hmac-epoch image (chain + head pin) keeps its Match posture: the
+    /// disclosure is false, no legacy mark is written.
+    #[test]
+    fn hmac_epoch_restore_unchanged() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let db = dir.path().join("hmac.db");
+        make_audit_db(&db, 3);
+        {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            let head = audit::read_head_pin(&conn).expect("pin after writes");
+            // Re-pin at the hmac epoch (the runtime posture of a keyed chain).
+            conn.execute(
+                "INSERT INTO schema_meta(key, value) VALUES ('audit_chain_head', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                [serde_json::to_string(&audit::HeadPin {
+                    id: head.id,
+                    hash: head.hash.clone(),
+                    epoch: "hmac256".into(),
+                })
+                .unwrap()],
+            )
+            .unwrap();
+        }
+        let pre_pin = {
+            let conn = rusqlite::Connection::open(&db).unwrap();
+            audit::read_head_pin(&conn)
+        };
+        let out = dir.path().join("hmac.bk");
+        backup(&db, &out, b"passphrase").unwrap();
+        let work = dir.path().join("target.db");
+        make_audit_db(&work, 1);
+        let disclosure = restore_with_options(&out, &work, b"passphrase", false).expect("restores");
+        assert!(!disclosure.legacy_unkeyed_chain, "hmac epoch is not legacy");
+        assert!(!disclosure.chainless_admitted);
+        let conn = rusqlite::Connection::open(&work).unwrap();
+        let post_pin = audit::read_head_pin(&conn);
+        // The restore appends its OWN evidence rows, so the head ADVANCES
+        // (never rewinds or diverges) and the chain still verifies. (The
+        // appended rows carry the RUNTIME epoch — absent a chain key in this
+        // fixture, legacy — which is the documented posture, not a defect.)
+        assert!(
+            post_pin.map(|p| p.id).unwrap_or(0) >= pre_pin.map(|p| p.id).unwrap_or(0),
+            "the chain only moved forward"
+        );
+        assert!(audit::verify_chain(&conn), "the restored chain verifies");
     }
 
     /// The pure detector: every arm of the pre/post pin comparison.
@@ -1771,8 +1960,8 @@ mod tests {
         // write_atomic restore_inner performs), then the attestation helper.
         let snapshot_bytes = fs::read(&older_snap).unwrap();
         write_atomic(&live, &snapshot_bytes).unwrap();
-        let (post_pin, comparison) =
-            verify_restored_chain_and_pin(&live, Some(&pre_pin)).expect("attest");
+        let (post_pin, comparison, _chainless) =
+            verify_restored_chain_and_pin(&live, Some(&pre_pin), false).expect("attest");
         assert_eq!(post_pin.as_ref().map(|p| p.id), Some(2));
         assert_eq!(
             comparison,
@@ -1791,7 +1980,7 @@ mod tests {
             conn.execute("UPDATE audit_events SET actor = 'mallory' WHERE id = 1", [])
                 .unwrap();
         }
-        let refused = verify_restored_chain_and_pin(&broken, None);
+        let refused = verify_restored_chain_and_pin(&broken, None, false);
         let err = match refused {
             Err(e) => format!("{e:#}"),
             Ok(_) => panic!("a broken restored chain must refuse certification"),

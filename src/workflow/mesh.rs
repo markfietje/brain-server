@@ -26,6 +26,20 @@ pub const TOPIC_RESULT: &str = "delegation/result";
 /// "drain observed in events" reading rides this topic).
 pub const TOPIC_REVOKED: &str = "delegation/revoked";
 
+/// The operator-key generation counter (schema_meta; 0 = first generation).
+/// Bumped by `brain key rotate`; sign_card stamps it onto new cards;
+/// verify_card uses it to pick the key deterministically.
+pub(crate) fn operator_key_generation(conn: &Connection) -> i64 {
+    conn.query_row(
+        "SELECT COALESCE((SELECT value FROM schema_meta WHERE key = 'operator_key_generation'), '0')",
+        [],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|v| v.parse::<i64>().ok())
+    .unwrap_or(0)
+}
+
 pub const STATE_REQUESTED: &str = "requested";
 pub const STATE_COMPLETED: &str = "completed";
 
@@ -167,22 +181,45 @@ pub(crate) fn revoke_principal(
         &format!("revoke:{reason}"),
     );
     // The drain: active runs whose in-flight delegations this principal owns.
-    let mut stmt = conn
-        .prepare(
-            "SELECT DISTINCT d.run_id, r.state_json, r.state_revision
-               FROM delegations d JOIN workflow_runs r ON r.id = d.run_id
-              WHERE d.from_principal = ?1 AND d.state = ?2 AND r.status = 'active'
-              ORDER BY d.run_id LIMIT 200",
-        )
-        .map_err(|e| MeshError::Database(e.to_string()))?;
-    let victims: Vec<(i64, String, i64)> = stmt
-        .query_map(params![principal, STATE_REQUESTED], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })
-        .map_err(|e| MeshError::Database(e.to_string()))?
-        .collect::<Result<_, _>>()
-        .map_err(|e| MeshError::Database(e.to_string()))?;
-    drop(stmt);
+    // PAGED (the old single LIMIT 200 silently abandoned run 201+): up to
+    // 10 pages of 200, then a loud `drain_incomplete` row naming the
+    // remainder. Cancelling a run removes it from the active set, so each
+    // page naturally advances.
+    const DRAIN_PAGE: i64 = 200;
+    const DRAIN_MAX_PAGES: usize = 10;
+    let mut victims: Vec<(i64, String, i64)> = Vec::new();
+    let mut pages = 0usize;
+    loop {
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT d.run_id, r.state_json, r.state_revision
+                   FROM delegations d JOIN workflow_runs r ON r.id = d.run_id
+                  WHERE d.from_principal = ?1 AND d.state = ?2 AND r.status = 'active'
+                  ORDER BY d.run_id LIMIT ?3",
+            )
+            .map_err(|e| MeshError::Database(e.to_string()))?;
+        let page: Vec<(i64, String, i64)> = stmt
+            .query_map(params![principal, STATE_REQUESTED, DRAIN_PAGE], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .map_err(|e| MeshError::Database(e.to_string()))?
+            .collect::<Result<_, _>>()
+            .map_err(|e| MeshError::Database(e.to_string()))?;
+        drop(stmt);
+        let full = page.len() == DRAIN_PAGE as usize;
+        victims.extend(page);
+        pages += 1;
+        if !full || pages >= DRAIN_MAX_PAGES {
+            break;
+        }
+    }
+    let mut remaining = victims.len() as i64;
+    if pages >= DRAIN_MAX_PAGES && victims.len() as i64 == DRAIN_PAGE * DRAIN_MAX_PAGES as i64 {
+        // The cap bound us: count what the SAME predicate still matches
+        // (post-cancel, in a moment) — the loud remainder row is written
+        // after the drain below.
+        remaining = -1; // marker: recount after drain
+    }
     let mut drained = 0usize;
     for (run_id, state_json, revision) in victims {
         let cancelled = crate::workflow::state::cas_update(
@@ -219,6 +256,35 @@ pub(crate) fn revoke_principal(
         );
         drained += 1;
     }
+    // The loud remainder: a drain capped by the page budget must NAME what
+    // it could not finish (the old single-page drain was silent about runs
+    // past 200). The row lands on the hash-chained audit trail (kind Auth,
+    // the revocation register's evidence) + the error log stream.
+    if remaining < 0 || pages >= DRAIN_MAX_PAGES {
+        let left: i64 = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT d.run_id) FROM delegations d
+                   JOIN workflow_runs r ON r.id = d.run_id
+                  WHERE d.from_principal = ?1 AND d.state = ?2 AND r.status = 'active'",
+                params![principal, STATE_REQUESTED],
+                |r| r.get(0),
+            )
+            .unwrap_or(-1);
+        if left > 0 {
+            tracing::error!(
+                "revocation drain INCOMPLETE for {principal}: {left} active run(s) remain                  beyond the {DRAIN_MAX_PAGES}-page budget — re-run the revoke or drain manually"
+            );
+            crate::audit::record(
+                conn,
+                crate::audit::AuditKind::Auth,
+                revoked_by,
+                &format!("principal:{principal}"),
+                crate::audit::AuditStatus::Error,
+                &format!("drain_incomplete: {left} active run(s) remain"),
+            );
+        }
+    }
+    let _ = remaining;
     Ok(drained)
 }
 
@@ -266,6 +332,10 @@ pub struct AgentCard {
     pub card_json: String,
     pub signature_hex: String,
     pub signed_by: String,
+    /// The operator-key generation that signed this card (additive; legacy
+    /// rows are NULL = verify against current-or-previous, the old
+    /// binaries' behavior plus the overlap window).
+    pub signing_epoch: Option<i64>,
 }
 
 fn validate_card(draft: &CardDraft) -> Result<(), MeshError> {
@@ -325,14 +395,19 @@ pub(crate) fn provision_card(
     let sig = ed25519_dalek::Signer::sign(&sk, sha256_hex(card_json.as_bytes()).as_bytes());
     let signature_hex = hex::encode(sig.to_bytes());
     let signed_by = crate::handlers::ump::did_key(&sk.verifying_key().to_bytes());
+    // The card's signing epoch = the operator-key generation at signing
+    // time. `verify_card` uses it to pick the key deterministically; the
+    // audit trail names the generation.
+    let epoch = operator_key_generation(conn);
     conn.execute(
         "INSERT INTO agent_cards(domain, principal, name, description, capabilities_json,
-             card_json, signature, signed_by, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             card_json, signature, signed_by, signing_epoch, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(domain, principal) DO UPDATE SET
              name = excluded.name, description = excluded.description,
              capabilities_json = excluded.capabilities_json, card_json = excluded.card_json,
              signature = excluded.signature, signed_by = excluded.signed_by,
+             signing_epoch = excluded.signing_epoch,
              created_at = excluded.created_at",
         params![
             draft.domain,
@@ -343,6 +418,7 @@ pub(crate) fn provision_card(
             card_json,
             signature_hex,
             signed_by,
+            epoch,
             now
         ],
     )
@@ -363,6 +439,7 @@ pub(crate) fn provision_card(
         card_json,
         signature_hex,
         signed_by,
+        signing_epoch: Some(epoch),
     })
 }
 
@@ -386,7 +463,7 @@ pub(crate) fn verify_card(
     let row = conn
         .query_row(
             "SELECT id, principal, name, description, capabilities_json, card_json,
-                    signature, signed_by, domain
+                    signature, signed_by, domain, signing_epoch
                FROM agent_cards WHERE domain = ?1 AND principal = ?2",
             params![domain, principal],
             |r| {
@@ -400,21 +477,44 @@ pub(crate) fn verify_card(
                     signature_hex: r.get(6)?,
                     signed_by: r.get(7)?,
                     domain: r.get(8)?,
+                    signing_epoch: r.get(9)?,
                 })
             },
         )
         .optional()
         .map_err(|e| MeshError::Database(e.to_string()))?
         .ok_or_else(|| MeshError::CardUnknown(principal.to_string()))?;
-    let (_, sk) = crate::handlers::ump::operator_signing_key().ok_or(MeshError::NoOperatorKey)?;
+    // The overlap window: cards signed by the PREVIOUS generation keep
+    // verifying through `operator.ed25519.prev`; the current generation
+    // verifies against the current key. Signing is ALWAYS the current key
+    // (see sign_card); this is the verify-only seam the rotation ceremony
+    // relies on. Legacy rows (NULL epoch — pre-column) try both keys, which
+    // is exactly the old binaries' behavior plus the window.
+    let keys = crate::handlers::ump::operator_verify_keys();
+    if keys.is_empty() {
+        return Err(MeshError::NoOperatorKey);
+    }
+    let current_gen = operator_key_generation(conn);
+    let chosen: Vec<&ed25519_dalek::SigningKey> = match row.signing_epoch {
+        Some(epoch) if epoch == current_gen => vec![&keys[0]],
+        Some(epoch) if epoch == current_gen - 1 && keys.len() > 1 => vec![&keys[1]],
+        // Legacy / unknown epoch: current first, then the overlap window.
+        _ => keys.iter().collect(),
+    };
     let sig_bytes: [u8; 64] = hex::decode(&row.signature_hex)
         .ok()
         .and_then(|v| <[u8; 64]>::try_from(v).ok())
         .ok_or_else(|| MeshError::CardTampered(principal.to_string()))?;
     let sig = ed25519_dalek::Signature::from_bytes(&sig_bytes);
-    sk.verifying_key()
-        .verify_strict(sha256_hex(row.card_json.as_bytes()).as_bytes(), &sig)
-        .map_err(|_| MeshError::CardTampered(principal.to_string()))?;
+    let msg = sha256_hex(row.card_json.as_bytes());
+    let verified = chosen.iter().any(|sk| {
+        sk.verifying_key()
+            .verify_strict(msg.as_bytes(), &sig)
+            .is_ok()
+    });
+    if !verified {
+        return Err(MeshError::CardTampered(principal.to_string()));
+    }
     Ok(row)
 }
 
@@ -708,6 +808,98 @@ mod tests {
             // SAFETY: single-threaded under ENV_LOCK.
             unsafe { std::env::remove_var("BRAIN_UMP_KEY_DIR") };
         }
+    }
+
+    /// Simulate one rotation the way `brain key rotate` does: rename the
+    /// current key file to `.prev`, write a fresh seed at the fixed name,
+    /// bump the generation counter in the DB.
+    fn rotate(dir: &std::path::Path, conn: &Connection) {
+        std::fs::rename(
+            dir.join(crate::handlers::ump::OPERATOR_KEY_FILE),
+            dir.join(crate::handlers::ump::OPERATOR_KEY_PREV_FILE),
+        )
+        .unwrap();
+        let seed: Vec<u8> = (0..32).map(|i| (i * 31 + 7) as u8).collect();
+        std::fs::write(dir.join(crate::handlers::ump::OPERATOR_KEY_FILE), &seed).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                dir.join(crate::handlers::ump::OPERATOR_KEY_FILE),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO schema_meta(key, value) VALUES ('operator_key_generation', '1')
+             ON CONFLICT(key) DO UPDATE SET
+                 value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",
+            [],
+        )
+        .unwrap();
+    }
+
+    /// The rotation window: a card signed before `brain key rotate` keeps
+    /// verifying through `operator.ed25519.prev`; a card provisioned after
+    /// signs with (and verifies against) the CURRENT key only.
+    #[test]
+    fn rotate_keeps_old_card_verifying_via_prev() {
+        let _guard = lock_env();
+        let key = OperatorKey::new();
+        let conn = db();
+        let old = provision_card(&conn, &card("atlas"), 1100).expect("provisioned");
+        verify_card(&conn, "acme", "atlas").expect("pre-rotation verify");
+
+        rotate(key.0.path(), &conn);
+
+        // The old card still verifies (the ONE-deep overlap window).
+        verify_card(&conn, "acme", "atlas").expect("post-rotation verify via prev");
+        // A NEW card signs with the CURRENT key and records the new epoch.
+        let fresh = provision_card(&conn, &card("hermes"), 1200).expect("re-provisioned");
+        assert_ne!(
+            old.signed_by, fresh.signed_by,
+            "signing ALWAYS uses the current key"
+        );
+        verify_card(&conn, "acme", "hermes").expect("new card verifies via current");
+    }
+
+    /// The window is ONE key deep: after a SECOND rotate, the first
+    /// generation's cards die (the .prev slot holds the middle generation).
+    #[test]
+    fn third_generation_kills_first() {
+        let _guard = lock_env();
+        let key = OperatorKey::new();
+        let conn = db();
+        let first = provision_card(&conn, &card("gen1"), 1100).expect("gen1 card");
+
+        rotate(key.0.path(), &conn); // gen 1
+        rotate(key.0.path(), &conn); // gen 2
+
+        // gen-1's signer is GONE (prev now holds gen-2's predecessor = gen-1's
+        // key? no: prev holds the key current BEFORE the second rotate = the
+        // MIDDLE key). The FIRST generation cannot verify.
+        assert!(
+            matches!(
+                verify_card(&conn, "acme", "gen1"),
+                Err(MeshError::CardTampered(_))
+            ),
+            "the one-deep window means a second rotate orphans the first generation (pinned)"
+        );
+        assert_eq!(first.signing_epoch, Some(0));
+    }
+
+    /// Every provisioned card records its signing epoch — the audit trail
+    /// names the generation and verify picks the key deterministically.
+    #[test]
+    fn card_epoch_recorded() {
+        let _guard = lock_env();
+        let key = OperatorKey::new();
+        let conn = db();
+        let c = provision_card(&conn, &card("atlas"), 1100).expect("provisioned");
+        assert_eq!(c.signing_epoch, Some(0));
+        rotate(key.0.path(), &conn);
+        let c2 = provision_card(&conn, &card("atlas2"), 1200).expect("provisioned");
+        assert_eq!(c2.signing_epoch, Some(1));
     }
 
     fn card(principal: &str) -> CardDraft<'_> {

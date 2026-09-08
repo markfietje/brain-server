@@ -337,7 +337,14 @@ impl ReplayCache {
         if list.len() >= CAP_REPLAY_CAP {
             list.retain(|(_, e)| *e > now);
             if list.len() >= CAP_REPLAY_CAP {
-                list.clear(); // extreme flood: drop history rather than grow
+                // At the cap, evict the OLDEST quarter (the list is
+                // insertion-ordered — drain the front). The old flood-clear
+                // dropped EVERY pin, letting an attacker replay anything
+                // older than the flood window; now recent pins survive a
+                // flood and the documented trade-off shrinks to "the oldest
+                // quarter of the window".
+                let evict = list.len() / 4;
+                list.drain(..evict);
             }
         }
         // Pin: a jti is bound to the FIRST (method, path) it presented on.
@@ -682,6 +689,39 @@ mod tests {
         assert!(
             !cap_replay_check(&minted, "GET", "/ump/export"),
             "second endpoint refused as replay"
+        );
+    }
+
+    /// At the cap, the OLDEST quarter is evicted (recent pins survive);
+    /// the pinned recent jti still reads as a retry after the flood.
+    #[test]
+    fn flood_evicts_oldest_quarter_keeps_recent() {
+        let cache = ReplayCache::default();
+        assert!(cache.first_presentation("keep-me", "POST", "/ump/recall", u64::MAX));
+        for i in 0..(CAP_REPLAY_CAP + 64) {
+            let jti = format!("flood-{i}");
+            let _ = cache.first_presentation(&jti, "POST", "/ump/flood", u64::MAX);
+        }
+        let list = cache.seen.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(list.len() < CAP_REPLAY_CAP, "bounded: {}", list.len());
+        let last = list.last().map(|((j, _, _), _)| j.clone()).unwrap();
+        assert_eq!(last, format!("flood-{}", CAP_REPLAY_CAP + 63));
+    }
+
+    /// The structural memory bound is pinned: the cache can never hold
+    /// more than the cap under any input sequence.
+    #[test]
+    fn cache_bounded_memory_pinned() {
+        let cache = ReplayCache::default();
+        for i in 0..(CAP_REPLAY_CAP * 3) {
+            let jti = format!("wave-{i}");
+            let _ = cache.first_presentation(&jti, "GET", "/ump/x", u64::MAX);
+        }
+        let list = cache.seen.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            list.len() <= CAP_REPLAY_CAP,
+            "the cache must stay <= cap: {}",
+            list.len()
         );
     }
 }

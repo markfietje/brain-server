@@ -482,12 +482,17 @@ mod tests {
     impl OperatorKey {
         fn new() -> OperatorKey {
             let dir = tempfile::TempDir::new().unwrap();
-            std::fs::write(dir.path().join("operator.key"), [7u8; 32]).unwrap();
+            // The FIXED operator-key filename (the deterministic resolver).
+            std::fs::write(
+                dir.path().join(crate::handlers::ump::OPERATOR_KEY_FILE),
+                [7u8; 32],
+            )
+            .unwrap();
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(
-                    dir.path().join("operator.key"),
+                    dir.path().join(crate::handlers::ump::OPERATOR_KEY_FILE),
                     std::fs::Permissions::from_mode(0o600),
                 )
                 .unwrap();
@@ -510,6 +515,34 @@ mod tests {
         conn.pragma_update(None, "journal_mode", "WAL").unwrap();
         conn.execute_batch("CREATE TABLE notes(id INTEGER PRIMARY KEY, body TEXT NOT NULL)")
             .unwrap();
+        // The shipped restore now REFUSES chain-less images (the
+        // chainless_image_refused law) — the fixture carries a real
+        // (legacy-epoch) audit chain so the promote path stays the shipped
+        // one end to end.
+        conn.execute_batch(
+            "CREATE TABLE audit_events(
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               ts TEXT DEFAULT CURRENT_TIMESTAMP,
+               kind TEXT NOT NULL,
+               actor TEXT,
+               target_hash TEXT,
+               status TEXT,
+               detail_hash TEXT,
+               tenant_id TEXT NOT NULL DEFAULT 'global',
+               prev_hash TEXT);
+             CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT);",
+        )
+        .unwrap();
+        for i in 0..2 {
+            crate::audit::record(
+                &conn,
+                crate::audit::AuditKind::Ingest,
+                "fixture",
+                &format!("standby-{i}"),
+                crate::audit::AuditStatus::Ok,
+                "fixture row",
+            );
+        }
         for i in 0..rows {
             conn.execute(
                 "INSERT INTO notes(body) VALUES (?1)",
@@ -601,7 +634,10 @@ mod tests {
         let follower = work.join("follower");
         let m = ship_cycle(&db_path, &follower, b"drill-pass", 30, 1).expect("ship cycle");
         assert!(
-            _key.0.path().join("operator.key").is_file(),
+            _key.0
+                .path()
+                .join(crate::handlers::ump::OPERATOR_KEY_FILE)
+                .is_file(),
             "fixture sanity: the operator seed file must exist for the cycle to sign"
         );
         assert_eq!(m.cycle, 1);

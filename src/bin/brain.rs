@@ -296,7 +296,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
         name: "restore",
         json: false,
         run: cmd_restore,
-        usage: "brain restore <in-path> [--passphrase-file PATH]",
+        usage: "brain restore <in-path> [--passphrase-file PATH] [--allow-chainless]",
     },
     Subcommand {
         name: "standby",
@@ -308,7 +308,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
         name: "key",
         json: false,
         run: cmd_key,
-        usage: "brain key generate [--kid ID] [--dir PATH]\n  brain key list [--dir PATH]\n  brain key prune [--dir PATH] [--keep N]",
+        usage: "brain key generate [--kid ID] [--dir PATH]\n  brain key list [--dir PATH]\n  brain key prune [--dir PATH] [--keep N]\n  brain key rotate [--db PATH] — rotate the UMP operator signing key (one-deep overlap)",
     },
     Subcommand {
         name: "ump",
@@ -2669,6 +2669,105 @@ fn cmd_ump_keygen(args: &[String]) -> Result<String, String> {
     Ok(did)
 }
 
+/// `brain key rotate` — the OPERATOR rotation verb for the UMP OPERATOR
+/// SIGNING KEY (the key-lifecycle release; distinct from `brain key
+/// generate`, which manages JWT RSA keys). Generates a new seed, moves the
+/// current key to `operator.ed25519.prev` (verify-only overlap, ONE key
+/// deep), writes the new key 0600, bumps the key generation in the DB, and
+/// writes the rotation's hash-chained audit row. NO scheduling, NO
+/// background anything — rotation happens when an operator runs this.
+fn cmd_operator_key_rotate(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    if positionals.first().map(|s| s.as_str()) != Some("rotate") {
+        return Err("usage: brain key rotate [--db PATH]".to_string());
+    }
+    let dir = std::env::var("BRAIN_UMP_KEY_DIR")
+        .ok()
+        .filter(|d| !d.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| dirs_home().join(".config/brain-server/ump"));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create key dir {dir:?}: {e}"))?;
+    let current = dir.join(brain_server::handlers::ump::OPERATOR_KEY_FILE);
+    let prev = dir.join(brain_server::handlers::ump::OPERATOR_KEY_PREV_FILE);
+    if !current.exists() {
+        return Err(format!(
+            "no operator key at {current:?} to rotate — provision one first (the server \
+             generates one on first boot, or use 'brain ump keygen')"
+        ));
+    }
+    if prev.exists() {
+        return Err(format!(
+            "{prev:?} already exists — the overlap window is ONE key deep. A second rotate \
+             now would orphan every card signed by the middle generation. Re-provision the \
+             old generation's cards first, then delete {prev:?} deliberately."
+        ));
+    }
+    // Atomic move: current → prev (verify-only from this moment).
+    std::fs::rename(&current, &prev).map_err(|e| format!("move current key to prev: {e}"))?;
+    // Generate the new seed + write 0600.
+    use rand::{TryRng, rngs::SysRng};
+    let mut seed = [0u8; 32];
+    SysRng
+        .try_fill_bytes(&mut seed)
+        .map_err(|e| format!("OS entropy source failed: {e}"))?;
+    std::fs::write(&current, seed).map_err(|e| {
+        // roll the rename back — never leave the operator keyless
+        let _ = std::fs::rename(&prev, &current);
+        format!("write new {current:?}: {e} (rename rolled back)")
+    })?;
+    set_mode_0600(&current)?;
+    let sk = ed25519_dalek::SigningKey::from_bytes(&seed);
+    let new_did = brain_server::handlers::ump::did_key(&sk.verifying_key().to_bytes());
+    // Bookkeeping in the DB: generation bump + the hash-chained audit row
+    // (the audit chain IS the register — no parallel event store for an
+    // identity-scoped act).
+    let db = flags
+        .get("db")
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_db_path);
+    if db.exists() {
+        let conn = rusqlite::Connection::open(&db).map_err(|e| format!("open {db:?}: {e}"))?;
+        conn.execute(
+            "INSERT INTO schema_meta(key, value) VALUES ('operator_key_generation', '1')
+             ON CONFLICT(key) DO UPDATE SET
+                 value = CAST(CAST(value AS INTEGER) + 1 AS TEXT)",
+            [],
+        )
+        .map_err(|e| format!("bump key generation: {e}"))?;
+        let generation: String = conn
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key = 'operator_key_generation'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| "?".to_string());
+        let row = brain_server::audit::record(
+            &conn,
+            brain_server::audit::AuditKind::Auth,
+            "operator",
+            "identity:operator-signing-key",
+            brain_server::audit::AuditStatus::Ok,
+            &format!("key_rotation: generation {generation}, new signer {new_did}"),
+        );
+        if row.is_none() {
+            return Err("the rotation audit row failed to write — the rotation is NOT                         evidenced; investigate before relying on the new key"
+                .to_string());
+        }
+        println!("key generation: {generation}");
+    } else {
+        println!("note: no DB at {db:?} — generation/audit bookkeeping skipped");
+    }
+    println!("rotated operator key in {dir:?}");
+    println!("new key: {current:?} (0600) — signs immediately");
+    println!(
+        "prev key: {prev:?} — VERIFY-ONLY overlap (cards signed by the old key keep verifying)"
+    );
+    println!("new signer did: {new_did}");
+    println!("re-provision the old generation's cards at leisure; a SECOND rotate orphans them.");
+    Ok(())
+}
+
 fn cmd_ump_export(args: &[String]) -> Result<(), String> {
     let mut format = "md";
     let mut out = "records.ump.md".to_string();
@@ -3337,11 +3436,11 @@ fn cmd_backup(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// `brain restore <in-path> [--passphrase-file PATH] [--force] [--yes]`
+/// `brain restore <in-path> [--passphrase-file PATH] [--force] [--yes] [--allow-chainless]`
 fn cmd_restore(args: &[String]) -> Result<(), String> {
     let (positionals, flags) = parse_flags(args)?;
     let in_path = positionals.first().cloned().ok_or_else(|| {
-        "usage: brain restore <in-path> [--passphrase-file PATH] [--force] [--yes]".to_string()
+        "usage: brain restore <in-path> [--passphrase-file PATH] [--force] [--yes] [--allow-chainless]".to_string()
     })?;
     let pass = resolve_passphrase(&flags)?;
     let db = default_db_path();
@@ -3379,9 +3478,28 @@ fn cmd_restore(args: &[String]) -> Result<(), String> {
             return Ok(());
         }
     }
-    brain_server::backup::restore(Path::new(&in_path), &db, &pass)
-        .map_err(|e| format!("restore failed: {e:#}"))?;
+    let allow_chainless = flags.contains_key("allow-chainless");
+    let disclosure = brain_server::backup::restore_with_options(
+        Path::new(&in_path),
+        &db,
+        &pass,
+        allow_chainless,
+    )
+    .map_err(|e| format!("restore failed: {e:#}"))?;
     println!("restored: {db:?} (safety snapshot saved as <db>.bak)");
+    if disclosure.chainless_admitted {
+        println!(
+            "WARNING: chain-less image admitted (--allow-chainless): the backup carried NO \
+             audit_events table — nothing was certified about its contents."
+        );
+    }
+    if disclosure.legacy_unkeyed_chain {
+        println!(
+            "WARNING: legacy_unkeyed_chain: forgeable: true — this image predates keyed \
+             audit chains. Run the re-anchor (\'brain audit re-anchor\' / --re-audit path) \
+             before treating the chain as evidence."
+        );
+    }
     Ok(())
 }
 
@@ -3736,8 +3854,9 @@ fn cmd_key(args: &[String]) -> Result<(), String> {
         "generate" => cmd_key_generate(rest),
         "list" => cmd_key_list(rest),
         "prune" => cmd_key_prune(rest),
+        "rotate" => cmd_operator_key_rotate(rest),
         other => Err(format!(
-            "unknown 'brain key' subcommand: '{other}' (try generate|list|prune)"
+            "unknown 'brain key' subcommand: '{other}' (try generate|list|prune|rotate)"
         )),
     }
 }

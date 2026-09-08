@@ -179,6 +179,8 @@ pub const SCHEMA_VERSION_V1_28_53: &str = "1.28.53";
 /// one-way; empty on every existing deployment until a revocation is filed;
 /// the down-migration is a documented no-op.
 pub const SCHEMA_VERSION_V1_28_62: &str = "1.28.62";
+/// the key-lifecycle release: `agent_cards.signing_epoch` (additive).
+pub const SCHEMA_VERSION_V1_28_73: &str = "1.28.73";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";

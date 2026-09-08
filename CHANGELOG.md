@@ -18,6 +18,93 @@ measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
 
+## [1.28.73] — 2026-09-08 — "Keyring": key + evidence lifecycle
+
+The fourth REGISTER LINE release (X-C4, X-C3, X-W8 — audit 2026-09-06
+§4.3/§4.1). Theme: the operator signing key becomes deterministic and
+rotatable with a one-deep overlap window, restore stops certifying
+chain-less images silently, and the two bounded-memory trade-offs get
+explicit eviction instead of flood-clear. Schema: ONE additive column
+(`agent_cards.signing_epoch`) — version 1.28.73, contract test extended.
+Plan: `IMPLEMENTATION_PLAN_v1.28.73_Keyring.md`.
+
+### Release notes
+
+**Bug fixes**
+
+- The UMP revocation-replay cache no longer clears ALL pins at the
+  4096 cap: a flood now evicts only the OLDEST quarter (insertion-order
+  truncate), so recent capability pins survive and the documented
+  trade-off shrinks to "the oldest quarter of the window".
+- The revocation drain no longer silently abandons runs past the first
+  200: it pages (max 10 × 200) and, when the budget is exhausted, writes
+  a loud `drain_incomplete` row on the hash-chained audit trail naming
+  the remainder.
+
+**Security fixes**
+
+- **The operator signing key is DETERMINISTIC** (X-C4): the fixed
+  filename `operator.ed25519` inside the key dir replaces the
+  first-file readdir scan (which nondeterministically picked whichever
+  seed the filesystem listed first — rotation invalidated EVERY card at
+  once). Existing installs migrate transparently: the first admissible
+  seed is renamed once, logged. A wrong-size or leaked seed at the
+  fixed name is now a LOUD refusal — the historical silent degrade to
+  L2 hash-only integrity dies.
+- **`brain key rotate`** — the operator rotation verb: current key →
+  `operator.ed25519.prev` (atomic rename), new 0600 seed written,
+  generation bumped, hash-chained audit row. Cards signed by the old
+  key keep verifying through the ONE-deep overlap window; a second
+  rotate deliberately refuses while `.prev` exists (a third generation
+  would orphan the middle one — pinned). NO scheduling, NO background
+  anything.
+- **Cards carry `signing_epoch`** (additive column): `verify_card`
+  picks the key deterministically — current generation → current key,
+  previous generation → `.prev`, legacy NULL rows try both (old
+  binaries' behavior plus the window, byte-compat).
+- **Restore tells the truth about chain-less images** (X-C3): a backup
+  image with NO `audit_events` table REFUSES with
+  `chainless_image_refused` unless the CLI passes
+  `--allow-chainless` (the flag restores with a loud disclosure — no
+  chain exists to carry the row, and that absence IS the finding).
+  Legacy-epoch (unkeyed SHA-256) chains restore marked
+  `legacy_unkeyed_chain: forgeable: true` on the completion line + a
+  disclosure evidence row naming `--re-audit` as the re-anchor. Head-pin
+  rollback stays disclosed-not-refused (the legitimate
+  restore-from-older recovery use).
+
+### Engineering record
+
+- **Rotation ceremony mapping (honest):** the plan's `key_rotation`
+  lineage event maps onto the audit chain itself (the register IS the
+  audit chain — no parallel event store for an identity-scoped act; the
+  Advocate precedent). The outbox lineage machinery is run-scoped;
+  rotation is not.
+- **Schema:** `agent_cards.signing_epoch INTEGER` (additive, NULL for
+  legacy rows), version stamp 1.28.62 → 1.28.73, contract test extended
+  same-commit; boots green on a COPY of the fixture corpus (the
+  standby roundtrip proptest exercises the new restore path).
+- **Drills (all test-level, on copies + scratch key dirs):** rotate →
+  old card verifies via `.prev`, new card signs with the current key
+  (`rotate_keeps_old_card_verifying_via_prev`); a no-audit-events image
+  → restore refuses (`chainless_backup_refused_without_flag`); the
+  legacy image restores with the forgeable mark + evidence row
+  (`legacy_chain_marked_forgeable_until_reanchor`); a second rotate →
+  first-generation cards die (`third_generation_kills_first`); the
+  transparent rename rehearsed (`legacy_first_file_migrates_transparently`).
+- **Validation:** full bench suite 1,450 passed / 7 ignored (default
+  1,467; otel 1,469); clippy clean ×3 feature sets; fmt clean;
+  lipstyk clean; CRATE_TEST_FLOOR 1,345 → 1,356 (needle re-measured).
+- **ponytail (plan non-goals):** no HSM/KMS (the threat model is a
+  laptop + disk; 0600 + deterministic + one-deep overlap is the
+  proportionate ceremony); no automatic rotation scheduling (no
+  background workers); no multi-party signing; same-disk key ceiling
+  stands until v3.7-class work.
+- Migration note: none required for correct installs — the fixed
+  filename adopts in place on first boot; operators with MULTIPLE
+  seeds in the key dir get the first admissible one (documented
+  nondeterminism, now resolved once and logged).
+
 ## [1.28.72] — 2026-09-08 — "Scrim": every emitted surface is shaped
 
 The third REGISTER LINE release (X-R3, X-W6, X-L4, X-E5 — audit

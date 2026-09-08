@@ -85,6 +85,7 @@ on the HTTP API or the client console.
 | `brain key generate` [`--kid ID`] [`--dir PATH`] | Generate an RSA-2048 (RS256) JWT signing keypair (JWT mode). Algorithm is fixed at RSA-2048/RS256. |
 | `brain key list` [`--dir PATH`] | Show loaded keys |
 | `brain key prune` [`--dir PATH`] [`--keep N`] | Drop expired keys from JWKS |
+| `brain key rotate` [`--db PATH`] | Rotate the UMP operator signing key (`operator.ed25519`): current → `.prev` (verify-only, ONE key deep), new seed 0600, generation bump + hash-chained audit row. Operator verb — no scheduling, no background anything. |
 
 ## Token management
 
@@ -129,7 +130,7 @@ on the HTTP API or the client console.
 | Command | Purpose |
 |---|---|
 | `brain backup <out-path>` [`--passphrase-file PATH`] [`--format v1\|v2\|v3`] | Encrypted AES-256-GCM backup (checksummed, excludes secrets; v3 is the current format — header bytes are GCM AAD). DB path is taken from `BRAIN_DB_PATH`/default, not a positional. A passphrase is required. |
-| `brain restore <in-path>` [`--passphrase-file PATH`] | Restore from an encrypted backup |
+| `brain restore <in-path>` [`--passphrase-file PATH`] [`--force`] [`--yes`] [`--allow-chainless`] | Restore from an encrypted backup. A chain-less image (no `audit_events` table) REFUSES without `--allow-chainless`; the flag restores with a loud disclosure. Legacy-epoch (unkeyed) chains are marked `forgeable: true` until `--re-audit` re-anchors. |
 
 ## Warm standby (v1.28.61)
 

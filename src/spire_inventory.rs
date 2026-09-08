@@ -95,7 +95,7 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// bare-`#[test]` pins: the four `auth_token_sets`/agent-source config
 /// pins and the `scoped_domain_label` pure pin — the ten tokio agent
 /// pins ride outside the needle like every tokio test before them).
-const CRATE_TEST_FLOOR: usize = 1_345;
+const CRATE_TEST_FLOOR: usize = 1_356;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows (security.txt + the

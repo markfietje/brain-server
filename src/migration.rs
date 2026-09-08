@@ -1889,6 +1889,7 @@ pub fn run_migration_with_store_dim(
             card_json         TEXT NOT NULL,
             signature         TEXT NOT NULL,
             signed_by         TEXT NOT NULL,
+            signing_epoch     INTEGER,
             created_at        INTEGER NOT NULL,
             UNIQUE(domain, principal)
          );",
@@ -2202,9 +2203,25 @@ pub fn run_migration_with_store_dim(
         "CREATE TABLE IF NOT EXISTS rules(id INTEGER PRIMARY KEY, jurisdiction TEXT NOT NULL, subject TEXT NOT NULL, rule_key TEXT NOT NULL, body TEXT NOT NULL, source_ref TEXT NOT NULL, effective_at INTEGER NOT NULL, reviewed_at INTEGER, expires_at INTEGER, revision INTEGER NOT NULL, superseded_by INTEGER, created_at INTEGER NOT NULL);
          CREATE TABLE IF NOT EXISTS rule_rates(id INTEGER PRIMARY KEY, rule_id INTEGER NOT NULL REFERENCES rules(id), rate_json TEXT NOT NULL, applicable_from INTEGER NOT NULL);",
     )?;
+    // ── the key-lifecycle release: agent cards carry the signing epoch so
+    // `verify_card` picks the operator key deterministically and the audit
+    // trail names the generation. Additive column; legacy rows are NULL
+    // (= "current-or-previous" verification, byte-compat with old binaries).
+    let has_epoch: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('agent_cards') WHERE name='signing_epoch'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !has_epoch {
+        db.execute_batch("ALTER TABLE agent_cards ADD COLUMN signing_epoch INTEGER;")?;
+    }
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.62')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.62';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.73')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.73';",
         [],
     )?;
 
