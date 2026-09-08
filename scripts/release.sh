@@ -56,7 +56,7 @@ if ! command -v gh >/dev/null 2>&1; then
 fi
 echo ">> waiting for CI (ci.yml) on ${HEAD_SHA:0:10} to finish…"
 RUN_ID=""
-for i in $(seq 1 20); do  # ≤ 10 min for the run to register after the push
+for _ in $(seq 1 20); do  # ≤ 10 min for the run to register after the push
   RUN_ID="$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --json databaseId --limit 1 --jq '.[0].databaseId' 2>/dev/null || true)"
   [[ -n "$RUN_ID" ]] && break
   sleep 30
@@ -68,7 +68,7 @@ fi
 RUN_URL="$(gh run view "$RUN_ID" --json url --jq .url 2>/dev/null || echo "(gh run view $RUN_ID)")"
 echo ">> watching CI run #$RUN_ID — $RUN_URL"
 STATUS="queued"; CONCLUSION=""
-for i in $(seq 1 120); do  # ≤ 60 min for the matrix to complete
+for _ in $(seq 1 120); do  # ≤ 60 min for the matrix to complete
   LINE="$(gh run view "$RUN_ID" --json status,conclusion --jq '[.status, (.conclusion // "")] | @tsv' 2>/dev/null || true)"
   if [[ -n "$LINE" ]]; then
     STATUS="${LINE%%$'\t'*}"
