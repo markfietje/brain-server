@@ -1,6 +1,6 @@
 # COMPLIANCE.md — Compliance Posture & Technical File
 
-**Version:** 1.28.34 "Goodwill" · **Last updated:** 2026-08-26
+**Version:** 1.28.75 "Preflight" · **Last updated:** 2026-09-09
 
 This is the buyer-facing technical file: what brain-server IS, what it logs,
 how it erases, and how it maps to the frameworks procurement asks about. It is
