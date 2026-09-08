@@ -93,3 +93,5 @@ echo '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.
 ## License
 
 MIT 2026 Mark Fietje. See `LICENSE`. Issues welcome on GitHub.
+
+If it saves you a query, a star helps others find it.
