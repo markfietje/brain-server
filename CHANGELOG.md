@@ -18,6 +18,86 @@ measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
 
+## [1.28.75] — 2026-09-08 — "Preflight": the program's exit gate
+
+The last REGISTER LINE release (X-W7, X-A4b, X-C5, X-C6, X-C8 — audit
+2026-09-06 §4.1–4.3/§8), docs-heavy by design: the last release of a
+line certifies. **This release is the gate: the 1.32.x Loop line may
+open** — with its inherited preconditions (hardened dormant exec
+mediation + the dormancy pin to delete on wiring, review-by-default
+installs, pinned signers, origin labels). The program close-out — all
+55 findings × disposition, the four-leg exit-gate drill, per-release
+deltas, and the surviving ceilings — is in `docs/AUDIT.md`. Plan:
+`IMPLEMENTATION_PLAN_v1.28.75_Preflight.md`.
+
+### Release notes
+
+**Security fixes**
+
+- **The dormant exec mediation is hardened — and its dormancy is now a
+  declared, machine-checked state** (X-W7): argv0 admission
+  canonicalizes the resolved binary and refuses divergence from the
+  allowlist prefix (the symlink-masquerade door the "refuse rather than
+  canonicalize" posture left open); the danger screen is renamed in
+  docs what it is — the TRIPWIRE (the allowlist is the admit gate) —
+  and gains the pipe-to-shell family (`| sh`, `| bash`, `| zsh`,
+  `base64 -d`); `kill_on_drop` is pinned at the exec spawn seam. The
+  new dormancy pin (`hostcalls_mediation_stays_unwired_until_loop_line`)
+  asserts ZERO production call sites — when the Loop line wires the
+  mediation, it DELETES this pin and inherits the hardened ground; a
+  silent partial wiring fails here first.
+- **Review posture at install** (X-A4b): `install-service.sh` writes
+  `BRAIN_WRITE_POSTURE=review` for installs whose plist carries NO
+  explicit posture yet — an operator-set value (including a deliberate
+  `open` opt-out) is NEVER stomped by a re-run (the old unconditional
+  remove+insert did exactly that on every update). The completion
+  message names the resolved posture, what review means, and the
+  opt-out. The compiled default stays `open` — unattended upgrades must
+  not break; the installer is the posture authority.
+- **The honest ceilings become docs truth** (X-C5, X-C6):
+  THREAT_MODEL.md now states verbatim-honest that (a) the audit chain's
+  HMAC key + head pin share the host with the DB — the chain detects
+  SQL/application-level tampering, NOT host compromise; and (b) the
+  live DB + `.bak` snapshots are PLAINTEXT on the primary (the
+  encryption law covers the follower only). SECURITY.md carries both in
+  the reporter scope — a reporter demonstrating ".bak extraction on a
+  stolen disk" knows it is a known ceiling, not a bounty shape.
+- **SBOM freshness is gated** (X-C8): `badges.sh --selfcheck` (already
+  run in CI) now REFUSES when `sbom/brain-server-<version>.cdx.json` is
+  absent from the COMMITTED tree — the human step (generate + commit)
+  is unforgoable; no CI bot commits.
+
+### Engineering record
+
+- **Migration note (installer):** existing plists are untouched — if
+  your plist already carries a posture, re-running the installer keeps
+  it and says so. New installs (and plists that never named a posture)
+  get review.
+- **Program close-out:** `docs/AUDIT.md` carries the findings ledger ×
+  disposition (55 findings; the plan's "41" undercounted — all are
+  dispositioned: 46 fixed across v1.28.63–.75, 5 accepted
+  ceilings/with-disclosure, 2 forward to their own lines, plus the
+  .64 identity batch), the four-leg exit-gate drill transcript, and
+  per-release test deltas.
+- **Exit-gate drill (the four headline exploits re-run — all fail
+  closed):** (1) `channel/out` forge via the events route → REFUSED
+  (reserved-topic pins); (2) steering launder via the same seam →
+  REFUSED; (3) revoked principal on a non-mesh route → DENIED (kill-
+  switch pins); (4) poisoned-memory canary (tag-encoded instruction +
+  forged markers + image URL) → screened/fenced/stripped (the Meridian
+  division-of-labor pin + fence welding pins). Transcripts in
+  `docs/AUDIT.md`.
+- **Validation:** full bench suite 1,458 passed / 7 ignored; clippy
+  clean ×3 feature sets; fmt clean; lipstyk clean; CRATE_TEST_FLOOR
+  1,358 → 1,363; `badges.sh --selfcheck` green WITH the new SBOM gate;
+  `bash -n` on the installer (shellcheck not installed locally — noted
+  ceiling).
+- **ponytail (plan non-goals):** the mediation is NOT wired (no
+  consumer exists; wiring without the Loop line's policy design would
+  be speculative authority); no sandboxing/namespace isolation; no
+  primary-disk encryption (FileVault is on; encrypting `.bak` breaks
+  the restore-on-bare-metal path); no CI-committed artifacts.
+
 ## [1.28.74] — 2026-09-08 — "Origin": taint labels survive the whole trip
 
 The fifth REGISTER LINE release (X-S2 at proportionate grade, X-F3 —

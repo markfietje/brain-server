@@ -179,9 +179,17 @@ fi
 #     carries; its writes land as proposals under the review posture).
 AGENT_TOKEN_FILE="$HOME/.config/brain-server/auth-agent-token"
 if [[ -f "$TOKEN_FILE" ]]; then
-	plutil -remove EnvironmentVariables.BRAIN_WRITE_POSTURE "$PLIST" 2>/dev/null || true
-	plutil -insert EnvironmentVariables.BRAIN_WRITE_POSTURE -string "review" "$PLIST"
-	ok "BRAIN_WRITE_POSTURE=review installed"
+	# The write posture is a NEW-INSTALL default (the preflight line): review
+	# is inserted only when the plist carries NO explicit posture yet. An
+	# operator-set value (including a deliberate `open` opt-out) is NEVER
+	# overwritten by a re-run — the installer provisions, the operator owns.
+	CURRENT_POSTURE="$(plutil -extract EnvironmentVariables.BRAIN_WRITE_POSTURE raw "$PLIST" 2>/dev/null || true)"
+	if [[ -z "$CURRENT_POSTURE" ]]; then
+		plutil -insert EnvironmentVariables.BRAIN_WRITE_POSTURE -string "review" "$PLIST"
+		ok "BRAIN_WRITE_POSTURE=review installed (new-install default)"
+	else
+		ok "BRAIN_WRITE_POSTURE=$CURRENT_POSTURE kept (operator-set; untouched)"
+	fi
 	if [[ ! -f "$AGENT_TOKEN_FILE" ]]; then
 		openssl rand -hex 32 > "$AGENT_TOKEN_FILE"
 		chmod 600 "$AGENT_TOKEN_FILE"
@@ -247,4 +255,11 @@ for _ in $(seq 1 15); do
 done
 [[ "$healthy" = "1" ]] || die "service up but /health not responding -- check logs"
 ok "/health OK"
+POSTURE_ECHO="$(plutil -extract EnvironmentVariables.BRAIN_WRITE_POSTURE raw "$PLIST" 2>/dev/null || true)"
 printf '\nDone. Logs: ~/Library/Logs/brain-server.{log,err.log}\n'
+printf 'Write posture: %s\n' "${POSTURE_ECHO:-open (compiled default)}"
+if [[ "${POSTURE_ECHO:-open}" != "review" ]]; then
+	printf '  NOTE: not review-by-default. Agent writes go straight to memory.\n'
+	printf '  Restore the guard: plutil -insert EnvironmentVariables.BRAIN_WRITE_POSTURE -string review '"'"'%s'"'"'\n' "$PLIST"
+fi
+printf '  review = agent writes land as human-approved proposals (opt-out: open).\n'

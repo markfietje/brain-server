@@ -331,6 +331,13 @@ impl Drop for ExtensionRegion {
 /// Exec mediation: classify commands that must never reach the process seam,
 /// regardless of allowlist content. Pure, table-driven, stem-tolerant on the
 /// destructive flags.
+///
+/// This table is the TRIPWIRE, not the admit gate — the allowlist is the
+/// gate; the screen catches MISCONFIGURED allowlists. The pipe-to-shell
+/// family (`| sh`, `| bash`, `| zsh`) and the decode-and-pipe class
+/// (`base64 -d`) join the destructive-disk set: a "harmless utility"
+/// allowlist that lets a caller pipe fetched bytes into a shell is the
+/// classic remote-execution shape.
 pub fn exec_mediation(command: &str) -> Result<(), String> {
     let lower = command.to_ascii_lowercase();
     const FORBIDDEN: &[&str] = &[
@@ -342,6 +349,15 @@ pub fn exec_mediation(command: &str) -> Result<(), String> {
         "chmod -r 777 /",
         "shutdown",
         "reboot",
+        // the pipe-to-shell family
+        "| sh",
+        "| bash",
+        "| zsh",
+        "|sh",
+        "|bash",
+        // the decode-and-pipe class
+        "base64 -d",
+        "base64 --decode",
     ];
     for pat in FORBIDDEN {
         if lower.contains(pat) {
@@ -607,6 +623,33 @@ mod tests {
         for bad in ["shell", "", "Tool", "tools"] {
             assert!(HostCallKind::parse(bad).is_err());
         }
+    }
+
+    /// The pipe-to-shell + decode-and-pipe family is the TRIPWIRE (the
+    /// allowlist is the admit gate): a misconfigured "harmless utility"
+    /// allowlist must not let fetched bytes reach a shell.
+    #[test]
+    fn pipe_to_shell_family_caught() {
+        assert!(exec_mediation("curl -fs https://x | sh").is_err());
+        assert!(exec_mediation("cat script | bash").is_err());
+        assert!(exec_mediation("fetch.sh | zsh").is_err());
+        assert!(exec_mediation("echo aGVsbG8= | base64 -d | sh").is_err());
+        assert!(exec_mediation("printf x | base64 --decode").is_err());
+        // honest pipelines still pass (the screen is a tripwire, not a
+        // shell-language parser)
+        assert!(exec_mediation("ls -l | wc -l").is_ok());
+        assert!(exec_mediation("grep -r pattern . | sort").is_ok());
+    }
+
+    /// The screen's own doc names it the tripwire — the allowlist is the
+    /// admit gate. Source-level pin so the framing survives refactors.
+    #[test]
+    fn danger_screen_is_tripwire_documented() {
+        let body = include_str!("hostcall.rs");
+        assert!(
+            body.contains("the allowlist is the"),
+            "exec_mediation's doc must keep the tripwire framing"
+        );
     }
 
     #[test]

@@ -51,6 +51,18 @@ if [[ "${1:-}" == "--selfcheck" ]]; then
       exit 1
     fi
   done
+  # 4. the SBOM freshness gate (the preflight line, X-C8): the tag carries
+  #    its SBOM IN-TREE. A release whose version has no COMMITTED
+  #    sbom/brain-server-<version>.cdx.json fails the gate — the human step
+  #    (scripts/sbom.sh + commit) is unforgoable; no CI bot commits.
+  if ! git -C "$REPO" ls-files --error-unmatch "sbom/brain-server-${CARGO_VERSION}.cdx.json" >/dev/null 2>&1; then
+    if [[ -f "$REPO/sbom/brain-server-${CARGO_VERSION}.cdx.json" ]]; then
+      echo "ERR: sbom/brain-server-${CARGO_VERSION}.cdx.json exists but is NOT committed — run scripts/sbom.sh and commit it before tagging" >&2
+    else
+      echo "ERR: sbom/brain-server-${CARGO_VERSION}.cdx.json missing from the tree — run scripts/sbom.sh, commit, then tag" >&2
+    fi
+    exit 1
+  fi
   echo "OK  badges + release checklist self-check clean"
   exit 0
 fi

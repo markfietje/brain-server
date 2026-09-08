@@ -14175,6 +14175,67 @@ mod scrim {
         assert_ne!(h, brain_server::otel::query_hash("other"));
     }
 
+    // ── the preflight line: installer posture, docs truth, SBOM gate ──
+
+    /// The SBOM freshness gate lives in the selfcheck the CI runs — the
+    /// committed-tree check (generate + commit is the human step; no bot
+    /// commits). Source-level pin: the gate exists and checks git, not the
+    /// filesystem alone.
+    #[test]
+    fn selfcheck_requires_committed_sbom() {
+        let script = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/badges.sh"),
+        )
+        .expect("badges.sh readable");
+        assert!(
+            script.contains("git -C \"$REPO\" ls-files --error-unmatch \"sbom/brain-server-${CARGO_VERSION}.cdx.json\""),
+            "the selfcheck must gate on the COMMITTED sbom (ls-files), not a working-tree file"
+        );
+        assert!(
+            script.contains("run scripts/sbom.sh"),
+            "the failure message names the unforgoable human step"
+        );
+    }
+
+    /// The installer writes review for NEW installs only:    /// The installer writes review for NEW installs only: the insert is
+    /// guarded by an absent-posture check, and the unconditional remove
+    /// (which stomped operator-set values on every re-run) is gone.
+    #[test]
+    fn installer_writes_review_for_new_installs() {
+        let script = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/install-service.sh"),
+        )
+        .expect("installer readable");
+        // The guarded insert: review only when NO explicit posture exists.
+        assert!(
+            script.contains("if [[ -z \"$CURRENT_POSTURE\" ]]"),
+            "the review write must be guarded by the absent-posture check"
+        );
+        assert!(
+            script.contains("BRAIN_WRITE_POSTURE -string \"review\""),
+            "the review insert is present"
+        );
+        // Existing plists untouched: no unconditional remove of the posture.
+        assert!(
+            !script.contains("plutil -remove EnvironmentVariables.BRAIN_WRITE_POSTURE"),
+            "the posture is never removed/stomped by a re-run"
+        );
+        // The completion message documents the posture + the opt-out.
+        assert!(
+            script.contains("Write posture:"),
+            "the completion line names the resolved posture"
+        );
+        assert!(
+            script.contains("review = agent writes land as human-approved proposals"),
+            "the completion message explains what review means"
+        );
+        // The compiled default stays open (unattended upgrades must not break).
+        assert!(
+            !script.contains("-string \"open\""),
+            "the installer never silently writes open either — the operator owns the value"
+        );
+    }
+
     /// An authorization failure BEFORE the stream opens is an HTTP 403 —
     /// the handler returns Err, axum renders the status; it is no longer a
     /// 200-then-error-event.

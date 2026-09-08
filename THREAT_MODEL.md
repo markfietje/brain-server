@@ -182,6 +182,18 @@ a `ponytail:` comment naming the ceiling and upgrade path.
    (LUKS/FileVault/BitLocker) recommended in deployment checklist. Risk: a
    disk image captures plaintext DBs. Accepted because: brain-server targets
    single-host trusted-disk deployments; SQLCipher is the v3.7 fix.
+   Standing statement (the preflight line's docs truth): the live DB AND its
+   `.bak` safety snapshots are PLAINTEXT on the primary host — the encryption
+   law covers the warm-standby FOLLOWER only. Full-disk encryption (LUKS/
+   FileVault) is the standing recommendation for the primary.
+
+2b. **The audit chain detects tampering, not host compromise.** The HMAC
+   chain key and the head pin share the host with the DB: the chain proves
+   integrity against SQL/application-level tampering (a flipped row, a
+   truncated history, an old image restored over a newer one), NOT against
+   an attacker who owns the host — host compromise is disk encryption's
+   problem (statement 2). Reporters: demonstrating ".bak extraction on a
+   stolen disk" is a KNOWN CEILING, not a novel finding (see SECURITY.md).
 
 3. **Prompt-injection guard is heuristic, not ML-classifier-based.** Ceiling
    documented in `contains_suspicious_pattern`. Accepted because: edge-only

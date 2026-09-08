@@ -38,6 +38,15 @@ at [`/.well-known/security.txt`](http://127.0.0.1:8765/.well-known/security.txt)
 - **SLA**: Acknowledgement within 48 hours; fix timeline within 5 business days;
   public disclosure coordinated with reporter (90-day default per Project Zero).
 
+**Known ceilings (stated so reporters do not burn time on them):**
+- The audit chain's HMAC key and head pin share the host with the DB — the
+  chain detects SQL/application-level tampering, NOT host compromise; host
+  compromise is disk encryption's problem.
+- The live DB and its `.bak` snapshots are PLAINTEXT on the primary; the
+  encryption law covers the warm-standby follower only. LUKS/FileVault is
+  the standing recommendation. A report demonstrating ".bak extraction on
+  a stolen disk" is a known ceiling, not a bounty shape.
+
 **Image / beacon exfiltration is in scope.** If you find any surface that
 automatically FETCHES a remote URL that model-controlled content influenced —
 a rendered image, a favicon probe, a data-URI side channel, an auto-fetching

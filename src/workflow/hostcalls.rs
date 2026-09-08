@@ -54,13 +54,29 @@ fn word_list(raw: &str) -> Vec<String> {
 fn argv0_allowed(argv0: &str, allowlist: &[String]) -> bool {
     // Prefix admission is only sound on a normalized path: a `..` component
     // could let `/usr/bin/../sbin/evil` masquerade under the `/usr/bin/`
-    // prefix. Refuse rather than canonicalize (symlinks stay out of scope).
+    // prefix — refuse.
     if argv0.split('/').any(|c| c == "..") {
         return false;
     }
-    allowlist
+    let textual = allowlist
         .iter()
-        .any(|e| e == argv0 || (e.ends_with('/') && argv0.starts_with(e.as_str())))
+        .any(|e| e == argv0 || (e.ends_with('/') && argv0.starts_with(e.as_str())));
+    if !textual {
+        return false;
+    }
+    // Symlink-masquerade closure (the preflight line's hardening): the
+    // RESOLVED file must still match the same allowlist. A symlink planted
+    // inside an allowlisted prefix pointing OUTSIDE it dies here — the
+    // historical "refuse rather than canonicalize" posture left that door
+    // open. A path that cannot be canonicalized (no file yet) keeps the
+    // textual decision; the spawn itself will fail on a missing binary
+    // either way.
+    std::fs::canonicalize(argv0).map_or(true, |resolved| {
+        allowlist.iter().any(|e| {
+            let r = resolved.to_string_lossy();
+            e == &r || (e.ends_with('/') && resolved.starts_with(e.as_str()))
+        })
+    })
 }
 
 fn loopback_host(host: &str) -> bool {
@@ -779,6 +795,78 @@ mod tests {
             )
             .unwrap();
         Arc::new(SqliteWorkflowHost::new(pool))
+    }
+
+    /// The preflight line's symlink closure: a symlink planted inside an
+    /// allowlisted prefix pointing OUTSIDE it is refused — the RESOLVED
+    /// path must still match the allowlist. An honest binary inside the
+    /// prefix stays admitted.
+    #[test]
+    fn symlink_prefix_masquerade_refused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let honest = bin.join("honest-tool");
+        std::fs::write(&honest, b"#!/bin/sh\n").unwrap();
+        // the outside target
+        let outside = dir.path().join("evil-real");
+        std::fs::write(&outside, b"#!/bin/sh\n").unwrap();
+        let planted = bin.join("planted");
+        std::os::unix::fs::symlink(&outside, &planted).unwrap();
+        // macOS /tmp is itself a symlink (/tmp → /private/var/...): build
+        // the allowlist from the CANONICAL prefix so the honest case tests
+        // the admission law, not the OS temp-dir aliasing.
+        let bin_canon = std::fs::canonicalize(&bin).unwrap();
+        let allowlist = vec![format!("{}/", bin_canon.display())];
+        // Paths as the operator would invoke them (same convention as the
+        // allowlist) — the honest tool: admitted (canonicalize stays in).
+        let honest_path = bin_canon.join("honest-tool");
+        assert!(argv0_allowed(&honest_path.to_string_lossy(), &allowlist));
+        // The planted symlink: textual match under the prefix, RESOLVED
+        // path outside it → refuse.
+        let planted_path = bin_canon.join("planted");
+        assert!(
+            !argv0_allowed(&planted_path.to_string_lossy(), &allowlist),
+            "a symlink masquerading under the prefix must refuse"
+        );
+    }
+
+    /// The dormancy pin: the exec mediation is HARDENED but UNWIRED —
+    /// `hostcalls::build` has zero production call sites (grep the way the
+    /// audit did). When the 1.32.x Loop line wires this, DELETE this pin
+    /// and inherit the hardened mediation. A silent partial wiring must
+    /// fail here first.
+    #[test]
+    fn hostcalls_mediation_stays_unwired_until_loop_line() {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut hits = 0usize;
+        let mut files = 0usize;
+        for entry in std::fs::read_dir(manifest.join("src")).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_dir() {
+                continue;
+            }
+            files += 1;
+            let body = std::fs::read_to_string(entry.path()).unwrap();
+            hits += body.matches("hostcalls::build(").count();
+        }
+        assert!(files > 10, "sanity: the walk scanned {files} files");
+        assert_eq!(
+            hits, 0,
+            "hostcalls::build must stay UNWIRED until the Loop line (delete this pin when wiring)"
+        );
+    }
+
+    /// kill_on_drop is inherited on the exec spawn path: abandonment (router
+    /// timeout, disconnect) kills the child with the drop — the .69 outcome
+    /// pinned at the seam that owns the spawn.
+    #[test]
+    fn exec_spawn_carries_kill_on_drop() {
+        let body = include_str!("hostcalls.rs");
+        assert!(
+            body.contains("cmd.kill_on_drop(true)"),
+            "the exec spawn must set kill_on_drop (abandonment kills the child)"
+        );
     }
 
     #[test]

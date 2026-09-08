@@ -566,3 +566,74 @@ it opens.
 - [ ] Ops debts riding along: the openclaw-side token purge (paused),
       the review-posture flip at install (Preflight), the SBOM refresh
       (Preflight).
+
+---
+
+# SEAM + REGISTER PROGRAM CLOSE-OUT — 2026-09-08 (v1.28.75 "Preflight")
+
+The 2026-09-06 audit's findings ledger (§4, namespace `X-`) is fully
+dispositioned. Two lines closed it: the **SEAM LINE** (v1.28.63–.70) and
+the **REGISTER LINE** (v1.28.70–.75). This release is the program's exit
+gate: the 1.32.x Loop line may open, with the inherited preconditions
+named in CHANGELOG §[1.28.75].
+
+## Findings ledger × disposition (55 findings; the plan's "41" undercounted — all are dispositioned)
+
+| Findings | Disposition | Release |
+|---|---|---|
+| X-W1, X-W2, X-W3, X-W4, X-W5 | FIXED (reserved outbox vocabulary, run-status closure, valet fence, alert-bus kind auth) | v1.28.63 |
+| X-R1, X-R5, X-S1, X-M2 | FIXED (untrusted labels, strip-set parity fixture, host-side merge strip, MCP envelope) | v1.28.65 |
+| X-L1, X-L2, X-L3, X-L5 | FIXED (approval args truth, head+tail truncation, DSAR prompts, restore interlocks) | v1.28.66 |
+| X-M1, X-M3, X-C1, X-C2 | FIXED (MCP scope env, catalog pins, required signers, integrity census) | v1.28.67 |
+| X-E1, X-E2, X-E4 | FIXED (remote images default-OFF + host allowlist, favicon beacon closed, data-URI budget) | v1.28.68 |
+| X-E3, X-M4, X-M5, X-M6 | FIXED (public-only egress pinning, absolute steward bin, kill_on_drop, console role gate) | v1.28.69 |
+| X-A4a, X-A5 | FIXED (typed agent principal, scoped telemetry) | v1.28.70 |
+| X-R4, X-R6, X-R7 | FIXED (stripped-form screen, translation/anagram/encoding tiers, bridge parity, log ANSI) | v1.28.71 |
+| X-R3, X-W6, X-L4, X-E5 | FIXED (element strip, write-on-read gate, SSE 403, KB escaping + locale contract) | v1.28.72 |
+| X-C3, X-C4, X-W8 | FIXED (chainless-refusal, deterministic key + rotation window, bounded evictions) | v1.28.73 |
+| X-S2, X-F3 | FIXED at proportionate grade (origin labels end to end; telemetry posture) | v1.28.74 |
+| X-W7, X-A4b, X-C5, X-C6, X-C8 | FIXED/STATED (mediation hardened + dormancy pinned; installer review default; the two ceilings stated as docs truth; SBOM freshness gate) | v1.28.75 |
+| X-A1, X-A2, X-A3, X-A6, X-A7, X-A8, X-A9, X-A10 | FIXED (kill-switch wiring, TTL match, key agility, public-path dedup, guard tables both directions, method scan, loud allow, rate buckets) | v1.28.64 |
+| X-A4 (single-token half) | ACCEPTED WITH DISCLOSURE — two-token setups enforced closed; single-token deployments keep the documented legacy superuser posture (pinned; the boot warn is the nudge) | v1.28.70 |
+| X-R2, X-R3 (bare-URL half), X-S3 | ACCEPTED CEILING — bare URLs linkified-but-inert; channel trust framing is prompt-text (docs-truth registered) | standing |
+| X-C7 | ACCEPTED WITH DOCUMENTATION — Marvin timing model (local-daemon threat model; audit.toml ignore) | standing |
+| X-F1, X-F2 | FORWARD — the 1.32.x Loop line and the WASM/payment lines carry their own addenda; .75 names the inherited preconditions | forward |
+
+## Exit-gate drill (the four headline exploits, re-run at the close-out commit — all fail closed)
+
+1. **`channel/out` forge via the events route** → REFUSED. Pins:
+   `enqueue_child_refuses_reserved_topics`,
+   `reserved_vocabulary_semantics`,
+   `reserved_refusal_converts_to_loud_sql_error` — green.
+2. **Steering launder via the same seam** → REFUSED (same reserved
+   vocabulary covers `steering`) — green.
+3. **Revoked principal on a non-mesh route** → DENIED.
+   `revoked_principal_cards_fail_closed` + `revoked_owner_no_new_dispatch`
+   — green (probe-blind 401/403 + dispatch re-check).
+4. **Poisoned-memory canary** (tag-encoded instruction + forged
+   `<active_memory_plugin>` markers + image URL) → screened/fenced/stripped:
+   `meridian_canary_screen_verdict_unchanged` (the read-seam division of
+   labor holds), the fence welding pins
+   (`wrap_fenced_blocks_control_char_welding`,
+   `wrap_fenced_blocks_invisible_near_markers`), and the .71/​.74 label
+   pins — green.
+
+## Per-release test deltas (REGISTER LINE)
+
+| Release | CRATE_TEST_FLOOR |
+|---|---|
+| v1.28.69 (pre-line) | 1,303 |
+| v1.28.70 Twokeys | 1,313 |
+| v1.28.71 Pores | 1,336 |
+| v1.28.72 Scrim | 1,345 |
+| v1.28.73 Keyring | 1,356 |
+| v1.28.74 Origin | 1,358 |
+| v1.28.75 Preflight | (this release's needle, above) |
+
+Live-proof transcripts: the .65 fence canary
+(`docs/MERIDIAN_PROOF_20260907.md`) and the .74 origin canary (per-tree
+test pins; the live group-chat drill is the Loop line's opening act —
+its inherited preconditions are hardened dormant mediation + the
+dormancy pin to delete on wiring, review-by-default installs, pinned
+signers, origin labels).
+
