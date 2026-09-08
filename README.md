@@ -21,22 +21,20 @@ Web + desktop + mobile GUI (Dioxus) · OpenAI-compatible embeddings · MCP serve
 
 ## Try it in 30 seconds
 
-A fresh `docker compose up` starts empty. Add one fact, then recall it:
+A fresh `docker compose up` starts empty and unauthenticated on loopback. One copy pastes the whole demo:
 
 ```bash
 docker compose up -d
-curl http://127.0.0.1:8765/health
-
-# Add one piece of knowledge
-curl -X POST http://127.0.0.1:8765/ingest/markdown \
-  -d '{"title":"Bignay","content":"Bignay is alternative to blueberry."}'
-
-# Recall it
-curl -X POST http://127.0.0.1:8765/recall \
-  -d '{"query":"blueberry alternative","provenance":true}'
+sleep 2 && curl -s http://127.0.0.1:8765/health
+curl -s -X POST http://127.0.0.1:8765/ingest/markdown \
+  -d '{"title":"Bignay","content":"Bignay is alternative to blueberry."}' > /dev/null
+curl -s -X POST http://127.0.0.1:8765/recall \
+  -d '{"query":"blueberry alternative","provenance":true}' | jq .
 ```
 
 You get `decision: ok` with sources, or `low_confidence` when it is not sure. No guess. Fresh install has no data until you add some.
+
+If you created `./data/auth-token` then add `-H "Authorization: Bearer $(cat ./data/auth-token)"` to the two POST curls. The compose file is unauthenticated by default because it only listens on 127.0.0.1.
 
 Prefer a local build?
 
