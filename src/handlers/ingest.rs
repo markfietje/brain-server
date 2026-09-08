@@ -74,6 +74,13 @@ pub struct IngestRequest {
     pub confidence: Option<f64>,
     #[serde(default)]
     pub expires_at: Option<i64>,
+    /// the taint label (the origin-labeling line): `"owner" | "channel"` —
+    /// WHERE the content came from. Absent/empty = owner (back-compat
+    /// byte-identical); `"channel"` stores the row with origin
+    /// `channel-capture` so recall surfaces label it and the plugin can
+    /// exclude it. Any other value is a 400 (closed vocabulary).
+    #[serde(default)]
+    pub origin_context: Option<String>,
     /// friendly retention — days from now (only honored
     /// when `expires_at` is absent; an explicit absolute always wins).
     /// Bounded 1..=36500 (the `POST /retention` bound).
@@ -184,6 +191,21 @@ pub async fn ingest(
                     .map_err(|e| HandlerError::bad_request("invalid_body", e.to_string())),
             ]
         };
+
+    // the closed origin vocabulary: absent/empty = owner; anything beyond
+    // owner|channel refuses (the label is capture-time truth, not a tag bag)
+    for lowered_req in lowered.iter().flatten() {
+        if let Some(ctx) = lowered_req.0.origin_context.as_deref()
+            && !ctx.is_empty()
+            && ctx != "owner"
+            && ctx != "channel"
+        {
+            return Err(HandlerError::bad_request(
+                "invalid_origin_context",
+                "origin_context must be owner or channel",
+            ));
+        }
+    }
 
     if lowered.len() == 1 {
         // was `.next().unwrap()` — trivially safe after
@@ -299,6 +321,7 @@ pub fn lower_ump(record: &Value) -> Result<(IngestRequest, crate::handlers::ump:
         title: row["title"].as_str().unwrap_or("untitled").to_string(),
         content: row["content"].as_str().unwrap_or_default().to_string(),
         domain: None,
+        origin_context: None,
         entities,
         relations,
         memory_kind: row["memory_kind"].as_str().map(|s| s.to_string()),
@@ -340,6 +363,8 @@ async fn propose_structured(
             domain: req.domain,
             title: Some(req.title),
             source_prompt: None,
+            // the taint label rides the review path too: the proposal badge
+            origin_context: req.origin_context,
         },
     )
     .await;
@@ -652,6 +677,7 @@ pub(crate) async fn ingest_one(
             ump_meta: req.ump_meta.as_deref(),
             lawful_basis: req.lawful_basis.as_deref(),
             purpose: req.purpose.as_deref(),
+            origin_context: req.origin_context.as_deref(),
             entities: &entities_norm,
             relations: &relations_norm,
         };

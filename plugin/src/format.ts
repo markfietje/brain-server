@@ -88,7 +88,8 @@ export function formatRecallContext(hits: ReadonlyArray<BrainRecallHit>): string
     const conflict = hit.conflict ? " ⚠conflicted" : "";
     const score = Number.isFinite(hit.score) ? ` (${Math.round(hit.score * 100)}%)` : "";
     const body = sanitizeForBlock(hit.content);
-    return `${i + 1}.${title}${domain}${score}${conflict}${provenanceTag(hit)} ${body}`;
+    const originPrefix = originLinePrefix(hit);
+    return `${i + 1}.${originPrefix}${title}${domain}${score}${conflict}${provenanceTag(hit)} ${body}`;
   });
   // v1.20.28: the unforgeable fence wraps banner + lines. v1.27.21 (S2-01):
   // per-field sanitization is NOT enough — each field is stripped
@@ -108,6 +109,22 @@ export function formatRecallContext(hits: ReadonlyArray<BrainRecallHit>): string
  * should ask the user to clarify or fall back to web search, not treat the
  * empty result as a plain "no memories".
  */
+// The origin-labeling line: non-owner hits carry a visible prefix INSIDE the
+// fence; owner hits stay untagged. The memory_recall TOOL path always labels
+// (tools return what was asked) — only auto-inject can exclude.
+export function originLinePrefix(hit: BrainRecallHit): string {
+  return hit.origin && hit.origin !== "owner"
+    ? ` [memory | ${sanitizeForBlock(hit.origin)}]`
+    : "";
+}
+
+// The `untrustedOrigins: "exclude"` posture: drop channel-captured hits from
+// AUTO-INJECT. The tool path never calls this.
+export function excludeChannelCaptures(hits: ReadonlyArray<BrainRecallHit>): BrainRecallHit[] {
+  const keep = (h: BrainRecallHit): boolean => h.origin !== "channel-capture";
+  return hits.filter(keep);
+}
+
 export const RECALL_ABSTENTION =
   "Memory recall abstained (low confidence): the query was too ambiguous or " +
   "under-specified to retrieve trustworthy memories. Ask the user to clarify, " +

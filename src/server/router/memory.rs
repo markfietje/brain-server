@@ -521,6 +521,7 @@ pub async fn add_chunk(
                 domain: Some("global".to_string()),
                 title: None,
                 source_prompt: None,
+                origin_context: None,
             },
         )
         .await;
@@ -1031,6 +1032,7 @@ pub async fn ingest_memory(
                 domain: Some("global".to_string()),
                 title: None,
                 source_prompt: None,
+                origin_context: None,
             },
         )
         .await;
@@ -1786,6 +1788,7 @@ pub(crate) async fn ingest_markdown(
                     domain: Some(domain.clone()),
                     title: None,
                     source_prompt: None,
+                    origin_context: None,
                 },
             )
             .await

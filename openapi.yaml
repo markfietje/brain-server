@@ -1809,6 +1809,13 @@ paths:
                     dispatches through the channel seam — never promoted to
                     knowledge.
                 source: { type: string }
+                origin_context:
+                  type: string
+                  enum: [owner, channel]
+                  description: >
+                    `channel` stamps the proposal's source as
+                    `channel-capture` — the review-queue badge the operator
+                    approves against; the promoted row carries the origin.
                 authority: { type: number }
                 observed_at: { type: integer }
                 domain: { type: string }
@@ -3324,6 +3331,15 @@ paths:
               properties:
                 title: { type: string, maxLength: 500 }
                 content: { type: string, maxLength: 1000000 }
+                origin_context:
+                  type: string
+                  enum: [owner, channel]
+                  description: >
+                    The capture-taint label: where the content came from.
+                    Absent = owner (byte-compat default). `channel` stores
+                    the row with origin `channel-capture`, which recall
+                    surfaces label (and the plugin can exclude). Any other
+                    value is a 400.
                 domain:
                   type: string
                   description: Target domain (defaults to 'global').

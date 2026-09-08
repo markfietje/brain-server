@@ -14037,6 +14037,144 @@ mod scrim {
         assert!(empty.get("suggestions").is_some());
     }
 
+    // ── the origin-labeling line (X-S2's proportionate grade) ────────
+
+    /// A `/ingest` carrying origin_context=channel lands with the
+    /// `channel-capture` origin; the default stays byte-identical.
+    #[tokio::test]
+    async fn channel_capture_lands_channel_origin() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = scrim_state(&tmp);
+        let body = serde_json::json!({
+            "title": "standup note",
+            "content": "the deployment window moved to thursday",
+            "origin_context": "channel"
+        });
+        let resp = handlers::ingest::ingest(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            Query(handlers::ingest::IngestQuery { format: None }),
+            body.to_string(),
+        )
+        .await
+        .unwrap();
+        let id = resp.0["id"].as_i64().expect("created");
+        let origin: String = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT origin FROM knowledge WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(origin, "channel-capture");
+        // owner default unchanged
+        let body2 = serde_json::json!({
+            "title": "owner note",
+            "content": "my private reading list for the quarter"
+        });
+        let resp2 = handlers::ingest::ingest(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            Query(handlers::ingest::IngestQuery { format: None }),
+            body2.to_string(),
+        )
+        .await
+        .unwrap();
+        let id2 = resp2.0["id"].as_i64().expect("created");
+        let origin2: String = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT origin FROM knowledge WHERE id = ?1",
+                params![id2],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(origin2, "imported", "the default stays the safe fallback");
+    }
+
+    /// The closed vocabulary: an unknown origin_context is a 400.
+    #[tokio::test]
+    async fn capture_rejects_unknown_origin_context() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = scrim_state(&tmp);
+        let body = serde_json::json!({
+            "title": "t",
+            "content": "c",
+            "origin_context": "lateral"
+        });
+        let err = handlers::ingest::ingest(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            Query(handlers::ingest::IngestQuery { format: None }),
+            body.to_string(),
+        )
+        .await
+        .expect_err("unknown vocabulary refuses");
+        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    /// The proposal badge: a channel capture stamps the proposal source as
+    /// `channel-capture` — the review queue renders it at approve time.
+    #[tokio::test]
+    async fn proposal_preview_shows_origin_badge() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = scrim_state(&tmp);
+        let resp = handlers::gate::ingest_proposal(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            axum::Json(handlers::gate::ProposalRequest {
+                content: "the vendor demo is at three on friday".to_string(),
+                kind: "fact".to_string(),
+                source: None,
+                origin_context: Some("channel".to_string()),
+                authority: None,
+                observed_at: None,
+                domain: Some("global".to_string()),
+                title: None,
+                source_prompt: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let source: String = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT source FROM proposals WHERE id = ?1",
+                params![resp.id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            source, "channel-capture",
+            "the operator SEES the capture origin"
+        );
+    }
+
+    /// Telemetry attributes pass the strip+redact chain; the query hash
+    /// treatment is untouched. (otel-gated: the module ships only there.)
+    #[cfg(feature = "otel")]
+    #[test]
+    fn span_attributes_sanitized() {
+        let dirty = "global\u{1B}[31m\nsecond line";
+        let out = brain_server::otel::sanitize_span_attribute(dirty);
+        assert!(!out.contains('\u{1B}'), "no ESC in attributes: {out:?}");
+        assert!(!out.contains('\n'), "single-line: {out:?}");
+        let pii = brain_server::otel::sanitize_span_attribute("call +1-555-010-9999 now");
+        assert!(!pii.contains("555"), "PII redacted: {pii:?}");
+    }
+
+    #[cfg(feature = "otel")]
+    #[test]
+    fn query_hash_unchanged() {
+        let h = brain_server::otel::query_hash("quarterly numbers");
+        assert_eq!(h, brain_server::otel::query_hash("quarterly numbers"));
+        assert_ne!(h, brain_server::otel::query_hash("other"));
+    }
+
     /// An authorization failure BEFORE the stream opens is an HTTP 403 —
     /// the handler returns Err, axum renders the status; it is no longer a
     /// 200-then-error-event.

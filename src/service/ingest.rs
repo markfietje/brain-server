@@ -217,6 +217,9 @@ pub struct StoreRecord<'a> {
     pub ump_meta: Option<&'a str>,
     pub lawful_basis: Option<&'a str>,
     pub purpose: Option<&'a str>,
+    /// the capture-taint label: `Some("channel")` → the row's origin is
+    /// `channel-capture` (the recall/plugin label + exclude posture).
+    pub origin_context: Option<&'a str>,
     pub entities: &'a [(String, Option<String>)],
     pub relations: &'a [NormalizedRelation],
 }
@@ -346,8 +349,12 @@ pub fn store_record(
             input.purpose,
             // Seatbelt (Seatbelt): a UMP-lowered record is
             // agent-authored by definition; plain structured ingest stays
-            // `imported` (the safe fallback).
-            if input.ump_meta.is_some() {
+            // `imported` (the safe fallback). Channel-captured content
+            // takes the taint label regardless of the author class — the
+            // label is capture-time truth.
+            if input.origin_context == Some("channel") {
+                "channel-capture"
+            } else if input.ump_meta.is_some() {
                 "agent"
             } else {
                 crate::gate::origin_for_source(Some("structured"))
@@ -519,6 +526,7 @@ mod tests {
         relations: &'a [NormalizedRelation],
     ) -> StoreRecord<'a> {
         StoreRecord {
+            origin_context: None,
             domain: "global",
             title: "t",
             content,

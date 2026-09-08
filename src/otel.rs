@@ -13,6 +13,18 @@ use crate::screen::ScreenResult;
 /// Opaque short hash of a recall query, so an operator can correlate a span to
 /// the query it answered without exporting the query text. Delegates to the
 /// codebase-wide audit hash (SHA-256 — a fingerprint, not a leak).
+/// The origin-labeling line (telemetry-is-untrusted posture): every span
+/// ATTRIBUTE value derived from request text passes this before export —
+/// ANSI/C1 strip (the shared `strip_control_chars`, which also closes
+/// log-forging), newline collapse, and unconditional PII redaction. Treat
+/// any collector as untrusted infrastructure: attributes are export bytes,
+/// not trusted internal state. Resource attributes (host/version) are
+/// static and never routed through request text.
+pub fn sanitize_span_attribute(v: &str) -> String {
+    let single_line = crate::strip_invisible::strip_control_chars(v).replace('\n', " ");
+    crate::pii_mask::redact_unconditional(&single_line)
+}
+
 pub fn query_hash(query: &str) -> String {
     crate::audit::hash(query)
 }

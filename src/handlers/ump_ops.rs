@@ -141,6 +141,7 @@ pub async fn remember(
                 domain: req.domain,
                 title: None,
                 source_prompt: None,
+                origin_context: None,
             },
         )
         .await?;
@@ -655,6 +656,7 @@ pub async fn revise(
                 domain: new_req.domain,
                 title: None,
                 source_prompt: None,
+                origin_context: None,
             },
         )
         .await?;

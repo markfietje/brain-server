@@ -288,6 +288,11 @@ type RecallResponseWire = {
   telemetry?: unknown;
 };
 
+type ProposalResponseWire = {
+  id?: number;
+  status?: string;
+};
+
 type IngestResponseWire = {
   id: number;
   status?: "created" | "duplicate";
@@ -513,14 +518,20 @@ export class BrainClient {
     entities?: BrainEntity[];
     relations?: BrainRelation[];
     timeoutMs?: number;
+    /** the capture-taint label: "channel" when the turn is group/channel
+     * traffic (the origin-labeling line) — sent as origin_context. */
+    originContext?: "owner" | "channel";
   }): Promise<BrainStoreResult> {
-    const body = {
+    const body: Record<string, unknown> = {
       title: params.title,
       content: params.content,
       ...(params.domain ? { domain: params.domain } : {}),
       ...(params.entities?.length ? { entities: params.entities } : {}),
       ...(params.relations?.length ? { relations: params.relations } : {}),
     };
+    if (params.originContext && params.originContext !== "owner") {
+      body.origin_context = params.originContext;
+    }
     const res = await this.fetchJson<IngestResponseWire>(
       "/ingest",
       "POST",
@@ -550,14 +561,20 @@ export class BrainClient {
     source?: string;
     sourcePrompt?: string;
     timeoutMs?: number;
+    /** the capture-taint label ("channel" stamps the proposal's source as
+     * channel-capture — the review-queue badge the operator approves on). */
+    originContext?: "owner" | "channel";
   }): Promise<{ id: number; status: "pending" }> {
-    const body = {
+    const body: Record<string, unknown> = {
       content: params.content,
       kind: "fact",
       ...(params.source ? { source: params.source } : {}),
       ...(params.sourcePrompt ? { source_prompt: params.sourcePrompt } : {}),
     };
-    const res = await this.fetchJson<{ id?: number; status?: string }>(
+    if (params.originContext && params.originContext !== "owner") {
+      body.origin_context = params.originContext;
+    }
+    const res = await this.fetchJson<ProposalResponseWire>(
       "/ingest/proposal",
       "POST",
       body,

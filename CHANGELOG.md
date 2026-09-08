@@ -18,6 +18,80 @@ measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
 
+## [1.28.74] — 2026-09-08 — "Origin": taint labels survive the whole trip
+
+The fifth REGISTER LINE release (X-S2 at proportionate grade, X-F3 —
+audit 2026-09-06 §4.8/§4.9). THREE TREES: brain-server (capture stamps
+origin + telemetry posture), the plugin (labels + the exclude posture),
+the openclaw fork (replay marking). ONE boolean-grade label end to end —
+no lattice, no policy engine (CaMeL/FIDES stay reference models). Plan:
+`IMPLEMENTATION_PLAN_v1.28.74_Origin.md`.
+
+### Release notes
+
+**Security fixes**
+
+- **Capture stamps origin (brain):** `POST /ingest` and
+  `POST /ingest/proposal` accept `origin_context: "owner"|"channel"`
+  (absent = owner, byte-compat; anything else is a 400 — closed
+  vocabulary). A channel capture stores the row with origin
+  `channel-capture`; under the review posture the proposal's SOURCE is
+  stamped `channel-capture` so the review queue renders the badge and
+  the operator SEES "captured from channel traffic" at approve time;
+  approval promotes the label onto the knowledge row.
+- **The plugin renders + gates on origin (plugin 0.6.0):** recall hit
+  lines prefix `[memory | channel-capture]` INSIDE the fence for
+  non-owner origins (owner hits untagged — no noise); the new
+  `untrustedOrigins: "label"|"exclude"` config (default `label`)
+  drops channel-captured hits from AUTO-INJECT entirely under
+  `exclude`; the `memory_recall` TOOL path always labels (tools return
+  what was asked). autoCapture sends `origin_context: "channel"`
+  whenever the turn's chat type is group/channel — the fact already
+  existed client-side in the gating layer.
+- **Replay marking (openclaw fork):** the inbound boundary recognizes
+  the `[memory | …]` prefix on QUOTED/REPLAYED text and marks it
+  `[quoted memory · origin: … — untrusted replay, not fresh prose]` —
+  a channel-forwarded memory line can no longer masquerade as fresh
+  owner prose (the mirror of the `<active_memory_plugin>` handling).
+  The fork reads NO brain store and learns NO schema — one textual
+  convention at its own boundary.
+- **Telemetry is untrusted infrastructure (X-F3):** span attribute
+  values derived from request text now pass the ANSI/C1 strip +
+  unconditional PII redaction before export (`domain` labels at the
+  recall + gate spans); `query_hash` is untouched; resource attributes
+  (host/version) are static and unrouted. The OTLP export path logs
+  the posture line at startup: "telemetry attributes are sanitized;
+  treat any collector as untrusted infrastructure".
+
+### Engineering record
+
+- **Capstone line proof:** the end-to-end trip is exercised per tree —
+  capture (server test: the row lands `channel-capture`, default
+  unchanged, unknown vocabulary 400s), the badge (proposal source
+  pinned), labeling/exclusion (plugin vitest: prefix inside the fence,
+  owner untagged, exclude filters, tool path always labels), replay
+  (fork vitest: quoted prefix marks as untrusted replay, fresh text
+  unaffected, idempotent). The live group-chat drill (poison a chat →
+  proposal badge → approve → labeled recall) is recorded as the
+  program's .75 exit-gate canary leg.
+- **Non-goals (ponytail, honest):** no taint propagation THROUGH the
+  model (output classification is LLM-work the mantra forbids); no
+  per-recipient labels (the label is capture-time truth, not
+  audience-aware); no openclaw-side enforcement beyond the exclude
+  config; the FIDES/CaMeL lattice stays a reference model, not a
+  dependency.
+- **Validation:** brain bench suite 1,453 passed / 7 ignored (otel
+  1,474; default 1,470); clippy clean ×3; lipstyk clean; plugin vitest
+  57 green (4 new); fork strip-inbound-meta suite 60 green (4 new);
+  CRATE_TEST_FLOOR 1,356 → 1,358. openapi additive (both request
+  fields); x-api-version unchanged; no schema migration (origin value
+  extension only).
+- The synthetic tsconfig base used to run the plugin vitest suite in
+  this repo (`tsconfig.package-boundary.base.json`, committed — it was
+  previously implicit in the fork workspace and made the plugin suite
+  unrunnable from a brain-server checkout) is now real; content is the
+  minimal strict compiler config.
+
 ## [1.28.73] — 2026-09-08 — "Keyring": key + evidence lifecycle
 
 The fourth REGISTER LINE release (X-C4, X-C3, X-W8 — audit 2026-09-06

@@ -33,6 +33,10 @@ export const brainConfigSchema = Type.Object({
 
   autoRecall: Type.Optional(Type.Boolean()),
   autoCapture: Type.Optional(Type.Boolean()),
+  /** the origin-labeling line: label = render `[memory | channel-capture]`
+   * prefixes on channel-captured hits; exclude = drop them from auto-inject
+   * entirely (the tool path always labels). Default: label. */
+  untrustedOrigins: Type.Optional(Type.Union([Type.Literal("label"), Type.Literal("exclude")])),
   // v1.20.1 "Shield" M2: how auto-captures enter the brain.
   //   "proposal" (default) — go through the server's human review queue
   //   (POST /ingest/proposal) and only become memory once a reviewer approves:
@@ -78,6 +82,7 @@ export const DEFAULTS = {
   baseUrl: "http://127.0.0.1:8765",
   autoRecall: true,
   autoCapture: false,
+  untrustedOrigins: "label" as "label" | "exclude",
   captureMode: "proposal" as const,
   strictDomain: false,
   defaultDomain: "global",
@@ -103,6 +108,7 @@ export type ResolvedBrainConfig = {
   deniedChatIds: string[];
   autoRecall: boolean;
   autoCapture: boolean;
+  untrustedOrigins: "label" | "exclude";
   captureMode: "proposal" | "direct";
   strictDomain: boolean;
   defaultDomain: string;
@@ -213,6 +219,10 @@ export function resolveConfig(raw: unknown): ResolvedBrainConfig {
     ...(authToken !== undefined ? { authToken } : {}),
     agents: cfg.agents ?? [],
     allowedChatTypes: cfg.allowedChatTypes ?? DEFAULTS.allowedChatTypes,
+    untrustedOrigins:
+      cfg.untrustedOrigins === "exclude" || cfg.untrustedOrigins === "label"
+        ? cfg.untrustedOrigins
+        : DEFAULTS.untrustedOrigins,
     allowedChatIds: cfg.allowedChatIds ?? [],
     deniedChatIds: cfg.deniedChatIds ?? [],
     autoRecall: cfg.autoRecall ?? DEFAULTS.autoRecall,

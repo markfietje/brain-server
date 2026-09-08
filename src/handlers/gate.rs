@@ -41,6 +41,15 @@ pub struct ProposalRequest {
     pub kind: String,
     #[serde(default)]
     pub source: Option<String>,
+    /// the capture-taint label (the origin-labeling line):
+    /// `"owner" | "channel"` — absent/empty/`owner` is the default. A
+    /// `"channel"` capture stamps the proposal's source as
+    /// `channel-capture`, which renders in the review queue (the dock
+    /// badge convention): the operator SEES "captured from channel
+    /// traffic" at approve time, and the approved row carries the
+    /// `channel-capture` origin for recall labeling/exclusion.
+    #[serde(default)]
+    pub origin_context: Option<String>,
     #[serde(default)]
     pub authority: Option<f32>,
     #[serde(default)]
@@ -245,12 +254,22 @@ pub(crate) async fn create_proposal(
             None
         };
 
+        // The origin badge (the origin-labeling line): a channel capture
+        // stamps the proposal's SOURCE as `channel-capture` — the review
+        // queue renders the source, so the operator sees "captured from
+        // channel traffic" at approve time with zero new machinery. The
+        // approved knowledge row inherits the label (origin column).
+        let effective_source = if req.origin_context.as_deref() == Some("channel") {
+            Some("channel-capture")
+        } else {
+            req.source.as_deref()
+        };
         let id = crate::service::review::insert_proposal(
             &conn,
             &crate::service::review::NewProposal {
                 kind: &req.kind,
                 content: &content_for_task,
-                source: req.source.as_deref(),
+                source: effective_source,
                 authority: req.authority,
                 observed_at: req.observed_at,
                 novelty,
@@ -292,7 +311,7 @@ pub(crate) async fn create_proposal(
             crate::otel::screen_verdict_span(screen_res),
         );
         span.record("principal", super::recall::principal_label(&principal));
-        span.record("domain", domain.clone());
+        span.record("domain", crate::otel::sanitize_span_attribute(&domain));
     }
 
     // alert the console a candidate is awaiting review
@@ -1200,7 +1219,13 @@ pub async fn approve_proposal(
         // carry the supervisor's coaching note into the
         // promoted chunk's provenance (`origin`) so the coaching survives
         // approval as audit-grade evidence on the chunk itself.
-        let mut origin = crate::gate::origin_for_source(Some(&source_kind)).to_string();
+        let mut origin = if source_kind == "channel-capture" {
+            // the taint label survives approval: a channel capture promotes
+            // with the `channel-capture` origin (recall labels/excludes it).
+            "channel-capture".to_string()
+        } else {
+            crate::gate::origin_for_source(Some(&source_kind)).to_string()
+        };
         if let Some(note) = qa_note.as_deref() {
             origin = format!("{origin}\ncoach:{note}");
         }
@@ -2712,6 +2737,7 @@ mod valet_lint_tests {
 
     fn draft_req(content: &str) -> ProposalRequest {
         ProposalRequest {
+            origin_context: None,
             content: content.to_string(),
             kind: "draft".to_string(),
             source: None,
@@ -2776,6 +2802,7 @@ mod valet_lint_tests {
 
         // 1. The style amendment arrives as an ordinary pending proposal.
         let req = ProposalRequest {
+            origin_context: None,
             content: r#"{"banned_phrases":["synergy"]}"#.to_string(),
             kind: "fact".to_string(),
             source: Some(crate::valet_style::STYLE_MEMORY_SOURCE.to_string()),

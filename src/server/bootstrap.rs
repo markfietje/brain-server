@@ -397,6 +397,13 @@ pub fn bootstrap() -> Result<BootOutcome> {
                         )
                         .init();
                     info!("OTLP trace export enabled -> {}", config::otel_endpoint());
+                    // The research line's posture statement, encoded where
+                    // the next reader looks: span attributes pass the
+                    // strip+redact chain, but the collector itself is
+                    // OUTSIDE the trust boundary.
+                    info!(
+                        "telemetry attributes are sanitized; treat any collector as untrusted infrastructure"
+                    );
                 }
                 Err(e) => {
                     tracing_subscriber::fmt().with_env_filter(filter).init();

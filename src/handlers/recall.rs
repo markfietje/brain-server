@@ -746,7 +746,10 @@ pub async fn run_recall(
         span.record("decision", format!("{:?}", decision).to_lowercase());
         span.record("graph_rescued", tel.graph_rescued);
         span.record("hits", tagged.len() as i64);
-        span.record("domain", primary_domain.clone());
+        span.record(
+            "domain",
+            crate::otel::sanitize_span_attribute(&primary_domain),
+        );
         span.record("principal", principal_label(principal));
         span.record("query_hash", crate::otel::query_hash(&trace_query));
     }

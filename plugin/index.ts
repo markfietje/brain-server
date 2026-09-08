@@ -30,6 +30,7 @@ import { BrainClient, type BrainRecallResult } from "./src/brain-client.js";
 import { brainPluginConfigSchema, resolveConfig, type ResolvedBrainConfig } from "./src/config.js";
 import {
   STATIC_SYSTEM_GUIDANCE,
+  excludeChannelCaptures,
   formatRecallContext,
   latestUserText,
   looksCaptureWorthy,
@@ -281,7 +282,11 @@ export default definePluginEntry({
               ? { ...h, content: h.content.slice(0, MAX_HIT_CHARS) }
               : h,
           );
-          const block = formatRecallContext(hits);
+          // The untrustedOrigins posture: `exclude` drops channel-captured
+          // hits from auto-inject entirely (the tool path always labels).
+          const injectable =
+            c.untrustedOrigins === "exclude" ? excludeChannelCaptures(hits) : hits;
+          const block = formatRecallContext(injectable);
           if (!block) {
             return undefined;
           }
@@ -341,6 +346,14 @@ export default definePluginEntry({
           // POST /ingest/proposal (only becomes memory after a reviewer
           // approves); `captureMode: "direct"` keeps the old straight-to-
           // memory behavior (still screened by the server injection gate).
+          // The origin-labeling line: the chat-type fact already exists
+          // client-side (gating) — group/channel turns capture with the
+          // channel taint so the operator sees the badge at approve time
+          // and recall can label/exclude the hit later.
+          const originContext: "owner" | "channel" =
+            gate.chatType === "group" || gate.chatType === "channel"
+              ? "channel"
+              : "owner";
           if (c.captureMode === "direct") {
             await client.store({
               title: text.slice(0, 80),
@@ -348,6 +361,7 @@ export default definePluginEntry({
               ...(c.defaultDomain && c.defaultDomain !== "global"
                 ? { domain: c.defaultDomain }
                 : {}),
+              originContext,
               timeoutMs: c.requestTimeoutMs,
             });
           } else {
@@ -355,6 +369,7 @@ export default definePluginEntry({
               content: text,
               source: "agent_end",
               ...(body.length ? { sourcePrompt: body } : {}),
+              originContext,
               timeoutMs: c.requestTimeoutMs,
             });
           }
