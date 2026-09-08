@@ -87,11 +87,23 @@ deltas, and the surviving ceilings — is in `docs/AUDIT.md`. Plan:
   forged markers + image URL) → screened/fenced/stripped (the Meridian
   division-of-labor pin + fence welding pins). Transcripts in
   `docs/AUDIT.md`.
+- **CI caught what macOS could not (merged-usr):** the first CI run on
+  the release commit went RED on Ubuntu — `/bin` is a symlink to
+  `/usr/bin` there, so canonicalizing only the argv0 turned every honest
+  textual allowlist entry (`/bin/ls`) into a refusal; two exec tests
+  failed and `release.sh` REFUSED the tag on the red matrix (the
+  fail-closed gate working as designed). The fix (this release's final
+  commit) canonicalizes the ALLOWLIST ENTRY too: `canonical(entry) ==
+  canonical(argv0)` admits binaries through symlinked directories,
+  prefix entries compare against the resolved directory, and
+  non-existent entries keep the textual fallback. New pins: the
+  alias-directory admission and its sibling-refusal mirror.
 - **Validation:** full bench suite 1,458 passed / 7 ignored; clippy
   clean ×3 feature sets; fmt clean; lipstyk clean; CRATE_TEST_FLOOR
   1,358 → 1,363; `badges.sh --selfcheck` green WITH the new SBOM gate;
   `bash -n` on the installer (shellcheck not installed locally — noted
-  ceiling).
+  ceiling); released as tag `v1.28.75` only after the fixed tree was
+  CI-green.
 - **ponytail (plan non-goals):** the mediation is NOT wired (no
   consumer exists; wiring without the Loop line's policy design would
   be speculative authority); no sandboxing/namespace isolation; no

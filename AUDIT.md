@@ -628,7 +628,7 @@ named in CHANGELOG §[1.28.75].
 | v1.28.72 Scrim | 1,345 |
 | v1.28.73 Keyring | 1,356 |
 | v1.28.74 Origin | 1,358 |
-| v1.28.75 Preflight | (this release's needle, above) |
+| v1.28.75 Preflight | 1,363 |
 
 Live-proof transcripts: the .65 fence canary
 (`docs/MERIDIAN_PROOF_20260907.md`) and the .74 origin canary (per-tree
