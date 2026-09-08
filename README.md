@@ -19,6 +19,8 @@ Paste a resolution once, recall it the same way every time. A person has to appr
 Web + desktop + mobile GUI (Dioxus) · OpenAI-compatible embeddings · MCP server · OpenClaw plugin
 </p>
 
+![Brain Server hero](docs/assets/hero-light.png)
+
 ## Try it in 30 seconds
 
 A fresh `docker compose up` starts empty and unauthenticated on loopback. One copy pastes the whole demo:
