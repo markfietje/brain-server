@@ -30,7 +30,11 @@ use hmac::{Hmac, KeyInit, Mac};
 use rusqlite::OptionalExtension;
 use rusqlite::params;
 use sha2::Sha256;
+use std::collections::HashMap;
+use std::net::ToSocketAddrs;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::{OnceLock, RwLock};
 use std::time::SystemTime;
 use xxhash_rust::xxh3::xxh3_64;
 
@@ -276,16 +280,29 @@ impl WebhookQueue {
 /// the one outbound HTTP client used by both webhook
 /// sinks (alert + Art-19 DSAR). Redirects are refused (a 3xx is surfaced to
 /// the caller, not fetched), so an operator URL that bounces to cloud metadata
-/// or loopback cannot be followed. Defense-in-depth, not a replacement for
-/// operator care.
+/// or loopback cannot be followed. Since Deadbolt the client also carries the
+/// boot-frozen DNS pins: every pinned host's traffic is forced to the
+/// validated address set — no resolution happens on the send path at all.
 ///
-/// ponytail: this does NOT resolve+validate the host's IPs against RFC1918 /
-/// loopback / link-local / 169.254.x before the *first* request — that is the
-/// v2.x per-request resolver upgrade. The redirect refusal closes the cheap,
-/// high-probability SSRF class (302→metadata) today; DNS-rebinding across the
-/// connection-pool TTL remains the documented ceiling. It also does NOT touch
-/// body handling, request signing, retry policy, or any URL allowlist.
+/// ponytail: no ASN/CIDR feeds, no reputation — IANA registry math only. No
+/// custom resolver trait, no egress proxy, no sink allowlist (the env sinks
+/// ARE the operator's allowlist — this guard closes the range class and
+/// rebinding, not operator intent).
 pub fn egress_client() -> reqwest::Client {
+    let mut builder = hardened_egress_builder();
+    if let Ok(map) = egress_pins().read() {
+        for (host, addrs) in map.iter() {
+            builder = builder.resolve_to_addrs(host, addrs);
+        }
+    }
+    builder
+        .build()
+        .expect("hardened egress client has no invalid defaults")
+}
+
+/// The shared bounds every egress client carries (redirect refusal +
+/// 5 s connect / 15 s total), so a pinned variant cannot shed them.
+fn hardened_egress_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         // A stalled sink must not wedge the drain worker or accumulate
@@ -293,6 +310,319 @@ pub fn egress_client() -> reqwest::Client {
         // is capped at (15 s).
         .connect_timeout(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(15))
+}
+
+// ── Deadbolt: the egress guard (X-E3) ──────────────────────────────────────
+//
+// The two env webhook sinks (`BRAIN_ALERT_WEBHOOK_URL`, `BRAIN_DSAR_WEBHOOK_URL`)
+// are program-driven egress; per the OWASP SSRF Prevention Cheat Sheet's
+// bypass-proof form, EVERY resolved address (A + AAAA) must be globally
+// routable — parsed as real `IpAddr`s and matched against the IANA IPv4/IPv6
+// special-purpose registries (never string forms: hex/octal/dword/mixed
+// encodings of a private address are the documented bypass class, killed by
+// parsing + by the url crate's literal canonicalization). Redirect refusal
+// was the first layer and stays; this closes the range class and DNS
+// rebinding: resolve → validate → PIN, insert-only, first resolution wins
+// for the process lifetime (a host move needs a restart — documented).
+
+/// Why a sink target was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EgressRefused {
+    /// The host is (or resolved to) a non-globally-routable address;
+    /// `class` names the IANA special-purpose registry row.
+    PrivateAddr {
+        host: String,
+        addr: IpAddr,
+        class: String,
+    },
+    /// A cloud-metadata hostname refused BEFORE resolution
+    /// (defense-in-depth; the IP table catches its resolutions anyway).
+    MetadataHost { host: String },
+    /// Resolution failed (or the URL does not name a host). The lazy send
+    /// path surfaces this as the named `egress_unresolved` failure — fail
+    /// closed, no send.
+    Unresolved { host: String, source: String },
+}
+
+impl std::fmt::Display for EgressRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PrivateAddr { host, addr, class } => write!(
+                f,
+                "egress_private_refused: '{host}' address {addr} is not globally routable ({class})"
+            ),
+            Self::MetadataHost { host } => {
+                write!(
+                    f,
+                    "egress_metadata_host_refused: '{host}' is a cloud-metadata hostname"
+                )
+            }
+            Self::Unresolved { host, source } => {
+                write!(f, "egress_unresolved: '{host}' did not resolve ({source})")
+            }
+        }
+    }
+}
+
+/// IPv4 deny table: `(network, prefix bits, class)` — the IANA IPv4
+/// special-purpose registry rows the plan carries (100.64/10 CGNAT matters:
+/// Tailscale lives there).
+const IPV4_DENY: &[(u32, u8, &str)] = &[
+    (0x0000_0000, 8, "this-network 0.0.0.0/8"),
+    (0x0A00_0000, 8, "private 10/8"),
+    (0x6440_0000, 10, "cgnat 100.64/10"),
+    (0x7F00_0000, 8, "loopback 127/8"),
+    (0xA9FE_0000, 16, "link-local/cloud-metadata 169.254/16"),
+    (0xAC10_0000, 12, "private 172.16/12"),
+    (0xC000_0000, 24, "ietf-protocol-assignments 192.0.0/24"),
+    (0xC000_0200, 24, "documentation 192.0.2/24"),
+    (0xC0A8_0000, 16, "private 192.168/16"),
+    (0xC612_0000, 15, "benchmarking 198.18/15"),
+    (0xC633_6400, 24, "documentation 198.51.100/24"),
+    (0xCB00_7100, 24, "documentation 203.0.113/24"),
+    (0xFFFF_FFFF, 32, "broadcast 255.255.255.255"),
+    (0xF000_0000, 4, "reserved 240/4"),
+];
+
+/// IPv6 deny table: `(network, prefix bits, class)`.
+const IPV6_DENY: &[(u128, u8, &str)] = &[
+    (0, 128, "unspecified ::"),
+    (1, 128, "loopback ::1"),
+    (0xFC00 << 112, 7, "ula fc00::/7"),
+    (0xFE80 << 112, 10, "link-local fe80::/10"),
+    (0xFF00 << 112, 8, "multicast ff00::/8"),
+    (0x2001_0DB8 << 96, 32, "documentation 2001:db8::/32"),
+];
+
+fn ipv4_denied(ip: Ipv4Addr) -> Option<&'static str> {
+    let v = u32::from(ip);
+    IPV4_DENY
+        .iter()
+        .find(|(net, bits, _)| {
+            let mask = if *bits == 0 {
+                0
+            } else {
+                u32::MAX << (32 - *bits)
+            };
+            v & mask == net & mask
+        })
+        .map(|(_, _, class)| *class)
+}
+
+fn ipv6_denied(ip: Ipv6Addr) -> Option<&'static str> {
+    let v = u128::from(ip);
+    IPV6_DENY
+        .iter()
+        .find(|(net, bits, _)| {
+            let mask = if *bits == 0 {
+                0
+            } else {
+                u128::MAX << (128 - *bits)
+            };
+            v & mask == net & mask
+        })
+        .map(|(_, _, class)| *class)
+}
+
+/// THE policy fn (pure, table-driven over `IpAddr`; unit-tested with
+/// literal IPs — no DNS in unit tests). EVERY address must clear the
+/// registries; one private hit refuses the whole set.
+pub fn validate_public_addrs(
+    host: &str,
+    addrs: &[SocketAddr],
+) -> Result<Vec<SocketAddr>, EgressRefused> {
+    for sa in addrs {
+        let class = match sa.ip() {
+            IpAddr::V4(ip) => ipv4_denied(ip),
+            IpAddr::V6(ip) => ipv6_denied(ip),
+        };
+        if let Some(class) = class {
+            return Err(EgressRefused::PrivateAddr {
+                host: host.to_string(),
+                addr: sa.ip(),
+                class: class.to_string(),
+            });
+        }
+    }
+    Ok(addrs.to_vec())
+}
+
+/// The cloud-metadata hostnames (the OWASP metadata table) refused before
+/// resolution ever runs.
+const METADATA_HOSTNAMES: &[&str] = &["metadata.amazonaws.com", "metadata.google.internal"];
+
+fn refuse_metadata_host(host: &str) -> Result<(), EgressRefused> {
+    let h = host.trim().trim_end_matches('.').to_ascii_lowercase();
+    if METADATA_HOSTNAMES.contains(&h.as_str()) {
+        return Err(EgressRefused::MetadataHost { host: h });
+    }
+    Ok(())
+}
+
+/// Resolve a sink host and validate EVERY address. An IP-literal host
+/// validates directly (no resolution exists to hijack). Under
+/// `allow_private` (the boot opt-out) a private/metadata hit is admitted
+/// LOUDLY instead of refused — the table itself never moves.
+pub fn resolve_and_validate_sink(
+    host: &str,
+    port: u16,
+    allow_private: bool,
+) -> Result<Vec<SocketAddr>, EgressRefused> {
+    if !allow_private {
+        refuse_metadata_host(host)?;
+    }
+    let resolved: Vec<SocketAddr> = match host.parse::<IpAddr>() {
+        Ok(ip) => vec![SocketAddr::new(ip, port)],
+        Err(_) => (host, port)
+            .to_socket_addrs()
+            .map_err(|e| EgressRefused::Unresolved {
+                host: host.to_string(),
+                source: e.to_string(),
+            })?
+            .collect(),
+    };
+    if resolved.is_empty() {
+        return Err(EgressRefused::Unresolved {
+            host: host.to_string(),
+            source: "resolver returned no addresses".to_string(),
+        });
+    }
+    match validate_public_addrs(host, &resolved) {
+        Ok(addrs) => Ok(addrs),
+        Err(e @ EgressRefused::PrivateAddr { .. }) if allow_private => {
+            tracing::warn!(
+                "egress: PRIVATE sink address admitted by BRAIN_EGRESS_ALLOW_PRIVATE=1: {e}"
+            );
+            Ok(resolved)
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// The boot-frozen (then insert-only) DNS pins: host → the validated
+/// address set the client override uses for the process lifetime. The FIRST
+/// resolution wins structurally — a later rebinding attempt loses.
+static EGRESS_PINS: OnceLock<RwLock<HashMap<String, Vec<SocketAddr>>>> = OnceLock::new();
+
+fn egress_pins() -> &'static RwLock<HashMap<String, Vec<SocketAddr>>> {
+    EGRESS_PINS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn pinned_addrs_for(host: &str) -> Option<Vec<SocketAddr>> {
+    egress_pins()
+        .read()
+        .ok()?
+        .get(host.to_ascii_lowercase().as_str())
+        .cloned()
+}
+
+/// Insert-only: returns false when the host was already pinned (the
+/// rebind loses, silently — the pin cannot be moved).
+fn pin_egress_host(host: &str, addrs: Vec<SocketAddr>) -> bool {
+    let mut map = egress_pins().write().expect("egress pin lock");
+    let key = host.to_ascii_lowercase();
+    if map.contains_key(&key) {
+        return false;
+    }
+    map.insert(key, addrs);
+    true
+}
+
+/// Split a sink URL into its bare (lowercased) host + a port hint for
+/// resolution. The url crate canonicalizes IPv4-ish domains (the
+/// hex/octal/dword forms) to dotted literals before we ever see them.
+fn sink_host_port(url: &str) -> Result<(String, u16), EgressRefused> {
+    let parsed = reqwest::Url::parse(url).map_err(|e| EgressRefused::Unresolved {
+        host: url.to_string(),
+        source: format!("unparseable sink URL: {e}"),
+    })?;
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    let raw = parsed.host_str().ok_or_else(|| EgressRefused::Unresolved {
+        host: url.to_string(),
+        source: "sink URL has no host".to_string(),
+    })?;
+    // IPv6 literals serialize bracketed; the parse below wants the bare form.
+    let host = raw
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(raw)
+        .to_ascii_lowercase();
+    Ok((host, port))
+}
+
+/// Boot: the two env sinks resolve + validate + pin NOW (blocking, off the
+/// request path — boot is the one moment a sink may cost a resolver call).
+/// Private sink without the opt-out → REFUSE BOOT (the WRITE_POSTURE
+/// pattern: a LAN/metadata sink is a misconfiguration, never a runtime
+/// surprise). DNS failure → warn + lazy re-validate on first send (boot
+/// must not die on a flaky resolver when the sink is unused). The opt-out
+/// env itself parses fail-closed (unknown value refuses the boot).
+pub fn validate_env_sinks_at_boot() -> Result<(), String> {
+    let allow = crate::config::egress_allow_private()?;
+    for (label, url) in [
+        (
+            "BRAIN_ALERT_WEBHOOK_URL",
+            crate::config::alert_webhook_url(),
+        ),
+        ("BRAIN_DSAR_WEBHOOK_URL", crate::config::dsar_webhook_url()),
+    ] {
+        let Some(url) = url else { continue };
+        let (host, port) = sink_host_port(&url).map_err(|e| format!("{label} sink: {e}"))?;
+        if pinned_addrs_for(&host).is_some() {
+            continue;
+        }
+        match resolve_and_validate_sink(&host, port, allow) {
+            Ok(addrs) => {
+                if host.parse::<IpAddr>().is_err() {
+                    pin_egress_host(&host, addrs.clone());
+                }
+                tracing::info!(
+                    "egress pin: {label} sink host '{host}' pinned to {addrs:?} \
+                     (rebinding closed; a host move needs a restart)"
+                );
+            }
+            Err(EgressRefused::Unresolved { host, source }) => {
+                tracing::warn!(
+                    "{label} sink host '{host}' did not resolve at boot ({source}) — \
+                     failing closed lazily on first send (egress_unresolved)"
+                );
+            }
+            Err(e) => {
+                return Err(format!(
+                    "{label} sink host is not globally routable: {e}. A private/metadata \
+                     webhook sink is a misconfiguration; if the target genuinely lives on a \
+                     private network, set BRAIN_EGRESS_ALLOW_PRIVATE=1 (the admission is LOUD \
+                     and the sink stays pinned)."
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The send-path seam for the two env sinks: a pinned host builds the
+/// pinned client; an unpinned name lazy-resolves ONCE (boot DNS-flake
+/// recovery) and pins; anything refused — private range, metadata host,
+/// unresolved — fails closed BEFORE any byte leaves (the caller logs the
+/// `egress_*` label; the sink's fail-soft posture is unchanged).
+pub fn egress_client_for_url(url: &str) -> Result<reqwest::Client, EgressRefused> {
+    let (host, port) = sink_host_port(url)?;
+    if pinned_addrs_for(&host).is_some() {
+        return Ok(egress_client());
+    }
+    let allow = crate::config::egress_allow_private().unwrap_or(false);
+    let addrs = resolve_and_validate_sink(&host, port, allow)?;
+    if host.parse::<IpAddr>().is_err() {
+        pin_egress_host(&host, addrs);
+    }
+    Ok(egress_client())
+}
+
+/// A client pinned to ONE host's validated address set (the hostcall
+/// per-host cache's constructor — same hardened bounds).
+pub fn egress_client_pinned_to(host: &str, addrs: &[SocketAddr]) -> reqwest::Client {
+    hardened_egress_builder()
+        .resolve_to_addrs(host, addrs)
         .build()
         .expect("hardened egress client has no invalid defaults")
 }
@@ -707,5 +1037,309 @@ mod tests {
         let _ = thread.join();
         assert!(status.is_success(), "legitimate URL is delivered: {status}");
         assert_eq!(body, "ok", "response body is read intact");
+    }
+
+    // ── Deadbolt: egress guard (X-E3) ──────────────────
+    //
+    // Env-mutating tests serialize on this lock (the hostcalls posture:
+    // env reads are process-global). Poison-tolerant so a panicking sibling
+    // cannot cascade.
+    static EGRESS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn egress_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        EGRESS_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Set + restore one env var (SAFETY: single-threaded under the lock).
+    struct EnvGuard(&'static str);
+    impl EnvGuard {
+        fn set(name: &'static str, value: &str) -> EnvGuard {
+            // SAFETY: single-threaded under EGRESS_ENV_LOCK.
+            unsafe { std::env::set_var(name, value) };
+            EnvGuard(name)
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: single-threaded under EGRESS_ENV_LOCK.
+            unsafe { std::env::remove_var(self.0) };
+        }
+    }
+
+    /// `private_ranges_refused_table` — the FULL deny table as data: every
+    /// deny range gets a literal-IP case (low + high edge), all refused with
+    /// the right class named; public addresses clear the table.
+    #[test]
+    fn private_ranges_refused_table() {
+        let denied: &[(&str, &str)] = &[
+            ("0.0.0.0", "this-network 0.0.0.0/8"),
+            ("0.255.255.255", "this-network 0.0.0.0/8"),
+            ("10.0.0.0", "private 10/8"),
+            ("10.255.255.255", "private 10/8"),
+            ("100.64.0.0", "cgnat 100.64/10"),
+            ("100.127.255.255", "cgnat 100.64/10"),
+            ("127.0.0.0", "loopback 127/8"),
+            ("127.255.255.254", "loopback 127/8"),
+            ("169.254.0.0", "link-local/cloud-metadata 169.254/16"),
+            ("169.254.169.254", "link-local/cloud-metadata 169.254/16"),
+            ("172.16.0.0", "private 172.16/12"),
+            ("172.31.255.255", "private 172.16/12"),
+            ("192.0.0.1", "ietf-protocol-assignments 192.0.0/24"),
+            ("192.0.2.1", "documentation 192.0.2/24"),
+            ("192.168.0.0", "private 192.168/16"),
+            ("192.168.1.77", "private 192.168/16"),
+            ("198.18.0.0", "benchmarking 198.18/15"),
+            ("198.19.255.255", "benchmarking 198.18/15"),
+            ("198.51.100.7", "documentation 198.51.100/24"),
+            ("203.0.113.9", "documentation 203.0.113/24"),
+            ("240.0.0.0", "reserved 240/4"),
+            ("255.254.255.254", "reserved 240/4"),
+            ("255.255.255.255", "broadcast 255.255.255.255"),
+            ("::", "unspecified ::"),
+            ("::1", "loopback ::1"),
+            ("fc00::1", "ula fc00::/7"),
+            ("fdff::ffff", "ula fc00::/7"),
+            ("fe80::1", "link-local fe80::/10"),
+            ("febf::ffff", "link-local fe80::/10"),
+            ("ff02::1", "multicast ff00::/8"),
+            ("2001:db8::1", "documentation 2001:db8::/32"),
+        ];
+        for (ip_str, class) in denied {
+            let ip: std::net::IpAddr = ip_str
+                .parse()
+                .unwrap_or_else(|_| panic!("literal {ip_str}"));
+            let sa = SocketAddr::new(ip, if ip.is_ipv4() { 80 } else { 443 });
+            let err = validate_public_addrs("sink.test", &[sa])
+                .expect_err(&format!("{ip_str} must be refused"));
+            match err {
+                EgressRefused::PrivateAddr { addr, class: c, .. } => {
+                    assert_eq!(addr, ip, "{ip_str}");
+                    assert_eq!(&c, class, "{ip_str} class label");
+                }
+                other => panic!("{ip_str}: wrong refusal {other:?}"),
+            }
+        }
+
+        // Public addresses clear the table (v4 + v6 + the CGNAT boundaries
+        // just outside the deny range).
+        for ok in [
+            "8.8.8.8:443",
+            "1.1.1.1:80",
+            "100.128.0.1:8080",
+            "172.32.0.1:80",
+            "198.20.0.1:443",
+            "[2606:4700::1111]:443",
+        ] {
+            let sa: SocketAddr = ok.parse().unwrap();
+            validate_public_addrs("sink.test", &[sa])
+                .unwrap_or_else(|e| panic!("{ok} must be admitted: {e}"));
+        }
+    }
+
+    /// `metadata_ip_refused` — the metadata literal AND the two OWASP
+    /// metadata hostnames refuse (the hostname pre-check fires BEFORE any
+    /// resolution — no DNS in unit tests).
+    #[test]
+    fn metadata_ip_refused() {
+        let err = validate_public_addrs(
+            "metadata.amazonaws.com",
+            &["169.254.169.254:80".parse().unwrap()],
+        )
+        .expect_err("metadata IP must refuse");
+        assert!(matches!(err, EgressRefused::PrivateAddr { .. }), "{err:?}");
+
+        for host in ["metadata.amazonaws.com", "metadata.google.internal"] {
+            let err = resolve_and_validate_sink(host, 80, false)
+                .expect_err(&format!("{host} must refuse pre-resolution"));
+            assert!(
+                matches!(err, EgressRefused::MetadataHost { .. }),
+                "{host}: {err:?}"
+            );
+        }
+        // The un-widened form: the pre-check is exact-host (a lookalike
+        // domain still gets resolved + IP-checked).
+        assert!(refuse_metadata_host("metadata.amazonaws.com.evil.test").is_ok());
+    }
+
+    /// `boot_refuses_private_sink_without_opt_out` — the drill's first leg:
+    /// `BRAIN_ALERT_WEBHOOK_URL` aimed at cloud metadata refuses the boot
+    /// with the offending host named (the WRITE_POSTURE pattern).
+    #[test]
+    fn boot_refuses_private_sink_without_opt_out() {
+        let _lock = egress_env_lock();
+        let _url = EnvGuard::set(
+            "BRAIN_ALERT_WEBHOOK_URL",
+            "http://169.254.169.254/latest/meta-data",
+        );
+        let _allow = EnvGuard::set("BRAIN_EGRESS_ALLOW_PRIVATE", "");
+        let err = validate_env_sinks_at_boot().expect_err("private sink must refuse boot");
+        assert!(err.contains("169.254.169.254"), "{err}");
+        assert!(err.contains("BRAIN_EGRESS_ALLOW_PRIVATE"), "{err}");
+
+        // The invalid opt-out VALUE refuses too (fail-closed parse family).
+        let _bad = EnvGuard::set("BRAIN_EGRESS_ALLOW_PRIVATE", "true");
+        let err = validate_env_sinks_at_boot().expect_err("invalid opt-out must refuse boot");
+        assert!(err.contains("BRAIN_EGRESS_ALLOW_PRIVATE='true'"), "{err}");
+    }
+
+    /// `opt_out_boots_with_warn_and_pins` — with the opt-out the boot
+    /// proceeds AND the host is pinned: a name that resolves to loopback
+    /// (`localhost`, offline-safe) is admitted loudly and the pin registry
+    /// now carries it (first-send sees it pinned — no second resolution).
+    #[test]
+    fn opt_out_boots_with_warn_and_pins() {
+        let _lock = egress_env_lock();
+        let _url = EnvGuard::set("BRAIN_ALERT_WEBHOOK_URL", "http://localhost:9999/hook");
+        let _allow = EnvGuard::set("BRAIN_EGRESS_ALLOW_PRIVATE", "1");
+        validate_env_sinks_at_boot().expect("opt-out admits the private sink");
+        let pinned = pinned_addrs_for("localhost").expect("localhost must be pinned");
+        assert!(
+            pinned.iter().all(|sa| sa.ip().is_loopback()),
+            "pinned addrs are the validated loopback set: {pinned:?}"
+        );
+        // And the pinned registry feeds the client (override present).
+        let client = egress_client();
+        let _ = client; // construction success is the contract; the rebind test proves the pin bites
+    }
+
+    /// `pinned_client_survives_dns_rebind` — the pin is load-bearing and
+    /// insert-only. The pin map carries `rebind.invalid` (RFC 6761: the
+    /// system resolver can NEVER answer `.invalid`, so a connection that
+    /// lands is riding the pin, not DNS). A post-boot "rebind" (re-pin to a
+    /// second listener) loses structurally; the request still lands on the
+    /// pinned address and the shadow listener sees zero connections.
+    #[test]
+    fn pinned_client_survives_dns_rebind() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let pinned_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+        let shadow_listener = std::net::TcpListener::bind("127.0.0.1:0").expect("listen");
+        let pinned_addr = pinned_listener.local_addr().unwrap();
+        let shadow_addr = shadow_listener.local_addr().unwrap();
+        assert_ne!(pinned_addr, shadow_addr);
+
+        // Boot-pin the (unresolvable) name to the FIRST listener.
+        assert!(pin_egress_host(
+            "rebind.invalid",
+            vec![SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                pinned_addr.port()
+            )]
+        ));
+
+        // The rebind attempt: insert-only refuses the flip, the map keeps A.
+        assert!(!pin_egress_host(
+            "rebind.invalid",
+            vec![SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                shadow_addr.port()
+            )]
+        ));
+        let kept = pinned_addrs_for("rebind.invalid").unwrap();
+        assert_eq!(kept[0].port(), pinned_addr.port(), "first pin wins");
+
+        let shadow_connects = Arc::new(AtomicU32::new(0));
+        let shadow_count = Arc::clone(&shadow_connects);
+        shadow_listener.set_nonblocking(true).unwrap();
+        let shadow = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(700);
+            while std::time::Instant::now() < deadline {
+                match shadow_listener.accept() {
+                    Ok(_) => shadow_count.fetch_add(1, Ordering::SeqCst),
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                        continue;
+                    }
+                    Err(_) => break,
+                };
+            }
+        });
+
+        let pinned_connects = Arc::new(AtomicU32::new(0));
+        let pinned_count = Arc::clone(&pinned_connects);
+        let responder_port = pinned_addr.port();
+        let responder = std::thread::spawn(move || {
+            // Deadline-bounded accept retries; ONE connection is served.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(700);
+            let mut sock = loop {
+                if std::time::Instant::now() >= deadline {
+                    return;
+                }
+                match pinned_listener.accept() {
+                    Ok((sock, _)) => break sock,
+                    Err(_) => continue,
+                }
+            };
+            let _ = sock.set_nonblocking(false);
+            pinned_count.fetch_add(1, Ordering::SeqCst);
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let n = sock.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let resp =
+                format!("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nokpinned:{responder_port}");
+            let _ = sock.write_all(resp.as_bytes());
+        });
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let status = rt.block_on(async {
+            // The pinned client is the shared one — the override for
+            // `rebind.invalid` rides every egress_client() construction.
+            // The URL carries the pinned listener's port (the override
+            // supplies the ADDRESS; the URL's explicit port always wins).
+            let client = egress_client();
+            let url = format!("http://rebind.invalid:{}/hook", pinned_addr.port());
+            let resp = client
+                .post(&url)
+                .body(b"x".to_vec())
+                .send()
+                .await
+                .expect("the pin must carry the request to the pinned addr");
+            resp.status()
+        });
+
+        let _ = responder.join();
+        let _ = shadow.join();
+        assert_eq!(status.as_u16(), 200, "request delivered via the pin");
+        assert_eq!(
+            pinned_connects.load(Ordering::SeqCst),
+            1,
+            "exactly the pinned listener was hit"
+        );
+        assert_eq!(
+            shadow_connects.load(Ordering::SeqCst),
+            0,
+            "the rebind target must never see a connection"
+        );
+    }
+
+    /// `unresolved_sink_fails_closed` — a sink whose host never resolves
+    /// (an `.invalid` name: RFC 6761 guarantees the refusal, offline or on)
+    /// fails closed with the named `egress_unresolved` error — no client,
+    /// no send.
+    #[test]
+    fn unresolved_sink_fails_closed() {
+        let err = egress_client_for_url("http://deadbolt-unresolved.invalid/sink")
+            .expect_err("unresolved host must fail closed");
+        let display = err.to_string();
+        match err {
+            EgressRefused::Unresolved { host, .. } => {
+                assert_eq!(host, "deadbolt-unresolved.invalid");
+            }
+            other => panic!("wrong refusal: {other:?}"),
+        }
+        assert!(
+            display.contains("egress_unresolved"),
+            "the named label rides the display: {display}"
+        );
     }
 }

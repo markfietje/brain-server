@@ -5019,6 +5019,11 @@ Final paragraph after the rule.";
         });
         unsafe { std::env::set_var("BRAIN_DSAR_WEBHOOK_URL", &url) };
         unsafe { std::env::set_var("BRAIN_DSAR_WEBHOOK_SECRET", "s3cret") };
+        // Deadbolt (X-E3): a loopback sink is private — the egress guard
+        // refuses it unless the operator opt-out is set. This test IS the
+        // loopback-receiver posture, so it runs under the documented
+        // BRAIN_EGRESS_ALLOW_PRIVATE=1 (loud, still pinned).
+        unsafe { std::env::set_var("BRAIN_EGRESS_ALLOW_PRIVATE", "1") };
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             handlers::observe::notify_art19("alice@example.com".to_string(), 7, "now".to_string());
@@ -5026,6 +5031,7 @@ Final paragraph after the rule.";
         });
         unsafe { std::env::remove_var("BRAIN_DSAR_WEBHOOK_URL") };
         unsafe { std::env::remove_var("BRAIN_DSAR_WEBHOOK_SECRET") };
+        unsafe { std::env::remove_var("BRAIN_EGRESS_ALLOW_PRIVATE") };
         let req = sent_rx
             .recv_timeout(std::time::Duration::from_secs(2))
             .unwrap_or_default();
@@ -13029,6 +13035,12 @@ Final paragraph after the rule.";
         use axum::extract::{Path, State};
         use axum::http::{HeaderMap, StatusCode};
 
+        // Deadbolt: the three `pending` role pins below mutate the same
+        // process-global env; every console test holds this lock so the
+        // pre-existing BRAIN_CONNECTOR_CONFIG_DIR race is closed, not
+        // carried.
+        let _lock = DEADBOLT_CONSOLE_LOCK.lock().await;
+
         register_sqlite_vec();
         let manager = SqliteConnectionManager::memory();
         let pool = Pool::new(manager).expect("pool");
@@ -13234,6 +13246,243 @@ Final paragraph after the rule.";
         assert_eq!(resp.status(), StatusCode::NOT_FOUND, "already decided");
 
         if let Some(prev) = prev_dir {
+            unsafe { std::env::set_var("BRAIN_CONNECTOR_CONFIG_DIR", prev) };
+        } else {
+            unsafe { std::env::remove_var("BRAIN_CONNECTOR_CONFIG_DIR") };
+        }
+    }
+
+    // ── v1.28.69 "Deadbolt": the console `pending` listing role-checks
+    //    (X-M6). Three pins over the same HMAC edge: `read` is required,
+    //    an unroled actor is refused, and the decide path is untouched.
+    //    These serialize on a dedicated async mutex (they mutate
+    //    BRAIN_CONNECTOR_CONFIG_DIR) and use their own bridge kind so they
+    //    never verify against the Herald test's config dir.
+
+    static DEADBOLT_CONSOLE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Bridge config + signed `pending`/`decide` call helpers for the
+    /// Deadbolt console pins (kind `teams`, tenant `deadbolt`).
+    mod deadbolt_console {
+        use base64::Engine;
+        use hmac::{Hmac, KeyInit, Mac};
+        type HmacSha256 = Hmac<sha2::Sha256>;
+
+        pub const SECRET: &str = "deadbolt-secret";
+
+        pub fn register_bridge(dir: &std::path::Path) {
+            let cfg_path = dir.join("channel-teams-deadbolt.json");
+            std::fs::write(
+                &cfg_path,
+                format!(r#"{{"domain":"deadbolt","webhook_secret":"{SECRET}"}}"#),
+            )
+            .unwrap();
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&cfg_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        pub fn sign(body: &[u8]) -> [String; 3] {
+            let id = "deadbolt-webhook-id".to_string();
+            let ts = chrono::Utc::now().timestamp().to_string();
+            let mut mac = HmacSha256::new_from_slice(SECRET.as_bytes()).unwrap();
+            mac.update(id.as_bytes());
+            mac.update(b".");
+            mac.update(ts.as_bytes());
+            mac.update(b".");
+            mac.update(body);
+            let sig = format!(
+                "v1,{}",
+                base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
+            );
+            [id, ts, sig]
+        }
+    }
+
+    async fn deadbolt_console_call(
+        state: std::sync::Arc<AppState>,
+        body: serde_json::Value,
+    ) -> axum::response::Response {
+        use axum::body::Bytes;
+        use axum::extract::{Path, State};
+        let bytes = Bytes::from(serde_json::to_vec(&body).unwrap());
+        let [id, ts, sig] = deadbolt_console::sign(&bytes);
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("webhook-id", id.parse().unwrap());
+        headers.insert("webhook-timestamp", ts.parse().unwrap());
+        headers.insert("webhook-signature", sig.parse().unwrap());
+        handlers::channel_webhook::post_console(
+            State(state),
+            Path("teams".to_string()),
+            headers,
+            bytes,
+        )
+        .await
+    }
+
+    /// Seed the role rows + user map; roles hold exactly the `can` list
+    /// given (the map is the only trust anchor — empty grants nothing).
+    fn deadbolt_seed_actor(
+        conn: &rusqlite::Connection,
+        platform_id: &str,
+        role_name: &str,
+        can: &[&str],
+    ) {
+        conn.execute(
+            "INSERT OR IGNORE INTO roles(name, json) VALUES (?1, ?2)",
+            rusqlite::params![
+                role_name,
+                serde_json::json!({
+                    "name": role_name, "scopes": ["private"], "owner_filter": "all",
+                    "can": can,
+                })
+                .to_string()
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_user_map(channel, tenant, platform_user_id, principal,
+                                         roles_json, created_at, created_by)
+             VALUES ('teams', 'deadbolt', ?1, ?2, ?3, 100, 'seed')",
+            rusqlite::params![
+                platform_id,
+                format!("{platform_id}@deadbolt"),
+                serde_json::json!([role_name]).to_string()
+            ],
+        )
+        .unwrap();
+    }
+
+    /// `pending_requires_read_role` — the pending listing (proposal bodies +
+    /// digests) now requires the mapped actor's `read` capability: a
+    /// reader-capable actor gets 200; an approve-only actor gets 403.
+    #[tokio::test]
+    async fn pending_requires_read_role() {
+        let _lock = DEADBOLT_CONSOLE_LOCK.lock().await;
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let conn = state.pool.get().unwrap();
+        deadbolt_seed_actor(&conn, "UREADER", "deadbolt_reader", &["read"]);
+        deadbolt_seed_actor(&conn, "UAPPROVER", "deadbolt_approver", &["approve"]);
+
+        let dir = tempfile::tempdir().unwrap();
+        deadbolt_console::register_bridge(dir.path());
+        let prev_dir = std::env::var("BRAIN_CONNECTOR_CONFIG_DIR").ok();
+        unsafe { std::env::set_var("BRAIN_CONNECTOR_CONFIG_DIR", dir.path()) };
+
+        let resp = deadbolt_console_call(
+            Arc::clone(&state),
+            serde_json::json!({"action": "pending", "actor_ref": "UREADER"}),
+        )
+        .await;
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::OK,
+            "a reader lists pending"
+        );
+
+        let resp = deadbolt_console_call(
+            Arc::clone(&state),
+            serde_json::json!({"action": "pending", "actor_ref": "UAPPROVER"}),
+        )
+        .await;
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::FORBIDDEN,
+            "approve-only must NOT read the listing"
+        );
+
+        restore_connector_dir(prev_dir);
+    }
+
+    /// `unroled_actor_pending_refused` — a mapped actor with an EMPTY role
+    /// grant gets nothing (the map is the only trust anchor; empty grants
+    /// nothing — the same posture as decide).
+    #[tokio::test]
+    async fn unroled_actor_pending_refused() {
+        let _lock = DEADBOLT_CONSOLE_LOCK.lock().await;
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let conn = state.pool.get().unwrap();
+        deadbolt_seed_actor(&conn, "UNOLED", "deadbolt_norole", &[]);
+
+        let dir = tempfile::tempdir().unwrap();
+        deadbolt_console::register_bridge(dir.path());
+        let prev_dir = std::env::var("BRAIN_CONNECTOR_CONFIG_DIR").ok();
+        unsafe { std::env::set_var("BRAIN_CONNECTOR_CONFIG_DIR", dir.path()) };
+
+        let resp = deadbolt_console_call(
+            Arc::clone(&state),
+            serde_json::json!({"action": "pending", "actor_ref": "UNOLED"}),
+        )
+        .await;
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::FORBIDDEN,
+            "no role, no listing"
+        );
+
+        restore_connector_dir(prev_dir);
+    }
+
+    /// `decide_path_unchanged` — with the pending gate in place, the decide
+    /// path still runs the real approve machinery for a mapped, capable
+    /// actor carrying the exact rendered digest.
+    #[tokio::test]
+    async fn decide_path_unchanged() {
+        let _lock = DEADBOLT_CONSOLE_LOCK.lock().await;
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let conn = state.pool.get().unwrap();
+        deadbolt_seed_actor(&conn, "UDECIDER", "deadbolt_decider", &["read", "approve"]);
+        let content = "decide me after the pending gate";
+        conn.execute(
+            "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
+             VALUES ('draft', ?1, 0.5, 0.5, ?2, 'proposer@deadbolt')",
+            rusqlite::params![content, chrono::Utc::now().timestamp()],
+        )
+        .unwrap();
+        let proposal_id: i64 = conn
+            .query_row(
+                "SELECT id FROM proposals ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let digest = brain_server::workflow::channels::review_digest(content);
+
+        let dir = tempfile::tempdir().unwrap();
+        deadbolt_console::register_bridge(dir.path());
+        let prev_dir = std::env::var("BRAIN_CONNECTOR_CONFIG_DIR").ok();
+        unsafe { std::env::set_var("BRAIN_CONNECTOR_CONFIG_DIR", dir.path()) };
+
+        let resp = deadbolt_console_call(
+            Arc::clone(&state),
+            serde_json::json!({
+                "action": "decide", "decision": "approve", "proposal_id": proposal_id,
+                "digest": digest, "actor_ref": "UDECIDER"
+            }),
+        )
+        .await;
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::OK,
+            "decide is untouched"
+        );
+        let conn = state.pool.get().unwrap();
+        let decided: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM proposals WHERE id = ?1 AND status = 'approved'",
+                rusqlite::params![proposal_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(decided, 1, "the CAS approved exactly once");
+
+        restore_connector_dir(prev_dir);
+    }
+
+    fn restore_connector_dir(prev: Option<String>) {
+        if let Some(prev) = prev {
             unsafe { std::env::set_var("BRAIN_CONNECTOR_CONFIG_DIR", prev) };
         } else {
             unsafe { std::env::remove_var("BRAIN_CONNECTOR_CONFIG_DIR") };

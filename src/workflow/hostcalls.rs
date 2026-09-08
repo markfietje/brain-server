@@ -7,7 +7,9 @@
 use brain_engine_sdk::host::{AuditKind, AuditStatus, WorkflowHost};
 use brain_engine_sdk::hostcall::{HostCallContext, exec_mediation};
 use brain_engine_sdk::trust::{EngineOverride, ExtensionPolicy, HostCallKind};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::net::ToSocketAddrs;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::workflow::host::SqliteWorkflowHost;
 
@@ -106,6 +108,98 @@ fn build_url(host_name: &str, path: &str) -> String {
         "https"
     };
     format!("{scheme}://{host_name}{path}")
+}
+
+// ── Deadbolt (X-E3, the hostcall half) ─────────────────────────────────────
+//
+// The operator allowlist is the trust anchor here — loopback stays a legal
+// mediated target (that feature is pinned), so the public-only table does
+// NOT apply to this path. What closes is DNS REBINDING: a host resolves
+// ONCE (validate-on-first-use) and the per-host client cache pins that
+// address set for the process lifetime. The cache is insert-only, and its
+// bound IS the allowlist: `pinned_hostcall_client` re-checks allowlist
+// membership before anything else, so no host outside the allowlist can
+// ever occupy a cache slot — the cache can never exceed the allowlist size.
+// (ponytail: no eviction machinery — the bound is structural.)
+
+static HOSTCALL_CLIENTS: OnceLock<Mutex<HashMap<String, reqwest::Client>>> = OnceLock::new();
+
+fn hostcall_clients() -> &'static Mutex<HashMap<String, reqwest::Client>> {
+    HOSTCALL_CLIENTS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Test observability for the bound pin.
+#[cfg(test)]
+pub(crate) fn hostcall_cache_len() -> usize {
+    hostcall_clients()
+        .lock()
+        .expect("hostcall cache lock")
+        .len()
+}
+
+/// Split a mediated host name into (bare host, resolution port hint). ONE
+/// colon reads as `host:port` (bare IPv6 is not expressible — the admission
+/// charset carries no brackets — and multi-colon names never resolve).
+fn mediated_host_port(host_name: &str) -> Result<(String, u16), String> {
+    match host_name.rsplit_once(':') {
+        Some((h, p)) if !h.is_empty() && !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => {
+            let port: u16 = p
+                .parse()
+                .map_err(|_| format!("invalid port in mediated host '{host_name}'"))?;
+            Ok((h.to_ascii_lowercase(), port))
+        }
+        _ => {
+            let scheme_default = if loopback_host(host_name) { 80 } else { 443 };
+            Ok((host_name.to_ascii_lowercase(), scheme_default))
+        }
+    }
+}
+
+/// The pinned client for one allowlisted host — cache hit returns as-is;
+/// first use resolves + pins (the FIRST resolution wins for the process
+/// lifetime; a later rebind can never move a pinned host). Refusals are
+/// deny strings the caller audits.
+fn pinned_hostcall_client(host_name: &str) -> Result<reqwest::Client, String> {
+    // The cache's structural bound: membership is re-checked HERE, so the
+    // cache keyset is always a subset of the allowlist.
+    if !http_allowlist()
+        .iter()
+        .any(|e| e.eq_ignore_ascii_case(host_name))
+    {
+        return Err("host not in http allowlist".to_string());
+    }
+    if let Some(client) = hostcall_clients()
+        .lock()
+        .expect("hostcall cache lock")
+        .get(host_name)
+    {
+        return Ok(client.clone());
+    }
+    let (host, port) = mediated_host_port(host_name)?;
+    let addrs: Vec<std::net::SocketAddr> = match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => vec![std::net::SocketAddr::new(ip, port)],
+        Err(_) => (host.as_str(), port)
+            .to_socket_addrs()
+            .map_err(|e| format!("egress_unresolved: '{host}': {e}"))?
+            .collect(),
+    };
+    if addrs.is_empty() {
+        return Err(format!(
+            "egress_unresolved: '{host}' resolved to no addresses"
+        ));
+    }
+    let client = if host.parse::<std::net::IpAddr>().is_ok() {
+        crate::webhook::egress_client()
+    } else {
+        let pinned = crate::webhook::egress_client_pinned_to(&host, &addrs);
+        hostcall_clients()
+            .lock()
+            .expect("hostcall cache lock")
+            .entry(host_name.to_string())
+            .or_insert_with(|| pinned.clone());
+        pinned
+    };
+    Ok(client)
 }
 
 /// The unprivileged read principal handlers sanitize through — an engine's
@@ -370,7 +464,20 @@ fn exec_effect(body: &str) -> Result<ExecOutput, String> {
     let err_reader = drain(child.stderr.take(), EFFECT_OUTPUT_CAP);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(EXEC_TIMEOUT_SECS);
     loop {
-        match child.try_wait().map_err(|e| format!("wait failed: {e}"))? {
+        // Deadbolt (X-M5): every exit from this loop reaps the child — the
+        // deadline branch kills explicitly, and a failed wait would have
+        // returned early with the process alive.
+        let status = match child.try_wait() {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                let _ = out_reader.join();
+                let _ = err_reader.join();
+                return Err(format!("wait failed: {e}"));
+            }
+        };
+        match status {
             Some(status) => {
                 let stdout = out_reader
                     .join()
@@ -445,7 +552,13 @@ fn run_mediated_http(
         return deny("path must start with '/'".into());
     }
     let url = build_url(&host_name, path);
-    let client = crate::webhook::egress_client();
+    // Deadbolt: the client for an allowlisted host is the PINNED one (first
+    // resolution wins for the process lifetime — rebinding closed). A host
+    // that never resolves refuses here (`egress_unresolved`), audited.
+    let client = match pinned_hostcall_client(&host_name) {
+        Ok(c) => c,
+        Err(e) => return deny(format!("egress refused: {e}")),
+    };
     // The handler seam is sync; egress rides a throwaway current-thread
     // runtime (the webhook drain worker's posture).
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -1128,5 +1241,44 @@ mod tests {
         let stdout_len = v["stdout"].as_str().map(|s| s.len()).unwrap_or(0);
         assert!(stdout_len <= 64 * 1024, "stdout not capped: {stdout_len}");
         unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") }
+    }
+
+    /// `hostcall_host_cache_bounded_by_allowlist` — the pinned per-host
+    /// client cache (Deadbolt): an allowlisted host pins ONCE (cache hit on
+    /// the second call, len stays 1) and a non-allowlisted host is refused
+    /// BEFORE any resolution or insertion — the cache keyset can never
+    /// exceed the allowlist. `localhost` resolves offline (/etc/hosts), so
+    /// the pin path needs no network.
+    #[test]
+    fn hostcall_host_cache_bounded_by_allowlist() {
+        let _g = env_lock();
+        unsafe {
+            std::env::set_var("BRAIN_ENGINE_HTTP_ALLOWLIST", "localhost");
+        }
+        let before = hostcall_cache_len();
+        let client = pinned_hostcall_client("localhost").expect("allowlisted host pins");
+        let _ = client;
+        assert_eq!(
+            hostcall_cache_len(),
+            before + 1,
+            "first use inserts exactly one pinned client"
+        );
+        let again = pinned_hostcall_client("localhost").expect("cache hit");
+        let _ = again;
+        assert_eq!(
+            hostcall_cache_len(),
+            before + 1,
+            "the second call rides the cache — no re-resolution, no second slot"
+        );
+        // Not on the allowlist → refused before the cache, structurally.
+        let refused = pinned_hostcall_client("not-allowlisted.invalid")
+            .expect_err("non-allowlisted host must refuse");
+        assert_eq!(refused, "host not in http allowlist");
+        assert_eq!(
+            hostcall_cache_len(),
+            before + 1,
+            "the refusal never touches the cache"
+        );
+        unsafe { std::env::remove_var("BRAIN_ENGINE_HTTP_ALLOWLIST") }
     }
 }

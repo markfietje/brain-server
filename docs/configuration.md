@@ -106,7 +106,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `BRAIN_SYNCHRONOUS` | `full` | Per-connection SQLite durability on the MAIN pool (Headroom): `full` fsyncs every commit (the pre-1.28.59 effective behavior — a fresh pooled connection always ran the compile default); `normal` is the WAL-mode tuning posture (commit fsyncs move to checkpoint time; on power loss recent commits may roll back but the DB stays uncorrupted). Applied beside `busy_timeout=5000` at every pooled connection's init; the applied policy is echoed by `/health/db` under `durability`. An unknown value **refuses boot** |
 | `BRAIN_WAL_AUTOCHECKPOINT` | `1000` | WAL autocheckpoint threshold in pages (Headroom) — the SQLite compile default and the pre-1.28.59 effective value. Lower = checkpoints run more often, bounding `brain_wal_pages_pending` lag at the cost of more frequent checkpoint I/O. Integer, `1..=65536`; `0` (autocheckpoint off — unbounded WAL) and out-of-range values **refuse boot** |
 | `BRAIN_LOOM` | off | Opt-in CPU parallelism for the two loom fan-out sites (Loom): the batch-ingest embed stage and the consolidate near-dup scan's pure-CPU preprocessing. Active only when ALL THREE hold: the `loom` cargo feature is compiled in, the capacity target is not `jetson`, and this var is `1`. `0`/unset keeps the byte-identical serial path; any other value **refuses boot** (fail-closed parse). The pool is capped at `min(cores-1, 4)` so ingest never starves the tokio blocking pool; the resolved decision is echoed by `/health/db` as `loom: active (N threads)` or `off:no-feature` / `off:jetson` / `off:env`. No cross-chunk reduction exists by design — every fan-out is an ordered per-item map (`loom_preserves_fused_ranks`) |
-| `BRAIN_ALERT_WEBHOOK_URL` / `BRAIN_ALERT_WEBHOOK_SECRET` | — | Outbound alert webhook sink (uses the hardened egress client) |
+| `BRAIN_ALERT_WEBHOOK_URL` / `BRAIN_ALERT_WEBHOOK_SECRET` | — | Outbound alert webhook sink (resolve → validate → pin egress: a private/metadata sink refuses the boot unless `BRAIN_EGRESS_ALLOW_PRIVATE=1`) |
 
 ## Observability & audit (v1.15)
 
@@ -116,6 +116,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `BRAIN_AUDIT_READ_SAMPLE_RATE` | `1.0` | Read-event sampling (0.0..=1.0); `1.0` = every read event. |
 | `BRAIN_AUDIT_RETENTION_DAYS` | unset = forever | Audit retention window; when set, expired rows are pruned and the chain re-anchored. Deployers subject to AI Act Art 26(6) guidance: set ≥180. |
 | `BRAIN_DSAR_WEBHOOK_URL` / `BRAIN_DSAR_WEBHOOK_SECRET` | — | Opt-in Art 19 onward-notification: on a completed DSAR purge, POSTs `{subject, certified_at, certificate_id}` HMAC-SHA256-signed. Fail-soft. |
+| `BRAIN_EGRESS_ALLOW_PRIVATE` | — | The ONE egress opt-out (Deadbolt): `1` admits a private/loopback/metadata webhook sink at boot with a LOUD warn (the sink stays DNS-pinned). Unset = private sinks refuse the boot; any other value refuses the boot (fail-closed parse). |
 | `BRAIN_OTEL_ENABLED` / `BRAIN_OTEL_ENDPOINT` | enabled on `--features otel` builds / `http://127.0.0.1:4318/v1/traces` | OpenTelemetry OTLP export. Kill-switch only: `0\|false\|no\|off` disables the compiled-in exporter (a default build compiles no exporter at all) |
 | `CORS_METHODS` | `GET,POST,PUT,DELETE,OPTIONS` | Allowed CORS methods |
 | `CORS_HEADERS` | `content-type,authorization` | Allowed CORS request headers |
@@ -152,7 +153,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `BRAIN_ENGINE_EXEC_ALLOWLIST` / `BRAIN_ENGINE_HTTP_ALLOWLIST` / `BRAIN_ENGINE_WORKDIR` | — | The hostcall door's allowlists + workdir (the engine's tool-effect boundary). |
 | `MCP_TRANSPORT` / `MCP_HTTP_PORT` / `MCP_HTTP_ADDR` / `MCP_HTTP_TOKEN` | stdio | The MCP binary's transport: stdio (default) or Streamable HTTP + SSE. See docs/mcp.md. |
 | `PACKING_WEIGHTS` | built-in | Evidence-packing weight overrides (advanced). |
-| `BRAIN_STEWARD_BIN` | — | Override the workflow-crank harness binary (dev/testing). |
+| `BRAIN_STEWARD_BIN` | — | Override the workflow-crank harness binary. MUST be an ABSOLUTE path (relative refuses; PATH is never consulted) or the binary lives beside the kernel. |
 
 > **The single source of truth** for every tunable is `src/config.rs` in the repository.
 

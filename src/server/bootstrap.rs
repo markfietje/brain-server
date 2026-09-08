@@ -416,6 +416,19 @@ pub fn bootstrap() -> Result<BootOutcome> {
     // injection screen entirely — a real posture, but never a silent one.
     config::injection_policy_boot_warning();
 
+    // ── fail-closed egress posture (Deadbolt) ─────────
+    // AFTER tracing init so the pin/admission lines are visible (the drill
+    // caught the pre-init placement swallowing them). The two env webhook
+    // sinks resolve + validate + pin at boot: a sink whose host is (or
+    // resolves to) a private/loopback/metadata address refuses the boot
+    // unless BRAIN_EGRESS_ALLOW_PRIVATE=1 (one loud warn, still pinned —
+    // rebinding closed either way). A flaky resolver does NOT kill the
+    // boot (the sink may be unused): that case fails closed lazily on
+    // first send (`egress_unresolved`).
+    if let Err(e) = crate::webhook::validate_env_sinks_at_boot() {
+        return Err(anyhow::anyhow!("fatal egress config: {e}"));
+    }
+
     // ── Register sqlite-vec before ANY connection opens ────────────────
     // sqlite3_auto_extension registers the vec0 module + vec_* functions on
     // every new connection. MUST be called before r2d2 builds the pool.

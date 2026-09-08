@@ -153,6 +153,26 @@ pub fn validate_write_posture() -> Result<(), String> {
     }
 }
 
+/// Deadbolt: the ONE egress opt-out. `BRAIN_EGRESS_ALLOW_PRIVATE=1` admits a
+/// webhook sink whose host is (or resolves to) a private/loopback/metadata
+/// address — the admission is a loud boot warn and the sink stays DNS-pinned
+/// (the opt-out is grace for LAN-webhook operators, never silence). Absent/
+/// empty = refused (the default: a private sink refuses the boot). Any other
+/// value is invalid and refuses the boot rather than silently degrading —
+/// the `BRAIN_WRITE_POSTURE` pattern.
+pub fn egress_allow_private() -> Result<bool, String> {
+    match std::env::var("BRAIN_EGRESS_ALLOW_PRIVATE")
+        .unwrap_or_default()
+        .as_str()
+    {
+        "" => Ok(false),
+        "1" => Ok(true),
+        other => Err(format!(
+            "BRAIN_EGRESS_ALLOW_PRIVATE='{other}' is invalid; must be 1 or unset"
+        )),
+    }
+}
+
 // ── durability policy (Headroom) ─────────────────────────────────────────
 // The write path's pragma policy becomes explicit, per-capacity-target, and
 // fail-closed: the envelope carries the per-target defaults (pinned equal to

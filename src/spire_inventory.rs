@@ -86,7 +86,13 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// (foreign-signer refusal, L2-unchanged, signed_by-surfaced verify JSON),
 /// and the hash-only census set — eleven in-crate pins plus the two
 /// parcels wire tests the floor's tests/ walk absorbs.
-const CRATE_TEST_FLOOR: usize = 1_303;
+/// 1,303 → 1,313 at the Deadbolt open: the egress guard set (registry
+/// table, metadata refusal, boot refusal, opt-out pin, DNS-rebind pin,
+/// unresolved fail-closed, hostcall cache bound) and the crank set
+/// (relative-override refusal, PATH-never-consulted, exe-dir fallback,
+/// success-path shape — the two tokio crank pins ride outside this
+/// needle), 1,313 measured at the release commit.
+const CRATE_TEST_FLOOR: usize = 1_313;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows (security.txt + the

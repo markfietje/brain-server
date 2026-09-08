@@ -485,7 +485,7 @@ pub async fn post_console(
     };
     let action = v.get("action").and_then(|x| x.as_str()).unwrap_or("");
     match action {
-        "pending" => console_pending_action(&state, &actor, &v).await,
+        "pending" => console_pending_action(&state, &cfg, &actor, &v).await,
         "decide" => console_decide_action(&state, &cfg, &actor, &v).await,
         "due" => console_due_action(&state, &cfg, &actor, &v).await,
         "crank" => console_crank_action(&state, &cfg, &actor, &v).await,
@@ -516,7 +516,8 @@ fn bounded_actor_ref(v: &serde_json::Value) -> Option<String> {
 
 async fn console_pending_action(
     state: &Arc<AppState>,
-    _actor: &str,
+    cfg: &ChannelBridgeConfig,
+    actor: &str,
     v: &serde_json::Value,
 ) -> Response {
     let limit = v
@@ -524,12 +525,59 @@ async fn console_pending_action(
         .and_then(|x| x.as_u64())
         .map(|n| n.min(channels::MAX_CONSOLE_PENDING as u64) as usize)
         .unwrap_or(channels::MAX_CONSOLE_PENDING);
+    // Deadbolt (X-M6): the pending listing carries proposal bodies + digests,
+    // so it role-checks the mapped actor exactly like every other console
+    // action — `read` capability via the same map (empty grants nothing).
+    let Some(actor_ref) = bounded_actor_ref(v) else {
+        console_audit(
+            state,
+            actor,
+            "console",
+            crate::audit::AuditStatus::Denied,
+            "actor_ref_invalid",
+        );
+        return HandlerError::bad_request(
+            "actor_ref_invalid",
+            "actor_ref must be an opaque platform id",
+        )
+        .into_response();
+    };
+    let pool = state.pool.clone();
+    let cfg2 = cfg.clone();
+    let resolved =
+        tokio::task::spawn_blocking(move || -> Result<(String, Vec<String>), &'static str> {
+            let conn = pool.get().map_err(|_| "pool_unavailable")?;
+            resolve_console_actor(&conn, &cfg2, &actor_ref, "read")
+        })
+        .await;
+    let (principal_label, _roles) = match resolved {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(reason)) => {
+            console_audit(
+                state,
+                actor,
+                "console:pending",
+                crate::audit::AuditStatus::Denied,
+                reason,
+            );
+            return HandlerError::forbidden(crate::auth::Action::Read, &cfg.domain, "global")
+                .into_response();
+        }
+        Err(e) => return HandlerError::internal(format!("{e}")).into_response(),
+    };
     let pool = state.pool.clone();
     let rows = tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, String> {
         let conn = pool.get().map_err(|e| format!("{e}"))?;
         channels::console_pending(&conn, limit).map_err(|e| format!("{e}"))
     })
     .await;
+    console_audit(
+        state,
+        actor,
+        "console:pending",
+        crate::audit::AuditStatus::Ok,
+        &format!("principal:{principal_label}"),
+    );
     match rows {
         Ok(Ok(proposals)) => (
             StatusCode::OK,
@@ -783,16 +831,33 @@ async fn console_crank_action(
     // performs — same binary resolution, bounded steps, ONE timeout window.
     // It runs on the kernel host because THAT is where the engine lives; the
     // channel seam merely relays an operator's role-checked command.
-    let Some(harness) = resolve_harness_bin() else {
-        console_audit(
-            state,
-            actor,
-            "console:crank",
-            crate::audit::AuditStatus::Denied,
-            "harness_missing",
-        );
-        return HandlerError::internal("steward-harness binary not found beside the kernel")
+    let harness = match resolve_harness_bin() {
+        Ok(p) => p,
+        Err(HarnessBinRefusal::RelativeOverride(v)) => {
+            console_audit(
+                state,
+                actor,
+                "console:crank",
+                crate::audit::AuditStatus::Denied,
+                "harness_relative_override_refused",
+            );
+            return HandlerError::internal(format!(
+                "BRAIN_STEWARD_BIN='{v}' must be an ABSOLUTE path — PATH is never consulted \
+                 (install steward-harness beside the kernel binary, or name it absolutely)"
+            ))
             .into_response();
+        }
+        Err(HarnessBinRefusal::NotFound) => {
+            console_audit(
+                state,
+                actor,
+                "console:crank",
+                crate::audit::AuditStatus::Denied,
+                "harness_missing",
+            );
+            return HandlerError::internal("steward-harness binary not found beside the kernel")
+                .into_response();
+        }
     };
     let cmd = serde_json::json!({ "cmd": "crank", "run_id": run_id, "max_steps": max_steps });
     let outcome = tokio::time::timeout(
@@ -836,31 +901,96 @@ async fn console_crank_action(
     (StatusCode::OK, Json(report)).into_response()
 }
 
+/// Resolve the crank's binary (X-M4): the ABSOLUTE `BRAIN_STEWARD_BIN`
+/// override, then beside-the-kernel-binary. The PATH scan is DELETED — a
+/// writable PATH entry in the service context must never become arbitrary
+/// code execution as the service user. A RELATIVE override is refused with
+/// the requirement named (the operator asked for a specific binary; silently
+/// falling to the exe-dir twin would be a lie about what ran).
+#[derive(Debug, PartialEq)]
+pub(crate) enum HarnessBinRefusal {
+    /// `BRAIN_STEWARD_BIN` was set to a relative path — never resolved.
+    RelativeOverride(String),
+    /// No usable override and nothing beside the kernel binary.
+    NotFound,
+}
+
+pub(crate) fn resolve_harness_bin() -> Result<std::path::PathBuf, HarnessBinRefusal> {
+    if let Ok(override_bin) = std::env::var("BRAIN_STEWARD_BIN")
+        && !override_bin.trim().is_empty()
+    {
+        let p = std::path::PathBuf::from(&override_bin);
+        if !p.is_absolute() {
+            return Err(HarnessBinRefusal::RelativeOverride(override_bin));
+        }
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(dir) = exe.parent()
+    {
+        let p = dir.join("steward-harness");
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    Err(HarnessBinRefusal::NotFound)
+}
+
 async fn run_harness_crank(
     harness: std::path::PathBuf,
     cmd: serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    run_harness_crank_bounded(
+        harness,
+        cmd,
+        std::time::Duration::from_secs(CONSOLE_CRANK_TIMEOUT_SECS),
+    )
+    .await
+}
+
+/// The bounded crank — the timeout is a parameter so tests can scale the
+/// 60 s window down without shipping a 60-second test (X-M5: the child dies
+/// with its budget — `kill_on_drop` reaps it when the timeout drops the
+/// future; cap/timeout semantics otherwise unchanged).
+async fn run_harness_crank_bounded(
+    harness: std::path::PathBuf,
+    cmd: serde_json::Value,
+    budget: std::time::Duration,
+) -> Result<serde_json::Value, String> {
     use tokio::io::AsyncWriteExt;
-    let mut child = tokio::process::Command::new(&harness)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("spawn {}: {e}", harness.display()))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(format!("{cmd}\n").as_bytes())
+    let outcome = tokio::time::timeout(budget, async move {
+        let mut child = tokio::process::Command::new(&harness)
+            .kill_on_drop(true)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn {}: {e}", harness.display()))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin
+                .write_all(format!("{cmd}\n").as_bytes())
+                .await
+                .map_err(|e| format!("write stdin: {e}"))?;
+            stdin
+                .shutdown()
+                .await
+                .map_err(|e| format!("close stdin: {e}"))?;
+        }
+        child
+            .wait_with_output()
             .await
-            .map_err(|e| format!("write stdin: {e}"))?;
-        stdin
-            .shutdown()
-            .await
-            .map_err(|e| format!("close stdin: {e}"))?;
-    }
-    let out = child
-        .wait_with_output()
-        .await
-        .map_err(|e| format!("wait harness: {e}"))?;
+            .map_err(|e| format!("wait harness: {e}"))
+    })
+    .await;
+    let out = match outcome {
+        Ok(Ok(out)) => out,
+        Ok(Err(e)) => return Err(e),
+        // The timeout dropped the spawn future — `kill_on_drop(true)` sent
+        // SIGKILL and reaped the child: nothing outlives its budget.
+        Err(_) => return Err("crank exceeded its timeout window".to_string()),
+    };
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
         let snippet: String = stderr.chars().take(200).collect();
@@ -875,34 +1005,6 @@ async fn run_harness_crank(
         "stopped_at": parsed.get("stopped_at").cloned().unwrap_or(serde_json::Value::Null),
         "steps_executed": parsed.get("steps_executed").cloned().unwrap_or(serde_json::Value::Null),
     }))
-}
-
-/// Same resolution the `brain workflow crank` CLI performs: the explicit
-/// override, the binary installed beside the kernel, then PATH.
-fn resolve_harness_bin() -> Option<std::path::PathBuf> {
-    if let Ok(override_bin) = std::env::var("BRAIN_STEWARD_BIN") {
-        let p = std::path::PathBuf::from(override_bin);
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let p = dir.join("steward-harness");
-        if p.exists() {
-            return Some(p);
-        }
-    }
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in path_var.split(':') {
-            let p = std::path::Path::new(dir).join("steward-harness");
-            if p.exists() {
-                return Some(p);
-            }
-        }
-    }
-    None
 }
 
 // ── Mount-registration reuse (the ONE registration surface for bridges) ────
@@ -1020,3 +1122,227 @@ fn config_path(dir: &std::path::Path, cfg: &ChannelBridgeConfig) -> std::path::P
 
 #[allow(dead_code)] // re-export surface for wiring tests
 fn _probe(_: Option<String>) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Env-mutating tests serialize on this lock (the hostcalls posture:
+    /// env reads are process-global). Poison-tolerant so a panicking sibling
+    /// cannot cascade.
+    static CRANK_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn crank_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        CRANK_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Set + restore one env var (SAFETY: single-threaded under the lock).
+    struct EnvGuard(&'static str);
+    impl EnvGuard {
+        fn set(name: &'static str, value: &str) -> EnvGuard {
+            // SAFETY: single-threaded under CRANK_ENV_LOCK.
+            unsafe { std::env::set_var(name, value) };
+            EnvGuard(name)
+        }
+        fn remove(name: &'static str) -> EnvGuard {
+            // SAFETY: single-threaded under CRANK_ENV_LOCK.
+            unsafe { std::env::remove_var(name) };
+            EnvGuard(name)
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            // SAFETY: single-threaded under CRANK_ENV_LOCK.
+            unsafe { std::env::remove_var(self.0) };
+        }
+    }
+
+    /// macOS Sonoma+ gives freshly-written executables a
+    /// `com.apple.provenance` xattr and Gatekeeper SIGKILLs the FIRST exec
+    /// (exit 137) — the install-service.sh lesson. Test stubs strip it
+    /// after writing; on Linux there is no xattr binary and this is a
+    /// silent no-op.
+    fn write_executable(path: &std::path::Path, content: &str) {
+        std::fs::write(path, content).expect("write stub");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let _ = std::process::Command::new("xattr")
+            .args(["-d", "com.apple.provenance"])
+            .arg(path)
+            .status();
+    }
+
+    /// `relative_steward_bin_refuses` — a RELATIVE `BRAIN_STEWARD_BIN` is
+    /// refused with the requirement named; the exe-dir twin is never
+    /// silently consulted for an override that cannot be honored.
+    #[test]
+    fn relative_steward_bin_refuses() {
+        let _g = crank_env_lock();
+        let _bin = EnvGuard::set(
+            "BRAIN_STEWARD_BIN",
+            "tools/steward-harness/target/debug/harness",
+        );
+        let refusal = resolve_harness_bin().expect_err("relative override must refuse");
+        match refusal {
+            HarnessBinRefusal::RelativeOverride(v) => {
+                assert_eq!(v, "tools/steward-harness/target/debug/harness");
+            }
+            other => panic!("wrong refusal: {other:?}"),
+        }
+    }
+
+    /// `path_lookup_never_consulted` — a shadowing `steward-harness` planted
+    /// in a PATH directory is NEVER returned: the PATH scan is deleted, so
+    /// with no override and nothing beside the kernel the resolution is a
+    /// named refusal, not whatever a writable PATH entry offers.
+    #[test]
+    fn path_lookup_never_consulted() {
+        let _g = crank_env_lock();
+        let dir = tempfile::tempdir().unwrap();
+        let planted = dir.path().join("steward-harness");
+        std::fs::write(&planted, b"#!/bin/sh\ntouch shadow-ran\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let _bin = EnvGuard::remove("BRAIN_STEWARD_BIN");
+        let _path = EnvGuard::set("PATH", dir.path().to_str().unwrap());
+        let refusal = resolve_harness_bin().expect_err("PATH must never be consulted");
+        assert_eq!(refusal, HarnessBinRefusal::NotFound, "{refusal:?}");
+        assert!(planted.exists(), "the shadow binary sits unexecuted");
+    }
+
+    /// `exe_dir_fallback_still_works` — with no override, a steward-harness
+    /// installed beside the (test) binary is the resolution (the as-rooted
+    /// fallback the plan keeps).
+    #[test]
+    fn exe_dir_fallback_still_works() {
+        let _g = crank_env_lock();
+        let exe = std::env::current_exe().unwrap();
+        let dir = exe.parent().unwrap().to_path_buf();
+        let planted = dir.join("steward-harness");
+        // Defense: if a stray file is already there, adopt it for the test
+        // and restore rather than clobber.
+        let original = std::fs::read(&planted).ok();
+        std::fs::write(&planted, b"#!/bin/sh\nexit 0\n").unwrap();
+        let _bin = EnvGuard::remove("BRAIN_STEWARD_BIN");
+        let resolved = resolve_harness_bin();
+        match &original {
+            Some(bytes) => {
+                let _ = std::fs::write(&planted, bytes);
+            }
+            None => {
+                let _ = std::fs::remove_file(&planted);
+            }
+        }
+        let resolved = resolved.expect("the beside-the-binary install must resolve");
+        assert_eq!(resolved, planted);
+    }
+
+    /// `crank_success_path_unchanged` — the success path is byte-identical
+    /// to the pre-Deadbolt shape: valid JSON stdin/stdout, the refs-only
+    /// projection (stopped_at + steps_executed, nothing else rides).
+    #[tokio::test]
+    async fn crank_success_path_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let stub = dir.path().join("steward-harness");
+        write_executable(
+            &stub,
+            "#!/bin/sh\nread -r line\necho '{\"stopped_at\":\"s3\",\"steps_executed\":3,\"secret_detail\":\"DROP\"}'\n",
+        );
+        let report = run_harness_crank_bounded(
+            stub,
+            serde_json::json!({"cmd": "crank", "run_id": 7}),
+            std::time::Duration::from_secs(5),
+        )
+        .await
+        .expect("the success path is unchanged");
+        assert_eq!(report["stopped_at"], "s3", "{report}");
+        assert_eq!(report["steps_executed"], 3, "{report}");
+        assert!(
+            report.get("secret_detail").is_none(),
+            "refs-only projection holds: {report}"
+        );
+    }
+
+    /// `crank_timeout_kills_child` (X-M5, scaled) — a sleep-harness records
+    /// its pid, then sleeps far past the (300 ms) budget. The timeout drops
+    /// the future; `kill_on_drop(true)` reaps the child: within a short
+    /// poll the recorded pid is gone (`kill -0` fails).
+    ///
+    /// The warmup leg absorbs a real-machinery quirk: the FIRST exec of a
+    /// freshly-written binary on macOS can be delayed seconds by a
+    /// Gatekeeper/syspolicyd scan (measured 0.3–2 s on the dev host —
+    /// sibling of the install-service.sh provenance-xattr lesson). Warm
+    /// first, measure second: the scaled window then tests only kill
+    /// semantics.
+    #[tokio::test]
+    async fn crank_timeout_kills_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid_file = dir.path().join("child.pid");
+        let stub = dir.path().join("steward-harness");
+        let pid_path = pid_file.display().to_string();
+        write_executable(
+            &stub,
+            &format!("#!/bin/sh\necho $$ > \"{pid_path}\"\nexec sleep 30\n"),
+        );
+
+        // Warmup: run the stub once (stdin closed), wait until it actually
+        // ran (the pid file appears), kill + reap it, clear the pid file.
+        let mut warm = tokio::process::Command::new(&stub)
+            .kill_on_drop(true)
+            .stdin(std::process::Stdio::null())
+            .spawn()
+            .expect("warmup spawn");
+        let warmup_deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+        while !pid_file.exists() {
+            assert!(
+                std::time::Instant::now() < warmup_deadline,
+                "warmup child never ran (first-exec scan exceeded 15 s)"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        warm.kill().await.expect("warmup kill");
+        warm.wait().await.expect("warmup reap");
+        std::fs::remove_file(&pid_file).expect("clear warmup pid file");
+
+        // Measured window (300 ms): a warm exec records its pid within
+        // milliseconds, so the file is present when the timeout fires.
+        let started = std::time::Instant::now();
+        let err = run_harness_crank_bounded(
+            stub,
+            serde_json::json!({"cmd": "crank"}),
+            std::time::Duration::from_millis(300),
+        )
+        .await
+        .expect_err("the sleep-harness must hit the budget");
+        assert!(err.contains("timeout"), "{err}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+
+        // The child was killed + reaped: `kill -0 <pid>` must fail shortly
+        // after the timeout (poll: tokio's orphan reaper is asynchronous).
+        let pid = std::fs::read_to_string(&pid_file)
+            .expect("the measured child recorded its pid")
+            .trim()
+            .to_string();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let alive = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("kill -0 {pid} 2>/dev/null"))
+                .status()
+                .expect("sh")
+                .success();
+            if !alive {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child pid {pid} outlived its budget — kill_on_drop did not reap"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+}

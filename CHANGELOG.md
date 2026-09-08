@@ -18,6 +18,175 @@ measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
 
+## [1.28.69] — 2026-09-08 — "Deadbolt": the egress and process boundary — the SEAM LINE closes
+
+The last SEAM LINE release (X-E3, X-M4, X-M5, X-M6 — audit 2026-09-06
+§4.7/§4.5). Theme: the two doors left open by .63–.68 — program-driven
+EGRESS (the shared webhook client could reach any private network its URL
+named, DNS rebinding included) and the PROCESS boundary (the console crank
+resolved its harness through PATH, could outlive its timeout, and the
+pending listing role-checked nothing). One boot-time refusal for
+private-IP sinks (explicit opt-out env), one spawn-site hardening, one
+403. No schema change; no route changes; no openapi change; x-api-version
+unchanged. Plan: `IMPLEMENTATION_PLAN_v1.28.69_Deadbolt.md`.
+
+### Release notes
+
+**Bug fixes**
+
+- None. (The orphaned-crank-child fix (X-M5) is a process-hygiene
+  security fix and lives below.)
+
+**Security fixes**
+
+- **SSRF/IP-validation on the shared egress client (X-E3, carried F-E5).**
+  The two env webhook sinks (`BRAIN_ALERT_WEBHOOK_URL`,
+  `BRAIN_DSAR_WEBHOOK_URL`) now resolve → validate → PIN at boot, per the
+  OWASP SSRF Prevention Cheat Sheet's bypass-proof form: EVERY resolved
+  address (A + AAAA) must be globally routable per the IANA IPv4/IPv6
+  special-purpose registries (0/8, 10/8, 100.64/10 CGNAT — Tailscale lives
+  there, 127/8, 169.254/16 + cloud metadata, 172.16/12, 192.0.0/24,
+  192.0.2/24, 192.168/16, 198.18/15, 198.51.100/24, 203.0.113/24, 240/4,
+  255.255.255.255; ::, ::1, fc00::/7, fe80::/10, ff00::/8, 2001:db8::/32),
+  parsed as real `IpAddr`s — string encodings (hex/octal/dword) are
+  canonicalized by the URL parser before the table ever sees them. The
+  metadata hostnames `metadata.amazonaws.com` / `metadata.google.internal`
+  refuse before resolution. The pinned client forces every send to the
+  validated address set (reqwest `resolve_to_addrs`; TLS SNI preserved) —
+  DNS rebinding is closed for the process lifetime. Redirect refusal was
+  the first layer and stays.
+- **The crank's binary, absolutely (X-M4).** `resolve_harness_bin` no
+  longer scans PATH: a writable PATH entry in the service context can
+  never again become arbitrary code execution as the service user.
+  Resolution is the absolute `BRAIN_STEWARD_BIN` override (a RELATIVE
+  value refuses with the requirement named — no silent exe-dir fallback
+  for an override that cannot be honored) or the binary installed beside
+  the kernel. The `brain workflow crank` CLI keeps its own PATH resolution
+  (the operator's own trusted context — documented ceiling).
+- **The crank's child dies with its budget (X-M5).** The harness spawn
+  carries `kill_on_drop(true)`: the 60 s timeout now reaps the child
+  instead of orphaning it past its window. The 30 s hostcall exec path
+  was audited in the same commit — its deadline loop already killed
+  explicitly; the one early-return that could orphan (a failed `try_wait`)
+  now kills + reaps before returning.
+- **The console pending listing role-checks (X-M6).**
+  `POST /webhooks/channel/{kind}/console` with `action: "pending"`
+  (proposal bodies + digests) now requires the mapped actor's `read`
+  capability through the same `channel_user_map` + role-store machinery
+  every other console action uses (empty grants nothing). `decide`,
+  `due`, `crank` unchanged.
+- **Hostcall egress pinned (X-E3, hostcall half).** The mediated HTTP
+  path keeps its operator allowlist (the trust anchor; loopback stays a
+  legal target) but now resolves each allowlisted host ONCE and pins the
+  per-host client for the process lifetime — rebinding closed there too.
+  The client cache is insert-only and bounded structurally by the
+  allowlist (membership is re-checked before any insertion).
+
+**Improvements**
+
+- `BRAIN_EGRESS_ALLOW_PRIVATE=1` is the ONE egress opt-out (fail-closed
+  parse: any other value refuses the boot — the `BRAIN_WRITE_POSTURE`
+  pattern). It admits a private/metadata sink LOUDLY (boot warn names the
+  host) and the sink stays DNS-pinned.
+- A sink whose host does not resolve at boot no longer kills the boot
+  (the sink may be unused): it warns and fails closed lazily on first
+  send with the named `egress_unresolved` label.
+
+### Engineering record
+
+- **Migration note (private-sink operators):** a webhook sink aimed at a
+  LAN/loopback address now REFUSES THE BOOT (the WRITE_POSTURE pattern:
+  a private sink is a misconfiguration, never a runtime surprise). If the
+  target genuinely lives on your private network, set
+  `BRAIN_EGRESS_ALLOW_PRIVATE=1` — the admission is a loud warn and the
+  sink stays pinned. One release of grace: the env can pre-neutralize the
+  refusal without a revert.
+- **Migration note (steward-bin PATH users):** deployments relying on
+  PATH lookup for `steward-harness` must set `BRAIN_STEWARD_BIN` to an
+  ABSOLUTE path or install the binary beside `brain-server`. A relative
+  `BRAIN_STEWARD_BIN` now refuses the crank with the requirement named.
+- **Validation:** all plan tests green — `private_ranges_refused_table`
+  (the full registry table as data: every deny range gets literal-IP
+  cases, class labels asserted), `metadata_ip_refused`,
+  `boot_refuses_private_sink_without_opt_out`,
+  `opt_out_boots_with_warn_and_pins`, `pinned_client_survives_dns_rebind`
+  (pin to an RFC 6761 `.invalid` name — the system resolver can never
+  answer it, so a delivered request rides the pin; a re-pin attempt loses
+  structurally and the shadow listener sees zero connections),
+  `hostcall_host_cache_bounded_by_allowlist`,
+  `unresolved_sink_fails_closed`; `relative_steward_bin_refuses`,
+  `path_lookup_never_consulted`, `exe_dir_fallback_still_works`;
+  `crank_timeout_kills_child` (scaled 300 ms window + pid-canary
+  `kill -0` reap poll), `crank_success_path_unchanged`;
+  `pending_requires_read_role`, `unroled_actor_pending_refused`,
+  `decide_path_unchanged`. Full suite 1,399 passed / 7 ignored
+  at the release commit; clippy bench/default/otel clean; fmt + lipstyk
+  clean; CI dry-run set green.
+- **DRILL 2026-09-08 on a COPY of the live DB** (release build v1.28.69,
+  test port 8801, bridge config in an isolated config dir, mapped
+  actor `UDRILL` holding `read+write+approve`; a quiet fresh-migrated DB
+  for the crank legs — the live copy's queued-alert backlog tried the
+  sink on every boot, which is the lazy seam working, but noisy): (1)
+  `BRAIN_ALERT_WEBHOOK_URL=http://169.254.169.254/latest/meta-data` →
+  `error: fatal egress config: BRAIN_ALERT_WEBHOOK_URL sink host is not
+  globally routable: egress_private_refused: '169.254.169.254' address
+  169.254.169.254 is not globally routable (link-local/cloud-metadata
+  169.254/16)` — process exits; (2) `http://localhost:9999/hook` with
+  `BRAIN_EGRESS_ALLOW_PRIVATE=1` → boots AND logs
+  `egress: PRIVATE sink address admitted by BRAIN_EGRESS_ALLOW_PRIVATE=1`
+  followed by `egress pin: BRAIN_ALERT_WEBHOOK_URL sink host 'localhost'
+  pinned to [127.0.0.1:9999, [::1]:9999] (rebinding closed; a host move
+  needs a restart)`; (3) a signed console crank at a
+  `BRAIN_STEWARD_BIN` sleep-harness stub (90 s sleep vs the 60 s budget)
+  → the recorded stub pid is GONE from the process table after the
+  response — and the drill found the reaper firing EARLY: the router's
+  30 s `TimeoutLayer` (408) drops the handler future first, and
+  `kill_on_drop` reaps on THAT drop too — the child now dies on every
+  abandonment path (previously it survived all of them); (4) a shadowing
+  `steward-harness` planted in a PATH dir (server PATH pointed at it) →
+  `500 steward-harness binary not found beside the kernel`, the planted
+  binary's canary file NEVER appears, audit row `workflow/denied`.
+- **Drill-found placement bug, fixed in-commit:** the boot egress check
+  first sat BEFORE tracing init — the refusal printed (anyhow) but every
+  pin/admission log line went nowhere. Moved after
+  `injection_policy_boot_warning()`; the drill transcript above is from
+  the corrected placement.
+- reqwest 0.13.4's `ClientBuilder::resolve_to_addrs` is the documented
+  pin seam (per-client DNS override; hyper-util applies the override at
+  resolution and keeps the URL host for TLS SNI — verified against the
+  vendored source; URL-explicit ports always win over the pinned addr's).
+- `ponytail:` non-goals held — no custom DNS resolver trait / hickory
+  integration (system resolver + pin is enough for two static sinks + a
+  bounded allowlist), no egress proxy architecture, no URL allowlist for
+  the alert/DSAR sinks themselves (they ARE the operator's allowlist; the
+  guard closes the range class), no changes to `enqueue_out`/drain
+  semantics (Wardline owns that seam), no eviction machinery for the
+  hostcall client cache (the bound is structural).
+- Ceilings (honest): pins live for the process lifetime — a sink host
+  moving to a NEW address needs a restart (documented in the boot log
+  line); the public-only table does NOT apply to the hostcall path (the
+  allowlist is operator trust, and loopback mediation is a pinned
+  feature — the pin closes rebinding, not operator intent); the CLI's
+  `brain workflow crank` keeps PATH resolution by design (operator
+  context, not the service context); lazy re-resolution happens at most
+  once per host (boot + first send), so a rebinder's window is a single
+  resolution; the IANA table is the plan's enumerate-deny form (the
+  bypass-proof complement — "must be globally routable" — is exactly
+  what the table encodes for unicast space); the console crank's
+  effective wall-clock is min(30 s router TimeoutLayer, 60 s crank
+  window) — pre-existing layering, and BOTH paths now reap the child.
+- **Migration note (test suites):** any test that points
+  `BRAIN_ALERT_WEBHOOK_URL` / `BRAIN_DSAR_WEBHOOK_URL` at a loopback
+  listener must now set `BRAIN_EGRESS_ALLOW_PRIVATE=1` for the send —
+  the in-repo Art-19 drill test does exactly that (with the comment
+  naming the posture).
+- CRATE_TEST_FLOOR raised 1,303 → 1,313 (the spire needle re-measured at
+  the release commit: ten plain-test additions — six egress pins, the
+  hostcall cache pin, three harness pins; the tokio crank pins and the
+  three main_suite console pins ride the run counts, not this needle).
+
+---
+
 ## [1.28.68] — 2026-09-07 — "Shutter": image + beacon egress closed upstream — the two carried EchoLeak-class seats finally shut
 
 The docs half of a two-tree release. The code half lives in the openclaw

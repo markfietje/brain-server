@@ -515,3 +515,54 @@ one ingest → recall round-trip).
 - The Capstone ledger numbers (124 lines, 1,198 pins) drift by
   doc-comment literals under the substring needles — the needles are
   measured identically every time; that is what a freeze needs.
+
+## 2026-09-08 — v1.28.69 "Deadbolt" — the SEAM LINE close-out (skeleton)
+
+The SEAM LINE (v1.28.63 "Wardline" → v1.28.69 "Deadbolt") was the
+remediation program for the 2026-09-06 joint audit's code-closeable
+findings: the seven releases that break a documented security law or open
+a model-context seam. This skeleton is the re-load anchor for the
+REGISTER LINE (v1.28.70 "Twokeys" → v1.28.75 "Preflight", the program
+that closes everything else in the ledger): each section below states
+what is measured now and what the Register Line must re-measure before
+it opens.
+
+### The finding → release map (as shipped)
+
+| Release | Closes | Where the fix lives |
+|---|---|---|
+| v1.28.63 "Wardline" | X-W1..X-W5 (the one code-false security law: `channel/out` forgery at the events seam) | reserved vocabulary at `enqueue_child`, closed run statuses, valet fence, alert-bus kind auth |
+| v1.28.64 "Blackout" | X-A1..X-A3a, X-A6..X-A9 (revocation + surface identity) | revocation at authN, denylist TTL, alg compare, public-path single source, reverse route scan, INJECTION_POLICY warn |
+| v1.28.65 "Meridian" | X-R1, X-R5, X-S1, X-M2 (content hygiene at the model seam) | `/suggest` untrusted labels, plugin INVISIBLE_CLASSES parity fixture, host merge-seam strip, MCP external-content idiom |
+| v1.28.66 "Truthglass" | X-L1, X-L2, X-L3, X-L5 (the approver sees the truth) | approval `args` both transports, head+tail truncation with exact counts, `dsar --action` + prompts, restore interlocks |
+| v1.28.67 "Pin" | X-M1, X-M3, X-C1, X-C2 (identity pinned) | MCP catalog sha256 pins + drift/ack, `BRAIN_MCP_SCOPE`, parcels `expected_signer` REQUIRED, `/ump/audit/verify` integrity census |
+| v1.28.68 "Shutter" | X-E1, X-E2, X-E4 (image + beacon egress — openclaw fork + this tree's docs) | remote-image host allowlist default-OFF, favicon beacon default-OFF, data-URI 64 KiB; THREAT_MODEL §5 |
+| v1.28.69 "Deadbolt" | X-E3, X-M4, X-M5, X-M6 (egress + process boundary) | resolve→validate→pin egress guard (`webhook.rs`), absolute-only harness bin, `kill_on_drop`, console pending read-role |
+
+### What the line proved (re-measure at Register Line open)
+
+- Every audit law that was code-false is now code-true and PINNED: the
+  reserved-vocabulary gate (Wardline), revocation-before-authN
+  (Blackout), the content doors (Meridian), the approval/truncation
+  truth (Truthglass), tool + signer identity (Pin), the egress seats
+  (Shutter + Deadbolt).
+- The one WIRE break in the whole line: parcels `expected_signer`
+  becoming required (Pin). Schema untouched throughout (1.28.45 →
+  REGISTER-LINE-OPEN value). openapi additive-only throughout.
+- The drill discipline held: Meridian's end-to-end injection proof, the
+  Pin rug-pull demo, Deadbolt's four-leg boot/crank/PATH drill — each
+  release carried a live transcript, not just pins.
+
+### Register Line pre-flight checklist (what .70–.75 must carry in)
+
+- [ ] Re-run the full ledger (§4 of the 2026-09-06 audit) against the
+      .69 tip; re-verify each REGISTER-line finding still exists as
+      described (X-A4, X-A5, X-R2..X-R4, X-R6..X-R7, X-W6, X-W7, X-W8,
+      X-L4, X-C3..X-C6, X-C8, X-E5, X-S2, X-F3).
+- [ ] Carry the ceilings forward honestly: allowlists are trust, not
+      safety (Shutter); the hostcall path's loopback exception is
+      operator trust (Deadbolt); pins are process-lifetime (Deadbolt);
+      screen-is-a-heuristic stands even post-Pores.
+- [ ] Ops debts riding along: the openclaw-side token purge (paused),
+      the review-posture flip at install (Preflight), the SBOM refresh
+      (Preflight).

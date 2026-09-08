@@ -702,7 +702,16 @@ pub fn notify_art19(subject: String, certificate_id: i64, certified_at: String) 
     })
     .to_string();
     tokio::spawn(async move {
-        let client = crate::webhook::egress_client();
+        // Deadbolt: same fail-closed seam as the alert sink — a private or
+        // unresolved target refuses before any byte leaves; the purge itself
+        // is untouched (the webhook failure NEVER rolls it back).
+        let client = match crate::webhook::egress_client_for_url(&url) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!("DSAR Art 19 webhook failed closed before send: {e}");
+                return;
+            }
+        };
         let mut last_err: Option<String> = None;
         for attempt in 0..3u32 {
             let mut req = client.post(&url).header("content-type", "application/json");

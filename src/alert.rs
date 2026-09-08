@@ -452,7 +452,16 @@ async fn sink(state: &Arc<AppState>, seq: u64, body: &str) {
     let queue = crate::webhook::WebhookQueue::new(Arc::new(state.pool.clone()));
     let _ = queue.enqueue("alert", "alert", &delivery_id, body.as_bytes());
 
-    let client = crate::webhook::egress_client();
+    // Deadbolt: the sink builds only against a validated/pinned host — a
+    // private/metadata target or an unresolved one fails closed here (the
+    // `egress_*` label), never on the wire.
+    let client = match crate::webhook::egress_client_for_url(&url) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("alert webhook sink failed closed before send: {e}");
+            return;
+        }
+    };
     let ts = chrono::Utc::now().to_rfc3339();
     let mut last_err: Option<String> = None;
     for attempt in 0..3u32 {
