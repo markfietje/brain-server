@@ -44,6 +44,7 @@ are assumed; swap `BRAIN_TOKEN_FILE`/`-H 'authorization: Bearer …'` as needed.
 | **Crypto inventory + algorithm-agility seams (PQC)** (Attestation) | v1.28.62 | `docs/crypto-inventory.md` — SP 1800-38B-shaped table (algorithm · what it protects · HNDL verdict · swap path) + the JWT ML-DSA landing procedure (`auth/jwt.rs::ALLOWED_ALGS` seam) + the UMP did:key multicodec version-prefix rule; pinned by `pqc_inventory_seam_deliverable` |
 | **Approval-fatigue telemetry (ASI09)** (Attestation) | v1.28.62 | `GET /workflow/scoreboard` (DPO/admin) → `review_independence_risk` + `approval_uniformity_ratio` + `review_decisions_window`; pinned to the client detector's arithmetic by `scoreboard_uniformity_matches_client_math` |
 | **Calendar-as-code regulatory watches** (CRA/AI Act/PQC) | v1.28.58–.62 | `cargo test --lib reg_watch` — CRA Art 14 runbook + standby/revocation drill records + the Art 50 marking deliverable + the PQC inventory, each a CI gate |
+| **Provable embedding deletion — purge is not a row delete** (EDPB CEF, Preflight) | v1.28.75 | Ingest → note id, purge id, then `vec0` re-recall negative proves embedding gone (see `reproduce.md` § "Embedding deletion proof"); idempotent — re-ingest under same id does not resurrect; pinned by DSAR cert `held_ids`/`chain_verifies` + tombstone registry |
 
 ## Claims that are ceilings (owned, not shipped)
 

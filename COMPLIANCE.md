@@ -59,6 +59,18 @@ paths are explicit client calls; nothing is inferred or scraped.
   personal-use contract) and **on by default in JWT mode** (enterprise
   posture). Override: `BRAIN_AUDIT_READ_EVENTS`, sampling via
   `BRAIN_AUDIT_READ_SAMPLE_RATE`.
+ 
+ > **EU AI Act Art 10 (data governance) anchor.** For a memory store the Art 10
+ > duty is ingest provenance and quality: the server stores exactly what the
+ > client sends — no enrichment, no profiling, no inferred training data — and the
+ > ingest gate screens every write for injection (ASI06 blocklist + quarantine,
+ > `origin`/`source` provenance per row, `lawful_basis` tag). See §6.5. This one
+ > sentence is the Art 10 trace a procurement reviewer looks for.
+ 
+ > **EU AI Act Art 9 (risk management) anchor.** The risk-management system is
+ > `THREAT_MODEL.md` (STRIDE) + `SECURITY.md` defense-in-depth + `AUDIT.md`
+ > lifecycle, summarized as the risk register in `docs/risk-register.md` (ID ·
+ > likelihood × impact · treatment · owner · residual). Clause 6.1/8.2/9.x/10.x.
 
 ## 3. Logging Specification (EU AI Act Art 12 / Art 26(6) posture)
 
@@ -157,6 +169,16 @@ is a documentation of how to assemble the bundle, no new code.
    drop the subject); a tombstone row is left with the reason
    (`owner:<subject>` / `derived`) and, for derived chunks, the root
    `origin_id`.
+ 
+ > **EDPB Coordinated Enforcement Framework — provable embedding deletion.**
+ > A purge is not a row delete: the transaction clears the vector row in
+ > `vec_knowledge`, the FTS5 index, the graph edges (`relationships` +
+ > `evidence_links`), and the proposal refs in the same atomic commit. A
+ > tombstoned id is **idempotent** — re-embedding or re-ingesting the same
+ > content under the same id does not resurrect the erased embedding — and a
+ > `vec0` re-recall of a purged id returns no hit (pinned in
+ > `docs/trust/proof-map.md`). This is the CEF "embeddings and derived
+ > artefacts" sentence.
 4. **Certificate** — `{subject, action, found_count, purged_ids,
    tombstone_root, certified_at, chain_head}`; the `chain_head` is the audit
    chain tip at certification time. Re-fetchable via
@@ -215,15 +237,28 @@ explicit operator action.
 - **EU (GDPR):** Art 15/17 (DSAR + erasure certificate), Art 19 (onward-
   notification webhook), Art 22 (trace replay = meaningful information about
   the logic), Art 26(6) guidance (retention ≥180 days where required).
-- **California (CCPA/CPRA + ADMT):** the Art 22 trace maps to the ADMT
-  right-to-know logic explanation; `/export` is the data-portability response;
-  `/tombstones` evidences completed deletion requests.
+- **California (CCPA/CPRA + ADMT — full compliance 1 Jan 2027):** the Art 22
+  trace maps to the ADMT right-to-know logic explanation; `/export` is the
+  data-portability response; `/tombstones` evidences completed deletion
+  requests.
 - **Residency:** loopback-first means the data physically never leaves the
   host; cross-border deployment is purely a deployment choice, not an
   architectural one.
-- **EU CRA horizon:** the embedded-dependency story is documented in
-  `SECURITY.md` (bundled SQLite 3.53.2, cargo-audit gate); no change to the
-  data path.
+- **EU CRA horizon (reporting live 11 Sept 2026):** the embedded-dependency
+  story is documented in `SECURITY.md` (bundled SQLite 3.53.2, cargo-audit
+  gate); the Art 14 24h/72h/14d reporting playbook is
+  `docs/cra-reporting-runbook.md` — no change to the data path.
+- **US patchwork (no federal comprehensive law as of Sept 2026):**
+
+  | State / law | Trigger | Effective | Brain-server evidence |
+  |---|---|---|---|
+  | **Colorado** SB 24-205 → amended **SB 26-189 eff 1 Jan 2027** (enforcement 2027) | Consequential decisions (employment, housing, credit, insurance, education, health) — risk-management program + impact assessment + transparency | **1 Jan 2027** | Impact assessment consumes trace + audit evidence (§3/§3.6) |
+  | **Texas TRAIGA** (signed Jun 2025) | Intent-based prohibition (no AI use with intent to discriminate/deceive/violate law), AG enforcement, no private right | **1 Jan 2026** (enforcement 2026) | Trace + retention report evidence "reasonable oversight" |
+  | **California** ADMT full regime (see above) | ADMT right-to-know / opt-out | **1 Jan 2027** | As above |
+
+  Enumerating all ~13 state trackers would stale fast — CA/CO/TX are the
+  representative rows a US reviewer needs; the pattern is "trace + retention
+  report = reasonable oversight."
 
 ### 6.4 EU AI Act Art 4 (AI literacy)
 

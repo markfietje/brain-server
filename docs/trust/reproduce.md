@@ -75,6 +75,33 @@ curl -s -X POST "$B/ingest" -H 'content-type: application/json' \
 curl -s "$B/health" | jq '.injection_classifier_loaded'
 ```
 
+## 6b. Embedding deletion proof — purge clears `vec_knowledge` and is idempotent (EDPB CEF)
+
+```sh
+# 1) Ingest a uniquely identifiable chunk
+ID=$(curl -s -X POST "$B/ingest" -H 'content-type: application/json' \
+  -d '{"content":"EDPB_PROBE_'"$(date +%s)"'_ unique canary sentence","owner":"probe-subject"}' | jq -r '.id')
+
+# 2) Recall proves it is embedded (vec0 + FTS5)
+curl -s -X POST "$B/recall" -H 'content-type: application/json' \
+  -d '{"query":"EDPB_PROBE canary"}' | jq --arg id "$ID" '[.hits[] | select(.id==$id)] | length'  # → 1
+
+# 3) Purge the id (one tx: knowledge + vec_knowledge + relationships + evidence_links + proposals + workflow family)
+curl -s -X POST "$B/purge" -H 'content-type: application/json' \
+  -d '{"ids":["'"$ID"'"]}' | jq '.purged'
+
+# 4) vec0 re-recall negative — the embedding is gone, not just the row
+curl -s -X POST "$B/recall" -H 'content-type: application/json' \
+  -d '{"query":"EDPB_PROBE canary"}' | jq --arg id "$ID" '[.hits[] | select(.id==$id)] | length'  # → 0
+
+# 5) Tombstone is present and idempotent — re-purge is a no-op (200, purged: 0 or holds)
+curl -s "$B/tombstones?subject=probe-subject" | jq --arg id "$ID" '[.[] | select(.id==$id)] | length'  # → 1
+curl -s -X POST "$B/purge" -H 'content-type: application/json' \
+  -d '{"ids":["'"$ID"'"]}' | jq '.purged'  # → 0
+
+# DSAR variant (same guarantee): POST /dsar {subject:"probe-subject", action:"purge"} leaves the same tombstone + cert `chain_verifies: true`
+```
+
 ## 7. Tear down
 
 ```sh

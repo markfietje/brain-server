@@ -585,3 +585,55 @@ tier.
 - [Architecture](./architecture.md) — how the pieces fit together.
 - [Security](./security.md) — the full threat model.
 - [Compliance](./compliance.md) — regulatory mapping and data handling.
+
+## Enterprise pilot profile — openclaw.json hardening (2026-09-09)
+
+The personal-use defaults in `~/.openclaw/openclaw.json` are correct for a
+trusted loopback host but too permissive for a multi-tenant pilot. Apply this
+profile for any internet-facing or group pilot:
+
+```json
+{
+  "plugins": {
+    "brain-server": {
+      "agents": ["*"],
+      "autoCapture": false,
+      "autoRecall": true, "autoRecallTopK": 5, "recallMaxChars": 2500,
+      "allowedChatTypes": ["direct", "explicit"],
+      "baseUrl": "http://127.0.0.1:8765",
+      "defaultDomain": "global",
+      "minQueryLength": 5,
+      "requestTimeoutMs": 8000,
+      "strictDomain": true,
+      "authToken": "${BRAIN_SERVER_AUTH_TOKEN}"
+    }
+  },
+  "tools": {
+    "fs": { "workspaceOnly": true }
+  }
+}
+```
+
+Server side for the same pilot:
+
+```
+BRAIN_WRITE_POSTURE=review
+BRAIN_AUDIT_READ_EVENTS=on
+BRAIN_AUDIT_RETENTION_DAYS=180
+```
+
+Why each change (see `MEMORY_STACK_REPORT_2026-09-09.md` §1):
+
+| Setting | Personal default | Pilot value | Why |
+|---|---|---|---|
+| `autoCapture` | `true` | `false` | Every group/channel message auto-queues as a proposal — GhostWriter surface maximized |
+| `allowedChatTypes` | `["direct","explicit","group","channel"]` | `["direct","explicit"]` | Plugin recall in groups = cross-tenant prompt-injection via query |
+| `strictDomain` | `false` | `true` | Fail-closed on unknown domain instead of `global` sink |
+| `autoRecallTopK` / `recallMaxChars` | `8` / `4000` | `5` / `2500` | Tighter context injection per turn |
+| `tools.fs.workspaceOnly` | `false` + `alsoAllow ["*"]` | `true` + explicit allowlist | Maximally permissive is personal-only |
+
+### Pilot caveats (honest ceilings)
+
+- **Residency panel today shows DB file + `BRAIN_REGION` stamp, not per-tenant key isolation** — per-tenant keys (SQLCipher + KMS, `BRAIN_TENANT_KEY_FILE` per tenant) ship in v3.7 (Q1 2027). See `COMPLIANCE.md` §10.3 / `THREAT_MODEL.md`.
+- **Rate limiting is loopback-scoped until v2.1.** The shared loopback bucket (X-A10 / S2-40) is correct for loopback. Any **internet-facing pilot requires per-principal rate buckets** (carry until v2.1) — put the reverse proxy's per-IP limit in front and note the gate in the deployment runbook.
+- **"Enterprise-pilot-ready" is subject to operator attestation.** ISO 42001 / SOC 2 Type II attestation remains an external operator audit; the repo provides the posture, not the certificate. See `COMPLIANCE.md` header + §6.1.
