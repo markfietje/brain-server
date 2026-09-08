@@ -155,6 +155,11 @@ pub fn health_body(
                 // is loaded. Mirrors `screen::screen_classifier_loaded()`; lets ops
                 // confirm the opt-in model is actually active.
                 "injection_classifier_loaded": crate::screen::screen_classifier_loaded(),
+                // Pores: the classifier POSTURE tri-state — `on` (loaded and
+                // scoring), `off` (explicit BRAIN_INJECTION_CLASSIFIER=off
+                // opt-out), `absent` (no artifact resolved / feature not
+                // compiled). Additive beside the boolean above.
+                "injection_classifier": crate::screen::screen_classifier_state(),
                 // the resolved INJECTION_POLICY (quarantine|reject|allow):
                 // `allow` disables the screen entirely, so it is never silent
                 // — the boot warn + this echo surface it.

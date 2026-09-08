@@ -94,8 +94,8 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 |---|---|---|
 | `INJECTION_POLICY` | `quarantine` | `quarantine` \| `reject` \| `allow` — how prompt-injection-suspicious input is handled. |
 | `BRAIN_INGEST_SKIP_PATTERNS` | — (off) | Newline- or comma-separated prefixes; text beginning with any is skipped at ingest (e.g. `!redacted,```). Opt-in; default behavior unchanged. |
-| `BRAIN_INJECTION_CLASSIFIER` | — | Injection classifier selector |
-| `BRAIN_INJECTION_TOKENIZER` | — | Tokenizer used by the injection classifier |
+| `BRAIN_INJECTION_CLASSIFIER` | `on` | Layer-2 classifier selector (v1.28.71 "Pores" auto-on): `on`/unset loads when the default artifact `~/.config/brain-server/models/injection-classifier/{model.onnx,tokenizer.json}` resolves (`absent` posture otherwise, layer 1 unaffected); `off` opts out; any other value is an explicit model path — a non-existent path **refuses the boot** (fail-closed). Echoed as `injection_classifier: on\|off\|absent` on `/health/db`. |
+| `BRAIN_INJECTION_TOKENIZER` | — | Tokenizer used by the injection classifier (required alongside an explicit `BRAIN_INJECTION_CLASSIFIER` path) |
 | `BRAIN_INJECTION_THRESHOLD_HIGH` | `0.9` | Classifier banding: score ≥ this → reject |
 | `BRAIN_INJECTION_THRESHOLD_LOW` | `0.7` | Classifier banding: score ≥ this (below high) → quarantine |
 | `BRAIN_PROPOSAL_TTL_SECS` | `604800` (7 d) | How long a proposal can sit pending before auto-expire (audited). |

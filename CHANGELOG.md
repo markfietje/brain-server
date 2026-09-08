@@ -18,6 +18,119 @@ measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
 
+## [1.28.71] — 2026-09-08 — "Pores": the screen sees what the model sees
+
+The second REGISTER LINE release (X-R4, X-R6, X-R7 — audit 2026-09-06
+§4.4). Theme: the layer-1 injection screen stops running on raw bytes
+while the classifier sees the stripped form; the vocabulary stops being
+13 English phrases; the layer-2 classifier turns itself on when its model
+is present; and the log/bridge seams adopt the canonical strips. Screen
+verdicts shift at the margin — QUARANTINE-WARD only. No schema; no
+routes; x-api-version unchanged. Plan:
+`IMPLEMENTATION_PLAN_v1.28.71_Pores.md`.
+
+### Release notes
+
+**Bug fixes**
+
+- The log seam no longer lets ANSI/C1 escape sequences through to log
+  values: request-derived values logged by the memory routes route
+  through the shared control-char strip, so a crafted `ESC[...` payload
+  cannot script the operator's terminal via the launchd/journald stream
+  (line-forging stayed closed; the escape-class gap is now closed too).
+- Slack/Teams message previews strip the canonical invisible-Unicode
+  class and dereference markdown image/link refs at the bridge edge
+  before the 4000-char clamp — previews previously rode the
+  control-char scrub only. The kernel screen stays authoritative
+  server-side; this is defense-in-depth at the rendering boundary.
+
+**Security fixes**
+
+- **The injection screen runs on the stripped form** — the same
+  normalization the layer-2 classifier input gets. A bidi-split
+  structural marker (`sys\u202Etem:`) or zero-width-split role heading
+  can no longer dodge the blocklist leg while the classifier sees it
+  clean. Verdicts can only move Clean→Quarantine/Reject from this
+  change, never the reverse.
+- **The blocklist stops being 13 English phrases**: translation
+  families (Spanish, German, French, Dutch, Filipino) cover the same six
+  instruction-override intents; a typoglycemia tier catches
+  scrambled-middle evasions ("ignroe all prevoius systme instructions")
+  via the OWASP cheat sheet's minimal anagram match (first+last equal,
+  sorted middle equal, length ≥ 4); and a bounded encoding tier decodes
+  base64/hex runs (≥ 24 chars, first 8 runs, ≤ 4 KiB per decode) and
+  re-scans the decoded text against the same detector.
+- **The layer-2 classifier auto-loads when its model artifact is
+  present** (feature-gated builds): `BRAIN_INJECTION_CLASSIFIER=off`
+  opts out, `on`/unset probes the default artifact location
+  (`~/.config/brain-server/models/injection-classifier/`), an explicit
+  path keeps working — and a non-existent explicit path now REFUSES the
+  boot (fail-closed; a typo must not silently disable layer 2).
+  `/health/db` echoes the tri-state `injection_classifier:
+  on|off|absent`. The poison posture is unchanged (a dead classifier
+  scores fail-open 0.0 — layer 2 never eats ingest).
+
+**Improvements**
+
+- `install-service.sh` scaffolds the classifier artifact directory and
+  surfaces the layer-2 posture at install time (artifact fetching stays
+  an operator step; the model manifest pins integrity).
+
+### Engineering record
+
+- **Verdict-shift disclosure (honest):** the four breadth additions move
+  verdicts QUARANTINE-WARD at the margin — the bidi-wrapped phrase that
+  motivated the stripped-form change now quarantines (was Clean), and
+  translated/scrambled/encoded instruction phrasings quarantine where
+  they previously sailed through. The clean-corpus pins
+  (`clean_text_verdicts_unchanged_table`,
+  `no_false_positive_drift_on_clean_corpus`) guard the reverse: no
+  corpus entry flipped clean-ward, and no benign prose in the fixture
+  corpora drifted quarantine-ward (a punctuation-adjacent and a
+  long-standing "system prompt" corpus entry were corrected during
+  development — the matcher behavior was right both times).
+- **The screen is a tripwire, not a boundary — standing honesty note.**
+  The OWASP Best-of-N finding (power-law scaling; 89% success on GPT-4o
+  at sufficient attempts) is now cited in the module doc verbatim:
+  static filters SLOW attackers, they never stop them. The boundary is
+  the pairing — `flagged`/`untrusted` segregation, the unforgeable
+  fence, and the HITL approval gate. The dual-LLM/guardrail-model
+  pattern remains considered-and-rejected (the house LLM-screening ban).
+- **Matcher ceiling (deliberate):** the anagram tier stops at
+  first+last/sorted-middle equality — Levenshtein/Damerau distance
+  matching needs a string-metric crate, deliberately not taken. Exact
+  keywords alone never trip the anagram tier (bare "system"/"ignore"
+  are ordinary prose). The token-run matcher stays punctuation-adjacent
+  blind (a comma fused to a phrase's last word dodges it) — same as the
+  English list pre-Pores. The encoding tier is bounded (8 runs, 4 KiB,
+  single decode level, no recursion — `encoding_scan_bounded` pins the
+  cap including the honest "run #9 is not decoded" direction).
+- **Bridge parity method:** the bridge crate's strip is a byte-for-byte
+  port of the kernel scanner semantics (first-`]`/first-`)` link scan)
+  over the synced plugin `format.ts` invisible class set — the parity
+  property is pinned bridge-side (`kernel_screen_still_authoritative`).
+  The bridge crate suite runs in the crates CI job; its test floor
+  holds.
+- **M4 delta:** `sanitize_log_value` now maps `\r` to removal (was: a
+  space) — one space narrower, still line-forge-proof; `\n`→space and
+  tab-survival are pinned to the pre-existing behavior.
+- **Validation:** full bench suite 1,426 passed / 7 ignored (default-features 1,443; otel 1,445); clippy
+  clean; fmt clean; the channel-bridge crate suite green (39 tests);
+  CRATE_TEST_FLOOR 1,318 → 1,336 (needle re-measured: +18 bare-`#[test]`
+  pins — the Pores family + the drill pin). Drill: the bidi-wrapped
+  "ignore previous instructions" class now quarantines (pinned,
+  `bidi_wrapped_phrase_now_quarantines`), and the Meridian canary memory
+  keeps its screen verdict Clean (pinned,
+  `meridian_canary_screen_verdict_unchanged`) — it was designed to slip
+  the screen and is caught at the read seam instead.
+- **ponytail (plan non-goals):** no LLM-based screening; no
+  classifier-as-gate (advisory tier only); no embedding-similarity
+  blocklist; no string-metric dependency; the installer does not fetch
+  model artifacts (scaffold + guidance only — fetching stays an operator
+  step).
+- OpenAPI/schema: untouched. `x-api-version`: unchanged. New deps:
+  none (`base64`/`hex` were already in the tree).
+
 ## [1.28.70] — 2026-09-08 — "Twokeys": the opaque-mode operator/agent split — the REGISTER LINE opens
 
 The first REGISTER LINE release (X-A4a carried F-W1 + X-A5 — audit

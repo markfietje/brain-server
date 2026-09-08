@@ -421,6 +421,24 @@ pub fn bootstrap() -> Result<BootOutcome> {
     // injection screen entirely — a real posture, but never a silent one.
     config::injection_policy_boot_warning();
 
+    // ── Pores classifier posture (once, at boot, AFTER tracing init) ──
+    // An explicit BRAIN_INJECTION_CLASSIFIER path that does not resolve
+    // REFUSES the boot (fail-closed — a typo must not silently disable
+    // layer 2; `on`/`off`/unset parse total). The echo names the resolved
+    // tri-state (`on|off|absent`) in the same log stream; reading it
+    // force-initializes the lazy load exactly like the health echo does,
+    // so a present artifact loads here — off the request path.
+    #[cfg(feature = "injection-classifier")]
+    {
+        if let Err(e) = config::validate_injection_classifier_env() {
+            return Err(anyhow::anyhow!("fatal injection-classifier config: {e}"));
+        }
+        info!(
+            "injection classifier: {}",
+            crate::screen::screen_classifier_state()
+        );
+    }
+
     // ── Twokeys auth posture (once, at boot, AFTER tracing init) ───────
     // The opaque-mode operator/agent split: a resolved agent token means
     // agent bearers authenticate as the scoped AgentLoopback principal; a

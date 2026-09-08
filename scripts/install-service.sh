@@ -209,6 +209,17 @@ if command -v shasum >/dev/null 2>&1; then
 	fi
 fi
 
+# 2f. Pores: the layer-2 injection classifier auto-loads (feature-gated
+#     builds) when its model artifact is present at the default location.
+#     Scaffold the location and surface the posture; artifact FETCHING stays
+#     an operator step (the manifest above pins integrity, the server boot
+#     log + /health/db echo the on|off|absent state).
+CLS_DIR="$HOME/.config/brain-server/models/injection-classifier"
+mkdir -p "$CLS_DIR" 2>/dev/null || true
+if [ ! -f "$CLS_DIR/model.onnx" ] || [ ! -f "$CLS_DIR/tokenizer.json" ]; then
+	log "injection classifier artifacts absent -> layer 2 stays off (place model.onnx + tokenizer.json in $CLS_DIR, or set BRAIN_INJECTION_CLASSIFIER=off to silence)"
+fi
+
 # 3. Restart the launchd service so it runs the new binary.
 #    bootout is best-effort (service may not be loaded yet); bootstrap reloads
 #    the plist, which always picks up the current binary at the copied path.

@@ -509,12 +509,74 @@ pub const INJECTION_THRESHOLD_HIGH: f32 = 0.9;
 /// lower than a false negative (a plant stored unflagged).
 pub const INJECTION_THRESHOLD_LOW: f32 = 0.7;
 
-/// Path to the layer-2 ONNX classifier model. Empty → layer-2 off (the
-/// deterministic blocklist remains). Only compiled under the
-/// `injection-classifier` feature.
+/// How the layer-2 classifier resolves. `Off` is the
+/// explicit `BRAIN_INJECTION_CLASSIFIER=off` opt-out; `Auto` (unset/`on`)
+/// loads when the default artifact location resolves; `Path` is the
+/// historical explicit model path (back-compat — the env var carried a path
+/// before auto-on existed).
 #[cfg(feature = "injection-classifier")]
-pub fn injection_classifier_path() -> String {
-    std::env::var("BRAIN_INJECTION_CLASSIFIER").unwrap_or_default()
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClassifierSetting {
+    Off,
+    Auto,
+    Path(String),
+}
+
+/// Resolve `BRAIN_INJECTION_CLASSIFIER` per the Pores vocabulary:
+/// unset/empty/`on` → [`ClassifierSetting::Auto`]; `off` → the explicit
+/// opt-out; any other value is the explicit model path (back-compat).
+/// Unknown NON-path values refuse the boot via
+/// [`validate_injection_classifier_env`] — a typo must not silently disable
+/// layer 2 (the `BRAIN_WRITE_POSTURE` fail-closed pattern).
+#[cfg(feature = "injection-classifier")]
+pub fn injection_classifier_setting() -> ClassifierSetting {
+    match std::env::var("BRAIN_INJECTION_CLASSIFIER")
+        .unwrap_or_default()
+        .trim()
+    {
+        "" | "on" | "ON" | "On" => ClassifierSetting::Auto,
+        "off" | "OFF" | "Off" => ClassifierSetting::Off,
+        p => ClassifierSetting::Path(p.to_string()),
+    }
+}
+
+/// The default model artifact location probed by
+/// [`ClassifierSetting::Auto`]: `<config dir>/models/injection-classifier/`
+/// holding `model.onnx` + `tokenizer.json`. Returns `None` unless BOTH files
+/// exist — a missing artifact is the silent `absent` posture, never a boot
+/// failure (the deterministic blocklist remains the always-on layer).
+#[cfg(feature = "injection-classifier")]
+pub fn injection_classifier_default_paths() -> Option<(String, String)> {
+    let dir = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".config/brain-server/models/injection-classifier");
+    let model = dir.join("model.onnx");
+    let tok = dir.join("tokenizer.json");
+    if model.is_file() && tok.is_file() {
+        Some((
+            model.to_string_lossy().into_owned(),
+            tok.to_string_lossy().into_owned(),
+        ))
+    } else {
+        None
+    }
+}
+
+/// Boot validation: an explicit `BRAIN_INJECTION_CLASSIFIER` PATH
+/// value must resolve to an existing file, or the boot REFUSES (fail-closed —
+/// the historical behavior logged a lazy load failure and quietly ran
+/// layer-1 only). Only compiled under the `injection-classifier` feature;
+/// the env vocabulary itself (`on`/`off`) is total.
+#[cfg(feature = "injection-classifier")]
+pub fn validate_injection_classifier_env() -> Result<(), String> {
+    if let ClassifierSetting::Path(p) = injection_classifier_setting()
+        && !std::path::Path::new(&p).is_file()
+    {
+        return Err(format!(
+            "BRAIN_INJECTION_CLASSIFIER='{p}' does not resolve to a model file; set an existing .onnx path, 'on' (default artifact location), or 'off'"
+        ));
+    }
+    Ok(())
 }
 
 /// Path to the matching BERT `tokenizer.json`. Required (with the model) to

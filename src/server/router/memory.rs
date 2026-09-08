@@ -259,10 +259,16 @@ fn default_source() -> String {
 
 /// Log-injection seam: scrub control characters from a request-derived value
 /// before it reaches a log line. Newlines would let a crafted payload forge
-/// log entries; NUL corrupts line-oriented consumers. The returned value is
+/// log entries; NUL corrupts line-oriented consumers. The scrub routes
+/// through the shared `strip_control_chars`, so ANSI/C1 escape sequences no
+/// longer reach log VALUES (the historical hand-rolled `\n\r\0` scrub only
+/// closed line-forging). Behavior pinned to current for the
+/// single-line shape the helper serves: `\n` still becomes a space, `\r`
+/// (already stripped by the shared helper) disappears, `\0` is removed, and
+/// tab survives (structured log consumers tolerate it). The returned value is
 /// for LOGGING only — never a substitute for validating the stored value.
 pub(crate) fn sanitize_log_value(v: &str) -> String {
-    v.replace(['\n', '\r'], " ").replace('\0', "")
+    crate::strip_invisible::strip_control_chars(v).replace('\n', " ")
 }
 
 #[derive(Deserialize)]
@@ -3414,17 +3420,45 @@ mod log_injection_seam_tests {
 
     /// The log-injection pin: a request-derived value must not carry control
     /// characters into a log line — a crafted `\n` would forge entries in the
-    /// journald/launchd stream the operator reads.
+    /// journald/launchd stream the operator reads. Pores delta: `\r` is now
+    /// REMOVED by the shared strip (was: replaced with a space) — still
+    /// line-forge-proof, one space narrower.
     #[test]
     fn sanitize_log_value_strips_line_forging_characters() {
         assert_eq!(
             sanitize_log_value("work\n⚠️ FORGED ENTRY"),
             "work ⚠️ FORGED ENTRY"
         );
-        assert_eq!(sanitize_log_value("a\r\nb"), "a  b");
+        assert_eq!(sanitize_log_value("a\r\nb"), "a b");
         assert_eq!(sanitize_log_value("nul\0byte"), "nulbyte");
         // benign values pass through untouched
         assert_eq!(sanitize_log_value("my-domain_2"), "my-domain_2");
         assert_eq!(sanitize_log_value(""), "");
+    }
+
+    /// Pores M4 (X-R7): an ANSI/C1 escape smuggled through a request-derived
+    /// value must never reach a log line — the shared
+    /// `strip_control_chars` now closes the terminal-scripting class the
+    /// hand-rolled `\n\r\0` scrub ignored.
+    #[test]
+    fn ansi_escape_never_reaches_log_values() {
+        // The ESC control char never reaches the log value, so no terminal
+        // interprets a sequence (the printable bytes "[31m" are inert
+        // literal text — the ESCAPE char is what scripts a terminal).
+        assert_eq!(sanitize_log_value("a\u{1B}[31mred"), "a[31mred");
+        assert_eq!(sanitize_log_value("a\u{7F}b"), "ab");
+        assert_eq!(sanitize_log_value("a\u{9B}b"), "ab"); // CSI single-char C1
+        assert_eq!(sanitize_log_value("a\u{85}b"), "ab"); // NEL
+    }
+
+    /// Pores M4: the single-line contract pinned — `\n` becomes a space (a
+    /// value stays one log line), tab SURVIVES (structured consumers tolerate
+    /// it; the helper's callers pass single-line values, so this matches the
+    /// pre-Pores behavior exactly).
+    #[test]
+    fn tab_newline_behavior_pinned() {
+        assert_eq!(sanitize_log_value("a\tb"), "a\tb");
+        assert_eq!(sanitize_log_value("a\nb"), "a b");
+        assert_eq!(sanitize_log_value("a\r\nb\nc"), "a b c");
     }
 }

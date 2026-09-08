@@ -65,14 +65,127 @@ pub(crate) fn clamp_envelope_text(s: &str) -> String {
     clamp_chars(s, MAX_ENVELOPE_TEXT_CHARS, ENVELOPE_SUFFIX)
 }
 
-/// Screen + bound message text before it crosses the seam: control chars
-/// (except newline/tab) are stripped, then the 4000-char bound applies.
+/// Screen + bound message text before it crosses the seam. Pores (v1.28.71
+/// M5, X-R6) edge parity: the strip now matches the canonical chain —
+/// invisible-Unicode strip FIRST (the synced plugin `format.ts`
+/// INVISIBLE_CLASSES set, the Rust `strip_invisible.rs` canonical class),
+/// then the markdown image/link-ref dereference (the EchoLeak class), then
+/// the control-char scrub (except newline/tab), then the 4000-char bound.
+/// The kernel screen (`channels.rs` `screen`) still runs server-side — this
+/// is defense-in-depth at the operator-rendering boundary (Slack/Teams
+/// previews of message TEXT previously rode the control-char strip only).
 pub(crate) fn sanitize_text(s: &str) -> String {
-    let scrubbed: String = s
+    let invisible_free = strip_invisible_chars(s);
+    let refs_stripped = strip_markdown_refs(&invisible_free);
+    let scrubbed: String = refs_stripped
         .chars()
         .filter(|c| !c.is_control() || *c == '\n' || *c == '\t')
         .collect();
     clamp_envelope_text(&scrubbed)
+}
+
+/// The canonical invisible-Unicode smuggling class, ported from the synced
+/// plugin `format.ts` `INVISIBLE_CLASSES` set (Meridian parity — the ONE
+/// definition both trees pin): tag block U+E0000–E007F, variation selectors
+/// U+FE00–FE0F + supplemental U+E0100–E01EF, zero-width set
+/// (U+200B/200C/200D + word joiner U+2060–2063), the bidi controls
+/// (U+200E/200F, U+202A–202E, U+2066–2069, U+061C), and the legacy/residual
+/// members (BOM U+FEFF, soft hyphen U+00AD, combining grapheme joiner U+034F,
+/// Mongolian vowel separator U+180E, Hangul fillers U+115F/U+1160,
+/// interlinear annotation U+FFF9–FFFB).
+fn is_invisible_char(c: char) -> bool {
+    let cp = c as u32;
+    (0xE0000..=0xE007F).contains(&cp)
+        || (0xFE00..=0xFE0F).contains(&cp)
+        || (0xE0100..=0xE01EF).contains(&cp)
+        || (0x200E..=0x200F).contains(&cp)
+        || (0x202A..=0x202E).contains(&cp)
+        || (0x2066..=0x2069).contains(&cp)
+        || cp == 0x061C
+        || matches!(cp, 0x200B | 0x200C | 0x200D | 0x2060)
+        || matches!(cp, 0xFEFF | 0x2061 | 0x2062 | 0x2063 | 0x00AD | 0x034F)
+        || matches!(cp, 0x180E | 0x115F | 0x1160)
+        || (0xFFF9..=0xFFFB).contains(&cp)
+}
+
+fn strip_invisible_chars(s: &str) -> String {
+    s.chars().filter(|&c| !is_invisible_char(c)).collect()
+}
+
+/// Neutralize the EchoLeak markdown exfil class on rendered text — the same
+/// contract as the kernel's `strip_markdown_refs`: `![alt](url)` → `[alt]`,
+/// `[text](url)` → `text`, bare URLs in prose left intact. Invisible chars
+/// are stripped FIRST (the scanner requires `(` directly after `]`).
+/// Lint-clean by construction (`.get` + checked arithmetic — this runs on
+/// hostile bytes; a panic here would be an edge DoS).
+fn strip_markdown_refs(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if let Some((is_image, label_start, label_end, resume)) = scan_construct_at(bytes, i) {
+            if is_image {
+                // Image: keep the alt text bracketed (it renders as prose).
+                out.push('[');
+                if let Some(seg) = s.get(label_start..label_end) {
+                    out.push_str(seg);
+                }
+                out.push(']');
+            } else if let Some(seg) = s.get(label_start..label_end) {
+                out.push_str(seg);
+            }
+            i = resume;
+            continue;
+        }
+        // Copy one char (multibyte-safe); `get` on a byte offset is
+        // boundary-safe by construction (i only advances on boundaries).
+        match s.get(i..).and_then(|rest| rest.chars().next()) {
+            Some(ch) => {
+                out.push(ch);
+                i = i.saturating_add(ch.len_utf8());
+            }
+            None => break,
+        }
+    }
+    out
+}
+
+/// If a markdown link/image construct starts at `pos` (either `![` or `[`),
+/// return `(is_image, label_start, label_end, resume_pos)`.
+fn scan_construct_at(bytes: &[u8], pos: usize) -> Option<(bool, usize, usize, usize)> {
+    let open = match bytes.get(pos) {
+        Some(b'!') => pos.checked_add(1)?,
+        Some(b'[') => pos,
+        _ => return None,
+    };
+    let (label_start, label_end, url_close) = scan_link_construct(bytes, open)?;
+    let resume = url_close.checked_add(1)?;
+    Some((
+        bytes.get(pos) == Some(&b'!'),
+        label_start,
+        label_end,
+        resume,
+    ))
+}
+
+/// From an opening `[` at `open_bracket`, look for the complete link
+/// construct `[label](url)`. Returns `(label_start, label_end, url_close)`
+/// byte offsets (label excludes the brackets; url_close is the `)` index).
+/// Byte-for-byte port of the kernel's `fence::scan_link_construct` — parity
+/// IS the deliverable (X-R6), so the two scanners accept the same constructs.
+fn scan_link_construct(bytes: &[u8], open_bracket: usize) -> Option<(usize, usize, usize)> {
+    let label_start = open_bracket.checked_add(1)?;
+    let label_end_rel = bytes.get(label_start..)?.iter().position(|&b| b == b']')?;
+    let label_end = label_start.checked_add(label_end_rel)?;
+    let paren_open = label_end.checked_add(1)?;
+    if bytes.get(paren_open) != Some(&b'(') {
+        return None;
+    }
+    let url_start = paren_open.checked_add(1)?;
+    let url_close_rel = bytes.get(url_start..)?.iter().position(|&b| b == b')')?;
+    url_start
+        .checked_add(url_close_rel)
+        .map(|c| (label_start, label_end, c))
 }
 
 fn clamp_preview(s: &str) -> String {
@@ -454,5 +567,84 @@ mod tests {
         );
         assert!(ping_target("", Some("")).is_none());
         assert!(ping_target("", None).is_none());
+    }
+
+    // ── PORES PIN (v1.28.71 M5, X-R6): the bridge edge strips what the
+    //    kernel screen + plugin fence strip — the canonical invisible class
+    //    and the markdown-ref dereference — before the 4000 clamp.
+
+    /// Tag-block (U+E0000–E007F) and bidi/zero-width smuggling is stripped
+    /// at the bridge edge: the rendered message text the operator previews
+    /// (and the kernel receives) carries none of the class.
+    #[test]
+    fn edge_strips_tag_unicode() {
+        // The Meridian canary shape: tag-encoded bytes + a bidi override.
+        let tagged = "keep\u{E0000}\u{E0010}secret\u{E007F} this \u{202E}noitarod\u{202C} visible";
+        let out = sanitize_text(tagged);
+        assert!(
+            !out.chars().any(is_invisible_char),
+            "no invisible class survives: {out:?}"
+        );
+        assert!(out.contains("keepsecret"));
+        // The RLO-wrapped word's MARKS are gone; the char order is the
+        // author's problem (stripping never reorders) — the kernel screen's
+        // typoglycemia tier is what reads scrambled forms.
+        assert!(out.contains("this noitarod visible"));
+        // The residual members of the canonical set too.
+        let residual = "a\u{FEFF}b\u{00AD}c\u{200B}d\u{2060}e\u{061C}f";
+        assert_eq!(sanitize_text(residual), "abcdef");
+    }
+
+    /// The EchoLeak markdown class is dereferenced at the bridge edge:
+    /// image URLs drop, link URLs drop (label kept), bare URLs in prose
+    /// stay (the documented shipped contract — linkified-but-inert).
+    #[test]
+    fn edge_strips_markdown_image_refs() {
+        assert_eq!(
+            sanitize_text("see ![alt](http://x.example/pixel.png) now"),
+            "see [alt] now"
+        );
+        assert_eq!(
+            sanitize_text("read [the doc](http://x.example/a) today"),
+            "read the doc today"
+        );
+        // Bare URL in prose survives (kernel parity — not this seam's job).
+        assert_eq!(
+            sanitize_text("visit http://x.example/a for more"),
+            "visit http://x.example/a for more"
+        );
+    }
+
+    /// The 4000-char envelope bound is unchanged: clamping still lands on
+    /// the marker, measured AFTER the strip (an invisible-padded blob
+    /// clamps the same as its visible content).
+    #[test]
+    fn clamp_unchanged() {
+        let long = "x".repeat(6000);
+        let clamped = sanitize_text(&long);
+        assert!(clamped.chars().count() <= MAX_ENVELOPE_TEXT_CHARS);
+        assert!(clamped.ends_with("…[truncated]"));
+        // Invisible padding does not buy extra room: 3000+3000 tag chars
+        // around 10 visible chars renders to just the visible content.
+        let padded = "\u{E0000}".repeat(3000) + "short note" + &"\u{E007F}".repeat(3000);
+        let out = sanitize_text(&padded);
+        assert_eq!(out, "short note");
+    }
+
+    /// End-to-end (bridge half): a tagged-unicode message lands at the
+    /// kernel ALREADY stripped — the kernel screen (`channels.rs`
+    /// `screen`) stays authoritative server-side either way, so the text
+    /// the bridge emits is exactly the text the screen's layer-1 sees
+    /// stripped-form. The parity property: whatever the kernel strips at
+    /// its boundary is a no-op on bridge-rendered bytes.
+    #[test]
+    fn kernel_screen_still_authoritative() {
+        let hostile = "\u{2066}\u{E0000}hidden\u{E007F}instruction\u{2069} ![x](http://y)";
+        let rendered = sanitize_text(hostile);
+        // Idempotent: re-sanitizing rendered bytes is a no-op.
+        assert_eq!(sanitize_text(&rendered), rendered);
+        // No invisible class, no live ref — the kernel sees shaped text.
+        assert!(!rendered.chars().any(is_invisible_char));
+        assert!(!rendered.contains("](http://"));
     }
 }
