@@ -113,6 +113,8 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 
 | Variable | Default | Description |
 |---|---|---|
+| `BRAIN_AUDIT_CHAIN_KEY_FILE` | — | Explicit path to the audit-chain HMAC key. Resolution order: this env → `audit-chain.key` beside the DB → a generated 0600 key. A resolution failure is a loud warning, not a boot refusal; writes to `hmac256`-epoch DBs fail closed per-write until a key resolves |
+| `BRAIN_AUDIT_SIGNING_KEY_FILE` | — | Explicit path to the Art 50/decision-provenance Ed25519 signing key (0600; installer-provisioned). Absent = marks are present but visibly unsigned |
 | `BRAIN_AUDIT_READ_EVENTS` | `on` (JWT) / `off` (loopback) | When `on`, `/recall`, `/search`, `/get/{id}`, `/multi-get` emit hash-chained audit rows (no content, no raw query). |
 | `BRAIN_AUDIT_READ_SAMPLE_RATE` | `1.0` | Read-event sampling (0.0..=1.0); `1.0` = every read event. |
 | `BRAIN_AUDIT_RETENTION_DAYS` | unset = forever | Audit retention window; when set, expired rows are pruned and the chain re-anchored. Deployers subject to AI Act Art 26(6) guidance: set ≥180. |
@@ -163,3 +165,20 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 - **[Installation](./deployment.md)** — applying these in practice.
 - **[Security](./security.md)** — how the auth variables work together.
 - **[API Reference](./api.md)** — the contract those configs gate.
+
+## Auxiliary binaries & harness (client-side env)
+
+These are read by the operator CLIs and optional binaries — not the
+server process — so they sit outside the main table.
+
+| Variable | Default | Description |
+|---|---|---|
+| `BRAIN_URL` | `http://127.0.0.1:8765` | Base URL every client-side binary addresses (`brain`, `mcp`, `bench`, the connector stubs) |
+| `BRAIN_MCP_SCOPE` | `full` | MCP dispatch scope (`read\|full`, fail-closed parse): `read` refuses `brain_ingest`, `ump.remember`, `ump.revise`, `ump.forget` at the dispatch seam and annotates them `x-brain-scope: read-denied` in `tools/list` |
+| `BRAIN_GH_APP_TOKEN` | — | GitHub App installation token for `brain-connector-gh` (the binary refuses to run on the placeholder) |
+| `BRAIN_EVAL_JUDGMENTS` | — | Judged-query fixture path for `bench --eval` (missing file fails the eval run) |
+
+`BENCH_*` harness knobs (`BENCH_SCALES`, `BENCH_SEARCHES`, `BENCH_CLIENTS`,
+`BENCH_SEED`, `BENCH_ENVELOPE`, …) are documented in the `bench` binary's
+own header (`src/bin/bench.rs`) with worked invocations in
+[`BENCHMARKS.md`](../BENCHMARKS.md).
