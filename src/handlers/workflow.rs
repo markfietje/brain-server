@@ -225,6 +225,23 @@ pub async fn get_suggestions(
             }
         })?;
     crate::handlers::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    // The KCS evidence side-effects below (abstention + SIR rows) are WRITES
+    // riding a GET — they now require the caller to hold Write on the domain
+    // AND the `workflow` role capability. Read-only principals get the
+    // suggestions body unchanged with `evidence_recorded: false` (additive
+    // field — the read is untouched, the write is conditional). The endpoint
+    // is deliberately NOT split or moved: the KCS double loop depends on this
+    // capture; scoping the write is the whole fix.
+    let evidence_allowed = {
+        let write_ok =
+            crate::handlers::authorize(&principal, crate::auth::Action::Write, "", &domain).is_ok();
+        let role_ok = if write_ok {
+            crate::handlers::authorize_role(&principal, &st.pool, "workflow").is_ok()
+        } else {
+            false
+        };
+        write_ok && role_ok
+    };
     let q: String = serde_json::from_str::<serde_json::Value>(&state_json)
         .ok()
         .and_then(|v| v.get("q").and_then(|x| x.as_str()).map(|s| s.to_string()))
@@ -267,30 +284,35 @@ pub async fn get_suggestions(
         .unwrap_or_default()
     };
     if hits.is_empty() {
-        let pool3 = st.pool.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Ok(mut conn) = pool3.get() {
-                let now = chrono::Utc::now().timestamp();
-                // Never certify silence: a failed abstention record is
-                // announced, not swallowed (the silent-write sweep convention).
-                if let Err(e) = crate::workflow::kcs::record_abstention(&conn, id, now) {
-                    tracing::warn!("abstention finding write failed for run {id}: {e}");
+        if evidence_allowed {
+            let pool3 = st.pool.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Ok(mut conn) = pool3.get() {
+                    let now = chrono::Utc::now().timestamp();
+                    // Never certify silence: a failed abstention record is
+                    // announced, not swallowed (the silent-write sweep convention).
+                    if let Err(e) = crate::workflow::kcs::record_abstention(&conn, id, now) {
+                        tracing::warn!("abstention finding write failed for run {id}: {e}");
+                    }
+                    // The documented KCS signal for a zero-hit reuse search.
+                    let n = crate::workflow::kcs::record_sir_not_found(&mut conn, id, now);
+                    if n == 0 && crate::workflow::kcs::case_ref_for_run(&conn, id).is_some() {
+                        tracing::warn!("sir not-found record failed for run {id}");
+                    }
                 }
-                // The documented KCS signal for a zero-hit reuse search.
-                let n = crate::workflow::kcs::record_sir_not_found(&mut conn, id, now);
-                if n == 0 && crate::workflow::kcs::case_ref_for_run(&conn, id).is_some() {
-                    tracing::warn!("sir not-found record failed for run {id}");
-                }
-            }
-        })
-        .await
-        .ok();
-        return Ok(Json(serde_json::json!({"suggestions": []})));
+            })
+            .await
+            .ok();
+        }
+        return Ok(Json(
+            serde_json::json!({"suggestions": [], "evidence_recorded": evidence_allowed}),
+        ));
     }
     // The Reuse practice: cited hits (the `used` id list the engine sends
     // back once it actually cites them in step evidence) land `searched_found`
     // SIR rows. Best-effort; a failed record reads as a gap, never a fork.
-    if let Some(used) = params.get("used").cloned() {
+    // Write-gated: a Read-only caller's citations are not recorded.
+    if evidence_allowed && let Some(used) = params.get("used").cloned() {
         let hit_ids: std::collections::HashSet<i64> = hits
             .iter()
             .filter_map(|h| h.get("id").and_then(|v| v.as_i64()))
@@ -317,7 +339,9 @@ pub async fn get_suggestions(
         .into_iter()
         .map(|h| serde_json::json!({"hit": h}))
         .collect();
-    Ok(Json(serde_json::json!({"suggestions": suggestions})))
+    Ok(Json(
+        serde_json::json!({"suggestions": suggestions, "evidence_recorded": evidence_allowed}),
+    ))
 }
 
 /// `GET /workflow/scoreboard` — the outcome/efficiency scoreboard over

@@ -435,7 +435,10 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
 
 /// SSE surfaces: the handshake answers 200 before the gate runs; denial is
 /// delivered in-band as an SSE `error` event (headers cannot carry 403).
-const SSE_SOFT: &[&str] = &["/events", "/ump/subscribe"];
+/// The alert feed (`/events`) LEFT this class — its denial is now an HTTP
+/// 403 before the stream opens (status change, documented + openapi'd);
+/// `/ump/subscribe` keeps the in-band denial shape.
+const SSE_SOFT: &[&str] = &["/ump/subscribe"];
 /// Layout-conditional rows: the table pins the multi-db posture (Read) but
 /// the shim-mode fixture requires Admin (corpus-wide scans over the shared
 /// pool) — the read class therefore 403s here even though the table says

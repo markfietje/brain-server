@@ -144,8 +144,14 @@ pub async fn events(
     principal: crate::handlers::auth::OptPrincipal,
     axum::extract::Query(q): axum::extract::Query<EventsQuery>,
     headers: axum::http::HeaderMap,
-) -> Sse<KeepAliveStream<Pin<Box<dyn tokio_stream::Stream<Item = Result<Event, Infallible>> + Send>>>>
-{
+) -> Result<
+    Sse<
+        KeepAliveStream<
+            Pin<Box<dyn tokio_stream::Stream<Item = Result<Event, Infallible>> + Send>>,
+        >,
+    >,
+    crate::handlers::HandlerError,
+> {
     let rx = state.alert_events.subscribe();
     let last_event_id: Option<i64> = headers
         .get("last-event-id")
@@ -162,12 +168,14 @@ pub async fn events(
             .data("{\"feed\":\"alert\"}"),
     ));
     let gate = crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global");
+    // A denial BEFORE the stream opens is an HTTP status, not a
+    // 200-then-error-event: monitors see the 403, connection errors
+    // surface, and the caller's poll fallback keys on the failure. The
+    // error-EVENT mechanism stays for MID-STREAM failures — a different
+    // failure class (headers already sent, status already committed).
+    gate?;
     let stream: Pin<Box<dyn tokio_stream::Stream<Item = Result<Event, Infallible>> + Send>> =
-        if let Err(e) = gate {
-            Box::pin(tokio_stream::once(Ok::<Event, Infallible>(
-                Event::default().event("error").data(format!("{e:?}")),
-            )))
-        } else {
+        {
             let principal = principal.0;
             // The resume replay (bounded): only when the subscriber asked for
             // workflow events at all — other coordinate spaces have their own
@@ -231,7 +239,7 @@ pub async fn events(
                     )),
             )
         };
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
 /// Bounded replay of stored `workflow/*` events with `id > since` across every

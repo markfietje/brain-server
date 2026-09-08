@@ -366,6 +366,70 @@ pub fn redact_content(
 /// unchanged; `sanitize_read` still routes through this exact function.
 pub use crate::fence::strip_markdown_refs;
 
+/// Strip a CLOSED set of hostile element names from emitted text — not all
+/// tags: prose angle-brackets ("x < y", "<3", "a<b>c") must survive. The set
+/// is the fetch/script/embed class: anything that could execute or
+/// auto-fetch in a downstream renderer (script/img/iframe/svg/object/embed/
+/// link/meta/form/input/video/audio/source/track/base). Case-insensitive;
+/// attribute-greedy to the matching `>`; both the opening form and the
+/// closing form (`</script>`) are stripped, leaving any inner content as
+/// inert prose. Deterministic, zero deps — a closed name-set, NOT an HTML
+/// parser (markup the system never intentionally stores does not justify a
+/// parser dependency). Read-seam ONLY: storage stays verbatim, so
+/// digest-bearing surfaces are untouched (`review_digest` binds the stored
+/// form). Bare URLs in prose remain the documented ceiling above.
+pub(crate) fn strip_hostile_elements(s: &str) -> String {
+    const ELEMENTS: [&str; 15] = [
+        "script", "img", "iframe", "svg", "object", "embed", "link", "meta", "form", "input",
+        "video", "audio", "source", "track", "base",
+    ];
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'<' {
+            let ch = s[i..].chars().next().unwrap_or('<');
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        // A tag candidate: `<` + optional `/` + a name from the set. Anything
+        // else is prose and survives verbatim.
+        let after_open = i + 1;
+        let name_start = match bytes.get(after_open) {
+            Some(b'/') => i + 2,
+            Some(c) if c.is_ascii_alphabetic() => i + 1,
+            _ => {
+                out.push('<');
+                i += 1;
+                continue;
+            }
+        };
+        let name_bytes: Vec<u8> = bytes
+            .get(name_start..)
+            .unwrap_or(&[])
+            .iter()
+            .copied()
+            .take_while(|b| b.is_ascii_alphanumeric())
+            .collect();
+        let name = String::from_utf8_lossy(&name_bytes).to_ascii_lowercase();
+        if ELEMENTS.contains(&name.as_str()) {
+            // Greedy to the matching `>` (the attribute class this strip
+            // exists for carries spaces, quotes, and `=`). An unterminated
+            // tag drops the tail: a stored fragment cut mid-tag must not
+            // emit a live open tag either.
+            i = bytes[name_start..]
+                .iter()
+                .position(|&b| b == b'>')
+                .map_or(bytes.len(), |gt_rel| name_start + gt_rel + 1);
+        } else {
+            out.push('<');
+            i += 1;
+        }
+    }
+    out
+}
+
 /// the read-path output seam. Applies PII redaction
 /// (when the row is PII-flagged and the principal holds no `pii:read`) AND the
 /// invisible-Unicode strip (bidi / zero-width / tag-block smuggling) to EVERY
@@ -375,25 +439,29 @@ pub use crate::fence::strip_markdown_refs;
 /// on the HTTP JSON boundary. Idempotent; safe where clients re-strip.
 ///
 /// redact (PII spans) →
-/// strip_invisible (bidi/ZW) → strip_markdown_refs (drop remote refs).
-/// Invisible stripping MUST run first: the ref scanner requires `(` directly
-/// after `]`, so an invisible char between them makes it miss — and a later
-/// invisible strip would then HEAL the construct back into a dereferenceable
-/// ref (`![i]\u{200B}(url)` survived the old order; PoC-pinned). Nothing runs
-/// after the ref strip, so nothing can heal a miss. `redact_content`'s
-/// `[redacted:*]` placeholders carry no following `(...)`, so they pass through
-/// `strip_markdown_refs` untouched (no interaction).
+/// strip_invisible (bidi/ZW) → strip_markdown_refs (drop remote refs) →
+/// strip_hostile_elements (closed element-name set). Invisible stripping MUST
+/// run first: the ref scanner requires `(` directly after `]`, so an
+/// invisible char between them makes it miss — and a later invisible strip
+/// would then HEAL the construct back into a dereferenceable ref
+/// (`![i]\u{200B}(url)` survived the old order; PoC-pinned). The element strip
+/// lands AFTER the ref strip so `<img src=x>`-style markdown-hybrid forms
+/// (whose `(...)` the ref strip consumed first) meet the tag stripper too.
+/// Nothing runs after either strip, so nothing can heal a miss.
+/// `redact_content`'s `[redacted:*]` placeholders carry no following `(...)`,
+/// so they pass through `strip_markdown_refs` untouched (no interaction).
 pub fn sanitize_read(s: &str, pii: bool, principal: &Option<crate::auth::Principal>) -> String {
-    strip_markdown_refs(&crate::strip_invisible::strip_invisible(&redact_content(
-        s, pii, principal,
-    )))
+    strip_hostile_elements(&strip_markdown_refs(
+        &crate::strip_invisible::strip_invisible(&redact_content(s, pii, principal)),
+    ))
 }
 
 /// borrow-preserving variant of [`sanitize_read`].
 /// Returns the input unchanged — zero copies — when every transform is provably
 /// a no-op: no PII layer active, no `[` byte (the markdown-ref strip can only
-/// fire on a construct that contains one), and no invisible chars. Only when a
-/// transform can actually fire does it allocate (and then it IS
+/// fire on a construct that contains one), no `<` byte (the hostile-element
+/// strip can only fire on a tag that contains one), and no invisible chars.
+/// Only when a transform can actually fire does it allocate (and then it IS
 /// [`sanitize_read`], byte-identical). The stored-text read paths that emit
 /// large content/evidence fields get the borrowed fast path on the common
 /// clean row.
@@ -407,7 +475,10 @@ pub fn sanitize_read_cow<'a>(
         // masked path materializes (plain sanitize_read, unchanged semantics).
         return std::borrow::Cow::Owned(sanitize_read(s, pii, principal));
     }
-    if !s.as_bytes().contains(&b'[') && !s.chars().any(crate::strip_invisible::is_invisible) {
+    if !s.as_bytes().contains(&b'[')
+        && !s.as_bytes().contains(&b'<')
+        && !s.chars().any(crate::strip_invisible::is_invisible)
+    {
         return std::borrow::Cow::Borrowed(s);
     }
     std::borrow::Cow::Owned(sanitize_read(s, pii, principal))
@@ -905,5 +976,102 @@ mod tests {
         let chunk = "notes: ![logo](https://evil/p.png?ctx=secret) end";
         let out = sanitize_read(chunk, false, &None);
         assert_eq!(out, "notes: [logo] end");
+    }
+
+    /// The read seam strips every member of the closed element-name set —
+    /// opening and closing forms, attributes greedy to the matching `>`.
+    #[test]
+    fn hostile_elements_stripped_table() {
+        let elements = [
+            "script", "img", "iframe", "svg", "object", "embed", "link", "meta", "form", "input",
+            "video", "audio", "source", "track", "base",
+        ];
+        for el in elements {
+            let hostile = format!("before <{el} src=x onerror=\"alert(1)\"> after");
+            let out = sanitize_read(&hostile, false, &None);
+            assert_eq!(
+                out, "before  after",
+                "<{el}> must strip with its attributes"
+            );
+            let closing = format!("a </{el}> b");
+            assert_eq!(
+                sanitize_read(&closing, false, &None),
+                "a  b",
+                "</{el}> must strip too"
+            );
+            // Case-insensitive.
+            let upper = format!("<{EL_upper}><{el}>", EL_upper = el.to_uppercase());
+            let out2 = sanitize_read(&upper, false, &None);
+            assert!(
+                !out2.contains('<'),
+                "case-folded <{el}> must strip: {out2:?}"
+            );
+        }
+    }
+
+    /// Prose angle-brackets SURVIVE — the set is closed, not all tags.
+    #[test]
+    fn prose_angle_brackets_survive() {
+        for prose in [
+            "x < y",
+            "<3 always",
+            "a<b>c",
+            "5<6 and 7>8",
+            "<notanelement>",
+        ] {
+            assert_eq!(
+                sanitize_read(prose, false, &None),
+                prose,
+                "prose must survive the element strip"
+            );
+        }
+    }
+
+    /// The canonical drill shape: an SVG with an onload handler carries no
+    /// executable element through the seam.
+    #[test]
+    fn svg_with_onload_stripped() {
+        let hostile = "<svg onload=\"alert(1)\"><circle r=\"1\"/></svg> caption";
+        let out = sanitize_read(hostile, false, &None);
+        assert!(!out.contains("svg"), "svg tags gone: {out:?}");
+        assert!(!out.contains("onload"), "handler attribute gone: {out:?}");
+        assert!(out.contains("caption"), "prose survives");
+        // And the ingest drill: an <img> plant stored via a proposal reads
+        // back as inert prose.
+        let plant = "<img src=x onerror=alert(1)>";
+        assert_eq!(sanitize_read(plant, false, &None), "");
+    }
+
+    /// Order pin: the ref strip runs BEFORE the element strip, so a
+    /// markdown-hybrid image whose URL was consumed still meets the tag
+    /// stripper — and plain markdown refs keep their regression.
+    #[test]
+    fn markdown_refs_still_stripped() {
+        assert_eq!(
+            sanitize_read("see [the doc](https://x) now", false, &None),
+            "see the doc now"
+        );
+        // The hybrid: `<img src=x onerror=...>` inside a link construct's
+        // URL slot loses the ref first, then the tag.
+        let hybrid = "[![x](y)](<img src=z>)";
+        let out = sanitize_read(hybrid, false, &None);
+        assert!(!out.contains("onerror"), "no live tag survives: {out:?}");
+    }
+
+    /// The borrow-preserving fast path must NOT take the borrowed branch on
+    /// a `<`-carrying row: the element strip can fire there, so the owned
+    /// (stripped) path materializes.
+    #[test]
+    fn cow_borrow_path_cannot_leak_hostile_elements() {
+        let hostile = "<img src=x onerror=alert(1)>";
+        let cow = sanitize_read_cow(hostile, false, &None);
+        assert!(matches!(cow, std::borrow::Cow::Owned(_)), "< rows allocate");
+        assert_eq!(cow.into_owned(), "");
+        // A clean row still borrows (zero copies).
+        let clean = "plain text only";
+        assert!(matches!(
+            sanitize_read_cow(clean, false, &None),
+            std::borrow::Cow::Borrowed(_)
+        ));
     }
 }

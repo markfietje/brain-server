@@ -3010,6 +3010,12 @@ paths:
             text/event-stream:
               schema:
                 type: string
+        "403":
+          description: >
+            Not authorized for the feed. The denial is an HTTP status, not a
+            200-then-error-event: monitors see the 403 and the caller's poll
+            fallback keys on the connection failure. Mid-stream failures
+            still arrive as `error` events on an open stream.
   /export:
     get:
       summary: Portable JSON export for data portability (v1.14.0 M2)
@@ -6417,7 +6423,11 @@ paths:
           schema: { type: integer }
       responses:
         "200":
-          description: Suggestion hits (may be empty; abstention is recorded)
+          description: >
+            Suggestion hits (may be empty). The KCS evidence side-effect
+            (abstention / SIR rows) fires only for principals holding Write
+            on the run's domain AND the `workflow` role capability;
+            `evidence_recorded` names what happened.
           content:
             application/json:
               schema:
@@ -6426,6 +6436,12 @@ paths:
                   suggestions:
                     type: array
                     items: { type: object }
+                  evidence_recorded:
+                    type: boolean
+                    description: >
+                      Whether the read recorded KCS evidence rows. `false`
+                      for Read-only principals (the body is unchanged; only
+                      the write is gated).
         "401": { description: Not authenticated }
         "403": { description: Not authorized for the run's domain }
         "404": { description: Workflow run not found }

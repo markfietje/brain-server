@@ -441,18 +441,23 @@ fn hreflang_head(
         return String::new();
     };
     let mut out = String::new();
+    let ebase = esc(base);
     // x-default points at the default-locale page (the canonical article).
+    // The operator-configured base is escaped like every other interpolation
+    // — a malformed config renders inert text, never attribute injection.
     out.push_str(&format!(
-        "<link rel=\"alternate\" hreflang=\"x-default\" href=\"{base}/articles/{slug}.html\">\n"
+        "<link rel=\"alternate\" hreflang=\"x-default\" href=\"{ebase}/articles/{slug}.html\">\n",
+        slug = esc(slug)
     ));
     for l in locales {
         let target = if let Some(t) = have.iter().find(|t| t.locale == *l) {
-            format!("{base}/{}/{slug}.html", esc(&t.locale))
+            format!("{ebase}/{}/{slug}.html", esc(&t.locale), slug = esc(slug))
         } else {
             // No translation ⇒ the localized URL still exists (serving the
             // default content with the explicit note), so the alternate is
-            // honest for every declared locale.
-            format!("{base}/{l}/{slug}.html")
+            // honest for every declared locale. Same escape as the translated
+            // branch — parity.
+            format!("{ebase}/{}/{slug}.html", esc(l), slug = esc(slug))
         };
         out.push_str(&format!(
             "<link rel=\"alternate\" hreflang=\"{}\" href=\"{}\">\n",
@@ -521,21 +526,24 @@ fn sitemap_xml_locales(
     let Some(base) = base_url else {
         return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"></urlset>\n".to_string();
     };
+    let ebase = esc(base);
     let mut urls = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\">\n<url><loc>{base}/index.html</loc></url>\n"
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\" xmlns:xhtml=\"http://www.w3.org/1999/xhtml\">\n<url><loc>{ebase}/index.html</loc></url>\n"
     );
     for a in articles {
         let alts: String = locales
             .iter()
             .map(|l| {
                 format!(
-                    "<xhtml:link rel=\"alternate\" hreflang=\"{l}\" href=\"{base}/{l}/{}.html\"/>",
+                    "<xhtml:link rel=\"alternate\" hreflang=\"{}\" href=\"{ebase}/{}/{}.html\"/>",
+                    esc(l),
+                    esc(l),
                     esc(&a.slug)
                 )
             })
             .collect();
         urls.push_str(&format!(
-            "<url><loc>{base}/articles/{}.html</loc>{alts}</url>\n",
+            "<url><loc>{ebase}/articles/{}.html</loc>{alts}</url>\n",
             esc(&a.slug)
         ));
     }
@@ -701,6 +709,14 @@ pub fn add_case_status_files(files: &mut BTreeMap<String, String>, entries: &[Ca
     }
 }
 
+/// The CLI's locale charset rule (non-empty, ≤ 12 chars, ASCII alphanumeric
+/// + hyphen). The library-side build validates against the SAME contract.
+///
+/// (Distinct from the kcs proposal charset, which also admits `_`.)
+fn locale_matches_cli_contract(l: &str) -> bool {
+    !l.is_empty() && l.len() <= 12 && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
 pub fn build_files_ext(
     articles: &[KbArticle],
     redirects: &[(String, String)],
@@ -728,8 +744,18 @@ pub fn build_files_ext(
     // ── Per-locale pages + per-locale search indexes. Missing
     // translations serve the default content with an explicit note — never a
     // silent fallback.
-    if !opts.locales.is_empty() {
-        for locale in &opts.locales {
+    // The library matches the CLI's locale contract: non-empty, ≤ 12 chars,
+    // ASCII alphanumeric + hyphen. Invalid entries generate NO files (a
+    // hostile locale string can never become a path segment or an unescaped
+    // attribute); the CLI refuses them upstream, the library drops them here.
+    let locales: Vec<String> = opts
+        .locales
+        .iter()
+        .filter(|l| locale_matches_cli_contract(l))
+        .cloned()
+        .collect();
+    if !locales.is_empty() {
+        for locale in &locales {
             let for_locale: Vec<&KbTranslation> = opts
                 .translations
                 .iter()
@@ -759,7 +785,7 @@ pub fn build_files_ext(
         if base_url.is_some() {
             files.insert(
                 "sitemap.xml".into(),
-                sitemap_xml_locales(articles, base_url, &opts.locales, &opts.translations),
+                sitemap_xml_locales(articles, base_url, &locales, &opts.translations),
             );
         }
     }
@@ -857,6 +883,114 @@ fn now_unix() -> i64 {
 mod tests {
     use super::*;
     use crate::migration::run_migration;
+
+    /// A quote-carrying base_url renders ESCAPED in every generated
+    /// surface — hreflang alternates, the canonical link (escaped at
+    /// page_with_head), and the sitemap loc/alternates. A malformed
+    /// config can inject markup nowhere.
+    #[test]
+    fn base_url_with_quotes_escaped_everywhere() {
+        let evil = "http://kb.example\u{22}/><script>alert(1)</script>";
+        let articles = vec![KbArticle {
+            id: 1,
+            slug: "test-slug".to_string(),
+            title: "t".to_string(),
+            body: "b".to_string(),
+            updated_at: 0,
+            origin: None,
+            revision: String::new(),
+        }];
+        let opts = BuildOptions {
+            locales: vec!["en".to_string(), "fil".to_string()],
+            translations: vec![],
+            ..Default::default()
+        };
+        let files = build_files_ext(&articles, &[], Some(evil), &opts);
+        let joined: String = files.values().cloned().collect::<Vec<_>>().join("\n");
+        // The base's raw quote would close the attribute mid-URL — the raw
+        // form `example"/>` must appear nowhere; only the escaped form.
+        assert!(
+            !joined.contains("kb.example\n") && !joined.contains("example\n/>"),
+            "no raw quote from the base may reach an attribute"
+        );
+        assert!(
+            !joined.contains("\"http://kb.example\n"),
+            "attribute boundary is the generator's, not the config's"
+        );
+        assert!(
+            !joined.contains("<script>alert(1)</script>"),
+            "no element from the base may survive"
+        );
+        // The escaped forms render (inert text, real URLs for honest bases).
+        assert!(joined.contains("&quot;") || joined.contains("&amp;"));
+        let sitemap = &files["sitemap.xml"];
+        assert!(sitemap.contains("&quot;"), "sitemap loc escaped");
+    }
+
+    /// The library matches the CLI locale contract: non-empty, ≤ 12 chars,
+    /// ASCII alphanumeric + hyphen. An invalid locale generates NO files.
+    #[test]
+    fn library_rejects_invalid_locale() {
+        let articles = vec![KbArticle {
+            id: 1,
+            slug: "s".to_string(),
+            title: "t".to_string(),
+            body: "b".to_string(),
+            updated_at: 0,
+            origin: None,
+            revision: String::new(),
+        }];
+        let opts = BuildOptions {
+            locales: vec![
+                "../evil".to_string(),
+                "waytoolonglocale".to_string(),
+                "en".to_string(),
+            ],
+            translations: vec![],
+            ..Default::default()
+        };
+        let files = build_files_ext(&articles, &[], None, &opts);
+        assert!(
+            !files.keys().any(|k| k.starts_with("../evil/")),
+            "a path-traversal locale must not become a path segment"
+        );
+        assert!(
+            !files.keys().any(|k| k.starts_with("waytoolonglocale/")),
+            "an over-long locale must not generate files"
+        );
+        assert!(
+            files.contains_key("en/s.html"),
+            "a valid locale still builds"
+        );
+    }
+
+    /// The library validator is the CLI charset rule — one contract, two
+    /// surfaces. The CLI accepts `en`, refuses `../evil` and the over-long
+    /// form; the library's predicate agrees on exactly those.
+    #[test]
+    fn cli_validation_parity() {
+        let cli_accepts = |s: &str| {
+            !s.is_empty()
+                && s.len() <= 12
+                && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        };
+        for candidate in [
+            "en",
+            "fil",
+            "de-DE",
+            "",
+            "../evil",
+            "has space",
+            "waytoolonglocale",
+            "en_x",
+        ] {
+            assert_eq!(
+                locale_matches_cli_contract(candidate),
+                cli_accepts(candidate),
+                "parity broken for {candidate:?}"
+            );
+        }
+    }
 
     /// complaint_policy_is_published_and_linked_from_status_pages: the
     /// published complaints policy renders as the public

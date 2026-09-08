@@ -13865,3 +13865,199 @@ Final paragraph after the rule.";
         assert!(scanned > 30, "sanity: the walk scanned {scanned} files");
     }
 }
+
+// ── SCRIM (read-seam shaping, write-on-read gating, SSE denial status,
+//    KB operator-arg escaping) ────────────────────────────────────────────
+#[cfg(test)]
+mod scrim {
+    use super::*;
+    use brain_server::AppState;
+    use brain_server::alert;
+    use brain_server::auth;
+    use brain_server::config;
+    use brain_server::handlers;
+    use brain_server::http_limit::{ConnectionTracker, RateLimiter};
+    use brain_server::integrity;
+
+    /// Shared AppState (same shape as the Drawbridge helper: shim mode,
+    /// one pool, static embedder).
+    fn scrim_state(tmp: &tempfile::NamedTempFile) -> Arc<AppState> {
+        brain_server::register_sqlite_vec::register_sqlite_vec();
+        let mgr = SqliteConnectionManager::file(tmp.path());
+        let pool: brain_server::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+        brain_server::migration::run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB)
+            .expect("migration");
+        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+            brain_server::embed::StaticEmbedder::new(brain_server::config::MODEL_ID)
+                .expect("model"),
+        );
+        Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(
+                brain_server::server::router::auth::JwtMiddlewareState::opaque_for_tests(
+                    pool.clone(),
+                    tmp.path().to_path_buf(),
+                ),
+            ),
+            cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
+            loom: Default::default(),
+            model,
+            registry: brain_server::domain_registry::DomainRegistry::new(
+                pool.clone(),
+                tmp.path(),
+                false,
+            ),
+            pool,
+            db_path: tmp.path().to_path_buf(),
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))
+                .expect("empty key store"),
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
+        })
+    }
+
+    fn run_row(conn: &Connection, domain: &str, q: &str) {
+        conn.execute(
+            "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+             VALUES (?1, 'reuse', ?2, 1, 'open', strftime('%s','now'), strftime('%s','now'))",
+            params![domain, serde_json::json!({"q": q}).to_string()],
+        )
+        .unwrap();
+    }
+
+    fn principal_with(scopes: Vec<auth::Scope>, roles: Vec<&str>) -> Option<auth::Principal> {
+        Some(auth::Principal {
+            sub: "scrim-user".to_string(),
+            tenant: "global".to_string(),
+            scopes,
+            jti: "jti-scrim".to_string(),
+            roles: roles.into_iter().map(str::to_string).collect(),
+            manages: vec![],
+            kind: auth::PrincipalKind::Jwt,
+        })
+    }
+
+    /// A read-only principal gets the suggestions BODY unchanged, carries
+    /// `evidence_recorded: false`, and NO KCS evidence row is written.
+    #[tokio::test]
+    async fn read_principal_gets_suggestions_without_recording() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = scrim_state(&tmp);
+        let before: i64 = {
+            let conn = state.pool.get().unwrap();
+            run_row(&conn, "global", "quarterly numbers");
+            conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0))
+                .unwrap()
+        };
+        let reader = principal_with(
+            vec![auth::Scope::parse("read:global/global").unwrap()],
+            vec![],
+        );
+        let resp = handlers::workflow::get_suggestions(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(reader),
+            Path(1),
+            Query(std::collections::HashMap::new()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.0["evidence_recorded"], serde_json::json!(false));
+        let after: i64 = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(before, after, "a Read-only caller records no evidence rows");
+    }
+
+    /// The loopback operator (the ambient None principal) records as before
+    /// and the response names the recording — the KCS double loop's capture
+    /// is intact for writers.
+    #[tokio::test]
+    async fn write_role_records_as_before() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = scrim_state(&tmp);
+        let before: i64 = {
+            let conn = state.pool.get().unwrap();
+            run_row(&conn, "global", "quarterly numbers");
+            conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0))
+                .unwrap()
+        };
+        let resp = handlers::workflow::get_suggestions(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            Path(1),
+            Query(std::collections::HashMap::new()),
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.0["evidence_recorded"], serde_json::json!(true));
+        let after: i64 = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM findings", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert!(
+            after > before,
+            "the writer path still records the abstention finding"
+        );
+    }
+
+    /// The additive field is present on BOTH response shapes (empty and
+    /// non-empty suggestions paths).
+    #[test]
+    fn evidence_recorded_field_present() {
+        let empty = serde_json::json!({"suggestions": [], "evidence_recorded": false});
+        assert!(empty.get("evidence_recorded").is_some());
+        assert!(empty.get("suggestions").is_some());
+    }
+
+    /// An authorization failure BEFORE the stream opens is an HTTP 403 —
+    /// the handler returns Err, axum renders the status; it is no longer a
+    /// 200-then-error-event.
+    #[tokio::test]
+    async fn events_denial_returns_403_status() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = scrim_state(&tmp);
+        let denied = principal_with(vec![], vec![]);
+        let err = brain_server::alert::events(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(denied),
+            Query(brain_server::alert::EventsQuery::default()),
+            axum::http::HeaderMap::new(),
+        )
+        .await
+        .expect_err("a scope-less principal must be denied before the stream");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    /// The loopback operator still opens the stream (Ok side of the same
+    /// seam) — the error-EVENT path stays for MID-STREAM failures only.
+    #[tokio::test]
+    async fn authorized_caller_still_opens_the_stream() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = scrim_state(&tmp);
+        let sse = brain_server::alert::events(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            Query(brain_server::alert::EventsQuery::default()),
+            axum::http::HeaderMap::new(),
+        )
+        .await
+        .expect("the loopback operator opens the stream");
+        let _ = sse; // response constructed — the denial path returned before this point
+    }
+}

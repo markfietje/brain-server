@@ -1,5 +1,58 @@
 # Agent Execution History — brain-server
 
+Predecessor: **v1.28.70 "Twokeys"** (2026-09-08) — the
+opaque-mode operator/agent split. THE REGISTER LINE OPENS (X-A4a
+carried F-W1 + X-A5; plan + execution prompts in the repo root).
+(1) X-A4a: the installer's two-token convention becomes a TYPED
+principal server-side — token-file line 2 (or `AGENT_TOKEN_FILE`,
+same 0600 law + constant-time compare, boot-REFUSED when leaked or
+empty) resolves via `config::auth_token_sets()` into
+`PrincipalKind::AgentLoopback` (sub `agent@loopback`, scope
+`write:*/global`, role = the ship-with `agent` preset). The
+EXISTING authz matrix binds it everywhere — no Admin/purge/domains/
+revoke/dsar/DPO/workflow-engine; the `opaque` middleware injects it
+after the operator lane misses, runs Blackout's kill-switch FIRST
+(revoke `agent@loopback` → 401 `identity_revoked`), audits the
+agent's 403s at that boundary (`agent_forbidden` rows), and NEVER
+lets the agent bearer be the None superuser. `AUTH_TOKEN` env
+content stays all-operator byte-identically (the line contract is
+the FILE's). (2) X-A5: `/health/db` full body rises to Admin-on-
+global (Read gets the reduced `{status, version, db_ok}` probe;
+403 otherwise — openapi additive); `/metrics` per-domain labels
+render only for in-scope scrapers via `scoped_domain_label` (the
+`can_read_domain` predicate) — out-of-scope domains collapse into
+one SUMMED `domain="other"` series per gauge; global gauges
+unchanged. **F-W1 closure disclosure (honest): enforced for
+two-token setups; single-token deployments keep the legacy
+superuser posture byte-identically (pinned
+`single_token_legacy_posture_unchanged` +
+`operator_token_behavior_byte_identical`) — the boot warn
+(`auth: single token (LEGACY SUPERUSER — second line recommended)`,
+post-tracing-init per the Deadbolt lesson) is the nudge, the file
+format is additive, no forced migration.** Tests: 6 agent pins + 1
+matrix class extension (`authz_matrix_agent_loopback_class`, every
+AUTHZ_GATES row × the agent class; the role-gated rows are
+tabulated from the handler sources — relay accept/decline +
+mesh delegation-result carry only the scope gate, `reject` is the
+agent preset's own capability, kcs publish-retract is Write-only)
++ 4 M2 pins incl. the pure `scoped_domain_label` pin (shim-mode
+/metrics can only enumerate `global`, so the cross-tenant collapse
+is witnessed at the rule) + 4 config source pins. Env-race
+hardening: ALL token-env-mutating config tests now share
+`TOKEN_ENV_LOCK` (the default/otel lib runs caught the race the
+bench run missed — three green reruns since). Role-table ceiling:
+`workflow` is not grantable to any preset (`validate` restricts
+`can` to CAN_ACTIONS) — engine seams stay operator-side until the
+Loop line. CRATE_TEST_FLOOR 1,313 → 1,318. Drill (4 legs + boot
+postures) in CHANGELOG §[1.28.70]. No schema; no routes; openapi
+additive; x-api-version unchanged; committed, NOT pushed.
+
+---
+
+(moved here from AGENTS.md at v1.28.72)
+
+# Agent Execution History — brain-server (original heading below)
+
 > Retired from AGENTS.md on token-efficiency grounds (the detail lives in
 > `CHANGELOG.md` per release and in ROADMAP.md; AGENTS.md keeps only the
 > operational contract + compact pointers). Loaded on demand.

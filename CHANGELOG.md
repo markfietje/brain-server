@@ -18,6 +18,80 @@ measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
 
+## [1.28.72] — 2026-09-08 — "Scrim": every emitted surface is shaped
+
+The third REGISTER LINE release (X-R3, X-W6, X-L4, X-E5 — audit
+2026-09-06). Theme: the read seam strips hostile HTML element names, the
+write-on-read GET gets a gate, the SSE denial becomes an HTTP status,
+and the KB library escapes its operator args like it escapes everything
+else. One visible output-bytes change, one wire-visible status change —
+both ledgered. No schema. Plan:
+`IMPLEMENTATION_PLAN_v1.28.72_Scrim.md`.
+
+### Release notes
+
+**Bug fixes**
+
+- The KB site generator escapes operator-configured values
+  (`base_url`, config locales) in every generated surface — hreflang
+  alternates, the sitemap loc/alternates, the no-translation branch's
+  locale — so a malformed config renders inert text instead of
+  injecting markup. The library now enforces the CLI's locale contract
+  (non-empty, ≤ 12 chars, ASCII alphanumeric + hyphen); invalid locales
+  generate no files.
+
+**Security fixes**
+
+- **The read seam strips hostile element names** (X-R3): a closed,
+  case-insensitive, attribute-greedy set —
+  script/img/iframe/svg/object/embed/link/meta/form/input/video/audio/
+  source/track/base — applied AFTER the markdown-ref strip (so hybrid
+  forms meet the tag stripper too). Prose angle-brackets survive ("x <
+  y", "<3", "a<b>c" are pinned). Storage stays verbatim: digest-bearing
+  surfaces are untouched. Bare URLs in prose remain the documented
+  linkified-but-inert ceiling — no URL rewriting.
+- **`GET suggestions` stops writing unguarded** (X-W6): the KCS
+  evidence side-effect (abstention + SIR rows) now requires Write on
+  the run's domain AND the `workflow` role capability. Read-only
+  principals get the suggestions body unchanged with the additive
+  `evidence_recorded: false`. The endpoint is NOT split or moved — the
+  KCS double loop's capture is intact for writers.
+- **A denied `/events` subscriber gets HTTP 403** (X-L4) instead of a
+  200-then-error-event: monitors see the denial, connection errors
+  surface, and the poll fallback keys on the failure. The error-EVENT
+  mechanism remains for mid-stream failures (a different failure class
+  — the boundary is commented at the handler). The client events
+  driver already handled non-200 statuses (verified: `ApiError::Status`
+  path) — no client change was required.
+
+### Engineering record
+
+- **Bytes-change ledger (honest):** stored markup now disappears from
+  read seams — recalled/queried/exported text that carried
+  `<img ...>`-class tags returns stripped. Stored digests do NOT move:
+  `review_digest` binds the STORED form (order load-bearing
+  PII → invisible → markdown refs → elements; the element strip is
+  read-seam only), and the KB determinism corpus re-ran green.
+- **Status-change ledger:** `/events` denial 401/403 replaces the
+  legacy 200+SSE-error shape; the authz matrix moved `/events` out of
+  `SSE_SOFT` (`/ump/subscribe` keeps the in-band denial). openapi
+  documents both wire deltas additively; `x-api-version` unchanged.
+- **Fast-path integrity:** the borrow-preserving `sanitize_read_cow`
+  fast path now also requires a `<`-free row — an element-carrying row
+  can never take the borrowed (unstripped) branch (pinned).
+- **Drill:** the `<img src=x onerror=alert(1)>` plant shape stored in
+  content reads back EMPTY through `sanitize_read` (pinned), and the
+  svg+onload variant carries no element text while prose survives.
+- **Validation:** full bench suite 1,439 passed / 7 ignored; clippy
+  clean; fmt clean; CRATE_TEST_FLOOR 1,336 → 1,345 (needle
+  re-measured). New pins: the element strip table, prose-survival,
+  svg/onload, markdown regression, the cow fast-path guard, the
+  suggestions read/write split, the SSE status denial + stream-open,
+  and the three KB escaping/validation pins.
+- **ponytail (plan non-goals):** no full HTML parser (closed name-set
+  only); no bare-URL handling (ceiling stands); `sanitize_public`'s
+  no-bypass posture untouched.
+
 ## [1.28.71] — 2026-09-08 — "Pores": the screen sees what the model sees
 
 The second REGISTER LINE release (X-R4, X-R6, X-R7 — audit 2026-09-06
