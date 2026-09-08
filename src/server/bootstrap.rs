@@ -316,6 +316,11 @@ pub fn bootstrap() -> Result<BootOutcome> {
         auth::check_secret_permissions(&path)
             .map_err(|e| anyhow::anyhow!("fatal auth config: {e}"))?;
     }
+    // Twokeys: the agent credential obeys the same law — a leaked (0644)
+    // or broken AGENT_TOKEN_FILE refuses the boot, never a silent posture.
+    if let Some(msg) = config::agent_token_misconfigured() {
+        return Err(anyhow::anyhow!(msg));
+    }
 
     // ── fail-closed write posture ─────────────────────
     // An unknown BRAIN_WRITE_POSTURE value refuses startup rather than
@@ -415,6 +420,20 @@ pub fn bootstrap() -> Result<BootOutcome> {
     // INJECTION_POLICY visibility (once, at boot): `allow` disables the
     // injection screen entirely — a real posture, but never a silent one.
     config::injection_policy_boot_warning();
+
+    // ── Twokeys auth posture (once, at boot, AFTER tracing init) ───────
+    // The opaque-mode operator/agent split: a resolved agent token means
+    // agent bearers authenticate as the scoped AgentLoopback principal; a
+    // single token stays the LEGACY SUPERUSER posture — the warn is the
+    // nudge, not a forced migration (the token-file format is additive).
+    {
+        let (_, agent) = config::auth_token_sets();
+        if agent.is_some() {
+            info!("auth: operator token + agent token (scoped)");
+        } else if config::auth_token().is_some() {
+            info!("auth: single token (LEGACY SUPERUSER — second line recommended)");
+        }
+    }
 
     // ── fail-closed egress posture (Deadbolt) ─────────
     // AFTER tracing init so the pin/admission lines are visible (the drill

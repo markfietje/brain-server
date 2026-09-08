@@ -6,12 +6,12 @@ Paste a resolution once, recall it the same way every time. A person has to appr
 
 <p align="center">
 
-[![Version](https://img.shields.io/badge/version-1.28.69-blue.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.28.70-blue.svg)](#)
 [![Docs](https://img.shields.io/badge/docs-brain--server-1f6feb.svg)](https://markfietje.github.io/brain-server/)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg?logo=rust)](#)
 [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
 [![Cost](https://img.shields.io/badge/cost-%240%20per%20query-success.svg)](#)
-[![Tests](https://img.shields.io/badge/tests-1408%20passed-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1423%20passed-brightgreen.svg)](#)
 
 </p>
 
@@ -67,7 +67,7 @@ More in `docs/` if you want the deep dive: graph hops, bi-temporal `valid_from` 
 ## Proof, not promises
 
 * UMP 1.0 L3, 13 of 13 conformance checks, pinned in CI
-* 1,408 tests passed, `cargo fmt` and `clippy -D warnings` clean
+* 1,423 tests passed, `cargo fmt` and `clippy -D warnings` clean
 * Append only SHA-256 audit chain, `GET /audit/verify` to check it
 * Maps to ISO 42001, NIST AI RMF, SOC 2, GDPR. See `COMPLIANCE.md`
 

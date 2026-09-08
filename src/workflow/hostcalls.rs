@@ -212,6 +212,7 @@ fn unprivileged() -> Option<crate::auth::Principal> {
         jti: String::new(),
         roles: Vec::new(),
         manages: Vec::new(),
+        kind: crate::auth::PrincipalKind::Jwt,
     })
 }
 

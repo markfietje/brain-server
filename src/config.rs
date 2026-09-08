@@ -676,6 +676,97 @@ pub fn auth_token_misconfigured() -> Option<String> {
     ))
 }
 
+// ── the agent token source ─────────────────────────────────────────────────
+//
+// The installer's two-token convention (the plugin reads the SECOND
+// whitespace-split line of the server's token file deliberately) becomes a
+// resolved, typed source. `auth_tokens()` above stays byte-identical; the
+// split lives in `auth_token_sets()` and only the middleware consumes it.
+
+/// The agent token file (`AGENT_TOKEN_FILE`) — the same `*_FILE` secret-file
+/// convention as `AUTH_TOKEN_FILE`: one 0600 file holding one bearer string,
+/// keeping the agent token out of env dumps and process listings. Boot-time
+/// source: the rotation watcher follows the operator token file only, so a
+/// swapped agent file takes effect at restart.
+pub fn agent_token_file() -> Option<std::path::PathBuf> {
+    std::env::var("AGENT_TOKEN_FILE")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(std::path::PathBuf::from)
+}
+
+fn agent_file_token() -> Option<String> {
+    let path = agent_token_file()?;
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Boot validation for the agent source, mirroring
+/// [`auth_token_misconfigured`]: a configured `AGENT_TOKEN_FILE` must be
+/// owner-only (0600/0400 — a leaked agent credential refuses the boot) AND
+/// readable AND non-empty. Returns the fatal message; the server refuses to
+/// start.
+pub fn agent_token_misconfigured() -> Option<String> {
+    let path = agent_token_file()?;
+    if agent_file_token().is_none() {
+        return Some(format!(
+            "AGENT_TOKEN_FILE={} is set but missing, unreadable, or empty — fix the file \
+             or unset AGENT_TOKEN_FILE.",
+            path.display()
+        ));
+    }
+    if let Err(e) = crate::secret_file::check_secret_permissions(&path) {
+        return Some(format!(
+            "AGENT_TOKEN_FILE={} — {e}; refusing to start with a leaked agent credential \
+             on disk. `chmod 600` the file or unset AGENT_TOKEN_FILE.",
+            path.display()
+        ));
+    }
+    None
+}
+
+/// The resolved token sets: `(operators, agent)`.
+///
+/// - `AGENT_TOKEN_FILE` set → the agent token comes from that file and the
+///   operator set is the ENTIRE `AUTH_TOKEN_FILE`/`AUTH_TOKEN` content (no
+///   line semantics applied — the two sources never fight).
+/// - Otherwise, when the source is the token FILE, its SECOND
+///   whitespace-separated token is the agent's (the plugin's two-token
+///   convention); line one and any remaining tokens stay operator.
+/// - `AUTH_TOKEN` env content keeps today's all-operator semantics
+///   byte-identical — the env carries no line contract.
+///
+/// A duplicated token (line 2 == line 1) resolves to both sets; the
+/// middleware checks the operator set FIRST, so the operator posture wins —
+/// the agent principal can never widen by collision.
+pub fn auth_token_sets() -> (Vec<String>, Option<String>) {
+    if let Some(agent) = agent_file_token() {
+        return (auth_tokens(), Some(agent));
+    }
+    let file_source = std::env::var("AUTH_TOKEN_FILE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .and_then(|_| auth_token());
+    match file_source {
+        Some(content) => {
+            let mut tokens: Vec<String> = content
+                .split_whitespace()
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+                .collect();
+            if tokens.len() >= 2 {
+                let agent = Some(tokens.remove(1));
+                return (tokens, agent);
+            }
+            (tokens, None)
+        }
+        None => (auth_tokens(), None),
+    }
+}
+
 /// Whether per-domain database isolation is active. When false (default),
 /// every domain resolves to the shared global DB (legacy single-DB back-compat).
 /// When true, non-`global` domains get their own `brain-<domain>.db` file.
@@ -1301,6 +1392,7 @@ mod tests {
     /// Save/restore pattern as in capacity.rs (parallel-runner safe).
     #[test]
     fn auth_token_misconfigured_fail_closed_ladder() {
+        let _env = TOKEN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev_file = std::env::var("AUTH_TOKEN_FILE").ok();
         let prev_env = std::env::var("AUTH_TOKEN").ok();
 
@@ -1344,6 +1436,7 @@ mod tests {
     /// the pin travels with its subject, `auth_tokens`.)
     #[test]
     fn auth_tokens_supports_rotation_set() {
+        let _env = TOKEN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("AUTH_TOKEN").ok();
         unsafe { std::env::set_var("AUTH_TOKEN", "tok-a\n  tok-b\n") };
         let tokens = auth_tokens();
@@ -1355,5 +1448,119 @@ mod tests {
         } else {
             unsafe { std::env::remove_var("AUTH_TOKEN") }
         }
+    }
+
+    // ── Twokeys: the agent token source (pins travel with `auth_token_sets`) ──
+
+    /// Serializes the env-var mutations in this module's Twokeys pins —
+    /// the save/restore pattern alone still races under the parallel runner.
+    static TOKEN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn set_or_remove_env(key: &str, value: Option<String>) {
+        if let Some(v) = value {
+            unsafe { std::env::set_var(key, v) };
+        } else {
+            unsafe { std::env::remove_var(key) };
+        }
+    }
+
+    fn with_token_env(
+        auth_token_file: Option<&str>,
+        auth_token: Option<&str>,
+        agent_token_file: Option<&str>,
+        f: impl FnOnce(),
+    ) {
+        let _guard = TOKEN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev_f = std::env::var("AUTH_TOKEN_FILE").ok();
+        let prev_t = std::env::var("AUTH_TOKEN").ok();
+        let prev_a = std::env::var("AGENT_TOKEN_FILE").ok();
+        set_or_remove_env("AUTH_TOKEN_FILE", auth_token_file.map(str::to_string));
+        set_or_remove_env("AUTH_TOKEN", auth_token.map(str::to_string));
+        set_or_remove_env("AGENT_TOKEN_FILE", agent_token_file.map(str::to_string));
+        f();
+        set_or_remove_env("AUTH_TOKEN_FILE", prev_f);
+        set_or_remove_env("AUTH_TOKEN", prev_t);
+        set_or_remove_env("AGENT_TOKEN_FILE", prev_a);
+    }
+
+    /// The plugin's convention: line 2 of the token FILE is the agent's;
+    /// line 1 stays operator. A SINGLE line keeps today's posture exactly
+    /// (no agent, all-operator).
+    #[test]
+    fn auth_token_sets_second_line_is_agent() {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(f.path(), "op-token\nagent-token\n").unwrap();
+        with_token_env(Some(f.path().to_str().unwrap()), None, None, || {
+            let (operators, agent) = auth_token_sets();
+            assert_eq!(operators, vec!["op-token".to_string()]);
+            assert_eq!(agent, Some("agent-token".to_string()));
+        });
+        std::fs::write(f.path(), "only-token\n").unwrap();
+        with_token_env(Some(f.path().to_str().unwrap()), None, None, || {
+            let (operators, agent) = auth_token_sets();
+            assert_eq!(operators, vec!["only-token".to_string()]);
+            assert_eq!(agent, None, "single line = today's posture byte-identical");
+        });
+    }
+
+    /// `AUTH_TOKEN` env content keeps today's all-operator semantics —
+    /// the env carries no line contract, so multi-token env stays
+    /// byte-identical (no agent extraction).
+    #[test]
+    fn auth_token_sets_env_tokens_stay_all_operator() {
+        with_token_env(None, Some("env-a\nenv-b\n"), None, || {
+            let (operators, agent) = auth_token_sets();
+            assert_eq!(operators.len(), 2);
+            assert_eq!(agent, None);
+        });
+    }
+
+    /// `AGENT_TOKEN_FILE` wins as the agent source and the operator set is
+    /// the ENTIRE token-file content — the two sources never fight.
+    #[test]
+    fn auth_token_sets_agent_file_overrides() {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(f.path(), "op-token\n").unwrap();
+        let a = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(a.path(), "agent-from-file\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(a.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
+        with_token_env(
+            Some(f.path().to_str().unwrap()),
+            None,
+            Some(a.path().to_str().unwrap()),
+            || {
+                let (operators, agent) = auth_token_sets();
+                assert_eq!(operators, vec!["op-token".to_string()]);
+                assert_eq!(agent, Some("agent-from-file".to_string()));
+            },
+        );
+    }
+
+    /// A configured agent file must be owner-only AND non-empty: a leaked
+    /// (0644) or empty file refuses the boot with the path + reason named.
+    #[cfg(unix)]
+    #[test]
+    fn agent_token_file_modes_enforced() {
+        use std::os::unix::fs::PermissionsExt;
+        let a = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(a.path(), "agent-token\n").unwrap();
+
+        std::fs::set_permissions(a.path(), std::fs::Permissions::from_mode(0o600)).unwrap();
+        with_token_env(None, None, Some(a.path().to_str().unwrap()), || {
+            assert_eq!(agent_token_misconfigured(), None, "0600 passes");
+        });
+
+        std::fs::set_permissions(a.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
+        with_token_env(None, None, Some(a.path().to_str().unwrap()), || {
+            let msg = agent_token_misconfigured().expect("0644 refuses the boot");
+            assert!(msg.contains("AGENT_TOKEN_FILE"), "names the source: {msg}");
+            assert!(msg.contains("644"), "names the offending mode: {msg}");
+        });
+
+        with_token_env(None, None, Some("/nonexistent/agent-token"), || {
+            let msg = agent_token_misconfigured().expect("missing file refuses the boot");
+            assert!(msg.contains("missing, unreadable, or empty"), "{msg}");
+        });
     }
 }

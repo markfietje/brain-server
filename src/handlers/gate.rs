@@ -2470,6 +2470,7 @@ mod tests {
             jti: "token-1".to_string(),
             roles: vec![],
             manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
         };
         assert_eq!(principal_to_owner(&Some(p)), Some("user-42".to_string()));
     }
@@ -2514,6 +2515,7 @@ mod tests {
             jti: "t".into(),
             roles: vec![],
             manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
         })));
     }
 

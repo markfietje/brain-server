@@ -1419,6 +1419,7 @@ mod tests {
             jti: "t".to_string(),
             roles: vec![],
             manages: vec!["agent-1".to_string()],
+            kind: crate::auth::PrincipalKind::Jwt,
         };
         let resp = client_proposals(
             State(state.clone()),
@@ -1447,6 +1448,7 @@ mod tests {
                 jti: "a".to_string(),
                 roles: vec!["client-auditor".to_string()],
                 manages: vec![],
+                kind: crate::auth::PrincipalKind::Jwt,
             }))
         };
         let list = list_clients(State(state.clone()), auditor())
@@ -1476,6 +1478,7 @@ mod tests {
             jti: "b".to_string(),
             roles: vec!["bpo-ops".to_string()],
             manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
         }));
         let all = list_clients(State(state.clone()), ops)
             .await
@@ -1502,6 +1505,7 @@ mod tests {
                 jti: "a".to_string(),
                 roles: vec!["client-auditor".to_string()],
                 manages: vec![],
+                kind: crate::auth::PrincipalKind::Jwt,
             }))
         };
         let list = list_clients(State(state.clone()), auditor()).await;
@@ -1566,6 +1570,7 @@ mod tests {
             jti: "a".to_string(),
             roles: vec!["client-auditor".to_string()],
             manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
         }));
         let err = crate::handlers::authorize_role(&auditor.0, &state.pool, "admin")
             .expect_err("client-auditor cannot admin");
@@ -2031,6 +2036,7 @@ mod tests {
             jti: "m3".to_string(),
             roles: roles.iter().map(|r| r.to_string()).collect(),
             manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
         }))
     }
 

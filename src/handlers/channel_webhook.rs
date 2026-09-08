@@ -406,6 +406,7 @@ fn console_principal(
         jti: format!("channel-console:{}", cfg.bridge_id()),
         roles,
         manages: Vec::new(),
+        kind: crate::auth::PrincipalKind::Jwt,
     }
 }
 

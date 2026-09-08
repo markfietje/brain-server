@@ -91,8 +91,11 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// unresolved fail-closed, hostcall cache bound) and the crank set
 /// (relative-override refusal, PATH-never-consulted, exe-dir fallback,
 /// success-path shape — the two tokio crank pins ride outside this
-/// needle), 1,313 measured at the release commit.
-const CRATE_TEST_FLOOR: usize = 1_313;
+/// needle), 1,318 measured at the Twokeys release commit (the five new
+/// bare-`#[test]` pins: the four `auth_token_sets`/agent-source config
+/// pins and the `scoped_domain_label` pure pin — the ten tokio agent
+/// pins ride outside the needle like every tokio test before them).
+const CRATE_TEST_FLOOR: usize = 1_318;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows (security.txt + the

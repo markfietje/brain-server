@@ -43,7 +43,10 @@ pub use crate::secret_file::check_secret_permissions;
 #[allow(unused_imports)]
 pub use jwt::{ALLOWED_ALGS, AuthError, Claims, TokenType, VerifyingKey};
 #[allow(unused_imports)]
-pub use policy::{Action, Principal, Scope, client_authorized_domains, is_authorized};
+pub use policy::{
+    AGENT_LOOPBACK_SUB, Action, Principal, PrincipalKind, Scope, client_authorized_domains,
+    is_authorized,
+};
 #[allow(unused_imports)]
 pub use revocation::{RevocationCache, purge_expired, revoke, revoke_chain};
 
@@ -137,6 +140,12 @@ pub enum TokenRead {
 #[derive(Default)]
 struct TokenState {
     tokens: HashSet<String>,
+    /// The agent bearer: line 2 of the token file or the
+    /// `AGENT_TOKEN_FILE` content. `None` = the single-token posture — no
+    /// agent principal exists and the middleware behaves byte-identically
+    /// to the single-token server. Agent bearers authenticate as the
+    /// `Principal::agent_loopback()` principal, never as superuser.
+    agent: Option<String>,
     /// mtime of the file when `tokens` was last loaded. `None` until the first
     /// successful load — used to detect rotation.
     mtime: Option<SystemTime>,
@@ -159,8 +168,9 @@ impl TokenStore {
     /// parallel runner. The server uses [`Self::new`] which reads the env once.
     pub fn from_file(file: Option<PathBuf>) -> Self {
         let mut state = TokenState::default();
-        let initial = config::auth_tokens();
-        state.tokens = initial.iter().cloned().collect();
+        let (operators, agent) = config::auth_token_sets();
+        state.tokens = operators.iter().cloned().collect();
+        state.agent = agent;
         // `initialized` now means "a token source
         // is configured" — an explicit token file, an env token, or a resolved
         // token set. Previously the flag meant "a load ran", so a store with
@@ -202,6 +212,26 @@ impl TokenStore {
         self.file.is_some()
     }
 
+    /// Snapshot of the agent bearer, if one is configured (Twokeys). `None`
+    /// on a poisoned lock too — the middleware reads `tokens()` FIRST, so a
+    /// poisoned store already denied upstream and this read is unreachable
+    /// in the deny path.
+    pub fn agent_token(&self) -> Option<String> {
+        crate::concurrency::rwlock_read_measured(&self.inner)
+            .ok()
+            .and_then(|g| g.agent.clone())
+    }
+
+    /// Force-set both lanes. The explicit test seam (the twokey analogue of
+    /// `reload_if_changed_from`): no mtime gate, no env lookup —
+    /// parallel-test safe. The server's live path is [`Self::reload_if_changed`].
+    pub fn reload_parts_from(&self, operators: Vec<String>, agent: Option<String>) {
+        if let Ok(mut guard) = crate::concurrency::rwlock_write_measured(&self.inner) {
+            guard.tokens = operators.into_iter().collect();
+            guard.agent = agent.filter(|s| !s.is_empty());
+        }
+    }
+
     /// Reload from disk if the file's mtime advanced since the last load.
     /// Fail-safe: if the file is missing/unreadable/empty AFTER a successful
     /// initial load, keep the cached tokens and log a warning. Returns `true`
@@ -241,12 +271,45 @@ impl TokenStore {
         changed
     }
 
-    /// Reload from disk via [`config::auth_tokens`] if the file's mtime advanced
-    /// since the last load. Fail-safe: if the file is missing/unreadable/empty
-    /// AFTER a successful initial load, keep the cached tokens. Returns `true`
-    /// when a real rotation happened (caller may audit + log).
+    /// Reload from disk via [`config::auth_token_sets`] (BOTH lanes —
+    /// Twokeys) if the file's mtime advanced since the last load.
+    /// Fail-safe: if the file is missing/unreadable/empty AFTER a successful
+    /// initial load, keep the cached tokens. Returns `true` when a real
+    /// rotation happened (caller may audit + log).
+    ///
+    /// The agent lane rides the operator file when it is line 2; an
+    /// `AGENT_TOKEN_FILE` source is re-read here too, so an agent-file swap
+    /// takes effect at the next operator-file rotation (boot-time otherwise —
+    /// the watcher follows one file).
     pub fn reload_if_changed(&self) -> bool {
-        self.reload_if_changed_from(config::auth_tokens())
+        let path = match &self.file {
+            Some(p) => p.clone(),
+            None => return false,
+        };
+        let new_mtime = match std::fs::metadata(&path).and_then(|m| m.modified()) {
+            Ok(m) => m,
+            Err(_) => return false, // fail-safe: keep cache
+        };
+        let prev_mtime = crate::concurrency::rwlock_read_measured(&self.inner)
+            .ok()
+            .and_then(|s| s.mtime);
+        if Some(new_mtime) == prev_mtime {
+            return false;
+        }
+        let (operators, agent) = config::auth_token_sets();
+        if operators.is_empty() {
+            return false; // fail-safe: file became empty
+        }
+        let fresh_set: HashSet<String> = operators.into_iter().collect();
+        let changed = crate::concurrency::rwlock_read_measured(&self.inner)
+            .map(|g| g.tokens != fresh_set || g.agent != agent)
+            .unwrap_or(true);
+        if let Ok(mut guard) = crate::concurrency::rwlock_write_measured(&self.inner) {
+            guard.tokens = fresh_set;
+            guard.agent = agent;
+            guard.mtime = Some(new_mtime);
+        }
+        changed
     }
 }
 
@@ -306,6 +369,7 @@ mod tests {
         TokenStore {
             inner: Arc::new(RwLock::new(TokenState {
                 tokens: initial_tokens.into_iter().collect(),
+                agent: None,
                 mtime,
                 initialized: true,
             })),
@@ -390,6 +454,7 @@ mod tests {
     fn poisoned_token_store_reads_as_read_failed() {
         let state = TokenState {
             tokens: std::collections::HashSet::from(["only-token".to_string()]),
+            agent: None,
             mtime: None,
             initialized: true,
         };

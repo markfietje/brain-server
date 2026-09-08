@@ -18,6 +18,154 @@ measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
 
+## [1.28.70] — 2026-09-08 — "Twokeys": the opaque-mode operator/agent split — the REGISTER LINE opens
+
+The first REGISTER LINE release (X-A4a carried F-W1 + X-A5 — audit
+2026-09-06 §4.2). Theme: the installer's two-token convention — operator
+on line 1, agent on line 2, which the plugin has read deliberately all
+along — becomes a TYPED principal server-side, and the observability
+family stops narrating every tenant to every reader. One additive env
+(`AGENT_TOKEN_FILE`), one re-shaped response (`/health/db`), one scoped
+label set (`/metrics`). No schema; no routes; x-api-version unchanged.
+Plan: `IMPLEMENTATION_PLAN_v1.28.70_Twokeys.md`.
+
+### Release notes
+
+**Bug fixes**
+
+- None. (The cross-tenant telemetry tightening (X-A5) is a security fix
+  and lives below.)
+
+**Security fixes**
+
+- **The agent token becomes a principal (X-A4a, carried F-W1 — open
+  since 2026-08-23).** In an opaque-token deployment, line 2 of the
+  token file (or the new `AGENT_TOKEN_FILE`, same 0600 secret-file law,
+  same constant-time compare) now authenticates as a SCOPED principal —
+  `PrincipalKind::AgentLoopback`, sub `agent@loopback` — instead of
+  another superuser bearer. The scope set is `write:*/global` (write
+  implies read down; the shared pool only) and the role set is the
+  ship-with `agent` preset (can read/write/reject — recall, search,
+  suggest, ingest→proposal, UMP remember→proposal under the review
+  posture, reject own drafts). NOTHING is granted agent-specifically:
+  the EXISTING authz matrix binds the principal everywhere — no Admin,
+  no purge, no domains, no revoke, no dsar, no DPO boards, and no
+  workflow-engine capability. Blackout's kill-switch applies BY
+  PRINCIPAL NAME: `POST /ops/agents/revoke` for `agent@loopback` and
+  the next agent bearer dies `401 identity_revoked` at the middleware.
+  Agent 403s are audited at that boundary (`agent_forbidden` rows) so
+  the denials are evidence, not silence. A leaked (group/world-readable)
+  or empty `AGENT_TOKEN_FILE` **refuses the boot**.
+- **The observability family stops narrating every tenant (X-A5).** The
+  full `/health/db` body (model, OTLP endpoint, DPO contact, durability
+  posture, per-domain WAL, sizes) is operator telemetry and now requires
+  an Admin credential on global; a Read credential receives the reduced
+  probe `{status, version, db_ok}` — the public `/health` content plus
+  the pool-liveness bit; a credential with neither Read nor Admin is
+  403 (openapi documents the new shape). `/metrics` per-domain gauge
+  labels (`brain_pool_in_use`, `brain_pool_idle`,
+  `brain_wal_pages_pending`) render the domain NAME only for principals
+  whose scope grants Read there — the same `can_read_domain` predicate
+  the read paths use; out-of-scope domains collapse into one SUMMED
+  `domain="other"` series per gauge (counts visible, names hidden — no
+  duplicate series). Global gauges are unchanged.
+
+**Improvements**
+
+- Boot logs the auth posture, post-tracing-init: `auth: operator token +
+  agent token (scoped)` or `auth: single token (LEGACY SUPERUSER —
+  second line recommended)`.
+- `AUTH_TOKEN` env content keeps today's all-operator semantics
+  byte-identically — the line contract lives in the token FILE only.
+- Read-only dashboards that scraped the full `/health/db` body add the
+  admin credential (see the migration note below).
+
+### Engineering record
+
+- **F-W1 closure disclosure (carried since 2026-08-23), stated honestly:**
+  the static-superuser gap is now ENFORCED CLOSED for two-token setups —
+  the second token is scoped by the server, not by installer convention.
+  **Single-token deployments keep the documented legacy superuser
+  posture byte-identically** (pinned by
+  `single_token_legacy_posture_unchanged` +
+  `operator_token_behavior_byte_identical`): the file format is
+  additive, the boot warn is the nudge, and there is no forced
+  migration. The audit's compounding concern — the still-unpurged
+  openclaw-side token leak — remains an ops item (AGENTS.md Known
+  Issues); rotating to a two-line file neutralizes the exposed bearer's
+  authority even before that purge lands.
+- **Migration note (Read-only dashboards):** `/health/db` full bodies
+  need the admin credential; Read credentials get the reduced probe.
+  Scrapers keying on per-domain metric LABELS need a scope matching the
+  domain (or they see `other`).
+- **Migration note (single-token operators):** nothing changes on the
+  wire; add an agent line (or `AGENT_TOKEN_FILE`) when you want the
+  plugin's token scoped.
+- **Role-table ceiling (honest):** the `workflow` engine capability is
+  not grantable to ANY ship-with role (`role::validate` restricts `can`
+  to `CAN_ACTIONS`, which does not name it), so the agent principal
+  cannot reach the workflow-engine surfaces (runs/state/events/rewind,
+  valet, handover offers, calibration, scoreboard). Engine seams stay
+  operator-side — revisit when the 1.32.x Loop line needs an
+  agent-reachable workflow vocabulary. The agent preset's `reject`
+  capability DOES pass the proposal-reject route (rejecting own drafts
+  is the designed act); the kcs publish-retract branch carries only the
+  Write scope and likewise passes.
+- **ponytail (plan non-goals):** no per-agent identities (one `agent@
+  loopback` principal; fine-grained agent tokens wait for a real second
+  consumer); no JWT-mode changes; no metrics authz redesign; SPIFFE
+  stays v3.7.
+- **Validation:** all plan tests green — `agent_token_authenticates_as_
+  scoped_principal`, `agent_principal_denied_admin_routes` (the
+  purge/domains/revoke/dsar sample + the `agent_forbidden` audit row),
+  `agent_principal_can_propose_not_promote` (202 pending → approve
+  403), `operator_token_behavior_byte_identical` (status AND body equal
+  with and without line 2), `single_token_legacy_posture_unchanged`,
+  `revoked_agent_principal_denied_everywhere`, `agent_token_file_modes_
+  enforced`, `auth_token_sets_second_line_is_agent`,
+  `auth_token_sets_env_tokens_stay_all_operator`,
+  `auth_token_sets_agent_file_overrides` — plus the authz-matrix class
+  extension `authz_matrix_agent_loopback_class` (every AUTHZ_GATES row ×
+  the agent class, role-gated rows tabulated from the handler sources)
+  and the M2 set `health_db_admin_full_read_reduced`,
+  `public_health_unchanged`, `admin_sees_domain_labels`,
+  `tenant_reader_sees_other_not_domain_names` (pure pin over
+  `scoped_domain_label` — shim-mode `/metrics` can only enumerate
+  `global`, which every `/metrics` reader is gated to read, so the
+  cross-tenant collapse is witnessed at the rule itself). Full suite
+  1,414 passed / 6 ignored at the release commit; clippy
+  bench/default/otel clean; fmt + lipstyk clean; CI dry-run set green;
+  CRATE_TEST_FLOOR 1,313 → 1,318 (needle re-measured: +5 bare-`#[test]`
+  pins; the ten tokio agent pins ride outside the needle).
+- **openapi additive:** `/health/db` description + the reduced Read
+  shape + the 403 response. No other wire change; x-api-version
+  unchanged; schema untouched.
+- **DRILL 2026-09-08 on a COPY of the live DB** (release build v1.28.70,
+  test port 8766, two-line token file 0600, `BRAIN_WRITE_POSTURE=review`):
+  (1) agent bearer → `POST /purge` → `403 {"error":{"code":"forbidden",
+  "message":"no scope grants Admin on global/global", …}}` and the drill
+  DB holds EXACTLY ONE `audit_events` row with `status='denied'` and
+  `detail_hash = sha256("agent_forbidden")` — the denial is evidence; (2)
+  agent bearer → `POST /ingest` → `202 {"proposal_id":1310,
+  "status":"pending"}` — the write landed as a pending proposal, promotable
+  only by an approver; (3) operator bearer → `POST /ops/agents/revoke
+  {"principal":"agent@loopback"}` → `200 {"revoked":true,"runs_drained:0}`,
+  the NEXT agent request dies `401 {"code":"identity_revoked"}` at the
+  middleware while the operator bearer still passes `/stats` 200 —
+  Blackout's kill-switch binds the agent by name, class-blind; (4) shapes:
+  the operator's `/health/db` is the full body (17 top-level keys, model +
+  compliance/DPO present) while the agent's is the reduced probe
+  `{"db_ok":true,"status":"ok","version":"1.28.70"}` — and the agent's
+  `/metrics` scrape renders the shared pool named (`brain_pool_in_use{
+  domain="global"}` — in scope) with no foreign names to hide. Boot
+  posture lines witnessed in both postures: `auth: operator token + agent
+  token (scoped)` on the two-line file and `auth: single token (LEGACY
+  SUPERUSER — second line recommended)` on a one-line file. Drill
+  sequencing note (honest): the first pass ran the shape leg AFTER the
+  revocation leg and the agent correctly 401'd — revocation is persistent,
+  so the shapes were re-witnessed on a fresh boot of the same copy with
+  the revocation row cleared.
+
 ## [1.28.69] — 2026-09-08 — "Deadbolt": the egress and process boundary — the SEAM LINE closes
 
 The last SEAM LINE release (X-E3, X-M4, X-M5, X-M6 — audit 2026-09-06

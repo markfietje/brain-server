@@ -28,7 +28,8 @@ Brain Server is configured entirely through **environment variables**, all resol
 
 | Variable | Default | Description |
 |---|---|---|
-| `AUTH_TOKEN` / `AUTH_TOKEN_FILE` | — | Opaque bearer token(s). Newline-separated = live rotation. **Off if unset.** |
+| `AUTH_TOKEN` / `AUTH_TOKEN_FILE` | — | Opaque bearer token(s). Newline-separated = live rotation. **Off if unset.** Twokeys (v1.28.70): with a token FILE, line 1 = operator (full authority) and line 2 = the agent token — agent bearers authenticate as the scoped `agent@loopback` principal (no Admin, no purge/domains/revoke/dsar, no DPO boards; writes land as proposals under `BRAIN_WRITE_POSTURE=review`; the Blackout kill-switch revokes it by name). A single line keeps the legacy all-superuser posture — a boot warn is the nudge, never a forced migration. `AUTH_TOKEN` env content keeps the all-operator semantics. |
+| `AGENT_TOKEN_FILE` | — | Alternative agent-token source (0600 file, one bearer string — same secret-file law as `AUTH_TOKEN_FILE`). When set, the agent token comes from here and the operator token file's ENTIRE content stays operator. Boot-time source: a swapped agent file takes effect at restart (the rotation watcher follows the operator file; a line-2 edit reloads live with it). A leaked (group/world-readable) or empty agent file **refuses the boot**. |
 | `BRAIN_JWT_ISSUER` | — | Enables **JWT mode** when set + keys loaded. URL of the issuer (verified against the `iss` claim). |
 | `BRAIN_JWT_KEY_DIR` | `~/.config/brain-server/keys/` | Directory holding JWT signing key PEMs (mode 0700; private keys 0600). |
 | `BRAIN_JWT_AUDIENCE` | `brain-server` | Expected `aud` claim value. |

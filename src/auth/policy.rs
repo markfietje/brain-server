@@ -50,6 +50,25 @@ impl Action {
     }
 }
 
+/// What kind of credential produced this principal.
+/// `Jwt` covers every verified-JWT bearer (the only principal class before
+/// the opaque agent split); `AgentLoopback` is the opaque agent token resolved from the
+/// token file's second line / `AGENT_TOKEN_FILE` — the typed half of the
+/// operator/agent split. The class is metadata: authorization runs through
+/// the SAME scope/role machinery for both (the existing matrix binds the
+/// agent); the kind exists so a surface can name the class without
+/// re-deriving it from scope shapes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrincipalKind {
+    Jwt,
+    AgentLoopback,
+}
+
+/// The agent principal's identity anchor (`Principal::sub`). Blackout's
+/// kill-switch binds this name: revoking `agent@loopback` through
+/// `POST /ops/agents/revoke` kills every agent bearer identity-wide.
+pub const AGENT_LOOPBACK_SUB: &str = "agent@loopback";
+
 /// An authenticated principal. Built from a verified JWT's claims in the
 /// middleware; injected into request extensions. The `Option<Principal>`
 /// pattern in handlers means `None` = opaque-token mode or no auth (the
@@ -71,6 +90,40 @@ pub struct Principal {
     /// the source for an `owner_filter: "reports"` role's record gate. Empty =
     /// no reports (a reports-role sees nothing by default — deny-by-default).
     pub manages: Vec<String>,
+    /// the credential class that produced this principal.
+    pub kind: PrincipalKind,
+}
+
+impl Principal {
+    /// THE agent principal (Twokeys): the single identity every agent
+    /// bearer authenticates as. Fixed non-Admin scope/role set —
+    /// `write:*/global` (write implies read down; the shared pool only; no
+    /// Admin anywhere) + the ship-with `agent` preset role (can
+    /// read/write/reject: the MCP read tools + proposal writes under the
+    /// review posture; NO approve/promote). The EXISTING authz matrix binds
+    /// it from here — nothing agent-specific is granted anywhere.
+    ///
+    /// ponytail (plan non-goals): one agent identity, not per-agent
+    /// identities; fine-grained agent tokens wait for a real second
+    /// consumer. The workflow-engine capability (`workflow`) is NOT
+    /// grantable to any preset role (`role::validate` restricts `can` to
+    /// CAN_ACTIONS, which does not name it) — engine surfaces stay
+    /// operator-side; that is the documented Twokeys ceiling.
+    pub fn agent_loopback() -> Self {
+        Principal {
+            sub: AGENT_LOOPBACK_SUB.to_string(),
+            tenant: "global".to_string(),
+            scopes: vec![Scope {
+                action: Action::Write,
+                team: "*".to_string(),
+                domain: "global".to_string(),
+            }],
+            jti: "loopback-agent".to_string(),
+            roles: vec!["agent".to_string()],
+            manages: vec![],
+            kind: PrincipalKind::AgentLoopback,
+        }
+    }
 }
 
 /// A parsed scope. `<action>:<team>/<domain>`. Lowercased on parse so
@@ -249,6 +302,7 @@ mod tests {
             jti: String::new(),
             roles: vec![],
             manages: vec![],
+            kind: PrincipalKind::Jwt,
         };
         assert!(!is_authorized(&p, Action::Read, "any", "any"));
         assert!(!is_authorized(&p, Action::Admin, "any", "any"));
@@ -260,6 +314,7 @@ mod tests {
             jti: String::new(),
             roles: vec![],
             manages: vec![],
+            kind: PrincipalKind::Jwt,
         };
         assert!(is_authorized(&admin, Action::Admin, "any", "any"));
     }
@@ -273,6 +328,7 @@ mod tests {
             jti: "jti-1".to_string(),
             roles: vec![],
             manages: vec![],
+            kind: PrincipalKind::Jwt,
         };
         // A domain wildcard grants the shared pool…
         assert!(is_authorized(&p, Action::Read, "team-alpha", "global"));
@@ -303,6 +359,7 @@ mod tests {
             jti: "jti-2".to_string(),
             roles: vec![],
             manages: vec![],
+            kind: PrincipalKind::Jwt,
         };
         for domain in ["global", "acme-us", "beta-eu"] {
             for team in ["team-alpha", "team-beta"] {
@@ -320,6 +377,7 @@ mod tests {
             jti: String::new(),
             roles: roles.iter().map(|s| s.to_string()).collect(),
             manages: vec![],
+            kind: PrincipalKind::Jwt,
         })
     }
 

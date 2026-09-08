@@ -1347,6 +1347,7 @@ mod tests {
             jti: "t".into(),
             roles: vec![],
             manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
         });
         let mut r = crate::SearchResult::raw(
             1,

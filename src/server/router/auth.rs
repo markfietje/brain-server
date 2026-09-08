@@ -173,6 +173,7 @@ pub async fn jwt_auth_middleware(
                 jti: claims.jti,
                 roles: claims.roles,
                 manages: claims.manages,
+                kind: auth::PrincipalKind::Jwt,
             })
             .map(|principal| (principal, AccessTokenExp(token_exp)))
         },
@@ -418,6 +419,46 @@ pub async fn auth_middleware(
     let presented_owned = presented.unwrap_or("").to_string();
     if ok {
         next.run(req).await
+    } else if s
+        .tokens
+        .agent_token()
+        .is_some_and(|agent| ct_eq(presented_owned.as_bytes(), agent.as_bytes()))
+    {
+        // Twokeys: the AGENT bearer authenticates as the typed
+        // AgentLoopback principal — never as the None superuser. Blackout's
+        // kill-switch runs FIRST (identity precedes authorization, the same
+        // ordering the JWT middleware pins), the principal is injected for
+        // the handler gates, and the agent's 403s are audited at this
+        // boundary (the one trust-boundary seam that sees every route —
+        // operator/None traffic is untouched).
+        let pool = s.pool.clone();
+        let verdict = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+            let conn = pool
+                .get()
+                .map_err(|e| format!("revocation store unavailable: {e}"))?;
+            crate::workflow::mesh::is_revoked(&conn, auth::AGENT_LOOPBACK_SUB)
+                .map_err(|e| format!("revocation store error: {e}"))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("revocation store unavailable: {e}")));
+        match verdict {
+            Ok(true) => {
+                audit_auth_failure(&s.db_path, &path, "identity_revoked").await;
+                return unauthorized_response("identity_revoked");
+            }
+            Ok(false) => {}
+            Err(code) => {
+                audit_auth_failure(&s.db_path, &path, &code).await;
+                return unauthorized_response(&code);
+            }
+        }
+        req.extensions_mut()
+            .insert(auth::Principal::agent_loopback());
+        let resp = next.run(req).await;
+        if resp.status() == axum::http::StatusCode::FORBIDDEN {
+            audit_auth_failure(&s.db_path, &path, "agent_forbidden").await;
+        }
+        resp
     } else if capability_pass_through(&mut req, &presented_owned, &path) {
         // the bearer verified as an operator-signed capability
         // token on the UMP surface; the handler's cap_gate enforces verbs.

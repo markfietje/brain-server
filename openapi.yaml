@@ -38,17 +38,22 @@ paths:
                   version: { type: string }
   /health/db:
     get:
-      summary: Detailed deployment health (Read-gated)
+      summary: Detailed deployment health (Admin-gated full body; Read gets the reduced probe)
       description: >-
         The full health body: model id, system memory, pool, backup snapshot,
         webhook posture, otel, compliance (DPO contact), hardening counters
         (incl. audit_commit_failures), capacity envelope, audit-chain
-        integrity, plus database_size_bytes and last_write. Requires a Read
-        credential — the public /health carries none of these.
+        integrity, plus database_size_bytes and last_write. v1.28.70 (Twokeys,
+        X-A5): the full body is OPERATOR telemetry and requires an Admin
+        credential on global; a Read credential receives the reduced public
+        shape {status, version, db_ok} (the public /health content plus the
+        pool liveness bit); a credential with neither Read nor Admin is 403.
       operationId: getHealthDb
       responses:
         "200":
-          description: Detailed health (Read-gated)
+          description: >-
+            Full health for Admin on global; the reduced probe
+            {status, version, db_ok} for Read credentials.
           content:
             application/json:
               schema:
@@ -131,6 +136,16 @@ paths:
                         description: Per-domain WAL frames not yet checkpointed (last sweep).
                   database_size_bytes: { type: integer }
                   last_write: { type: string, nullable: true }
+        "403":
+          description: >-
+            Neither Read nor Admin on global (error envelope). Read
+            credentials never 403 here — they receive the reduced probe.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error: { type: object, description: code + message envelope }
   /ready:
     get:
       summary: Readiness probe

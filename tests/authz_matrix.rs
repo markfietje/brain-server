@@ -1355,3 +1355,520 @@ async fn authz_matrix_revoked_principal_row_per_class() {
         "an opaque bearer has no principal id to revoke — revocation rows cannot touch it"
     );
 }
+
+// ── Twokeys (v1.28.70): the opaque agent token becomes a principal ──────
+//
+// X-A4a / carried F-W1. The installer's two-token convention (operator on
+// line 1, agent on line 2 — the plugin reads the second line deliberately)
+// becomes a typed principal server-side. The agent bearer authenticates as
+// `PrincipalKind::AgentLoopback` (`agent@loopback`) with a fixed non-Admin
+// scope/role set, so the EXISTING matrix binds it: no Admin, no purge, no
+// domains, no revoke, no dsar, no DPO boards, and no workflow-engine
+// capability (the role table has no agent-grantable `workflow` verb —
+// engine surfaces stay operator-side). Blackout's kill-switch applies by
+// principal name. The single-token posture is BYTE-IDENTICAL: one line
+// means no principal — the v1.1 superuser path, unchanged.
+
+const TWOKEY_OP: &str = "twokey-op-token";
+const TWOKEY_AGENT: &str = "twokey-agent-token";
+
+/// An opaque-mode server whose token file carries `lines`. Same fixture
+/// shape as the opaque block above; the store is seeded through the
+/// explicit parts seam so no env vars are touched (parallel-test safe).
+fn build_opaque_token_server(
+    lines: &str,
+    operators: Vec<String>,
+    agent: Option<String>,
+) -> TestServer {
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let db_path = dir.path().join("brain.db");
+    brain_server::register_sqlite_vec::register_sqlite_vec();
+    let mgr = SqliteConnectionManager::file(&db_path);
+    let pool: brain_server::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+    brain_server::migration::run_migration(
+        &mut pool.get().expect("conn"),
+        brain_server::config::DB_MMAP_SIZE_MIB,
+    )
+    .expect("migration");
+    let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+        brain_server::embed::StaticEmbedder::new(brain_server::config::MODEL_ID).expect("model"),
+    );
+    let tok_file = dir.path().join("tokens");
+    std::fs::write(&tok_file, lines).expect("token file");
+    let token_store = brain_server::auth::TokenStore::from_file(Some(tok_file));
+    token_store.reload_parts_from(operators, agent);
+
+    let jwt_middleware_state = Arc::new(JwtMiddlewareState::opaque_for_tests(
+        pool.clone(),
+        db_path.clone(),
+    ));
+    let state = Arc::new(brain_server::AppState {
+        token_store,
+        jwt_middleware_state,
+        cors: tower_http::cors::CorsLayer::new(),
+        durability: Default::default(),
+        loom: Default::default(),
+        model,
+        registry: brain_server::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
+        pool,
+        db_path,
+        connection_tracker: Arc::new(brain_server::http_limit::ConnectionTracker::new()),
+        rate_limiter: Arc::new(brain_server::http_limit::RateLimiter::new()),
+        snapshot: brain_server::integrity::SnapshotState::default(),
+        audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+        auth_mode: brain_server::auth::AuthMode::Opaque,
+        key_store: brain_server::auth::jwks::KeyStore::default(),
+        revocation_cache: Arc::new(brain_server::auth::revocation::RevocationCache::new()),
+        jwt_issuer: String::new(),
+        jwt_audience: String::new(),
+        oidc_config: brain_server::handlers::well_known::OidcConfig::unconfigured(),
+        ump_events: tokio::sync::broadcast::channel(brain_server::config::UMP_EVENT_BUFFER).0,
+        alert_events: tokio::sync::broadcast::channel(brain_server::config::ALERT_EVENT_BUFFER).0,
+        alert_seq: std::sync::atomic::AtomicU64::new(0),
+        chain_watch: brain_server::alert::ChainWatchState::default(),
+        concurrency: &brain_server::concurrency::CONCURRENCY,
+    });
+    TestServer {
+        _dir: dir,
+        state,
+        priv_key: {
+            let mut rng = rand::rngs::ThreadRng::default();
+            rsa::RsaPrivateKey::new(&mut rng, 2048).expect("keypair")
+        },
+    }
+}
+
+fn twokey_server() -> TestServer {
+    build_opaque_token_server(
+        &format!("{TWOKEY_OP}\n{TWOKEY_AGENT}\n"),
+        vec![TWOKEY_OP.to_string()],
+        Some(TWOKEY_AGENT.to_string()),
+    )
+}
+
+/// One line = today's posture, byte for byte: the bearer authenticates to
+/// NO principal — the v1.1 superuser path. Admin routes pass, reads pass,
+/// no-token still 401s.
+#[tokio::test]
+async fn single_token_legacy_posture_unchanged() {
+    let srv =
+        build_opaque_token_server(&format!("{TWOKEY_OP}\n"), vec![TWOKEY_OP.to_string()], None);
+    for (method, path, body) in [
+        ("GET", "/stats", ""),
+        ("POST", "/recall", r#"{"query":"t"}"#),
+        ("POST", "/reindex", "{}"),
+        ("POST", "/purge", r#"{"ids":[1]}"#),
+    ] {
+        let (st, _) = send_body(&srv, Some(TWOKEY_OP), path, method, body).await;
+        assert!(
+            st != StatusCode::UNAUTHORIZED && st != StatusCode::FORBIDDEN,
+            "{method} {path} (single-token operator) must keep the superuser path, got {st}"
+        );
+    }
+    let (st, _) = send_body(&srv, None, "/stats", "GET", "").await;
+    assert_eq!(st, StatusCode::UNAUTHORIZED, "no token still 401s");
+}
+
+/// The operator's per-route outcomes are IDENTICAL with and without the
+/// agent line: adding line 2 must not move line 1 anywhere (status AND
+/// body compared).
+#[tokio::test]
+async fn operator_token_behavior_byte_identical() {
+    let one =
+        build_opaque_token_server(&format!("{TWOKEY_OP}\n"), vec![TWOKEY_OP.to_string()], None);
+    let two = twokey_server();
+    for (method, path, body) in [
+        ("GET", "/stats", ""),
+        ("GET", "/audit", ""),
+        ("POST", "/recall", r#"{"query":"t"}"#),
+        ("POST", "/reindex", "{}"),
+        ("POST", "/purge", r#"{"ids":[1]}"#),
+        (
+            "POST",
+            "/dsar",
+            r#"{"subject":"m","action":"export","dry_run":true,"subject_exact":true}"#,
+        ),
+    ] {
+        let a = send_body(&one, Some(TWOKEY_OP), path, method, body).await;
+        let b = send_body(&two, Some(TWOKEY_OP), path, method, body).await;
+        assert_eq!(
+            a, b,
+            "{method} {path}: the operator's response must not move when the agent line exists"
+        );
+    }
+}
+
+/// The agent bearer authenticates as a SCOPED principal: reads pass, and an
+/// Admin route that the None-superuser passes is 403 — the injection proof
+/// (a bare middleware pass would carry no principal and inherit the
+/// superuser path).
+#[tokio::test]
+async fn agent_token_authenticates_as_scoped_principal() {
+    let srv = twokey_server();
+    let (st, _) = send_body(&srv, Some(TWOKEY_AGENT), "/stats", "GET", "").await;
+    assert_eq!(st, StatusCode::OK, "agent reads pass");
+    // The injection proof: /purge is a HARD-403 Admin route (`/reindex`
+    // soft-denies with the legacy 200 shell) — the None superuser passes
+    // it; the scoped agent bearer must not.
+    let (st, _) = send_body(&srv, Some(TWOKEY_AGENT), "/purge", "POST", r#"{"ids":[1]}"#).await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "the agent bearer must be a scoped principal, not the None superuser"
+    );
+    let (st, _) = send_body(
+        &srv,
+        Some(TWOKEY_AGENT),
+        "/recall",
+        "POST",
+        r#"{"query":"t"}"#,
+    )
+    .await;
+    assert!(
+        st != StatusCode::UNAUTHORIZED && st != StatusCode::FORBIDDEN,
+        "agent recall passes, got {st}"
+    );
+}
+
+/// The plan's denial sample: purge, domains, revoke, dsar all 403 — and the
+/// purge denial leaves an auth audit row (agent denials are evidenced at
+/// the middleware; operator/None denials are untouched).
+#[tokio::test]
+async fn agent_principal_denied_admin_routes() {
+    let srv = twokey_server();
+    for (method, path, body) in [
+        ("POST", "/purge", r#"{"ids":[1]}"#),
+        ("POST", "/domains/move", r#"{"ids":[1],"to":"global"}"#),
+        (
+            "POST",
+            "/ops/agents/revoke",
+            r#"{"principal":"someone","reason":"t"}"#,
+        ),
+        (
+            "POST",
+            "/dsar",
+            r#"{"subject":"m","action":"export","dry_run":true,"subject_exact":true}"#,
+        ),
+    ] {
+        let (st, _) = send_body(&srv, Some(TWOKEY_AGENT), path, method, body).await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "{method} {path} must 403");
+    }
+    // The denial evidence: an auth audit row exists for the agent's 403
+    // (the middleware hashes the detail — match the digest).
+    {
+        let detail_hash = brain_server::audit::hash("agent_forbidden");
+        let conn = srv.state.pool.get().expect("conn");
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE status = 'denied' AND detail_hash = ?1",
+                rusqlite::params![detail_hash],
+                |r| r.get(0),
+            )
+            .expect("audit count");
+        assert!(n >= 1, "the agent's denied attempts must leave audit rows");
+    }
+}
+
+/// Review posture: the agent's ingest lands as a pending proposal (202) and
+/// the agent CANNOT promote it — the approve gate 403s (the `agent` role
+/// carries no `approve` capability).
+#[tokio::test]
+async fn agent_principal_can_propose_not_promote() {
+    static POSTURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _env = POSTURE_LOCK.lock().await;
+    let prev = std::env::var("BRAIN_WRITE_POSTURE").ok();
+    unsafe { std::env::set_var("BRAIN_WRITE_POSTURE", "review") };
+
+    let srv = twokey_server();
+    let (st, body) = send_body(
+        &srv,
+        Some(TWOKEY_AGENT),
+        "/ingest",
+        "POST",
+        r#"{"title":"m","content":"m","domain":"global"}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::ACCEPTED,
+        "ingest under review → 202: {body}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&body).expect("202 body is JSON");
+    assert_eq!(
+        v["status"], "pending",
+        "the write landed as a pending proposal"
+    );
+    let proposal_id = v["proposal_id"].as_i64().expect("proposal_id in body");
+
+    // Promote attempt on the REAL proposal: the approve capability is not
+    // the agent role's to spend (403 before any row work).
+    let (st, _) = send_body(
+        &srv,
+        Some(TWOKEY_AGENT),
+        &format!("/proposals/{proposal_id}/approve"),
+        "POST",
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "the agent cannot promote");
+
+    match prev {
+        Some(v) => unsafe { std::env::set_var("BRAIN_WRITE_POSTURE", v) },
+        None => unsafe { std::env::remove_var("BRAIN_WRITE_POSTURE") },
+    }
+}
+
+/// Blackout's kill-switch binds the agent BY PRINCIPAL NAME: the operator
+/// (None-superuser) revokes `agent@loopback` through the real route, and
+/// the next agent bearer is `401 identity_revoked` at the middleware —
+/// while the operator token is untouched.
+#[tokio::test]
+async fn revoked_agent_principal_denied_everywhere() {
+    let srv = twokey_server();
+    revoke_via_route(&srv, TWOKEY_OP, "agent@loopback").await;
+
+    let (st, text) = send_body(&srv, Some(TWOKEY_AGENT), "/stats", "GET", "").await;
+    assert_eq!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "a revoked agent dies at the middleware"
+    );
+    assert_eq!(text, revoked_body("identity_revoked"));
+
+    let (st, _) = send_body(&srv, Some(TWOKEY_OP), "/stats", "GET", "").await;
+    assert_ne!(st, StatusCode::UNAUTHORIZED, "the operator is untouched");
+}
+
+/// THE NET, agent class. Every AUTHZ_GATES row × the AgentLoopback
+/// principal: scope-passing rows go through UNLESS the route carries a
+/// role gate the `agent` preset lacks (`workflow`/`approve`/`publish`/
+/// `purge`/`dsar_export`/`reject`) or the DPO dual gate (the agent HAS
+/// roles, so the empty-roles skip never fires) — those speak the denied
+/// vocabulary. Admin rows 403 outright.
+const ROLE_GATED_FOR_AGENT: &[&str] = &[
+    // the `workflow` capability (19 gate sites; the role table has no
+    // agent-grantable `workflow` verb — validate() restricts `can` to
+    // CAN_ACTIONS, which does not name it)
+    "/workflow/runs",
+    "/workflow/runs/{id}",
+    "/workflow/runs/{id}/state",
+    "/workflow/runs/{id}/events",
+    "/workflow/runs/{id}/answer",
+    "/workflow/runs/{id}/steering",
+    "/workflow/runs/{id}/complaint/lifecycle",
+    "/workflow/runs/{id}/complaint/remedy",
+    "/workflow/runs/{id}/complaint/adr-packet",
+    "/workflow/runs/{id}/complaint/ack",
+    "/workflow/complaints/ack-sweep",
+    "/workflow/outreach/campaign",
+    "/workflow/outreach/consent",
+    "/workflow/outreach/followup",
+    "/workflow/runs/{id}/status-ref",
+    "/workflow/runs/{id}/rewind",
+    "/workflow/outreach/campaign/{id}",
+    "/workflow/valet/due",
+    "/workflow/valet/brief",
+    "/workflow/valet/consent",
+    "/workflow/runs/{id}/handover/offer",
+    // NOT workflow-gated (verified: the relay `workflow` sites both live in
+    // post_handover_offer; accept/decline + mesh's post_delegation_result
+    // carry only the scope gate — they pass for this class on Write)
+    // approve / translate / purge / dsar_export — note `reject` is NOT
+    // here: the `agent` preset role CAN reject (its own drafts), so the
+    // reject route passes the role gate for this class; nor is
+    // `/kcs/articles/{id}/publish` — its retract branch carries only the
+    // Write scope (the 409 there is pass-path route vocabulary)
+    "/proposals/{id}/approve",
+    "/kcs/articles/{id}/approve",
+    "/kcs/translate",
+    "/purge",
+    "/dsar",
+    "/clients/{name}/dsar",
+    // the DPO dual gate (require_dpo_role): binds because the agent
+    // principal CARRIES roles — the empty-roles skip never fires
+    "/legal-hold",
+    "/legal-hold/{id}/release",
+    "/legal-holds",
+    "/breach",
+    "/breach/{id}/event",
+    "/breach/{id}/close",
+    "/breaches",
+    "/breaches/{id}",
+    "/workflow/scoreboard",
+    "/workflow/calibration/sign",
+];
+
+#[tokio::test]
+async fn authz_matrix_agent_loopback_class() {
+    let srv = twokey_server();
+    for (template, path, method, body) in rows() {
+        let Some((_, action)) = AUTHZ_GATES.iter().find(|(t, _)| *t == template) else {
+            continue;
+        };
+        if *action == "public" {
+            continue;
+        }
+        // status-only `send` (the sibling loops' pattern): the SSE rows
+        // (`/events`, `/ump/subscribe`) answer the handshake 200 and stream
+        // forever — `to_bytes` would wait on a body that never ends.
+        let st = send(&srv, Some(TWOKEY_AGENT), &path, method, body).await;
+        let scope_pass = matches!(*action, "Read" | "Write" | "Traverse");
+        let role_denied = ROLE_GATED_FOR_AGENT.contains(&template);
+        let pass = scope_pass && !role_denied && !LAYOUT_CONDITIONAL.contains(&template);
+        if pass {
+            assert!(
+                st != StatusCode::UNAUTHORIZED && st != StatusCode::FORBIDDEN,
+                "{method} {template} (agent) must pass the gate, got {st}"
+            );
+        } else if SOFT_DENY_LEGACY.contains(&template) {
+            assert_eq!(
+                st,
+                StatusCode::OK,
+                "{method} {template} (agent) soft-denies with the legacy 200 shape"
+            );
+        } else if PRE_GATE_400.contains(&template) {
+            assert_eq!(
+                st,
+                StatusCode::BAD_REQUEST,
+                "{method} {template} (agent) pre-gate 400s"
+            );
+        } else if PRE_GATE_404.contains(&template) {
+            assert!(
+                st == StatusCode::NOT_FOUND || st == StatusCode::FORBIDDEN,
+                "{method} {template} (agent) must pre-gate 404 or 403, got {st}"
+            );
+        } else if LAYOUT_CONDITIONAL.contains(&template) {
+            assert_eq!(
+                st,
+                StatusCode::FORBIDDEN,
+                "{method} {template} (agent) is Admin-gated in shim mode"
+            );
+        } else {
+            assert_eq!(
+                st,
+                StatusCode::FORBIDDEN,
+                "{method} {template} (agent) must 403"
+            );
+        }
+    }
+}
+
+// ── Twokeys M2: observability scoping (X-A5) ────────────────────────────
+
+/// The full /health/db body is Admin-on-global; a Read principal gets the
+/// reduced public shape ({status, version, db_ok}) — no model, no system,
+/// no pool, no DPO/durability/WAL detail.
+#[tokio::test]
+async fn health_db_admin_full_read_reduced() {
+    let srv = build_server();
+    let reader = mint(
+        &srv,
+        "m2-hdb-r",
+        "user:m2r",
+        "team-a",
+        &["read:team-a/*"],
+        &[],
+    );
+    let admin = mint(
+        &srv,
+        "m2-hdb-a",
+        "user:m2a",
+        "team-a",
+        &["admin:*/*"],
+        &["admin", "matrix-role"],
+    );
+
+    let (st, body) = send_body(&srv, Some(&admin), "/health/db", "GET", "").await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        body.contains("\"model\"") && body.contains("\"system\""),
+        "admin sees the full body"
+    );
+
+    let (st, body) = send_body(&srv, Some(&reader), "/health/db", "GET", "").await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "a Read principal still gets the reduced probe"
+    );
+    let v: serde_json::Value = serde_json::from_str(&body).expect("reduced body is JSON");
+    let obj = v.as_object().expect("object");
+    assert_eq!(
+        obj.keys().collect::<Vec<_>>(),
+        vec!["db_ok", "status", "version"],
+        "the reduced shape is exactly status/version/db_ok (serde sorts keys)"
+    );
+}
+
+/// Public /health is untouched: no auth, minimal shape.
+#[tokio::test]
+async fn public_health_unchanged() {
+    let srv = build_server();
+    let (st, body) = send_body(&srv, None, "/health", "GET", "").await;
+    assert_eq!(st, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(
+        v,
+        serde_json::json!({"status": "ok", "version": v["version"]})
+    );
+}
+
+/// The admin scrape still carries real per-domain labels (shim mode:
+/// `global`), and never the collapse label.
+#[tokio::test]
+async fn admin_sees_domain_labels() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "m2-met-a",
+        "user:m2ma",
+        "team-a",
+        &["admin:*/*"],
+        &["admin", "matrix-role"],
+    );
+    let (st, body) = send_body(&srv, Some(&admin), "/metrics", "GET", "").await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        body.contains("brain_pool_in_use{domain=\"global\"}"),
+        "admin sees the domain name: {body}"
+    );
+    assert!(
+        !body.contains("{domain=\"other\"}"),
+        "no collapse series for admin"
+    );
+}
+
+/// Pure pin over the scoping rule at the unit seam (shim-mode /metrics can
+/// only ever enumerate `global`, which every /metrics reader is gated to
+/// read — the cross-tenant collapse is witnessable where the rule lives).
+/// A tenant reader (read:team-a/*) sees `global` named (its scope grants
+/// the shared pool) but foreign named domains collapse to `other`; the
+/// None superuser sees every name.
+#[test]
+fn tenant_reader_sees_other_not_domain_names() {
+    use brain_server::server::router::core::scoped_domain_label;
+    let reader = Some(brain_server::auth::Principal {
+        sub: "user:r".into(),
+        tenant: "team-a".into(),
+        scopes: vec![brain_server::auth::Scope::parse("read:team-a/*").unwrap()],
+        jti: String::new(),
+        roles: vec![],
+        manages: vec![],
+        kind: brain_server::auth::PrincipalKind::Jwt,
+    });
+    assert_eq!(
+        scoped_domain_label(&reader, "global"),
+        "global",
+        "the shared pool stays named for a wildcard-team reader"
+    );
+    assert_eq!(
+        scoped_domain_label(&reader, "acme-us"),
+        "other",
+        "a foreign tenant domain collapses: count visible, name hidden"
+    );
+    assert_eq!(
+        scoped_domain_label(&None, "acme-us"),
+        "acme-us",
+        "the None superuser sees every name"
+    );
+}

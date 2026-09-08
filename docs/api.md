@@ -15,7 +15,7 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 | GET | `/` · `/app/*` | The Dioxus console SPA, served from `BRAIN_CLIENT_DIST` when built and mounted (static asset surface — the JSON API routes are unaffected) |
 | GET | `/health` | Liveness probe (minimal `{status, version}`; detail on `/health/db`) |
 | GET | `/ready` | Readiness probe for load balancers |
-| GET | `/health/db` | Read-gated detail — capacity, pool, hardening, model, otel, DPO, concurrency (pool timeouts, busy errors, WAL pages pending), durability (Headroom boot-time echo: `synchronous`, `wal_autocheckpoint_pages`, `capacity_target`) |
+| GET | `/health/db` | Admin-gated detail (v1.28.70: the full body — capacity, pool, hardening, model, otel, DPO, concurrency, durability — is operator telemetry); a Read credential gets the reduced probe `{status, version, db_ok}`; Read-only dashboards add the admin credential for the full body |
 | GET | `/stats`, `/version` | Counts, model, version |
 | GET | `/openapi.yaml` | Full API contract |
 | GET | `/.well-known/security.txt` · `/openid-configuration` · `/jwks.json` | RFC 9116 disclosure file, OIDC discovery (RFC 8414), JWKS key set (RFC 7517) — all public, no auth |

@@ -950,6 +950,7 @@ mod tests {
             jti: "jti-eve".to_string(),
             roles: vec![],
             manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
         };
         // Same team, shared pool: allowed.
         assert!(
@@ -1004,6 +1005,7 @@ mod tests {
             jti: "j".to_string(),
             roles: vec![],
             manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
         };
         assert!(authorize(&Some(writer.clone()), crate::auth::Action::Read, "t", "l1").is_ok());
         assert!(authorize(&Some(writer), crate::auth::Action::Write, "t", "l1").is_ok());
@@ -1014,6 +1016,7 @@ mod tests {
             jti: "j".to_string(),
             roles: vec![],
             manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
         };
         assert!(authorize(&Some(admin.clone()), crate::auth::Action::Read, "t", "l1").is_ok());
         assert!(authorize(&Some(admin.clone()), crate::auth::Action::Write, "t", "l1").is_ok());
@@ -1032,6 +1035,7 @@ mod tests {
             jti: "jti-eve".to_string(),
             roles: vec![],
             manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
         };
         // No requested tenant -> forced to own tenant.
         assert_eq!(

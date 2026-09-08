@@ -45,6 +45,7 @@ impl SessionSanitizer for ReadViewSanitizer {
             jti: String::new(),
             roles: Vec::new(),
             manages: Vec::new(),
+            kind: crate::auth::PrincipalKind::Jwt,
         });
         crate::gate::sanitize_read(raw, true, &unprivileged)
     }

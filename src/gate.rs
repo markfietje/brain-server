@@ -653,6 +653,7 @@ mod tests {
             jti: "t".into(),
             roles: vec![],
             manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
         })
     }
 
@@ -672,6 +673,7 @@ mod tests {
             jti: "t".into(),
             roles: vec![],
             manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
         };
         let masked = redact_content(text, true, &Some(p));
         assert!(masked.contains("[redacted:email]"));
@@ -742,6 +744,7 @@ mod tests {
                 jti: "test".into(),
                 roles: vec![],
                 manages: vec![],
+                kind: crate::auth::PrincipalKind::Jwt,
             }),
         );
         assert!(
@@ -773,6 +776,7 @@ mod tests {
             jti: "t".into(),
             roles: vec![],
             manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
         };
         // em-dash (3-byte) right after a valid 10-digit run — the exact boundary
         // that panicked (`out[i..i+1]` on the em-dash's first byte is not a char).
@@ -806,6 +810,7 @@ mod tests {
             jti: "t".into(),
             roles: vec![],
             manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
         };
         assert!(!has_pii_read(&Some(p)));
     }

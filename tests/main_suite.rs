@@ -4804,6 +4804,7 @@ Final paragraph after the rule.";
             jti: "token-1".to_string(),
             roles: vec![],
             manages: vec![],
+            kind: auth::PrincipalKind::Jwt,
         };
         let owner = handlers::gate::principal_to_owner(&Some(alice));
         assert_eq!(owner.as_deref(), Some("alice@example.com"));
@@ -5836,6 +5837,7 @@ Final paragraph after the rule.";
             jti: "jti-r".to_string(),
             roles: roles.iter().map(|s| s.to_string()).collect(),
             manages: manages.iter().map(|s| s.to_string()).collect(),
+            kind: auth::PrincipalKind::Jwt,
         }
     }
 
@@ -5903,6 +5905,7 @@ Final paragraph after the rule.";
             jti: "j".to_string(),
             roles: vec![],
             manages: vec![],
+            kind: auth::PrincipalKind::Jwt,
         };
         assert!(ok(&nora, "approve"), "no-roles principal not role-gated");
     }
@@ -5946,6 +5949,7 @@ Final paragraph after the rule.";
             jti: claims.jti,
             roles: claims.roles,
             manages: claims.manages,
+            kind: auth::PrincipalKind::Jwt,
         };
         assert_eq!(principal.roles, vec!["dpo".to_string()]);
     }
@@ -7758,6 +7762,7 @@ Final paragraph after the rule.";
             jti: "jti-db".to_string(),
             roles: Vec::new(),
             manages: Vec::new(),
+            kind: auth::PrincipalKind::Jwt,
         }
     }
 
@@ -7849,6 +7854,7 @@ Final paragraph after the rule.";
             jti: "jti-steer".to_string(),
             roles: vec!["no-such-role".to_string()],
             manages: vec![],
+            kind: auth::PrincipalKind::Jwt,
         });
         let err = brain_server::handlers::workflow::post_steering(
             State(state.clone()),
@@ -8164,6 +8170,7 @@ Final paragraph after the rule.";
             jti: "jti-engine".to_string(),
             roles: vec!["no-such-role".to_string()],
             manages: vec![],
+            kind: auth::PrincipalKind::Jwt,
         });
 
         let err = brain_server::handlers::workflow::post_run(
@@ -9096,6 +9103,7 @@ Final paragraph after the rule.";
             jti: "jti-db".to_string(),
             roles: Vec::new(),
             manages: Vec::new(),
+            kind: auth::PrincipalKind::Jwt,
         };
         let outcome = match handlers::recall::run_recall(
             &state,
@@ -9200,6 +9208,7 @@ Final paragraph after the rule.";
             jti: "jti-review".to_string(),
             roles: Vec::new(),
             manages: Vec::new(),
+            kind: auth::PrincipalKind::Jwt,
         };
         assert!(!handlers::review_flags_allowed(&Some(reader.clone())));
         assert!(handlers::review_flags_allowed(&None));
@@ -11978,6 +11987,7 @@ Final paragraph after the rule.";
             jti: "jti-rewind".to_string(),
             roles: vec!["no-such-role".to_string()],
             manages: vec![],
+            kind: auth::PrincipalKind::Jwt,
         });
         let err = brain_server::handlers::workflow_lineage::post_rewind(
             State(state.clone()),
@@ -12282,6 +12292,7 @@ Final paragraph after the rule.";
             jti: "jti-pub".into(),
             roles: vec!["supervisor".into()],
             manages: vec![],
+            kind: auth::PrincipalKind::Jwt,
         };
         let err = brain_server::handlers::gate::approve_proposal(
             axum::extract::State(state.clone()),
@@ -12376,6 +12387,7 @@ Final paragraph after the rule.";
             jti: "jti-reauth-1".into(),
             roles: vec![],
             manages: vec![],
+            kind: auth::PrincipalKind::Jwt,
         };
         let err = brain_server::handlers::gate::approve_proposal(
             axum::extract::State(state.clone()),
@@ -12411,6 +12423,7 @@ Final paragraph after the rule.";
             jti: "jti-reauth-2".into(),
             roles: vec![],
             manages: vec![],
+            kind: auth::PrincipalKind::Jwt,
         };
         let out = brain_server::handlers::gate::approve_proposal(
             axum::extract::State(state.clone()),

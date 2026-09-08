@@ -217,11 +217,29 @@ pub async fn health_db(
     State(s): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
 ) -> Result<Json<serde_json::Value>, crate::handlers::HandlerError> {
-    // Read-gated. Public `/health` stays the minimal probe shape; the detailed
-    // deployment surface (model, otel, pool, backup, webhook, hardening, DPO)
-    // lives here so an unauthenticated network probe cannot fingerprint the
-    // deployment.
-    crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
+    // Twokeys (X-A5): the FULL body rises to Admin on global. The detailed
+    // deployment surface (model, otel, pool, backup, webhook, hardening,
+    // DPO contact, durability posture, per-domain WAL) is operator
+    // telemetry — a cross-tenant reader has no business enumerating it. A
+    // Read principal gets the reduced public shape + `db_ok` (the one bit a
+    // monitor needs); everyone else 403s. Public `/health` stays the
+    // minimal probe shape.
+    let is_admin =
+        crate::handlers::authorize(&principal.0, crate::auth::Action::Admin, "", "global").is_ok();
+    if !is_admin {
+        crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
+        let pool = s.pool.clone();
+        let probe = task::spawn_blocking(move || pool.get().is_ok());
+        let db_ok = timeout(StdDuration::from_secs(3), probe)
+            .await
+            .map(|inner| inner.unwrap_or(false))
+            .unwrap_or(false);
+        return Ok(Json(serde_json::json!({
+            "status": "ok",
+            "version": SERVER_VERSION,
+            "db_ok": db_ok,
+        })));
+    }
     let pool = s.pool.clone();
     let snapshot = s.snapshot.clone();
     // Throughput: the WAL sweep covers EVERY registered domain (same target
@@ -439,6 +457,20 @@ pub(crate) struct AuditQuery {
     offset: usize,
 }
 
+/// The per-domain label a principal's `/metrics` scrape may carry: the
+/// domain NAME renders only when the principal's scope
+/// grants Read there — the same predicate the read paths use
+/// (`can_read_domain`); otherwise the label collapses to `"other"` (the
+/// count stays visible, the name does not). The None superuser sees every
+/// name — byte-identical to the single-token scrape.
+pub fn scoped_domain_label(principal: &Option<crate::auth::Principal>, domain: &str) -> String {
+    if crate::handlers::can_read_domain(principal, domain) {
+        domain.to_string()
+    } else {
+        "other".to_string()
+    }
+}
+
 /// `GET /metrics` — Prometheus text-format exporter.
 /// Reuses the same numbers `/health` reports; no Prometheus client dep, just
 /// the wire format. Auth-gated like other operator surfaces (`auth_middleware`).
@@ -465,6 +497,11 @@ pub(crate) async fn metrics(
     // (`brain_pool_in_use`/`brain_pool_idle` from `r2d2::State` snapshots
     // taken at scrape) — no extra registry work.
     let chain_targets = crate::handlers::domain_pools(&s.registry, &pool);
+    // Twokeys (X-A5): per-domain labels render only for in-scope principals;
+    // out-of-scope domains collapse to `domain="other"` (summed — duplicate
+    // series labels are illegal in the text format). Global gauges are
+    // unchanged; the None superuser sees every name.
+    let principal = principal.0.clone();
     let body = task::spawn_blocking(move || -> String {
         let pool_state = pool.state();
         let busy = pool_state
@@ -486,18 +523,35 @@ pub(crate) async fn metrics(
         // from the SAME target list the chain gauge consumes (state() is an
         // in-memory snapshot — no syscalls). Computed BEFORE the chain block
         // below, which may consume (move) the target vec on a cache miss.
+        // Twokeys: out-of-scope domains sum into one `other` series per gauge.
         let mut domain_pool_lines = String::new();
+        let mut other_in_use: Option<u32> = None;
+        let mut other_idle: Option<u32> = None;
         for (domain, pool) in &chain_targets {
             if let Some(p) = pool {
                 let st = p.state();
+                let in_use = st.connections.saturating_sub(st.idle_connections);
+                if scoped_domain_label(&principal, domain) == "other" {
+                    *other_in_use.get_or_insert(0) += in_use;
+                    *other_idle.get_or_insert(0) += st.idle_connections;
+                    continue;
+                }
                 domain_pool_lines.push_str(&format!(
-                    "brain_pool_in_use{{domain=\"{domain}\"}} {}\n",
-                    st.connections.saturating_sub(st.idle_connections)
+                    "brain_pool_in_use{{domain=\"{domain}\"}} {in_use}\n"
                 ));
                 domain_pool_lines.push_str(&format!(
                     "brain_pool_idle{{domain=\"{domain}\"}} {}\n",
                     st.idle_connections
                 ));
+            }
+        }
+        if let Some(in_use) = other_in_use {
+            domain_pool_lines.push_str(&format!(
+                "brain_pool_in_use{{domain=\"other\"}} {in_use}\n"
+            ));
+            if let Some(idle) = other_idle {
+                domain_pool_lines
+                    .push_str(&format!("brain_pool_idle{{domain=\"other\"}} {idle}\n"));
             }
         }
         let chain_ok = {
@@ -553,11 +607,21 @@ pub(crate) async fn metrics(
             "brain_busy_errors_total {}\n",
             crate::concurrency::CONCURRENCY.busy_errors()
         ));
-        out.push_str("# HELP brain_wal_pages_pending WAL frames not yet checkpointed, per domain — last /health/db snapshot (the PASSIVE checkpoint PRAGMA runs ONLY there, cold path). Absent domains: no snapshot yet.\n");
+        out.push_str("# HELP brain_wal_pages_pending WAL frames not yet checkpointed, per domain — last /health/db snapshot (the PASSIVE checkpoint PRAGMA runs ONLY there, cold path). Absent domains: no snapshot yet. Twokeys: domains outside the scrape principal's read scope collapse into the summed `other` label.\n");
         out.push_str("# TYPE brain_wal_pages_pending gauge\n");
+        let mut other_wal: Option<u64> = None;
         for (domain, pending) in crate::concurrency::CONCURRENCY.wal_snapshot() {
+            if scoped_domain_label(&principal, &domain) == "other" {
+                *other_wal.get_or_insert(0) += pending;
+                continue;
+            }
             out.push_str(&format!(
                 "brain_wal_pages_pending{{domain=\"{domain}\"}} {pending}\n"
+            ));
+        }
+        if let Some(pending) = other_wal {
+            out.push_str(&format!(
+                "brain_wal_pages_pending{{domain=\"other\"}} {pending}\n"
             ));
         }
         // Headroom: lock-wait bucket-quantiles. Only CONTENDED acquisitions
