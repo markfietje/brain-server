@@ -1,5 +1,7 @@
 # Overview
 
+![Brain Server hero](assets/hero-light.png)
+
 Brain Server is a **deterministic knowledge server for teams and their AI
 agents**. It is one Rust binary that stores what a team knows — past
 resolutions, runbooks, KB articles, decisions, customer context — and recalls
