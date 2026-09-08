@@ -77,29 +77,39 @@ curl -s "$B/health" | jq '.injection_classifier_loaded'
 
 ## 6b. Embedding deletion proof — purge clears `vec_knowledge` and is idempotent (EDPB CEF)
 
+Every selector below is reverse-checked against the wire: `/ingest`
+returns the numeric row `id`; `/purge` takes `{"ids":[<i64>]}` and
+answers `{"purged":<n>}`; `/tombstones` (Admin; loopback superuser on
+the no-auth harness) answers `{"tombstones":[{knowledge_id, …}]}` where
+the row's `owner` column — derived from the bearer `sub`, not an ingest
+field — is what makes `reason = "owner:<subject>"`.
+
 ```sh
-# 1) Ingest a uniquely identifiable chunk
+# 1) Ingest a uniquely identifiable chunk (row owner = the bearer sub on
+#    the harness; unauthenticated loopback ingests carry no owner)
 ID=$(curl -s -X POST "$B/ingest" -H 'content-type: application/json' \
-  -d '{"content":"EDPB_PROBE_'"$(date +%s)"'_ unique canary sentence","owner":"probe-subject"}' | jq -r '.id')
+  -d '{"content":"EDPB_PROBE_'"$(date +%s)"'_ unique canary sentence"}' | jq '.id')
 
 # 2) Recall proves it is embedded (vec0 + FTS5)
 curl -s -X POST "$B/recall" -H 'content-type: application/json' \
-  -d '{"query":"EDPB_PROBE canary"}' | jq --arg id "$ID" '[.hits[] | select(.id==$id)] | length'  # → 1
+  -d '{"query":"EDPB_PROBE canary"}' | jq --argjson id "$ID" '[.hits[] | select(.id==$id)] | length'  # → 1
 
 # 3) Purge the id (one tx: knowledge + vec_knowledge + relationships + evidence_links + proposals + workflow family)
 curl -s -X POST "$B/purge" -H 'content-type: application/json' \
-  -d '{"ids":["'"$ID"'"]}' | jq '.purged'
+  -d "{"ids":[$ID]}" | jq '.purged'  # → 1
 
 # 4) vec0 re-recall negative — the embedding is gone, not just the row
 curl -s -X POST "$B/recall" -H 'content-type: application/json' \
-  -d '{"query":"EDPB_PROBE canary"}' | jq --arg id "$ID" '[.hits[] | select(.id==$id)] | length'  # → 0
+  -d '{"query":"EDPB_PROBE canary"}' | jq --argjson id "$ID" '[.hits[] | select(.id==$id)] | length'  # → 0
 
-# 5) Tombstone is present and idempotent — re-purge is a no-op (200, purged: 0 or holds)
-curl -s "$B/tombstones?subject=probe-subject" | jq --arg id "$ID" '[.[] | select(.id==$id)] | length'  # → 1
+# 5) Tombstone is present and re-purge is a no-op (Admin-gated read)
+curl -s "$B/tombstones" | jq --argjson id "$ID" '[.tombstones[] | select(.knowledge_id==$id)] | length'  # → 1
 curl -s -X POST "$B/purge" -H 'content-type: application/json' \
-  -d '{"ids":["'"$ID"'"]}' | jq '.purged'  # → 0
+  -d "{"ids":[$ID]}" | jq '.purged'  # → 0
 
-# DSAR variant (same guarantee): POST /dsar {subject:"probe-subject", action:"purge"} leaves the same tombstone + cert `chain_verifies: true`
+# DSAR variant (same guarantee): POST /dsar {"subject":"<sub>","action":"purge"}
+# leaves the same tombstone registry + a certificate whose `chain_verifies`
+# recomputes live: GET /dsar/{id}/certificate
 ```
 
 ## 7. Tear down
