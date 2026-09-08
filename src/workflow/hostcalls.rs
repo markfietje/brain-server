@@ -65,16 +65,22 @@ fn argv0_allowed(argv0: &str, allowlist: &[String]) -> bool {
         return false;
     }
     // Symlink-masquerade closure (the preflight line's hardening): the
-    // RESOLVED file must still match the same allowlist. A symlink planted
-    // inside an allowlisted prefix pointing OUTSIDE it dies here — the
-    // historical "refuse rather than canonicalize" posture left that door
-    // open. A path that cannot be canonicalized (no file yet) keeps the
-    // textual decision; the spawn itself will fail on a missing binary
-    // either way.
+    // RESOLVED file must still match the allowlist. BOTH sides resolve:
+    // OS-level directory aliases (/bin -> /usr/bin on merged-usr distros)
+    // must not turn an honest allowlist entry into a refusal, and a symlink
+    // planted under an allowlisted prefix pointing OUTSIDE it must not slip
+    // through. An entry that cannot be canonicalized (not on disk) falls
+    // back to its textual form against the resolved argv0.
     std::fs::canonicalize(argv0).map_or(true, |resolved| {
-        allowlist.iter().any(|e| {
-            let r = resolved.to_string_lossy();
-            e == &r || (e.ends_with('/') && resolved.starts_with(e.as_str()))
+        allowlist.iter().any(|e| match std::fs::canonicalize(e) {
+            Ok(entry_resolved) => {
+                entry_resolved == resolved
+                    || (e.ends_with('/') && resolved.starts_with(&entry_resolved))
+            }
+            Err(_) => {
+                let r = resolved.to_string_lossy();
+                e == &r || (e.ends_with('/') && resolved.starts_with(e.as_str()))
+            }
         })
     })
 }
@@ -828,6 +834,23 @@ mod tests {
         assert!(
             !argv0_allowed(&planted_path.to_string_lossy(), &allowlist),
             "a symlink masquerading under the prefix must refuse"
+        );
+        // The merged-usr alias (Ubuntu: /bin -> /usr/bin): an allowlist
+        // entry whose directory is itself a symlink must still admit the
+        // honest binary — canonical(entry) == canonical(argv0).
+        let alias = dir.path().join("alias-bin");
+        std::os::unix::fs::symlink(&bin_canon, &alias).unwrap();
+        let alias_tool = alias.join("honest-tool");
+        let alias_allow = vec![format!("{}", alias.join("honest-tool").display())];
+        assert!(
+            argv0_allowed(&alias_tool.to_string_lossy(), &alias_allow),
+            "an allowlist entry through a symlinked DIRECTORY admits the honest binary"
+        );
+        // ...but the same alias trick cannot smuggle a DIFFERENT binary:
+        // allowlisting alias-bin/honest-tool does not admit bin/planted.
+        assert!(
+            !argv0_allowed(&planted_path.to_string_lossy(), &alias_allow),
+            "an alias-entry allowlist must not admit a sibling the operator never named"
         );
     }
 
