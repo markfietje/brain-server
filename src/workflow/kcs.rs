@@ -116,6 +116,22 @@ pub(crate) fn record_sir_not_found(conn: &mut Connection, run_id: i64, now: i64)
     n
 }
 
+/// The shared LIKE-contains pattern builder (the SP-W8 fence): escapes the
+/// three LIKE metacharacters (`\`, `%`, `_`) so the needle matches
+/// LITERALLY, and pairs with `ESCAPE '\'` at every call site. Born inline in
+/// [`reuse_candidates`]; promoted to the shared fence when the DSAR/sweep
+/// subject patterns adopted it (v1.28.77 — an unfenced subject over-matched,
+/// and an erasure over-match is over-deletion).
+pub(crate) fn like_contains_pattern(needle: &str) -> String {
+    format!(
+        "%{}%",
+        needle
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    )
+}
+
 /// The zero-hit reuse probe behind the run-suggestions surface: a bounded
 /// LIKE search over the run's domain with the quarantine + decay posture
 /// (flagged rows never surface through a side door; expired rows stay
@@ -139,13 +155,7 @@ pub(crate) fn reuse_candidates(
         return out;
     };
     let q_take: String = q.chars().take(50).collect();
-    let pat = format!(
-        "%{}%",
-        q_take
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-    );
+    let pat = like_contains_pattern(&q_take);
     let rows = match stmt.query_map(params![domain, pat, now], |r| {
         let id: i64 = r.get(0)?;
         let title: Option<String> = r.get(1)?;

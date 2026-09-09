@@ -444,10 +444,12 @@ pub fn build_export_bundle(
     let mut note_stmt = tx.prepare(
         "SELECT id, run_id, kind, author, content, addressed_to, created_at
          FROM case_notes
-          WHERE author = ?1 OR addressed_to = ?1 OR content LIKE ?2
+          WHERE author = ?1 OR addressed_to = ?1 OR content LIKE ?2 ESCAPE '\\'
           ORDER BY id",
     )?;
-    let q = note_stmt.query_map(params![subject, format!("%{subject}%")], |row| {
+    let q = note_stmt.query_map(
+        params![subject, crate::workflow::kcs::like_contains_pattern(subject)],
+        |row| {
         Ok(serde_json::json!({
             "id": row.get::<_, i64>(0)?,
             "run_id": row.get::<_, i64>(1)?,
@@ -669,8 +671,8 @@ pub fn run_pool(
             0
         } else {
             tx.query_row(
-                "SELECT COUNT(*) FROM workflow_runs WHERE state_json LIKE ?1",
-                params![format!("%{subject}%")],
+                "SELECT COUNT(*) FROM workflow_runs WHERE state_json LIKE ?1 ESCAPE '\\'",
+                params![crate::workflow::kcs::like_contains_pattern(subject)],
                 |r| r.get::<_, i64>(0),
             )? as usize
         };
@@ -767,8 +769,8 @@ pub fn run_pool(
             )
         } else {
             (
-                "DELETE FROM recall_traces WHERE trace_json LIKE ?1",
-                format!("%{subject}%"),
+                "DELETE FROM recall_traces WHERE trace_json LIKE ?1 ESCAPE '\\'",
+                crate::workflow::kcs::like_contains_pattern(subject),
             )
         };
         tx.execute(sql, params![pat])?;
@@ -789,8 +791,8 @@ pub fn run_pool(
             )
         } else {
             (
-                "DELETE FROM proposals WHERE content LIKE ?1",
-                format!("%{subject}%"),
+                "DELETE FROM proposals WHERE content LIKE ?1 ESCAPE '\\'",
+                crate::workflow::kcs::like_contains_pattern(subject),
             )
         };
         tx.execute(sql, params![pat])?;
@@ -816,8 +818,8 @@ pub fn run_pool(
                 )
             } else {
                 (
-                    "SELECT COUNT(*) FROM workflow_runs WHERE state_json LIKE ?1",
-                    format!("%{subject}%"),
+                    "SELECT COUNT(*) FROM workflow_runs WHERE state_json LIKE ?1 ESCAPE '\\'",
+                    crate::workflow::kcs::like_contains_pattern(subject),
                 )
             };
             workflow_rows = tx.query_row(sql, params![pat], |r| r.get::<_, i64>(0))? as usize;
