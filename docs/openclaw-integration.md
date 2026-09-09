@@ -574,7 +574,7 @@ settings without restarting the gateway.
   origin taint labels, and the host-side replay marking above. The full
   control-by-control matrix lives in [`OWASP_AGENTIC_2026.md`](./OWASP_AGENTIC_2026.md);
   the second-pass audit that stress-tested these closures is
-  the second-pass addendum in [`AUDIT.md`](../AUDIT.md#second-pass-audit-addendum--v12876-selfheal-2026-09-09).
+  the second-pass addendum in [`AUDIT.md`](AUDIT.md#second-pass-audit-addendum--v12876-selfheal-2026-09-09).
 
 ---
 
