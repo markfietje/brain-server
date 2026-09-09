@@ -7114,6 +7114,12 @@ components:
         created_at: { type: string, nullable: true }
         source_uri: { type: string, nullable: true }
         revision_id: { type: integer, nullable: true }
+        flagged:
+          type: boolean
+          description: >
+            The quarantine marker (v1.28.77, additive — the same vocabulary
+            /recall emits on every hit). True means the row is quarantined;
+            by-id reads never filter, the operator decides.
     VerifyResponse:
       type: object
       description: >

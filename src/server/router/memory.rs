@@ -2369,6 +2369,10 @@ pub async fn get_chunk(
             "created_at": rec.created_at,
             "source_uri": rec.source_uri,
             "revision_id": rec.revision_id,
+            // the quarantine marker, same vocabulary recall emits — the
+            // marker is the truth, the operator decides (no filtering
+            // change: by-id is an operator/review surface).
+            "flagged": rec.flagged,
         });
         // belt-and-braces — re-authorize against the
         // row's OWN domain, and run the record gate (the recall
@@ -2474,6 +2478,8 @@ pub async fn multi_get(
                 "line_end": rec.line_end,
                 "source_uri": rec.source_uri,
                 "revision_id": rec.revision_id,
+                // per-row quarantine marker (same vocabulary recall emits).
+                "flagged": rec.flagged,
             });
             // drop (not error) rows whose domain the
             // principal may not read and rows the record gate denies — a

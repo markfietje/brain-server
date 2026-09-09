@@ -136,6 +136,10 @@ pub(crate) struct ChunkRecord {
     pub source_uri: Option<String>,
     pub revision_id: Option<i64>,
     pub pii: bool,
+    /// the quarantine marker (`knowledge.flagged`) — by-id reads carry it so
+    /// a consumer keying on by-id never sees quarantined content as
+    /// clean-looking (recall emits the same vocabulary; v1.28.77 SP-S3b).
+    pub flagged: bool,
     /// The row's OWN domain — the handler re-authorizes against it.
     pub domain: String,
     pub owner: Option<String>,
@@ -160,7 +164,7 @@ pub(crate) fn chunk_in_domain(
     let r = conn.query_row(
         "SELECT k.id, k.title, k.content, k.source, k.document_id, k.chunk_index,
                 k.heading_path, k.line_start, k.line_end, k.created_at,
-                s.uri, sr.id, k.pii, k.domain, k.owner, k.access_scope
+                s.uri, sr.id, k.pii, k.flagged, k.domain, k.owner, k.access_scope
          FROM knowledge k
          LEFT JOIN sources s ON k.source_id = s.id
          LEFT JOIN source_revisions sr ON k.revision_id = sr.id
@@ -181,9 +185,10 @@ pub(crate) fn chunk_in_domain(
                 source_uri: row.get(10)?,
                 revision_id: row.get(11)?,
                 pii: row.get::<_, i64>(12)? != 0,
-                domain: row.get(13)?,
-                owner: row.get(14)?,
-                access_scope: row.get(15)?,
+                flagged: row.get::<_, i64>(13)? != 0,
+                domain: row.get(14)?,
+                owner: row.get(15)?,
+                access_scope: row.get(16)?,
             })
         },
     );
@@ -220,7 +225,7 @@ pub(crate) fn chunks_in_domain(
     let sql = format!(
         "SELECT k.id, k.title, k.content, k.document_id, k.chunk_index,\
                 k.heading_path, k.line_start, k.line_end, s.uri, sr.id, k.pii,\
-                k.domain, k.owner, k.access_scope \
+                k.flagged, k.domain, k.owner, k.access_scope \
          FROM knowledge k \
          LEFT JOIN sources s ON k.source_id = s.id \
          LEFT JOIN source_revisions sr ON k.revision_id = sr.id \
@@ -247,9 +252,10 @@ pub(crate) fn chunks_in_domain(
             source_uri: row.get(8)?,
             revision_id: row.get(9)?,
             pii: row.get::<_, i64>(10)? != 0,
-            domain: row.get(11)?,
-            owner: row.get(12)?,
-            access_scope: row.get(13)?,
+            flagged: row.get::<_, i64>(11)? != 0,
+            domain: row.get(12)?,
+            owner: row.get(13)?,
+            access_scope: row.get(14)?,
             // the batch projection never carried these two columns.
             source: None,
             created_at: None,
