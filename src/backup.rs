@@ -1148,8 +1148,7 @@ fn verify_snapshot_chain_posture(
         ),
         None => "no pre-restore database existed — nothing was overwritten".to_string(),
     };
-    verify_chain_posture(&conn, allow_chainless)
-        .map_err(|e| anyhow::anyhow!("{:#}; {bak_note}", e))
+    verify_chain_posture(&conn, allow_chainless).map_err(|e| anyhow::anyhow!("{:#}; {bak_note}", e))
 }
 
 /// Test-facing variant of the posture check + head-pin classification over a

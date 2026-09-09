@@ -99,9 +99,8 @@ pub(crate) fn sweep_subject(
         return Ok(report);
     }
     let pattern = crate::workflow::kcs::like_contains_pattern(subject);
-    let mut stmt = tx.prepare(
-        "SELECT id FROM workflow_runs WHERE state_json LIKE ?1 ESCAPE '\\' ORDER BY id",
-    )?;
+    let mut stmt = tx
+        .prepare("SELECT id FROM workflow_runs WHERE state_json LIKE ?1 ESCAPE '\\' ORDER BY id")?;
     let targets: Vec<i64> = stmt
         .query_map(rusqlite::params![pattern], |r| r.get(0))?
         .flatten()
@@ -246,15 +245,12 @@ pub(crate) fn sweep_subject(
         "DELETE FROM case_notes WHERE content LIKE ?1 ESCAPE '\\'",
         rusqlite::params![crate::workflow::kcs::like_contains_pattern(subject)],
     )?;
-    let mut stmt = tx.prepare(
-        "SELECT id, roster_json FROM shifts WHERE roster_json LIKE ?1 ESCAPE '\\'",
-    )?;
+    let mut stmt =
+        tx.prepare("SELECT id, roster_json FROM shifts WHERE roster_json LIKE ?1 ESCAPE '\\'")?;
     let rostered: Vec<(i64, String)> = stmt
         .query_map(
             rusqlite::params![crate::workflow::kcs::like_contains_pattern(subject)],
-            |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            },
+            |r| Ok((r.get(0)?, r.get(1)?)),
         )?
         .flatten()
         .collect();
@@ -728,9 +724,11 @@ mod tests {
             [],
         )
         .unwrap();
-        let subject_chunk: i64 =
-            conn.query_row("SELECT id FROM knowledge WHERE owner='jane'", [], |r| r.get(0))
-                .unwrap();
+        let subject_chunk: i64 = conn
+            .query_row("SELECT id FROM knowledge WHERE owner='jane'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         // Another principal's memory — never in the purge set — carrying the
         // subject's dismiss feedback (the row the session arm exists for).
         conn.execute(
@@ -739,9 +737,11 @@ mod tests {
             [],
         )
         .unwrap();
-        let other_chunk: i64 =
-            conn.query_row("SELECT id FROM knowledge WHERE owner='bob'", [], |r| r.get(0))
-                .unwrap();
+        let other_chunk: i64 = conn
+            .query_row("SELECT id FROM knowledge WHERE owner='bob'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         conn.execute(
             "INSERT INTO suggest_feedback(chunk_id, feedback, ts, tenant_id, owner) \
              VALUES (?1, 'dismiss', 1, 'default', 'jane')",

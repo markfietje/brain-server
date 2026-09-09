@@ -537,7 +537,11 @@ mod tests {
             conn.execute(
                 "INSERT INTO knowledge (title, content, source, content_hash) \
                  VALUES (?1, ?2, 'structured', ?3)",
-                rusqlite::params![format!("t{i}"), format!("cap row {i}"), format!("h-cap-{i}")],
+                rusqlite::params![
+                    format!("t{i}"),
+                    format!("cap row {i}"),
+                    format!("h-cap-{i}")
+                ],
             )
             .expect("insert");
         }

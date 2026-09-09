@@ -448,18 +448,22 @@ pub fn build_export_bundle(
           ORDER BY id",
     )?;
     let q = note_stmt.query_map(
-        params![subject, crate::workflow::kcs::like_contains_pattern(subject)],
+        params![
+            subject,
+            crate::workflow::kcs::like_contains_pattern(subject)
+        ],
         |row| {
-        Ok(serde_json::json!({
-            "id": row.get::<_, i64>(0)?,
-            "run_id": row.get::<_, i64>(1)?,
-            "kind": row.get::<_, String>(2)?,
-            "author": row.get::<_, String>(3)?,
-            "content": row.get::<_, String>(4)?,
-            "addressed_to": row.get::<_, Option<String>>(5)?,
-            "created_at": row.get::<_, i64>(6)?,
-        }))
-    })?;
+            Ok(serde_json::json!({
+                "id": row.get::<_, i64>(0)?,
+                "run_id": row.get::<_, i64>(1)?,
+                "kind": row.get::<_, String>(2)?,
+                "author": row.get::<_, String>(3)?,
+                "content": row.get::<_, String>(4)?,
+                "addressed_to": row.get::<_, Option<String>>(5)?,
+                "created_at": row.get::<_, i64>(6)?,
+            }))
+        },
+    )?;
     for v in q.flatten() {
         notes.push(v);
     }
