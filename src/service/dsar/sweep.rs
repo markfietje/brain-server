@@ -216,13 +216,17 @@ pub(crate) fn sweep_subject(
         "DELETE FROM principal_skills WHERE principal = ?1",
         rusqlite::params![subject],
     )?;
-    // Suggestion feedback: the table has NO principal column —
-    // its subject links are the tenant label (per-principal tenants keep
-    // their feedback rows erased here) and the chunk references the purge
-    // arm already removes. Counted under dependent rows so the certificate
-    // footprint stays honest.
+    // Suggestion feedback (v1.28.77 — the SP-S5 session arm): BOTH subject
+    // links erase. The tenant label covers per-principal tenants; the owner
+    // column (the captured JWT principal) reaches rows the tenant label can
+    // never match — feedback given under a shared tenant, on chunks the
+    // purge arm doesn't touch. Session ids are client-owned opaque labels
+    // and are deliberately NOT a match key (not principal evidence). One
+    // statement so the two arms can't disagree; counted under dependent
+    // rows so the certificate footprint stays honest, and under the named
+    // feedback_rows counter the certificate census carries.
     let feedback = tx.execute(
-        "DELETE FROM suggest_feedback WHERE tenant_id = ?1",
+        "DELETE FROM suggest_feedback WHERE tenant_id = ?1 OR owner = ?1",
         rusqlite::params![subject],
     )?;
     report.feedback_rows += feedback;
