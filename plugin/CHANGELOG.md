@@ -4,6 +4,26 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.0] — 2026-09-08
+
+**Origin** — taint labels survive the whole trip; shipped with brain-server
+v1.28.74.
+
+- Hit lines inside the UNTRUSTED fence prefix ` [memory | <origin>]` for any
+  non-`owner` origin (`[memory | channel-capture]` for group/channel
+  captures; owner memories stay untagged). The label passes through
+  `sanitizeForBlock` — it is displayed, never executable.
+- New config `untrustedOrigins: "label" | "exclude"` (default `label`):
+  `exclude` drops channel-captured hits from AUTO-INJECT entirely. The
+  `memory_recall` TOOL path always labels, whatever the setting — a tool
+  consumer always sees the taint.
+- `autoCapture` sends `origin_context: "channel"` when the gating chat-type
+  is a group/channel chat, so the server stores the capture with origin
+  `channel-capture` (absent = `owner`; unknown values 400 at the server).
+- No new deps; wire additive only. Does NOT add a taint lattice, policy
+  engine, or server-side exclusion — ONE boolean-grade label, and promotion
+  stays human-gated.
+
 ## [0.5.1] — 2026-09-07
 
 **Meridian M2 (X-R5)** — strip-set sync; shipped with brain-server v1.28.65.
