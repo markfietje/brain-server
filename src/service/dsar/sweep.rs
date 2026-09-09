@@ -788,4 +788,39 @@ mod tests {
             .unwrap();
         assert_eq!(bob_rows, 1, "the other principal's row survives");
     }
+
+    /// DSAR subject patterns are FENCED (SP-W8, v1.28.77): a subject
+    /// containing LIKE metacharacters (`%`, `_`) matches LITERALLY — the
+    /// pattern is built through the shared escaped builder (the kcs.rs
+    /// fence) so a DSAR for `a_b%` erases `a_b%` and never `axb`/`ab`.
+    /// The unfenced `%subject%` over-matched, and an over-match in an
+    /// ERASURE path is over-deletion.
+    #[test]
+    fn dsar_pattern_fencing_percent_underscore() {
+        let (pool, _tmp) = db();
+        let mut conn = pool.get().unwrap();
+        // Three runs: the literal subject, and the two neighbors the
+        // unfenced wildcards used to swallow.
+        let literal = seed_run(&conn, "acme", r#"{"who":"a_b%"}"#);
+        let underscore = seed_run(&conn, "acme", r#"{"who":"axb"}"#);
+        let widened = seed_run(&conn, "acme", r#"{"who":"ab"}"#);
+        let tx = conn.transaction().unwrap();
+        let rep = sweep_subject(&tx, "a_b%").unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            rep.runs_matched, 1,
+            "the wildcard subject matches exactly one run — its literal form"
+        );
+        let survivors = |id: i64| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM workflow_runs WHERE id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(survivors(literal), 0, "the literal subject run is erased");
+        assert_eq!(survivors(underscore), 1, "`axb` must NOT match `a_b%`");
+        assert_eq!(survivors(widened), 1, "`ab` must NOT match `a_b%`");
+    }
 }
