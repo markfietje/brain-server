@@ -568,6 +568,13 @@ settings without restarting the gateway.
 - **Deterministic + local**: no embedding/decision tokens, no data egress, loopback only.
 - **Fail-open reads, fail-closed auth**: recall errors never stall the agent; a bad/missing token
   never grants access.
+- **Formal threat mapping (OWASP Agentic 2026)**: the plugin+server pair is the
+  worked answer to [ASI01 Agent Goal Hijack / ASI06 Memory & Context Poisoning](https://genai.owasp.org/resource/owasp-top-10-for-agentic-applications-for-2026/) —
+  ingestion screening with quarantine, the digest-bound human promotion gate,
+  origin taint labels, and the host-side replay marking above. The full
+  control-by-control matrix lives in [`OWASP_AGENTIC_2026.md`](./OWASP_AGENTIC_2026.md);
+  the second-pass audit that stress-tested these closures is
+  [`SECOND_PASS_AUDIT_20260909.md`](./SECOND_PASS_AUDIT_20260909.md).
 
 ---
 

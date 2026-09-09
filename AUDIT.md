@@ -637,3 +637,46 @@ its inherited preconditions are hardened dormant mediation + the
 dormancy pin to delete on wiring, review-by-default installs, pinned
 signers, origin labels).
 
+---
+
+# SECOND-PASS AUDIT ADDENDUM — v1.28.76 "Selfheal" (2026-09-09)
+
+The program close-out above covers the 2026-09-06 audit (X- namespace).
+A **second-pass audit** — same trees, harder questions, fresh `SP-`
+namespace — then re-attacked the closures themselves. Full report:
+[`docs/SECOND_PASS_AUDIT_20260909.md`](./SECOND_PASS_AUDIT_20260909.md).
+
+**Result: 30 fresh findings (5 HIGH, 12 MEDIUM, 9 LOW, 4 INFO) across both
+trees. v1.28.76 closes all 5 HIGH and 7 MEDIUM; the remainder are LOW/INFO
+or scheduled.** The five HIGH classes, for the record:
+
+1. **Read-seam strips healed under re-assembly (2 HIGH):**
+   `<scr<script>ipt>` re-welded into a live `<script>` after the element
+   strip; nested markdown constructs healed into auto-fetch images after
+   the dereference. Fixed by bounded fixed-point iteration
+   (`strip_to_fixpoint`, `strip_markdown_refs_does_not_heal_nested_construct`,
+   `hostile_element_strip_does_not_heal_nested_tag`).
+2. **The fork's .66/.67 halves were never shipped (HIGH, openclaw):**
+   approval-args, head+tail truncation, and MCP catalog pins were local
+   branches. Merged to fork main 2026-09-09.
+3. **Compute bounds missing on the model seam (HIGH+MED):** the ONNX
+   scorer serialized all screened writes behind one mutex with no
+   sentence/size budget; the embedder encoded full-size content.
+   Budgeted (`embed_input_is_budgeted`).
+4. **Gate reach:** the identity kill-switch missed `/auth/refresh` and
+   the console actors; the MCP read-scope gate missed `ump.feedback`;
+   the live SSE stream leaked `valet/due` labels; the X-W4 valet fence
+   missed the CAS state-advance path. All closed
+   (`refresh_refuses_revoked_identity`,
+   `valet_due_requires_optin_and_domain_authz`, `live_event_admissible`).
+5. **Docs drift:** THREAT_MODEL frozen at v1.28.68, SECURITY.md history
+   at v1.28.17, plugin changelog gaps. Swept in v1.28.76.
+
+**Lesson recorded:** a first-pass closure is where the work starts. The
+second pass found the seams the first pass's own fixes created — which is
+why the trust walkthrough exists and why the audits keep running.
+
+*Per-release delta: CRATE_TEST_FLOOR 1,358 → 1,372 (v1.28.76, incl. the
+Origin-line and second-pass pins). The plugin rides at 0.6.1 (schema-declared
+`untrustedOrigins`).*
+

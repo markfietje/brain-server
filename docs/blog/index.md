@@ -19,5 +19,6 @@ proof map.
 - [The 500 that proved the audit chain works](./12-the-500-that-proved-the-chain.md) — *failure post-mortem, fail-closed evidence*
 - [Dual-era MCP without the handshake tax](./13-dual-era-mcp.md) — *MCP 2026-07-28 + 2025-11-25 interoperability*
 - [Four copies of sha256_hex](./14-four-copies-of-sha256-hex.md) — *what happened when we let a machine audit our own repo*
+- [Prompt injection made stateful — and the memory layer that was built for it](./15-prompt-injection-made-stateful.md) — *the 2026 memory-poisoning research, and the architectural answer*
 
 Positions and one-liners live in the [media kit](../media-kit.md).
