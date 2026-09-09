@@ -28,15 +28,29 @@ pub(crate) const MAX_PROPOSALS: usize = 200;
 
 /// A storage failure. `Database`'s Display carries the exact pre-move
 /// message; the handler wraps it unchanged in its internal-error form.
+/// `ExportTooLarge` is the v1.28.77 export cap (SP-S9): the bundle being
+/// built crossed its byte ceiling and the build refused BEFORE materializing
+/// more of it — the handler maps it to the named 507.
 #[derive(Debug)]
 pub enum GateError {
     Database(String),
+    ExportTooLarge {
+        /// Bytes materialized when the build stopped.
+        built: u64,
+        /// The configured ceiling (`BRAIN_EXPORT_MAX_BYTES`, default 1 GiB).
+        cap: u64,
+    },
 }
 
 impl fmt::Display for GateError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GateError::Database(m) => f.write_str(m),
+            GateError::ExportTooLarge { built, cap } => write!(
+                f,
+                "export_too_large: the export bundle reached {built} bytes, \
+                 past the {cap}-byte cap"
+            ),
         }
     }
 }

@@ -220,6 +220,7 @@ pub(crate) fn superseded_link_follow(
 /// in their stored/legacy JSON forms — the redaction pass, the provenance
 /// summary, and the UMP projections are handler-side read-seam shaping on
 /// these stored forms.
+#[derive(Debug)]
 pub(crate) struct ExportBundle {
     pub total: i64,
     pub knowledge: Vec<serde_json::Value>,
@@ -230,8 +231,33 @@ pub(crate) struct ExportBundle {
 
 /// The GDPR portability read. Knowledge rows ride the lifecycle fetch core's
 /// shared column list + row projection (one definition with `/ump/*`).
-pub(crate) fn export_bundle(conn: &Connection) -> Result<ExportBundle, GateError> {
+///
+/// `max_bytes` is the bundle ceiling (v1.28.77, SP-S9 — the
+/// `BRAIN_EXPORT_MAX_BYTES` posture, default 1 GiB): each row is measured
+/// with a running size counter as the four datasets accumulate, and a row
+/// that would push the build past the cap refuses as
+/// [`GateError::ExportTooLarge`] BEFORE the rest of the DB is materialized.
+/// The handler maps the refusal to the named 507, pointing at the chunked
+/// DSAR export path.
+pub(crate) fn export_bundle(conn: &Connection, max_bytes: u64) -> Result<ExportBundle, GateError> {
     use crate::service::lifecycle::fetch::{KNOWLEDGE_ROW_COLS, knowledge_row_to_json};
+    // The running byte counter: the serialized size of every row accumulated
+    // so far (the envelope's own overhead is bounded hundreds of bytes and
+    // rides under the same cap with room to spare).
+    let mut bundle_bytes: u64 = 0;
+    let mut charge = |row: &serde_json::Value| -> Result<u64, GateError> {
+        let n = serde_json::to_vec(row)
+            .map(|b| b.len() as u64)
+            .map_err(|e| GateError::Database(format!("export row serialize failed: {e}")))?;
+        bundle_bytes = bundle_bytes.saturating_add(n);
+        if bundle_bytes > max_bytes {
+            return Err(GateError::ExportTooLarge {
+                built: bundle_bytes,
+                cap: max_bytes,
+            });
+        }
+        Ok(bundle_bytes)
+    };
     let total: i64 = conn
         .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
         .map_err(GateError::from)?;
@@ -246,6 +272,7 @@ pub(crate) fn export_bundle(conn: &Connection) -> Result<ExportBundle, GateError
             .query_map([], knowledge_row_to_json)
             .map_err(GateError::from)?;
         for v in rows.flatten() {
+            charge(&v)?;
             knowledge.push(v);
         }
     }
@@ -274,6 +301,7 @@ pub(crate) fn export_bundle(conn: &Connection) -> Result<ExportBundle, GateError
             })
             .map_err(GateError::from)?;
         for v in rows.flatten() {
+            charge(&v)?;
             proposals.push(v);
         }
     }
@@ -292,6 +320,7 @@ pub(crate) fn export_bundle(conn: &Connection) -> Result<ExportBundle, GateError
             })
             .map_err(GateError::from)?;
         for v in rows.flatten() {
+            charge(&v)?;
             entities.push(v);
         }
     }
@@ -312,6 +341,7 @@ pub(crate) fn export_bundle(conn: &Connection) -> Result<ExportBundle, GateError
             })
             .map_err(GateError::from)?;
         for v in rows.flatten() {
+            charge(&v)?;
             relationships.push(v);
         }
     }
@@ -456,7 +486,7 @@ mod tests {
             [],
         )
         .expect("insert");
-        let rows = export_bundle(&conn).expect("bundle").knowledge;
+        let rows = export_bundle(&conn, u64::MAX).expect("bundle").knowledge;
         assert_eq!(rows.len(), 1, "the row must survive the mapping");
         assert_eq!(rows[0]["content"], "Dave works at Acme.");
         assert!(
@@ -464,6 +494,54 @@ mod tests {
             "created_at is a unix epoch: {}",
             rows[0]["created_at"]
         );
+    }
+
+    /// The export cap refuses (SP-S9): a bundle past the ceiling stops the
+    /// build with the named `ExportTooLarge` error (bytes + cap), BEFORE the
+    /// rest of the DB is materialized — the named 507's payload.
+    #[test]
+    fn export_refuses_past_cap() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let conn = in_memory_db_with_rows();
+        let err = export_bundle(&conn, 1).expect_err("a 1-byte cap must refuse");
+        match err {
+            GateError::ExportTooLarge { built, cap } => {
+                assert!(built > 1, "some rows were materialized: {built}");
+                assert_eq!(cap, 1);
+            }
+            other => panic!("expected ExportTooLarge, got {other:?}"),
+        }
+    }
+
+    /// Under the cap the whole bundle streams unchanged — the default
+    /// posture for every existing deployment (uncapped == u64::MAX, the two
+    /// pre-existing call-site pins prove it too).
+    #[test]
+    fn export_under_cap_streams_fine() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let conn = in_memory_db_with_rows();
+        let bundle = export_bundle(&conn, u64::MAX).expect("bundle");
+        assert_eq!(bundle.total, 3);
+        assert_eq!(bundle.knowledge.len(), 3);
+        // A generous-but-finite cap behaves the same.
+        let bundle = export_bundle(&conn, 1 << 30).expect("bundle");
+        assert_eq!(bundle.knowledge.len(), 3);
+    }
+
+    /// Shared fixture: a migrated in-memory DB with three knowledge rows
+    /// (the cap tests exercise datasets beyond the first row).
+    fn in_memory_db_with_rows() -> rusqlite::Connection {
+        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
+        crate::migration::run_migration(&mut conn, 1).expect("migration");
+        for i in 0..3 {
+            conn.execute(
+                "INSERT INTO knowledge (title, content, source, content_hash) \
+                 VALUES (?1, ?2, 'structured', ?3)",
+                rusqlite::params![format!("t{i}"), format!("cap row {i}"), format!("h-cap-{i}")],
+            )
+            .expect("insert");
+        }
+        conn
     }
 
     /// export JSON carries per-row `source` + `origin` + the
@@ -502,7 +580,7 @@ mod tests {
         )
         .unwrap();
 
-        let knowledge = export_bundle(&conn).expect("bundle").knowledge;
+        let knowledge = export_bundle(&conn, u64::MAX).expect("bundle").knowledge;
         assert_eq!(knowledge.len(), 4);
 
         let by_origin: std::collections::HashMap<&str, usize> = knowledge

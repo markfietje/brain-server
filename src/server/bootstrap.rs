@@ -329,6 +329,13 @@ pub fn bootstrap() -> Result<BootOutcome> {
         return Err(anyhow::anyhow!("fatal write posture: {e}"));
     }
 
+    // ── fail-closed export cap (Erasure, SP-S9) ───────
+    // An unknown BRAIN_EXPORT_MAX_BYTES value refuses the boot rather than
+    // surfacing as a per-request parse surprise on the export surface.
+    if let Err(e) = config::validate_export_max_bytes() {
+        return Err(anyhow::anyhow!("fatal export cap: {e}"));
+    }
+
     // ── fail-closed durability policy (Headroom) ──────
     // The envelope's per-target defaults ⊕ the optional BRAIN_SYNCHRONOUS /
     // BRAIN_WAL_AUTOCHECKPOINT overrides. An unknown value refuses the boot

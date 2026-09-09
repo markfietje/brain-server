@@ -2207,8 +2207,24 @@ pub async fn export(
         let conn = pool
             .get()
             .map_err(HandlerError::db_down)?;
-        let bundle = crate::service::gate::export_bundle(&conn)
-            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        // the bundle ceiling (v1.28.77 SP-S9): stream-build with a running
+        // size counter; a bundle past the cap refuses BEFORE the whole DB is
+        // materialized. The env parse is fail-closed at boot; an error here
+        // is a named 507 pointing at the chunked DSAR path.
+        let cap = crate::config::export_max_bytes()
+            .map_err(|e| HandlerError::internal(format!("export cap: {e}")))?;
+        let bundle = crate::service::gate::export_bundle(&conn, cap).map_err(|e| match e {
+            crate::service::review::GateError::ExportTooLarge { built, cap } => HandlerError::internal_with(
+                "export_too_large",
+                format!(
+                    "the export bundle reached {built} bytes, past the {cap}-byte cap \
+                     (BRAIN_EXPORT_MAX_BYTES); use the chunked DSAR export path \
+                     (POST /dsar with action=export) or a per-domain export"
+                ),
+                axum::http::StatusCode::INSUFFICIENT_STORAGE,
+            ),
+            other => HandlerError::internal(other.to_string()),
+        })?;
         // pre-flight row count to bound memory. The full export
         // buffers every row into a Vec<Value> then serializes; on a multi-GB
         // DB that OOMs the server. We refuse (413) above MAX_EXPORT_ROWS and

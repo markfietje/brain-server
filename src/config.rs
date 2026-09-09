@@ -173,6 +173,46 @@ pub fn egress_allow_private() -> Result<bool, String> {
     }
 }
 
+// ── export cap (v1.28.77 "Erasure", SP-S9) ──────────────────────────────
+
+/// Default ceiling for the GDPR `/export` bundle: 1 GiB of materialized
+/// bundle bytes. The bundle buffers rows before serialization; unbounded, a
+/// multi-GB DB turns an Admin read into an OOM (an availability hazard, not
+/// a disclosure one). The chunked DSAR export path is the escape hatch.
+pub const DEFAULT_EXPORT_MAX_BYTES: u64 = 1_073_741_824;
+
+/// Resolve `BRAIN_EXPORT_MAX_BYTES` against the 1 GiB default. Unset/empty →
+/// the default. A bare non-negative integer = bytes. Anything else refuses
+/// (fail-closed parse, the `BRAIN_WRITE_POSTURE` pattern) via
+/// [`validate_export_max_bytes`] at boot; 0 also refuses — a zero cap can
+/// only refuse everything, and silence-by-configuration is not a posture.
+pub fn export_max_bytes() -> Result<u64, String> {
+    let raw = match std::env::var("BRAIN_EXPORT_MAX_BYTES") {
+        Ok(v) => v,
+        Err(_) => return Ok(DEFAULT_EXPORT_MAX_BYTES),
+    };
+    if raw.trim().is_empty() {
+        return Ok(DEFAULT_EXPORT_MAX_BYTES);
+    }
+    let parsed: u64 = raw
+        .trim()
+        .parse()
+        .map_err(|_| format!("BRAIN_EXPORT_MAX_BYTES='{raw}' is invalid; must be a byte count"))?;
+    if parsed == 0 {
+        return Err(
+            "BRAIN_EXPORT_MAX_BYTES=0 would refuse every export; unset it or name a real cap"
+                .to_string(),
+        );
+    }
+    Ok(parsed)
+}
+
+/// Startup validation: an unknown `BRAIN_EXPORT_MAX_BYTES` value refuses the
+/// boot rather than failing per-request at read time.
+pub fn validate_export_max_bytes() -> Result<(), String> {
+    export_max_bytes().map(|_| ())
+}
+
 // ── durability policy (Headroom) ─────────────────────────────────────────
 // The write path's pragma policy becomes explicit, per-capacity-target, and
 // fail-closed: the envelope carries the per-target defaults (pinned equal to
@@ -1260,6 +1300,39 @@ mod tests {
         let prev = std::env::var("INJECTION_POLICY").ok();
         set(v);
         f();
+        set(prev.as_deref());
+    }
+
+    /// The export cap parses fail-closed (the SP-S9 posture): unset/empty →
+    /// the 1 GiB default; a bare byte count parses; junk and 0 refuse (0
+    /// would refuse every export — silence-by-configuration is not a
+    /// posture, and `validate_export_max_bytes` turns the error into a boot
+    /// refusal).
+    #[test]
+    fn export_max_bytes_parses_fail_closed() {
+        let _guard = IP_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let set = |val: Option<&str>| {
+            if let Some(v) = val {
+                unsafe { std::env::set_var("BRAIN_EXPORT_MAX_BYTES", v) };
+            } else {
+                unsafe { std::env::remove_var("BRAIN_EXPORT_MAX_BYTES") };
+            }
+        };
+        let prev = std::env::var("BRAIN_EXPORT_MAX_BYTES").ok();
+        // default + empty
+        set(None);
+        assert_eq!(export_max_bytes().unwrap(), DEFAULT_EXPORT_MAX_BYTES);
+        set(Some(""));
+        assert_eq!(export_max_bytes().unwrap(), DEFAULT_EXPORT_MAX_BYTES);
+        // a real byte count
+        set(Some("4096"));
+        assert_eq!(export_max_bytes().unwrap(), 4096);
+        // junk refuses
+        set(Some("1 GiB"));
+        assert!(export_max_bytes().is_err(), "junk must not parse as 1");
+        // zero refuses
+        set(Some("0"));
+        assert!(export_max_bytes().is_err());
         set(prev.as_deref());
     }
 
