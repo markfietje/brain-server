@@ -53,7 +53,7 @@ impl From<rusqlite::Error> for FeedbackError {
 /// (column stays NULL).
 ///
 /// The optional `owner` is the JWT principal (`sub`) that gave the feedback —
-/// the v1.28.77 erasure join evidence. Session ids are client-owned opaque
+/// the erasure join evidence. Session ids are client-owned opaque
 /// labels and can never substitute for it: without the owner, a certified
 /// purge/DSAR could not reach the subject's feedback rows on chunks the
 /// purge never touched. No principal (opaque/loopback callers) stores NULL —

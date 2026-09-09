@@ -74,7 +74,7 @@ pub(crate) struct SweepReport {
     /// matched by re-hashing the sweep subject — raw identifiers never
     /// lived in the registry).
     pub consent_rows: usize,
-    /// Suggestion-feedback rows erased with the subject (v1.28.77): the
+    /// Suggestion-feedback rows erased with the subject: the
     /// tenant arm (per-principal tenants) + the owner arm (the captured JWT
     /// principal on the feedback row). ALSO counted under `dependent_rows`
     /// (the .76 discipline — the workflow footprint stays honest); this
@@ -216,7 +216,7 @@ pub(crate) fn sweep_subject(
         "DELETE FROM principal_skills WHERE principal = ?1",
         rusqlite::params![subject],
     )?;
-    // Suggestion feedback (v1.28.77 — the SP-S5 session arm): BOTH subject
+    // Suggestion feedback ( the SP-S5 session arm): BOTH subject
     // links erase. The tenant label covers per-principal tenants; the owner
     // column (the captured JWT principal) reaches rows the tenant label can
     // never match — feedback given under a shared tenant, on chunks the
@@ -650,7 +650,7 @@ mod tests {
         );
     }
 
-    /// The feedback census NAMES the arm (v1.28.77): both suggestion-feedback
+    /// The feedback census NAMES the arm: both suggestion-feedback
     /// subject links erase — the tenant label (per-principal tenants) AND the
     /// captured `owner` principal (the join evidence session ids could never
     /// provide). The named counter rides `dependent_rows` too (the .76
@@ -710,8 +710,7 @@ mod tests {
     /// End-to-end erasure completeness (the SP-S5 session arm): a certified
     /// subject purge must reach the subject's feedback row that lives on a
     /// chunk the purge NEVER touches — the row whose only subject links are
-    /// the owner principal and a client-owned session label. Before v1.28.77
-    /// that row survived every certified purge.
+    /// the owner principal and a client-owned session label. Before     /// that row survived every certified purge.
     #[test]
     fn purge_removes_suggest_feedback_for_session() {
         let (pool, _tmp) = db();
@@ -795,7 +794,7 @@ mod tests {
         assert_eq!(bob_rows, 1, "the other principal's row survives");
     }
 
-    /// DSAR subject patterns are FENCED (SP-W8, v1.28.77): a subject
+    /// DSAR subject patterns are FENCED (SP-W8): a subject
     /// containing LIKE metacharacters (`%`, `_`) matches LITERALLY — the
     /// pattern is built through the shared escaped builder (the kcs.rs
     /// fence) so a DSAR for `a_b%` erases `a_b%` and never `axb`/`ab`.

@@ -2207,7 +2207,7 @@ pub async fn export(
         let conn = pool
             .get()
             .map_err(HandlerError::db_down)?;
-        // the bundle ceiling (v1.28.77 SP-S9): stream-build with a running
+ // the bundle ceiling (SP-S9): stream-build with a running
         // size counter; a bundle past the cap refuses BEFORE the whole DB is
         // materialized. The env parse is fail-closed at boot; an error here
         // is a named 507 pointing at the chunked DSAR path.

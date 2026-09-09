@@ -16,9 +16,9 @@
 //! reuse). v2 fixes both:
 //!
 //! ```text
-//! magic    : b"BSBK"          (4 bytes)
-//! version  : u16 = 2
-//! header   : JSON, length-prefixed u32:
+//! magic   : b"BSBK"          (4 bytes)
+//! version : u16 = 2
+//! header  : JSON, length-prefixed u32:
 //!            { "kdf": "argon2id", "m": 65536, "t": 3, "p": 1,
 //!              "salt":  "<b64 16B>", "nonce": "<b64 12B>",   // BOTH random per backup
 //!              "created_at": "<iso>", "manifest": { … xxh3 map … } }
@@ -941,7 +941,7 @@ fn restore_inner(
         bak_snapshot = Some(bak);
     }
 
-    // (SP-C1, v1.28.77) Verify the DECRYPTED SNAPSHOT's chain BEFORE the
+    // (SP-C1) Verify the DECRYPTED SNAPSHOT's chain BEFORE the
     // live DB is overwritten. The chainless/chain-verify refusals used to
     // fire AFTER `write_atomic` had already replaced the live file — a
     // refused restore left the unattested image in place. Both checks read
@@ -951,7 +951,7 @@ fn restore_inner(
         &snapshot,
         allow_chainless,
         bak_snapshot.as_deref(),
-        &db_path,
+        db_path,
     )?;
 
     // write the decrypted snapshot over the live DB atomically
@@ -1100,7 +1100,7 @@ fn verify_chain_posture(
     Ok((false, post_pin))
 }
 
-/// (SP-C1, v1.28.77) Run the chain-posture checks against the DECRYPTED
+/// (SP-C1) Run the chain-posture checks against the DECRYPTED
 /// snapshot bytes BEFORE the live DB is overwritten: the snapshot is
 /// materialized to a throwaway file beside the target (same volume, cleaned
 /// up on every path), opened read-only-ish, and checked. Every refusal
@@ -1889,11 +1889,11 @@ mod tests {
         assert!(matches!(comparison, audit::HeadComparison::NoPostPin));
     }
 
-    // ── v1.28.77 "Erasure" (SP-C1): verification PRECEDES the overwrite ──
+    // ── (SP-C1): verification PRECEDES the overwrite ──
 
     /// A restore whose image fails chain verification refuses BEFORE the
     /// live DB is overwritten — the refused path must not leave the
-    /// unattested image in place. (Before v1.28.77 both refusals fired
+    /// unattested image in place. (Before both refusals fired
     /// after `write_atomic` had already replaced the live file.)
     #[test]
     fn restore_verifies_snapshot_before_overwrite() {

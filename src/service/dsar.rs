@@ -522,7 +522,7 @@ fn count_subject_tombstones(
 /// the honest physical-purge posture to disclose on the
 /// deletion certificate (the strict domain's certificate states
 /// secure_delete). `feedback_rows` names the suggestion-feedback erasure arm
-/// (v1.28.77) so the certified census carries it explicitly.
+/// so the certified census carries it explicitly.
 #[allow(clippy::too_many_arguments)]
 pub fn certificate_json(
     subject: &str,
@@ -569,7 +569,7 @@ pub struct DsarRun {
     /// Governed-workflow rows this pool's sweep reached (matched runs +
     /// dependents; frozen runs counted as matched).
     pub workflow_rows: usize,
-    /// Suggestion-feedback rows the sweep's feedback arm erased (v1.28.77 —
+    /// Suggestion-feedback rows the sweep's feedback arm erased (
     /// the tenant + owner arms). Subset of `workflow_rows`; named separately
     /// so the certificate census carries the erasure arm explicitly.
     pub feedback_rows: usize,

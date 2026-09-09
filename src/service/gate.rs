@@ -232,7 +232,7 @@ pub(crate) struct ExportBundle {
 /// The GDPR portability read. Knowledge rows ride the lifecycle fetch core's
 /// shared column list + row projection (one definition with `/ump/*`).
 ///
-/// `max_bytes` is the bundle ceiling (v1.28.77, SP-S9 — the
+/// `max_bytes` is the bundle ceiling (SP-S9 — the
 /// `BRAIN_EXPORT_MAX_BYTES` posture, default 1 GiB): each row is measured
 /// with a running size counter as the four datasets accumulate, and a row
 /// that would push the build past the cap refuses as

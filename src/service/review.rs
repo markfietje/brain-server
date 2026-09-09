@@ -28,7 +28,7 @@ pub(crate) const MAX_PROPOSALS: usize = 200;
 
 /// A storage failure. `Database`'s Display carries the exact pre-move
 /// message; the handler wraps it unchanged in its internal-error form.
-/// `ExportTooLarge` is the v1.28.77 export cap (SP-S9): the bundle being
+/// `ExportTooLarge` is the export cap (SP-S9): the bundle being
 /// built crossed its byte ceiling and the build refused BEFORE materializing
 /// more of it — the handler maps it to the named 507.
 #[derive(Debug)]

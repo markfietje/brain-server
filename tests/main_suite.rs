@@ -8938,7 +8938,7 @@ Final paragraph after the rule.";
         assert_eq!(chunks.len(), 2);
         for chunk in chunks {
             let id = chunk["id"].as_i64().unwrap();
-            let expected = if id == flagged_id { true } else { false };
+            let expected = id == flagged_id;
             assert_eq!(
                 chunk["flagged"], expected,
                 "row {id} must carry its own flagged marker"
@@ -8978,9 +8978,13 @@ Final paragraph after the rule.";
         let state = drawbridge_state(&tmp);
         seed_due_valet_reminders(&state, 105);
 
-        let resp = post_due(State(state.clone()), handlers::auth::OptPrincipal(None), None)
-            .await
-            .expect("the capped batch fires — the >=100 refusal wedge is gone");
+        let resp = post_due(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            None,
+        )
+        .await
+        .expect("the capped batch fires — the >=100 refusal wedge is gone");
         assert_eq!(
             resp.0["suppressed_no_consent"], 100,
             "the capped batch of 100 fired (suppressed: no consent in force)"
@@ -9000,24 +9004,33 @@ Final paragraph after the rule.";
         let state = drawbridge_state(&tmp);
         seed_due_valet_reminders(&state, 105);
 
-        let first = post_due(State(state.clone()), handlers::auth::OptPrincipal(None), None)
-            .await
-            .expect("first crank");
+        let first = post_due(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            None,
+        )
+        .await
+        .expect("first crank");
         assert_eq!(first.0["suppressed_no_consent"], 100);
         assert_eq!(first.0["remaining"], 5);
 
-        let second = post_due(State(state.clone()), handlers::auth::OptPrincipal(None), None)
-            .await
-            .expect("second crank drains the remainder");
+        let second = post_due(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            None,
+        )
+        .await
+        .expect("second crank drains the remainder");
         assert_eq!(second.0["suppressed_no_consent"], 5);
-        assert_eq!(
-            second.0["remaining"], 0,
-            "the backlog is fully drained"
-        );
+        assert_eq!(second.0["remaining"], 0, "the backlog is fully drained");
 
-        let third = post_due(State(state.clone()), handlers::auth::OptPrincipal(None), None)
-            .await
-            .expect("third crank is a clean no-op");
+        let third = post_due(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            None,
+        )
+        .await
+        .expect("third crank is a clean no-op");
         assert_eq!(third.0["suppressed_no_consent"], 0);
         assert_eq!(third.0["already_fired"], 0);
         assert_eq!(third.0["remaining"], 0);

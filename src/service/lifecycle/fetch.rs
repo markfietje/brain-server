@@ -138,7 +138,7 @@ pub(crate) struct ChunkRecord {
     pub pii: bool,
     /// the quarantine marker (`knowledge.flagged`) — by-id reads carry it so
     /// a consumer keying on by-id never sees quarantined content as
-    /// clean-looking (recall emits the same vocabulary; v1.28.77 SP-S3b).
+    /// clean-looking (recall emits the same vocabulary; SP-S3b).
     pub flagged: bool,
     /// The row's OWN domain — the handler re-authorizes against it.
     pub domain: String,

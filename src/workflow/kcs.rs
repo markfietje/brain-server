@@ -120,7 +120,7 @@ pub(crate) fn record_sir_not_found(conn: &mut Connection, run_id: i64, now: i64)
 /// three LIKE metacharacters (`\`, `%`, `_`) so the needle matches
 /// LITERALLY, and pairs with `ESCAPE '\'` at every call site. Born inline in
 /// [`reuse_candidates`]; promoted to the shared fence when the DSAR/sweep
-/// subject patterns adopted it (v1.28.77 — an unfenced subject over-matched,
+/// subject patterns adopted it ( an unfenced subject over-matched,
 /// and an erasure over-match is over-deletion).
 pub(crate) fn like_contains_pattern(needle: &str) -> String {
     format!(

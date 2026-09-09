@@ -24,7 +24,7 @@ pub struct DueRequest {
 /// (bounded batch), each in its own audited tx; a repeat re-arms its next
 /// envelope. Exactly-once per envelope via the outbox idempotency key.
 ///
-/// (v1.28.77, SP-W1) A full backlog DRAINS instead of wedging: the capped
+/// (SP-W1) A full backlog DRAINS instead of wedging: the capped
 /// batch fires, and the response reports `remaining` — the due envelopes
 /// past the cap — so repeated cranks make visible progress. A non-zero
 /// remainder is audited (the operator's next-crank nudge). NO auto-loop:

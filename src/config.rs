@@ -173,7 +173,7 @@ pub fn egress_allow_private() -> Result<bool, String> {
     }
 }
 
-// ── export cap (v1.28.77 "Erasure", SP-S9) ──────────────────────────────
+// ── export cap (SP-S9) ──────────────────────────────
 
 /// Default ceiling for the GDPR `/export` bundle: 1 GiB of materialized
 /// bundle bytes. The bundle buffers rows before serialization; unbounded, a

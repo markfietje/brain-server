@@ -348,7 +348,7 @@ pub async fn feedback(
         .map(|p| p.tenant.clone())
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| audit::DEFAULT_TENANT.to_string());
-    // owner: the JWT principal's sub — the erasure join evidence (v1.28.77).
+    // owner: the JWT principal's sub — the erasure join evidence.
     // Session ids are client-owned labels, never principals; without this
     // column a certified purge/DSAR cannot reach the subject's feedback rows.
     // No principal → NULL (opaque/loopback rows stay reachable only through
