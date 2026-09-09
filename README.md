@@ -25,28 +25,39 @@ Web + desktop + mobile GUI (Dioxus) · OpenAI-compatible embeddings · MCP serve
 
 ## Try it in 30 seconds
 
-A fresh `docker compose up` starts empty and unauthenticated on loopback. One copy pastes the whole demo:
+No Docker, no API keys, no accounts. Download the binary and paste the demo — it starts empty, unauthenticated, on loopback only:
 
 ```bash
-docker compose up -d
-sleep 2 && curl -s http://127.0.0.1:8765/health
+curl -L -o brain-server https://github.com/markfietje/brain-server/releases/latest/download/brain-server-darwin-arm64
+chmod +x brain-server
+./brain-server
+# 127.0.0.1:8765 — first start fetches the embedding model (~30 s, one-time;
+# every start after that is ~1 s). Other platforms: swap the suffix for
+# brain-server-{darwin,linux}-{x86_64,arm64}.
+```
+
+Then, in a second terminal:
+
+```bash
 curl -s -X POST http://127.0.0.1:8765/ingest \
-  -d '{"title":"Bignay","content":"Bignay is alternative to blueberry."}' > /dev/null
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Bignay","content":"Bignay is alternative to blueberry."}'
 curl -s -X POST http://127.0.0.1:8765/recall \
+  -H 'Content-Type: application/json' \
   -d '{"query":"blueberry alternative","provenance":true}' | jq .
 ```
 
-You get `decision: ok` with sources, or `low_confidence` when it is not sure. No guess. Fresh install has no data until you add some.
+You get `decision: ok` with ranked sources — each hit carrying its score, provenance, and the exact evidence text, fenced and labelled `untrusted`. Nothing gets invented.
 
-If you created `./data/auth-token` then add `-H "Authorization: Bearer $(cat ./data/auth-token)"` to the two POST curls. The compose file is unauthenticated by default because it only listens on 127.0.0.1.
-
-Prefer a local build?
+Prefer to build from source?
 
 ```bash
-cargo build --release --features bench,migrate,compliance-pack
+cargo build --release --features bench
 ./target/release/brain-server
-# listens on 127.0.0.1:8765, data at ~/.openclaw/workspace/brain.db
+# same behavior; data at ~/.openclaw/workspace/brain.db
 ```
+
+The full 5-minute walkthrough — the human approval gate, the `brain` CLI, and running it as a persistent service — is in the [Quickstart](https://markfietje.github.io/brain-server/quickstart.html). Production deploys (Docker, SSO, launchd) are in [Deployment](https://markfietje.github.io/brain-server/deployment.html).
 
 ## Who it is for
 
@@ -61,7 +72,7 @@ This is not a general-purpose memory layer for rapid prototyping.
 * **Human promotion gate.** Agent captures become proposals. Promotion requires explicit approval bound to the SHA-256 of the exact bytes reviewed (`content_digest`). Drift returns 409.
 * **Ingest screening and quarantine.** Every write is screened. Suspect content is quarantined and excluded from vector, full-text, and graph retrieval.
 * **Untrusted fences.** Recalled content is rendered inside unforgeable boundaries, stripped of invisible-character and bidi smuggling plus auto-fetch constructs, and labelled untrusted.
-* **Knows when it does not know.** Deterministic hybrid retrieval — vector KNN plus FTS5 via reciprocal rank fusion — and recall abstains with `low_confidence` instead of guessing. `POST /verify` checks a claim against the stored text.
+* **Deterministic retrieval with explicit verdicts.** Hybrid retrieval — vector KNN plus FTS5 via reciprocal rank fusion. Same query, same answer. Every recall carries a decision verdict and per-hit confidence instead of prose guesses, and `POST /verify` checks any claim against the stored text.
 * **Tamper-evident audit.** Append-only keyed hash chain with a verifiable head. `GET /audit/verify` checks it.
 * **Verifiable deletion.** DSAR and purge produce certificates and tombstones.
 * **Local-first, zero-token recall.** Static embeddings and hybrid retrieval. No LLM in the hot path. No data egress by default. Zero per query.
