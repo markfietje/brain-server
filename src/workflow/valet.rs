@@ -210,6 +210,30 @@ pub(crate) fn due(conn: &Connection, now: i64) -> Vec<ValetDue> {
     out
 }
 
+/// How many envelopes are due RIGHT NOW — the same scan + Rust-side arbiter
+/// as [`due`], but counted, not truncated (v1.28.77 SP-W1: the crank fires
+/// the capped batch and REPORTS the remainder; the honest remainder number
+/// needs the count past the batch truncation, bounded by MAX_DUE_SCAN).
+pub(crate) fn due_count(conn: &Connection, now: i64) -> usize {
+    let rows: Vec<(i64, String)> = conn
+        .prepare(
+            "SELECT id, state_json FROM workflow_runs
+              WHERE status = 'active' AND kind LIKE 'valet/%'
+              ORDER BY id ASC LIMIT ?1",
+        )
+        .and_then(|mut s| {
+            s.query_map(params![MAX_DUE_SCAN], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .and_then(|it| it.collect())
+        })
+        .unwrap_or_default();
+    rows.iter()
+        .filter_map(|(_, raw)| parse_state(raw))
+        .filter(|st| st.due_at <= now)
+        .count()
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum FireOutcome {
     /// Fired now; a repeat re-armed with this next due_at.

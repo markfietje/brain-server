@@ -5476,6 +5476,13 @@ paths:
                   fired: { type: integer }
                   suppressed_no_consent: { type: integer }
                   already_fired: { type: integer }
+                  remaining:
+                    type: integer
+                    description: >
+                      Due envelopes still waiting after this capped batch
+                      (v1.28.77, additive). The batch always fires; a
+                      non-zero remainder is audited and drained by the next
+                      crank — re-run the crank (no auto-loop).
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
   /workflow/valet/brief:

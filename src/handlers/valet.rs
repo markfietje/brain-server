@@ -23,6 +23,12 @@ pub struct DueRequest {
 /// POST /workflow/valet/due — the crank. Fires every due valet envelope
 /// (bounded batch), each in its own audited tx; a repeat re-arms its next
 /// envelope. Exactly-once per envelope via the outbox idempotency key.
+///
+/// (v1.28.77, SP-W1) A full backlog DRAINS instead of wedging: the capped
+/// batch fires, and the response reports `remaining` — the due envelopes
+/// past the cap — so repeated cranks make visible progress. A non-zero
+/// remainder is audited (the operator's next-crank nudge). NO auto-loop:
+/// the operator re-runs the crank (mantra 2).
 pub async fn post_due(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
@@ -31,22 +37,17 @@ pub async fn post_due(
     let principal = principal.0;
     super::authorize(&principal, crate::auth::Action::Write, "", "global")?;
     super::authorize_role(&principal, &state.pool, "workflow")?;
+    let actor = super::recall::principal_label(&principal);
     let now = body
         .and_then(|b| b.0.now)
         .unwrap_or_else(|| chrono::Utc::now().timestamp());
     let pool = state.pool.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, String> {
         let mut conn = pool.get().map_err(|e| format!("{e}"))?;
-        let items = {
-            let items = core::due(&conn, now);
-            if items.len() >= core::MAX_DUE_BATCH {
-                return Err(format!(
-                    "due backlog at cap {} — drain before adding more",
-                    core::MAX_DUE_BATCH
-                ));
-            }
-            items
-        };
+        // Fire the capped batch (the batch, never a refusal — the old
+        // `>= MAX_DUE_BATCH` check turned a full backlog into a permanent
+        // wedge, since nothing else drains it).
+        let items = core::due(&conn, now);
         let mut fired = 0usize;
         let mut suppressed = 0usize;
         let mut already = 0usize;
@@ -63,11 +64,30 @@ pub async fn post_due(
             }
             tx.commit().map_err(|e| format!("{e}"))?;
         }
+        // Report + audit the remainder: how many envelopes are STILL due
+        // after this batch (the same arbiter as `due`, counted without the
+        // batch truncation).
+        let remaining = core::due_count(&conn, now);
+        if remaining > 0 {
+            crate::audit::record_tenant(
+                &conn,
+                crate::audit::AuditKind::Workflow,
+                &actor,
+                "valet/due",
+                crate::audit::AuditStatus::Ok,
+                &format!(
+                    "valet crank drained the capped batch ({fired} fired, {suppressed} \
+                     suppressed); {remaining} due envelope(s) remain — re-run the crank"
+                ),
+                "global",
+            );
+        }
         Ok(serde_json::json!({
             "ok": true,
             "fired": fired,
             "suppressed_no_consent": suppressed,
             "already_fired": already,
+            "remaining": remaining,
         }))
     })
     .await
