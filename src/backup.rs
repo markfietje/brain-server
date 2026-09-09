@@ -885,6 +885,7 @@ fn restore_inner(
     // safety snapshot of the live DB
     let mut active_holds: Vec<(i64, String, String)> = Vec::new();
     let mut tombstoned: Vec<i64> = Vec::new();
+    let mut bak_snapshot: Option<std::path::PathBuf> = None;
     if db_path.exists() {
         let bak = db_path.with_file_name(format!(
             "{}.bak",
@@ -937,7 +938,21 @@ fn restore_inner(
         // pre-created empty file — no umask window, no write-through of a
         // pre-planted file or symlink.
         vacuum_into_exclusive(&conn, &bak)?;
+        bak_snapshot = Some(bak);
     }
+
+    // (SP-C1, v1.28.77) Verify the DECRYPTED SNAPSHOT's chain BEFORE the
+    // live DB is overwritten. The chainless/chain-verify refusals used to
+    // fire AFTER `write_atomic` had already replaced the live file — a
+    // refused restore left the unattested image in place. Both checks read
+    // only the snapshot bytes, so they run pre-overwrite on a throwaway
+    // materialization; the live DB is byte-untouched when an image refuses.
+    let (chainless_admitted, post_pin) = verify_snapshot_chain_posture(
+        &snapshot,
+        allow_chainless,
+        bak_snapshot.as_deref(),
+        &db_path,
+    )?;
 
     // write the decrypted snapshot over the live DB atomically
     if let Some(parent) = db_path.parent() {
@@ -951,27 +966,62 @@ fn restore_inner(
     // disclose any tombstoned content the backup resurrected. Best-effort for
     // the restore itself, but never silent.
     reapply_holds_and_disclose_resurrections(db_path, &active_holds, &tombstoned);
-    // Verify the restored chain BEFORE certifying the
-    // restore — a backup whose audit chain does not verify is untrustworthy
-    // evidence, and the restore must say so. The pre-restore state remains
-    // recoverable in <db>.bak. Then compare the restored head pin against the
-    // pre-restore pin: a mismatch means the restore moved the evidence
-    // position (typically a rollback — an older backup restored over a newer
-    // chain), which is DISCLOSED loudly + recorded on the restore row, then
-    // the `restore complete (head=…)` evidence row is written on the restored
-    // chain (re-pinning it via `record_tenant`).
-    let restored = verify_restored_chain_and_pin(db_path, pre_pin.as_ref(), allow_chainless)?;
-    let head_detail = match &restored.0 {
+    // Compare the restored head pin against the pre-restore pin: a mismatch
+    // means the restore moved the evidence position (typically a rollback —
+    // an older backup restored over a newer chain), which is DISCLOSED
+    // loudly + recorded on the restore row, then the `restore complete
+    // (head=…)` evidence row is written on the restored chain (re-pinning it
+    // via `record_tenant`). The refusals already happened pre-overwrite;
+    // from here on every posture is disclosed, never silent. An admitted
+    // chain-less image has NO chain to classify — the short-circuit posture
+    // stays NoPostPin (the pre-refactor behavior, byte-identical).
+    let comparison = if chainless_admitted {
+        audit::HeadComparison::NoPostPin
+    } else {
+        audit::classify_restored_head(pre_pin.as_ref(), post_pin.as_ref())
+    };
+    match &comparison {
+        audit::HeadComparison::Match => {
+            tracing::info!("restore: audit chain head matches the pre-restore pin")
+        }
+        audit::HeadComparison::NoPrePin => {
+            tracing::info!("restore: live DB carried no head pin (fresh or pre-1.27.31)")
+        }
+        audit::HeadComparison::NoPostPin => {
+            tracing::warn!(
+                "restore: restored chain predates head pinning — truncation detection \
+                 starts at the next audit write"
+            )
+        }
+        audit::HeadComparison::RolledBack { pre_id, post_id } => {
+            tracing::error!(
+                "restore ROLLED BACK the audit chain: head id {pre_id} → {post_id}. The \
+                 pre-restore (newer) chain is preserved in {} — this restore rewound \
+                 evidence and the rewind is now on record",
+                bak_snapshot
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "<db>.bak".to_string())
+            )
+        }
+        audit::HeadComparison::Diverged { pre_id, post_id } => {
+            tracing::warn!(
+                "restore moved the audit chain to a different head: id {pre_id} → {post_id} \
+                 (a newer backup restored, or a divergent chain) — disclosed"
+            )
+        }
+    }
+    let head_detail = match &post_pin {
         Some(pin) => format!("restore complete (head={}:{}…)", pin.id, &pin.hash[..16]),
         None => "restore complete (head=unpinned)".to_string(),
     };
     audit_backup(db_path, AuditStatus::Ok, &head_detail);
     // Legacy epoch = the restored chain's head is unkeyed: either NO pin at
     // all (predates pinning) or a pin whose epoch is not the keyed scheme.
-    let legacy_epoch = restored.0.as_ref().is_none_or(|pin| pin.epoch != "hmac256");
+    let legacy_epoch = post_pin.as_ref().is_none_or(|pin| pin.epoch != "hmac256");
     let disclosure = RestoreDisclosure {
         legacy_unkeyed_chain: legacy_epoch,
-        chainless_admitted: restored.2,
+        chainless_admitted,
     };
     if disclosure.legacy_unkeyed_chain && !disclosure.chainless_admitted {
         // Legacy-epoch image: the chain is an UNKEYED SHA-256 chain —
@@ -999,17 +1049,17 @@ fn restore_inner(
     Ok(disclosure)
 }
 
-/// Post-restore chain attestation + head-pin comparison. Bails when the
-/// restored chain does not verify (fail-closed: the operator keeps the .bak);
-/// otherwise returns the restored pin + the pin comparison (logged here,
-/// returned for tests/callers that need the disclosure programmatically).
-fn verify_restored_chain_and_pin(
-    db_path: &Path,
-    pre_pin: Option<&audit::HeadPin>,
+/// The chain-posture checks over an OPEN connection — the restore's two
+/// refusals in one place: an image with NO audit_events table refuses
+/// without the explicit flag (and admits WITH it, marked), and an image
+/// whose chain does not verify refuses (untrustworthy evidence). Returns
+/// `(chainless_admitted, post_pin)`; the pin feeds the post-restore
+/// classification. The error strings here do NOT name the .bak — the
+/// snapshot wrapper appends that (only it knows whether a .bak exists).
+fn verify_chain_posture(
+    conn: &rusqlite::Connection,
     allow_chainless: bool,
-) -> Result<(Option<audit::HeadPin>, audit::HeadComparison, bool)> {
-    let conn = rusqlite::Connection::open(db_path)
-        .with_context(|| format!("open restored DB {db_path:?}"))?;
+) -> Result<(bool, Option<audit::HeadPin>)> {
     // A restored DB with no audit_events table predates the audit chain (pre-audit-schema
     // fixtures) — nothing to attest. A DB WITH the table that does not verify is
     // untrustworthy evidence and the restore refuses to certify it.
@@ -1039,43 +1089,87 @@ fn verify_restored_chain_and_pin(
         tracing::warn!(
             "restore: chain-less image admitted via --allow-chainless — nothing certified"
         );
-        return Ok((None, audit::HeadComparison::NoPostPin, true));
+        return Ok((true, None));
     }
-    if !audit::verify_chain(&conn) {
+    if !audit::verify_chain(conn) {
         anyhow::bail!(
-            "restored DB's audit chain does not verify — refusing to certify the restore \
-             (the pre-restore state is preserved in <db>.bak; inspect before retrying)"
+            "restored DB's audit chain does not verify — refusing to certify the restore"
         );
     }
-    let post_pin = audit::read_head_pin(&conn);
-    let comparison = audit::classify_restored_head(pre_pin, post_pin.as_ref());
-    match &comparison {
-        audit::HeadComparison::Match => {
-            tracing::info!("restore: audit chain head matches the pre-restore pin")
-        }
-        audit::HeadComparison::NoPrePin => {
-            tracing::info!("restore: live DB carried no head pin (fresh or pre-1.27.31)")
-        }
-        audit::HeadComparison::NoPostPin => {
-            tracing::warn!(
-                "restore: restored chain predates head pinning — truncation detection \
-                 starts at the next audit write"
-            )
-        }
-        audit::HeadComparison::RolledBack { pre_id, post_id } => {
-            tracing::error!(
-                "restore ROLLED BACK the audit chain: head id {pre_id} → {post_id}. The \
-                 pre-restore (newer) chain is preserved in <db>.bak — this restore rewound \
-                 evidence and the rewind is now on record"
-            )
-        }
-        audit::HeadComparison::Diverged { pre_id, post_id } => {
-            tracing::warn!(
-                "restore moved the audit chain to a different head: id {pre_id} → {post_id} \
-                 (a newer backup restored, or a divergent chain) — disclosed"
-            )
+    let post_pin = audit::read_head_pin(conn);
+    Ok((false, post_pin))
+}
+
+/// (SP-C1, v1.28.77) Run the chain-posture checks against the DECRYPTED
+/// snapshot bytes BEFORE the live DB is overwritten: the snapshot is
+/// materialized to a throwaway file beside the target (same volume, cleaned
+/// up on every path), opened read-only-ish, and checked. Every refusal
+/// error names the preserved pre-restore snapshot path explicitly — never a
+/// `<db>.bak` placeholder (and says honestly when there is no .bak because
+/// nothing existed to preserve).
+fn verify_snapshot_chain_posture(
+    snapshot: &[u8],
+    allow_chainless: bool,
+    bak: Option<&Path>,
+    work_dir: &Path,
+) -> Result<(bool, Option<audit::HeadPin>)> {
+    struct TempFileGuard(std::path::PathBuf);
+    impl Drop for TempFileGuard {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
         }
     }
+    let parent = work_dir
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let verify_path = parent.join(format!(
+        ".{}.restore-verify-{}-{}",
+        work_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "db".to_string()),
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos() as u64 + d.as_secs())
+            .unwrap_or(0)
+    ));
+    fs::write(&verify_path, snapshot)
+        .with_context(|| format!("materialize snapshot for verification at {verify_path:?}"))?;
+    let _guard = TempFileGuard(verify_path.clone());
+    let conn = rusqlite::Connection::open(&verify_path)
+        .with_context(|| format!("open snapshot copy {verify_path:?} for verification"))?;
+    let bak_note = match bak {
+        Some(p) => format!(
+            "the pre-restore database is preserved in {} \
+             (move or delete it to retry from a known state)",
+            p.display()
+        ),
+        None => "no pre-restore database existed — nothing was overwritten".to_string(),
+    };
+    verify_chain_posture(&conn, allow_chainless)
+        .map_err(|e| anyhow::anyhow!("{:#}; {bak_note}", e))
+}
+
+/// Test-facing variant of the posture check + head-pin classification over a
+/// DB PATH (production restore_inner verifies the snapshot pre-overwrite via
+/// [`verify_snapshot_chain_posture`] and classifies inline post-overwrite).
+#[cfg(test)]
+fn verify_restored_chain_and_pin(
+    db_path: &Path,
+    pre_pin: Option<&audit::HeadPin>,
+    allow_chainless: bool,
+) -> Result<(Option<audit::HeadPin>, audit::HeadComparison, bool)> {
+    let conn = rusqlite::Connection::open(db_path)
+        .with_context(|| format!("open restored DB {db_path:?}"))?;
+    let (chainless_admitted, post_pin) = verify_chain_posture(&conn, allow_chainless)?;
+    if chainless_admitted {
+        // The admitted chain-less image has NO chain to classify — the
+        // short-circuit posture (pre-refactor behavior).
+        return Ok((None, audit::HeadComparison::NoPostPin, true));
+    }
+    let comparison = audit::classify_restored_head(pre_pin, post_pin.as_ref());
     Ok((post_pin, comparison, false))
 }
 
@@ -1844,7 +1938,20 @@ mod tests {
         let rows: i64 = conn
             .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(rows, 2, "the live chain was not replaced by the image");
+        assert_eq!(
+            rows, 3,
+            "the live chain keeps its 2 rows + the failed-restore evidence row \
+             (the refusal is ON RECORD, on the LIVE chain)"
+        );
+        let failed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'backup' \
+                 AND status = 'error'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(failed, 1, "the failed restore is evidenced, not silent");
     }
 
     /// Every restore-refusal error names the preserved pre-restore snapshot
