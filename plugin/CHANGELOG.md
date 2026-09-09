@@ -4,6 +4,17 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.1] — 2026-09-09
+
+**Schema fix** — `untrustedOrigins` was missing from
+`openclaw.plugin.json`'s `configSchema` (`additionalProperties: false`),
+so a host validating plugin config rejected/stripped the key: the
+0.6.0 `exclude` posture was unusable even though the resolver supported
+it. The manifest now declares the knob (`label`/`exclude`, default
+`label`) with a uiHint, the resolver has test coverage (invalid values
+degrade to `label`), and the defaults assertion pins it. No other
+change; `memory_recall` still always labels.
+
 ## [0.6.0] — 2026-09-08
 
 **Origin** — taint labels survive the whole trip; shipped with brain-server

@@ -16,6 +16,7 @@ describe("resolveConfig", () => {
       deniedChatIds: [],
       autoRecall: true,
       autoCapture: false,
+      untrustedOrigins: "label",
       captureMode: "proposal",
       strictDomain: false,
       defaultDomain: DEFAULTS.defaultDomain,
@@ -136,5 +137,25 @@ describe("assertSafeBaseUrl (F-E4 scheme gate)", () => {
     );
     expect(() => assertSafeBaseUrl("ftp://x")).toThrow(/scheme/);
     expect(() => assertSafeBaseUrl("not a url")).toThrow(/valid URL/);
+  });
+});
+
+describe("untrustedOrigins (v0.6.0 Origin)", () => {
+  test("defaults to label; exclude and label resolve verbatim", () => {
+    expect(resolveConfig({}).untrustedOrigins).toBe("label");
+    expect(
+      resolveConfig({ untrustedOrigins: "exclude" } as never).untrustedOrigins,
+    ).toBe("exclude");
+    expect(
+      resolveConfig({ untrustedOrigins: "label" } as never).untrustedOrigins,
+    ).toBe("label");
+  });
+
+  test("an invalid value degrades to the label default (fail-safe)", () => {
+    // The manifest schema only admits label|exclude; the resolver is the
+    // second gate for configs that bypass it (hand-edited jsonc).
+    expect(
+      resolveConfig({ untrustedOrigins: "purge" } as never).untrustedOrigins,
+    ).toBe("label");
   });
 });
