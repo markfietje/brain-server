@@ -92,6 +92,8 @@
 - [The loop runs: what it means for an engine to ask permission](./blog/11-the-loop-runs.md)
 - [The 500 that proved the audit chain works](./blog/12-the-500-that-proved-the-chain.md)
 - [Dual-era MCP without the handshake tax](./blog/13-dual-era-mcp.md)
+- [Four copies of sha256_hex: when a machine audits the docs](./blog/14-four-copies-of-sha256-hex.md)
+- [Prompt injection made stateful — and the memory layer built for it](./blog/15-prompt-injection-made-stateful.md)
 
 # Regulation & trust
 
