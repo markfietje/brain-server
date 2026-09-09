@@ -812,6 +812,9 @@ pub async fn feedback(
         .map(|p| p.tenant.clone())
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| crate::audit::DEFAULT_TENANT.to_string());
+    // owner: the JWT principal's sub — the erasure join evidence (v1.28.77),
+    // the same capture the /suggest/feedback handler does. No principal → NULL.
+    let owner = principal.0.as_ref().map(|p| p.sub.clone());
     let ts = chrono::Utc::now().timestamp();
     let pool = state.pool.clone();
     tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
@@ -826,6 +829,7 @@ pub async fn feedback(
             session,
             &tenant,
             Some(&outcome),
+            owner.as_deref(),
         )
         .map_err(|e| match e {
             crate::service::suggest::FeedbackError::NoSuchChunk(id) => {

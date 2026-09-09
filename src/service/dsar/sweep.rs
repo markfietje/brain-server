@@ -74,6 +74,12 @@ pub(crate) struct SweepReport {
     /// matched by re-hashing the sweep subject — raw identifiers never
     /// lived in the registry).
     pub consent_rows: usize,
+    /// Suggestion-feedback rows erased with the subject (v1.28.77): the
+    /// tenant arm (per-principal tenants) + the owner arm (the captured JWT
+    /// principal on the feedback row). ALSO counted under `dependent_rows`
+    /// (the .76 discipline — the workflow footprint stays honest); this
+    /// named counter is what the certificate census carries.
+    pub feedback_rows: usize,
     /// Case-status refs removed with the subject's runs (Keystone): PURGED
     /// for erased runs, REVOKED (page goes dark, evidence stays) for runs a
     /// legal hold defers.
@@ -215,10 +221,12 @@ pub(crate) fn sweep_subject(
     // their feedback rows erased here) and the chunk references the purge
     // arm already removes. Counted under dependent rows so the certificate
     // footprint stays honest.
-    report.dependent_rows += tx.execute(
+    let feedback = tx.execute(
         "DELETE FROM suggest_feedback WHERE tenant_id = ?1",
         rusqlite::params![subject],
     )?;
+    report.feedback_rows += feedback;
+    report.dependent_rows += feedback;
     // Channel sweep: a note or invite carries the subject's personal data
     // BOTH as authorship/addressee ids AND possibly in content — the exact-
     // principal arms cover rows on ANY run (over-match, erasure-safe
@@ -634,5 +642,146 @@ mod tests {
             0,
             "the run's channel thread dies with the erasure"
         );
+    }
+
+    /// The feedback census NAMES the arm (v1.28.77): both suggestion-feedback
+    /// subject links erase — the tenant label (per-principal tenants) AND the
+    /// captured `owner` principal (the join evidence session ids could never
+    /// provide). The named counter rides `dependent_rows` too (the .76
+    /// discipline), and an unrelated principal's row survives.
+    #[test]
+    fn dsar_sweep_counts_feedback_arm() {
+        let (pool, _tmp) = db();
+        let mut conn = pool.get().unwrap();
+        // tenant match: the subject is the tenant label.
+        conn.execute(
+            "INSERT INTO suggest_feedback(chunk_id, feedback, ts, tenant_id) \
+             VALUES (1, 'dismiss', 1, 'jane')",
+            [],
+        )
+        .unwrap();
+        // owner match: the subject gave feedback under the default tenant —
+        // the row a tenant-only arm can never reach (session ids are not
+        // principal ids).
+        conn.execute(
+            "INSERT INTO suggest_feedback(chunk_id, feedback, ts, tenant_id, owner) \
+             VALUES (2, 'dismiss', 1, 'default', 'jane')",
+            [],
+        )
+        .unwrap();
+        // unrelated: another principal's row must survive.
+        conn.execute(
+            "INSERT INTO suggest_feedback(chunk_id, feedback, ts, tenant_id, owner) \
+             VALUES (3, 'accept', 1, 'default', 'bob')",
+            [],
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        let rep = sweep_subject(&tx, "jane").unwrap();
+        tx.commit().unwrap();
+        assert_eq!(
+            rep.feedback_rows, 2,
+            "the census counts BOTH feedback arms by name"
+        );
+        assert!(
+            rep.dependent_rows >= 2,
+            "the arm also rides the dependent-rows footprint"
+        );
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM suggest_feedback"),
+            1,
+            "only the unrelated principal's row survives"
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM suggest_feedback WHERE owner='bob'"
+            ),
+            1
+        );
+    }
+
+    /// End-to-end erasure completeness (the SP-S5 session arm): a certified
+    /// subject purge must reach the subject's feedback row that lives on a
+    /// chunk the purge NEVER touches — the row whose only subject links are
+    /// the owner principal and a client-owned session label. Before v1.28.77
+    /// that row survived every certified purge.
+    #[test]
+    fn purge_removes_suggest_feedback_for_session() {
+        let (pool, _tmp) = db();
+        let mut conn = pool.get().unwrap();
+        // The subject's own memory (purged; its feedback row goes via the
+        // .76 chunk arm).
+        conn.execute(
+            "INSERT INTO knowledge (content, content_hash, owner) \
+             VALUES ('subject memory', 'h-s1', 'jane')",
+            [],
+        )
+        .unwrap();
+        let subject_chunk: i64 =
+            conn.query_row("SELECT id FROM knowledge WHERE owner='jane'", [], |r| r.get(0))
+                .unwrap();
+        // Another principal's memory — never in the purge set — carrying the
+        // subject's dismiss feedback (the row the session arm exists for).
+        conn.execute(
+            "INSERT INTO knowledge (content, content_hash, owner) \
+             VALUES ('bob memory', 'h-s2', 'bob')",
+            [],
+        )
+        .unwrap();
+        let other_chunk: i64 =
+            conn.query_row("SELECT id FROM knowledge WHERE owner='bob'", [], |r| r.get(0))
+                .unwrap();
+        conn.execute(
+            "INSERT INTO suggest_feedback(chunk_id, feedback, ts, tenant_id, owner) \
+             VALUES (?1, 'dismiss', 1, 'default', 'jane')",
+            rusqlite::params![subject_chunk],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO suggest_feedback(chunk_id, feedback, ts, tenant_id, session, owner) \
+             VALUES (?1, 'dismiss', 1, 'default', 'run-42', 'jane')",
+            rusqlite::params![other_chunk],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO suggest_feedback(chunk_id, feedback, ts, tenant_id, owner) \
+             VALUES (?1, 'accept', 1, 'default', 'bob')",
+            rusqlite::params![other_chunk],
+        )
+        .unwrap();
+
+        let run = crate::service::dsar::run_pool(
+            &mut conn, "global", "jane", "purge", false, 100, false, None, false,
+        )
+        .unwrap();
+        assert!(
+            run.purged_ids.contains(&subject_chunk),
+            "the subject's memory is purged"
+        );
+        assert_eq!(
+            run.feedback_rows, 1,
+            "the certificate census names the owner-arm row"
+        );
+        let jane_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM suggest_feedback WHERE owner = 'jane'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            jane_rows, 0,
+            "a certified purge leaves NO feedback row for the subject — \
+             not even session-keyed rows on untouched chunks"
+        );
+        let bob_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM suggest_feedback WHERE owner = 'bob'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(bob_rows, 1, "the other principal's row survives");
     }
 }

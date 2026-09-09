@@ -3776,9 +3776,11 @@ Final paragraph after the rule.";
         // Keystone for the case_status_refs + kcs_translations tables.
         // Triage for the proposals.domain + proposals.title columns (the
         // domain-scoped review queue).
+        // Erasure for the suggest_feedback.owner column (the erasure join
+        // evidence — the session arm).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_73),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_77),
             "schema_version must be recorded as the current release after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×
@@ -3806,6 +3808,19 @@ Final paragraph after the rule.";
             )
             .expect("pragma probe");
         assert_eq!(epoch_cols, 1, "agent_cards.signing_epoch must exist");
+        // the erasure release: feedback rows carry the JWT principal (the
+        // join evidence that lets a certified purge/DSAR reach the subject's
+        // rows on chunks the purge never touched — session ids are
+        // client-owned labels, never principal ids).
+        let fb_cols: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('suggest_feedback')
+                  WHERE name = 'owner'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma probe");
+        assert_eq!(fb_cols, 1, "suggest_feedback.owner must exist");
         // Keystone: one live status ref per run — UNIQUE on both sides, with
         // rotation/revocation timestamps; and per-locale translations pinned
         // to a source revision.

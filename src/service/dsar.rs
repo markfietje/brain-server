@@ -515,7 +515,8 @@ fn count_subject_tombstones(
 /// stamp (advisory). `remanence` is
 /// the honest physical-purge posture to disclose on the
 /// deletion certificate (the strict domain's certificate states
-/// secure_delete).
+/// secure_delete). `feedback_rows` names the suggestion-feedback erasure arm
+/// (v1.28.77) so the certified census carries it explicitly.
 #[allow(clippy::too_many_arguments)]
 pub fn certificate_json(
     subject: &str,
@@ -529,6 +530,7 @@ pub fn certificate_json(
     certified_at: &str,
     chain_head: Option<String>,
     remanence: &str,
+    feedback_rows: usize,
 ) -> String {
     serde_json::json!({
         "subject": subject,
@@ -543,6 +545,7 @@ pub fn certificate_json(
         "certified_at": certified_at,
         "chain_head": chain_head,
         "physical_purge": remanence,
+        "suggest_feedback_rows": feedback_rows,
     })
     .to_string()
 }
@@ -560,6 +563,10 @@ pub struct DsarRun {
     /// Governed-workflow rows this pool's sweep reached (matched runs +
     /// dependents; frozen runs counted as matched).
     pub workflow_rows: usize,
+    /// Suggestion-feedback rows the sweep's feedback arm erased (v1.28.77 —
+    /// the tenant + owner arms). Subset of `workflow_rows`; named separately
+    /// so the certificate census carries the erasure arm explicitly.
+    pub feedback_rows: usize,
     /// Live-purge ids from this pool (certificate payload).
     pub purged_ids: Vec<i64>,
     /// ids under legal hold that erasure DEFERRED,
@@ -674,6 +681,7 @@ pub fn run_pool(
             tombstones: tombstones as usize,
             dsar_rows: dsar_rows as usize,
             workflow_rows,
+            feedback_rows: 0,
             purged_ids: Vec::new(),
             held: Vec::new(),
             bundle: None,
@@ -688,6 +696,7 @@ pub fn run_pool(
     let mut purged_ids: Vec<i64> = Vec::new();
     let mut held: Vec<serde_json::Value> = Vec::new();
     let mut workflow_rows = 0;
+    let mut feedback_rows = 0;
     if matches!(action, "purge" | "both") {
         // a held id is frozen against DSAR erasure too
         // (the WORM-lite posture). The subject's located set that is under an
@@ -793,6 +802,7 @@ pub fn run_pool(
     if matches!(action, "purge" | "both") {
         let wf = sweep::sweep_subject(&tx, subject)?;
         workflow_rows = wf.runs_matched + wf.dependent_rows;
+        feedback_rows = wf.feedback_rows;
         for (run_id, reasons) in wf.deferred {
             held.push(serde_json::json!({ "run": run_id, "reasons": reasons }));
         }
@@ -850,6 +860,7 @@ pub fn run_pool(
         tombstones: 0,
         dsar_rows: 0,
         workflow_rows,
+        feedback_rows,
         purged_ids,
         held,
         bundle: export_bundle,

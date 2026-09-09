@@ -1101,6 +1101,30 @@ pub fn run_migration_with_store_dim(
         }
     }
 
+    // v1.28.77 "Erasure": `suggest_feedback.owner` captures the JWT principal
+    // (`sub`) that gave the feedback — the join evidence the erasure story
+    // was missing. Session ids are CLIENT-OWNED opaque labels (Mem0 run_id
+    // pattern), never principal ids, so a certified purge/DSAR could not
+    // reach the subject's feedback rows on chunks the purge never touched.
+    // With the owner captured, the DSAR sweep's feedback arm matches
+    // `owner = subject` exactly (same vocabulary as `knowledge.owner`);
+    // NULL rows (opaque/no-auth callers) stay reachable only through the
+    // tenant + chunk arms — the honest ceiling, disclosed in the CHANGELOG.
+    // Additive + nullable; same guarded pattern as ump_outcome above.
+    {
+        let present: bool = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('suggest_feedback') WHERE name='owner'",
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute("ALTER TABLE suggest_feedback ADD COLUMN owner TEXT", [])?;
+        }
+    }
+
     // v1.18.2 "Transparency": explicit model-vs-human origin marker (Art 50
     // synthetic-content line). `source` says the ingest kind; `origin` says who
     // produced the memory. Default 'imported' is the safe fallback — never
@@ -2178,6 +2202,7 @@ pub fn run_migration_with_store_dim(
     )?;
 
     // Bumped once per release that changes this function.
+    // v1.28.77 "Erasure": suggest_feedback.owner (additive, nullable) → 1.28.77.
     // v1.28.62 "Attestation": revoked_principals table → 1.28.62.
     // v1.28.53 "Triage": proposals.domain + proposals.title + the
     // (status, domain) index → 1.28.53.
@@ -2220,8 +2245,8 @@ pub fn run_migration_with_store_dim(
     }
 
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.73')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.73';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.77')
+         ON CONFLICT(key) DO UPDATE SET value = '1.28.77';",
         [],
     )?;
 

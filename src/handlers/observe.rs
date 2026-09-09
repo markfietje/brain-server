@@ -346,6 +346,7 @@ pub async fn post_dsar(
             runs.last()
                 .map(|r| r.remanence.as_str())
                 .unwrap_or("logical (secure_delete off; WAL/freelist/backup copies may persist)"),
+            runs.iter().map(|r| r.feedback_rows).sum(),
         );
         let ledger_id =
             ledger_id.ok_or_else(|| HandlerError::internal("no ledger row written".to_string()))?;
@@ -554,6 +555,7 @@ pub(crate) async fn run_dsar_subject(
             &certified_at,
             chain_head,
             &run.remanence,
+            run.feedback_rows,
         );
         let conn = pool.get().map_err(HandlerError::db_down)?;
         backfill_certificate(&conn, ledger_id, &subject, &certificate);

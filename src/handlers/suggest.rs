@@ -348,6 +348,12 @@ pub async fn feedback(
         .map(|p| p.tenant.clone())
         .filter(|t| !t.is_empty())
         .unwrap_or_else(|| audit::DEFAULT_TENANT.to_string());
+    // owner: the JWT principal's sub — the erasure join evidence (v1.28.77).
+    // Session ids are client-owned labels, never principals; without this
+    // column a certified purge/DSAR cannot reach the subject's feedback rows.
+    // No principal → NULL (opaque/loopback rows stay reachable only through
+    // the tenant + chunk arms — the disclosed ceiling).
+    let owner = principal.0.as_ref().map(|p| p.sub.clone());
     let chunk_id = req.chunk_id;
     let outcome_str = outcome.as_str();
     let ts = std::time::SystemTime::now()
@@ -367,6 +373,7 @@ pub async fn feedback(
             session,
             &tenant,
             None,
+            owner.as_deref(),
         )
         .map_err(feedback_err)
     })

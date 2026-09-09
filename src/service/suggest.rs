@@ -52,10 +52,18 @@ impl From<rusqlite::Error> for FeedbackError {
 /// `contradicted`) in its own column; the suggest path passes `None`
 /// (column stays NULL).
 ///
+/// The optional `owner` is the JWT principal (`sub`) that gave the feedback —
+/// the v1.28.77 erasure join evidence. Session ids are client-owned opaque
+/// labels and can never substitute for it: without the owner, a certified
+/// purge/DSAR could not reach the subject's feedback rows on chunks the
+/// purge never touched. No principal (opaque/loopback callers) stores NULL —
+/// those rows stay reachable only through the tenant + chunk arms (the
+/// disclosed ceiling).
+///
 /// The existence check's fail-open read posture is preserved verbatim: a
 /// QUERY ERROR on the EXISTS probe reads as "no chunk" (a 404), not a 500 —
 /// the same `.unwrap_or(false)` the handler had.
-#[allow(clippy::too_many_arguments)] // 8 positional params, 2 call sites; a struct would be ceremony for a private fn
+#[allow(clippy::too_many_arguments)] // 9 positional params, 2 call sites; a struct would be ceremony for a private fn
 pub(crate) fn record_feedback(
     conn: &Connection,
     chunk_id: i64,
@@ -65,6 +73,7 @@ pub(crate) fn record_feedback(
     session: Option<String>,
     tenant: &str,
     ump_outcome: Option<&str>,
+    owner: Option<&str>,
 ) -> Result<(), FeedbackError> {
     // chunk_id validity: refuse feedback on a non-existent chunk so the
     // metric isn't poisoned by typos. (A deleted chunk's id still counts —
@@ -81,14 +90,15 @@ pub(crate) fn record_feedback(
         return Err(FeedbackError::NoSuchChunk(chunk_id));
     }
     conn.execute(
-        "INSERT INTO suggest_feedback(chunk_id, feedback, reason_hash, ts, session, tenant_id, ump_outcome)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "INSERT INTO suggest_feedback(chunk_id, feedback, reason_hash, ts, session, tenant_id, ump_outcome, owner)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(chunk_id, COALESCE(session, '')) DO UPDATE SET
            feedback = excluded.feedback,
            reason_hash = excluded.reason_hash,
            ts = excluded.ts,
-           ump_outcome = excluded.ump_outcome",
-        params![chunk_id, feedback, reason_hash, ts, session, tenant, ump_outcome],
+           ump_outcome = excluded.ump_outcome,
+           owner = excluded.owner",
+        params![chunk_id, feedback, reason_hash, ts, session, tenant, ump_outcome, owner],
     )
     .map_err(|e| FeedbackError::Database(format!("feedback insert failed: {e}")))?;
     Ok(())
@@ -131,4 +141,83 @@ pub(crate) fn feedback_counts(
         out.push(row);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
+
+    fn seed() -> Connection {
+        register_sqlite_vec();
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migration(&mut conn, 1).unwrap();
+        conn.execute(
+            "INSERT INTO knowledge (content, content_hash, node_kind) \
+             VALUES ('suggested memory', 'h-own', 'fact')",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    /// The erasure join evidence exists: the feedback upsert stores the JWT
+    /// principal (`sub`) in `suggest_feedback.owner`, so a certified
+    /// purge/DSAR can reach the subject's rows even when the session label
+    /// (client-owned, never a principal id) is the only other key. The
+    /// no-principal call stores NULL — the disclosed ceiling.
+    #[test]
+    fn feedback_owner_captured_from_principal() {
+        let conn = seed();
+        let chunk_id: i64 = conn
+            .query_row("SELECT id FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        record_feedback(
+            &conn,
+            chunk_id,
+            "dismiss",
+            None,
+            1,
+            Some("session-7".into()),
+            "default",
+            None,
+            Some("jane"),
+        )
+        .unwrap();
+        let owner: Option<String> = conn
+            .query_row(
+                "SELECT owner FROM suggest_feedback WHERE chunk_id = ?1",
+                params![chunk_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            owner.as_deref(),
+            Some("jane"),
+            "the principal evidence must ride the feedback row"
+        );
+        // Last-wins replay from a different principal REPLACES the owner
+        // (the row's evidence reflects who spoke last).
+        record_feedback(
+            &conn,
+            chunk_id,
+            "accept",
+            None,
+            2,
+            Some("session-7".into()),
+            "default",
+            None,
+            None,
+        )
+        .unwrap();
+        let owner: Option<String> = conn
+            .query_row(
+                "SELECT owner FROM suggest_feedback WHERE chunk_id = ?1",
+                params![chunk_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(owner, None, "an opaque replay overwrites the evidence");
+    }
 }

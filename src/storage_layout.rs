@@ -181,6 +181,11 @@ pub const SCHEMA_VERSION_V1_28_53: &str = "1.28.53";
 pub const SCHEMA_VERSION_V1_28_62: &str = "1.28.62";
 /// the key-lifecycle release: `agent_cards.signing_epoch` (additive).
 pub const SCHEMA_VERSION_V1_28_73: &str = "1.28.73";
+/// the erasure release: `suggest_feedback.owner` (additive, nullable) — the
+/// principal evidence that lets a certified purge/DSAR reach the subject's
+/// feedback rows on chunks the purge never touched (the session arm; session
+/// ids are client-owned labels, never principal ids).
+pub const SCHEMA_VERSION_V1_28_77: &str = "1.28.77";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
