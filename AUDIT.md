@@ -643,8 +643,7 @@ signers, origin labels).
 
 The program close-out above covers the 2026-09-06 audit (X- namespace).
 A **second-pass audit** — same trees, harder questions, fresh `SP-`
-namespace — then re-attacked the closures themselves. Full report:
-[`docs/SECOND_PASS_AUDIT_20260909.md`](./SECOND_PASS_AUDIT_20260909.md).
+namespace — then re-attacked the closures themselves. Full report is this addendum (previously `docs/SECOND_PASS_AUDIT_20260909.md`, now consolidated here).
 
 **Result: 30 fresh findings (5 HIGH, 12 MEDIUM, 9 LOW, 4 INFO) across both
 trees. v1.28.76 closes all 5 HIGH and 7 MEDIUM; the remainder are LOW/INFO

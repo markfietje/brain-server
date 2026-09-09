@@ -94,7 +94,7 @@ you prove an embedding was deleted? where does the audit chain's key live?*
 We published our answers as
 [a control matrix](../OWASP_AGENTIC_2026.md) and a
 [live proof map](../trust/proof-map.md) — and a
-[second-pass audit](../SECOND_PASS_AUDIT_20260909.md) of our own closures,
+[second-pass audit](../../AUDIT.md#second-pass-audit-addendum--v12876-selfheal-2026-09-09) of our own closures,
 because the first pass is where the work starts, not where it ends.
 
 ## Sources
