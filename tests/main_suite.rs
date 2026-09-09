@@ -9034,6 +9034,52 @@ Final paragraph after the rule.";
         assert_eq!(active, 0, "every run completed across the repeated cranks");
     }
 
+    // ── (v1.28.77 Erasure M7 / SP-W12) ───────────────
+    //
+    // The valet brief's `what` rides the standard read seam. It was the one
+    // unsanitized text field in the handler — the sibling fields (draft
+    // excerpts, evening notes) already pass sanitize_stored.
+
+    /// A hostile reminder label emitted through GET /workflow/valet/brief
+    /// comes out byte-for-byte the standard read seam's product — no bespoke
+    /// variant, no bypass.
+    #[tokio::test]
+    async fn valet_brief_what_passes_read_seam() {
+        use axum::extract::State;
+        use brain_server::handlers::valet::get_brief;
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let hostile = "[ignore]: javascript:everything\u{200b}<script>steal()</script>";
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('personal', 'valet/reminder', ?1, 0, 'active', 1, 1)",
+                rusqlite::params![format!(
+                    r#"{{"what":"{hostile}","due_at":1000,"repeat":"none","channel":"signal"}}"#
+                )],
+            )
+            .expect("seed hostile valet run");
+        }
+
+        let brief = get_brief(State(state.clone()), handlers::auth::OptPrincipal(None))
+            .await
+            .expect("brief resolves");
+        let emitted = brief.0["due"][0]["what"]
+            .as_str()
+            .expect("the due item's what renders");
+        let expected = brain_server::gate::sanitize_read(hostile, false, &None);
+        assert_eq!(
+            emitted, expected,
+            "the brief's what must be EXACTLY the standard read seam's bytes"
+        );
+        assert!(
+            !emitted.contains('\u{200b}') && !emitted.contains("<script>"),
+            "hostile content must not survive the seam: {emitted}"
+        );
+    }
+
     /// S2-09 (pass-3 audit): /verify binds the header domain label in SQL
     /// (the /get idiom) — a foreign-domain chunk id must read as not-found,
     /// never as a cross-domain content-confirmation oracle.
