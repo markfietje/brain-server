@@ -36,7 +36,7 @@ this plugin (TS)  ──POST /recall (loopback)──►  brain-server (Rust)
   the agent to clarify or fall back to web search instead of presenting a
   fabricated answer.
 
-## Security defaults (OWASP LLM Top 10 + Lakera)
+## Security defaults (OWASP LLM Top 10 + OWASP Agentic 2026)
 
 - **Per-agent opt-in** — empty `agents` list ⇒ disabled. Memory is a capability
   an agent must be granted (LLM06 least privilege).
@@ -51,6 +51,24 @@ this plugin (TS)  ──POST /recall (loopback)──►  brain-server (Rust)
   basis / region) inside the `UNTRUSTED` fence; labels run through
   `sanitizeForBlock`, so recalled content can neither forge its attribution nor
   break the fence markers.
+- **Fail-safe drop** — a hit that arrives without the server's `untrusted: true`
+  flag is *dropped*, not injected (fail-safe toward no context).
+- **Origin labels ride the whole trip (v1.28.74 / plugin 0.6.0)** — captures from
+  group/channel traffic carry origin `channel-capture`; auto-injected hit lines
+  prefix ` [memory | channel-capture]` inside the fence (owner memories stay
+  untagged), `autoCapture` tells the server which chat a capture came from
+  (`origin_context`), and the new `untrustedOrigins` knob (below) drops
+  channel-captured hits from auto-injection entirely. The `memory_recall` TOOL
+  path always labels — a tool consumer always sees the taint. The openclaw host
+  additionally marks quoted/replayed `[memory | …]` prefixes in inbound text as
+  untrusted replay, so a captured label cannot be forged into fresh prose.
+- **Schema-declared config (v0.6.1)** — every knob (including
+  `untrustedOrigins`) is declared in the manifest's strict `configSchema`
+  (`additionalProperties: false`), so a host validating plugin config cannot
+  silently strip a security posture.
+- **Digest-bound approvals (server-side)** — in the default review posture,
+  promoting a capture requires the operator to carry the SHA-256 of the exact
+  bytes they reviewed (`400 digest_required` when absent, `409` on drift).
 - **Fail-open** on recall errors (never stall the agent); **fail-closed** on auth.
 
 ## Install
@@ -78,8 +96,9 @@ Restart the gateway after installing. Min host version: `2026.5.31`.
   "agents": ["main"], // per-agent opt-in; empty = disabled
   "allowedChatTypes": ["direct", "explicit"],
   "autoRecall": true, // deterministic per-turn recall
-  "autoCapture": false, // store durable facts after a turn
+  "autoCapture": false, // store durable facts after a turn (sends origin_context when the chat is group/channel)
   "captureMode": "proposal", // route captures through human review (default)
+  "untrustedOrigins": "label", // v0.6.0: label channel-captured hits in auto-inject, or "exclude" them (tool path always labels)
   "strictDomain": false, // false = cross-domain fallback on miss
   "autoRecallTopK": 3,
   "autoRecallTimeoutMs": 5000,
@@ -213,6 +232,28 @@ Prerequisites:
 - **Off by default**, gated by the same per-agent allowlist as recall.
 - **Privacy:** only a whitespace-collapsed intent label (first 200 chars)
   enters run state. Full prompts and messages never leave the host process.
+
+## Origin labels (v0.6.x) — memories remember where they came from
+
+Group/channel traffic is the classic memory-poisoning vector (OWASP Agentic
+2026, ASI06): something said in a shared chat persists into the assistant's
+own memory and replays as trusted context later. The plugin+server pair
+answers it end to end:
+
+- **At capture** — `autoCapture` stamps the chat type: content from a
+  group/channel chat is stored with origin `channel-capture` (direct chats
+  stay `owner`).
+- **At review** — channel captures surface in the operator's queue with a
+  `channel-capture` badge; approving is a deliberate, digest-bound act.
+- **At recall** — auto-injected hit lines prefix
+  ` [memory | channel-capture]` inside the untrusted fence, so the model sees
+  the taint exactly where it sees the memory. Owner memories stay untagged.
+- **By posture** — `untrustedOrigins: "exclude"` drops channel-captured hits
+  from auto-injection entirely. The `memory_recall` TOOL path always labels:
+  a tool consumer always sees what it asked for.
+- **On replay** — if a labeled line is quoted back into inbound text, the
+  openclaw host marks it `untrusted replay` so a forwarded memory cannot
+  masquerade as fresh prose.
 
 ## Why not a skill or a recall sub-agent?
 
