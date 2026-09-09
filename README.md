@@ -1,8 +1,10 @@
 # Brain Server
 
-**Your team's memory, on your machine. Zero dollars per query.**
+**Governed, local-first memory for AI agents in regulated environments.**
 
-Paste a resolution once, recall it the same way every time. A person has to approve before anything becomes permanent. One Rust binary, no cloud, no embedding API.
+Nothing becomes permanent knowledge until a human approves the exact bytes.
+One Rust binary, no cloud, no embedding API — no data egress by default.
+Built for teams that treat memory poisoning (OWASP ASI06) as a production risk.
 
 <p align="center">
 
@@ -28,7 +30,7 @@ A fresh `docker compose up` starts empty and unauthenticated on loopback. One co
 ```bash
 docker compose up -d
 sleep 2 && curl -s http://127.0.0.1:8765/health
-curl -s -X POST http://127.0.0.1:8765/ingest/markdown \
+curl -s -X POST http://127.0.0.1:8765/ingest \
   -d '{"title":"Bignay","content":"Bignay is alternative to blueberry."}' > /dev/null
 curl -s -X POST http://127.0.0.1:8765/recall \
   -d '{"query":"blueberry alternative","provenance":true}' | jq .
@@ -46,6 +48,25 @@ cargo build --release --features bench,migrate,compliance-pack
 # listens on 127.0.0.1:8765, data at ~/.openclaw/workspace/brain.db
 ```
 
+## Who it is for
+
+* Teams in **financial services, healthcare, legal, government, and BPOs** that store decisions, customer context, or operational knowledge in long-lived agents.
+* **Security, compliance, and platform teams** that require human gates, digests, quarantine, and tamper-evident audit.
+* Teams adopting **agentic coding assistants** (Claude Code, Cursor, Copilot, OpenClaw, and custom agents) that need a governed memory backend.
+
+This is not a general-purpose memory layer for rapid prototyping.
+
+## Guarantees
+
+* **Human promotion gate.** Agent captures become proposals. Promotion requires explicit approval bound to the SHA-256 of the exact bytes reviewed (`content_digest`). Drift returns 409.
+* **Ingest screening and quarantine.** Every write is screened. Suspect content is quarantined and excluded from vector, full-text, and graph retrieval.
+* **Untrusted fences.** Recalled content is rendered inside unforgeable boundaries, stripped of invisible-character and bidi smuggling plus auto-fetch constructs, and labelled untrusted.
+* **Knows when it does not know.** Deterministic hybrid retrieval — vector KNN plus FTS5 via reciprocal rank fusion — and recall abstains with `low_confidence` instead of guessing. `POST /verify` checks a claim against the stored text.
+* **Tamper-evident audit.** Append-only keyed hash chain with a verifiable head. `GET /audit/verify` checks it.
+* **Verifiable deletion.** DSAR and purge produce certificates and tombstones.
+* **Local-first, zero-token recall.** Static embeddings and hybrid retrieval. No LLM in the hot path. No data egress by default. Zero per query.
+* **Scoped principals.** Agents get least-privilege tokens limited to recall, store, and propose — separate from operator credentials.
+
 ## Why this instead of a cloud memory service
 
 | Cloud memory | Brain Server |
@@ -54,21 +75,11 @@ cargo build --release --features bench,migrate,compliance-pack
 | Data in someone else's datacenter | Data stays in SQLite on your box. No telemetry. |
 | Extra round trip | Sub 50ms p99 recall on loopback. |
 
-## What it does
-
-* **Same answer every time.** Hybrid retrieval. Vector KNN plus FTS5 via Reciprocal Rank Fusion. Deterministic.
-* **Knows when it does not know.** Abstains with `low_confidence` instead of making something up. `POST /verify` checks a claim against the stored text.
-* **Human has to approve.** Proposals are scored, a person approves, the approval locks to the exact bytes shown (`content_digest`). Stale approvals get a 409.
-* **One daemon.** `brain-server` bundles SQLite plus sqlite-vec. Rust, Axum, Tokio. Runs anywhere Rust builds. CLI `brain`, MCP, bench in the same repo.
-* **Plays with your agents.** OpenAI compatible `POST /v1/embeddings`, MCP tools `brain_search`, `brain_recall`, UMP 1.0 L3 (13 of 13), native OpenClaw plugin.
-
-More in `docs/` if you want the deep dive: graph hops, bi-temporal `valid_from` to `valid_to`, audit chain, DSAR, case loop.
-
 ## Proof, not promises
 
 * UMP 1.0 L3, 13 of 13 conformance checks, pinned in CI
-* 1,423 tests passed, `cargo fmt` and `clippy -D warnings` clean
-* Append only SHA-256 audit chain, `GET /audit/verify` to check it
+* 1,477 tests passed, `cargo fmt` and `clippy -D warnings` clean
+* Append-only SHA-256 audit chain, `GET /audit/verify` to check it
 * Maps to ISO 42001, NIST AI RMF, SOC 2, GDPR. See `COMPLIANCE.md`
 
 Try the MCP server in two seconds:

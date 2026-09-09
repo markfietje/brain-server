@@ -1796,6 +1796,86 @@ mod tests {
         assert!(matches!(comparison, audit::HeadComparison::NoPostPin));
     }
 
+    // ── v1.28.77 "Erasure" (SP-C1): verification PRECEDES the overwrite ──
+
+    /// A restore whose image fails chain verification refuses BEFORE the
+    /// live DB is overwritten — the refused path must not leave the
+    /// unattested image in place. (Before v1.28.77 both refusals fired
+    /// after `write_atomic` had already replaced the live file.)
+    #[test]
+    fn restore_verifies_snapshot_before_overwrite() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // The image: a chained DB whose chain is then corrupted (checksum +
+        // decrypt stay fine; the CHAIN is the thing that must refuse).
+        let src = dir.path().join("src.db");
+        make_audit_db(&src, 3);
+        {
+            let conn = rusqlite::Connection::open(&src).unwrap();
+            conn.execute(
+                "UPDATE audit_events SET prev_hash = 'deadbeef' WHERE id = 2",
+                [],
+            )
+            .unwrap();
+        }
+        let img = dir.path().join("poisoned.bk");
+        backup(&src, &img, b"passphrase").unwrap();
+        // The live DB: a real database with a marker the poisoned image
+        // does not carry.
+        let live = dir.path().join("live.db");
+        make_audit_db(&live, 2);
+        {
+            let conn = rusqlite::Connection::open(&live).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE marker(x TEXT); INSERT INTO marker VALUES ('LIVE-STATE');",
+            )
+            .unwrap();
+        }
+
+        let err = restore(&img, &live, b"passphrase")
+            .expect_err("a poisoned chain must refuse the restore");
+        let _ = err; // the message shape is pinned by the sibling test
+
+        // THE point: the live DB is byte-untouched by the refused restore.
+        let conn = rusqlite::Connection::open(&live).unwrap();
+        let marker: String = conn
+            .query_row("SELECT x FROM marker", [], |r| r.get(0))
+            .expect("the live marker survives a refused restore");
+        assert_eq!(marker, "LIVE-STATE");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 2, "the live chain was not replaced by the image");
+    }
+
+    /// Every restore-refusal error names the preserved pre-restore snapshot
+    /// path explicitly (the .bak the operator keeps) — never a literal
+    /// `<db>.bak` placeholder.
+    #[test]
+    fn restore_failure_error_names_bak() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("src.db");
+        make_audit_db(&src, 3);
+        {
+            let conn = rusqlite::Connection::open(&src).unwrap();
+            conn.execute(
+                "UPDATE audit_events SET prev_hash = 'deadbeef' WHERE id = 2",
+                [],
+            )
+            .unwrap();
+        }
+        let img = dir.path().join("poisoned.bk");
+        backup(&src, &img, b"passphrase").unwrap();
+        let live = dir.path().join("live.db");
+        make_audit_db(&live, 2);
+
+        let err = restore(&img, &live, b"passphrase").expect_err("refuses");
+        let text = format!("{err:#}");
+        assert!(
+            text.contains("live.db.bak"),
+            "the refusal must name the actual .bak path: {text}"
+        );
+    }
+
     /// A legacy-epoch image (chain present, NO head pin) restores but the
     /// disclosure marks `legacy_unkeyed_chain` and the written disclosure
     /// row names the re-anchor path. An hmac-epoch image is untouched.
