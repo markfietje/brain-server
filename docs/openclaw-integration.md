@@ -5,13 +5,14 @@ personal AI assistant gateway. The integration is a TypeScript plugin
 (`@markfietje/brain-server-openclaw`) that lives in `plugin/` and calls the Rust server over
 **loopback HTTP**. It plugs into OpenClaw's **memory slot** (`kind: "memory"`).
 
-**Plugin version:** the in-tree package is at **0.5.0**. It is published as
+**Plugin version:** the in-tree package is at **0.6.0**. It is published as
 `@markfietje/brain-server-openclaw` (npm) (the openclaw monorepo ships it under
 `extensions/brain-server`, in sync with the `plugin/` tree). Per-version behavior lives in
 `plugin/CHANGELOG.md`; the server-side releases each version rides on are itemized in
-`../CHANGELOG.md` (see the **plugin 0.4.x/0.5.x** rows: 0.4.3 provenance, 0.4.4 fence-forgery
-closure, 0.4.5 the `BRAIN_TOKEN_FILE` env-token ladder, 0.4.6 recall-graph default-pinning,
-0.4.7 drift reconciliation + hardening, 0.5.0 the Team Bridge).
+`../CHANGELOG.md` (see the **plugin 0.4.x/0.5.x/0.6.x** rows: 0.4.3 provenance, 0.4.4
+fence-forgery closure, 0.4.5 the `BRAIN_TOKEN_FILE` env-token ladder, 0.4.6 recall-graph
+default-pinning, 0.4.7 drift reconciliation + hardening, 0.5.0 the Team Bridge, 0.5.1 the
+strip-set parity sync, 0.6.0 the origin labels — see the Security model below).
 
 The remembered, searchable, erased facts all live in the Rust brain-server. The plugin is a **thin
 TypeScript shim**: it implements the OpenClaw SDK contract (hooks, tools, config, gating) and
@@ -133,9 +134,12 @@ Server-side details (source of truth: `src/handlers/gate.rs`):
   auto-expires (status `rejected`, `proposal_expired` audit) and the queue will neither approve nor
   reject it, because its capture context is unrecoverable.
 - **Approve** is race-safe: an `IMMEDIATE` transaction + a `AND status = 'pending'` CAS forbids
-  double-promotion (v1.20.2 A3). It embeds the content, inserts the row into `knowledge` **and**
-  `vec_knowledge`, records the approving principal as owner, supports optional `?supersedes=`, and
-  audits `proposal_approved`, returning `{proposal_id, chunk_id, status: "approved"}`.
+  double-promotion (v1.20.2 A3). It is **digest-bound**: `?digest=` must carry the
+  `content_digest` the queue served the reviewer (`400 digest_required` when absent, `409` on
+  drift) — the approval binds to the exact bytes the reviewer saw. It embeds the content, inserts
+  the row into `knowledge` **and** `vec_knowledge`, records the approving principal as owner,
+  supports optional `?supersedes=`, and audits `proposal_approved`, returning
+  `{proposal_id, chunk_id, status: "approved"}`.
 - **Reject** sets `status = rejected` + `decided_at`; the content is never promoted to memory.
 - Every stage writes a **hash-chained audit** row (`proposal_pending` → `proposal_approved`/
   `proposal_rejected`/`proposal_expired`).
@@ -512,6 +516,7 @@ schema is `plugin/openclaw.plugin.json` (`configSchema`). Defaults in parenthese
 | `teamBridge` | `false` | **v0.5.0** — mirror agent activity onto the governed dashboards (mesh card + run timeline + scoreboard), off by default; gated by the same `agents` allowlist. |
 | `teamDomain` | `defaultDomain` | Domain the bridge opens its mirrored runs in (1–63 lowercase alnum/hyphen; validated client-side so a bad value can't fail every request). |
 | `teamHeartbeatMs` | `60000` | Throttle for the mirrored run's `beat` lineage event (15 s – 10 min; rides `before_prompt_build`). |
+| `untrustedOrigins` | `"label"` | **v0.6.0** — how channel-captured hits are treated in AUTO-INJECT: `label` keeps them with a visible `[memory \| channel-capture]` line inside the fence; `exclude` drops them from auto-injection entirely (the `memory_recall` TOOL path always labels, whatever this is set to — a tool consumer always sees the taint). |
 
 ```jsonc
 // sanitized example
@@ -550,6 +555,12 @@ settings without restarting the gateway.
   attribution is displayed, not asserted.
 - **Markdown-ref strip** (v1.20.27): the plugin also strips markdown image/link references, so a
   recalled chunk cannot exfiltrate context through a rendered URL to an LLM consumer.
+- **Origin labels ride the whole trip** (v1.28.74 / plugin 0.6.0): a hit captured from a
+  group/channel chat carries origin `channel-capture`; auto-injected hit lines prefix
+  `[memory | channel-capture]` inside the fence (owner memories stay untagged), and
+  `untrustedOrigins: "exclude"` drops them from auto-injection. The tool path always labels.
+  The openclaw host additionally marks quoted/replayed `[memory | …]` prefixes in inbound text
+  as untrusted replay, so a captured label cannot be forged into fresh prose.
 - **Human-gated writes**: default `captureMode: "proposal"` means no turn- or tool-triggered fact
   enters memory without a reviewer approving it.
 - **Deterministic + local**: no embedding/decision tokens, no data egress, loopback only.
