@@ -244,7 +244,7 @@ pub(crate) fn export_bundle(conn: &Connection, max_bytes: u64) -> Result<ExportB
     // The running byte counter: the serialized size of every row accumulated
     // so far (the envelope's own overhead is bounded hundreds of bytes and
     // rides under the same cap with room to spare).
-    let mut bundle_bytes: u64 = 0;
+    let mut bundle_bytes = 0u64;
     let mut charge = |row: &serde_json::Value| -> Result<u64, GateError> {
         let n = serde_json::to_vec(row)
             .map(|b| b.len() as u64)

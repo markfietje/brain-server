@@ -8946,6 +8946,94 @@ Final paragraph after the rule.";
         }
     }
 
+    // ── (v1.28.77 Erasure M6 / SP-W1) ───────────────
+    //
+    // The valet crank drains or says why: a full backlog (>= 100 due
+    // envelopes) used to wedge — `due()` truncates at 100, then the handler
+    // REFUSED at >= 100, so the backlog could never drain. Now the capped
+    // batch FIRES, the remainder is reported (`remaining`) + audited, and
+    // repeated cranks drain.
+
+    /// Seed N due valet reminders (repeat=none, due in the past).
+    fn seed_due_valet_reminders(state: &AppState, n: usize) {
+        let conn = state.pool.get().unwrap();
+        for i in 0..n {
+            conn.execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('personal', 'valet/reminder', ?1, 0, 'active', 1, 1)",
+                rusqlite::params![format!(
+                    r#"{{"what":"reminder {i}","due_at":1000,"repeat":"none","channel":"signal"}}"#
+                )],
+            )
+            .expect("seed valet run");
+        }
+    }
+
+    #[tokio::test]
+    async fn valet_crank_fires_capped_batch_and_reports_remainder() {
+        use axum::extract::State;
+        use brain_server::handlers::valet::post_due;
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        seed_due_valet_reminders(&state, 105);
+
+        let resp = post_due(State(state.clone()), handlers::auth::OptPrincipal(None), None)
+            .await
+            .expect("the capped batch fires — the >=100 refusal wedge is gone");
+        assert_eq!(
+            resp.0["suppressed_no_consent"], 100,
+            "the capped batch of 100 fired (suppressed: no consent in force)"
+        );
+        assert_eq!(
+            resp.0["remaining"], 5,
+            "the remainder past the cap is REPORTED, not refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn valet_backlog_drains_over_repeated_cranks() {
+        use axum::extract::State;
+        use brain_server::handlers::valet::post_due;
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        seed_due_valet_reminders(&state, 105);
+
+        let first = post_due(State(state.clone()), handlers::auth::OptPrincipal(None), None)
+            .await
+            .expect("first crank");
+        assert_eq!(first.0["suppressed_no_consent"], 100);
+        assert_eq!(first.0["remaining"], 5);
+
+        let second = post_due(State(state.clone()), handlers::auth::OptPrincipal(None), None)
+            .await
+            .expect("second crank drains the remainder");
+        assert_eq!(second.0["suppressed_no_consent"], 5);
+        assert_eq!(
+            second.0["remaining"], 0,
+            "the backlog is fully drained"
+        );
+
+        let third = post_due(State(state.clone()), handlers::auth::OptPrincipal(None), None)
+            .await
+            .expect("third crank is a clean no-op");
+        assert_eq!(third.0["suppressed_no_consent"], 0);
+        assert_eq!(third.0["already_fired"], 0);
+        assert_eq!(third.0["remaining"], 0);
+
+        let active: i64 = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM workflow_runs WHERE status = 'active'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(active, 0, "every run completed across the repeated cranks");
+    }
+
     /// S2-09 (pass-3 audit): /verify binds the header domain label in SQL
     /// (the /get idiom) — a foreign-domain chunk id must read as not-found,
     /// never as a cross-domain content-confirmation oracle.
