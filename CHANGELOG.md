@@ -18,6 +18,169 @@ measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
 
+## [1.28.77] — 2026-09-09 — "Erasure": store, recall, and erase
+
+Mantra 1 finished — *store, recall, **erase*** — plus the storage-lane
+fail-closed debts the second pass left planned: erasure completeness
+(SP-S5 session arm), DSAR pattern fencing (SP-W8), the by-id flagged
+marker (SP-S3b), the export cap (SP-S9), restore-before-overwrite
+(SP-C1), and the valet crank wedge (SP-W1) + brief read seam (SP-W12).
+Plan: `IMPLEMENTATION_PLAN_v1.28.77_Erasure.md` (M1–M7). Schema:
+additive one column, `schema_version` → 1.28.77.
+
+### Release notes
+
+**Security fixes**
+
+- **Certified purges now delete the subject's suggestion feedback EVERYWHERE**
+  (SP-S5 — MED, the release's core): `suggest_feedback` rows the subject
+  left on chunks the purge never touches survived every certified purge,
+  because the row's only subject links were a client-owned session label
+  and a tenant column that is `default` on single-token deployments.
+  Feedback rows now capture the JWT principal (`suggest_feedback.owner`,
+  additive + nullable, schema 1.28.77), and the DSAR sweep's feedback arm
+  matches `tenant_id = subject OR owner = subject` in one statement.
+  Session ids are deliberately NOT a match key (client-owned labels are
+  not principal evidence). The deletion certificate names the arm
+  explicitly (`suggest_feedback_rows`).
+- **DSAR subject patterns match literally** (SP-W8): subject patterns
+  flowed into `LIKE %subject%` unescaped — a DSAR for `a_b%` over-matched
+  `axb`, and an erasure over-match is OVER-DELETION. Every DSAR/sweep
+  subject-LIKE site (workflow runs, case notes, shift rosters, recall
+  traces, proposals — erase and export-bundle sides symmetric) now builds
+  through the shared escaped builder (the kcs.rs fence) with
+  `ESCAPE '\'`.
+- **Restore verifies BEFORE the live DB is overwritten** (SP-C1 — MED):
+  the chainless/chain-verify refusals used to fire AFTER `write_atomic`
+  had already replaced the live file — a refused restore left the
+  unattested image in place. Both checks now run on the decrypted
+  snapshot (a throwaway materialization, cleaned up on every path)
+  BEFORE the overwrite; the live DB is byte-untouched when an image
+  refuses, and the failed attempt is evidenced on the LIVE chain.
+  Every restore-refusal error names the actual preserved snapshot path
+  (`…/brain.db.bak`) — never a `<db>.bak` placeholder (wire-invisible:
+  error strings + logs).
+- **Valet brief `what` passes the read seam** (SP-W12): the one
+  unsanitized text field in the handler now routes through
+  `sanitize_stored` with the same posture as its siblings — pinned
+  byte-for-byte with a hostile fixture.
+
+**Improvements**
+
+- **By-id reads carry the `flagged` marker** (SP-S3b): `GET /get/{id}` and
+  `/multi-get` return quarantined rows with `flagged: true` — the same
+  vocabulary recall emits — so a consumer keying on by-id no longer sees
+  quarantined content as clean-looking. Additive; no filtering change
+  (by-id is an operator/review surface; the marker is the truth, the
+  operator decides).
+- **The GDPR export is capped** (SP-S9): `export_bundle` stream-builds
+  with a running byte counter and refuses past the ceiling with the named
+  507 `export_too_large` (carrying the byte count + the chunked DSAR
+  pointer) BEFORE the rest of the DB is materialized. Default 1 GiB;
+  `BRAIN_EXPORT_MAX_BYTES` overrides, fail-closed parse (junk and 0
+  refuse at BOOT).
+- **The valet crank drains or says why** (SP-W1): a full backlog used to
+  wedge forever (`due()` truncates at 100, the handler refused at ≥100).
+  The capped batch now FIRES and the response reports `remaining`
+  (additive); a non-zero remainder is audited; repeated cranks drain.
+  NO auto-loop — the operator re-runs the crank (mantra 2).
+
+**Bug fixes**
+
+- None beyond the above (every item here is also a behavior fix).
+
+### Engineering record
+
+- **M1 (SP-S5, red→green):** migration adds `suggest_feedback.owner`
+  (pragma-guarded ADD COLUMN, the ump_outcome pattern) + the
+  `schema_version` stamp → 1.28.77 (`SCHEMA_VERSION_V1_28_77`); contract
+  test extended (version + column probe). `record_feedback` gains the
+  owner param; both call sites (`/suggest/feedback`, `/ump/feedback`)
+  capture the JWT `sub`; no principal → NULL (those rows stay reachable
+  only through the tenant + chunk arms — the disclosed ceiling). The
+  sweep's feedback arm is one statement (`tenant_id = ?1 OR owner = ?1`)
+  so the two arms can't disagree; the count rides `dependent_rows` (the
+  .76 discipline) AND the new named `feedback_rows` counter that the
+  certificate census carries (`suggest_feedback_rows`, both cert builders
+  wired — multi-pool + per-client). Red demonstrated: the owner-matched
+  row on an untouched chunk survived `run_pool` purge; the .76
+  `purge_removes_suggest_feedback_for_purged_chunk` pin is untouched.
+- **M2 (SP-W8, red→green):** kcs.rs's inline escape chain promoted to
+  `kcs::like_contains_pattern` (the shared fence); adopted by all 8
+  production subject-LIKE sites: sweep's workflow_runs + case_notes +
+  shifts roster, dsar's recall_traces + proposals + both dry-run
+  workflow_runs counts + the export bundle's case_notes arm (erase and
+  disclose stay symmetric). `subject_exact` branches stay exact.
+  `dsar_pattern_fencing_percent_underscore` red at 2 matched runs
+  (unfenced `_` swallowed `axb`), green at exactly 1.
+- **M3 (SP-S3b, red→green):** `ChunkRecord` carries `flagged` on both
+  projections (by-id + batch); both handlers emit it; openapi `Chunk`
+  schema gains the additive field. Tests pin per-row flags on a mixed
+  batch.
+- **M4 (SP-S9, test+impl — new API, compile-red):** `export_bundle(conn,
+  max_bytes)` measures every row (`serde_json::to_vec` once per row, the
+  exact serialized size) with a saturating running counter; over cap →
+  `GateError::ExportTooLarge { built, cap }` (review.rs; Display carries
+  the numbers) → handler maps to 507 `export_too_large` naming the
+  chunked DSAR path. `config::export_max_bytes` (default
+  `DEFAULT_EXPORT_MAX_BYTES` = 1 GiB) + `validate_export_max_bytes` at
+  boot beside the write posture. Tests: refuse-past-cap, under-cap
+  streams (incl. finite non-default cap), fail-closed parse.
+- **M5 (SP-C1, red→green):** the posture checks split into
+  `verify_chain_posture` (the two refusals over an open connection) +
+  `verify_snapshot_chain_posture` (snapshot materialized to a unique
+  drop-guarded sibling file beside the target, checked pre-overwrite;
+  refusal errors append the ACTUAL .bak path — or honestly say none
+  existed). Classification + disclosures move inline post-overwrite;
+  the chainless-admitted short-circuit posture (NoPostPin, no
+  classification) is byte-identical; `verify_restored_chain_and_pin`
+  survives as the test-facing path variant. Red demonstrated: the live
+  marker was GONE after a refused restore (replaced by the poisoned
+  image); the old refusal carried the literal `<db>.bak`.
+  `restore_verifies_snapshot_before_overwrite` also pins the failure-
+  evidence row landing on the LIVE chain (2 rows + 1 failed-restore row).
+  All 29 backup tests + 7 standby tests green.
+- **M6 (SP-W1, red→green):** the wedge reproduced verbatim in red
+  ("due backlog at cap 100 — drain before adding more"). Green: the
+  refusal deleted; `core::due_count` (same scan + arbiter as `due`,
+  counted without the batch truncation, bounded by MAX_DUE_SCAN) reports
+  the additive `remaining` field; non-zero remainder audited via
+  `record_tenant` (the actor label rides the closure). Crank cost: one
+  extra bounded scan per crank. openapi gains the additive field.
+- **M7 (SP-W12, red→green):** the brief's `what` routes through
+  `sanitize_stored(&what, false, &None)` — the exact sibling posture;
+  `valet_brief_what_passes_read_seam` pins byte-for-byte equality with
+  `sanitize_read` on a markdown-ref + U+200B + `<script>` fixture.
+- Pins added (12): `feedback_owner_captured_from_principal`,
+  `dsar_sweep_counts_feedback_arm`,
+  `purge_removes_suggest_feedback_for_session`,
+  `dsar_pattern_fencing_percent_underscore`,
+  `get_returns_flagged_marker_for_quarantined_row`,
+  `multi_get_flags_each_row_individually`, `export_refuses_past_cap`,
+  `export_under_cap_streams_fine`, `export_max_bytes_parses_fail_closed`,
+  `restore_verifies_snapshot_before_overwrite`,
+  `restore_failure_error_names_bak`, `valet_brief_what_passes_read_seam`
+  (+2 handler pins for the crank:
+  `valet_crank_fires_capped_batch_and_reports_remainder`,
+  `valet_backlog_drains_over_repeated_cranks`). CRATE_TEST_FLOOR
+  1,372 → 1,381 (walk-measured).
+- **Erasure-completeness disclosure:** purges/DSARs certified after this
+  release delete strictly more (the owner arm is new reach); DSAR
+  subjects containing literal `%`/`_` change matching behavior —
+  correctly (literal). Openapi additive only (Chunk.flagged,
+  valet/due.remaining, cert suggest_feedback_rows); x-api-version
+  UNCHANGED.
+- Gates: full bench suite green; clippy bench/default/otel clean; fmt +
+  lipstyk clean; boots green on a COPY of the live DB (purge + restore
+  rehearsed there).
+- `ponytail:` what this release does NOT do: no standby self-asserted
+  verification fixes (SP-C2/C3, v1.28.78), no legacy-search/KNN
+  quarantine fixes (SP-S2/S3/S6, v1.28.78), no key-rotate ceremony
+  (SP-C4/C6, v1.28.79), no dry-run feedback census in the footprint
+  preview (the cert census is the certified truth), no export streaming
+  format change (the cap + the chunked-DSAR pointer is the whole fix),
+  no session-boundary detection, no new deps.
+
 ## [1.28.76] — 2026-09-09 — "Selfheal": the second-pass audit's fix release
 
 The fix release for the 2026-09-09 second-pass audit
