@@ -8856,6 +8856,96 @@ Final paragraph after the rule.";
         );
     }
 
+    // ── (v1.28.77 Erasure M3 / SP-S3b) ───────────────
+    //
+    // By-id reads carry the `flagged` marker: recall emits it on every hit;
+    // get/multi-get returning quarantined rows WITHOUT it let a consumer key
+    // on by-id and see quarantined content as clean-looking. The marker is
+    // the truth; by-id stays an operator/review surface (no filtering
+    // change).
+
+    /// A quarantined row read by id carries `flagged: true` — the same
+    /// vocabulary recall emits.
+    #[tokio::test]
+    async fn get_returns_flagged_marker_for_quarantined_row() {
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let clean_id = seed_chunk(&state, "alpha", None, None, "clean alpha content");
+        let flagged_id = seed_chunk(&state, "alpha", None, None, "planted alpha content");
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "UPDATE knowledge SET flagged = 1 WHERE id = ?1",
+                rusqlite::params![flagged_id],
+            )
+            .unwrap();
+        }
+
+        let ok = get_chunk(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            domain_headers("alpha"),
+            Path(flagged_id),
+        )
+        .await
+        .expect("quarantined row still resolves by id");
+        assert_eq!(
+            ok.0["flagged"], true,
+            "by-id must carry the quarantined marker (no filtering change)"
+        );
+
+        let ok = get_chunk(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            domain_headers("alpha"),
+            Path(clean_id),
+        )
+        .await
+        .expect("clean row resolves");
+        assert_eq!(ok.0["flagged"], false, "a clean row reads flagged:false");
+    }
+
+    /// multi-get flags EACH row individually — a batch mixing clean and
+    /// quarantined rows must not blur the marker across the batch.
+    #[tokio::test]
+    async fn multi_get_flags_each_row_individually() {
+        use axum::extract::{Json as AxumJson, State};
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let clean_id = seed_chunk(&state, "alpha", None, None, "batch clean row");
+        let flagged_id = seed_chunk(&state, "alpha", None, None, "batch planted row");
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "UPDATE knowledge SET flagged = 1 WHERE id = ?1",
+                rusqlite::params![flagged_id],
+            )
+            .unwrap();
+        }
+
+        let resp = multi_get(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            domain_headers("alpha"),
+            AxumJson(MultiGetRequest {
+                ids: vec![clean_id, flagged_id],
+            }),
+        )
+        .await
+        .expect("multi-get succeeds");
+        let chunks = resp.0["chunks"].as_array().unwrap();
+        assert_eq!(chunks.len(), 2);
+        for chunk in chunks {
+            let id = chunk["id"].as_i64().unwrap();
+            let expected = if id == flagged_id { true } else { false };
+            assert_eq!(
+                chunk["flagged"], expected,
+                "row {id} must carry its own flagged marker"
+            );
+        }
+    }
+
     /// S2-09 (pass-3 audit): /verify binds the header domain label in SQL
     /// (the /get idiom) — a foreign-domain chunk id must read as not-found,
     /// never as a cross-domain content-confirmation oracle.
