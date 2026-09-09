@@ -117,16 +117,31 @@ pub struct EventsQuery {
     kinds: Option<String>,
 }
 
-/// The pure admission decision for one `workflow` event on
-/// one subscriber's stream. Additive + default-off: the subscriber must have
-/// explicitly opted in via `?kinds=workflow` (old consumers never see the new
-/// kind) AND pass the run-domain Read gate (fail-closed — a denied or errored
-/// gate drops the event, never streams it).
-pub(crate) fn workflow_event_admissible(
+/// The pure admission decision for one LIVE event on one subscriber's
+/// stream. `workflow` AND `valet/due` are additive, default-off kinds: the
+/// subscriber must explicitly opt in via `?kinds=` AND pass the event's
+/// domain Read gate (fail-closed — a denied or errored gate drops the
+/// event, never streams it). The valet half is the later fix: the label
+/// is the operator's private reminder text, the reconnect-replay path
+/// already gated both kinds, and the live stream previously gated only
+/// `workflow` — an unfiltered Read-on-global subscriber received every
+/// valet label across all domains. Pinned by
+/// `valet_due_requires_optin_and_domain_authz`.
+fn live_event_admissible(
+    kind: &str,
+    domain: &str,
+    principal: &Option<crate::auth::Principal>,
     kinds: Option<&std::collections::HashSet<String>>,
-    authorized: bool,
 ) -> bool {
-    kinds.is_some_and(|k| k.contains(ALERT_KIND_WORKFLOW)) && authorized
+    let optin_kind = match kind {
+        k if k == ALERT_KIND_WORKFLOW => ALERT_KIND_WORKFLOW,
+        k if k == ALERT_KIND_VALET => ALERT_KIND_VALET,
+        _ => return true,
+    };
+    let opted_in = kinds.is_some_and(|set| set.contains(optin_kind));
+    let authorized =
+        crate::handlers::authorize(principal, crate::auth::Action::Read, "", domain).is_ok();
+    opted_in && authorized
 }
 
 /// `GET /events` — SSE live alert feed (Read-gated). Mirrors `/ump/subscribe`:
@@ -200,26 +215,18 @@ pub async fn events(
                         move |item| match item {
                             Ok(v) => {
                                 let kind = v.get("kind").and_then(Value::as_str).unwrap_or("");
-                                // `workflow` events are additive and default-off:
-                                // only explicit `?kinds=workflow` subscribers
-                                // receive them, and only when they may read the
-                                // domain the run lives in.
-                                if kind == ALERT_KIND_WORKFLOW {
-                                    let domain = v
-                                        .get("payload")
-                                        .and_then(|p| p.get("domain"))
-                                        .and_then(Value::as_str)
-                                        .unwrap_or("global");
-                                    let authorized = crate::handlers::authorize(
-                                        &principal,
-                                        crate::auth::Action::Read,
-                                        "",
-                                        domain,
-                                    )
-                                    .is_ok();
-                                    if !workflow_event_admissible(kinds.as_ref(), authorized) {
-                                        return None;
-                                    }
+                                // The live gate (see `live_event_admissible`):
+                                // workflow AND valet/due are additive,
+                                // default-off kinds (the label is
+                                // the operator's private reminder text).
+                                let domain = v
+                                    .get("payload")
+                                    .and_then(|p| p.get("domain"))
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("global");
+                                if !live_event_admissible(kind, domain, &principal, kinds.as_ref())
+                                {
+                                    return None;
                                 }
                                 // Drop events the caller didn't ask for (per-kind filter).
                                 if let Some(k) = &kinds
@@ -635,6 +642,66 @@ pub(crate) async fn spawn_freshness_watcher(state: Arc<AppState>) {
 mod tests {
     use super::*;
 
+    /// The live-stream gate (v1.28.76): `valet/due` — the operator's
+    /// private reminder label — requires the `?kinds=valet/due` opt-in AND
+    /// the event-domain Read gate, exactly like `workflow` events; every
+    /// other kind streams to an opted-in subscriber unchanged.
+    #[test]
+    fn valet_due_requires_optin_and_domain_authz() {
+        use crate::auth::{Principal, PrincipalKind, Scope};
+        let superuser: Option<Principal> = None; // loopback superuser: authorize = Ok
+        // No opt-in ⇒ nothing (the pre-fix gap: valet streamed unfiltered).
+        assert!(!live_event_admissible(
+            ALERT_KIND_VALET,
+            "personal",
+            &superuser,
+            None
+        ));
+        // Opted in + superuser ⇒ admitted.
+        let valet_only: std::collections::HashSet<String> =
+            [ALERT_KIND_VALET.to_string()].into_iter().collect();
+        assert!(live_event_admissible(
+            ALERT_KIND_VALET,
+            "personal",
+            &superuser,
+            Some(&valet_only)
+        ));
+        // Opted in but domain-denied ⇒ dropped (fail-closed).
+        let reader: Option<Principal> = Some(Principal {
+            sub: "u@example".to_string(),
+            tenant: "team-alpha".to_string(),
+            scopes: vec![Scope::parse("read:team-alpha/*").unwrap()],
+            jti: "jti-valet".to_string(),
+            roles: vec![],
+            manages: vec![],
+            kind: PrincipalKind::Jwt,
+        });
+        assert!(!live_event_admissible(
+            ALERT_KIND_VALET,
+            "personal",
+            &reader,
+            Some(&valet_only)
+        ));
+        // The workflow kind keeps its exact prior semantics; unrelated
+        // kinds stay opt-in-free at this layer (the generic filter below
+        // the gate handles explicit kinds lists).
+        let workflow_only: std::collections::HashSet<String> =
+            [ALERT_KIND_WORKFLOW.to_string()].into_iter().collect();
+        assert!(live_event_admissible(
+            ALERT_KIND_WORKFLOW,
+            "global",
+            &superuser,
+            Some(&workflow_only)
+        ));
+        assert!(!live_event_admissible(
+            ALERT_KIND_WORKFLOW,
+            "global",
+            &superuser,
+            Some(&valet_only)
+        ));
+        assert!(live_event_admissible("screen", "global", &superuser, None));
+    }
+
     #[test]
     fn tier_transition_fires_once_per_boundary() {
         // Crossing critical fires once; re-triggering on the same tier does not.
@@ -989,25 +1056,37 @@ mod tests {
         assert_eq!(status, "delivered", "delivered exactly once, audit in-tx");
     }
 
-    /// Admission law: default-off (no `?kinds=` never receives workflow),
-    /// opt-in required, and the per-subscriber run-domain Read gate is
-    /// fail-closed — a denied or errored gate drops the event.
+    /// Admission law (via the live gate): default-off (no `?kinds=` never
+    /// receives workflow/valet), opt-in required, and the per-subscriber
+    /// domain Read gate is fail-closed — a denied or errored gate drops the
+    /// event.
     #[test]
     fn kinds_filter_excludes_workflow_by_default() {
         fn set(items: &[&str]) -> Option<std::collections::HashSet<String>> {
             Some(items.iter().map(|s| s.to_string()).collect())
         }
+        let nobody: Option<crate::auth::Principal> = None; // loopback superuser
         // Default consumers (no ?kinds=): workflow never streams.
-        assert!(!workflow_event_admissible(None, true));
-        // Opted-in but unauthorized: dropped (fail-closed).
-        assert!(!workflow_event_admissible(
-            set(&["workflow"]).as_ref(),
-            false
+        assert!(!live_event_admissible(
+            ALERT_KIND_WORKFLOW,
+            "global",
+            &nobody,
+            None
         ));
-        // Opted-in + authorized: admitted.
-        assert!(workflow_event_admissible(set(&["workflow"]).as_ref(), true));
+        // Opted-in and authorized: admitted.
+        assert!(live_event_admissible(
+            ALERT_KIND_WORKFLOW,
+            "global",
+            &nobody,
+            set(&["workflow"]).as_ref()
+        ));
         // An explicit kinds list WITHOUT workflow stays silent too.
-        assert!(!workflow_event_admissible(set(&["pending"]).as_ref(), true));
+        assert!(!live_event_admissible(
+            ALERT_KIND_WORKFLOW,
+            "global",
+            &nobody,
+            set(&["pending"]).as_ref()
+        ));
         // The old kinds keep their existing semantics: no workflow special-case.
         assert!(
             set(&["pending"])

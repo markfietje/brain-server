@@ -94,11 +94,19 @@ fn scope() -> McpScope {
     *SCOPE.get().unwrap_or(&McpScope::Full)
 }
 
-/// The write verbs the scope gate denies: destructive under a read-only token.
-/// Read tools (search/recall/get/capabilities/feedback/audit) stay served.
+/// The write verbs the scope gate denies: anything that mutates durable
+/// state under a read-only token. `ump.feedback` counts as a write — the
+/// suggest-feedback upsert is a durable write that steers ranking/KCS
+/// evidence, not a read (second-pass audit X-M1 completion).
 /// `ponytail:` per-tool allowlists are YAGNI — two scopes match the two
 /// real consumers (recall-only hosts vs full stewards); revisit with evidence.
-const WRITE_TOOLS: [&str; 4] = ["brain_ingest", "ump.remember", "ump.revise", "ump.forget"];
+const WRITE_TOOLS: [&str; 5] = [
+    "brain_ingest",
+    "ump.remember",
+    "ump.revise",
+    "ump.forget",
+    "ump.feedback",
+];
 
 /// Scope gate (pure): under `read`, a write verb refuses with the
 /// `tool_out_of_scope` message on the existing error seam (the tool name is
@@ -2175,7 +2183,6 @@ mod tests {
             "ump.capabilities",
             "ump.get",
             "ump.recall",
-            "ump.feedback",
             "ump.audit",
             "ump.audit.verify",
         ] {
@@ -2184,6 +2191,9 @@ mod tests {
                 "{name} stays served under read scope"
             );
         }
+        // v1.28.76: the feedback upsert is a DURABLE write — denied under
+        // read scope with the other write verbs.
+        assert!(check_tool_scope(McpScope::Read, "ump.feedback").is_err());
     }
 
     #[test]
@@ -2209,11 +2219,14 @@ mod tests {
             .iter()
             .filter(|t| t.get("x-brain-scope").and_then(|v| v.as_str()) == Some("read-denied"))
             .count();
-        assert_eq!(denied, 4, "exactly the four write verbs are annotated");
+        assert_eq!(
+            denied, 5,
+            "the five write verbs (incl. ump.feedback since v1.28.76) are annotated"
+        );
         let clean = tools
             .iter()
             .filter(|t| t.get("x-brain-scope").is_none())
             .count();
-        assert_eq!(clean, tools.len() - 4, "every other tool is untouched");
+        assert_eq!(clean, tools.len() - 5, "every other tool is untouched");
     }
 }

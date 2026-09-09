@@ -4,6 +4,10 @@
 + Cheat Sheet Series (Context7-verified 2026-07-26), NIST SP 800-63B (digital
 identity), NIST SP 800-207 (zero-trust architecture).
 
+**Coverage current through:** v1.28.76 (2026-09-09). The v1.28.63–.75
+hardening line (§5b) is folded in; per-release detail lives in `CHANGELOG.md`
+and the close-out in `docs/AUDIT.md`.
+
 This document is the engineering-side threat model. For per-release progress
 against the controls below, see [`SECURITY.md`](./SECURITY.md).
 
@@ -198,7 +202,11 @@ a `ponytail:` comment naming the ceiling and upgrade path.
 3. **Prompt-injection guard is heuristic, not ML-classifier-based.** Ceiling
    documented in `contains_suspicious_pattern`. Accepted because: edge-only
    threat model; recall always marked `untrusted: true` so the consuming
-   agent enforces the data/instruction boundary.
+   agent enforces the data/instruction boundary. Since v1.28.71 ("Pores") the
+   heuristic is layered (invisible-strip-first scanning, five translation
+   families, typoglycemia + bounded encoding tiers) and an optional local
+   ONNX classifier adds a second opinion — fail-open (0.0) by design, so the
+   HITL gate, never the classifier, remains the boundary.
 
 4. **Per-IP rate limit before v2.1.** Single-process in-memory. Risk: a
    distributed attacker from many IPs can exceed the per-IP cap. Mitigation:
@@ -247,6 +255,45 @@ Standing ceilings, documented honestly:
 - **Proxied favicon fetches are same-origin and authenticated**; the UI
   never fetches remote image bytes directly — everything rides the
   gateway proxy with its byte/time caps and strict media validation.
+
+---
+
+## 5b. The 2026-09 hardening line (v1.28.63–.75): controls and ceilings
+
+Thirteen releases closed every code-closeable finding of the 2026-09-06 joint
+audit (41 findings; close-out with dispositions in `docs/AUDIT.md`). The
+controls below are the threat-model-relevant additions, in ship order:
+
+| Threat | Control | Shipped |
+|---|---|---|
+| Unapproved channel egress (workflow-outbox forgery) | Reserved topic vocabulary enforced at EVERY outbox enqueue seam (`channel/*`, `steering`, `workflow/*` reachable only through kernel paths); closed run-status vocabulary; valet `what` screened on all write paths; alert-bus kind vocabulary closed | v1.28.63 "Wardline" |
+| Revocation scoped to mesh only | The principal kill-switch is consulted in the bearer AuthN path (revocation BEFORE signature/row work, probe-blind); denylist rows expire at the token's real `exp`, not a fixed TTL | v1.28.64 "Blackout" + v1.28.73 |
+| Poisoned memory re-entering prompts | `/suggest` hits carry `untrusted: true` (three-surface parity); openclaw host sanitizes EVERY plugin context segment at the merge seam (invisible strip + forged-marker neutralization); MCP tool results ride the external-content envelope; plugin↔server invisible-set parity fixture in CI | v1.28.65 "Meridian" |
+| Lies-in-the-loop (approver sees laundered descriptions) | Plugin approvals carry the EFFECTIVE tool-call arguments on both transports (display JSON, capped with exact-count markers); truncation keeps head AND tail unconditionally with count-first elision; `brain client dsar` and restore prompt before acting | v1.28.66 "Truthglass" |
+| Self-asserted identity (rug pulls, signer ambiguity) | Parcels require `expected_signer` (400 otherwise); the operator signing key pins verification (foreign signer ≠ silent accept); fork MCP catalog is sha256-pinned per tool + per server and reconciled EVERY run (drift notifies, drifted tools carry `pendingAck`); `BRAIN_MCP_SCOPE=read` denies the write verbs at dispatch | v1.28.67 "Pin" |
+| Markdown-image / beacon exfiltration (EchoLeak class) | Document-mode remote images default OFF behind an exact-host operator allowlist (UI + server re-verify); favicon proxy default OFF; `data:` URIs capped at a 64 KiB decoded budget | v1.28.68 "Shutter" (fork) |
+| Server-side SSRF / DNS rebinding on egress | The shared egress client resolves → validates EVERY address against the IANA special-purpose table (incl. CGNAT 100.64/10) → pins insert-only for the process lifetime; alert/DSAR sinks validate at boot, private sinks need `BRAIN_EGRESS_ALLOW_PRIVATE=1` (fail-closed); harness binary resolution is absolute-path only; spawned children die on drop | v1.28.69 "Deadbolt" |
+| Opaque-mode authority collapse (one superuser token) | Token-file line 2 authenticates as a scoped agent principal (`AgentLoopback`: no Admin, no purge/domains/revoke/dsar/DPO boards, writes proposal-gated); Blackout kill-switch revokes it by name; `/metrics` + `/health/db` scope per principal; single-token deployments keep the legacy posture with a boot warn | v1.28.70 "Twokeys" |
+| Injection screening evasion (bidi, translation, encoding) | Layer-1 screen runs on invisible-stripped text (verdicts only tighten); the 13-phrase blocklist became five translation families + a typoglycemia tier + a bounded encoding tier; optional local ONNX classifier (fail-open, `BRAIN_INJECTION_CLASSIFIER=off` opts out, `/health/db` echoes state); log values pass ANSI/C1 scrubbing | v1.28.71 "Pores" |
+| Hostile markup at the read seam | `sanitize_read` strips a closed, case-insensitive set of hostile elements (script/iframe/svg/img/…) after the markdown-ref strip; storage stays verbatim so outstanding approval digests never move; denied `/events` subscribers get 403 BEFORE the stream opens; KB generator escapes operator-configured args | v1.28.72 "Scrim" |
+| Key + evidence lifecycle gaps | The operator signing key is deterministic (`operator.ed25519`; wrong-size/leaked seeds refuse LOUDLY); `brain key rotate` moves current→`.prev` (verify-only, one deep) with `signing_epoch` on agent cards; chain-less backup images REFUSE restore unless `--allow-chainless`; legacy-epoch chains restore disclosed as forgeable; the replay cache evicts the oldest quarter (not clear-all) and the revocation drain pages + writes `drain_incomplete` | v1.28.73 "Keyring" |
+| Taint laundering across sessions | `/ingest` accepts `origin_context: owner\|channel` (unknown = 400); channel captures store origin `channel-capture`; the label rides recall into the plugin fence (`[memory \| channel-capture]`) and the openclaw fork marks quoted/replayed memory prefixes as untrusted replay; plugin `untrustedOrigins: "exclude"` drops captured hits from auto-inject; OTLP span attributes pass ANSI/PII sanitization (collectors are untrusted infrastructure) | v1.28.74 "Origin" |
+| Dormant exec mediation (Loop-line precondition) | The dormant hostcall `exec` mediation hardened: argv0 AND allowlist entries canonicalize (planted symlinks and honest aliases distinguished), the danger screen is the documented tripwire and gained the pipe-to-shell family, `kill_on_drop` pinned at the spawn seam; dormancy is a machine-checked state (`hostcalls_mediation_stays_unwired_until_loop_line`); the installer writes `BRAIN_WRITE_POSTURE=review` on new installs only (operator-set values never stomped); `badges.sh --selfcheck` refuses without the committed SBOM artifact | v1.28.75 "Preflight" |
+
+**Ceilings this line explicitly keeps** (do not "fix" without amending the
+architecture):
+
+- The screen is a tripwire, not a boundary — the boundary is the HITL gate
+  (mantra 3). Pores widens the tripwire; it never makes ingest "safe".
+- Origin is ONE boolean-grade label (`owner` vs `channel-capture`), not a
+  lattice or policy engine — no auto-promotion exists to protect.
+- MCP catalog drift is SURFACED (notify + `pendingAck`), not gated — the ack
+  is an explicit operator touch.
+- Egress pinning defends the server's own sinks; operator allowlists (webhook
+  hosts, remote images) are trust, not safety.
+- The audit chain detects SQL/application-level tampering, not host
+  compromise; the live DB and `.bak` snapshots stay plaintext on the primary
+  (§4 items 2/2b).
 
 ---
 

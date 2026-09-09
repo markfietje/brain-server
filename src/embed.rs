@@ -52,6 +52,13 @@ impl std::error::Error for EmbedError {}
 /// the "missing embedding ⇒ empty vec ⇒ caller skips" behavior.
 pub trait Embedder: Send + Sync {
     /// Encode a batch. Returns one vector per input, in order.
+    ///
+    /// The input is budgeted to [`MAX_EMBED_CHARS`] chars per text
+    /// (the embed budget): embedding sits behind a process-wide model lock, and a
+    /// 1 MiB ingest must not pin it (second-pass audit). Stored text stays
+    /// verbatim — only the VECTOR input is clipped, identically for every
+    /// caller, so no two paths can diverge into different vectors for the
+    /// same chunk.
     fn encode(&self, texts: &[&str]) -> Vec<Vec<f32>>;
 
     /// Single-input convenience — the idiom the ~10 call sites use today
@@ -75,6 +82,21 @@ pub trait Embedder: Send + Sync {
 }
 
 // ── Default backend: model2vec StaticModel (edge/Jetson, unchanged) ─────────
+
+/// The embed input budget: embedding is a resource-bound
+/// operation behind a process-wide model lock — a 1 MiB ingest must not pin
+/// it (second-pass audit). Stored text stays verbatim; only the VECTOR
+/// input is clipped, identically at every backend's boundary (one helper,
+/// all callers), so no two paths diverge into different vectors for the
+/// same chunk. Pinned by `embed_input_is_budgeted`.
+pub const MAX_EMBED_CHARS: usize = 8_000;
+
+/// Char-boundary-safe head truncation to [`MAX_EMBED_CHARS`].
+pub(crate) fn embed_input(text: &str) -> &str {
+    text.char_indices()
+        .nth(MAX_EMBED_CHARS)
+        .map_or(text, |(i, _)| &text[..i])
+}
 
 /// The default embedder. Wraps `model2vec_rs::StaticModel` and delegates
 /// verbatim — this is the no-behavior-change backend for `edge-default`,
@@ -102,7 +124,7 @@ impl Embedder for StaticEmbedder {
         // model2vec-rs 0.1.4: `encode(&self, sentences: &[String]) -> Vec<Vec<f32>>`.
         // It takes owned Strings (not generic AsRef<str>), so build the slice.
         // The one allocation per call is negligible vs the static-token lookup.
-        let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+        let owned: Vec<String> = texts.iter().map(|s| embed_input(s).to_string()).collect();
         self.inner.encode(&owned)
     }
     fn model_id(&self) -> &str {
@@ -191,7 +213,7 @@ pub mod neural {
         /// (never certify silence), and the caller's empty-vec guard drops
         /// the row rather than writing a corrupt embedding.
         pub fn embed_multi(&self, texts: &[&str]) -> MultiOutput {
-            let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+            let owned: Vec<String> = texts.iter().map(|s| embed_input(s).to_string()).collect();
             let mut m = match crate::concurrency::mutex_guard_measured(&self.inner) {
                 Ok(m) => m,
                 Err(_) => {
@@ -271,7 +293,7 @@ pub mod neural {
 
     impl Embedder for GteEmbedder {
         fn encode(&self, texts: &[&str]) -> Vec<Vec<f32>> {
-            let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+            let owned: Vec<String> = texts.iter().map(|s| embed_input(s).to_string()).collect();
             let mut m = match crate::concurrency::mutex_guard_measured(&self.inner) {
                 Ok(m) => m,
                 Err(_) => {
@@ -370,6 +392,19 @@ mod tests {
         assert_eq!(s.encode_one("hello"), vec![5.0]); // 5 chars
         let empty: Vec<f32> = s.encode_one("");
         assert!(empty.is_empty()); // empty input ⇒ empty vec (the contract)
+    }
+
+    /// The vector input is budgeted (v1.28.76): a 1 MiB text clips to
+    /// MAX_EMBED_CHARS chars at the embedder boundary — char-boundary-safe,
+    /// short texts untouched.
+    #[test]
+    fn embed_input_is_budgeted() {
+        assert_eq!(embed_input("short prose"), "short prose");
+        let flood = "a".repeat(MAX_EMBED_CHARS * 3);
+        assert_eq!(embed_input(&flood).len(), MAX_EMBED_CHARS);
+        // Multi-byte boundary: the cut lands ON a char edge, never mid-char.
+        let wide = "é".repeat(MAX_EMBED_CHARS + 10);
+        assert_eq!(embed_input(&wide).chars().count(), MAX_EMBED_CHARS);
     }
 
     #[test]

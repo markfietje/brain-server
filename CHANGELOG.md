@@ -18,6 +18,151 @@ measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
 
+## [1.28.76] — 2026-09-09 — "Selfheal": the second-pass audit's fix release
+
+The fix release for the 2026-09-09 second-pass audit
+(`docs/SECOND_PASS_AUDIT_20260909.md`): six parallel deep-audit lanes over
+the same surfaces at HEAD, plus storage/SQL and compute-bounds lanes the
+first pass under-covered, plus a docs-truth sweep. 30 fresh findings; the 5
+HIGH-class and 7 MEDIUM close here, the rest are planned
+(v1.28.77 "Erasure", v1.28.78 "Unconditional", v1.28.79 "Ceremony").
+Theme: **nothing stripped may reassemble, and no gate has a side door.**
+
+### Release notes
+
+**Security fixes**
+
+- **The read-seam strips can no longer be welded back into live markup**
+  (SP-R1, SP-R2 — HIGH): a single pass healed hostile constructs out of
+  surrounding prose — `<scr<script>ipt>` re-emitted as a live
+  `<script>alert(1)` after the hostile-element strip, and
+  `[![a](inner) c](outer-url)` re-emitted as a live auto-fetch
+  `![a c](outer-url)` image after the markdown-ref strip (the EchoLeak
+  class the strip exists to kill). Both strips now run to a bounded
+  fixed point (each pass only deletes; overflow fails closed by dropping
+  the construct-trigger bytes), pinned by
+  `hostile_element_strip_does_not_heal_nested_tag` (incl. the 65-level
+  overflow construction) and
+  `strip_markdown_refs_does_not_heal_nested_construct`.
+- **The ONNX injection scorer is budgeted** (SP-S1 — HIGH): scoring ran
+  every sentence of a field through the process-wide ONNX session with no
+  cap, and all screened writes serialize behind that mutex — a 1 MiB
+  ingest of short sentences pinned every screened write, and the review
+  queue amplified it per listing. Fields now score at most the first 64
+  sentences of their first 16,000 chars; the tripwire can only degrade
+  toward Clean beyond the budget — the HITL gate is unaffected. Pin
+  `score_field_is_budgeted`.
+- **A valet run's `what` can no longer be rewritten past the screen**
+  (SP-W4 — HIGH; completes the X-W4 closure): the fence held at run-open
+  only, while `PUT /workflow/runs/{id}/state` rewrote the label
+  unscreened — and the label rides the alert bus to Signal relays at fire
+  time. Valet-kind runs now vet through the same fence at the CAS seam
+  (`400 valet_what_refused` + a Denied audit row). Pin
+  `put_state_refuses_unscreened_valet_what`.
+- **The principal kill-switch now reaches `/auth/refresh`** (SP-A1 — MED):
+  the route is public, so the middleware's identity check never ran there
+  and a revoked identity's refresh chain kept rotating behind the
+  revocation. Refused with the middleware's own 401 `identity_revoked`
+  code. Pin `refresh_refuses_revoked_identity`.
+- **The kill-switch now reaches the channel console** (SP-A4 — MED): a
+  mapped, role-holding actor whose principal is revoked could still list
+  and decide on bridge HMAC alone; the bridge signature proves the
+  message, not the actor's standing. Refused (`actor_revoked`) before the
+  capability check. Pin `console_actor_revoked_refused`.
+- **Private `valet/due` labels no longer stream unfiltered on the live
+  SSE feed** (SP-A7 — MED): the reconnect-replay path gated both
+  `workflow` and `valet/due` kinds with opt-in + per-domain Read, but the
+  live stream gated only `workflow` — an unfiltered Read-on-global
+  subscriber received every private reminder label across all domains.
+  Both kinds share the gate now. Pin
+  `valet_due_requires_optin_and_domain_authz`.
+- **Egress validation covers the IPv6 embed families** (SP-E1 — MED):
+  IPv4-mapped IPv6 (`::ffff:169.254.169.254` passed as "public v6" while
+  the kernel routes to the embedded link-local v4), NAT64 `64:ff9b::/96`,
+  6to4 `2002::/16`, Teredo `2001::/32`, and discard-only `100::/64` are
+  denied; mapped PUBLIC v4 stays admitted (pinned complement). Edge-
+  literal pins extend `private_ranges_refused_table`.
+- **`BRAIN_MCP_SCOPE=read` now denies `ump.feedback`** (SP-M1 — LOW):
+  the suggest-feedback upsert is a durable write that steers ranking and
+  KCS evidence, not a read; gated at dispatch and annotated
+  `x-brain-scope: read-denied` with the other four write verbs.
+- **Embedder input is budgeted** (8,000 chars at every backend boundary;
+  stored text stays verbatim, vectors stay consistent across call sites).
+- **Suggestion-feedback rows are erased with their chunk** (SP-S5, first
+  arm): a certified purge no longer leaves feedback queryable by chunk id;
+  the DSAR sweep adds the tenant arm. The session-join question stays open
+  for v1.28.77 "Erasure".
+
+**Bug fixes**
+
+- **`repo-brief.sh` crashed at HEAD** (grep exit-1 on zero route sites in
+  the thin main.rs under `set -e`); it now counts router registrations and
+  runs clean — the one-shot briefing tool works again.
+- Corrected false in-code claims: `review_digest` binds the READ-CANONICAL
+  form, not stored bytes (any `sanitize_read` widening moves digests of
+  affected rows — fail-closed 409s at approve, disclosed per release); the
+  hostile-element set honestly documents its fetch/embed scope (`on*=`
+  handlers and script-scheme hrefs on other elements remain the stated
+  ceiling; the KB surface ships `default-src 'none'`).
+
+**Improvements**
+
+- Docs truth (the user-facing half): THREAT_MODEL.md gained §5b — the
+  v1.28.63–.75 control table + kept ceilings (was frozen at v1.28.68);
+  SECURITY.md's history gained the 13 missing releases (was stopped at
+  v1.28.17); the OWASP agentic matrix is re-stamped (ASI05 now states the
+  dormant, machine-pinned exec seam); `docs/AI_LITERACY.md`,
+  `docs/openclaw-integration.md` (plugin 0.6.0 + origin labels), and the
+  plugin changelog (the missing [0.6.0] row) are current.
+- The second-pass audit itself: `docs/SECOND_PASS_AUDIT_20260909.md` —
+  30 findings across both trees, closure verification of the 09-06 ledger,
+  and the tightly-scoped v1.28.77–.79 remediation plan.
+
+### Engineering record
+
+- **The .75 correction, stated plainly:** `exec_spawn_carries_kill_on_drop`
+  asserted a source string whose only occurrence was the assertion itself —
+  it could never fail — and the exec spawn is `std::process::Command`, which
+  has no kill_on_drop API. The real mechanism at that seam is the deadline
+  block (kill + wait + join, then refuse). The pin is rewritten honest and
+  behavioral (`exec_deadline_kills_child`: a 30 s sleep budgeted at 250 ms
+  must return the deadline refusal within 5 s — a missing kill would block
+  `wait()` for the child's full runtime and fail the bound), and the
+  deadline is injectable (`exec_effect_for`). AGENTS.md's .75 row overstates;
+  this section is the correction of record.
+- **Digest-invalidation disclosure:** the fixpoint strips widen
+  `sanitize_read` output exactly for rows whose stored text welds nested
+  constructs — those rows' `review_digest` moves, so outstanding approvals
+  fail closed with 409 at approve time and must be re-reviewed. Same
+  direction Scrim's strip addition took (there unnoticed; the corpus was
+  markup-free). Fail-closed by design; disclosed per the corrected gate.rs
+  discipline note.
+- The no-SQL-in-handlers guard caught three violations from this very fix
+  pass (the handler kind-read moved to `state::run_kind`; test fixtures
+  moved onto the production cores `role::upsert`,
+  `apply_user_map_change`, `revoke_principal`) — the law polices its
+  authors.
+- Pins added (10): `strip_markdown_refs_does_not_heal_nested_construct`,
+  `hostile_element_strip_does_not_heal_nested_tag`,
+  `line_markers_anchor_on_every_break_class` (the screen's line class is
+  the renderer's — lone `\r`, VT, FF, NEL, U+2028/9 anchor too),
+  `score_field_is_budgeted`, `embed_input_is_budgeted`,
+  `exec_deadline_kills_child`, `valet_due_requires_optin_and_domain_authz`,
+  `refresh_refuses_revoked_identity`, `console_actor_revoked_refused`,
+  `put_state_refuses_unscreened_valet_what`,
+  `purge_removes_suggest_feedback_for_purged_chunk` (11 counting the
+  egress table extensions inside `private_ranges_refused_table`). CRATE_
+  TEST_FLOOR 1,363 → 1,372.
+- Gates: full bench suite green; clippy bench/default/otel clean; fmt +
+  lipstyk clean; openapi.yaml/route tables/x-api-version diff-empty (no
+  wire change — every surface here is behavioral or docs).
+- `ponytail:` what this release does NOT do: no restore/standby posture
+  changes (v1.28.77), no KNN/dedup/legacy-search quarantine fixes
+  (v1.28.78), no key-rotate ceremony or token-demotion changes
+  (v1.28.79), no fork-side commits for SP-F2/F3/F4/F6 (they ride the next
+  fork sync), no classifier-default change (still opt-in), no lattice, no
+  policy engine, no new deps.
+
 ## [1.28.75] — 2026-09-08 — "Preflight": the program's exit gate
 
 The last REGISTER LINE release (X-W7, X-A4b, X-C5, X-C6, X-C8 — audit

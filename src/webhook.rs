@@ -384,7 +384,11 @@ const IPV4_DENY: &[(u32, u8, &str)] = &[
     (0xF000_0000, 4, "reserved 240/4"),
 ];
 
-/// IPv6 deny table: `(network, prefix bits, class)`.
+/// IPv6 deny table: `(network, prefix bits, class)`. The transition/embed
+/// families (NAT64 well-known prefix, 6to4, Teredo, discard-only) are denied
+/// wholesale — each can carry a routable v4 address inside its bits, and the
+/// operator's promise is "no private reach", not "no private reach except
+/// via an encapsulation trick" (pinned with edge literals).
 const IPV6_DENY: &[(u128, u8, &str)] = &[
     (0, 128, "unspecified ::"),
     (1, 128, "loopback ::1"),
@@ -392,6 +396,10 @@ const IPV6_DENY: &[(u128, u8, &str)] = &[
     (0xFE80 << 112, 10, "link-local fe80::/10"),
     (0xFF00 << 112, 8, "multicast ff00::/8"),
     (0x2001_0DB8 << 96, 32, "documentation 2001:db8::/32"),
+    (0x64_FF9B << 96, 96, "nat64 64:ff9b::/96"),
+    (0x2002 << 112, 16, "6to4 2002::/16"),
+    (0x2001_0000 << 96, 32, "teredo 2001::/32"),
+    (0x0100 << 112, 64, "discard-only 100::/64"),
 ];
 
 fn ipv4_denied(ip: Ipv4Addr) -> Option<&'static str> {
@@ -426,7 +434,11 @@ fn ipv6_denied(ip: Ipv6Addr) -> Option<&'static str> {
 
 /// THE policy fn (pure, table-driven over `IpAddr`; unit-tested with
 /// literal IPs — no DNS in unit tests). EVERY address must clear the
-/// registries; one private hit refuses the whole set.
+/// registries; one private hit refuses the whole set. An IPv4-mapped IPv6
+/// (`::ffff:a.b.c.d`) is normalized to its embedded v4 and checked against
+/// the v4 table — the kernel routes the connection to that v4, so the v6
+/// rows would never see the private embed (`::ffff:169.254.169.254` is the
+/// pinned probe).
 pub fn validate_public_addrs(
     host: &str,
     addrs: &[SocketAddr],
@@ -434,7 +446,13 @@ pub fn validate_public_addrs(
     for sa in addrs {
         let class = match sa.ip() {
             IpAddr::V4(ip) => ipv4_denied(ip),
-            IpAddr::V6(ip) => ipv6_denied(ip),
+            IpAddr::V6(ip) => {
+                // An IPv4-mapped IPv6 (::ffff:a.b.c.d) routes to the embedded
+                // v4 — validate it with the v4 table or the v6 rows never see
+                // the private embed (the ::ffff:169.254.169.254 pin).
+                ip.to_ipv4_mapped()
+                    .map_or_else(|| ipv6_denied(ip), ipv4_denied)
+            }
         };
         if let Some(class) = class {
             return Err(EgressRefused::PrivateAddr {
@@ -1103,6 +1121,22 @@ mod tests {
             ("febf::ffff", "link-local fe80::/10"),
             ("ff02::1", "multicast ff00::/8"),
             ("2001:db8::1", "documentation 2001:db8::/32"),
+            // v1.28.76: the embed/transition families. The mapped-v4 form
+            // resolves through the v4 table, so its class label is the v4
+            // one — the embeds below carry private payloads.
+            ("::ffff:10.0.0.1", "private 10/8"),
+            (
+                "::ffff:169.254.169.254",
+                "link-local/cloud-metadata 169.254/16",
+            ),
+            ("::ffff:192.168.1.77", "private 192.168/16"),
+            ("::ffff:100.64.0.1", "cgnat 100.64/10"),
+            ("64:ff9b::a00:1", "nat64 64:ff9b::/96"),
+            ("64:ff9b::c0a8:14b", "nat64 64:ff9b::/96"),
+            ("2002:a00:1::", "6to4 2002::/16"),
+            ("2002:c0a8:101::", "6to4 2002::/16"),
+            ("2001:0:a00:1:0:0:0:1", "teredo 2001::/32"),
+            ("100::1", "discard-only 100::/64"),
         ];
         for (ip_str, class) in denied {
             let ip: std::net::IpAddr = ip_str
@@ -1129,6 +1163,9 @@ mod tests {
             "172.32.0.1:80",
             "198.20.0.1:443",
             "[2606:4700::1111]:443",
+            // A MAPPED PUBLIC v4 is still admitted — the normalization must
+            // not over-refuse (the pinned complement to the embed refusals).
+            "[::ffff:8.8.8.8]:443",
         ] {
             let sa: SocketAddr = ok.parse().unwrap();
             validate_public_addrs("sink.test", &[sa])

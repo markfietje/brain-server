@@ -1034,6 +1034,44 @@ pub async fn put_run_state(
         ));
     }
     valid_state_body(&body.state_json)?;
+    // X-W4 completion: a valet run's `what` is fenced at OPEN
+    // (`post_run`) and the label rides the alert bus to Signal relays at
+    // fire time — the CAS path was the remaining unscreened write seam, so
+    // the fence holds here too. Named refusal + denied audit row, the same
+    // shape as the unknown_status refusal above (pinned by
+    // `put_state_refuses_unscreened_valet_what`).
+    let kind_pool = pool.clone();
+    let run_id = id;
+    let run_kind = tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
+        let conn = kind_pool.get().map_err(|e| format!("{e}"))?;
+        crate::workflow::state::run_kind(&conn, run_id).map_err(|e| format!("{e}"))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?;
+    if run_kind
+        .as_deref()
+        .unwrap_or_default()
+        .starts_with("valet/")
+        && let Err(vet_err) = crate::workflow::valet::vet_open_state(&body.state_json)
+    {
+        let actor = super::recall::principal_label(&principal);
+        if let Ok(conn) = pool.get() {
+            crate::audit::record_tenant(
+                &conn,
+                crate::audit::AuditKind::Workflow,
+                &actor,
+                &format!("run:{id}"),
+                crate::audit::AuditStatus::Denied,
+                &format!("valet_what_unscreened {vet_err}"),
+                &domain,
+            );
+        }
+        return Err(HandlerError::bad_request(
+            "valet_what_refused",
+            format!("valet run state rewrite refused the screen: {vet_err}"),
+        ));
+    }
     let new_state = body.state_json;
     let expected_rev = body.expected_rev;
     let completed_status = status.clone();

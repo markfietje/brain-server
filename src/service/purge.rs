@@ -156,6 +156,14 @@ pub fn purge_chunk_ids(
             "DELETE FROM proposals WHERE conflict_with = ?1",
             params![id],
         )?;
+        // suggest_feedback rows on the purged chunk are residue too
+        // (the DSAR completion): the row's subject link IS the chunk reference, so a
+        // certified purge must not leave it queryable by chunk_id (the DSAR
+        // sweep's tenant arm covers the rest).
+        tx.execute(
+            "DELETE FROM suggest_feedback WHERE chunk_id = ?1",
+            params![id],
+        )?;
         // cascade to recall_traces. The trace side table (read-event
         // replay artifact) embeds hit chunk ids in its JSON; a purged chunk
         // must not leave a trace that still "proves" it was returned. JSON1
@@ -265,6 +273,43 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
             .unwrap();
         assert_eq!(remaining, 0);
+    }
+
+    /// Suggest-feedback rows on a purged chunk are residue (v1.28.76): the
+    /// row's subject link IS the chunk reference, so certified erasure must
+    /// not leave it queryable by chunk_id.
+    #[test]
+    fn purge_removes_suggest_feedback_for_purged_chunk() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
+        crate::migration::run_migration(&mut conn, 1).expect("migration");
+        conn.execute(
+            "INSERT INTO knowledge (content, content_hash, node_kind) \
+             VALUES ('subject memory', 'h-sf', 'fact')",
+            [],
+        )
+        .unwrap();
+        let id: i64 = conn
+            .query_row("SELECT id FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        conn.execute(
+            "INSERT INTO suggest_feedback(chunk_id, feedback, ts, tenant_id) \
+             VALUES (?1, 'helpful', 1, 'default')",
+            rusqlite::params![id],
+        )
+        .unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let tx = conn.transaction().unwrap();
+        purge_chunk_ids(&tx, &[id], now, "test", None).unwrap();
+        tx.commit().unwrap();
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM suggest_feedback WHERE chunk_id = ?1",
+                rusqlite::params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0, "feedback on a purged chunk must be erased");
     }
 
     /// the in-function legal-hold fence is the BACKSTOP every erasure

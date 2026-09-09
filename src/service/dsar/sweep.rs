@@ -210,6 +210,15 @@ pub(crate) fn sweep_subject(
         "DELETE FROM principal_skills WHERE principal = ?1",
         rusqlite::params![subject],
     )?;
+    // Suggestion feedback: the table has NO principal column —
+    // its subject links are the tenant label (per-principal tenants keep
+    // their feedback rows erased here) and the chunk references the purge
+    // arm already removes. Counted under dependent rows so the certificate
+    // footprint stays honest.
+    report.dependent_rows += tx.execute(
+        "DELETE FROM suggest_feedback WHERE tenant_id = ?1",
+        rusqlite::params![subject],
+    )?;
     // Channel sweep: a note or invite carries the subject's personal data
     // BOTH as authorship/addressee ids AND possibly in content — the exact-
     // principal arms cover rows on ANY run (over-match, erasure-safe

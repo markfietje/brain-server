@@ -403,6 +403,7 @@ fn run_mediated_exec(
     }
 }
 
+#[derive(Debug)]
 struct ExecOutput {
     exit_code: i64,
     stdout: Vec<u8>,
@@ -412,6 +413,13 @@ struct ExecOutput {
 /// Validate + run one allowlisted command. Pure-ish seam so tests hit the
 /// refusal logic without spawning processes where possible.
 fn exec_effect(body: &str) -> Result<ExecOutput, String> {
+    exec_effect_for(body, std::time::Duration::from_secs(EXEC_TIMEOUT_SECS))
+}
+
+/// [`exec_effect`] with an injectable budget — the seam the deadline pin
+/// drives (the honest re-pin; the old string-contains pin could never
+/// fail: its target literal occurred only inside the assertion itself).
+fn exec_effect_for(body: &str, budget: std::time::Duration) -> Result<ExecOutput, String> {
     let v: serde_json::Value =
         serde_json::from_str(body).map_err(|_| "invalid exec payload".to_string())?;
     let mut argv: Vec<String> = v
@@ -485,7 +493,7 @@ fn exec_effect(body: &str) -> Result<ExecOutput, String> {
     }
     let out_reader = drain(child.stdout.take(), EFFECT_OUTPUT_CAP);
     let err_reader = drain(child.stderr.take(), EFFECT_OUTPUT_CAP);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(EXEC_TIMEOUT_SECS);
+    let deadline = std::time::Instant::now() + budget;
     loop {
         // Deadbolt (X-M5): every exit from this loop reaps the child — the
         // deadline branch kills explicitly, and a failed wait would have
@@ -880,16 +888,34 @@ mod tests {
         );
     }
 
-    /// kill_on_drop is inherited on the exec spawn path: abandonment (router
-    /// timeout, disconnect) kills the child with the drop — the .69 outcome
-    /// pinned at the seam that owns the spawn.
+    /// THE deadline pin, rewritten honest (v1.28.76): the .75
+    /// `exec_spawn_carries_kill_on_drop` asserted a source string whose only
+    /// occurrence was the assertion itself — it could never fail, and the
+    /// exec spawn is `std::process::Command` (no drop-kill exists). What
+    /// this seam owns is the DEADLINE branch, and the branch's kill + wait +
+    /// join are the same block that returns the error — so a child that was
+    /// NOT killed would keep `wait()`/the pipe readers blocked for its full
+    /// runtime and blow the elapsed bound. A 30 s `sleep` budgeted at 250 ms
+    /// must return the deadline refusal in seconds.
     #[test]
-    fn exec_spawn_carries_kill_on_drop() {
-        let body = include_str!("hostcalls.rs");
+    fn exec_deadline_kills_child() {
+        let _g = env_lock();
+        unsafe {
+            std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "/bin/sleep");
+        }
+        let started = std::time::Instant::now();
+        let err = exec_effect_for(
+            r#"{"argv":["/bin/sleep","30"]}"#,
+            std::time::Duration::from_millis(250),
+        )
+        .expect_err("the deadline must fire");
+        assert_eq!(err, "exec exceeded time budget");
         assert!(
-            body.contains("cmd.kill_on_drop(true)"),
-            "the exec spawn must set kill_on_drop (abandonment kills the child)"
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the child must be killed + reaped at the deadline, not awaited: {:?}",
+            started.elapsed()
         );
+        unsafe { std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST") };
     }
 
     #[test]

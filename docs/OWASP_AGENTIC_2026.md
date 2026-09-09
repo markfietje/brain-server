@@ -1,6 +1,9 @@
 # OWASP 2026 Compliance Matrix — brain-server (v1.27.12 "Agentic")
 
-**Last reviewed:** 2026-08-15 against the two 2026 OWASP agentic frameworks.
+**Last reviewed:** 2026-09-09 against the two 2026 OWASP agentic frameworks
+(rows below were first drawn up at v1.27.12; the dated addendum after Part 2
+carries the deltas the v1.28.63–.76 hardening line shipped — the row statuses
+stay, the addendum extends them).
 
 | Framework | Edition | Published | Canonical source |
 |---|---|---|---|
@@ -55,7 +58,7 @@ GitHub MCP exploit (supply chain), AutoGPT RCE (code exec), Gemini memory attack
 | **ASI02 Tool Misuse** | MCP tools are thin typed proxies over a validated API; per-route action matrix; no tool-description parsing of untrusted input | **Shipped** |
 | **ASI03 Identity & Privilege Abuse** | JWT/JWS + revocation + refresh-chain reuse detection; per-handler AuthZ; tenant-scoped audit; capability tokens not grantable for admin | **Shipped v1.2–v1.17.3**; full multi-team tenancy = **Ceiling v2.x** (owner v2.0 Cortex) |
 | **ASI04 Agentic Supply Chain** | First-party MCP only; plugin pinned by openclaw config; SBOM; UMP integrity | **Shipped** |
-| **ASI05 Unexpected Code Execution** | brain-server is a token validator — no eval path; client render never executes bodies | **Shipped (architectural)** |
+| **ASI05 Unexpected Code Execution** | brain-server is a token validator — no eval path on the served surface; client render never executes bodies. The ONE exec seam in the tree is the dormant hostcall `exec` mediation (operator allowlist, argv-only, cwd-pinned, caps): hardened in v1.28.75 (argv0 + allowlist-entry canonicalization, danger screen incl. pipe-to-shell, `kill_on_drop`) and machine-pinned UNWIRED until the 1.32.x Loop line — dormancy is a test-enforced state | **Shipped (architectural) + v1.28.75 (dormant seam hardened + pinned)** |
 | **ASI06 Memory & Context Poisoning** | **The core of this line**: screen (G1) + approval gate (G2) + classifier (G5) + quarantine + retention decay + cryptographic integrity (audit chain, UMP blocks) + provenance (`origin`) | **Shipped + v1.20.1–3** |
 | **ASI07 Insecure Inter-Agent Communication** | HMAC webhooks + `webhook_seen` idempotency; **Standard Webhooks handshake (v1.20.4)**; UMP capability tokens | **Shipped + v1.20.4**; A2A federation = **Ceiling v2.x** (owner v2.0 Cortex) |
 | **ASI08 Cascading Failures** | Proposal TTL auto-reject + expiry audit (v1.20.1); bounded webhook queue + idempotency; per-row batch outcomes; failure isolation in DSAR/consolidate | **Shipped + v1.20.1** |

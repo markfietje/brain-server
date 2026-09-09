@@ -425,6 +425,13 @@ fn resolve_console_actor(
     else {
         return Err("actor_not_mapped");
     };
+    // The kill-switch reaches the console: a mapped principal
+    // sitting in `revoked_principals` must not list or decide through the
+    // bridge HMAC alone — the bridge signature proves the MESSAGE, not the
+    // actor's standing (pinned by `console_actor_revoked_refused`).
+    if crate::workflow::mesh::is_revoked(conn, &principal).map_err(|_| "revocation_unreadable")? {
+        return Err("actor_revoked");
+    }
     // A channel-relayed act REQUIRES an explicit role grant — the map is the
     // only trust anchor and an empty grant grants nothing.
     if roles.is_empty() {
@@ -1127,6 +1134,64 @@ fn _probe(_: Option<String>) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The kill-switch reaches the console (v1.28.76): a mapped, role-
+    /// holding actor whose principal sits in `revoked_principals` is
+    /// refused (`actor_revoked`) BEFORE the capability check — the bridge
+    /// HMAC proves the message, not the actor's standing. Fixtures ride the
+    /// production cores (role::upsert, apply_user_map_change,
+    /// revoke_principal) — the no-SQL-in-handlers law covers tests too.
+    #[test]
+    fn console_actor_revoked_refused() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::migration::run_migration(&mut conn, 1).unwrap();
+        crate::role::upsert(
+            &conn,
+            &crate::role::Role {
+                name: "supervisor".to_string(),
+                description: None,
+                scopes: vec!["private".to_string()],
+                owner_filter: "all".to_string(),
+                can: vec!["read".to_string(), "approve".to_string()],
+                panels_default: None,
+                panels_hidden: None,
+                tools_allowed: None,
+            },
+        )
+        .unwrap();
+        crate::workflow::channels::apply_user_map_change(
+            &conn,
+            &crate::workflow::channels::UserMapChange {
+                action: "add".to_string(),
+                channel: "whatsapp".to_string(),
+                tenant: "acme".to_string(),
+                platform_user_id: "UOPERATOR".to_string(),
+                principal: "ops@acme".to_string(),
+                roles: vec!["supervisor".to_string()],
+            },
+            "seed",
+            100,
+        )
+        .unwrap();
+        let cfg = ChannelBridgeConfig {
+            kind: "whatsapp".to_string(),
+            tenant: "acme".to_string(),
+            domain: "acme".to_string(),
+            webhook_secret: b"secret".to_vec(),
+        };
+        let (principal, roles) = resolve_console_actor(&conn, &cfg, "UOPERATOR", "approve")
+            .expect("mapped + roled actor resolves");
+        assert_eq!(principal, "ops@acme");
+        assert_eq!(roles, vec!["supervisor".to_string()]);
+        crate::workflow::mesh::revoke_principal(&conn, "ops@acme", "second-pass drill", "op", 200)
+            .unwrap();
+        assert_eq!(
+            resolve_console_actor(&conn, &cfg, "UOPERATOR", "approve"),
+            Err("actor_revoked"),
+            "a revoked actor must not list or decide through the bridge"
+        );
+    }
 
     /// Env-mutating tests serialize on this lock (the hostcalls posture:
     /// env reads are process-global). Poison-tolerant so a panicking sibling

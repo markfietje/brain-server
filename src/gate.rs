@@ -368,17 +368,35 @@ pub use crate::fence::strip_markdown_refs;
 
 /// Strip a CLOSED set of hostile element names from emitted text — not all
 /// tags: prose angle-brackets ("x < y", "<3", "a<b>c") must survive. The set
-/// is the fetch/script/embed class: anything that could execute or
-/// auto-fetch in a downstream renderer (script/img/iframe/svg/object/embed/
-/// link/meta/form/input/video/audio/source/track/base). Case-insensitive;
+/// is the fetch/script/embed class: the elements that execute or auto-fetch
+/// by their mere presence (script/img/iframe/svg/object/embed/link/meta/
+/// form/input/video/audio/source/track/base). Case-insensitive;
 /// attribute-greedy to the matching `>`; both the opening form and the
 /// closing form (`</script>`) are stripped, leaving any inner content as
 /// inert prose. Deterministic, zero deps — a closed name-set, NOT an HTML
 /// parser (markup the system never intentionally stores does not justify a
-/// parser dependency). Read-seam ONLY: storage stays verbatim, so
-/// digest-bearing surfaces are untouched (`review_digest` binds the stored
-/// form). Bare URLs in prose remain the documented ceiling above.
+/// parser dependency). Read-seam ONLY: storage stays verbatim.
+///
+/// ponytail ceiling, stated honestly: this is a NAME-set, not an attribute
+/// sanitizer — `on*=` handler attributes and `javascript:` hrefs on elements
+/// OUTSIDE the set (a/details/marquee/body…) survive, so a downstream HTML
+/// consumer still needs its own CSP. The KB surface ships `default-src
+/// 'none'`; arbitrary third-party renderers are the consumer's contract.
+///
+/// The strip runs to its FIXED POINT (bounded): a single pass heals nested
+/// forms — `<scr<script>ipt>` re-emits `<scr` + the post-strip tail and
+/// welds into a live `<script>` (second-pass pinned). Each pass only
+/// deletes, so the loop terminates by itself; the shared
+/// [`crate::fence::FIXPOINT_PASSES`] bound fails closed by dropping the
+/// remaining `<` bytes entirely (no `<` → no tags). Bare URLs in prose
+/// remain the documented ceiling above.
 pub(crate) fn strip_hostile_elements(s: &str) -> String {
+    crate::fence::strip_to_fixpoint(s, strip_hostile_elements_once, |cur| {
+        cur.chars().filter(|c| *c != '<').collect()
+    })
+}
+
+fn strip_hostile_elements_once(s: &str) -> String {
     const ELEMENTS: [&str; 15] = [
         "script", "img", "iframe", "svg", "object", "embed", "link", "meta", "form", "input",
         "video", "audio", "source", "track", "base",
@@ -447,9 +465,21 @@ pub(crate) fn strip_hostile_elements(s: &str) -> String {
 /// (`![i]\u{200B}(url)` survived the old order; PoC-pinned). The element strip
 /// lands AFTER the ref strip so `<img src=x>`-style markdown-hybrid forms
 /// (whose `(...)` the ref strip consumed first) meet the tag stripper too.
-/// Nothing runs after either strip, so nothing can heal a miss.
+/// Both strips run to their fixed points: a single pass can weld a
+/// stripped construct back out of surrounding prose (`<scr<script>ipt>` and
+/// the nested-image `[![a](i) c](o)` heals; second-pass pinned) — the
+/// fixpoint pass strips the weld.
 /// `redact_content`'s `[redacted:*]` placeholders carry no following `(...)`,
 /// so they pass through `strip_markdown_refs` untouched (no interaction).
+///
+/// **Digest truth:** `review_digest` binds THE
+/// READ-CANONICAL form this function produces (`pii=false`,
+/// principal-independent) — NOT the stored bytes. Storage stays verbatim so
+/// re-screening and digests see one shape, but any widening of this pipeline
+/// (as Scrim's `strip_hostile_elements` addition was) MOVES the digest of
+/// every row whose text the new transform touches: outstanding approvals
+/// fail closed with 409 at approve time and must be re-reviewed. Release
+/// discipline: any `sanitize_read` change must disclose digest invalidation.
 pub fn sanitize_read(s: &str, pii: bool, principal: &Option<crate::auth::Principal>) -> String {
     strip_hostile_elements(&strip_markdown_refs(
         &crate::strip_invisible::strip_invisible(&redact_content(s, pii, principal)),
@@ -1025,6 +1055,31 @@ mod tests {
                 "prose must survive the element strip"
             );
         }
+    }
+
+    /// The weld forge (v1.28.76): a single pass re-emits a non-set tag's
+    /// `<` plus prose, and the tail AFTER a stripped set-tag welds onto it —
+    /// `<scr<script>ipt>` healed into a live `<script>` under the old
+    /// one-pass strip. The fixed-point pass strips the weld; no set-name
+    /// element may survive, and no live tag may be assembled.
+    #[test]
+    fn hostile_element_strip_does_not_heal_nested_tag() {
+        let forge = "<scr<script>ipt>alert(1)</script>";
+        let out = sanitize_read(forge, false, &None);
+        assert_eq!(
+            out, "alert(1)",
+            "nested heal must strip to inert prose: {out:?}"
+        );
+        assert!(!out.to_ascii_lowercase().contains("<script"));
+        // 65 nested heal levels need 65 fixpoint passes — one past the
+        // bound — so the overflow sweep fires and fails closed: the output
+        // carries no `<` at all, hence no assemblable tag.
+        let deep = "<scr".repeat(65) + "<script></script>" + &"ipt>".repeat(65);
+        let out2 = sanitize_read(&deep, false, &None);
+        assert!(
+            !out2.contains('<'),
+            "overflow sweep must leave no tag trigger: {out2:?}"
+        );
     }
 
     /// The canonical drill shape: an SVG with an onload handler carries no

@@ -25,8 +25,11 @@ m=src/main.rs
 if [ -f "$m" ]; then
   total=$(wc -l < "$m" | tr -d ' ')
   testln=$(awk '/^#\[cfg\(test\)\]/{found=NR} END{print found}' "$m")
-  routes=$(grep -c '\.route(' "$m")
-  echo "main.rs: ${total} lines | test-region from L${testln:-?} | .route( sites: ${routes}"
+  # Capstone: route registrations live ONLY under src/server/router/** —
+  # main.rs is wiring (0 .route( sites is the expected state, so the count
+  # must tolerate grep's exit-1-on-zero and read the router tree instead).
+  routes=$(grep -rhoE '\.route\(' src/server/router/ 2>/dev/null | wc -l | tr -d ' ')
+  echo "main.rs: ${total} lines | test-region from L${testln:-?} | router .route( sites: ${routes:-0}"
 fi
 echo "env vars:      $(grep -rhoE 'BRAIN_[A-Z0-9_]+' src --include='*.rs' | sort -u | wc -l | tr -d ' ')"
 echo "unique paths:  $(tr '\n' ' ' < "$m" 2>/dev/null | grep -oE '"(/[a-zA-Z0-9{}_.:/-]+)"' | sort -u | wc -l | tr -d ' ')"

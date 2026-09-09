@@ -5,14 +5,15 @@ personal AI assistant gateway. The integration is a TypeScript plugin
 (`@markfietje/brain-server-openclaw`) that lives in `plugin/` and calls the Rust server over
 **loopback HTTP**. It plugs into OpenClaw's **memory slot** (`kind: "memory"`).
 
-**Plugin version:** the in-tree package is at **0.6.0**. It is published as
+**Plugin version:** the in-tree package is at **0.6.1**. It is published as
 `@markfietje/brain-server-openclaw` (npm) (the openclaw monorepo ships it under
 `extensions/brain-server`, in sync with the `plugin/` tree). Per-version behavior lives in
 `plugin/CHANGELOG.md`; the server-side releases each version rides on are itemized in
 `../CHANGELOG.md` (see the **plugin 0.4.x/0.5.x/0.6.x** rows: 0.4.3 provenance, 0.4.4
 fence-forgery closure, 0.4.5 the `BRAIN_TOKEN_FILE` env-token ladder, 0.4.6 recall-graph
 default-pinning, 0.4.7 drift reconciliation + hardening, 0.5.0 the Team Bridge, 0.5.1 the
-strip-set parity sync, 0.6.0 the origin labels — see the Security model below).
+strip-set parity sync, 0.6.0 the origin labels, 0.6.1 the manifest schema
+declaration for `untrustedOrigins` — see the Security model below).
 
 The remembered, searchable, erased facts all live in the Rust brain-server. The plugin is a **thin
 TypeScript shim**: it implements the OpenClaw SDK contract (hooks, tools, config, gating) and
@@ -516,7 +517,7 @@ schema is `plugin/openclaw.plugin.json` (`configSchema`). Defaults in parenthese
 | `teamBridge` | `false` | **v0.5.0** — mirror agent activity onto the governed dashboards (mesh card + run timeline + scoreboard), off by default; gated by the same `agents` allowlist. |
 | `teamDomain` | `defaultDomain` | Domain the bridge opens its mirrored runs in (1–63 lowercase alnum/hyphen; validated client-side so a bad value can't fail every request). |
 | `teamHeartbeatMs` | `60000` | Throttle for the mirrored run's `beat` lineage event (15 s – 10 min; rides `before_prompt_build`). |
-| `untrustedOrigins` | `"label"` | **v0.6.0** — how channel-captured hits are treated in AUTO-INJECT: `label` keeps them with a visible `[memory \| channel-capture]` line inside the fence; `exclude` drops them from auto-injection entirely (the `memory_recall` TOOL path always labels, whatever this is set to — a tool consumer always sees the taint). |
+| `untrustedOrigins` | `"label"` | **v0.6.0** (declared in the manifest schema as of **v0.6.1** — a host validating plugin config now accepts the key) — how channel-captured hits are treated in AUTO-INJECT: `label` keeps them with a visible `[memory \| channel-capture]` line inside the fence; `exclude` drops them from auto-injection entirely (the `memory_recall` TOOL path always labels, whatever this is set to — a tool consumer always sees the taint). |
 
 ```jsonc
 // sanitized example
@@ -528,7 +529,8 @@ schema is `plugin/openclaw.plugin.json` (`configSchema`). Defaults in parenthese
     "allowedChatTypes": ["direct", "explicit"],
     "autoRecall": true,
     "autoCapture": true,                     // off by default; a policy choice
-    "captureMode": "proposal"                // human review queue (default)
+    "captureMode": "proposal",               // human review queue (default)
+    "untrustedOrigins": "label"              // "exclude" drops channel-captured hits from auto-inject
   }
 }
 ```

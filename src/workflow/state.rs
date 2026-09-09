@@ -164,6 +164,17 @@ pub(crate) fn read_state_and_revision(
     .optional()
 }
 
+/// The run's kind (`valet/…`, `interview`, …) — the X-W4 completion's
+/// kind-scoped vet at the CAS seam reads it. Missing row → None.
+pub(crate) fn run_kind(conn: &Connection, run_id: i64) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT kind FROM workflow_runs WHERE id=?1",
+        params![run_id],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+}
+
 /// The run's step rows in id order: (id, run_id, phase, step_key,
 /// state_json, revision, parent_step_id). Stored forms — the read seam
 /// stays handler-side.

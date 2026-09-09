@@ -54,6 +54,19 @@ fn denylist_expires_at(token_exp: Option<u64>, now: u64) -> u64 {
     })
 }
 
+/// The refresh-phase kill-switch: `/auth/refresh` is a PUBLIC
+/// route, so the auth middleware's identity check never runs there — this
+/// is the one door a revoked identity could keep walking through, rotating
+/// its chain forever behind the revocation. Same store, same 401
+/// `identity_revoked` code the middleware returns on the authenticated
+/// routes. Pinned by `refresh_refuses_revoked_identity`.
+fn refresh_principal_alive(conn: &rusqlite::Connection, sub: &str) -> Result<(), AuthHandlerError> {
+    if crate::workflow::mesh::is_revoked(conn, sub).map_err(|_| AuthHandlerError::internal())? {
+        return Err(AuthHandlerError::identity_revoked());
+    }
+    Ok(())
+}
+
 /// Request body for `/auth/refresh`. The refresh token is the credential.
 #[derive(Debug, Deserialize)]
 pub struct RefreshRequest {
@@ -165,6 +178,12 @@ pub async fn refresh(
     let refresh_token = req.refresh_token.clone();
     let result = tokio::task::spawn_blocking(move || -> Result<TokenPair, AuthHandlerError> {
         let conn = pool.get().map_err(|_| AuthHandlerError::internal())?;
+        // Kill-switch FIRST: /auth/refresh is a PUBLIC route, so
+        // the middleware's identity-revocation check never runs for it. A
+        // revoked identity's refresh chain must die here too, or the family
+        // keeps rotating forever behind the revocation (pinned by
+        // `refresh_refuses_revoked_identity`).
+        refresh_principal_alive(&conn, &claims.sub)?;
         let signing = key_store
             .signing_key()
             .ok_or_else(AuthHandlerError::no_signing_key)?;
@@ -382,6 +401,17 @@ impl AuthHandlerError {
         }
     }
 
+    /// The kill-switch reached the refresh seam: the same 401
+    /// code the auth middleware returns on the authenticated routes — the
+    /// identity is GONE, not merely unauthorized.
+    pub fn identity_revoked() -> Self {
+        AuthHandlerError {
+            status: StatusCode::UNAUTHORIZED,
+            code: "identity_revoked",
+            message: "principal has been revoked".to_string(),
+        }
+    }
+
     pub fn jwt_unavailable() -> Self {
         AuthHandlerError {
             status: StatusCode::NOT_FOUND,
@@ -517,6 +547,30 @@ fn build_encoding_key(mk: &crate::auth::jwks::ManagedKey) -> Result<EncodingKey,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The refresh seam consults the kill-switch (v1.28.76): a revoked
+    /// identity's `sub` refuses with the middleware's 401
+    /// `identity_revoked` shape — the family cannot rotate behind the
+    /// revocation; a clean sub passes. The revocation is written through
+    /// the production core (the no-SQL-in-handlers law covers tests too).
+    #[test]
+    fn refresh_refuses_revoked_identity() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::migration::run_migration(&mut conn, 1).unwrap();
+        assert!(refresh_principal_alive(&conn, "user@example").is_ok());
+        crate::workflow::mesh::revoke_principal(
+            &conn,
+            "user@example",
+            "second-pass drill",
+            "op",
+            1,
+        )
+        .unwrap();
+        let err = refresh_principal_alive(&conn, "user@example").unwrap_err();
+        assert_eq!(err.code, "identity_revoked");
+        assert_eq!(err.status, axum::http::StatusCode::UNAUTHORIZED);
+    }
 
     /// A long-lived external-IdP token gets a denylist row that covers its
     /// real validity window (clamped), not the old fixed 15-minute guess —

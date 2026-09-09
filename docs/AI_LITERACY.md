@@ -1,7 +1,7 @@
 # AI Literacy — Deployer Playbook (EU AI Act Art 4)
 
-**Artifact for:** `COMPLIANCE.md` §6.4 · **Applies to:** brain-server 1.28.34
-· **Last updated:** 2026-08-08
+**Artifact for:** `COMPLIANCE.md` §6.4 · **Applies to:** brain-server 1.28.76
+· **Last updated:** 2026-09-09
 
 EU AI Act **Art 4** (Regulation (EU) 2024/1689) requires providers and
 deployers to take reasonable steps to ensure a sufficient level of AI literacy
@@ -29,7 +29,7 @@ them has a control.
 | *Who approved this write?* | Proposal gate — `POST /ingest/proposal` scores but writes nothing; memory becomes permanent only via human approval (`/proposals` review queue). |
 | *Is anything quarantined?* | Quarantine list (`/quarantine`) — flagged rows are excluded from retrieval until reviewed. |
 | *Can a subject delete themselves?* | DSAR console + deletion certificate (`/dsar`, `/tombstones`) — locate → export → purge → certificate. |
-| *Has the audit chain been tampered with?* | `/audit/verify` — the SHA-256 hash chain verifies end to end. |
+| *Has the audit chain been tampered with?* | `/audit/verify` — the keyed hash chain (HMAC-SHA256, per-DB epoch + pinned head) verifies end to end. |
 | *How did a memory enter, and is it AI-derived?* | `/export` provenance + `/.well-known/ai-notice` (Art 50) — `source`, `assertion_kind`, `confidence` per row. |
 
 ## How a deployer demonstrates literacy
