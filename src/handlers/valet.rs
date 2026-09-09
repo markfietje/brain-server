@@ -117,7 +117,10 @@ pub async fn get_brief(
                 serde_json::json!({
                     "run_id": i.run_id,
                     "kind": i.kind,
-                    "what": i.state.what,
+                    // the standard read seam (SP-W12) — the same
+                    // sanitize_stored every sibling field in this handler
+                    // passes through; no bespoke variant.
+                    "what": crate::gate::sanitize_stored(&i.state.what, false, &None),
                     "due_at": i.state.due_at,
                     "overdue_secs": now - i.state.due_at,
                 })
