@@ -39,6 +39,17 @@ pub const MAX_DF_TERMS: usize = 4096;
 /// to this many candidates, then RRF merges and caps at the requested `k`.
 pub const RRF_OVERFETCH: usize = 20;
 
+/// Rows quarantined under old builds keep their vectors (no backfill by design); the
+/// bound keeps them from shadowing clean hits out of the ANN top-k before
+/// the flagged filter runs — the 20-plant shadowing analysis.
+pub const QUARANTINED_OVERFETCH: usize = 20;
+
+/// ANN overfetch: `k` clean hits survive even when the whole quarantine
+/// bound sits above them in the top-k.
+pub fn vec_overfetch(k: usize) -> usize {
+    (k + QUARANTINED_OVERFETCH).max(RRF_OVERFETCH)
+}
+
 // ── Search result types ─────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -1756,16 +1767,23 @@ fn perform_search_legacy(
     conn: &Connection,
     query_vec: &[f32],
     k: usize,
+    include_flagged: bool,
 ) -> Result<Vec<SearchResult>> {
     let total_count: i64 = conn.query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))?;
     let mut results: Vec<SearchResult> = Vec::with_capacity(k * 2);
     let mut offset = 0;
+    // Byte-parity with the vec0 path: quarantine is unconditional unless the
+    // caller explicitly opts into flagged rows (review paths only).
+    let mut sql = String::from(
+        "SELECT k.id, k.title, k.content, e.vector, k.flagged
+             FROM knowledge k JOIN embeddings e ON k.id = e.knowledge_id",
+    );
+    if !include_flagged {
+        sql.push_str(" WHERE k.flagged = 0");
+    }
+    sql.push_str(" LIMIT ? OFFSET ?");
     while offset < total_count as usize {
-        let mut stmt = conn.prepare_cached(
-            "SELECT k.id, k.title, k.content, e.vector
-             FROM knowledge k JOIN embeddings e ON k.id = e.knowledge_id
-             LIMIT ? OFFSET ?",
-        )?;
+        let mut stmt = conn.prepare_cached(&sql)?;
         let batch: Vec<SearchResult> = stmt
             .query_map(params![SEARCH_BATCH_SIZE as i64, offset as i64], |row| {
                 let vec_str: String = row.get(3)?;
@@ -1781,7 +1799,8 @@ fn perform_search_legacy(
                     cosine_sim(query_vec, &db_vec),
                     row.get(1)?,
                     row.get(2)?,
-                ))
+                )
+                .with_flagged(row.get(4)?))
             })?
             .filter_map(|r| r.ok())
             .collect();
@@ -1881,7 +1900,7 @@ pub fn perform_search_traced(
         filters.clone()
     };
 
-    let overfetch = k.max(RRF_OVERFETCH);
+    let overfetch = vec_overfetch(k);
 
     // Vector and FTS retrieval run concurrently on independent pooled read
     // connections (rusqlite Connection is not Sync, so each stage owns its own).
@@ -1910,14 +1929,14 @@ pub fn perform_search_traced(
                 // the legacy scan and clears the flag.
                 let res =
                     if !crate::migration::VEC0_READY.load(std::sync::atomic::Ordering::Relaxed) {
-                        perform_search_legacy(&conn, &vq, overfetch)
+                        perform_search_legacy(&conn, &vq, overfetch, vfilters.include_flagged)
                     } else {
                         match vec0_knn(&conn, &vq, overfetch, &vfilters) {
                             Ok(r) => Ok(r),
                             Err(e) if e.to_string().contains("no such table: vec_knowledge") => {
                                 crate::migration::VEC0_READY
                                     .store(false, std::sync::atomic::Ordering::Relaxed);
-                                perform_search_legacy(&conn, &vq, overfetch)
+                                perform_search_legacy(&conn, &vq, overfetch, vfilters.include_flagged)
                             }
                             Err(e) => Err(e),
                         }
@@ -2027,7 +2046,7 @@ pub fn perform_search_traced(
     // buckets, prefer newer `observed_at` then higher `authority`. This is a
     // post-fusion stable sort that NEVER reorders across distinct scores, so it
     // cannot distort lexical/vector retrieval semantics.
-    // ponytail: stable sort over ≤ k.max(RRF_OVERFETCH) items — O(n log n),
+    // ponytail: stable sort over ≤ vec_overfetch(k) items — O(n log n),
     // bounded and cheap.
     if filters.freshness_tiebreak {
         use std::cmp::Ordering;

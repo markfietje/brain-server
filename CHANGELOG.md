@@ -17,6 +17,69 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [1.28.78] — 2026-09-10 — "Unconditional": quarantine everywhere, docs-true delivery
+
+Quarantine is unconditional on every leg, and two doc-claimed delivery
+disciplines are now the shipped disciplines. Plan:
+`IMPLEMENTATION_PLAN_v1.28.78_Unconditional.md` (M1–M6). No schema. Fork
+lanes deferred by operator policy (no upstream-conflict surface).
+
+### Release notes
+
+**Security fixes**
+
+- **Legacy vector leg honors quarantine.** `perform_search_legacy` (reached
+  on restored-legacy images without vec0) had no `flagged` predicate and
+  hardcoded clean hits — quarantined plants surfaced as trustworthy. It now
+  filters and emits the real flag, byte-parity with the vec0 path.
+- **Quarantined rows get no vector.** Inserts landed in vec0 before the
+  quarantine gate, so ~20 plants could shadow a target memory out of recall
+  (denial). The insert moved after the gate; reads overfetch `k + 20` so
+  legacy-inserted vectors cannot shadow either. Re-approval regenerates.
+- **Dedup is domain-scoped.** Global content-hash dedup handed a second
+  tenant the first tenant's row id (existence oracle). Same content in two
+  domains now stores twice; the uniqueness backstop moved to
+  `(content_hash, domain)`. Existing rows untouched.
+- **Standby promotion pins the operator did.** `verify_follower` trusted the
+  did named inside the attacker-replaceable sig file. `promote-check` now
+  refuses on mismatch (names both dids) unless `--expected-signer` overrides.
+- **Ping drain is bridge-scoped.** Any bridge's drain consumed every
+  bridge's handover pings. Drains join the run's thread — foreign bridges
+  see nothing, rows stay pending for the right bridge.
+- **Lineage + at-least-once on the workflow seam.** `post_event` accepted
+  foreign-run parents (400 `parent_event_foreign` now); channel-out rows
+  stay pending until the bridge acks (`POST
+  /webhooks/channel/{kind}/drain/ack`, thread-scoped, idempotent) — a
+  silent bridge redrills, never loses. Bridges dedupe on `event_id`.
+
+**Improvements**
+
+- DSAR certificates now except audit-chain rows and log files alongside
+  backup files, in both postures.
+- Unsigned DSAR webhooks warn loudly at send time.
+- Plugin token ladder fails closed: a configured-but-unreadable
+  `BRAIN_TOKEN_FILE` refuses instead of downgrading.
+- Plugin transport maps server `{error, code}` to actionable hints
+  (401 → token check, 429 → back off, 422 → validation).
+
+### Engineering record
+
+Red-first tests per fix (legacy quarantine ×2, no-vector-on-quarantine,
+domain dedup + cross-domain negative, foreign/operator signer, bridge
+scoping, foreign parent + redrill + foreign-ack). Full gate:
+1180 lib + 195 main-suite green, clippy `-D warnings` clean, openapi pin
+green, plugin vitest 42/42 via the parity sync, lipstyk diff-watchdog
+clean after two self-findings (verbose match, empty catch).
+
+**Disclosures (accepted ceilings, not gaps).** `INJECTION_POLICY=allow`
+stays a loud, health-echoed operator posture. Refresh-reuse burns the
+`(iss, sub)` family per the OWASP pattern (multi-device sessions
+re-authenticate together). DNS-rebind of the plugin's pinned host and
+never-seen MCP-tool flagging remain fork-side residuals. The second-pass
+`docs/SECOND_PASS_AUDIT_20260909.md` file cited by the plan is absent
+from the repo — premises were re-verified against live source instead.
+Fork lanes (sanitizer joins) deferred per operator policy.
+
 
 ## [1.28.77] — 2026-09-09 — "Erasure": store, recall, and erase
 

@@ -1252,6 +1252,23 @@ pub async fn post_event(
                 "topic is kernel-reserved vocabulary; the events route may not enqueue it",
             ));
         }
+        Err(crate::workflow::outbox::OutboxError::ForeignParent { parent, run }) => {
+            if let Ok(conn) = refusal_pool.get() {
+                crate::audit::record_tenant(
+                    &conn,
+                    crate::audit::AuditKind::Workflow,
+                    &actor_label,
+                    &format!("run:{id}"),
+                    crate::audit::AuditStatus::Denied,
+                    &format!("outbox_foreign_parent_refused parent={parent} run={run}"),
+                    &domain_label,
+                );
+            }
+            return Err(HandlerError::bad_request(
+                "parent_event_foreign",
+                "parent_event_id must belong to the same run",
+            ));
+        }
         Err(crate::workflow::outbox::OutboxError::Database(m)) => {
             return Err(HandlerError::internal(m));
         }

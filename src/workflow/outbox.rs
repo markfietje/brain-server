@@ -54,6 +54,7 @@ pub fn topic_is_reserved(topic: &str) -> bool {
 #[derive(Debug)]
 pub enum OutboxError {
     ReservedTopic { topic: String },
+    ForeignParent { parent: i64, run: i64 },
     Database(String),
 }
 
@@ -80,6 +81,12 @@ impl From<OutboxError> for rusqlite::Error {
                     "reserved topic `{topic}` — only kernel writers may enqueue it"
                 )),
             ),
+            OutboxError::ForeignParent { parent, run } => rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+                Some(format!(
+                    "parent event {parent} belongs to another run (not {run})"
+                )),
+            ),
         }
     }
 }
@@ -89,6 +96,9 @@ impl std::fmt::Display for OutboxError {
         match self {
             OutboxError::ReservedTopic { topic } => {
                 write!(f, "reserved outbox topic `{topic}`")
+            }
+            OutboxError::ForeignParent { parent, run } => {
+                write!(f, "parent event {parent} is not in run {run}")
             }
             OutboxError::Database(e) => write!(f, "{e}"),
         }
@@ -198,6 +208,21 @@ pub(crate) fn enqueue_child(
         return Err(OutboxError::ReservedTopic {
             topic: topic.to_string(),
         });
+    }
+    // Lineage integrity: a parent must belong to the SAME run — a
+    // foreign-run parent would stitch false ancestry across runs.
+    if let Some(parent) = parent_id {
+        let owner: Option<i64> = conn
+            .query_row(
+                "SELECT run_id FROM outbox WHERE id = ?1",
+                rusqlite::params![parent],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|e| OutboxError::Database(e.to_string()))?;
+        if owner != Some(run_id) {
+            return Err(OutboxError::ForeignParent { parent, run: run_id });
+        }
     }
     insert_row(
         conn,
@@ -690,8 +715,16 @@ mod tests {
         assert!(!verify_outbox_lineage(&conn, 3).unwrap());
 
         // Cross-run parent: same-run law violated even though the id exists.
+        // Placed by raw SQL — the live gate refuses this write, so
+        // the fixture bypasses it exactly like the orphan case above to
+        // prove verify DETECTS legacy violations rather than the gate.
         let (_, other) = enqueue(&conn, 5, "t", "{}", "other", 1).unwrap();
-        enqueue_child(&conn, 4, Some(other), "t", "{}", "xrun", 1).unwrap();
+        conn.execute(
+            "INSERT INTO outbox(run_id, topic, payload_json, status, idempotency_key, created_at, parent_id)
+             VALUES (4, 't', '{}', 'pending', 'xrun', 1, ?1)",
+            rusqlite::params![other],
+        )
+        .unwrap();
         assert!(!verify_outbox_lineage(&conn, 4).unwrap());
 
         // Forward link (parent has a LARGER id): the stored rows disobey the
@@ -768,11 +801,31 @@ mod tests {
         assert_eq!(n, 0, "a refused forge lands no row");
     }
 
+    /// A parent from another run (or a nonexistent id) refuses with
+    /// the TYPED error and lands no row; a same-run parent admits.
+    #[test]
+    fn post_event_refuses_foreign_parent() {
+        let conn = db();
+        let (_, p1) = enqueue(&conn, 1, "intake", "{}", "w10-a", 1).unwrap();
+        let (_, p2) = enqueue(&conn, 2, "intake", "{}", "w10-b", 1).unwrap();
+        let err = enqueue_child(&conn, 1, Some(p2), "note", "{}", "w10-c", 2).unwrap_err();
+        assert!(
+            matches!(err, OutboxError::ForeignParent { parent, run } if parent == p2 && run == 1),
+            "foreign parent must refuse typed: {err:?}"
+        );
+        let err = enqueue_child(&conn, 1, Some(999_999), "note", "{}", "w10-d", 2).unwrap_err();
+        assert!(
+            matches!(err, OutboxError::ForeignParent { .. }),
+            "missing parent must refuse typed: {err:?}"
+        );
+        let (created, _) = enqueue_child(&conn, 1, Some(p1), "note", "{}", "w10-e", 2).unwrap();
+        assert!(created, "same-run parent admits");
+    }
+
     /// The kernel writers still mint reserved rows through the token — the
     /// gate is a fence around the vocabulary, not a ban on it.
     #[test]
-    fn kernel_writers_still_mint_reserved_rows() {
-        let conn = db();
+    fn kernel_writers_still_mint_reserved_rows() {        let conn = db();
         for (topic, key) in [
             ("channel/out", "k-out"),
             ("steering", "k-steer"),

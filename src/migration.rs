@@ -212,10 +212,29 @@ pub fn run_migration_with_store_dim(
         )?;
 
         db.execute(
-            "CREATE UNIQUE INDEX idx_knowledge_hash ON knowledge(content_hash)",
+            "CREATE UNIQUE INDEX idx_knowledge_hash ON knowledge(content_hash, domain)",
             [],
         )?;
         println!("MIGRATION: Complete");
+    }
+
+    // Dedup is domain-scoped — the uniqueness backstop moves
+    // from (content_hash) to (content_hash, domain). Existing rows are
+    // unaffected: the old index forced globally-unique hashes, so every
+    // (hash, domain) pair is trivially unique. No backfill.
+    let hash_idx_sql: String = db
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_knowledge_hash'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+    if hash_idx_sql.contains("(content_hash)") && !hash_idx_sql.contains("domain") {
+        db.execute("DROP INDEX idx_knowledge_hash", [])?;
+        db.execute(
+            "CREATE UNIQUE INDEX idx_knowledge_hash ON knowledge(content_hash, domain)",
+            [],
+        )?;
     }
 
     // v0.8.0 Knowledge Graph migration

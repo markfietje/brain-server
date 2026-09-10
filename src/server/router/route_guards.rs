@@ -133,6 +133,7 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     // Switchboard (HMAC self-authenticating like /webhooks/*)
     "/webhooks/channel/{kind}",
     "/webhooks/channel/{kind}/drain",
+    "/webhooks/channel/{kind}/drain/ack",
     // Herald (the bridge-relayed operator console; same seam)
     "/webhooks/channel/{kind}/console",
     "/audit",

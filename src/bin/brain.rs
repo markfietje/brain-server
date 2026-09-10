@@ -302,7 +302,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
         name: "standby",
         json: false,
         run: cmd_standby,
-        usage: "brain standby start --to <dir> [--interval-secs 30] [--passphrase-file PATH]\n  brain standby status [--to <dir>]\n  brain standby promote-check --from <dir> [--passphrase-file PATH]\n                 (warm standby: encrypted base + WAL chunks + a rehearsed\n                  promote — operator-run, never a server daemon; NO hot failover)",
+        usage: "brain standby start --to <dir> [--interval-secs 30] [--passphrase-file PATH]\n  brain standby status [--to <dir>]\n  brain standby promote-check --from <dir> [--passphrase-file PATH] [--expected-signer DID]\n                 (warm standby: encrypted base + WAL chunks + a rehearsed\n                  promote — operator-run, never a server daemon; NO hot failover)",
     },
     Subcommand {
         name: "key",
@@ -3709,7 +3709,8 @@ fn cmd_standby_promote_check(args: &[String]) -> Result<(), String> {
         }
     };
     let pass = resolve_passphrase(&flags)?;
-    let r = brain_server::standby::promote_check(&dir, &pass, false)?;
+    let expected = flags.get("expected-signer").and_then(|o| o.clone());
+    let r = brain_server::standby::promote_check(&dir, &pass, false, expected.as_deref())?;
     println!("standby promote-check — follower cycle {:04}", r.cycle);
     println!(
         "  RTO  restore + open + verify : {:.2}s (restore {:.2}s / verify {:.2}s)",

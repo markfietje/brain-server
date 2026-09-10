@@ -345,7 +345,7 @@ pub async fn post_dsar(
             chain_head,
             runs.last()
                 .map(|r| r.remanence.as_str())
-                .unwrap_or("logical (secure_delete off; WAL/freelist/backup copies may persist)"),
+                .unwrap_or("logical (secure_delete off; WAL/freelist/backup copies, audit-chain rows and log files may persist)"),
             runs.iter().map(|r| r.feedback_rows).sum(),
         );
         let ledger_id =
@@ -714,6 +714,12 @@ pub fn notify_art19(subject: String, certificate_id: i64, certified_at: String) 
                 return;
             }
         };
+        if crate::config::dsar_webhook_secret().is_none() {
+            tracing::warn!(
+                "DSAR Art 19 webhook to {url} is UNSIGNED (no BRAIN_DSAR_WEBHOOK_SECRET) — \
+                 set the secret so the receiver can verify provenance"
+            );
+        }
         let mut last_err: Option<String> = None;
         for attempt in 0..3u32 {
             let mut req = client.post(&url).header("content-type", "application/json");

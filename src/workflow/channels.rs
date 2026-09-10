@@ -1252,13 +1252,18 @@ pub(crate) fn drain_ping_batch(
     now: i64,
 ) -> Result<Vec<serde_json::Value>, rusqlite::Error> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    // Bridge-scoped like `drain_out_batch`: a ping belongs to the bridge
+    // holding the run's thread (mount registration binds bridge ↔ tenant).
+    // A foreign bridge's drain never sees — or consumes — another bridge's
+    // pings; unthreaded runs stay pending for the right bridge.
     let mut stmt = tx.prepare(
-        "SELECT id, run_id, payload_json FROM outbox
-          WHERE topic = 'channel/ping' AND status = 'pending'
-          ORDER BY id ASC LIMIT ?1",
+        "SELECT o.id, o.run_id, o.payload_json FROM outbox o
+          JOIN channel_threads t ON t.case_run_id = o.run_id AND t.channel = ?1
+          WHERE o.topic = 'channel/ping' AND o.status = 'pending'
+          ORDER BY o.id ASC LIMIT ?2",
     )?;
     let rows: Vec<(i64, i64, String)> = stmt
-        .query_map(params![MAX_PING_BATCH], |r| {
+        .query_map(params![kind, MAX_PING_BATCH], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })?
         .collect::<Result<_, _>>()?;
@@ -1680,13 +1685,14 @@ fn switchboard_consent_in_force(
 }
 
 /// Drain ONE pending `channel/out` batch for a bridge kind (pull-model
-/// delivery: the bridge's cron crank claims → sends → rows mark delivered
-/// atomically in ONE tx). Only THIS path consumes `channel/out` — the SSE/alert
-/// drainers exclude it by their topic families, so content never broadcasts.
+/// delivery: the crank drains → sends → acks; rows mark delivered ONLY on
+/// ack — a silent bridge redrills, never loses). Only THIS path serves
+/// `channel/out` — the SSE/alert drainers exclude it by their topic
+/// families, so content never broadcasts.
 pub(crate) fn drain_out_batch(
     conn: &mut Connection,
     kind: &str,
-    now: i64,
+    _now: i64,
 ) -> Result<Vec<serde_json::Value>, rusqlite::Error> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let mut stmt = tx.prepare(
@@ -1702,9 +1708,12 @@ pub(crate) fn drain_out_batch(
         })?
         .collect::<Result<_, _>>()?;
     drop(stmt);
+    // At-least-once: the drain does NOT mark delivered — rows stay
+    // pending until the bridge acks (`ack_out_batch`). A bridge that dies
+    // after receiving redrills the same rows; bridges dedupe on `event_id`
+    // (the outbox idempotency key makes redrills once-only).
     let mut out = Vec::with_capacity(rows.len());
     for (id, run_id, payload_json, conversation_ref) in rows {
-        outbox::deliver(&tx, id, now)?;
         let mut v: serde_json::Value =
             serde_json::from_str(&payload_json).unwrap_or_else(|_| serde_json::json!({}));
         v["conversation_ref"] = serde_json::json!(conversation_ref);
@@ -1714,6 +1723,39 @@ pub(crate) fn drain_out_batch(
     }
     tx.commit()?;
     Ok(out)
+}
+
+/// The bridge ack: mark drained `channel/out` rows delivered. Scoped to the
+/// bridge holding each row's thread — a foreign bridge cannot kill another
+/// bridge's rows by acking their ids. Idempotent: acking twice (or acking
+/// an already-delivered row) is a no-op kept at the first `delivered_at`.
+/// Returns the number of rows newly marked delivered.
+pub(crate) fn ack_out_batch(
+    conn: &mut Connection,
+    kind: &str,
+    event_ids: &[i64],
+    now: i64,
+) -> Result<usize, rusqlite::Error> {
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    let mut n = 0;
+    for id in event_ids {
+        let owned: bool = tx
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM outbox o
+                   JOIN channel_threads t ON t.case_run_id = o.run_id AND t.channel = ?1
+                   WHERE o.id = ?2 AND o.topic = 'channel/out' AND o.status = 'pending')",
+                params![kind, id],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        if owned {
+            outbox::deliver(&tx, *id, now)?;
+            n += 1;
+        }
+    }
+    tx.commit()?;
+    Ok(n)
 }
 
 // ── the HITL user-map proposal + the inbound flood bound ─────────────────
@@ -2726,12 +2768,53 @@ mod tests {
             "only the two lawful sends rode the topic"
         );
 
-        // Drain hands BOTH envelopes to the bridge once, marks them delivered.
+        // Drain hands BOTH envelopes to the bridge; rows stay pending until
+        // ack (at-least-once) — a silent bridge redrills the same rows.
         let batch = drain_out_batch(&mut conn, "signal", now + 60).unwrap();
         assert_eq!(batch.len(), 2);
-        let batch_again = drain_out_batch(&mut conn, "signal", now + 70).unwrap();
-        assert!(batch_again.is_empty(), "delivered envelopes never re-drain");
+        let redrill = drain_out_batch(&mut conn, "signal", now + 70).unwrap();
+        assert_eq!(redrill.len(), 2, "unacked rows redrill (bridge dedupes on event_id)");
+        // Ack marks delivered; acked envelopes never re-drain. Double-ack
+        // is a no-op.
+        let ids: Vec<i64> = batch.iter().map(|v| v["event_id"].as_i64().unwrap()).collect();
+        assert_eq!(ack_out_batch(&mut conn, "signal", &ids, now + 80).unwrap(), 2);
+        assert_eq!(ack_out_batch(&mut conn, "signal", &ids, now + 90).unwrap(), 0);
+        let gone = drain_out_batch(&mut conn, "signal", now + 100).unwrap();
+        assert!(gone.is_empty(), "acked envelopes never re-drain");
         assert!(batch.iter().all(|v| v["channel"] == "signal"));
+    }
+
+    /// Bridge "silence" (drain without ack) loses nothing — rows
+    /// stay pending and the redrill delivers once; a foreign bridge's ack
+    /// cannot kill them.
+    #[test]
+    fn channel_out_redrill_after_bridge_silence() {
+        let conn = db();
+        let c = cfg("acme");
+        let run = land_inbound_message(&conn, &c, &envelope("+31", "case open", "m1"), 5000)
+            .unwrap()
+            .case_run_id;
+        enqueue_handover_ping(&conn, run, 9, "ops@acme", 9000, 30, 5100).unwrap();
+        // Ping rows are not channel/out — plant one directly for the drill.
+        conn.execute(
+            "INSERT INTO outbox(run_id, topic, payload_json, status, idempotency_key, created_at)
+             VALUES (?1, 'channel/out', '{}', 'pending', 'w11-1', 5100)",
+            rusqlite::params![run],
+        )
+        .unwrap();
+        let mut conn2 = conn;
+        let first = drain_out_batch(&mut conn2, "signal", 5200).unwrap();
+        assert_eq!(first.len(), 1, "the drain serves the row");
+        let id = first[0]["event_id"].as_i64().unwrap();
+        // Foreign ack cannot kill it.
+        assert_eq!(ack_out_batch(&mut conn2, "slack", &[id], 5300).unwrap(), 0);
+        // Silence → redrill delivers the SAME row once.
+        let redrill = drain_out_batch(&mut conn2, "signal", 5400).unwrap();
+        assert_eq!(redrill.len(), 1);
+        assert_eq!(redrill[0]["event_id"].as_i64().unwrap(), id);
+        // Real ack → gone.
+        assert_eq!(ack_out_batch(&mut conn2, "signal", &[id], 5500).unwrap(), 1);
+        assert!(drain_out_batch(&mut conn2, "signal", 5600).unwrap().is_empty());
     }
 
     // ── Envelope bounds: garbage never panics, always names its refusal ────
@@ -3164,6 +3247,29 @@ mod tests {
             p["event_id"].is_i64(),
             "the outbox event id rides for bridge-side dedupe"
         );
+    }
+
+    /// A foreign bridge's drain never sees another bridge's
+    /// pings — rows stay pending for the bridge holding the run's thread.
+    #[test]
+    fn ping_drain_is_bridge_scoped() {
+        let conn = db();
+        let c = cfg("acme");
+        let run = land_inbound_message(&conn, &c, &envelope("+31", "case open", "m1"), 5000)
+            .unwrap()
+            .case_run_id;
+        enqueue_handover_ping(&conn, run, 9, "ops@acme", 9000, 30, 5100).unwrap();
+        let mut conn2 = conn;
+        let foreign = drain_ping_batch(&mut conn2, "slack", 5200).unwrap();
+        assert!(foreign.is_empty(), "foreign bridge sees nothing");
+        let pending: i64 = conn2
+            .query_row(
+                "SELECT COUNT(*) FROM outbox WHERE topic = 'channel/ping' AND status = 'pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pending, 1, "the row stays pending for the right bridge");
     }
 
     // ── HERALD PIN: the console `pending` shaping carries the canonical

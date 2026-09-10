@@ -289,11 +289,33 @@ pub fn ship_cycle(
     Ok(manifest)
 }
 
+/// The standby identity pin: the manifest's signer did must equal the
+/// expected operator did — the parcels `expected_signer` vocabulary applied
+/// to follower promotion. Verifying against the did named INSIDE the
+/// attacker-replaceable sig file is self-assertion; the pin closes it.
+/// Refusal names both dids.
+pub fn verify_follower_pinned(dir: &Path, expected_signer: &str) -> Result<StandbyManifest, String> {
+    let sig_json = std::fs::read_to_string(dir.join(MANIFEST_SIG_FILE))
+        .map_err(|e| format!("read manifest signature: {e}"))?;
+    let sig: ManifestSig =
+        serde_json::from_str(&sig_json).map_err(|e| format!("parse manifest signature: {e}"))?;
+    if sig.signed_by != expected_signer {
+        return Err(format!(
+            "follower manifest signer REFUSED: expected {expected_signer}, sig claims {} — \
+             the follower was shipped by a foreign key; re-ship from the operator \
+             or pass --expected-signer explicitly",
+            sig.signed_by
+        ));
+    }
+    verify_follower(dir)
+}
+
 /// The integrity self-check, shared by `status` and `promote-check`: verify
 /// the manifest's Ed25519 signature over its exact file bytes, then
 /// recompute sha256 of every artifact the manifest vouches for. ANY
 /// mismatch — tamper, truncation, a torn interrupted cycle — is `Err`
-/// (fail closed).
+/// (fail closed). No identity claim — the signer did is read, not pinned
+/// (use [`verify_follower_pinned`] for promotion decisions).
 pub fn verify_follower(dir: &Path) -> Result<StandbyManifest, String> {
     let manifest_bytes =
         std::fs::read(dir.join(MANIFEST_FILE)).map_err(|e| format!("read manifest: {e}"))?;
@@ -395,6 +417,7 @@ pub fn promote_check(
     dir: &Path,
     passphrase: &[u8],
     preserve_workdir: bool,
+    expected_signer: Option<&str>,
 ) -> Result<PromoteReport, String> {
     // The promoted db must open the way the SERVER would open it: the real
     // memory carries vec0 virtual tables, and `PRAGMA integrity_check`
@@ -403,7 +426,21 @@ pub fn promote_check(
     // The CLI binary registers nothing itself (only server bootstrap does).
     static VEC_ONCE: std::sync::Once = std::sync::Once::new();
     VEC_ONCE.call_once(crate::register_sqlite_vec::register_sqlite_vec);
-    let manifest = verify_follower(dir)?;
+    // The identity pin: the follower must be shipped by the live operator
+    // key (or an explicit --expected-signer override) — never by whoever
+    // the sig file names.
+    let expected = match expected_signer {
+        Some(did) => did.to_string(),
+        None => {
+            let (did, _) = crate::handlers::ump::operator_signing_key().ok_or_else(|| {
+                "promote-check REFUSES: no live operator key and no --expected-signer — \
+                 identity cannot be pinned"
+                    .to_string()
+            })?;
+            did
+        }
+    };
+    let manifest = verify_follower_pinned(dir, &expected)?;
     let workdir = std::env::temp_dir().join(format!(
         "brain-standby-promote-{}-{}",
         manifest.cycle,
@@ -481,11 +518,14 @@ mod tests {
     struct OperatorKey(tempfile::TempDir);
     impl OperatorKey {
         fn new() -> OperatorKey {
+            Self::with_seed([7u8; 32])
+        }
+        fn with_seed(seed: [u8; 32]) -> OperatorKey {
             let dir = tempfile::TempDir::new().unwrap();
             // The FIXED operator-key filename (the deterministic resolver).
             std::fs::write(
                 dir.path().join(crate::handlers::ump::OPERATOR_KEY_FILE),
-                [7u8; 32],
+                seed,
             )
             .unwrap();
             #[cfg(unix)]
@@ -732,6 +772,59 @@ mod tests {
         let _ = std::fs::remove_dir_all(&work);
     }
 
+    /// A follower shipped by a FOREIGN key refuses —
+    /// the refusal names both dids — while the operator's own follower
+    /// admits (live-key pin and explicit --expected-signer override).
+    #[test]
+    fn follower_foreign_signer_refused() {
+        let _guard = lock_env();
+        let work = tmp_dir("foreign-signer");
+        let db_path = work.join("brain.db");
+        make_wal_db(&db_path, 2);
+        let follower = work.join("follower");
+        let foreign_did = {
+            let _foreign = OperatorKey::with_seed([9u8; 32]);
+            ship_cycle(&db_path, &follower, b"p", 30, 1).unwrap();
+            crate::handlers::ump::operator_signing_key()
+                .map(|(did, _)| did)
+                .expect("foreign key resolves")
+        };
+        let operator_did = {
+            let _operator = OperatorKey::new();
+            // Same-key promote admits via the live-key pin.
+            assert!(
+                verify_follower_pinned(&follower, &foreign_did).is_ok(),
+                "explicit override admits the known shipper"
+            );
+            crate::handlers::ump::operator_signing_key()
+                .map(|(did, _)| did)
+                .expect("operator key resolves")
+        };
+        assert_ne!(foreign_did, operator_did, "two seeds, two dids");
+        // Live-key pin: the operator's key did NOT ship this follower.
+        let err = verify_follower_pinned(&follower, &operator_did).unwrap_err();
+        assert!(
+            err.contains(&foreign_did) && err.contains(&operator_did),
+            "refusal names both dids: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
+    #[test]
+    fn follower_operator_signer_admitted() {
+        let _guard = lock_env();
+        let _key = OperatorKey::new();
+        let work = tmp_dir("operator-signer");
+        let db_path = work.join("brain.db");
+        make_wal_db(&db_path, 2);
+        let follower = work.join("follower");
+        ship_cycle(&db_path, &follower, b"p", 30, 1).unwrap();
+        // Live-key pin admits the operator's own follower (None → live key).
+        let report = promote_check(&follower, b"p", true, None).expect("own follower promotes");
+        assert_eq!(report.integrity, "ok");
+        let _ = std::fs::remove_dir_all(&work);
+    }
+
     /// THE roundtrip property (proptest): backup→follower→restore→
     /// integrity-check green for any row count — every row shipped before
     /// the last cycle is on the promoted db, byte-for-byte readable, on the
@@ -760,7 +853,7 @@ mod tests {
             }
             drop(conn);
             let m2 = ship_cycle(&db_path, &follower, b"drill-pass", 30, 2).unwrap();
-            let report = promote_check(&follower, b"drill-pass", true)
+            let report = promote_check(&follower, b"drill-pass", true, None)
                 .expect("the drill promotes");
             assert_eq!(report.integrity, "ok");
             assert_eq!(report.cycle, 2);

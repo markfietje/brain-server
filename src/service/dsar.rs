@@ -635,9 +635,9 @@ pub fn run_pool(
         }
     }
     let remanence = if secure_delete_active {
-        "secure_delete+checkpoint (backup files excepted)".to_string()
+        "secure_delete+checkpoint (backup files, audit-chain rows and log files excepted)".to_string()
     } else {
-        "logical (secure_delete off; WAL/freelist/backup copies may persist)".to_string()
+        "logical (secure_delete off; WAL/freelist/backup copies, audit-chain rows and log files may persist)".to_string()
     };
     let tx = conn.transaction()?;
 

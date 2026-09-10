@@ -413,25 +413,25 @@ pub fn undo_supersession(tx: &Transaction<'_>, old_chunk: i64) -> Result<usize> 
     Ok(cleared + unlinked)
 }
 
-/// Find exact-duplicate chunks: same `content_hash` appearing more than once.
-/// Reuses the `content_hash` column already populated on every ingest (no new
-/// schema). Returns the duplicate chunk ids grouped by hash; the caller decides
-/// what (if anything) to do — this function only reports.
+/// Find exact-duplicate chunks: same `content_hash` appearing more than once
+/// within one domain (the same content in two domains is legitimate, not
+/// a duplicate). Returns the duplicate chunk ids grouped by hash; the caller
+/// decides what (if anything) to do — this function only reports.
 pub fn find_exact_duplicates(conn: &Connection) -> Result<Vec<Vec<i64>>> {
-    let hashes: Vec<String> = {
+    let pairs: Vec<(String, String)> = {
         let mut stmt = conn.prepare_cached(
-            "SELECT content_hash FROM knowledge
+            "SELECT content_hash, domain FROM knowledge
              WHERE content_hash IS NOT NULL
-             GROUP BY content_hash HAVING COUNT(*) > 1",
+             GROUP BY content_hash, domain HAVING COUNT(*) > 1",
         )?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         rows.filter_map(|r| r.ok()).collect()
     };
-    let mut groups = Vec::with_capacity(hashes.len());
-    for h in hashes {
-        let mut stmt =
-            conn.prepare("SELECT id FROM knowledge WHERE content_hash = ?1 ORDER BY id")?;
-        let rows = stmt.query_map(params![h], |r| r.get::<_, i64>(0))?;
+    let mut groups = Vec::with_capacity(pairs.len());
+    for (h, d) in pairs {
+        let mut stmt = conn
+            .prepare("SELECT id FROM knowledge WHERE content_hash = ?1 AND domain = ?2 ORDER BY id")?;
+        let rows = stmt.query_map(params![h, d], |r| r.get::<_, i64>(0))?;
         groups.push(rows.filter_map(|r| r.ok()).collect());
     }
     Ok(groups)
@@ -552,6 +552,7 @@ mod tests {
                 heading_path TEXT,
                 source TEXT,
                 content_hash TEXT,
+                domain TEXT NOT NULL DEFAULT 'global',
                 source_id INTEGER,
                 revision_id INTEGER,
                 observed_at TEXT,
@@ -612,6 +613,19 @@ mod tests {
         let dups = find_exact_duplicates(&c).unwrap();
         assert_eq!(dups.len(), 1, "one duplicate group");
         assert_eq!(dups[0], vec![1, 2]);
+    }
+
+    #[test]
+    fn find_exact_duplicates_ignores_cross_domain_content() {
+        // The same content in two domains is legitimate, not a duplicate.
+        let c = db();
+        c.execute(
+            "INSERT INTO knowledge(id, content, content_hash, domain) VALUES (1, 'same', 'h', 'a'), (2, 'same', 'h', 'b')",
+            [],
+        )
+        .unwrap();
+        let dups = find_exact_duplicates(&c).unwrap();
+        assert!(dups.is_empty(), "cross-domain content is not a duplicate group");
     }
 
     #[test]

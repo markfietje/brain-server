@@ -292,19 +292,22 @@ pub fn store_record(
 
     let content_hash = format!("{:016x}", xxh3_64(input.content.as_bytes()));
 
-    // Idempotent dedup: if this exact content already exists, report duplicate.
+    // Idempotent dedup, domain-scoped: the same content in two domains is
+    // two rows — a global hash would hand the second tenant the first
+    // tenant's row id (cross-tenant existence oracle). No backfill: rows
+    // duplicated under old builds stay; new ingests dedup per-domain.
     let existing: i64 = tx
         .query_row(
-            "SELECT COUNT(*) FROM knowledge WHERE content_hash = ?1",
-            rusqlite::params![&content_hash],
+            "SELECT COUNT(*) FROM knowledge WHERE content_hash = ?1 AND domain = ?2",
+            rusqlite::params![&content_hash, input.domain],
             |r| r.get(0),
         )
         .unwrap_or(0);
     if existing > 0 {
         let id: i64 = tx
             .query_row(
-                "SELECT id FROM knowledge WHERE content_hash = ?1 LIMIT 1",
-                rusqlite::params![&content_hash],
+                "SELECT id FROM knowledge WHERE content_hash = ?1 AND domain = ?2 LIMIT 1",
+                rusqlite::params![&content_hash, input.domain],
                 |r| r.get(0),
             )
             .unwrap_or(0);
@@ -374,12 +377,17 @@ pub fn store_record(
 
     // vec0 (int8 + binary quantized) is the sole vector
     // store; no raw f32 JSON is written to the legacy `embeddings` column.
-    tx.execute(
-        "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
-         VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'structured', datetime('now'))",
-        rusqlite::params![id, input.embedding.as_bytes()],
-    )
-    .map_err(|e| IngestError::Database(format!("vec0 insert failed: {e}")))?;
+    // A quarantined plant gets NO vector: its embedding must not occupy the
+    // ANN top-k and shadow clean recall (denial). Re-approval via the edit
+    // path re-screens and re-inserts it.
+    if !quarantined {
+        tx.execute(
+            "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+             VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'structured', datetime('now'))",
+            rusqlite::params![id, input.embedding.as_bytes()],
+        )
+        .map_err(|e| IngestError::Database(format!("vec0 insert failed: {e}")))?;
+    }
 
     if !quarantined {
         // Entities (idempotent upsert, with optional type).
@@ -911,5 +919,57 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 0, "the conflict refuses the write entirely");
         tx.rollback().unwrap();
+    }
+
+    /// A quarantined plant gets NO vector — its embedding must
+    /// not occupy the ANN top-k and shadow clean recall (denial). Recall is
+    /// restored when the operator re-approves via the edit path (which
+    /// re-screens and re-inserts the vector).
+    #[test]
+    fn quarantined_ingest_writes_no_vector() {
+        let mut conn = migrated_db();
+        let embedding = vec![0.1_f32; 512];
+        let none: Vec<(String, Option<String>)> = Vec::new();
+        let no_rels: Vec<NormalizedRelation> = Vec::new();
+        let tx = conn.transaction().unwrap();
+        let mut rec = input("planted prose", &embedding, &none, &no_rels);
+        rec.quarantine_flagged = true;
+        store_record(&tx, &rec).expect("stores (flagged)");
+        let vec_rows: i64 = tx
+            .query_row("SELECT COUNT(*) FROM vec_knowledge", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(vec_rows, 0, "quarantined rows get no vector");
+        tx.commit().unwrap();
+    }
+
+    /// Dedup is domain-scoped — the same content in two domains
+    /// stores twice (no cross-domain id leak = no cross-tenant existence
+    /// oracle), while the same content twice in one domain still dedups.
+    #[test]
+    fn dedup_is_domain_scoped() {
+        let mut conn = migrated_db();
+        let embedding = vec![0.1_f32; 512];
+        let none: Vec<(String, Option<String>)> = Vec::new();
+        let no_rels: Vec<NormalizedRelation> = Vec::new();
+        let tx = conn.transaction().unwrap();
+        let mut a = input("shared boilerplate", &embedding, &none, &no_rels);
+        a.domain = "tenant-a";
+        let StoreOutcome::Created { id: id_a, .. } = store_record(&tx, &a).expect("stores a")
+        else {
+            panic!("expected Created");
+        };
+        let mut b = input("shared boilerplate", &embedding, &none, &no_rels);
+        b.domain = "tenant-b";
+        let StoreOutcome::Created { id: id_b, .. } = store_record(&tx, &b).expect("stores b")
+        else {
+            panic!("cross-domain ingest must NOT dedup, got Duplicate");
+        };
+        assert_ne!(id_a, id_b, "two domains, two rows, no id leak");
+        let dup = store_record(&tx, &a).expect("re-stores a");
+        match dup {
+            StoreOutcome::Duplicate { id } => assert_eq!(id, id_a),
+            StoreOutcome::Created { .. } => panic!("same-domain dedup must hold"),
+        }
+        tx.commit().unwrap();
     }
 }

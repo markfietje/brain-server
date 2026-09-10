@@ -28,6 +28,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
+use serde::Deserialize;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -332,6 +333,73 @@ pub async fn drain_channel(
                 "envelopes": envelopes,
                 "pings": pings,
             })),
+        )
+            .into_response(),
+        Ok(Err(e)) => HandlerError::internal(e).into_response(),
+        Err(e) => HandlerError::internal(format!("{e}")).into_response(),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct AckChannelRequest {
+    /// Outbox event ids the bridge has delivered (`event_id` per envelope).
+    #[serde(default)]
+    event_ids: Vec<i64>,
+}
+
+/// `POST /webhooks/channel/{kind}/drain/ack` — the at-least-once close of
+/// the pull-model drain: the bridge confirms delivered `event_id`s and those
+/// rows mark delivered. Same HMAC seam as the drain; unacked rows stay
+/// pending and redrill (bridges dedupe on `event_id`). A bridge cannot ack
+/// another bridge's rows (thread-scoped). Bounded: 500 ids per call.
+pub async fn ack_channel(
+    State(state): State<Arc<AppState>>,
+    Path(kind): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let Some(cfg) = verify_bridge(
+        &state,
+        &kind,
+        &headers,
+        &body,
+        &format!("channel-ack:{kind}"),
+    ) else {
+        return HandlerError::unauthorized("bridge signature verification failed").into_response();
+    };
+    let actor = format!("channel-ack:{}", cfg.bridge_id());
+    if timestamp_skew_ok(&state, &header_str(&headers, "webhook-timestamp"), &actor).is_none() {
+        return HandlerError::unauthorized("timestamp check failed").into_response();
+    }
+    if body.len() > MAX_CONSOLE_BODY {
+        return HandlerError::bad_request("body_too_large", "ack body exceeds the bound")
+            .into_response();
+    }
+    let req: AckChannelRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(_) => {
+            return HandlerError::bad_request("body_invalid", "expected {\"event_ids\":[...]}")
+                .into_response();
+        }
+    };
+    if req.event_ids.len() > 500 {
+        return HandlerError::bad_request("too_many_ids", "at most 500 event_ids per ack")
+            .into_response();
+    }
+    let batched = tokio::task::spawn_blocking({
+        let kind = kind.clone();
+        move || -> Result<usize, String> {
+            let mut conn = state.pool.get().map_err(|e| format!("{e}"))?;
+            let now = chrono::Utc::now().timestamp();
+            channels::ack_out_batch(&mut conn, &kind, &req.event_ids, now)
+                .map_err(|e| format!("{e}"))
+        }
+    })
+    .await;
+    match batched {
+        Ok(Ok(n)) => (
+            StatusCode::OK,
+            axum::Json(json!({ "status": "ok", "acked": n })),
         )
             .into_response(),
         Ok(Err(e)) => HandlerError::internal(e).into_response(),

@@ -139,6 +139,10 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             post(handlers::channel_webhook::drain_channel),
         )
         .route(
+            "/webhooks/channel/{kind}/drain/ack",
+            post(handlers::channel_webhook::ack_channel),
+        )
+        .route(
             "/webhooks/channel/{kind}/console",
             post(handlers::channel_webhook::post_console),
         )

@@ -915,8 +915,9 @@ paths:
         Pull-model delivery of approved outbound envelopes from the `channel/out`
         topic to the SAME HMAC-authenticated bridge. Rows are ONLY approved acts
         (digest-bound proposals) or consented alert forwards — the alert bus stays
-        metadata-only and this topic never rides the SSE broadcast. The batch is
-        marked delivered atomically; senders dedupe on event_id.
+        metadata-only and this topic never rides the SSE broadcast. Rows stay
+        pending until the bridge acks (`drain/ack`); unacked rows redrill and
+        bridges dedupe on event_id (at-least-once, v1.28.78).
       parameters:
         - name: kind
           in: path
@@ -931,6 +932,31 @@ paths:
               schema:
                 type: object
                 example: {"status": "ok", "count": 1, "envelopes": [{"event_id": 12, "text": "…", "source_payload": {"source": "approved_act", "proposal_id": 3, "kind": "channel/template", "template": "order_update_v3", "digest": "<sha256-of-drained-body>"}}], "pings": [{"event_id": 13, "to_principal": "ops@acme", "platform_refs": ["U0PING1"], "case_channel": "C0123ABCD", "case_run_id": 41, "offer_id": 3, "complete": true, "missing": []}]}
+        "401":
+          description: Bridge signature verification failed
+  /webhooks/channel/{kind}/drain/ack:
+    post:
+      summary: Bridge delivery ack for drained channel/out envelopes (v1.28.78)
+      operationId: ackChannelOutbox
+      description: >-
+        The at-least-once close of the pull-model drain: the bridge confirms
+        delivered `event_id`s and those rows mark delivered. Same HMAC seam
+        as the drain; acks are thread-scoped (a bridge cannot ack another
+        bridge's rows) and idempotent. Unacked rows stay pending and redrill.
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Ack count. `acked` rows marked delivered.
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"status": "ok", "acked": 2}
         "401":
           description: Bridge signature verification failed
   /webhooks/channel/{kind}/console:

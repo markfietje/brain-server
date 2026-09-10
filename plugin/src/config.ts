@@ -145,16 +145,22 @@ export type ResolvedBrainConfig = {
 function resolveAuthToken(cfg: Partial<BrainConfig>): string | undefined {
   const file = process.env.BRAIN_TOKEN_FILE?.trim();
   if (file) {
+    // Fail-closed: an explicitly configured file source that cannot be read
+    // must refuse, never silently downgrade to a weaker rung (a broken
+    // ladder degrading to plaintext config is the leak this ladder exists
+    // to prevent).
+    let token: string;
     try {
-      const token = readFileSync(file, "utf8").trim();
-      if (token) {
-        return token;
-      }
-    } catch {
-      // Unreadable token file: fall through to the next rung with a warning —
-      // a broken ladder must not silently degrade to a weaker source.
-      console.warn(`brain plugin: BRAIN_TOKEN_FILE unreadable (${file}); falling back`);
+      token = readFileSync(file, "utf8").trim();
+    } catch (cause) {
+      throw new Error(`brain-server plugin: BRAIN_TOKEN_FILE unreadable (${file})`, {
+        cause,
+      });
     }
+    if (!token) {
+      throw new Error(`brain-server plugin: BRAIN_TOKEN_FILE is empty (${file})`);
+    }
+    return token;
   }
   const envToken = process.env.BRAIN_TOKEN?.trim();
   if (envToken) {

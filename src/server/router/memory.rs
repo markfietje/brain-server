@@ -577,7 +577,7 @@ pub async fn add_chunk(
 
         let exists: bool = conn
             .query_row(
-                "SELECT 1 FROM knowledge WHERE content_hash=? LIMIT 1",
+                "SELECT 1 FROM knowledge WHERE content_hash=? AND domain='global' LIMIT 1",
                 [&content_hash],
                 |r| r.get::<_, i32>(0),
             )
@@ -1109,7 +1109,7 @@ pub async fn ingest_memory(
             let content_hash = format!("{:016x}", xxh3_64(text.as_bytes()));
             let exists: bool = conn
                 .query_row(
-                    "SELECT 1 FROM knowledge WHERE content_hash=? LIMIT 1",
+                    "SELECT 1 FROM knowledge WHERE content_hash=? AND domain='global' LIMIT 1",
                     [&content_hash],
                     |r| r.get::<_, i32>(0),
                 )
@@ -2073,7 +2073,7 @@ pub fn write_markdown_ingest(
         // Idempotent: skip chunks already present (stable per content hash).
         let exists: i64 = tx
             .query_row(
-                "SELECT COUNT(*) FROM knowledge WHERE content_hash = ?1",
+                "SELECT COUNT(*) FROM knowledge WHERE content_hash = ?1 AND domain = 'global'",
                 params![&content_hash],
                 |r| r.get(0),
             )

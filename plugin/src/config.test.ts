@@ -96,10 +96,10 @@ describe("resolveConfig", () => {
         process.env.BRAIN_TOKEN_FILE = tokenFile;
         expect(resolveConfig({ authToken: "cfg-token" }).authToken).toBe("file-token");
 
-        // An unreadable file degrades loudly to the next rung, never silently
-        // to a weaker source without notice.
+        // An unreadable configured file FAILS CLOSED — it must refuse,
+        // never silently downgrade to a weaker rung.
         process.env.BRAIN_TOKEN_FILE = path.join(dir, "missing");
-        expect(resolveConfig({ authToken: "cfg-token" }).authToken).toBe("env-token");
+        expect(() => resolveConfig({ authToken: "cfg-token" })).toThrow(/unreadable/);
       } finally {
         if (prevFile === undefined) {
           delete process.env.BRAIN_TOKEN_FILE;

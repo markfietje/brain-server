@@ -1993,7 +1993,7 @@ mod tests {
         .expect("strict dsar runs");
         assert_eq!(
             strict.certificate.as_ref().unwrap()["physical_purge"],
-            "secure_delete+checkpoint (backup files excepted)",
+            "secure_delete+checkpoint (backup files, audit-chain rows and log files excepted)",
             "a strict domain's certificate states the strict posture"
         );
 
@@ -2014,7 +2014,7 @@ mod tests {
         .expect("default dsar runs");
         assert_eq!(
             logical.certificate.as_ref().unwrap()["physical_purge"],
-            "logical (secure_delete off; WAL/freelist/backup copies may persist)",
+            "logical (secure_delete off; WAL/freelist/backup copies, audit-chain rows and log files may persist)",
             "an unbound domain honestly discloses the logical posture"
         );
 

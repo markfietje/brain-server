@@ -5,7 +5,7 @@
  * to a silent `undefined`.
  */
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { BrainClient, BrainHttpError, describeBrainError } from "./brain-client.js";
+import { BrainClient, BrainHttpError, brainErrorDetail, describeBrainError } from "./brain-client.js";
 import { resolveConfig } from "./config.js";
 
 const cfg = () =>
@@ -322,5 +322,35 @@ describe("describeBrainError", () => {
 
   test("non-BrainHttpError falls back to string coercion", () => {
     expect(describeBrainError(new Error("xyz"))).toContain("xyz");
+  });
+});
+
+describe("brainErrorDetail", () => {
+  test("structured bodies map to actionable hints", () => {
+    expect(brainErrorDetail(401, '{"error":"unauthorized","code":"invalid_token"}')).toContain(
+      "BRAIN_TOKEN",
+    );
+    expect(brainErrorDetail(429, '{"error":"rate_limited","code":"rate_limited"}')).toContain(
+      "back off",
+    );
+    expect(brainErrorDetail(422, '{"error":"bad_request","code":"query_too_long"}')).toContain(
+      "validation",
+    );
+  });
+
+  test("unstructured bodies ride sanitized and capped", () => {
+    expect(brainErrorDetail(500, "boom")).toBe("boom");
+    expect(brainErrorDetail(500, "x".repeat(600)).length).toBeLessThanOrEqual(501);
+  });
+
+  test("fetchJson surfaces the mapped hint", async () => {
+    const client = new BrainClient(cfg());
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => mockResponse('{"error":"unauthorized","code":"invalid_token"}', { status: 401 })),
+    );
+    const err = await client.fetchJson("/recall", "POST", {}, 50).catch((e) => e);
+    expect(err).toBeInstanceOf(BrainHttpError);
+    expect((err as BrainHttpError).message).toContain("BRAIN_TOKEN");
   });
 });
