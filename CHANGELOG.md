@@ -17,49 +17,12 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
-## [1.28.80] — 2026-09-10 — "Ledger": the gap ledger hits zero
+## [1.28.79] — 2026-09-10 — "Parity": third-pass close-out, gap ledger zero
 
-Closes every honest gap the final audit named. No schema; existing data
-untouched. Plugin 0.6.4.
-
-### Release notes
-
-**Security fixes**
-
-- **Re-embedding skips quarantined rows.** The reindex and profile-switch
-  paths re-embedded every row, resurrecting vectors the ingest gate
-  removed. Both now share one candidate query that excludes quarantined
-  rows; the legacy add path gates its vector insert the same way.
-- **KCS drafts carry the screen verdict.** Draft inserts hardcoded a clean
-  flag without screening. The verdict is now recorded as advisory
-  provenance (the approving human's decision stays final), mirroring the
-  promote path.
-- **Team-bridge deny-default.** The gate prefers the gateway's classified
-  chat type and denies when unclassifiable — a context without channel
-  information can no longer derive open access.
-
-**Improvements**
-
-- Origin checks share one transport helper; pre-existing lint warns in
-  the team bridge cleared.
-
-### Engineering record
-
-Red-first tests per fix (candidate exclusion, draft-verdict binding).
-Full gate green; lipstyk zero-findings (pre-push enforced); fork tree
-pristine; plugin 0.6.4 synced byte-identical.
-
-**Residuals.** KCS publish-flow review stays human-gated by design.
-DNS-rebind, shim tenancy, and first-use flagging keep their Loop-line
-owners. v1.28.79 was never tagged — its commits ship inside this
-release.
-
-## [1.28.79] — 2026-09-10 — "Parity": the 3rd-pass close-out, zero upstream surface
-
-Closes the fork-vs-upstream third-pass audit. Fork-only files get code
-fixes; upstream-tracked files get upstream-PR specs + disclosures only —
-no hunk in this release touches upstream code. Plugin 0.6.3. No schema;
-existing data untouched.
+Closes the fork-vs-upstream third-pass audit and every honest gap the
+final audit named. Fork-only files get code fixes; upstream-tracked files
+get upstream-PR specs + disclosures only — no hunk in this release
+touches upstream code. No schema; existing data untouched. Plugin 0.6.4.
 
 ### Release notes
 
@@ -73,11 +36,20 @@ existing data untouched.
   pinned origin are refused, closing bearer leakage through cross-origin
   redirects.
 - **Team workflow mirrors honor chat-type gates.** Group and channel turns
-  barred from recall no longer reach the workflow mirror.
+  barred from recall no longer reach the workflow mirror; the gate prefers
+  the gateway's classified type and denies when unclassifiable.
 - **Proxy-header gates hardened.** Forwarded-header pairs without a
   configured trust basis are denied; legitimate multi-hop proxy chains no
   longer trip strict mode; brain recall fences are neutralized at the
   prompt-merge seam like every other marker.
+- **Re-embedding skips quarantined rows.** The reindex and profile-switch
+  paths re-embedded every row, resurrecting vectors the ingest gate
+  removed. Both now share one candidate query that excludes quarantined
+  rows; the legacy add path gates its vector insert the same way.
+- **KCS drafts carry the screen verdict.** Draft inserts hardcoded a clean
+  flag without screening. The verdict is now recorded as advisory
+  provenance (the approving human's decision stays final), mirroring the
+  promote path.
 
 **Upstream proposals (specs, no fork code)**
 
@@ -85,20 +57,26 @@ existing data untouched.
   default pin path, and replay-prefix hardening ship as file:line-anchored
   PR specs; disclosures recorded in the threat model until merged.
 
+**Improvements**
+
+- Origin checks share one transport helper; pre-existing lint warns in
+  the team bridge cleared.
+
 ### Engineering record
 
-Red-first tests per lane (multiline refuse, redirect re-pin, chat-type
-gate, header pins, fence split). Full gate: lib + main-suite green,
-clippy `-D warnings` clean, openapi/authz pins green, plugin vitest via
-parity sync (fork tree restored pristine), lipstyk slop 0, comment
+Red-first tests per fix (multiline refuse, redirect re-pin, chat-type
+gate, header pins, fence split, candidate exclusion, draft-verdict
+binding). Full gate: lib + main-suite green, clippy `-D warnings` clean,
+openapi/authz pins green, plugin vitest via parity sync (fork tree
+restored pristine), lipstyk zero-findings (pre-push enforced), comment
 hygiene gate green.
 
 **Disclosures (accepted, not gaps).** Missing-Origin pre-pass is
-architecture (non-browser clients authenticate post-handshake). DNS-rebind
-of the pinned host, first-use tool flagging, shim tenancy, and the
-writable pins file remain residuals with Loop-line owners. The cited
-second-pass audit file is absent from the repo; premises were re-verified
-against live source.
+architecture (non-browser clients authenticate post-handshake). KCS
+publish-flow review stays human-gated by design. DNS-rebind of the pinned
+host, first-use tool flagging, shim tenancy, and the writable pins file
+remain residuals with Loop-line owners. The cited second-pass audit file
+is absent from the repo; premises were re-verified against live source.
 
 ## [1.28.78] — 2026-09-10 — "Unconditional": quarantine everywhere, docs-true delivery
 
