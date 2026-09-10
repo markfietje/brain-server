@@ -4,6 +4,15 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.4] — 2026-09-10
+
+**Gate correctness + lint-clean** — synced byte-identical to the fork
+mirror:
+
+- The team-bridge gate prefers the gateway's classified chat type and
+  denies when unclassifiable (no thin-context bypass); origin checks share
+  one helper; pre-existing lint warns cleared.
+
 ## [0.6.3] — 2026-09-10
 
 **Third-pass hardening** — refusals and gates, all synced byte-identical

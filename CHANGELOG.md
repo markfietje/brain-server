@@ -17,6 +17,43 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [1.28.80] — 2026-09-10 — "Ledger": the gap ledger hits zero
+
+Closes every honest gap the final audit named. No schema; existing data
+untouched. Plugin 0.6.4.
+
+### Release notes
+
+**Security fixes**
+
+- **Re-embedding skips quarantined rows.** The reindex and profile-switch
+  paths re-embedded every row, resurrecting vectors the ingest gate
+  removed. Both now share one candidate query that excludes quarantined
+  rows; the legacy add path gates its vector insert the same way.
+- **KCS drafts carry the screen verdict.** Draft inserts hardcoded a clean
+  flag without screening. The verdict is now recorded as advisory
+  provenance (the approving human's decision stays final), mirroring the
+  promote path.
+- **Team-bridge deny-default.** The gate prefers the gateway's classified
+  chat type and denies when unclassifiable — a context without channel
+  information can no longer derive open access.
+
+**Improvements**
+
+- Origin checks share one transport helper; pre-existing lint warns in
+  the team bridge cleared.
+
+### Engineering record
+
+Red-first tests per fix (candidate exclusion, draft-verdict binding).
+Full gate green; lipstyk zero-findings (pre-push enforced); fork tree
+pristine; plugin 0.6.4 synced byte-identical.
+
+**Residuals.** KCS publish-flow review stays human-gated by design.
+DNS-rebind, shim tenancy, and first-use flagging keep their Loop-line
+owners. v1.28.79 was never tagged — its commits ship inside this
+release.
+
 ## [1.28.79] — 2026-09-10 — "Parity": the 3rd-pass close-out, zero upstream surface
 
 Closes the fork-vs-upstream third-pass audit. Fork-only files get code
