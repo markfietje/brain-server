@@ -182,14 +182,7 @@ fn run_reembed(pool: &Pool, target_profile: &str) -> Result<()> {
     let mut conn = pool.get().context("DB connection failed")?;
     crate::migration::rebuild_vec_store_at_dim(&mut conn, dim)?;
     // Same loop as /reindex: encode → delete + re-insert (vec0 has no UPSERT).
-    // Quarantined rows are skipped: they hold no vector by the ingest gate,
-    // and re-embedding them would resurrect the shadowing the gate removed
-    // (re-approval regenerates through the edit path).
-    let ids: Vec<(i64, String)> = conn
-        .prepare("SELECT id, content FROM knowledge WHERE flagged = 0 ORDER BY id")?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .filter_map(|r| r.ok())
-        .collect();
+    let ids = crate::service::reindex::reindex_candidate_ids(&conn)?;
     let mut reembedded = 0usize;
     let mut skipped = 0usize;
     for (id, content) in &ids {

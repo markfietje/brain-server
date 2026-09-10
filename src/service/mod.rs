@@ -74,6 +74,7 @@ pub mod procedure;
 pub mod purge;
 pub mod recall;
 pub mod register;
+pub mod reindex;
 pub mod retention;
 pub mod review;
 pub mod suggest;

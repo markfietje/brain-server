@@ -1138,6 +1138,14 @@ pub async fn approve_proposal(
                 let content_hash =
                     format!("{:016x}", xxhash_rust::xxh3::xxh3_64(content.as_bytes()));
                 let source_kind = source.clone().unwrap_or_else(|| "agent".to_string());
+                // Screen the draft like any ingest: the verdict rides as
+                // advisory `flagged` (the human approved the proposal — the
+                // decision is final — but the taint survives as provenance
+                // for review paths, same as the promote path).
+                let flagged = matches!(
+                    crate::screen::screen(&content, title.as_deref().unwrap_or("")),
+                    crate::screen::ScreenResult::Quarantine | crate::screen::ScreenResult::Reject
+                ) as i64;
                 let new_id = crate::service::gate::kcs_draft_insert(
                     &tx,
                     &content,
@@ -1147,6 +1155,7 @@ pub async fn approve_proposal(
                     authority,
                     observed_at,
                     principal_to_owner(&principal.0).as_deref(),
+                    flagged,
                 )
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
                 crate::service::gate::chunk_vec_insert(

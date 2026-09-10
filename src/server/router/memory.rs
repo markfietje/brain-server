@@ -2258,13 +2258,7 @@ pub(crate) async fn reindex(
     let model = Arc::clone(&s.model);
     let res = task::spawn_blocking(move || -> Result<(usize, usize), anyhow::Error> {
         let conn = pool.get().context("DB connection failed")?;
-        // Quarantined rows hold no vector by the ingest gate — re-embedding
-        // them would resurrect the shadowing the gate removed.
-        let ids: Vec<(i64, String)> = conn
-            .prepare("SELECT id, content FROM knowledge WHERE flagged = 0 ORDER BY id")?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .filter_map(|r| r.ok())
-            .collect();
+        let ids = crate::service::reindex::reindex_candidate_ids(&conn)?;
         let mut reembedded = 0usize;
         let mut skipped = 0usize;
         for (id, content) in &ids {
