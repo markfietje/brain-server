@@ -113,9 +113,7 @@ export function formatRecallContext(hits: ReadonlyArray<BrainRecallHit>): string
 // fence; owner hits stay untagged. The memory_recall TOOL path always labels
 // (tools return what was asked) — only auto-inject can exclude.
 export function originLinePrefix(hit: BrainRecallHit): string {
-  return hit.origin && hit.origin !== "owner"
-    ? ` [memory | ${sanitizeForBlock(hit.origin)}]`
-    : "";
+  return hit.origin && hit.origin !== "owner" ? ` [memory | ${sanitizeForBlock(hit.origin)}]` : "";
 }
 
 // The `untrustedOrigins: "exclude"` posture: drop channel-captured hits from

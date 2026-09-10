@@ -5,7 +5,12 @@
  * to a silent `undefined`.
  */
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { BrainClient, BrainHttpError, brainErrorDetail, describeBrainError } from "./brain-client.js";
+import {
+  BrainClient,
+  BrainHttpError,
+  brainErrorDetail,
+  describeBrainError,
+} from "./brain-client.js";
 import { resolveConfig } from "./config.js";
 
 const cfg = () =>
@@ -347,7 +352,9 @@ describe("brainErrorDetail", () => {
     const client = new BrainClient(cfg());
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => mockResponse('{"error":"unauthorized","code":"invalid_token"}', { status: 401 })),
+      vi.fn(async () =>
+        mockResponse('{"error":"unauthorized","code":"invalid_token"}', { status: 401 }),
+      ),
     );
     const err = await client.fetchJson("/recall", "POST", {}, 50).catch((e) => e);
     expect(err).toBeInstanceOf(BrainHttpError);

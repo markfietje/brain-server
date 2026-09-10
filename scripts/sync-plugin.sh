@@ -17,7 +17,9 @@ TARGET="${1:-$HOME/Sites/openclaw}/extensions/brain-server"
 # applies on commit (oxfmt) — otherwise its pre-commit hook re-wraps the synced
 # files and byte-identity drifts again (the 0.5.0 lesson). No-op when oxfmt or
 # a config is absent; never fails the sync on a missing tool.
-OC_DIR="$(dirname "$TARGET")"
+# OC_DIR is the openclaw WORKSPACE root (parent of extensions/), where
+# node_modules/.bin/oxfmt lives — not extensions/ itself.
+OC_DIR="$(dirname "$(dirname "$TARGET")")"
 OXFMT="$OC_DIR/node_modules/.bin/oxfmt"
 if [[ -x "$OXFMT" ]]; then
 	echo ">> formatting canonical plugin/ with the openclaw workspace's oxfmt…"

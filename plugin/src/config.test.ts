@@ -123,18 +123,12 @@ describe("assertSafeBaseUrl (F-E4 scheme gate)", () => {
     expect(() => assertSafeBaseUrl("https://brain.example.com")).not.toThrow();
   });
   test("loopback http passes", () => {
-    for (const u of [
-      "http://127.0.0.1:8765",
-      "http://localhost:8765",
-      "http://[::1]:8765",
-    ]) {
+    for (const u of ["http://127.0.0.1:8765", "http://localhost:8765", "http://[::1]:8765"]) {
       expect(() => assertSafeBaseUrl(u)).not.toThrow();
     }
   });
   test("remote cleartext throws", () => {
-    expect(() => assertSafeBaseUrl("http://brain.example.com")).toThrow(
-      /cleartext|loopback/,
-    );
+    expect(() => assertSafeBaseUrl("http://brain.example.com")).toThrow(/cleartext|loopback/);
     expect(() => assertSafeBaseUrl("ftp://x")).toThrow(/scheme/);
     expect(() => assertSafeBaseUrl("not a url")).toThrow(/valid URL/);
   });
@@ -143,19 +137,15 @@ describe("assertSafeBaseUrl (F-E4 scheme gate)", () => {
 describe("untrustedOrigins (v0.6.0 Origin)", () => {
   test("defaults to label; exclude and label resolve verbatim", () => {
     expect(resolveConfig({}).untrustedOrigins).toBe("label");
-    expect(
-      resolveConfig({ untrustedOrigins: "exclude" } as never).untrustedOrigins,
-    ).toBe("exclude");
-    expect(
-      resolveConfig({ untrustedOrigins: "label" } as never).untrustedOrigins,
-    ).toBe("label");
+    expect(resolveConfig({ untrustedOrigins: "exclude" } as never).untrustedOrigins).toBe(
+      "exclude",
+    );
+    expect(resolveConfig({ untrustedOrigins: "label" } as never).untrustedOrigins).toBe("label");
   });
 
   test("an invalid value degrades to the label default (fail-safe)", () => {
     // The manifest schema only admits label|exclude; the resolver is the
     // second gate for configs that bypass it (hand-edited jsonc).
-    expect(
-      resolveConfig({ untrustedOrigins: "purge" } as never).untrustedOrigins,
-    ).toBe("label");
+    expect(resolveConfig({ untrustedOrigins: "purge" } as never).untrustedOrigins).toBe("label");
   });
 });

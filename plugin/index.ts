@@ -284,8 +284,7 @@ export default definePluginEntry({
           );
           // The untrustedOrigins posture: `exclude` drops channel-captured
           // hits from auto-inject entirely (the tool path always labels).
-          const injectable =
-            c.untrustedOrigins === "exclude" ? excludeChannelCaptures(hits) : hits;
+          const injectable = c.untrustedOrigins === "exclude" ? excludeChannelCaptures(hits) : hits;
           const block = formatRecallContext(injectable);
           if (!block) {
             return undefined;
@@ -351,9 +350,7 @@ export default definePluginEntry({
           // channel taint so the operator sees the badge at approve time
           // and recall can label/exclude the hit later.
           const originContext: "owner" | "channel" =
-            gate.chatType === "group" || gate.chatType === "channel"
-              ? "channel"
-              : "owner";
+            gate.chatType === "group" || gate.chatType === "channel" ? "channel" : "owner";
           if (c.captureMode === "direct") {
             await client.store({
               title: text.slice(0, 80),

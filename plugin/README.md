@@ -52,7 +52,7 @@ this plugin (TS)  ──POST /recall (loopback)──►  brain-server (Rust)
   `sanitizeForBlock`, so recalled content can neither forge its attribution nor
   break the fence markers.
 - **Fail-safe drop** — a hit that arrives without the server's `untrusted: true`
-  flag is *dropped*, not injected (fail-safe toward no context).
+  flag is _dropped_, not injected (fail-safe toward no context).
 - **Origin labels ride the whole trip (v1.28.74 / plugin 0.6.0)** — captures from
   group/channel traffic carry origin `channel-capture`; auto-injected hit lines
   prefix ` [memory | channel-capture]` inside the fence (owner memories stay
