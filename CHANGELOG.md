@@ -51,16 +51,14 @@ touches upstream code. No schema; existing data untouched. Plugin 0.6.4.
   provenance (the approving human's decision stays final), mirroring the
   promote path.
 
-**Upstream proposals (specs, no fork code)**
-
-- Multi-block tool-result sanitization, prompt-hook input sanitization,
-  default pin path, and replay-prefix hardening ship as file:line-anchored
-  PR specs; disclosures recorded in the threat model until merged.
-
 **Improvements**
 
 - Origin checks share one transport helper; pre-existing lint warns in
   the team bridge cleared.
+- **Upstream proposals (specs, no fork code):** multi-block tool-result
+  sanitization, prompt-hook input sanitization, default pin path, and
+  replay-prefix hardening ship as file:line-anchored PR specs;
+  disclosures recorded in the threat model until merged.
 
 ### Engineering record
 
