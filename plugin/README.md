@@ -47,8 +47,10 @@ this plugin (TS)  ──POST /recall (loopback)──►  brain-server (Rust)
   rendered as numbered citations, never executed as instructions; contested
   (`conflict`) hits are flagged.
 - **Provenance-labeled recall (v1.27.12 / plugin 0.4.3)** — each hit renders a
-  deterministic `[src: · mk: · lb: · reg:]` line (source / memory kind / lawful
-  basis / region) inside the `UNTRUSTED` fence; labels run through
+  compact attribution label inside the `UNTRUSTED` fence from whatever
+  provenance the row carries (`src:` ingest kind, `mk:` memory kind, `lb:`
+  lawful basis, `reg:` residency region, `origin:` capture origin — absent
+  labels are dropped, all-absent yields no line); labels run through
   `sanitizeForBlock`, so recalled content can neither forge its attribution nor
   break the fence markers.
 - **Fail-safe drop** — a hit that arrives without the server's `untrusted: true`
@@ -69,6 +71,16 @@ this plugin (TS)  ──POST /recall (loopback)──►  brain-server (Rust)
 - **Digest-bound approvals (server-side)** — in the default review posture,
   promoting a capture requires the operator to carry the SHA-256 of the exact
   bytes they reviewed (`400 digest_required` when absent, `409` on drift).
+- **Transport hardening (plugin 0.6.2–0.6.4)** — `fetchJson` pins the
+  server origin (absolute-URL / protocol-relative path smuggling refused)
+  and re-pins after redirects (cross-origin redirect carrying
+  `Authorization` refused); structured server error bodies
+  (`{error, code}`) map to actionable hints (401 → agent-token pointer,
+  429 → back-off, 422 → validation bounds), anything else rides the
+  sanitized raw body capped at 500 chars — error text reaches the agent's
+  prompt. The team-bridge mirror honors the same chat-type gates as
+  recall (barred group/channel turns post nothing; unclassifiable chat
+  denied).
 - **Fail-open** on recall errors (never stall the agent); **fail-closed** on auth.
 
 ## Install
@@ -90,30 +102,42 @@ Restart the gateway after installing. Min host version: `2026.5.31`.
 
 ```jsonc
 {
+  "enabled": true, // master switch (default true; per-agent list still gates)
   "baseUrl": "http://127.0.0.1:8765",
-  // Token resolution: BRAIN_TOKEN_FILE (path to a 0600 token) > BRAIN_TOKEN > authToken (legacy)
+  // Token resolution: BRAIN_TOKEN_FILE (0600 file, single agent-token line) > BRAIN_TOKEN > authToken (legacy)
   "authToken": "<AUTH_TOKEN>", // legacy fallback — prefer an env source; never required
   "agents": ["main"], // per-agent opt-in; empty = disabled
   "allowedChatTypes": ["direct", "explicit"],
+  "allowedChatIds": [], // optional allowlist; empty = no constraint
+  "deniedChatIds": [], // optional denylist; wins over the allowlist
   "autoRecall": true, // deterministic per-turn recall
   "autoCapture": false, // store durable facts after a turn (sends origin_context when the chat is group/channel)
   "captureMode": "proposal", // route captures through human review (default)
   "untrustedOrigins": "label", // v0.6.0: label channel-captured hits in auto-inject, or "exclude" them (tool path always labels)
   "strictDomain": false, // false = cross-domain fallback on miss
+  "defaultDomain": "global",
   "autoRecallTopK": 3,
-  "autoRecallTimeoutMs": 5000,
+  "autoRecallTimeoutMs": 2000,
+  "requestTimeoutMs": 8000, // transport ceiling for non-recall calls
+  "minQueryLength": 5, // shorter prompts skip recall
+  "recallMaxChars": 1000, // per-hit body clamp before injection
   "autoRecallGraph": false, // opt IN to the graph-PPR third recall leg (sent explicitly: false disables it, whatever the server default)
   "proposalTools": false, // expose proposal review tools to the agent
 }
 ```
 
-> **Token resolution (0.4.5):** the plugin never writes a token. It resolves the
-> bearer via a ladder mirroring the `brain` CLI — `BRAIN_TOKEN_FILE` (a 0600 file;
-> the token never appears in config or env dumps) → `BRAIN_TOKEN` (env) →
-> `authToken` in the plugin config (legacy fallback). Config wins only when no env
-> source is set, so rotating via env never fights a stale stored value; an
-> unreadable token file degrades loudly to the next rung, never silently to a
-> weaker source.
+`autoRecallMaxContextTokens` (optional, unset by default) caps injected
+context tokens when set.
+
+> **Token resolution (0.4.5, fail-closed since 0.6.2):** the plugin never
+> writes a token. It resolves the bearer via a ladder mirroring the `brain`
+> CLI — `BRAIN_TOKEN_FILE` (a 0600 file holding the single agent-token line)
+> → `BRAIN_TOKEN` (env) → `authToken` in the plugin config (legacy
+> fallback). Config wins only when no env source is set, so rotating via
+> env never fights a stale stored value. Fail-closed: an unreadable or
+> empty token file **throws** (never falls back to a weaker rung), and a
+> file holding more than one token **throws** — pointing at the server's
+> two-line file would transmit the operator secret as one credential.
 >
 > **Two-token pattern (Seatbelt):** the server token file is whitespace-split.
 > Line 1 is the OPERATOR token (approvals, erasure — it must never enter
@@ -147,17 +171,21 @@ Restart the gateway after installing. Min host version: `2026.5.31`.
 
 ## Files
 
-| File                   | Purpose                                                            |
-| ---------------------- | ------------------------------------------------------------------ |
-| `index.ts`             | Plugin entry: `definePluginEntry`, hooks, tools, service           |
-| `src/config.ts`        | Typebox schema + resolved config + defaults                        |
-| `src/brain-client.ts`  | Thin typed HTTP client → Rust brain-server (no logic)              |
-| `src/gating.ts`        | OWASP/Lakera access gating (per-agent + chat-type)                 |
-| `src/format.ts`        | Recall formatting + anti-injection banner + capture heuristics     |
-| `openclaw.plugin.json` | Manifest (`kind: "memory"`, contracts, config)                     |
-| `package.json`         | Package metadata, min host version, plugin API compat              |
-| `test/plugin.test.ts`  | Integration: hook/tool flow against a mocked Rust server (`fetch`) |
-| `src/*.test.ts`        | Unit tests: config, gating, format, brain-client transport         |
+| File                       | Purpose                                                            |
+| -------------------------- | ------------------------------------------------------------------ |
+| `index.ts`                 | Plugin entry: `definePluginEntry`, hooks, tools, service           |
+| `src/config.ts`            | Typebox schema + resolved config + defaults                        |
+| `src/brain-client.ts`      | Thin typed HTTP client → Rust brain-server (no logic)              |
+| `src/gating.ts`            | OWASP/Lakera access gating (per-agent + chat-type)                 |
+| `src/format.ts`            | Recall formatting + anti-injection banner + capture heuristics     |
+| `src/tools.ts`             | Recall/store/verify/get/graph/proposal tool definitions            |
+| `src/procedural.ts`        | Procedural memory: runbooks + decision-tree tools                  |
+| `src/team-bridge.ts`       | Team bridge: mirror agent activity onto governed workflow surfaces |
+| `openclaw.plugin.json`     | Manifest (`kind: "memory"`, contracts, config)                     |
+| `package.json`             | Package metadata, min host version, plugin API compat              |
+| `test/plugin.test.ts`      | Integration: hook/tool flow against a mocked Rust server (`fetch`) |
+| `test/team-bridge.test.ts` | Integration: bridge gating + mirror flow (`fetch`)                 |
+| `src/*.test.ts`            | Unit tests: config, gating, format, brain-client transport         |
 
 ## Testing
 
