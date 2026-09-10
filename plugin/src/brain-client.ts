@@ -40,46 +40,37 @@ export class BrainHttpError extends Error {
   }
 }
 
+/** Actionable hints per status for structured server errors. */
+const STATUS_HINTS: Record<number, string> = {
+  401: "check BRAIN_TOKEN / BRAIN_TOKEN_FILE (agent token, not operator)",
+  429: "rate-limited — back off and retry",
+  422: "request failed server validation — check query/body bounds",
+};
+
 /**
  * Map a structured server error body ({error, code}) to an actionable hint.
  * Unknown shapes fall back to the sanitized raw body (capped) — the error
  * reaches the agent's prompt, so invisible/markdown-ref content is stripped.
  */
 export function brainErrorDetail(status: number, body: string): string {
-  const code = parseErrorCode(body);
-  if (code) {
-    if (status === 401) {
-      return `${code}: check BRAIN_TOKEN / BRAIN_TOKEN_FILE (agent token, not operator)`;
-    }
-    if (status === 429) {
-      return `${code}: rate-limited — back off and retry`;
-    }
-    if (status === 422) {
-      return `${code}: request failed server validation — check query/body bounds`;
-    }
-    return code;
-  }
-  const stripped = sanitizeForBlock(body);
-  return stripped.length > 500 ? `${stripped.slice(0, 500)}…` : stripped;
-}
-
-/** The server's `{error, code}` envelope, or `undefined` for opaque bodies. */
-function parseErrorCode(body: string): string | undefined {
+  let code: unknown;
   try {
     const parsed: unknown = JSON.parse(body);
-    if (typeof parsed === "object" && parsed !== null) {
-      const record = parsed as Record<string, unknown>;
-      const code = record.code ?? record.error;
-      return typeof code === "string" && code ? code : undefined;
-    }
-    return undefined;
-  } catch (err) {
-    // Opaque body (not a JSON envelope): no code to map, so the caller
-    // falls back to the sanitized raw body. The parse error itself carries
-    // no signal — deliberately ignored, not silently lost.
-    void err;
-    return undefined;
+    code =
+      typeof parsed === "object" && parsed !== null
+        ? ((parsed as Record<string, unknown>).code ?? (parsed as Record<string, unknown>).error)
+        : undefined;
+  } catch {
+    // Opaque body (not a JSON envelope): no code to map — fall through to
+    // the sanitized raw body below.
+    code = undefined;
   }
+  if (typeof code !== "string" || code === "") {
+    const stripped = sanitizeForBlock(body);
+    return stripped.length > 500 ? `${stripped.slice(0, 500)}…` : stripped;
+  }
+  const hint = STATUS_HINTS[status];
+  return hint === undefined ? code : `${code}: ${hint}`;
 }
 
 /** Human-readable summary for tool output and logs. */
@@ -459,6 +450,15 @@ export class BrainClient {
       this.token = cfg.authToken;
     }
     this.defaultTimeoutMs = cfg.requestTimeoutMs;
+  }
+
+  /** Resolve against the pinned base; undefined when malformed. */
+  private pinnedUrl(value: string): URL | undefined {
+    try {
+      return new URL(value, `${this.baseUrl}/`);
+    } catch {
+      return undefined;
+    }
   }
 
   /** Liveness probe — used by the service start hook. */
@@ -874,17 +874,11 @@ export class BrainClient {
       timeoutMs ?? this.defaultTimeoutMs,
     );
     let res: Response;
-    let url: string;
-    try {
-      const u = new URL(path, `${this.baseUrl}/`);
-      if (u.origin !== this.origin) {
-        throw new BrainHttpError("network", `refusing brain-server request outside pinned origin`);
-      }
-      url = u.toString();
-    } catch (err) {
-      if (err instanceof BrainHttpError) throw err;
-      throw new BrainHttpError("network", (err as Error)?.message ?? "invalid request path");
+    const u = this.pinnedUrl(path);
+    if (u === undefined || u.origin !== this.origin) {
+      throw new BrainHttpError("network", `refusing brain-server request outside pinned origin`);
     }
+    const url = u.toString();
     try {
       res = await fetch(url, {
         method,
@@ -909,15 +903,10 @@ export class BrainClient {
     }
 
     // Redirect re-pin: fetch follows cross-origin redirects resending
-    // Authorization — refuse a response that landed off the pinned origin.
-    // (Falls back to the pinned base when the runtime omits `url`.)
-    try {
-      if (new URL(res.url || this.baseUrl).origin !== this.origin) {
-        throw new BrainHttpError("network", `brain-server redirected off pinned origin`);
-      }
-    } catch (err) {
-      if (err instanceof BrainHttpError) throw err;
-      throw new BrainHttpError("network", (err as Error)?.message ?? "invalid response URL");
+    // Authorization — refuse a response that landed off the pinned origin
+    // (missing `url` resolves to the pinned base and passes).
+    if (this.pinnedUrl(res.url || "/")?.origin !== this.origin) {
+      throw new BrainHttpError("network", `brain-server redirected off pinned origin`);
     }
 
     if (!res.ok) {
