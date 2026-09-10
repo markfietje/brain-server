@@ -211,6 +211,11 @@ export async function evaluateDecision(
  * allowlisted agent; `memory_procedure_store` is a direct write (the server has
  * no proposal variant for procedures), gated instead by the server's Write
  * authz + injection screen and the plugin's per-agent `agents` allowlist.
+ * Trust basis, stated plainly: procedure writes are agent-invoked structured
+ * artifacts (titled steps, not ambient capture) — the screen + Write gate +
+ * agent allowlist is the review. A poisoned runbook recalled later renders
+ * through the same `untrusted` labeling as any recall. Operators wanting
+ * review-gating on procedures should front them with the proposal path.
  */
 export function registerProceduralTools(
   api: OpenClawPluginApi,

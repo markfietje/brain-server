@@ -33,6 +33,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import type { BrainClient } from "./brain-client.js";
 import type { ResolvedBrainConfig } from "./config.js";
 import { sanitizeForBlock } from "./format.js";
+import { deriveChatType, isRecallAllowed } from "./gating.js";
 
 // --------------------------------------------------------------------------
 // Pure helpers (exported for tests)
@@ -382,9 +383,38 @@ export function attachTeamBridge(
     log,
   );
 
-  const gated = (ctx: { agentId?: string } | undefined): boolean => {
+  const gated = (
+    ctx: { agentId?: string; channel?: string; trigger?: string; chatId?: string } | undefined,
+  ): boolean => {
     const c = liveCfg();
-    return teamGateEnabled(c, ctx?.agentId);
+    if (!teamGateEnabled(c, ctx?.agentId)) {
+      return false;
+    }
+    // Chat-type posture: group/channel turns barred from recall must not
+    // reach the workflow mirror either (intent labels carry turn text).
+    const gateCtx: {
+      agentId?: string;
+      chatType: "direct" | "group" | "channel" | "explicit";
+      chatId?: string;
+    } = {
+      chatType: deriveChatType({
+        channel: ctx?.channel,
+        trigger: ctx?.trigger,
+        chatId: ctx?.chatId,
+      }),
+    };
+    if (ctx?.agentId !== undefined) {
+      gateCtx.agentId = ctx.agentId;
+    }
+    if (ctx?.chatId !== undefined) {
+      gateCtx.chatId = ctx.chatId;
+    }
+    const verdict = isRecallAllowed(c, gateCtx);
+    if (!verdict.allowed) {
+      log.warn?.(`team-bridge: mirror skipped (${verdict.reason})`);
+      return false;
+    }
+    return true;
   };
 
   api.on(

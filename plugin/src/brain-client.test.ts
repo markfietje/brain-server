@@ -19,13 +19,17 @@ const cfg = () =>
     requestTimeoutMs: 100,
   });
 
-function mockResponse(body: unknown, init: { status?: number; statusText?: string } = {}) {
+function mockResponse(
+  body: unknown,
+  init: { status?: number; statusText?: string; url?: string } = {},
+) {
   const status = init.status ?? 200;
   const text = typeof body === "string" ? body : JSON.stringify(body);
   return {
     ok: status >= 200 && status < 300,
     status,
     statusText: init.statusText ?? "",
+    url: init.url ?? "http://127.0.0.1:8765/recall",
     text: async () => text,
   } as unknown as Response;
 }
@@ -359,5 +363,22 @@ describe("brainErrorDetail", () => {
     const err = await client.fetchJson("/recall", "POST", {}, 50).catch((e) => e);
     expect(err).toBeInstanceOf(BrainHttpError);
     expect((err as BrainHttpError).message).toContain("BRAIN_TOKEN");
+  });
+});
+
+describe("redirect re-pin", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  test("a response off the pinned origin refuses", async () => {
+    const client = new BrainClient(cfg());
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        mockResponse({ hits: [] }, { status: 200, url: "http://169.254.169.254/latest" }),
+      ),
+    );
+    const err = await client.fetchJson("/recall", "POST", {}, 50).catch((e) => e);
+    expect(err).toBeInstanceOf(BrainHttpError);
+    expect((err as BrainHttpError).kind).toBe("network");
   });
 });

@@ -160,6 +160,16 @@ function resolveAuthToken(cfg: Partial<BrainConfig>): string | undefined {
     if (!token) {
       throw new Error(`brain-server plugin: BRAIN_TOKEN_FILE is empty (${file})`);
     }
+    // The file holds ONE token: the agent-token line. A multi-line file
+    // means the operator pointed at the server's two-line file (whose first
+    // line is the privileged OPERATOR token) — transmitting it whole would
+    // leak operator authority down the agent path. Refuse, naming the fix.
+    if (/\s/.test(token)) {
+      throw new Error(
+        `brain-server plugin: BRAIN_TOKEN_FILE holds more than one token (${file}) — ` +
+          `point it at the single agent-token line, never the operator token`,
+      );
+    }
     return token;
   }
   const envToken = process.env.BRAIN_TOKEN?.trim();

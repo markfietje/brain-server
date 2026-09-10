@@ -908,6 +908,18 @@ export class BrainClient {
       clearTimeout(timer);
     }
 
+    // Redirect re-pin: fetch follows cross-origin redirects resending
+    // Authorization — refuse a response that landed off the pinned origin.
+    // (Falls back to the pinned base when the runtime omits `url`.)
+    try {
+      if (new URL(res.url || this.baseUrl).origin !== this.origin) {
+        throw new BrainHttpError("network", `brain-server redirected off pinned origin`);
+      }
+    } catch (err) {
+      if (err instanceof BrainHttpError) throw err;
+      throw new BrainHttpError("network", (err as Error)?.message ?? "invalid response URL");
+    }
+
     if (!res.ok) {
       // Surface the status + a best-effort message from the server body.
       let detail = res.statusText;

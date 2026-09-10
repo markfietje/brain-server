@@ -116,6 +116,24 @@ describe("resolveConfig", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  test("a multi-line token file refuses naming the agent line", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "brain-cfg-"));
+    const tokenFile = path.join(dir, "token");
+    fs.writeFileSync(tokenFile, "operator-token\nagent-token\n");
+    const prev = process.env.BRAIN_TOKEN_FILE;
+    process.env.BRAIN_TOKEN_FILE = tokenFile;
+    try {
+      expect(() => resolveConfig({})).toThrow(/agent-token line/);
+    } finally {
+      if (prev === undefined) {
+        delete process.env.BRAIN_TOKEN_FILE;
+      } else {
+        process.env.BRAIN_TOKEN_FILE = prev;
+      }
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("assertSafeBaseUrl (F-E4 scheme gate)", () => {

@@ -126,6 +126,17 @@ describe("team bridge gating", () => {
     await getHook(hooks, "before_agent_run")({ prompt: "hello" }, { sessionKey: "s1" });
     expect(calls).toHaveLength(0);
   });
+
+  test("group turn under direct-only policy posts nothing (chat-type gate)", async () => {
+    const { hooks, logger } = registerPlugin({ ...enabledCfg, allowedChatTypes: ["direct"] });
+    const calls = stubFetch(() => ({ status: 200, body: {} }));
+    await getHook(hooks, "before_agent_run")(
+      { prompt: "secret in group" },
+      { agentId: "Main", sessionKey: "s1", channel: "discord" },
+    );
+    expect(calls).toHaveLength(0);
+    expect(logger.warn).toHaveBeenCalled();
+  });
 });
 
 describe("team bridge happy path", () => {
