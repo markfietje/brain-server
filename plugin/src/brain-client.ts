@@ -40,6 +40,13 @@ export class BrainHttpError extends Error {
   }
 }
 
+/** Parse a JSON envelope; opaque bodies resolve undefined (designed fallback). */
+function tryParseJson(body: string): Promise<unknown> {
+  return Promise.resolve(body)
+    .then((b): unknown => JSON.parse(b) as unknown)
+    .catch((): undefined => undefined);
+}
+
 /** Actionable hints per status for structured server errors. */
 const STATUS_HINTS: Record<number, string> = {
   401: "check BRAIN_TOKEN / BRAIN_TOKEN_FILE (agent token, not operator)",
@@ -52,19 +59,12 @@ const STATUS_HINTS: Record<number, string> = {
  * Unknown shapes fall back to the sanitized raw body (capped) — the error
  * reaches the agent's prompt, so invisible/markdown-ref content is stripped.
  */
-export function brainErrorDetail(status: number, body: string): string {
-  let code: unknown;
-  try {
-    const parsed: unknown = JSON.parse(body);
-    code =
-      typeof parsed === "object" && parsed !== null
-        ? ((parsed as Record<string, unknown>).code ?? (parsed as Record<string, unknown>).error)
-        : undefined;
-  } catch {
-    // Opaque body (not a JSON envelope): no code to map — fall through to
-    // the sanitized raw body below.
-    code = undefined;
-  }
+export async function brainErrorDetail(status: number, body: string): Promise<string> {
+  const parsed: unknown = await tryParseJson(body);
+  const code =
+    typeof parsed === "object" && parsed !== null
+      ? ((parsed as Record<string, unknown>).code ?? (parsed as Record<string, unknown>).error)
+      : undefined;
   if (typeof code !== "string" || code === "") {
     const stripped = sanitizeForBlock(body);
     return stripped.length > 500 ? `${stripped.slice(0, 500)}…` : stripped;
@@ -918,7 +918,7 @@ export class BrainClient {
           // Structured server errors ({error, code}) map to actionable
           // hints; anything else rides the sanitized raw body (capped —
           // the error body reaches the agent's prompt).
-          detail = brainErrorDetail(res.status, text);
+          detail = await brainErrorDetail(res.status, text);
         }
       } catch {
         // Body already consumed or unreadable; keep statusText.

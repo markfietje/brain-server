@@ -21,15 +21,31 @@ const cfg = () =>
 
 function mockResponse(
   body: unknown,
-  init: { status?: number; statusText?: string; url?: string } = {},
+  init: Partial<{ status: number; statusText: string; url: string }> = {},
 ) {
-  const status = init.status ?? 200;
-  const text = typeof body === "string" ? body : JSON.stringify(body);
+  let status = 200;
+  if (init.status !== undefined) {
+    status = init.status;
+  }
+  let text: string;
+  if (typeof body === "string") {
+    text = body;
+  } else {
+    text = JSON.stringify(body);
+  }
+  let url = "http://127.0.0.1:8765/recall";
+  if (init.url !== undefined) {
+    url = init.url;
+  }
+  let statusText = "";
+  if (init.statusText !== undefined) {
+    statusText = init.statusText;
+  }
   return {
     ok: status >= 200 && status < 300,
     status,
-    statusText: init.statusText ?? "",
-    url: init.url ?? "http://127.0.0.1:8765/recall",
+    statusText,
+    url,
     text: async () => text,
   } as unknown as Response;
 }
@@ -335,21 +351,21 @@ describe("describeBrainError", () => {
 });
 
 describe("brainErrorDetail", () => {
-  test("structured bodies map to actionable hints", () => {
-    expect(brainErrorDetail(401, '{"error":"unauthorized","code":"invalid_token"}')).toContain(
-      "BRAIN_TOKEN",
-    );
-    expect(brainErrorDetail(429, '{"error":"rate_limited","code":"rate_limited"}')).toContain(
-      "back off",
-    );
-    expect(brainErrorDetail(422, '{"error":"bad_request","code":"query_too_long"}')).toContain(
-      "validation",
-    );
+  test("structured bodies map to actionable hints", async () => {
+    await expect(
+      brainErrorDetail(401, '{"error":"unauthorized","code":"invalid_token"}'),
+    ).resolves.toContain("BRAIN_TOKEN");
+    await expect(
+      brainErrorDetail(429, '{"error":"rate_limited","code":"rate_limited"}'),
+    ).resolves.toContain("back off");
+    await expect(
+      brainErrorDetail(422, '{"error":"bad_request","code":"query_too_long"}'),
+    ).resolves.toContain("validation");
   });
 
-  test("unstructured bodies ride sanitized and capped", () => {
-    expect(brainErrorDetail(500, "boom")).toBe("boom");
-    expect(brainErrorDetail(500, "x".repeat(600)).length).toBeLessThanOrEqual(501);
+  test("unstructured bodies ride sanitized and capped", async () => {
+    await expect(brainErrorDetail(500, "boom")).resolves.toBe("boom");
+    await expect(brainErrorDetail(500, "x".repeat(600))).resolves.toHaveLength(501);
   });
 
   test("fetchJson surfaces the mapped hint", async () => {
