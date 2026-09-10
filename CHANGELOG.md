@@ -19,48 +19,45 @@ been run, it is marked **pending** rather than asserted.
 
 ## [1.28.78] — 2026-09-10 — "Unconditional": quarantine everywhere, docs-true delivery
 
-Quarantine is unconditional on every leg, and two doc-claimed delivery
-disciplines are now the shipped disciplines. Plan:
-`IMPLEMENTATION_PLAN_v1.28.78_Unconditional.md` (M1–M6). No schema. Fork
-lanes deferred by operator policy (no upstream-conflict surface).
+Quarantine is unconditional on every retrieval and ingest leg, and channel
+delivery is now truly at-least-once. No schema changes; existing data
+untouched. Fork lanes deferred by operator policy.
 
 ### Release notes
 
 **Security fixes**
 
-- **Legacy vector leg honors quarantine.** `perform_search_legacy` (reached
-  on restored-legacy images without vec0) had no `flagged` predicate and
-  hardcoded clean hits — quarantined plants surfaced as trustworthy. It now
-  filters and emits the real flag, byte-parity with the vec0 path.
-- **Quarantined rows get no vector.** Inserts landed in vec0 before the
-  quarantine gate, so ~20 plants could shadow a target memory out of recall
-  (denial). The insert moved after the gate; reads overfetch `k + 20` so
-  legacy-inserted vectors cannot shadow either. Re-approval regenerates.
-- **Dedup is domain-scoped.** Global content-hash dedup handed a second
-  tenant the first tenant's row id (existence oracle). Same content in two
-  domains now stores twice; the uniqueness backstop moved to
-  `(content_hash, domain)`. Existing rows untouched.
-- **Standby promotion pins the operator did.** `verify_follower` trusted the
-  did named inside the attacker-replaceable sig file. `promote-check` now
-  refuses on mismatch (names both dids) unless `--expected-signer` overrides.
-- **Ping drain is bridge-scoped.** Any bridge's drain consumed every
-  bridge's handover pings. Drains join the run's thread — foreign bridges
-  see nothing, rows stay pending for the right bridge.
-- **Lineage + at-least-once on the workflow seam.** `post_event` accepted
-  foreign-run parents (400 `parent_event_foreign` now); channel-out rows
-  stay pending until the bridge acks (`POST
-  /webhooks/channel/{kind}/drain/ack`, thread-scoped, idempotent) — a
-  silent bridge redrills, never loses. Bridges dedupe on `event_id`.
+- **Legacy search honors quarantine.** Restored images without the vector
+  index previously surfaced quarantined content as trustworthy; it is now
+  filtered like every other leg.
+- **Quarantined content gets no vector embedding.** Inserts previously
+  landed in the vector index before the quarantine gate, so a batch of
+  plants could crowd a target memory out of recall (denial). Quarantined
+  rows now store without a vector, and reads over-fetch to cover embeddings
+  written by older versions. Re-approval restores recall.
+- **Deduplication is domain-scoped.** Identical content in two domains now
+  stores twice; previously the second tenant received the first tenant's
+  record id (existence oracle). Existing rows untouched.
+- **Standby promotion pins the operator identity.** The promotion rehearsal
+  now refuses followers shipped by a foreign key — naming both identities —
+  unless an explicit override names the expected signer.
+- **Handover-ping delivery is bridge-scoped.** One bridge's drain could
+  consume every bridge's pings. Undelivered pings now stay pending for the
+  owning bridge.
+- **Lineage + at-least-once on the workflow seam.** Events naming a parent
+  from another run are refused; outbound channel messages stay pending
+  until the bridge acknowledges them — a silent bridge redelivers, never
+  loses. Bridges deduplicate on the event id.
 
 **Improvements**
 
-- DSAR certificates now except audit-chain rows and log files alongside
-  backup files, in both postures.
-- Unsigned DSAR webhooks warn loudly at send time.
-- Plugin token ladder fails closed: a configured-but-unreadable
-  `BRAIN_TOKEN_FILE` refuses instead of downgrading.
-- Plugin transport maps server `{error, code}` to actionable hints
-  (401 → token check, 429 → back off, 422 → validation).
+- Deletion certificates additionally disclose retained audit-chain rows and
+  log files.
+- Unsigned deletion-notification webhooks log a loud warning at send time.
+- A configured-but-unreadable token file now refuses startup instead of
+  falling back to weaker credentials.
+- The client maps server errors to actionable hints (authentication,
+  rate-limit, validation).
 
 ### Engineering record
 
