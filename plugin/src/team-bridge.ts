@@ -384,7 +384,16 @@ export function attachTeamBridge(
   );
 
   const gated = (
-    ctx: { agentId?: string; channel?: string; trigger?: string; chatId?: string } | undefined,
+    ctx:
+      | {
+          agentId?: string;
+          chatType?: "direct" | "group" | "channel" | "explicit";
+          channel?: string;
+          trigger?: string;
+          chatId?: string;
+          channelId?: string;
+        }
+      | undefined,
   ): boolean => {
     const c = liveCfg();
     if (!teamGateEnabled(c, ctx?.agentId)) {
@@ -392,22 +401,28 @@ export function attachTeamBridge(
     }
     // Chat-type posture: group/channel turns barred from recall must not
     // reach the workflow mirror either (intent labels carry turn text).
+    // Prefer the gateway's already-classified chatType; derivation is the
+    // fallback for thin contexts, denied-by-default when unclassifiable.
     const gateCtx: {
       agentId?: string;
       chatType: "direct" | "group" | "channel" | "explicit";
       chatId?: string;
     } = {
-      chatType: deriveChatType({
-        channel: ctx?.channel,
-        trigger: ctx?.trigger,
-        chatId: ctx?.chatId,
-      }),
+      chatType:
+        ctx?.chatType ??
+        deriveChatType({
+          channel: ctx?.channel,
+          trigger: ctx?.trigger,
+          chatId: ctx?.chatId,
+        }) ??
+        "group",
     };
     if (ctx?.agentId !== undefined) {
       gateCtx.agentId = ctx.agentId;
     }
-    if (ctx?.chatId !== undefined) {
-      gateCtx.chatId = ctx.chatId;
+    const chatId = ctx?.chatId ?? ctx?.channelId;
+    if (chatId !== undefined) {
+      gateCtx.chatId = chatId;
     }
     const verdict = isRecallAllowed(c, gateCtx);
     if (!verdict.allowed) {
