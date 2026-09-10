@@ -617,31 +617,29 @@ pub async fn add_chunk(
 
         let chunk_id = tx.last_insert_rowid();
         if chunk_id > 0 {
-            // ── store quantized vectors in vec0 (int8 + binary) ────
-            if let Err(e) = tx.execute(
-                "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
-                 VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), ?3, datetime('now'))",
-                params![chunk_id, embedding.as_bytes(), &source],
-            ) {
-                return AddResponse::error(format!("vec0 insert failed: {}", e));
+            // under Quarantine policy, flag the row IN-TX, BEFORE the
+            // commit (fail-closed posture, documented below) — and a
+            // quarantined plant gets NO vector, same gate as the
+            // structured-ingest path, so its embedding cannot shadow clean
+            // recall from the ANN top-k.
+            if let Err(e) = screen::flag_if_quarantined(&tx, chunk_id, quarantine) {
+                return AddResponse::error(format!("quarantine flag failed: {e}"));
+            }
+            if !quarantine {
+                // ── store quantized vectors in vec0 (int8 + binary) ────
+                if let Err(e) = tx.execute(
+                    "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+                     VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), ?3, datetime('now'))",
+                    params![chunk_id, embedding.as_bytes(), &source],
+                ) {
+                    return AddResponse::error(format!("vec0 insert failed: {e}"));
+                }
             }
 
             // raw f32 vectors are no longer written to the legacy
             // `embeddings` JSON column. vec0 (int8 + binary) is the sole write
             // target. The `embeddings` table is retained read-only for one-time
             // backfill of DBs created before the vec0 store existed (see run_migration).
-
-            // under Quarantine policy, flag the row IN-TX, BEFORE the
-            // commit: the flag write is part of the
-            // ingest, so a failure rolls the whole chunk back — the
-            // `/ingest/memory` posture. Previously the flag ran post-commit:
-            // a failed flag write left the injection chunk durably stored
-            // `flagged = 0` and retrievable while the caller was told it
-            // failed. `flag_if_quarantined`'s "never stored clean" doc is
-            // now true on this path too.
-            if let Err(e) = screen::flag_if_quarantined(&tx, chunk_id, quarantine) {
-                return AddResponse::error(format!("quarantine flag failed: {e}"));
-            }
 
             if let Err(e) = tx.commit() {
                 return AddResponse::error(format!("Commit failed: {}", e));
@@ -2260,8 +2258,10 @@ pub(crate) async fn reindex(
     let model = Arc::clone(&s.model);
     let res = task::spawn_blocking(move || -> Result<(usize, usize), anyhow::Error> {
         let conn = pool.get().context("DB connection failed")?;
+        // Quarantined rows hold no vector by the ingest gate — re-embedding
+        // them would resurrect the shadowing the gate removed.
         let ids: Vec<(i64, String)> = conn
-            .prepare("SELECT id, content FROM knowledge ORDER BY id")?
+            .prepare("SELECT id, content FROM knowledge WHERE flagged = 0 ORDER BY id")?
             .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
             .filter_map(|r| r.ok())
             .collect();
