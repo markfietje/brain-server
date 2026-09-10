@@ -95,7 +95,6 @@ const enabledCfg = {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
-
 });
 
 // ---------------------------------------------------------------------------
