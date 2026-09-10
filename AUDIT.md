@@ -679,3 +679,36 @@ why the trust walkthrough exists and why the audits keep running.
 Origin-line and second-pass pins). The plugin rides at 0.6.1 (schema-declared
 `untrustedOrigins`).*
 
+
+---
+
+## 2026-09-10 — third-pass fork-vs-upstream audit (v1.28.79 "Parity")
+
+Full records kept with the audit archive (`THIRD_PASS_AUDIT_20260910.md`,
+`UPSTREAM_PR_SPECS_1.28.79.md`); this entry is the summary. Scope: the
+92-file `upstream/main...fork` delta across three lanes (auth/secrets,
+content-trust, egress/persistence) plus direct verification of every
+load-bearing claim. Every finding's file classified against
+`upstream/main`: fork-only files got code, upstream files got PR specs —
+zero upstream hunks.
+
+### Findings + dispositions
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| H1 | Multi-block MCP results skip marker neutralization (`mcp-content.ts`) | High | **Spec'd upstream (U1)** — 5-line sketch in archive |
+| H2 | Token file transmits multiline content incl. operator secret | High | **Closed** — multiline files refuse naming the agent line |
+| H3 | `systemPrompt` hook bypasses the merge seam | High | **Spec'd upstream (U2)** |
+| H4 | Pin hard-block opt-in (single caller passes pins path) | High | **Spec'd upstream (U3)** + threat-model disclosure |
+| M1 | Redirects resend bearer off pinned origin | Medium | **Closed** — `res.url` re-pin + pre-request pin |
+| M2 | Procedure writes bypass proposal Shield | Medium | **Closed-doc** — trust basis stated in-module |
+| M3/M5 | Contradiction gate dead; comma-reject breaks legit proxies | Medium | **Closed** — deny-without-basis; chain commas pass |
+| M4 | Null-Origin pre-pass | Medium | **Accepted-by-architecture** — post-handshake token is the gate |
+| M6 | Team-bridge ignores chat-type gates | Medium | **Closed** — conjoined with recall verdict + explicit-type preference |
+| M7 | Replay-prefix spoof | Medium | **Spec'd upstream (U4)** |
+| A1 | Vec resurrection via reindex/bootstrap/legacy-add | Medium | **Closed** — `flagged = 0` filters + ingest-order guard on `/add` |
+
+**Corrections to the pass's own claims:** the DSAR webhook posts
+metadata only (not the bundle); refresh-family burn is the OWASP pattern;
+`INJECTION_POLICY=allow` is loud by design. KCS-draft screening recorded
+as a v1.28.80 follow-up (needs lifecycle design, not a guard).
