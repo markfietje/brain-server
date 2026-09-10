@@ -4,6 +4,22 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.2] — 2026-09-10
+
+**Transport hardening** — three fail-closed/visibility fixes, all
+already live in the fork mirror (synced byte-identical):
+
+- `BRAIN_TOKEN_FILE` unreadable or empty now **throws** instead of
+  silently falling back to a weaker rung — a broken ladder must refuse,
+  never downgrade toward plaintext config (fail-closed).
+- `fetchJson` pins the origin: the URL is rebuilt from the path and any
+  request resolving outside the configured origin is refused (absolute-URL
+  or protocol-relative path smuggling).
+- Structured server error bodies (`{error, code}`) map to actionable
+  hints (401 → token-file/agent-token pointer, 429 → back-off, 422 →
+  validation bounds); anything else rides the sanitized raw body, capped
+  at 500 chars — error text reaches the agent's prompt.
+
 ## [0.6.1] — 2026-09-09
 
 **Schema fix** — `untrustedOrigins` was missing from
