@@ -17,6 +17,52 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [1.28.79] — 2026-09-10 — "Parity": the 3rd-pass close-out, zero upstream surface
+
+Closes the fork-vs-upstream third-pass audit. Fork-only files get code
+fixes; upstream-tracked files get upstream-PR specs + disclosures only —
+no hunk in this release touches upstream code. Plugin 0.6.3. No schema;
+existing data untouched.
+
+### Release notes
+
+**Security fixes**
+
+- **Token files refuse multiple tokens.** A token file holding more than
+  one line now refuses startup naming the agent-token line, instead of
+  transmitting the whole file — including any operator secret — as one
+  credential.
+- **Redirects re-pinned to the server origin.** Responses landing off the
+  pinned origin are refused, closing bearer leakage through cross-origin
+  redirects.
+- **Team workflow mirrors honor chat-type gates.** Group and channel turns
+  barred from recall no longer reach the workflow mirror.
+- **Proxy-header gates hardened.** Forwarded-header pairs without a
+  configured trust basis are denied; legitimate multi-hop proxy chains no
+  longer trip strict mode; brain recall fences are neutralized at the
+  prompt-merge seam like every other marker.
+
+**Upstream proposals (specs, no fork code)**
+
+- Multi-block tool-result sanitization, prompt-hook input sanitization,
+  default pin path, and replay-prefix hardening ship as file:line-anchored
+  PR specs; disclosures recorded in the threat model until merged.
+
+### Engineering record
+
+Red-first tests per lane (multiline refuse, redirect re-pin, chat-type
+gate, header pins, fence split). Full gate: lib + main-suite green,
+clippy `-D warnings` clean, openapi/authz pins green, plugin vitest via
+parity sync (fork tree restored pristine), lipstyk slop 0, comment
+hygiene gate green.
+
+**Disclosures (accepted, not gaps).** Missing-Origin pre-pass is
+architecture (non-browser clients authenticate post-handshake). DNS-rebind
+of the pinned host, first-use tool flagging, shim tenancy, and the
+writable pins file remain residuals with Loop-line owners. The cited
+second-pass audit file is absent from the repo; premises were re-verified
+against live source.
+
 ## [1.28.78] — 2026-09-10 — "Unconditional": quarantine everywhere, docs-true delivery
 
 Quarantine is unconditional on every retrieval and ingest leg, and channel

@@ -4,6 +4,20 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.3] — 2026-09-10
+
+**Third-pass hardening** — refusals and gates, all synced byte-identical
+to the fork mirror:
+
+- Token files holding more than one line now **refuse**, naming the
+  agent-token line — a two-line server file can no longer leak the
+  operator secret down the agent path.
+- Responses landing off the pinned origin are refused (redirect re-pin).
+- Team workflow mirrors honor chat-type gates: barred group/channel turns
+  post nothing.
+- Server error mapping and the fail-closed token ladder from 0.6.2
+  unchanged.
+
 ## [0.6.2] — 2026-09-10
 
 **Transport hardening** — three fail-closed/visibility fixes, all
