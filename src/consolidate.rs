@@ -429,8 +429,9 @@ pub fn find_exact_duplicates(conn: &Connection) -> Result<Vec<Vec<i64>>> {
     };
     let mut groups = Vec::with_capacity(pairs.len());
     for (h, d) in pairs {
-        let mut stmt = conn
-            .prepare("SELECT id FROM knowledge WHERE content_hash = ?1 AND domain = ?2 ORDER BY id")?;
+        let mut stmt = conn.prepare(
+            "SELECT id FROM knowledge WHERE content_hash = ?1 AND domain = ?2 ORDER BY id",
+        )?;
         let rows = stmt.query_map(params![h, d], |r| r.get::<_, i64>(0))?;
         groups.push(rows.filter_map(|r| r.ok()).collect());
     }
@@ -625,7 +626,10 @@ mod tests {
         )
         .unwrap();
         let dups = find_exact_duplicates(&c).unwrap();
-        assert!(dups.is_empty(), "cross-domain content is not a duplicate group");
+        assert!(
+            dups.is_empty(),
+            "cross-domain content is not a duplicate group"
+        );
     }
 
     #[test]

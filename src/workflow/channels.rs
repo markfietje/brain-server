@@ -2773,12 +2773,25 @@ mod tests {
         let batch = drain_out_batch(&mut conn, "signal", now + 60).unwrap();
         assert_eq!(batch.len(), 2);
         let redrill = drain_out_batch(&mut conn, "signal", now + 70).unwrap();
-        assert_eq!(redrill.len(), 2, "unacked rows redrill (bridge dedupes on event_id)");
+        assert_eq!(
+            redrill.len(),
+            2,
+            "unacked rows redrill (bridge dedupes on event_id)"
+        );
         // Ack marks delivered; acked envelopes never re-drain. Double-ack
         // is a no-op.
-        let ids: Vec<i64> = batch.iter().map(|v| v["event_id"].as_i64().unwrap()).collect();
-        assert_eq!(ack_out_batch(&mut conn, "signal", &ids, now + 80).unwrap(), 2);
-        assert_eq!(ack_out_batch(&mut conn, "signal", &ids, now + 90).unwrap(), 0);
+        let ids: Vec<i64> = batch
+            .iter()
+            .map(|v| v["event_id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(
+            ack_out_batch(&mut conn, "signal", &ids, now + 80).unwrap(),
+            2
+        );
+        assert_eq!(
+            ack_out_batch(&mut conn, "signal", &ids, now + 90).unwrap(),
+            0
+        );
         let gone = drain_out_batch(&mut conn, "signal", now + 100).unwrap();
         assert!(gone.is_empty(), "acked envelopes never re-drain");
         assert!(batch.iter().all(|v| v["channel"] == "signal"));
@@ -2814,7 +2827,11 @@ mod tests {
         assert_eq!(redrill[0]["event_id"].as_i64().unwrap(), id);
         // Real ack → gone.
         assert_eq!(ack_out_batch(&mut conn2, "signal", &[id], 5500).unwrap(), 1);
-        assert!(drain_out_batch(&mut conn2, "signal", 5600).unwrap().is_empty());
+        assert!(
+            drain_out_batch(&mut conn2, "signal", 5600)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     // ── Envelope bounds: garbage never panics, always names its refusal ────

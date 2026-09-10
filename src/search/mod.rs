@@ -1927,20 +1927,21 @@ pub fn perform_search_traced(
                 // in-process). On the impossible "flag set, table absent" case
                 // (e.g. `migrate_down_0_9_0` rehearsal) the error falls back to
                 // the legacy scan and clears the flag.
-                let res =
-                    if !crate::migration::VEC0_READY.load(std::sync::atomic::Ordering::Relaxed) {
-                        perform_search_legacy(&conn, &vq, overfetch, vfilters.include_flagged)
-                    } else {
-                        match vec0_knn(&conn, &vq, overfetch, &vfilters) {
-                            Ok(r) => Ok(r),
-                            Err(e) if e.to_string().contains("no such table: vec_knowledge") => {
-                                crate::migration::VEC0_READY
-                                    .store(false, std::sync::atomic::Ordering::Relaxed);
-                                perform_search_legacy(&conn, &vq, overfetch, vfilters.include_flagged)
-                            }
-                            Err(e) => Err(e),
+                let res = if !crate::migration::VEC0_READY
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    perform_search_legacy(&conn, &vq, overfetch, vfilters.include_flagged)
+                } else {
+                    match vec0_knn(&conn, &vq, overfetch, &vfilters) {
+                        Ok(r) => Ok(r),
+                        Err(e) if e.to_string().contains("no such table: vec_knowledge") => {
+                            crate::migration::VEC0_READY
+                                .store(false, std::sync::atomic::Ordering::Relaxed);
+                            perform_search_legacy(&conn, &vq, overfetch, vfilters.include_flagged)
                         }
-                    }?;
+                        Err(e) => Err(e),
+                    }
+                }?;
                 Ok((res, t_vec.elapsed().as_secs_f32() * 1000.0))
             });
             let fh = scope.spawn(move || -> (Vec<SearchResult>, f32) {

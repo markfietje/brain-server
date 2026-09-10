@@ -809,7 +809,11 @@ fn legacy_db() -> rusqlite::Connection {
 fn legacy_search_excludes_quarantined() {
     let c = legacy_db();
     let hits = super::perform_search_legacy(&c, &[1.0, 0.0], 10, false).unwrap();
-    assert_eq!(hits.len(), 1, "quarantined plant must not surface: {hits:?}");
+    assert_eq!(
+        hits.len(),
+        1,
+        "quarantined plant must not surface: {hits:?}"
+    );
     assert_eq!(hits[0].id, 1);
     assert!(!hits[0].flagged);
 }
@@ -818,7 +822,11 @@ fn legacy_search_excludes_quarantined() {
 fn legacy_hits_carry_real_flag() {
     let c = legacy_db();
     let hits = super::perform_search_legacy(&c, &[1.0, 0.0], 10, true).unwrap();
-    assert_eq!(hits.len(), 2, "explicit include must surface both: {hits:?}");
+    assert_eq!(
+        hits.len(),
+        2,
+        "explicit include must surface both: {hits:?}"
+    );
     let plant = hits.iter().find(|h| h.id == 2).expect("plant present");
     assert!(plant.flagged, "plant hit must carry flagged=true");
 }

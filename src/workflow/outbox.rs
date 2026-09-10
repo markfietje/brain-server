@@ -221,7 +221,10 @@ pub(crate) fn enqueue_child(
             .optional()
             .map_err(|e| OutboxError::Database(e.to_string()))?;
         if owner != Some(run_id) {
-            return Err(OutboxError::ForeignParent { parent, run: run_id });
+            return Err(OutboxError::ForeignParent {
+                parent,
+                run: run_id,
+            });
         }
     }
     insert_row(
@@ -825,7 +828,8 @@ mod tests {
     /// The kernel writers still mint reserved rows through the token — the
     /// gate is a fence around the vocabulary, not a ban on it.
     #[test]
-    fn kernel_writers_still_mint_reserved_rows() {        let conn = db();
+    fn kernel_writers_still_mint_reserved_rows() {
+        let conn = db();
         for (topic, key) in [
             ("channel/out", "k-out"),
             ("steering", "k-steer"),

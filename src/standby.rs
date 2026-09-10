@@ -294,7 +294,10 @@ pub fn ship_cycle(
 /// to follower promotion. Verifying against the did named INSIDE the
 /// attacker-replaceable sig file is self-assertion; the pin closes it.
 /// Refusal names both dids.
-pub fn verify_follower_pinned(dir: &Path, expected_signer: &str) -> Result<StandbyManifest, String> {
+pub fn verify_follower_pinned(
+    dir: &Path,
+    expected_signer: &str,
+) -> Result<StandbyManifest, String> {
     let sig_json = std::fs::read_to_string(dir.join(MANIFEST_SIG_FILE))
         .map_err(|e| format!("read manifest signature: {e}"))?;
     let sig: ManifestSig =
