@@ -73,7 +73,11 @@ function parseErrorCode(body: string): string | undefined {
       return typeof code === "string" && code ? code : undefined;
     }
     return undefined;
-  } catch {
+  } catch (err) {
+    // Opaque body (not a JSON envelope): no code to map, so the caller
+    // falls back to the sanitized raw body. The parse error itself carries
+    // no signal — deliberately ignored, not silently lost.
+    void err;
     return undefined;
   }
 }
