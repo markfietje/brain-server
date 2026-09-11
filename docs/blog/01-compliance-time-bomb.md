@@ -2,7 +2,8 @@
 
 *2026. This is the post that starts the conversation.*
 
-By mid-2026, roughly 95% of enterprises run AI agents autonomously. The models
+By mid-2026, agents run autonomously across most enterprises that have
+deployed AI beyond pilots. The models
 are no longer the hard part. The hard part is the thing nobody noticed: **the
 agent's memory.**
 
@@ -36,7 +37,7 @@ frameworks.
 The rest of this blog series shows each pillar, tied to the actual
 implementation. Start with the two that matter most in a review:
 
-- [The tamper-evident audit](./../research/01-bi-temporal.md), why a memory
+- [The tamper-evident audit](./03-tamper-evident-audit.md), why a memory
   store needs a hash chain, and how to verify it live.
 - [The honest ceiling](./07-honest-ceiling.md), what we deliberately do
   not claim, and why that's the most important thing we ship.

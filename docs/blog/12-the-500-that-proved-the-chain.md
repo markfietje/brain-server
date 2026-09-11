@@ -80,6 +80,6 @@ missing, ambiguous, or corrupt. "It fails loudly, changes nothing, and here's
 the test" is the answer you want. We got to say it because we fixed it in
 public first.
 
-*The repaired linkage lives in [`src/handlers/workflow.rs`](https://github.com/markfietje/brain-server/blob/main/src/handlers/workflow.rs) (`audited_run_ids`);
+*The repaired linkage lives in [`src/workflow/scoreboard.rs`](https://github.com/markfietje/brain-server/blob/main/src/workflow/scoreboard.rs) (`audited_run_ids`, called from the workflow handler);
 chain verification you can run yourself: `GET /audit/verify` or the scripted
 [`docs/trust/reproduce.md`](../trust/reproduce.md) walk-through.*

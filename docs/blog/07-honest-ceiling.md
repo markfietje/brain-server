@@ -50,7 +50,7 @@ A vendor who volunteers its limits reads as *credible*. It means:
 - **Verifiable by construction.** Every ceiling is paired with the thing that
   *does* work and the command to prove it (the proof map).
 - **The roadmap is honest.** Each ceiling names its upgrade path and version,
-  tenancy → v2.0, OTel → v1.20.7, SOC 2 kit → v1.20.10. "We don't do X yet"
+  tenancy → v2.0. "We don't do X yet"
   is followed by "and here's when X lands," not silence.
 
 **The takeaway:** in a category drowning in "revolutionary memory," the most

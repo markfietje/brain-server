@@ -25,8 +25,11 @@ person saying yes.
 - **Salience**, is it long enough to matter and rich in entities?
 
 It creates **no memory row**. It sits in a review queue. It becomes memory only
-via `POST /proposals/{id}/approve` (one transaction, optionally atomically
-superseding an old fact), or it is rejected, or it **expires**, the proposal
+via `POST /proposals/{id}/approve?digest=<content_digest>` (one transaction,
+optionally atomically
+superseding an old fact) — the digest is required since v1.27.12 (`400
+digest_required`, `409` on drift), so the approval binds to the exact bytes
+reviewed — or it is rejected, or it **expires**, the proposal
 TTL (`BRAIN_PROPOSAL_TTL_SECS`, default 7 days) auto-rejects stale candidates
 so the queue can't rot.
 

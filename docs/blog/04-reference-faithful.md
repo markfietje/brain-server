@@ -12,7 +12,7 @@ this?" has an answer no reviewer can verify.
 We took the other path: **deterministic, reference-faithful retrieval, with no
 LLM in the loop.** Recall never has to think. A static, local embedding model
 plus a deterministic pipeline answer the question, zero per-query cost, zero
-data egress, zero latency on a 4 GB ARM device.
+data egress, cheap local latency even on a 4 GB ARM device.
 
 ## This isn't "dumb" retrieval, it's research-grade retrieval, made deterministic
 
@@ -22,8 +22,8 @@ the LLM its authors used:
 | Technique | Reference | Deterministic here |
 |---|---|---|
 | Bi-temporal facts | Graphiti (Zep) | `src/temporal.rs` marker extraction + validity filters |
-| Submodular evidence packing | arXiv:2607.00725 (+5.1 F1) | lazy-greedy under a token knapsack, MMR diversity |
-| Typed graph paths | arXiv:2607.00339 (TRACE) | typed hop chains, bounded BFS, `?at=` validity |
+| Submodular evidence packing | arXiv:2607.00725 (see `src/search/packing.rs`) | lazy-greedy under a token knapsack, MMR diversity |
+| Typed graph paths | TRACE-style typed edges (internal naming, `src/trace.rs`) | typed hop chains, bounded BFS, `?at=` validity |
 | Personalized PageRank graph leg | HippoRAG 2 | pure-Rust CSR power iteration, `damping=0.5` |
 | Hub dampening + type weights | GAAMA, MemORAI | `w_ij·min(1,θ/deg)`, `tagged_with`→0.1 |
 | Calibrated abstention | roadmap evidence-gating | estimator-driven `ClarifyQuery` → "I don't know" |
@@ -38,8 +38,7 @@ it's defensible in a bakeoff.
 
 - **Reproducibility:** the same query returns the same answer, every time. You
   can pin behavior in a test, not pray it holds.
-- **No token bill:** recall and writes cost nothing per query. The `< 5 W`
-  manifesto is literal.
+- **No token bill:** recall and writes cost nothing per query.
 - **Verifiable provenance:** every hit carries its per-retriever rank, fused
   score, and evidence, `source_uri` + `revision_id` linking to the exact
   source revision, with byte-offset highlights *within* the revealed snippet.

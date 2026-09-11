@@ -1,7 +1,9 @@
 # DeepSeek Harness (dsh) meets Brain Server: agent memory as an MCP server
 
 *2026. Why dsh's "everything is a plugin" design is the right host for a memory
-server, and how Brain Server fits it without being a plugin.*
+server, and how Brain Server fits it without being a plugin. Third-party
+details below (ports, packages, papers) come from dsh's own docs; verify
+against upstream before relying on them.*
 
 If you're running DeepSeek Harness (`dsh`) and you want it to actually
 *remember*, the question isn't "is there a dsh memory plugin?", it's **"which

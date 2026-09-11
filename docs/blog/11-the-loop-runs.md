@@ -31,7 +31,8 @@ time, which is precisely how you want to meet it the first time.
 ## Act II: every tool-effect crosses one door (Anvil, v1.28.16)
 
 An engine that can't act is a spreadsheet. An engine that can act unmediated is
-a liability. Anvil closes the gap: all seven hostcall kinds resolve to a
+a liability. Anvil closes the gap: all seven hostcall kinds (Log, Session, Exec, Http,
+Events, Ui, Tool) resolve to a
 handler, an explicit mediation or an explicit refusal, never an absence.
 
 - **`exec`**: argv-only, no shell, pinned working directory, per-stream output
@@ -69,7 +70,7 @@ A single-crank loop proved agency could be governed. The follow-the-sun line ask
 
 - **Watchbill (.25) made the schedule first-class**: one row per site's on-call window, the handover overlap window *derived* from each shift pair at read time, no scheduler daemon. At the boundary the queue re-scopes to the incoming site while open runs keep their envelopes: the queue follows the sun, cases don't.
 - **Crew (.26) made the people visible without a heartbeat**: presence rides the caller's own transaction, every mutating act is its beacon, a rolled-back transition leaves no ghost. Skills tags are proposal-gated (agents cannot self-tag), and the DPO switch fails **open to hidden**: an unreadable config means an empty roster, never more visibility than configured.
-- **Relay (.27) closed the loop's exit**: `POST /handover/offer` refuses unless the I-PASS packet answers the five questions the receiving team needs (the refusal carries the MISSING list, the machine coaches the protocol); acceptance CAS-transfers ownership in the same transaction as the receipt, never touching the SLA clock; decline requires a screened reason. Offer, decision, and audit land in ONE transaction, a handover that can't write its audit row doesn't happen.
+- **Relay (.27) closed the loop's exit**: `POST /workflow/runs/{id}/handover/offer` refuses unless the I-PASS packet answers the five questions the receiving team needs (the refusal carries the MISSING list, the machine coaches the protocol); acceptance CAS-transfers ownership in the same transaction as the receipt, never touching the SLA clock; decline requires a screened reason. Offer, decision, and audit land in ONE transaction, a handover that can't write its audit row doesn't happen.
 
 The honest ceiling, stated in the changelog and repeated here: packet completeness reads the stored *shape*, a run can carry a complete-looking packet that is substantively empty. The gate enforces the protocol's form; judgment stays human.
 

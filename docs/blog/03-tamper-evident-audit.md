@@ -14,13 +14,13 @@ after it was written.
 Every audit row is chained to the previous one:
 
 ```
-row[0] = hash(payload[0])
-row[n] = hash(row[n-1] || payload[n])
+row[0] = HMAC-SHA256(full row[0])
+row[n] = HMAC-SHA256(full row[n], chained to row[n-1], pinned head)
 ```
 
 Change any row and every subsequent `prev_hash` disagrees. The chain is
 self-authenticating: you don't need to trust a server process to vouch for the
-log, you need one function (`GET /audit/verify`) that walks the whole chain and
+log, you need one function (`GET /audit/verify`, Admin-gated) that walks the whole chain and
 recomputes every link. It answers, in O(n): **has this ledger been tampered
 with, at any point, ever?** And it holds across database migrations, a subtle
 bug where migrated rows had a NULL backref was caught and fixed, with a test

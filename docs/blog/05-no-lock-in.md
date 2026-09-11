@@ -2,8 +2,8 @@
 
 *2026. Framework-agnostic isn't a nice-to-have, it's the adoption bar.*
 
-Agent-memory vendors are fond of telling you about integration counts. Mem0's
-own positioning boasts dozens of LLM frameworks and vector stores supported.
+Agent-memory vendors are fond of telling you about integration counts. Mem0
+positions itself on breadth of supported frameworks and stores.
 Read closely and the message is: **a memory layer that locks you to one
 framework or one vector store will not be adopted at scale.** That's a real
 insight, and it's one we agree with, and act on in a way that doesn't create a
