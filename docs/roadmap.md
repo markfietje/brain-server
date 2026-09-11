@@ -10,8 +10,7 @@ the full per-version record is
 
 ## Current status
 
-**v1.28.x — the current server line (1.28.62 "Attestation" — the Enterprise
-Line is complete).** Brain Server ships a Dioxus GUI (web + desktop + iOS +
+**v1.28.x — the current server line (1.28.80 "Lockdown").** Brain Server ships a Dioxus GUI (web + desktop + iOS +
 Android from one Rust codebase) on top of a mature server. The v1.28 line
 built the governed loop, then turned it into an enterprise platform:
 1.28.15–1.28.35 ran the governed loop and closed the ISO 10002/10003
@@ -25,9 +24,12 @@ Line** — concurrent truth + visible contention gauges, the durability policy
 + lock-wait telemetry, opt-in CPU parallelism, the warm standby, the seven
 CodeQL closures, and 1.28.62 "Attestation": provenance marks on
 engine-generated artifacts, the principal kill-switch, approval-fatigue
-telemetry, and the cryptographic inventory.
-
-The server core (retrieval, graph, governance) is stable and heavily tested
+telemetry, and the cryptographic inventory. **1.28.63–1.28.80 hardened it**:
+seam vocabulary, egress and process boundaries, the operator/agent token
+split, screen and read-seam hygiene, key lifecycle, origin taint labels,
+dormant-exec hardening, finished erasure, unconditional quarantine,
+third-pass close-out, and the Lockdown transport/approval/visibility
+controls. The server core (retrieval, graph, governance) is stable and heavily tested
 (1,330 tests across the workspace).
 
 ---
@@ -55,6 +57,7 @@ The server core (retrieval, graph, governance) is stable and heavily tested
 | **v1.28.36–1.28.45** | Conformance + channels | Keystone closes the Order-of-Care gaps; Access/Lexicon/Advocate/Handshake/Terrain complete the Conformance Line; Valet ships the assistant; Switchboard/Caravel/Herald open the governed channel edges (Signal, WhatsApp, Slack, Teams) |
 | **v1.28.46–1.28.55** | Foundation + Spire | The service-layer convergence (handler SQL enforced to zero) and the thin-binary law, machine-enforced |
 | **v1.28.58–1.28.62** | The Enterprise Line | Throughput (concurrent truth + the calendar as code), Headroom (durability + lock telemetry), Loom (opt-in parallelism), Standby (warm DR + CodeQL closure), Attestation (provenance marks, the principal kill-switch, approval-fatigue telemetry, the crypto inventory) |
+| **v1.28.63–1.28.80** | Hardening to Lockdown | Seam vocabulary, egress/process boundaries, operator/agent token split, screen + read-seam hygiene, key lifecycle, origin labels, dormant-exec hardening, finished erasure, unconditional quarantine, third-pass close-out, Lockdown (transport, quorum, visibility) |
 
 ---
 
@@ -68,8 +71,8 @@ The server core (retrieval, graph, governance) is stable and heavily tested
 | **v4.0** | Sovereign standard |
 
 The v1.19–v1.28 intermediate milestones (profiles, regulated modes, roles,
-connectors, BPO operations, the hardening/correctness line, and the four
-v1.28 lines through 1.28.62) are complete. Next: **v2.0 "Cortex"** —
+connectors, BPO operations, the hardening/correctness line, the four
+v1.28 lines, and hardening through 1.28.80) are complete. Next: **v2.0 "Cortex"** —
 multi-team tenancy, the first externally-pilotable release. The plan is
 evidence-gated: work is only shipped
 when it is verifiable and earned by a need, not speculation.
