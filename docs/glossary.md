@@ -43,7 +43,7 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 
 ## G
 
-- **Graph leg** — the optional third retrieval leg: Personalized PageRank over the knowledge graph, opt-in via `?graph=true`.
+- **Graph leg** — the third retrieval leg: Personalized PageRank over the knowledge graph, on by default, opt out with `BRAIN_RECALL_GRAPH_ENABLED=false` or per-request `graph=false`.
 - **Governance** — the layer that keeps memory honest and auditable: audit log, quarantine, write-back gating, DSAR, retention.
 
 ## H

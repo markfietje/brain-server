@@ -54,7 +54,7 @@ on the HTTP API or the client console.
 | `brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]` | Register an operating client (one isolation domain per client) |
 | `brain client dpa get <name>` | Show a client's DPA terms |
 | `brain client dpa set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S` | Set a client's DPA terms |
-| `brain client dsar <name> <subject> [--action purge\|export\|both] [--dry-run]` | Run a per-client jurisdiction-aware DSAR |
+| `brain client dsar <name> <subject> [--action purge\|export\|both] [--dry-run] [--yes]` | Run a per-client jurisdiction-aware DSAR |
 | `brain client hold add <name> <id> [<id> ...] --reason R` \| `list <name>` | Legal-hold / release a client's domain; list holds |
 | `brain client qa list <name>` \| `coach <name> <id> --note N [--flag]` | Supervisor QA queue + coaching note (v1.27.8, Admin) |
 | `brain client end <name> [--purge\|--return] [--dataset D] [--yes]` | Terminate a client: purge-or-return + archive + certificate |
