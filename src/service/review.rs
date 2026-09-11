@@ -187,6 +187,7 @@ pub(crate) fn pending_page(
     let rows = stmt
         .query_map(params_from_iter(bind), |r| {
             let row_content: String = r.get(2)?;
+            let row_title: Option<String> = r.get(15)?;
             let created_at: i64 = r.get(9)?;
             let owner: Option<String> = r.get(12)?;
             let (expires_at, warn_secs, critical_secs) = proposal_deadline(created_at);
@@ -200,7 +201,7 @@ pub(crate) fn pending_page(
                 kind: r.get(1)?,
                 screen_verdict: crate::screen::screen_verdict_label(crate::screen::screen(
                     &row_content,
-                    "",
+                    row_title.as_deref().unwrap_or(""),
                 ))
                 .to_string(),
                 content: row_content,
@@ -568,11 +569,12 @@ pub(crate) struct ApproveRow {
     pub observed_at: Option<i64>,
     pub qa_note: Option<String>,
     pub domain: String,
+    pub title: Option<String>,
 }
 
 pub(crate) fn approve_pending_row(conn: &Connection, id: i64) -> Option<ApproveRow> {
     conn.query_row(
-        "SELECT kind, content, source, authority, observed_at, qa_note, domain
+        "SELECT kind, content, source, authority, observed_at, qa_note, domain, title
          FROM proposals WHERE id = ?1 AND status = 'pending'",
         params![id],
         |r| {
@@ -584,6 +586,7 @@ pub(crate) fn approve_pending_row(conn: &Connection, id: i64) -> Option<ApproveR
                 observed_at: r.get(4)?,
                 qa_note: r.get(5)?,
                 domain: r.get(6)?,
+                title: r.get(7)?,
             })
         },
     )

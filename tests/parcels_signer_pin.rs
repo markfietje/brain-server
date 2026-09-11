@@ -125,6 +125,7 @@ fn mint(srv: &TestServer) -> String {
         scopes: vec!["admin:*/*".to_string()],
         roles: vec!["admin".to_string()],
         manages: Vec::new(),
+        chain: None,
     };
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some("matrix-kid".to_string());

@@ -550,6 +550,12 @@ pub fn authorize_role(
 ) -> Result<(), HandlerError> {
     let Some(p) = principal else { return Ok(()) };
     if p.roles.is_empty() {
+        // Role-less principals pass role gates: roles are additional
+        // restrictions for those who hold them, not a default-deny when the
+        // IdP omits the claim. Role governance binds the roles the IdP
+        // asserts; minting is the IdP's trust decision, scopes still bind
+        // every action. (A deployment that needs role-less denial enforces
+        // it at issuance, not here.)
         return Ok(());
     }
     let conn = pool.get().map_err(HandlerError::db_down)?;

@@ -335,7 +335,10 @@ pub fn store_record(
             &input.content,
             &content_hash,
             &input.domain,
-            !crate::gate::scan_pii(input.content).is_empty(),
+            // the flag covers content AND title: either field can carry
+            // identifiers, and the read seam redacts by this one bit.
+            !crate::gate::scan_pii(input.content).is_empty()
+                || !crate::gate::scan_pii(input.title).is_empty(),
             &input.owner,
             input.memory_kind,
             input.assertion_kind,

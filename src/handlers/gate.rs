@@ -166,12 +166,12 @@ pub(crate) async fn create_proposal(
         ));
     }
     // run the injection screen on the proposal
-    // content. `Reject` → 400, never persisted (the review queue only ever
+    // content + title. `Reject` → 400, never persisted (the review queue only ever
     // sees `clean`/`quarantine`); `Quarantine` → stored + badged so the
     // reviewer sees the flag before approving a capture whose own text was
     // instruction-bearing. The badge is recomputed deterministically at read
     // time (list_proposals), so no schema change is needed.
-    let screen_res = crate::screen::screen(&content, "");
+    let screen_res = crate::screen::screen(&content, title.as_deref().unwrap_or(""));
     if screen_res == crate::screen::ScreenResult::Reject {
         return Err(HandlerError::bad_request(
             "input_rejected",
@@ -556,6 +556,7 @@ pub async fn approve_proposal(
             observed_at,
             qa_note,
             domain: row_domain,
+            title: row_title,
         } = row;
 
         // Triage: row-domain re-auth BEFORE any decision CAS. The top-level
@@ -1251,7 +1252,7 @@ pub async fn approve_proposal(
         // ACL. A future v2.x ACL could deny recall of post-quarantine chunks by
         // role. Does NOT re-quarantine approved rows; recall segregation is
         // unchanged. Re-screens to DERIVE `flagged`, not as a gate.
-        let verdict = crate::screen::screen(&content, ""); // title is None in this INSERT
+        let verdict = crate::screen::screen(&content, row_title.as_deref().unwrap_or(""));
         let flagged = matches!(
             verdict,
             crate::screen::ScreenResult::Quarantine | crate::screen::ScreenResult::Reject

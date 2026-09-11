@@ -51,6 +51,12 @@ pub const ALLOWED_ALGS: &[Algorithm] = &[
 /// short max access-token lifetime (15min) is the primary replay defense.
 pub const LEEWAY_SECS: u64 = 30;
 
+/// Longest access-token lifetime the revocation denylist can cover for the
+/// token's whole life (matches the denylist row cap). Longer-lived tokens
+/// refuse at verify — a revocation that lapses before expiry is worse than
+/// a loud refusal at the door.
+pub const MAX_TOKEN_LIFETIME_SECS: u64 = 24 * 60 * 60;
+
 /// Verified JWT claims. Every field is required by the verification contract
 /// (missing → reject). `scopes` and `tenant` are the brain-specific extensions
 /// the AuthZ layer reads; they live in the same struct so a verified token
@@ -87,6 +93,11 @@ pub struct Claims {
     /// `owner_filter: "reports"` data-gate source (the call-center pattern).
     #[serde(default)]
     pub manages: Vec<String>,
+    /// Refresh-family id, minted per login session. Absent on legacy tokens
+    /// (which fall back to the derived per-(iss, sub) family) and on access
+    /// tokens (never consulted there).
+    #[serde(default)]
+    pub chain: Option<String>,
 }
 
 fn default_tenant() -> String {
@@ -157,6 +168,9 @@ pub enum AuthError {
     BadSignature,
     /// A standard claim was missing or invalid (iss/aud/exp/nbf/sub).
     InvalidClaim(&'static str),
+    /// The token outlives the revocation denylist horizon — fail-closed
+    /// rather than minting an uncoverable lifetime.
+    TokenLifetimeExceeded,
     /// Required `jti` was missing.
     MissingJti,
     /// Token type mismatch (e.g. refresh token presented to a data route).
@@ -186,6 +200,7 @@ impl AuthError {
                 _ => "invalid_claim",
             },
             AuthError::MissingJti => "missing_jti",
+            AuthError::TokenLifetimeExceeded => "lifetime_exceeded",
             AuthError::WrongType => "wrong_token_type",
             AuthError::Other(_) => "invalid_token",
         }
@@ -209,6 +224,9 @@ impl std::fmt::Display for AuthError {
             AuthError::BadSignature => write!(f, "signature invalid"),
             AuthError::InvalidClaim(c) => write!(f, "claim {c} invalid or missing"),
             AuthError::MissingJti => write!(f, "missing jti"),
+            AuthError::TokenLifetimeExceeded => {
+                write!(f, "token lifetime exceeds the revocable horizon")
+            }
             AuthError::WrongType => write!(f, "wrong token type for this route"),
             AuthError::Other(s) => write!(f, "verification failed: {s}"),
         }
@@ -313,6 +331,21 @@ pub fn verify_access_token(
         return Err(AuthError::MissingJti);
     }
 
+    // Phase 3b: issued-at + lifetime bounds the library never checks.
+    // A future `iat` is a token that is not yet valid; an `exp` past the
+    // denylist horizon is a token revocation cannot cover for its whole
+    // life (the bounded-table ceiling) — both refuse fail-closed.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    if claims.iat > now.saturating_add(LEEWAY_SECS) {
+        return Err(AuthError::InvalidClaim("iat"));
+    }
+    if claims.exp > now.saturating_add(MAX_TOKEN_LIFETIME_SECS) {
+        return Err(AuthError::TokenLifetimeExceeded);
+    }
+
     // Phase 4: token-type check from the JOSE header. Prevents a refresh
     // token (long-lived, different scope) from authorizing a data route.
     let actual = TokenType::from_header(&header);
@@ -394,6 +427,7 @@ mod tests {
             scopes: vec!["read:team-alpha/*".to_string()],
             roles: vec![],
             manages: vec![],
+            chain: None,
         }
     }
 
@@ -464,6 +498,30 @@ mod tests {
             verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).expect("valid token");
         assert_eq!(claims.sub, "user:test");
         assert_eq!(typ, TokenType::Access);
+    }
+
+    #[test]
+    fn future_issued_at_refused() {
+        let (priv_key, _, keys) = setup();
+        let raw = sign(&priv_key, Algorithm::RS256, Some("test-kid-1"), |c| {
+            c.iat += 3600;
+        });
+        assert_eq!(
+            verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err(),
+            AuthError::InvalidClaim("iat")
+        );
+    }
+
+    #[test]
+    fn token_outliving_denylist_horizon_refused() {
+        let (priv_key, _, keys) = setup();
+        let raw = sign(&priv_key, Algorithm::RS256, Some("test-kid-1"), |c| {
+            c.exp += 30 * 24 * 3600;
+        });
+        assert_eq!(
+            verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err(),
+            AuthError::TokenLifetimeExceeded
+        );
     }
 
     /// Per-kid algorithm pinning: an RSA kid whose record declares RS256

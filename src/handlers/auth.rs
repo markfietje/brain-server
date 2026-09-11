@@ -93,7 +93,7 @@ fn mint_pair(
     issuer: &str,
     audience: &str,
     source: &Claims,
-    _chain_id: &str,
+    chain_id: &str,
 ) -> Result<TokenPair, String> {
     let now = now_unix();
     let access_jti = uuid_v4();
@@ -111,6 +111,7 @@ fn mint_pair(
         scopes: source.scopes.clone(),
         roles: source.roles.clone(),
         manages: source.manages.clone(),
+        chain: None, // access tokens never carry the refresh family
     };
     let mut access_header = Header::new(alg);
     access_header.kid = Some(signing_kid.to_string());
@@ -129,6 +130,7 @@ fn mint_pair(
         scopes: Vec::new(), // refresh tokens carry no scopes
         roles: Vec::new(),  // nor roles — not presented to data routes
         manages: Vec::new(),
+        chain: Some(chain_id.to_string()),
     };
     let mut refresh_header = Header::new(alg);
     refresh_header.kid = Some(signing_kid.to_string());
@@ -169,10 +171,15 @@ pub async fn refresh(
     .map_err(AuthHandlerError::from_auth)?;
 
     // Phase 2: check + rotate the chain. This is where reuse is detected.
-    let chain_id = derive_chain_id(&claims);
+    // Prefer the presented token's own family id; legacy tokens without one
+    // fall back to the derived per-(iss, sub) family (shared across that
+    // user's concurrent sessions until they rotate into stamped chains).
+    let chain_id = claims
+        .chain
+        .clone()
+        .unwrap_or_else(|| derive_chain_id(&claims));
     let pool = s.pool.clone();
     let key_store = s.key_store.clone();
-    let rev_cache = s.revocation_cache.clone();
     let issuer_clone = issuer.clone();
     let audience_clone = audience.clone();
     let refresh_token = req.refresh_token.clone();
@@ -211,10 +218,7 @@ pub async fn refresh(
             &claims.jti,
             claims.exp,
         ) {
-            Ok(()) => {
-                rev_cache.invalidate(&claims.jti, &claims.iss);
-                Ok(new_pair)
-            }
+            Ok(()) => Ok(new_pair),
             Err(RefreshError::ReuseDetected) | Err(RefreshError::ChainBurned) => {
                 Err(AuthHandlerError::reuse_detected())
             }
@@ -243,7 +247,6 @@ pub async fn logout(
     };
     let token_exp = token_exp.map(|ext| ext.0.0); // Option<u64>
     let pool = s.pool.clone();
-    let cache = s.revocation_cache.clone();
     let issuer = s.jwt_issuer.clone();
     // a failed denylist write must surface. An
     // operator logging out believes the token is dead; if the denylist write failed
@@ -261,7 +264,6 @@ pub async fn logout(
             Some(&p.sub),
             "logout",
         )?;
-        cache.invalidate(&p.jti, &issuer);
         Ok(())
     })
     .await
@@ -296,7 +298,6 @@ pub async fn revoke_handler(
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
         .map_err(|e| AuthHandlerError::forbidden(e.inner.message))?;
     let pool = s.pool.clone();
-    let cache = s.revocation_cache.clone();
     // The operator supplies the target token's real `exp` when it is known;
     // the clamp bounds the row either way (a hostile or clock-wrong value
     // cannot pin the bounded table).
@@ -311,7 +312,6 @@ pub async fn revoke_handler(
             rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(1), Some(e.to_string()))
         })?;
         revoke(&conn, &jti, &iss, None, exp, None, &reason)?;
-        cache.invalidate(&jti, &iss);
         Ok(())
     })
     .await
@@ -383,6 +383,7 @@ impl AuthHandlerError {
             | AuthError::BadSignature
             | AuthError::InvalidClaim(_)
             | AuthError::MissingJti
+            | AuthError::TokenLifetimeExceeded
             | AuthError::WrongType
             | AuthError::Other(_) => StatusCode::UNAUTHORIZED,
         };
@@ -485,9 +486,11 @@ fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// Stable chain id from a refresh token's `(iss, sub)` pair. The chain is
-/// per-user per-issuer; a new login session (different sub or iss) gets a
-/// new chain. This is the OWASP "family" identifier.
+/// Stable chain id from a refresh token's `(iss, sub)` pair. LEGACY fallback:
+/// tokens minted before per-login families carry no `chain` claim, so they
+/// share one family per user per issuer (concurrent sessions rotate the same
+/// chain — the OWASP "family" identifier in its original coarse form).
+/// Current mints stamp a random per-login `chain` claim instead.
 fn derive_chain_id(claims: &Claims) -> String {
     // SHA-256 of (iss, sub) → hex. Stable across rotations within a session.
     use sha2::Digest;

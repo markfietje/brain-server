@@ -10,86 +10,42 @@
 //!
 //! Schema is created by `migration::run_migration` (additive — only adds
 //! tables that don't exist). Lookups are SQL, parameterized (no injection
-//! surface). Negative lookups are cached in-process for 60s (revocation is
-//! eventually consistent by design — a revoked token lives up to 60s past
-//! the revoke call before every replica sees it; acceptable for v1.2 single-
-//! instance, documented as a ceiling).
+//! surface). Every check hits SQL (one indexed `EXISTS`): there is no
+//! negative cache, so a revoke is visible on the very next request on every
+//! process sharing the database — no eventual-consistency window by design.
 //!
-//! ponytail ceiling: the 60s negative cache + the per-instance denylist mean
-//! a revoke propagates in ≤60s on this instance, and never across instances
-//! without a shared backing store. Distributed revocation (Redis pub/sub,
-//! PostgreSQL LISTEN/NOTIFY) is the v2.1 upgrade path.
+//! ponytail ceiling: cross-HOST revocation still needs a shared backing
+//! store. Distributed revocation (Redis pub/sub, PostgreSQL LISTEN/NOTIFY)
+//! is the v2.1 upgrade path.
 
-use std::collections::HashMap;
-use std::sync::Mutex;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::Connection;
-
-/// Cache TTL for negative jti lookups. 60s = the documented eventual-
-/// consistency bound. `/auth/logout` purges the cache entry it just wrote so
-/// the logout is visible on the next request from the same connection.
-pub const NEG_CACHE_TTL_SECS: u64 = 60;
 
 /// Purge cadence for `revoked_tokens` rows past their `exp`. Runs every 5 min
 /// from a background task in main.rs. Keeps the table bounded by active
 /// token lifetime, not by total tokens ever issued.
 pub const PURGE_INTERVAL_SECS: u64 = 300;
 
-/// In-process negative-lookup cache. Keyed by `(jti, iss)`. A present entry
-/// means "we checked recently and it was NOT revoked" — re-checking within
-/// the TTL is a cache hit (skip the SQL). An absent entry means "check SQL".
-///
-/// Positive lookups (token IS revoked) bypass the cache entirely and hit SQL
-/// every time — a revoked token must be caught immediately, not eventually.
+/// Revocation-check handle. Stateless: every `is_revoked` call runs one
+/// indexed SQL `EXISTS` (no cache, no staleness window). Kept as a struct
+/// so call sites and tests keep a stable handle.
 #[derive(Default)]
-pub struct RevocationCache {
-    /// `(jti, iss)` → when the negative lookup was performed.
-    ///
-    /// Lock bounds (Headroom): the critical sections are map arithmetic only
-    /// — get+TTL compare, insert, remove, retain-by-expiry. No I/O, no
-    /// nesting, no SQL under the lock (the authoritative `EXISTS` runs
-    /// BETWEEN acquisitions with the lock released). Poison: fail-open — a
-    /// poisoned cache reads as a miss and falls through to the SQL truth.
-    /// Request-path holder (bearer auth + refresh), so acquires are
-    /// wait-measured.
-    negatives: Mutex<HashMap<(String, String), CacheEntry>>,
-}
-
-#[derive(Clone, Copy)]
-struct CacheEntry {
-    checked_at: SystemTime,
-}
+pub struct RevocationCache;
 
 impl RevocationCache {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 
-    /// Is `(jti, iss)` revoked? Checks the negative cache first; on miss,
-    /// falls through to SQL. `conn` is a pooled connection. The cache is
-    /// per-process; on a fresh start every lookup misses and goes to SQL
-    /// (which is fast — indexed PK lookup).
+    /// Is `(jti, iss)` revoked? One indexed SQL lookup, every call.
     pub fn is_revoked(
         &self,
         conn: &Connection,
         jti: &str,
         iss: &str,
     ) -> Result<bool, rusqlite::Error> {
-        let key = (jti.to_string(), iss.to_string());
-        // Fast path: negative cache hit.
-        let fast = crate::concurrency::mutex_guard_measured(&self.negatives).map(|g| {
-            g.get(&key).is_some_and(|entry| {
-                SystemTime::now()
-                    .duration_since(entry.checked_at)
-                    .map(|d| d < Duration::from_secs(NEG_CACHE_TTL_SECS))
-                    .unwrap_or(false)
-            })
-        });
-        if fast.unwrap_or(false) {
-            return Ok(false);
-        }
-        // Slow path: SQL lookup. Parameterized — jti/iss come from a verified
+        // Single path: SQL lookup. Parameterized — jti/iss come from a verified
         // JWT but we treat them as untrusted at the storage layer too. Use
         // `SELECT EXISTS(...)` so a missing row is a clean `false` (not an
         // error) — `query_row` with `LIMIT 1` returns QueryReturnedNoRows
@@ -99,40 +55,7 @@ impl RevocationCache {
             rusqlite::params![jti, iss],
             |r| r.get(0),
         )?;
-        if !revoked {
-            // Cache the negative result.
-            if let Ok(mut g) = crate::concurrency::mutex_guard_measured(&self.negatives) {
-                g.insert(
-                    key,
-                    CacheEntry {
-                        checked_at: SystemTime::now(),
-                    },
-                );
-            }
-        }
         Ok(revoked)
-    }
-
-    /// Invalidate the negative cache for `(jti, iss)`. Called after a revoke
-    /// so the very next request from the same process sees the new state.
-    pub fn invalidate(&self, jti: &str, iss: &str) {
-        if let Ok(mut g) = crate::concurrency::mutex_guard_measured(&self.negatives) {
-            g.remove(&(jti.to_string(), iss.to_string()));
-        }
-    }
-
-    /// Drop every expired negative entry. Called by the purge task; keeps the
-    /// cache bounded by `NEG_CACHE_TTL_SECS * peak_qps` entries. Cheap because
-    /// it's a single mutex lock + retain.
-    pub fn purge_negatives(&self) {
-        let now = SystemTime::now();
-        if let Ok(mut g) = crate::concurrency::mutex_guard_measured(&self.negatives) {
-            g.retain(|_, entry| {
-                now.duration_since(entry.checked_at)
-                    .map(|d| d < Duration::from_secs(NEG_CACHE_TTL_SECS))
-                    .unwrap_or(false)
-            });
-        }
     }
 }
 
@@ -368,6 +291,7 @@ fn now_unix() -> u64 {
 mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
+    use std::time::Duration;
 
     const SCHEMA: &str = "CREATE TABLE revoked_tokens (
                 jti TEXT NOT NULL,
@@ -445,22 +369,17 @@ mod tests {
         let cache = RevocationCache::new();
         assert!(!cache.is_revoked(&conn, "jti-1", "iss").unwrap());
         revoke(&conn, "jti-1", "iss", Some("user"), 9999, None, "logout").unwrap();
-        cache.invalidate("jti-1", "iss");
         assert!(cache.is_revoked(&conn, "jti-1", "iss").unwrap());
     }
 
     #[test]
-    fn negative_lookup_caches_within_ttl() {
+    fn revoke_visible_immediately_no_cache_window() {
+        // No negative cache: a revoke behind a prior lookup is visible on
+        // the very next check — no invalidate call, no TTL window.
         let conn = mem_db();
         let cache = RevocationCache::new();
-        // First lookup: SQL miss → cache.
         assert!(!cache.is_revoked(&conn, "jti-2", "iss").unwrap());
-        // Revoke behind the cache's back — the cached negative must hold.
         revoke(&conn, "jti-2", "iss", None, 9999, None, "test").unwrap();
-        // No invalidate → cached result wins.
-        assert!(!cache.is_revoked(&conn, "jti-2", "iss").unwrap());
-        // After invalidation, SQL truth is visible.
-        cache.invalidate("jti-2", "iss");
         assert!(cache.is_revoked(&conn, "jti-2", "iss").unwrap());
     }
 

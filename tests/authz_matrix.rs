@@ -175,6 +175,7 @@ fn mint(
         scopes: scopes.iter().map(|s| s.to_string()).collect(),
         roles: roles.iter().map(|s| s.to_string()).collect(),
         manages: Vec::new(),
+        chain: None,
     };
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some("matrix-kid".to_string());

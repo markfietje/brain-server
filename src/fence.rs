@@ -114,6 +114,36 @@ fn strip_markdown_refs_once(s: &str) -> String {
             i = url_close + 1;
             continue;
         }
+        // Reference-style `[text][id]` / `[text][]`: no URL rides inline,
+        // but a renderer resolves it against a definition elsewhere. Emit
+        // the label; the definition arm below breaks the target.
+        if bytes[i] == b'['
+            && let Some(label_end) = scan_ref_link(bytes, i)
+        {
+            out.push_str(&s[i + 1..label_end]);
+            i = skip_ref_suffix(bytes, label_end);
+            continue;
+        }
+        // Link definitions `[id]: <url>` (up to 3 leading spaces): drop the
+        // whole line — the URL is the exfil payload and the label remnant is
+        // useless without it. Delete-only, keeping the fixpoint termination
+        // proof: every pass strictly shortens. Bare prose with colons never
+        // matches (line-start bracket + colon + non-space target required).
+        if bytes[i] == b'[' && is_link_definition(bytes, i) {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Autolinks `<scheme://...>`: emit the bare URL text (the bare-URL
+        // ceiling — prose URLs are never dropped, only de-linked).
+        if bytes[i] == b'<'
+            && let Some(url_end) = scan_autolink(bytes, i)
+        {
+            out.push_str(&s[i + 1..url_end]);
+            i = url_end + 1;
+            continue;
+        }
         let ch = s[i..].chars().next().expect("non-empty slice");
         out.push(ch);
         i += ch.len_utf8();
@@ -154,6 +184,92 @@ fn scan_link_construct(bytes: &[u8], open_bracket: usize) -> Option<(usize, usiz
     let url_start = paren_open + 1;
     let url_close_rel = bytes[url_start..].iter().position(|&b| b == b')')?;
     Some((label_start, label_end, url_start + url_close_rel))
+}
+
+/// Reference-style link `[text][id]` / `[text][]` at `open_bracket`.
+/// Returns the label's `]` offset; the caller emits the label and skips the
+/// ref suffix. Byte-level, no allocation.
+fn scan_ref_link(bytes: &[u8], open_bracket: usize) -> Option<usize> {
+    debug_assert_eq!(bytes[open_bracket], b'[');
+    let label_start = open_bracket + 1;
+    let label_end_rel = bytes[label_start..].iter().position(|&b| b == b']')?;
+    let label_end = label_start + label_end_rel;
+    let ref_open = label_end + 1;
+    if ref_open < bytes.len() && bytes[ref_open] == b'[' {
+        return Some(label_end);
+    }
+    None
+}
+
+/// Skip past the `[id]` / `[]` suffix; returns the resume offset.
+fn skip_ref_suffix(bytes: &[u8], label_end: usize) -> usize {
+    let mut i = label_end + 2; // past `][`
+    while i < bytes.len() && bytes[i] != b']' && bytes[i] != b'\n' {
+        i += 1;
+    }
+    if i < bytes.len() && bytes[i] == b']' {
+        i + 1
+    } else {
+        label_end + 1
+    }
+}
+
+/// Link definition `[id]: target` at a line start (≤3 leading spaces).
+/// Only fires when a non-space target follows the colon, so prose with
+/// brackets and colons never matches. Call only with `bytes[i] == b'['`.
+fn is_link_definition(bytes: &[u8], i: usize) -> bool {
+    // Definitions start a line (CommonMark allows ≤3 spaces of indent):
+    // walk back over spaces; whatever precedes must be a newline or BOF,
+    // and the indent must be ≤3.
+    let mut back = i;
+    while back > 0 && bytes[back - 1] == b' ' {
+        back -= 1;
+    }
+    if i - back > 3 {
+        return false;
+    }
+    if back != 0 && bytes[back - 1] != b'\n' {
+        return false;
+    }
+    let mut k = i + 1;
+    while k < bytes.len() && bytes[k] != b']' && bytes[k] != b'\n' {
+        k += 1;
+    }
+    if k >= bytes.len() || bytes[k] != b']' {
+        return false;
+    }
+    k += 1;
+    while k < bytes.len() && bytes[k] == b' ' {
+        k += 1;
+    }
+    if k >= bytes.len() || bytes[k] != b':' {
+        return false;
+    }
+    k += 1;
+    while k < bytes.len() && bytes[k] == b' ' {
+        k += 1;
+    }
+    k < bytes.len() && bytes[k] != b'\n' && bytes[k] != b' '
+}
+
+/// Autolink `<scheme://...>` at `i`. Onlyhttp(s) (the fetchable class);
+/// returns the closing `>` offset. The caller emits the bare inner text.
+fn scan_autolink(bytes: &[u8], i: usize) -> Option<usize> {
+    debug_assert_eq!(bytes[i], b'<');
+    let rest = &bytes[i + 1..];
+    let scheme_ok = rest.starts_with(b"http://") || rest.starts_with(b"https://");
+    if !scheme_ok {
+        return None;
+    }
+    let mut k = i + 1;
+    while k < bytes.len() && bytes[k] != b'>' && bytes[k] != b' ' && bytes[k] != b'\n' {
+        k += 1;
+    }
+    if k < bytes.len() && bytes[k] == b'>' {
+        Some(k)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -208,6 +324,32 @@ mod tests {
     fn strip_markdown_refs_neutralizes_image_and_link() {
         assert_eq!(strip_markdown_refs("![a](http://x)"), "[a]");
         assert_eq!(strip_markdown_refs("[t](http://x)"), "t");
+    }
+
+    #[test]
+    fn strip_markdown_refs_neutralizes_reference_style() {
+        // `![a][x]` resolves against the definition — both must die.
+        let forge = "see ![a][x] here\n\n[x]: https://attacker.example/p.png";
+        let out = strip_markdown_refs(forge);
+        assert!(
+            !out.contains("attacker.example"),
+            "ref target dead: {out:?}"
+        );
+        assert!(!out.contains("[a][x]"), "ref use dead: {out:?}");
+        // Prose brackets with colons are not definitions.
+        assert_eq!(
+            strip_markdown_refs("note [see intro]: blah"),
+            "note [see intro]: blah"
+        );
+    }
+
+    #[test]
+    fn strip_markdown_refs_delinks_autolinks() {
+        assert_eq!(
+            strip_markdown_refs("go <https://example.com/x> now"),
+            "go https://example.com/x now"
+        );
+        assert_eq!(strip_markdown_refs("a < b and c > d"), "a < b and c > d");
     }
 
     /// The label-heal forge: the outer link's label is re-emitted unscanned,
