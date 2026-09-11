@@ -253,8 +253,9 @@ pooled read connections and are fused.
   when the top pass-1 result appears in **both** dense and lexical lists within a
   bounded rank. It fires only on cross-retriever agreement, never on a fused score
   threshold alone.
-- **Graph leg (optional)** — Personalized PageRank over the knowledge graph, opt-in
-  via `?graph=true`, as a third RRF leg.
+- **Graph leg (on by default)** — Personalized PageRank over the knowledge graph
+  as a third RRF leg; `BRAIN_RECALL_GRAPH_ENABLED=false` or per-request
+  `graph=false` opts out.
 
 Every result carries **provenance**: per-retriever ranks, the fused score, any
 expansion terms, and (optionally) a rerank score.
@@ -329,9 +330,9 @@ Graph edges are superseded two ways, both retire-never-delete:
 - **Calibrated abstention**, **span verification** (`/verify`), and **reviewable
   proposals** keep the memory honest without an LLM.
 - **Read-seam sanitization** — every emitted text field passes redaction →
-  markdown-reference strip (EchoLeak) → invisible-Unicode strip before leaving
-  the server, so a stored chunk cannot smuggle context out through a rendered
-  URL or bidi/zero-width trickery (v1.20.3 / v1.20.27).
+  invisible-Unicode strip → markdown-reference strip (EchoLeak) → hostile-element
+  strip before leaving the server, so a stored chunk cannot smuggle context out
+  through a rendered URL or bidi/zero-width trickery (v1.20.3 / v1.20.27 / v1.28.72).
 - **Fail-closed bind + SSRF-hardened egress** — startup refuses a non-loopback
   bind without auth (v1.20.29); outbound webhook/alert calls follow no redirects
   (v1.20.26).
@@ -352,7 +353,10 @@ Graph edges are superseded two ways, both retire-never-delete:
 
 Memories can live in scoped **domain databases** (health, business, code, …), each
 with its own graph. Retrieval **auto-routes** by per-domain centroids and falls back
-across domains on a miss, so one domain's memory never leaks into another's answers.
+across domains on a miss. The fallback can mix the shared global corpus into a
+domain answer; every such response carries `included_global: true` so the mixing
+is visible (v1.28.80). True storage isolation is a separate deployment mode
+(`BRAIN_MULTI_DB`), not the default shim.
 This is a v1.x foundation (see [Roadmap](./roadmap.md)).
 
 ---
