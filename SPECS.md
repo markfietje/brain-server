@@ -251,14 +251,14 @@ Bound to `BIND_HOST:BIND_PORT` (default `127.0.0.1:8765`). All routes are layere
 | GET | `/version` | `version` | ✅ returns `env!("CARGO_PKG_VERSION")` |
 | POST | `/add` | `add_chunk` | text ingest (raw), embeds + stores |
 | POST | `/ingest/memory` | `ingest_memory` | structured memory ingest |
-| GET | `/search?q=&k=` | `search` | semantic search (brute-force cosine) |
+| GET | `/search?q=&k=` | `search` | hybrid RRF retrieval (this table predates the graph leg; current behavior in `docs/retrieval-and-recall.md`) |
 | POST | `/v1/embeddings` | `embeddings` | OpenAI-compatible embeddings endpoint |
 | POST | `/ingest/markdown` | `ingest_markdown` | markdown ingest + annotation extraction |
 | GET | `/graph/entity/{name}` | `get_entity` | entity + 1-hop relations |
 | GET | `/graph/relations?from=&to=` | `get_relations` | relations between entities |
-| GET | `/graph/traverse?start=&max_depth=` | `traverse_graph` | recursive graph walk (≤ `TRAVERSE_MAX_DEPTH`) |
+| GET | `/graph/traverse?start=&max_depth=` | `traverse_graph` | recursive graph walk (bounded: `MAX_HOPS` 4, `MAX_VISITED` 256) |
 | GET | `/audit?kind=&tenant=&limit=` | `list_audit` | operator audit-log diagnostics (hashes only); `tenant` filters at the SQL layer (v1.1.0) |
-| GET | `/audit/verify` | `verify_audit_chain` | v1.1.0 — returns `{ ok: bool }` after walking the SHA-256 hash chain |
+| GET | `/audit/verify` | `verify_audit_chain` | v1.1.0 — Admin-gated; returns per-domain results with overall `ok`, names failing domains and raises a chain alert |
 | GET | `/metrics` | `metrics` | v1.1.0 — Prometheus text-format exporter (no dep) |
 
 ### Request/response shapes (selected)
@@ -451,6 +451,7 @@ Every `SearchResult` carries `Provenance`:
 pub struct Provenance {
     pub vector_rank: Option<usize>,
     pub fts_rank: Option<usize>,
+    pub graph_rank: Option<usize>, // graph-PPR rank; None when the leg sat out
     pub fused_score: Option<f32>,
     pub rerank_score: Option<f32>,
     pub rerank_truncated: bool,
@@ -469,11 +470,14 @@ pub struct SearchTelemetry {
     pub embed_ms: f32,
     pub vector_ms: f32,
     pub fts_ms: f32,
+    pub graph_ms: f32, // 0 when the graph leg sat out
     pub fusion_ms: f32,
     pub prf_ms: f32,
     pub rerank_ms: f32,
     pub vec_candidates: usize,
     pub fts_candidates: usize,
+    pub graph_candidates: usize,
+    pub graph_rescued: bool, // auto-engaged rescue pass fired
     pub fused_count: usize,
     pub rrf_k: u32,
     pub intent: Option<String>,
@@ -482,6 +486,9 @@ pub struct SearchTelemetry {
     pub retrieval_ms_fts: f32,
     pub confidence: f32,
     pub recommendation: Option<Recommendation>,
+    pub packed_tokens: Option<usize>, // submodular packing, None when unrequested
+    pub packing_candidates: Option<usize>,
+    pub answer_in_context: Option<bool>, // gold-answer diagnostic, None without gold
 }
 ```
 
@@ -494,7 +501,7 @@ pub struct SearchTelemetry {
 
 The KG (`entities`/`relationships`) is populated at ingest from a **single source**:
 
-1. **Inline `[[relation::entity]]` syntax** — `parse_annotations()` in `main.rs`, a hand-rolled
+1. **Inline `[[relation::entity]]` syntax** — `parse_annotations()` in `src/server/router/memory.rs`, a hand-rolled
    byte scanner over the markdown body. **Always active.** Only `[A-Za-z0-9_-]` relation/entity
    names are accepted; `[[` … `::` … `]]`; the `from` entity is the lowercased title.
    - Also used by `POST /ingest/markdown` (v0.9.2+) which additionally extracts:
@@ -518,7 +525,7 @@ The KG (`entities`/`relationships`) is populated at ingest from a **single sourc
 - **Pool health check:** a `tokio::spawn` loop pings `SELECT 1` every 30 s.
 - **Connection leak detection:** `ConnectionTracker` assigns each acquired connection an id +
   timestamp; `spawn_connection_watchdog` logs long-running acquisitions (threshold 300 s).
-- **Rate limiter:** simple in-memory per-IP window (`RateLimiter`, 100 req/window in tests).
+- **Rate limiter:** simple in-memory per-IP window (`RateLimiter`, 10,000 req/window).
 - **Graceful shutdown:** `axum::serve(...).with_graceful_shutdown(...)` listens for SIGINT/SIGTERM,
   then axum's built-in drain handles in-flight requests (systemd `TimeoutStopSec`, default 90 s, is the outer cap).
 
@@ -624,8 +631,9 @@ to detect drift (e.g., sudden spike in `ClarifyQuery` indicates index/retrieval 
 ## 12. Build & Deploy
 
 ```bash
-# Rust + Axum release build
-RUSTFLAGS="-C target-cpu=native -C opt-level=3 -C codegen-units=1" cargo build --release
+# Rust + Axum release build (profile.release in Cargo.toml: opt-level = 2,
+# lto = "fat", codegen-units = 1, strip = true, panic = "abort")
+cargo build --release
 ./target/release/brain-server
 ```
 
