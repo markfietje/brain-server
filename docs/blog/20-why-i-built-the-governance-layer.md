@@ -1,46 +1,42 @@
 # Why I built the governance layer
 
-*2026-09-11. A personal note behind the product. If you hire for support
-operations, this is how I think.*
+*2026-09-11. The operating thesis behind this product.*
 
-I have watched the same failure in every support operation I have
-touched. Governance is side work. Nobody owns quality, access, or
-cleanup, so quality rots, access sprawls, and cleanup never happens.
-Then something breaks at 2 a.m. and everyone discovers the runbook was
-in one person's head. That person was usually me, and I got tired of
-being the runbook.
+Every support operation I have run hit the same wall. Governance was
+side work. Nobody owned quality, access, or cleanup, so quality rotted,
+access sprawled, and cleanup never shipped. Then something broke at
+2 a.m. and the runbook turned out to live in one person's head. I
+decided to build the layer I kept asking vendors for and never got.
 
-So I built the layer I kept wishing existed. Every write screened
-before it lands. Every definition owned, with one meaning per thing.
-Every recall carrying its lineage, so a wrong answer can be traced to
-the exact row it came from. Access scoped per tool, so each integration
-sees what it needs and nothing else. Deletion that produces a
-certificate instead of a promise. An audit chain that answers "who
-decided this was true" without a meeting.
+The requirements were non-negotiable. Every write screened before it
+lands. Every definition owned, one meaning per thing. Every recall
+carrying its lineage, so a wrong answer traces to the exact row it came
+from. Access scoped per integration, so each tool sees what it needs
+and nothing else. Deletion that produces a certificate instead of a
+promise. An audit chain that answers who decided something was true
+without scheduling a meeting.
 
-None of this is exotic. It is warehouse discipline ported to agent
-memory: screened writes, owned definitions, checked lineage, scoped
-access, proof. The tools I name are different, Redshift and dbt and
-Airflow do the heavy lifting in a warehouse, but the governance pattern
-is the same one those tools need. A definition nobody owns drifts. A
-write nobody checks poisons everything downstream. A deletion nobody can
-prove is a liability with a date on it.
+This is warehouse discipline applied to agent memory. Screened writes.
+Owned definitions. Checked lineage. Scoped access. Proof. The underlying
+systems differ, but the governance pattern is identical, and it is the
+pattern most AI deployments are missing. A definition nobody owns
+drifts. A write nobody checks poisons everything downstream. A deletion
+nobody can prove is a liability with a date on it.
 
-I work solo and hands on. My bench is Zed plus OpenCode, with Claude Code
-for heavy lifts and OpenClaw running the automation. I made OpenClaw
-integrate well on purpose: the memory plugin recalls every turn inside an
-untrusted fence, writes land as proposals, and the host merge seam strips
-forgeries ([the stateful prompt injection
-piece](./15-prompt-injection-made-stateful.md)). I use
-that loop daily to build monitors and triage faster. Then I keep the rules
-in code, because code does not forget, does not go on leave, and does not
-approve things at 4:55 p.m. on a Friday. When I say no to a write, the rule
-is written down and the tooling makes yes easy. That is the whole
-philosophy. Make the right action the cheap action, and one person can
-cover ground that used to need a team.
+My bench is Zed plus OpenCode, with Claude Code for heavy lifts and
+OpenClaw running production automation. The OpenClaw integration is
+deliberate, not incidental: per-turn recall inside an untrusted fence,
+writes gated as proposals, merge-seam forgery stripping, all covered in
+[the stateful prompt injection piece](./15-prompt-injection-made-stateful.md).
+That loop builds monitors and triage tooling daily. The rules live in
+code, where they cannot be forgotten, skipped under pressure, or
+rubber-stamped at end of day. When a write is refused, the rule is
+written down and the tooling makes approval easy. Make the right action
+the cheap action and a small team covers ground that used to need a
+large one.
 
 This repository is the evidence. Every control named above runs here,
-pinned by tests, with the ceilings stated where a buyer can price them.
-If you are hiring for someone to own quality in an AI support
-operation, start with the guarantees section of the README, then ask me
-what broke to earn each one. I remember all of them.
+pinned by tests, with residual limits stated where a buyer can price
+them. If you are evaluating this for a regulated operation, start with
+the guarantees in the README, then ask what broke to earn each one.
+There is a drill record behind every answer.
