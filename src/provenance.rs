@@ -238,6 +238,11 @@ pub fn verify_artifact_json(value: &Value, pinned_did: Option<&str>) -> Value {
             .cloned()
             .unwrap_or(Value::Null),
         "pinned": pinned_did.is_some(),
+        "authentication": if pinned_did.is_some() {
+            "operator-pinned"
+        } else {
+            "self-asserted (no operator key)"
+        },
         "reason": reason,
     })
 }
@@ -710,12 +715,14 @@ mod tests {
         assert_eq!(report["reason"], "ok");
         assert_eq!(report["signed_by"], serde_json::json!(did));
         assert_eq!(report["pinned"], serde_json::json!(false));
+        assert_eq!(report["authentication"], "self-asserted (no operator key)");
         assert_eq!(report["mark"], MARK_AIGEN);
 
         // Pinned against the right key: same shape, pinned=true.
         let report = verify_artifact_json(&a, Some(&did));
         assert_eq!(report["ok"], serde_json::json!(true));
         assert_eq!(report["pinned"], serde_json::json!(true));
+        assert_eq!(report["authentication"], "operator-pinned");
 
         // Pinned against a foreign key: ok=false, reason foreign_signer,
         // and signed_by STILL surfaces (the third-party identity is the
