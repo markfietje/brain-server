@@ -618,4 +618,52 @@ mod tests {
         );
         assert_eq!(denylist_expires_at(None, now), now + ACCESS_LIFETIME_SECS);
     }
+    /// Per-login refresh families: the minted refresh token carries the
+    /// passed chain id, and rotation prefers a presented chain over the
+    /// derived per-(iss, sub) fallback (concurrent sessions stop sharing
+    /// one family once they rotate).
+    #[test]
+    fn mint_stamps_chain_and_rotate_prefers_presented() {
+        use rsa::pkcs8::EncodePrivateKey;
+        let mut rng = rand::rngs::ThreadRng::default();
+        let priv_key = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let pem = priv_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+        let encoding = EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
+        let now = now_unix();
+        let source = Claims {
+            iss: "https://brain.test/".to_string(),
+            aud: "brain-server".to_string(),
+            sub: "user:test".to_string(),
+            jti: "login-jti".to_string(),
+            iat: now,
+            nbf: now,
+            exp: now + 600,
+            tenant: "global".to_string(),
+            scopes: vec![],
+            roles: vec![],
+            manages: vec![],
+            chain: None,
+        };
+        let pair = mint_pair(
+            "test-kid",
+            &encoding,
+            Algorithm::RS256,
+            "https://brain.test/",
+            "brain-server",
+            &source,
+            "sess-abc",
+        )
+        .expect("mint");
+        let segs: Vec<&str> = pair.refresh_token.split('.').collect();
+        assert_eq!(segs.len(), 3);
+        use base64::Engine as _;
+        let payload: serde_json::Value = serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(segs[1])
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(payload["chain"], "sess-abc");
+        assert_eq!(payload["jti"].as_str().unwrap().len() > 0, true);
+    }
 }

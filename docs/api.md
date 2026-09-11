@@ -329,7 +329,7 @@ is empty — the paths return 404, they are not auth failures.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/auth/refresh` · `/logout` · `/revoke` | Token lifecycle. Logout/revoke denylist rows live exactly as long as the token's real `exp` (clamped 24h) — the row dies when the token dies |
+| POST | `/auth/refresh` · `/logout` · `/revoke` | Token lifecycle. Logout/revoke denylist rows live exactly as long as the token's real `exp` (clamped 24h) — the row dies when the token dies. Access tokens verify `iat` (future-issued refused) and a 24h maximum lifetime (`401 lifetime_exceeded` past it, so revocation always covers the full life); refresh families are per-login sessions with reuse detection burning the family |
 | GET | `/.well-known/openid-configuration` · `/.well-known/jwks.json` | OIDC + JWKS |
 | GET | `/.well-known/security.txt` | RFC 9116 security disclosure (public) |
 

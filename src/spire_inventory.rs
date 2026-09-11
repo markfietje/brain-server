@@ -492,3 +492,27 @@ fn cli_reference_covers_subcommands() {
          entry ships its doc row in the same commit"
     );
 }
+
+/// The license identity pin: `LICENSE` carries the MIT text with the
+/// explicit `Copyright (c) 2026 Mark Fietje` header, and `Cargo.toml`
+/// declares `license = "MIT"`. A missing or altered header fails the
+/// build — provenance of ownership is machine-checked, not assumed.
+#[test]
+fn license_header_present() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let license =
+        std::fs::read_to_string(root.join("LICENSE")).expect("LICENSE must exist at repo root");
+    assert!(
+        license.contains("MIT License"),
+        "LICENSE must carry the MIT text"
+    );
+    assert!(
+        license.contains("Copyright (c) 2026 Mark Fietje"),
+        "LICENSE must carry the explicit copyright header"
+    );
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("Cargo.toml must exist");
+    assert!(
+        manifest.contains("license = \"MIT\""),
+        "Cargo.toml must declare the MIT license"
+    );
+}
