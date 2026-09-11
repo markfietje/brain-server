@@ -883,6 +883,7 @@ export class BrainClient {
       res = await fetch(url, {
         method,
         signal: controller.signal,
+        redirect: "manual",
         headers: {
           Accept: "application/json",
           ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
@@ -902,8 +903,11 @@ export class BrainClient {
       clearTimeout(timer);
     }
 
-    // Redirect re-pin: fetch follows cross-origin redirects resending
-    // Authorization — refuse a response that landed off the pinned origin
+    // Redirects are never followed: the bearer must not ride a 3xx anywhere.
+    if (res.status >= 300 && res.status < 400) {
+      throw new BrainHttpError("network", `brain-server redirect refused`);
+    }
+    // Re-pin: refuse a response that landed off the pinned origin
     // (missing `url` resolves to the pinned base and passes).
     if (this.pinnedUrl(res.url || "/")?.origin !== this.origin) {
       throw new BrainHttpError("network", `brain-server redirected off pinned origin`);

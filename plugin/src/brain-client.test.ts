@@ -397,4 +397,19 @@ describe("redirect re-pin", () => {
     expect(err).toBeInstanceOf(BrainHttpError);
     expect((err as BrainHttpError).kind).toBe("network");
   });
+
+  test("a 3xx refuses without following", async () => {
+    const client = new BrainClient(cfg());
+    const seen: RequestInit[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_u: unknown, init?: RequestInit) => {
+        seen.push(init ?? {});
+        return mockResponse("", { status: 302, url: "http://127.0.0.1:8765/recall" });
+      }),
+    );
+    const err = await client.fetchJson("/recall", "POST", {}, 50).catch((e) => e);
+    expect(err).toBeInstanceOf(BrainHttpError);
+    expect(seen[0]?.redirect).toBe("manual");
+  });
 });
