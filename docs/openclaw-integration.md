@@ -568,6 +568,14 @@ settings without restarting the gateway.
   as untrusted replay, so a captured label cannot be forged into fresh prose.
 - **Human-gated writes**: default `captureMode: "proposal"` means no turn- or tool-triggered fact
   enters memory without a reviewer approving it.
+- **Transport never follows redirects** (plugin 0.6.3): authenticated requests send
+  `redirect: "manual"`, so a 3xx can never carry the bearer to another origin; the
+  origin pin plus the response re-pin stay as second layers.
+- **One inseparable tool-result envelope** (fork): every text block of a tool result is
+  sanitized and joined into a single enveloped block, bounded per block, with oversize
+  images withheld as labeled placeholders.
+- **Signed catalog-pin acknowledgments** (fork): pin files carry a detached Ed25519
+  signature; forged or unsigned files rebuild loudly instead of silencing drift.
 - **Deterministic + local**: no embedding/decision tokens, no data egress, loopback only.
 - **Fail-open reads, fail-closed auth**: recall errors never stall the agent; a bad/missing token
   never grants access.

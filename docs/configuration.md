@@ -29,6 +29,8 @@ Brain Server is configured entirely through **environment variables**, all resol
 | Variable | Default | Description |
 |---|---|---|
 | `AUTH_TOKEN` / `AUTH_TOKEN_FILE` | — | Opaque bearer token(s). Newline-separated = live rotation. **Off if unset.** Twokeys (v1.28.70): with a token FILE, line 1 = operator (full authority) and line 2 = the agent token — agent bearers authenticate as the scoped `agent@loopback` principal (no Admin, no purge/domains/revoke/dsar, no DPO boards; writes land as proposals under `BRAIN_WRITE_POSTURE=review`; the Blackout kill-switch revokes it by name). A single line keeps the legacy all-superuser posture — a boot warn is the nudge, never a forced migration. `AUTH_TOKEN` env content keeps the all-operator semantics. |
+| `BRAIN_REQUIRE_AUTH` | — | Refuse unauthenticated boot (v1.28.80): `1` fails startup when no token resolves; unset keeps the loopback single-user default with a loud boot warning. Any other value refuses boot (fail-closed parse). |
+| `BRAIN_ALLOW_WILDCARD_GRANT` | — | Admit total-grant scopes (v1.28.80): `1` lets a scope wildcarding both team and domain (`*/*`) grant; unset means such scopes grant nothing. Loud boot warning when admitted. |
 | `AGENT_TOKEN_FILE` | — | Alternative agent-token source (0600 file, one bearer string — same secret-file law as `AUTH_TOKEN_FILE`). When set, the agent token comes from here and the operator token file's ENTIRE content stays operator. Boot-time source: a swapped agent file takes effect at restart (the rotation watcher follows the operator file; a line-2 edit reloads live with it). A leaked (group/world-readable) or empty agent file **refuses the boot**. |
 | `BRAIN_JWT_ISSUER` | — | Enables **JWT mode** when set + keys loaded. URL of the issuer (verified against the `iss` claim). |
 | `BRAIN_JWT_KEY_DIR` | `~/.config/brain-server/keys/` | Directory holding JWT signing key PEMs (mode 0700; private keys 0600). |
@@ -100,6 +102,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `BRAIN_INJECTION_THRESHOLD_HIGH` | `0.9` | Classifier banding: score ≥ this → reject |
 | `BRAIN_INJECTION_THRESHOLD_LOW` | `0.7` | Classifier banding: score ≥ this (below high) → quarantine |
 | `BRAIN_PROPOSAL_TTL_SECS` | `604800` (7 d) | How long a proposal can sit pending before auto-expire (audited). |
+| `BRAIN_APPROVAL_QUORUM` | `1` | Two-principal approvals (v1.28.80): `2` requires two distinct approvers before a proposal promotes (first returns `pending_second`, same-principal repeat refused). Any other value refuses boot. |
 | `BRAIN_DSAR_WINDOW_DAYS` | `30` | GDPR Art 17 response window shown on DSARs |
 | `BRAIN_DSAR_LEDGER_DAYS` | `30` | Retention window for the DSAR ledger |
 | `BRAIN_RETENTION_ENABLED` | enabled (`true`) | Per-kind query-time retention expiry; `false\|0\|no\|off` restores exact legacy behavior (only per-chunk `expires_at` governs decay) |
