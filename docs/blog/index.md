@@ -20,5 +20,9 @@ proof map.
 - [Dual-era MCP without the handshake tax](./13-dual-era-mcp.md) — *MCP 2026-07-28 + 2025-11-25 interoperability*
 - [Four copies of sha256_hex](./14-four-copies-of-sha256-hex.md) — *what happened when we let a machine audit our own repo*
 - [Prompt injection made stateful — and the memory layer that was built for it](./15-prompt-injection-made-stateful.md) — *the 2026 memory-poisoning research, and the architectural answer*
+- [Two people have to say yes](./16-two-people-have-to-say-yes.md) — *approval fatigue and the two-principal quorum*
+- [The redirect that never happens](./17-the-redirect-that-never-happens.md) — *bearer safety and manual-redirect transport*
+- [Signatures with a stated ceiling](./18-signatures-with-a-stated-ceiling.md) — *signed pin acks, TOFU limits stated plainly*
+- [Visible mixing beats pretend isolation](./19-visible-mixing-beats-pretend-isolation.md) — *the included_global flag and honest tenancy*
 
 Positions and one-liners live in the [media kit](../media-kit.md).

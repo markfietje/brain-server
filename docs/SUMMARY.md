@@ -20,13 +20,10 @@
 - [Connectors](connectors.md)
 - [Custom CRM connectors](connector-crm-custom.md)
 
-# API & developer
-
-- [API contract](API_CONTRACT.md)
-- [API reference](api.md)
-
 # Reference
 
+- [API reference](api.md)
+- [API contract](API_CONTRACT.md)
 - [Features](features.md)
 - [Use cases](use-cases.md)
 - [Procedures & runbooks](runbooks.md)
@@ -103,6 +100,10 @@
 - [Dual-era MCP without the handshake tax](./blog/13-dual-era-mcp.md)
 - [Four copies of sha256_hex: when a machine audits the docs](./blog/14-four-copies-of-sha256-hex.md)
 - [Prompt injection made stateful — and the memory layer built for it](./blog/15-prompt-injection-made-stateful.md)
+- [Two people have to say yes](./blog/16-two-people-have-to-say-yes.md)
+- [The redirect that never happens](./blog/17-the-redirect-that-never-happens.md)
+- [Signatures with a stated ceiling](./blog/18-signatures-with-a-stated-ceiling.md)
+- [Visible mixing beats pretend isolation](./blog/19-visible-mixing-beats-pretend-isolation.md)
 
 # Regulation & trust
 
@@ -128,12 +129,12 @@
 
 # Project
 
-- [Roadmap](roadmap.md)
-- [Release history](roadmap-and-release-history.md)
 - [Changelog](CHANGELOG.md)
-- [Release checklist](release-checklist.md)
+- [Release history](roadmap-and-release-history.md)
+- [Roadmap](roadmap.md)
 - [Benchmarks](BENCHMARKS.md)
 - [Audit register](AUDIT.md)
+- [Release checklist](release-checklist.md)
 - [Media kit](media-kit.md)
 - [Contributing](CONTRIBUTING.md)
 - [Code of conduct](CODE_OF_CONDUCT.md)
