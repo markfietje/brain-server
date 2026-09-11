@@ -175,7 +175,13 @@ impl Scope {
     /// matches `client_authorized_domains`, which already strips `*`/`global`.
     fn grants(&self, action: Action, team: &str, domain: &str) -> bool {
         let action_ok = self.action.rank() >= action.rank();
-        let team_ok = self.team == "*" || self.team == team;
+        // The total grant (`*/*`) needs the explicit admission: without
+        // BRAIN_ALLOW_WILDCARD_GRANT=1 it grants nothing (fail closed).
+        // A wildcard team over a NAMED domain keeps its prior meaning.
+        let total_wildcard = self.team == "*" && self.domain == "*";
+        let team_ok = self.team == team
+            || (self.team == "*" && !total_wildcard)
+            || (total_wildcard && crate::config::allow_wildcard_grant().unwrap_or(false));
         let domain_ok = self.domain == domain
             || (self.domain == "*" && (domain == "global" || self.team == "*"));
         action_ok && team_ok && domain_ok
@@ -229,6 +235,8 @@ pub fn client_authorized_domains(principal: &Option<Principal>) -> Option<Vec<St
 mod tests {
     use super::*;
 
+    static SCOPE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn scope_parsing_round_trips() {
         let s = Scope::parse("read:team-alpha/l1").unwrap();
@@ -267,11 +275,32 @@ mod tests {
 
     #[test]
     fn admin_star_star_is_superuser_scope() {
+        let _guard = SCOPE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("BRAIN_ALLOW_WILDCARD_GRANT").ok();
+        unsafe { std::env::set_var("BRAIN_ALLOW_WILDCARD_GRANT", "1") };
         let s = Scope::parse("*:*/*").unwrap();
         assert_eq!(s.action, Action::Admin);
         assert!(s.grants(Action::Read, "any", "any"));
         assert!(s.grants(Action::Write, "any", "any"));
         assert!(s.grants(Action::Admin, "any", "any"));
+        match prev {
+            Some(v) => unsafe { std::env::set_var("BRAIN_ALLOW_WILDCARD_GRANT", v) },
+            None => unsafe { std::env::remove_var("BRAIN_ALLOW_WILDCARD_GRANT") },
+        }
+    }
+
+    #[test]
+    fn total_wildcard_refuses_without_admission() {
+        let _guard = SCOPE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("BRAIN_ALLOW_WILDCARD_GRANT").ok();
+        unsafe { std::env::remove_var("BRAIN_ALLOW_WILDCARD_GRANT") };
+        let s = Scope::parse("admin:*/*").unwrap();
+        assert!(!s.grants(Action::Read, "any", "any"));
+        assert!(!s.grants(Action::Admin, "any", "global"));
+        match prev {
+            Some(v) => unsafe { std::env::set_var("BRAIN_ALLOW_WILDCARD_GRANT", v) },
+            None => unsafe { std::env::remove_var("BRAIN_ALLOW_WILDCARD_GRANT") },
+        }
     }
 
     #[test]
@@ -306,7 +335,10 @@ mod tests {
         };
         assert!(!is_authorized(&p, Action::Read, "any", "any"));
         assert!(!is_authorized(&p, Action::Admin, "any", "any"));
-        // The explicit superuser scope still works.
+        // The explicit superuser scope still works (under admission).
+        let _guard = SCOPE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("BRAIN_ALLOW_WILDCARD_GRANT").ok();
+        unsafe { std::env::set_var("BRAIN_ALLOW_WILDCARD_GRANT", "1") };
         let admin = Principal {
             sub: "op".to_string(),
             tenant: "global".to_string(),
@@ -317,6 +349,10 @@ mod tests {
             kind: PrincipalKind::Jwt,
         };
         assert!(is_authorized(&admin, Action::Admin, "any", "any"));
+        match prev {
+            Some(v) => unsafe { std::env::set_var("BRAIN_ALLOW_WILDCARD_GRANT", v) },
+            None => unsafe { std::env::remove_var("BRAIN_ALLOW_WILDCARD_GRANT") },
+        }
     }
 
     #[test]
@@ -350,8 +386,11 @@ mod tests {
     #[test]
     fn explicit_superuser_still_grants_named_domains() {
         // `admin:*/*` is the documented explicit-superuser shape: both fields
-        // wildcarded grants everything. Narrowing single-team wildcards must
-        // not touch it.
+        // wildcarded grants everything (under the wildcard admission).
+        // Narrowing single-team wildcards must not touch it.
+        let _guard = SCOPE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("BRAIN_ALLOW_WILDCARD_GRANT").ok();
+        unsafe { std::env::set_var("BRAIN_ALLOW_WILDCARD_GRANT", "1") };
         let p = Principal {
             sub: "user:root".to_string(),
             tenant: "global".to_string(),
@@ -366,6 +405,10 @@ mod tests {
                 assert!(is_authorized(&p, Action::Read, team, domain));
                 assert!(is_authorized(&p, Action::Write, team, domain));
             }
+        }
+        match prev {
+            Some(v) => unsafe { std::env::set_var("BRAIN_ALLOW_WILDCARD_GRANT", v) },
+            None => unsafe { std::env::remove_var("BRAIN_ALLOW_WILDCARD_GRANT") },
         }
     }
 

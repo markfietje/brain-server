@@ -188,6 +188,21 @@ pub fn require_auth() -> Result<bool, String> {
     }
 }
 
+/// The `admin:*/*` wildcard-grant admission. Absent = a team+domain wildcard
+/// scope grants nothing (fail closed); `=1` admits it with a loud boot warn.
+pub fn allow_wildcard_grant() -> Result<bool, String> {
+    match std::env::var("BRAIN_ALLOW_WILDCARD_GRANT")
+        .unwrap_or_default()
+        .as_str()
+    {
+        "" => Ok(false),
+        "1" => Ok(true),
+        other => Err(format!(
+            "BRAIN_ALLOW_WILDCARD_GRANT='{other}' is invalid; must be 1 or unset"
+        )),
+    }
+}
+
 // ── export cap (SP-S9) ──────────────────────────────
 
 /// Default ceiling for the GDPR `/export` bundle: 1 GiB of materialized

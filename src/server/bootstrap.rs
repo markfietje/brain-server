@@ -330,6 +330,13 @@ pub fn bootstrap() -> Result<BootOutcome> {
             "starting without authentication (no AUTH_TOKEN_FILE/AUTH_TOKEN): single-user loopback only — set BRAIN_REQUIRE_AUTH=1 to refuse this posture"
         );
     }
+    let allow_wildcard =
+        config::allow_wildcard_grant().map_err(|e| anyhow::anyhow!("fatal auth config: {e}"))?;
+    if allow_wildcard {
+        tracing::warn!(
+            "BRAIN_ALLOW_WILDCARD_GRANT=1: total-grant scopes (*/*) are admitted — issue narrowly, audit every grant"
+        );
+    }
 
     // ── fail-closed write posture ─────────────────────
     // An unknown BRAIN_WRITE_POSTURE value refuses startup rather than
