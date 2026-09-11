@@ -16,7 +16,7 @@ that shipped it and the exact live `curl`/`brain` command that proves it in
 
 | Version | Supported          | Notes |
 | ------- | ------------------ | ----- |
-| 1.28.x  | :white_check_mark: | Current — governed workflow (FirstLight/Anvil/Settle) + hostcall mediations |
+| 1.28.x  | :white_check_mark: | Current — governed workflow + hostcall mediations + Lockdown transport/approval/visibility controls (through 1.28.80) |
 | 1.27.x  | :white_check_mark: | Previous minor — security fixes only (ends at the AuditRepair re-anchor line) |
 | < 1.27  | :x:                | Unsupported — upgrade before exposing beyond loopback |
 
@@ -661,6 +661,30 @@ attestation requires an external auditor; the documents and policies
 themselves (incident response plan, change management, employee training)
 are operations work, not engineering.
 
+## US AI Laws (mapping)
+
+The component trains nothing, decides nothing, and serves no consumer UI,
+so every duty below falls on the deployer. This table maps each duty to the
+evidence the component furnishes live. The dated operator runbook with
+status snapshot and per-state checklists is `docs/US_STATE_MAP.md`
+(verified 2026-09-11; re-check dates against primary sources before filing).
+
+| Law (status 2026-09-11) | Duty | Component evidence | Operator action |
+|---|---|---|---|
+| TX TRAIGA (in force Jan 1 2026) | No prohibited intent/use; AG enforcement only | Recall trace + audit as oversight evidence; quarantine; purge/tombstone takedown | Attest intent; wire takedown SOP to purge; keep retention |
+| CA SB53 / AB2013 (in force Jan 1 2026) | Frontier framework + training-data summary (GenAI/frontier devs) | Out of scope (no training); scope note for procurement | Publish separately if applicable |
+| CA SB942 as amended (provider tier Aug 2 2026; platform 2027) | Detection tool + provenance marking (large providers) | Provenance fields + `/.well-known/ai-notice` as consumable bridge | Build marking/detection separately; surface disclosure in UI |
+| CA CCPA/CPRA + ADMT (business duties Jan 1 2027; filings Apr 2028) | Know/opt-out/risk assessments for significant decisions | Export, purge/tombstone proof, trace logic, retention report | 45-day clocks, assessments, in-app opt-out |
+| CO SB26-189 (Jan 1 2027; stay litigation pending) | Docs, notices, records, correction, human review for covered ADMT | Trace + audit + admt-kit + retention report | Impact assessment, notices, appeal path |
+| UT SB149 (in force) | GenAI disclosure on request / proactive in high-risk | Origin metadata + ai-notice copy + audit | Upfront disclosure in high-risk flows |
+| IL HB3773 (in force Jan 1 2026) | Notice + no zip-proxy discrimination in employment AI | Trace + scope filter + audit; purge bad entries | Notify, test impact, keep audit |
+| NYC LL144 (in force) | Annual independent bias audit + 10-business-day notice | Audit + trace + retention feed the auditor | Hire auditor; publish summary |
+| CT CART Act (general Oct 1 2026; AEDT Oct 1 2027) | Checkout/HR disclosure; AEDT program | Provenance + workflow lineage events | Disclosure process; AEDT program |
+| Deepfake/election rules (all states, conduct-triggered) | Takedown + disclaimers | Purge/tombstone certificate + provenance | Disclaimer copy + takedown clock SOP |
+
+Nothing here is legal advice. Duties move (stays, rulemakings, preemption
+rulings) — the runbook's quarterly re-check rule applies.
+
 ---
 
 ## Secure Deployment Checklist
@@ -691,6 +715,11 @@ are operations work, not engineering.
 
 | Version | Date | Changes |
 |---|---|---|
+| 1.28.80 | 2026-09-11 | "Lockdown" — manual-redirect transport, systemPrompt merge-seam sanitize, single-block MCP envelope, signed catalog-pin acks, `BRAIN_REQUIRE_AUTH` + `BRAIN_ALLOW_WILDCARD_GRANT` admissions, optional two-principal quorum (`BRAIN_APPROVAL_QUORUM=2`), `included_global` recall flag, `authn`/tripwire health echoes, JWT `iat`/lifetime bounds, SQL-only revocation checks, per-login refresh families. |
+| 1.28.79 | 2026-09-10 | "Parity" — third-pass close-out: multiline token refusal, redirect re-pin, chat-gated mirrors, quarantine-closed reindex (fork-only files fixed, upstream files spec'd). |
+| 1.28.78 | 2026-09-10 | "Unconditional" — quarantine on every retrieval and ingest leg; at-least-once channel delivery. |
+| 1.28.77 | 2026-09-09 | "Erasure" — session-arm erasure completeness, DSAR pattern fencing, export cap, restore-before-overwrite. |
+| 1.28.76 | 2026-09-09 | "Selfheal" — second-pass audit fix release: bounded strips, scorer budgets, kill-switch reach, gated SSE. |
 | 1.28.75 | 2026-09-08 | "Preflight" — the program exit gate: dormant hostcall exec mediation hardened (argv0 AND allowlist-entry canonicalization — planted symlinks refuse, honest aliases admit; danger screen gains the pipe-to-shell family; `kill_on_drop` at the spawn seam) and its dormancy machine-checked (`hostcalls_mediation_stays_unwired_until_loop_line`); installer writes `BRAIN_WRITE_POSTURE=review` for plists with NO explicit posture only (operator-set values never stomped); SBOM freshness gate requires the committed `sbom/*.cdx.json`; audit-chain/plaintext ceilings stated in THREAT_MODEL §4 + reporter guidance. |
 | 1.28.74 | 2026-09-08 | "Origin" — taint labels survive the whole trip: `origin_context: owner\|channel` on `/ingest` (unknown = 400), channel captures labeled `channel-capture`, the label rides recall into the plugin fence with `untrustedOrigins: label\|exclude`, the openclaw fork marks quoted/replayed memory prefixes as untrusted replay, and OTLP span attributes pass ANSI/PII sanitization. |
 | 1.28.73 | 2026-09-08 | "Keyring" — deterministic operator key (`operator.ed25519`; wrong-size/leaked seed refuses LOUDLY), `brain key rotate` (current→`.prev` verify-only, one deep) with `signing_epoch` cards; chain-less backup images REFUSE restore unless `--allow-chainless`; legacy-epoch chains restore disclosed forgeable; replay cache evicts the oldest quarter; revocation drain pages + writes `drain_incomplete`. |
