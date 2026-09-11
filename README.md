@@ -2,9 +2,7 @@
 
 **Governed, local-first memory for AI agents in regulated environments.**
 
-Nothing becomes permanent knowledge until a human approves the exact bytes.
-One Rust binary, no cloud, no embedding API — no data egress by default.
-Built for teams that treat memory poisoning (OWASP ASI06) as a production risk.
+Governance is usually side work: nobody owns quality, access, or cleanup. This server owns it. Nothing becomes permanent knowledge until a human approves the exact bytes. One Rust binary, no cloud, no embedding API, no data leaving the box by default. Built for teams that treat memory poisoning (OWASP ASI06) as a production risk.
 
 <p align="center">
 
@@ -65,7 +63,7 @@ The full 5-minute walkthrough — the human approval gate, the `brain` CLI, and 
 * **Security, compliance, and platform teams** that require human gates, digests, quarantine, and tamper-evident audit.
 * Teams adopting **agentic coding assistants** (Claude Code, Cursor, Copilot, OpenClaw, and custom agents) that need a governed memory backend.
 
-This is not a general-purpose memory layer for rapid prototyping.
+This is not a general-purpose memory layer for quick prototypes. It is for places where a wrong recall has a cost.
 
 ## Guarantees
 
@@ -77,6 +75,7 @@ This is not a general-purpose memory layer for rapid prototyping.
 * **Verifiable deletion.** DSAR and purge produce certificates and tombstones.
 * **Local-first, zero-token recall.** Static embeddings and hybrid retrieval. No LLM in the hot path. No data egress by default. Zero per query.
 * **Scoped principals.** Agents get least-privilege tokens limited to recall, store, and propose — separate from operator credentials. A revoked principal is refused on every route from the moment of revocation, and re-provisioning does not resurrect it.
+* **Signed memory in transit.** Parcels carry claim-bound Ed25519 signatures with a named counterparty, and imports land as proposals, never direct writes.
 
 ## Why this instead of a cloud memory service
 
