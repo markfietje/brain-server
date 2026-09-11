@@ -26,13 +26,18 @@ is the same one those tools need. A definition nobody owns drifts. A
 write nobody checks poisons everything downstream. A deletion nobody can
 prove is a liability with a date on it.
 
-I work solo and hands on. I use Claude Code and Copilot daily to build
-monitors and triage faster. Then I keep the rules in code, because code
-does not forget, does not go on leave, and does not approve things at
-4:55 p.m. on a Friday. When I say no to a write, the rule is written
-down and the tooling makes yes easy. That is the whole philosophy. Make
-the right action the cheap action, and one person can cover ground that
-used to need a team.
+I work solo and hands on. My bench is Zed plus OpenCode, with Claude Code
+for heavy lifts and OpenClaw running the automation. I made OpenClaw
+integrate well on purpose: the memory plugin recalls every turn inside an
+untrusted fence, writes land as proposals, and the host merge seam strips
+forgeries ([the stateful prompt injection
+piece](./15-prompt-injection-made-stateful.md)). I use
+that loop daily to build monitors and triage faster. Then I keep the rules
+in code, because code does not forget, does not go on leave, and does not
+approve things at 4:55 p.m. on a Friday. When I say no to a write, the rule
+is written down and the tooling makes yes easy. That is the whole
+philosophy. Make the right action the cheap action, and one person can
+cover ground that used to need a team.
 
 This repository is the evidence. Every control named above runs here,
 pinned by tests, with the ceilings stated where a buyer can price them.
