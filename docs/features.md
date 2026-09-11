@@ -1,6 +1,6 @@
 # Features
 
-Brain Server packs a lot of capability into a single Rust binary. This page is the complete feature tour — grouped by what the feature does for you. It is a **living inventory of what is shipped** (verified against the codebase up to v1.28.65); if a capability is described here, it exists in the current source.
+Brain Server packs a lot of capability into a single Rust binary. This page is the complete feature tour — grouped by what the feature does for you. It is a **living inventory of what is shipped** (verified against the codebase up to v1.28.80); if a capability is described here, it exists in the current source.
 
 ## Retrieval
 
@@ -64,6 +64,20 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 - **Engineering lines, one line** (1.28.46–.57) — the Foundation Line (all handler SQL extracted into service cores; zero SQL in handlers machine-enforced) and the Spire Line (main.rs pinned ≤ 300 lines of wiring; routes live only under `server/router/**`) — no new product surface, all of it guard-railed so it stays that way.
 - **Concurrent truth + the compliance calendar** (1.28.58 "Throughput") — same-seed determinism under concurrent clients with visible contention gauges (pool-timeout, busy, WAL-pending), plus the calendar as code: CRA reporting runbook + drill, AI Act and PQC watch items with stamped horizons.
 - **Durability policy, explicit and measured** (1.28.59 "Headroom") — `synchronous`/`wal_autocheckpoint` as first-class config with boot-time echo in `/health/db`, per-request-path lock-wait telemetry (`brain_lock_wait_micros_p50|p95`), and the write-discipline ratchet (deferred-transaction inventory frozen, immediate floored).
+- **Approvals show the effective action** (1.28.66 "Truthglass") — approval cards carry the effective tool-call arguments (capped with exact-count markers) on both transports; truncation keeps head and tail unconditionally; DSAR purge and backup restore prompt before acting.
+- **Tool identity pinning + verb scoping + parcel signers** (1.28.67 "Pin") — fork MCP catalog sha256-pinned per tool and reconciled every run (fingerprint-moved tools hard-blocked until re-acknowledged); `BRAIN_MCP_SCOPE=read` denies the write verbs at dispatch; parcel import requires a named `expected_signer`.
+- **Server-side SSRF closed** (1.28.69 "Deadbolt") — the shared egress client resolves, validates every address against the special-purpose table, and pins per process; private sinks need `BRAIN_EGRESS_ALLOW_PRIVATE=1`; spawned children die on drop.
+- **Operator/agent token split** (1.28.70 "Twokeys") — token-file line 2 authenticates as a scoped agent principal (no Admin, no purge, no revoke); single-token deployments keep the legacy posture with a boot warning.
+- **Screening that sees what the model sees** (1.28.71 "Pores") — layer 1 runs on invisible-stripped text; translation families, typoglycemia, and bounded-encoding tiers; optional local ONNX classifier with `/health/db` echo.
+- **Shaped read surfaces** (1.28.72 "Scrim") — `sanitize_read` strips hostile elements after the markdown-ref strip (storage stays verbatim so digests hold); suggestion evidence needs Write; denied event subscribers get 403 before the stream opens.
+- **Deterministic operator key + evidence lifecycle** (1.28.73 "Keyring") — fixed `operator.ed25519` filename with loud refusal on bad seeds; `brain key rotate` keeps one verify-only predecessor; chain-less restores refuse without `--allow-chainless`.
+- **Origin labels end to end** (1.28.74 "Origin") — ingest takes `owner` or `channel` context; channel captures render tagged inside the fence and can be excluded from auto-injection.
+- **Hardened dormant exec + install posture** (1.28.75 "Preflight") — argv0 and allowlist entries canonicalize against symlink masquerade; the installer defaults fresh installs to review posture without stomping operator values; badges refuse without the committed SBOM.
+- **Second-pass closures** (1.28.76 "Selfheal") — bounded fixed-point hostile strips, budgeted scorer/embedder input, kill-switch reach into refresh and console actors, gated live SSE, normalized egress table, read-scope denial of feedback writes.
+- **Finished erasure** (1.28.77 "Erasure") — session-arm erasure completeness, DSAR pattern fencing, by-id flagged markers, the 1 GiB export cap, restore-before-overwrite, valet crank and brief seams.
+- **Unconditional quarantine** (1.28.78 "Unconditional") — quarantine on every retrieval and ingest leg; channel delivery truly at-least-once.
+- **Third-pass close-out** (1.28.79 "Parity") — multiline token refusal, redirect re-pin, chat-gated mirrors, quarantine-closed reindex, fenced KCS drafts.
+- **Transport, approval, and visibility hardening** (1.28.80 "Lockdown") — manual-redirect transport, sanitized system-prompt merge, single-block tool envelope, signed pin acks, auth and wildcard admissions, optional two-principal quorum, `included_global` recall flag, authn and tripwire health echoes. See Security above.
 
 ## Anticipation & suggestions
 
@@ -120,7 +134,7 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 
 - **OpenAI-compatible embeddings** — `POST /v1/embeddings`.
 - **MCP server** — `mcp` binary exposes search/recall/ingest plus the UMP family (`ump.remember/revise/forget/feedback/recall/get/audit/capabilities`, plus `ump.audit.verify` for live chain verification) as MCP tools.
-- **`brain` CLI** — the operator surface: status, doctor, query, explain, get, ingest-dir, reconcile, resolve, undo-resolve, check-consistency, classify, procedure, evaluate, suggest (+feedback/metrics), retention, domains (move/recompute), clients, ump, connect, workflow, kb, parcel, backup, restore, token, key, setup, sync, connector-status, snapshot-status, eval, bench, and more. `--json` envelope mode on data commands.
+- **`brain` CLI** — the operator surface: status, doctor, query, explain, get, ingest-dir, reconcile, resolve, undo-resolve, check-consistency, classify, procedure, evaluate, suggest (+feedback/metrics), retention, domains (move/recompute), clients, ump, connect, workflow, valet, standby, ropa, kb, parcel, backup, restore, token, key, setup, sync, connector-status, snapshot-status, eval, bench, and more. `--json` envelope mode on data commands.
 - **UMP 1.0** — a full implementation of the open Universal Memory Protocol at conformance **L3** (L2 without an operator key): signed records, capability tokens, HTTP + MCP + file bindings, `GET /ump/capabilities`, `/ump/remember` / `revise` / `forget` / `feedback` / `recall` / `memory/{id}` / `subscribe` / `audit`.
 - **Client control surface** (v1.16+) — a Dioxus app (web + desktop + iOS + Android) with connection state machine, honest-batch review (A/S/R/J/K), recall decision-path viewer, DSAR certificate card, auth-failure feed, audit filters + export, live SLA clocks, role-gated console views, and an i18n-clean WCAG 2.2 AA interface.
 - **OpenClaw plugin** — `brain-server/plugin/` (TypeScript) calls `/recall` each turn via openclaw's `before_prompt_build` hook, renders recalled context inside the `UNTRUSTED_*` fence, and offers the offline-queue + token-ladder posture.
