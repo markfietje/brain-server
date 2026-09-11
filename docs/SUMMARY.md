@@ -52,6 +52,11 @@
 # Operations
 
 - [Security policy](security.md)
+- [Warm standby](standby.md)
+- [Valet reminders](valet.md)
+- [Signed parcels](parcels.md)
+- [Principal kill-switch](kill-switch.md)
+- [Records pack (Art30/RoPA/breach/transfers)](records-pack.md)
 - [Observability](observability.md)
 - [Compliance posture](compliance.md)
 - [Threat model](THREAT_MODEL.md)
