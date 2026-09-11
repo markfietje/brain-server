@@ -42,6 +42,7 @@ Default follower dir is `BRAIN_STANDBY_DIR`, else
 
 Drill of 2026-09-06 against a copy of the live 48.8 MB database:
 checkpoint lag ~0.4 s, worst-case RPO 10.4 s at a 10 s interval, promote
-0.55 s, row fidelity exact, one flipped byte detected with exit 1.
+0.55 s, 9,091 promoted rows with the post-cycle commit honestly absent
+(inside the RPO window), one flipped byte detected with exit 1.
 RPO follows `interval + checkpoint lag`; the status command computes it
 per cycle rather than asserting it once.

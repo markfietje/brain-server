@@ -24,9 +24,9 @@ submissions get `400 ropa_incomplete`. CLI: `brain ropa list`,
 ## Breach ledger (`POST /breach`, `/breach/{id}/event`,
 `/breach/{id}/close`, `GET /breaches`, `GET /breaches/{id}`)
 
-Recording a breach returns the jurisdiction deadlines computed from the
-discovery time and the declared jurisdictions, so the 72-hour clock is
-visible from the first minute. Follow-up is an append-only event chain
+Recording a breach returns the notification deadlines computed from the
+discovery time and the declared jurisdictions, so each clock is visible
+from the first minute. Follow-up is an append-only event chain
 (notifications, assessments, notes), hash-chained like everything else;
 closing is explicit and idempotent. Recording is manual. The server does
 not detect breaches on its own, and the page says so.

@@ -103,6 +103,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `BRAIN_INJECTION_THRESHOLD_LOW` | `0.7` | Classifier banding: score ≥ this (below high) → quarantine |
 | `BRAIN_PROPOSAL_TTL_SECS` | `604800` (7 d) | How long a proposal can sit pending before auto-expire (audited). |
 | `BRAIN_APPROVAL_QUORUM` | `1` | Two-principal approvals (v1.28.80): `2` requires two distinct approvers before a proposal promotes (first returns `pending_second`, same-principal repeat refused). Any other value refuses boot. |
+| `BRAIN_EXPORT_MAX_BYTES` | `1073741824` (1 GiB) | Ceiling on the materialized GDPR export bundle; a bare byte count overrides, anything else (including 0) refuses boot. The chunked export path is the escape hatch past it. |
 | `BRAIN_DSAR_WINDOW_DAYS` | `30` | GDPR Art 17 response window shown on DSARs |
 | `BRAIN_DSAR_LEDGER_DAYS` | `30` | Retention window for the DSAR ledger |
 | `BRAIN_RETENTION_ENABLED` | enabled (`true`) | Per-kind query-time retention expiry; `false\|0\|no\|off` restores exact legacy behavior (only per-chunk `expires_at` governs decay) |
