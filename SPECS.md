@@ -27,8 +27,8 @@ AI agent running on a Jetson Nano (4 GB RAM, ARM Cortex-A57).
 - **Fusion:** Reciprocal Rank Fusion (RRF, `k=60`) merges vec0 KNN and FTS5 BM25 ranks.
 - **Graph retrieval (v1.12.0 "Discern"):** noise-aware third RRF leg —
   deterministic Personalized PageRank over the existing `entities`/`relationships`
-  KG (`?graph=true` on `/search`/`/recall`; opt-in, disabled path adds zero
-  latency). Edge-type weights (`tagged_with`/`alias_of` → 0.1, semantic types
+  KG. On by default; `BRAIN_RECALL_GRAPH_ENABLED=false` or per-request
+  `graph=false` opts out. Edge-type weights (`tagged_with`/`alias_of` → 0.1, semantic types
   → 1.0) + GAAMA-style per-source hub dampening (`w_ij·min(1, θ/deg(i))`,
   θ=50) counter the taxonomy-heavy KG; complexity-gated auto-activation
   (v1.5.0 `ClarifyQuery` → one bounded graph-augmented rescue pass,
@@ -68,21 +68,19 @@ AI agent running on a Jetson Nano (4 GB RAM, ARM Cortex-A57).
 
 ## 2. Package & Dependencies
 
-From `Cargo.toml` (`name = "brain-server"`, `version = "1.27.22"`, `edition = "2021"`):
+From `Cargo.toml` (`name = "brain-server"`, `version = "1.28.80"`, `edition = "2024"`):
 
 | Purpose | Crate | Version |
 |---|---|---|
-| Embeddings (default) | `model2vec-rs` | `0.1.4` |
+| Embeddings (default) | `model2vec-rs` | `0.2` |
 | Embeddings (neural, optional) | `fastembed-rs` | optional — pulled only by `neural-embed` / `rerank-tier` |
 | DB | `rusqlite` (feature `bundled`) | `0.40.1` |
 | Pool | `r2d2` / `r2d2_sqlite` | `0.8.10` / `0.35.0` |
 | HTTP | `axum` | `0.8.9` |
-| HTTP engine | `hyper` | `1.10.1` |
-| CORS / middleware | `tower-http` (feature `cors`) | `0.6.11` |
+| CORS / middleware | `tower-http` (features `cors`, `limit`, `trace`, `timeout`, `catch-panic`, `compression-full`, `sensitive-headers`, `request-id`, `add-extension`, `set-header`, `fs`) | `0.7` |
 | Runtime | `tokio` (feature `full`) | `1.53.0` |
 | Serde | `serde` / `serde_json` | `1.0.229` / `1.0.150` |
-| Util | `anyhow`, `xxhash-rust` (`xxh3`), `sha2`, `chrono`, `dirs`, `sysinfo` | latest |
-| Annotator deps | `regex`, `toml`, `log` | `1.11` / `0.8` / `0.4` |
+| Util | `anyhow`, `xxhash-rust` (`xxh3`), `sha2`, `chrono`, `dirs`, `sysinfo` | pinned in `Cargo.lock` |
 | Tracing | `tracing` / `tracing-subscriber` (`env-filter`) | `0.1` / `0.3` |
 | Dev | `tempfile` | `3` |
 
@@ -106,28 +104,28 @@ below are *defined but not actually used* by the code path they name. Flagged in
 | `MAX_QUERY_LENGTH` | 2000 | ✅ |
 | `REQUEST_TIMEOUT_SECS` | 30 | ✅ (per-request timeout) |
 | `SEARCH_TIMEOUT_SECS` | 8 | ✅ |
-| `SHUTDOWN_DRAIN_SECS` | 60 | ✅ |
-| `POOL_MAX_SIZE` / `POOL_MIN_IDLE` | 20 / 2 | ⚠️ defined but the pool is built with literal `20` / `2` in `main()` |
-| `POOL_*_SECS` (conn/lifetime/idle) | 30 / 300 / 60 | ⚠️ same — literals in `main()` |
+| `SHUTDOWN_DRAIN_SECS` | — | ❌ removed; the server runs until SIGTERM, then axum's built-in drain handles the rest (systemd `TimeoutStopSec` is the outer cap) |
+| `POOL_MAX_SIZE` / `POOL_MIN_IDLE` | 20 / 2 | ✅ wired in `server/bootstrap.rs` |
+| `POOL_*_SECS` (conn/lifetime/idle) | 30 / 300 / 60 | ✅ wired in `server/bootstrap.rs` |
 | `CONTENT_MAX_LENGTH` / `TITLE_MAX_LENGTH` | 1,000,000 / 500 | ✅ (enforced inline) |
 | `CONNECTION_WATCHDOG_*` | 30 / 300 | ✅ |
-| `ENTITY_NAME_MAX_LENGTH` | 100 | ⚠️ defined; entity insertion does not enforce length |
-| `TRAVERSE_MAX_DEPTH` | 3 | ✅ |
-| `CORS_DEFAULT_ORIGINS/METHODS/HEADERS` | localhost:3000,8080 / GET,POST,PUT,DELETE,OPTIONS / content-type,authorization | ❌ **not used** — see §6 (CORS hardcoding) |
-| `CORS_MAX_AGE_SECS` | 3600 | ❌ not used |
+| `ENTITY_NAME_MAX_LENGTH` | — | ❌ no such constant exists in source; dropped from this table |
+| `TRAVERSE_MAX_DEPTH` | — | superseded: traversal caps are `MAX_HOPS = 4` / `MAX_VISITED = 256` in `src/trace.rs` |
+| `CORS_DEFAULT_ORIGINS/METHODS/HEADERS` | localhost:3000,8080 / GET,POST,PUT,DELETE,OPTIONS / content-type,authorization | ✅ defaults; `CORS_ORIGINS` (and methods/headers equivalents) override, with a safety guard when unset |
+| `CORS_MAX_AGE_SECS` | 3600 | ✅ |
 
 ### Environment variables
 
 | Variable | Default | Effect | Notes |
 |---|---|---|---|
-| `BIND_HOST` | `127.0.0.1` | Bind address | Invalid value falls back to `0.0.0.0` (open!) |
+| `BIND_HOST` | `127.0.0.1` | Bind address. A value that fails to parse as an IP **refuses to bind**; LAN exposure needs the explicit `BIND_PUBLIC=1` opt-in. |
 | `BIND_PORT` | `8765` | Listen port | Non-numeric falls back to `8765` |
 | `RUST_LOG` | `info` | tracing filter | |
 | `BRAIN_WORKER_THREADS` | number of cores | tokio multi-thread runtime worker count (v1.3.0). Jetson target = `2` to save ~10 MB RSS + context-switch overhead; unset = cores. | Ignored if ≤ 0 |
-| `ANNOTATOR_ENABLED` | — | **documented but ignored** | The annotator is constructed with `enabled: true` unconditionally in `main()` (see §8) |
+| `ANNOTATOR_ENABLED` | — | **removed** (v0.9.0 took out the TOML annotator module entirely) |
 | `CORS_ORIGINS` / `CORS_METHODS` / `CORS_HEADERS` | — | **documented but ignored** | CORS is hardcoded `Any` (see §6) |
 
-> **No env override for the DB path or domains dir.** Both are hardcoded to a default
+> Database file path reads `BRAIN_DB_PATH`, falling back to the default
 > workspace directory.
 
 ---
@@ -250,7 +248,7 @@ Bound to `BIND_HOST:BIND_PORT` (default `127.0.0.1:8765`). All routes are layere
 | GET | `/health/db` | `health_db` | DB round-trip check |
 | GET | `/ready` | `ready` | readiness (model + DB) |
 | GET | `/stats` | `stats` | counts + model + version |
-| GET | `/version` | `version` | ✅ returns `env!("CARGO_PKG_VERSION")` (now `1.4.0`) |
+| GET | `/version` | `version` | ✅ returns `env!("CARGO_PKG_VERSION")` |
 | POST | `/add` | `add_chunk` | text ingest (raw), embeds + stores |
 | POST | `/ingest/memory` | `ingest_memory` | structured memory ingest |
 | GET | `/search?q=&k=` | `search` | semantic search (brute-force cosine) |
@@ -522,8 +520,7 @@ The KG (`entities`/`relationships`) is populated at ingest from a **single sourc
   timestamp; `spawn_connection_watchdog` logs long-running acquisitions (threshold 300 s).
 - **Rate limiter:** simple in-memory per-IP window (`RateLimiter`, 100 req/window in tests).
 - **Graceful shutdown:** `axum::serve(...).with_graceful_shutdown(...)` listens for SIGINT/SIGTERM,
-  then drains for `SHUTDOWN_DRAIN_SECS` (60 s) before exiting. (Note: it sleeps the full drain
-  window unconditionally — does not exit early once in-flight requests finish. See Phase 5.)
+  then axum's built-in drain handles in-flight requests (systemd `TimeoutStopSec`, default 90 s, is the outer cap).
 
 ---
 
