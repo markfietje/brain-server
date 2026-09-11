@@ -31,7 +31,14 @@ votes). LLM01's mitigation list is the load-bearing set for this stack
 (least-privilege policy engine, invisible-char strip at every ingest+render
 boundary, provenance-labeled channel, explicit human confirmation surfacing the
 exact action, Rule of Two, memory writes as privileged operations, MCP/tool
-supply-chain pinning).
+supply-chain pinning). The 2026 MCP-defense literature converges on the same
+shape: SHIELDMCP (ACL 2026 — per-run tool-description hashes, parameter
+validation, response wrapping with instruction detection) matches the catalog
+pins plus the single-block tool-result envelope; Arcjet's trusted-guidance vs
+untrusted-evidence split matches the fence plus per-hit provenance; the
+April-2026 MCP incident wave (Unit42 taxonomy, Microsoft XPIA advisory)
+confirms sanitize plus classify as the current state of the art, which is
+what the screen plus optional local classifier implements.
 
 | LLM01–10:2026 | brain-server control | Status |
 |---|---|---|
@@ -57,12 +64,12 @@ GitHub MCP exploit (supply chain), AutoGPT RCE (code exec), Gemini memory attack
 | **ASI01 Agent Goal Hijack** | Screen + classifier + `untrusted` stamp; recall banner ("may contain untrusted content") | **Shipped + v1.20.1/3** |
 | **ASI02 Tool Misuse** | MCP tools are thin typed proxies over a validated API; per-route action matrix; no tool-description parsing of untrusted input | **Shipped** |
 | **ASI03 Identity & Privilege Abuse** | JWT/JWS + revocation + refresh-chain reuse detection; per-handler AuthZ; tenant-scoped audit; capability tokens not grantable for admin | **Shipped v1.2–v1.17.3**; full multi-team tenancy = **Ceiling v2.x** (owner v2.0 Cortex) |
-| **ASI04 Agentic Supply Chain** | First-party MCP only; plugin pinned by openclaw config; SBOM; UMP integrity | **Shipped** |
+| **ASI04 Agentic Supply Chain** | First-party MCP only; plugin pinned by openclaw config; SBOM; UMP integrity; fork MCP catalog sha256-pinned per tool and reconciled every run, with fingerprint-moved tools hard-blocked until re-acknowledged and pin acks Ed25519-signed (v1.28.80) | **Shipped** |
 | **ASI05 Unexpected Code Execution** | brain-server is a token validator — no eval path on the served surface; client render never executes bodies. The ONE exec seam in the tree is the dormant hostcall `exec` mediation (operator allowlist, argv-only, cwd-pinned, caps): hardened in v1.28.75 (argv0 + allowlist-entry canonicalization, danger screen incl. pipe-to-shell, `kill_on_drop`) and machine-pinned UNWIRED until the 1.32.x Loop line — dormancy is a test-enforced state | **Shipped (architectural) + v1.28.75 (dormant seam hardened + pinned)** |
-| **ASI06 Memory & Context Poisoning** | **The core of this line**: screen (G1) + approval gate (G2) + classifier (G5) + quarantine + retention decay + cryptographic integrity (audit chain, UMP blocks) + provenance (`origin`) | **Shipped + v1.20.1–3** |
+| **ASI06 Memory & Context Poisoning** | **The core of this line**: screen (G1) + approval gate (G2) + classifier (G5) + quarantine + retention decay + cryptographic integrity (audit chain, UMP blocks) + provenance (`origin`) + optional two-principal quorum (v1.28.80) | **Shipped + v1.20.1–3** |
 | **ASI07 Insecure Inter-Agent Communication** | HMAC webhooks + `webhook_seen` idempotency; **Standard Webhooks handshake (v1.20.4)**; UMP capability tokens | **Shipped + v1.20.4**; A2A federation = **Ceiling v2.x** (owner v2.0 Cortex) |
 | **ASI08 Cascading Failures** | Proposal TTL auto-reject + expiry audit (v1.20.1); bounded webhook queue + idempotency; per-row batch outcomes; failure isolation in DSAR/consolidate | **Shipped + v1.20.1** |
-| **ASI09 Human-Agent Trust Exploitation** | Review panel surfaces **exact content + `source_prompt`** (never a summary); approval TTL; **digest-bound approval** — the approve call carries the SHA-256 of the read-canonical form and is rejected on any drift (v1.27.12), so a rubber-stamped decision can never bless modified content; audit trail of every gate decision | **Shipped v1.20.1 / v1.27.12** |
+| **ASI09 Human-Agent Trust Exploitation** | Review panel surfaces **exact content + `source_prompt`** (never a summary); approval TTL; **digest-bound approval** — the approve call carries the SHA-256 of the read-canonical form and is rejected on any drift (v1.27.12), so a rubber-stamped decision can never bless modified content; optional second-approver quorum (v1.28.80); audit trail of every gate decision | **Shipped v1.20.1 / v1.27.12** |
 | **ASI10 Rogue Agents** | A compromised agent can only write via screened + gated paths; revocation; read-event audit; DSAR purge = eject-and-forget | **Shipped + v1.20.1** |
 
 ## Part 3 — AIUC-1 crosswalk (procurement bridge)

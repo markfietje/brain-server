@@ -241,7 +241,7 @@ curl -s http://127.0.0.1:8766/mcp \
   opens a listener (loopback by default). Anything that can reach that port can
   drive the same tools, so set `MCP_HTTP_TOKEN` whenever the listener is not
   strictly personal-loopback. A non-loopback `MCP_HTTP_ADDR` without a token
-  refuses to boot — the server treats it as a misconfiguration, not a warning.
+  refuses to boot. The server treats it as a misconfiguration, not a warning.
 
 ## DeepSeek Harness (dsh)
 
