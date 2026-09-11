@@ -1,8 +1,8 @@
 # The week runtime enforcement got a standard
 
-*2026-09-11. OWASP donated the Agent Control Standard on September 1 and
+*2026-09-11, updated for v1.28.81. OWASP donated the Agent Control Standard on September 1 and
 published the LLM Top 10 2026 in August. This post maps both to controls
-already running here, and names the one gap honestly.*
+already running here; the former gap section below is now marked as closed server-side, with boundaries stated.*
 
 Two things happened in the first week of September. OWASP published the
 2026 Top 10 for LLM Applications, the first edition weighted by
@@ -38,13 +38,7 @@ The ACS mapping, control by control:
 - **Static BOM.** A CycloneDX SBOM ships per release with a selfcheck
   gate that refuses badges without it.
 
-The honest gap is the dynamic half of AgBOM. Our BOM is static: it
-describes what shipped, not what the agent discovered at runtime. New
-MCP servers, new tools, modified capabilities mid-session, none of that
-enters a machine-readable inventory today. The catalog pins are the
-closest thing: per-run fingerprints with drift surfacing. Turning that
-into a real AgBOM, tools plus models plus reachable data, emitted live,
-is the correct next build, and ACS v1 gives us the schema to target.
+Update: the dynamic half is now live server-side in v1.28.81. `GET /ops/agents/bom`, Read on global, returns CycloneDX 1.6 regenerated per request. It names the server service, embedder and classifier models, knowledge-store domains, enforcement posture, and the static SBOM artifact. MCP tool inventory remains fork-side through catalog pins, and the calling agent's own tools and models remain outside this process by construction. So the closed part is the server runtime inventory; the remaining work is a cross-process AgBOM that also covers caller-side tools and models.
 
 Procurement translation: ask vendors whether their controls run at
 invocation time or only at configuration time. Permission granted at
