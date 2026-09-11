@@ -664,6 +664,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(payload["chain"], "sess-abc");
-        assert_eq!(payload["jti"].as_str().unwrap().len() > 0, true);
+        assert!(
+            !payload["jti"].as_str().unwrap().is_empty(),
+            "minted refresh token carries a jti"
+        );
     }
 }
