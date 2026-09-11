@@ -252,13 +252,26 @@ explicit operator action.
 
   | State / law | Trigger | Effective | Brain-server evidence |
   |---|---|---|---|
-  | **Colorado** SB 24-205 → amended **SB 26-189 eff 1 Jan 2027** (enforcement 2027) | Consequential decisions (employment, housing, credit, insurance, education, health) — risk-management program + impact assessment + transparency | **1 Jan 2027** | Impact assessment consumes trace + audit evidence (§3/§3.6) |
   | **Texas TRAIGA** (signed Jun 2025) | Intent-based prohibition (no AI use with intent to discriminate/deceive/violate law), AG enforcement, no private right | **1 Jan 2026** (enforcement 2026) | Trace + retention report evidence "reasonable oversight" |
+  | **California** SB53 frontier + AB2013 training data (both in force Jan 1 2026) | Frontier developers (framework, incident reports); GenAI devs (data summaries) | **1 Jan 2026** | Out of scope for the component (no training); scope note for procurement |
+  | **California** SB942 as amended by AB853 | Covered-provider detection tool + provenance (operative Aug 2 2026); platform/hosting phases 2027-2028 | **Aug 2 2026** / **2027** | Provenance fields + ai-notice as consumable bridge; not a watermarking engine |
   | **California** ADMT full regime (see above) | ADMT right-to-know / opt-out | **1 Jan 2027** | As above |
+  | **Colorado** SB26-189 (repeals SB24-205) | Covered ADMT docs, notices, records, correction, human review | **1 Jan 2027** | Impact assessment consumes trace + audit evidence (§3/§3.6) |
+  | **Utah** SB149 (as amended 2025) | GenAI disclosure on request / proactive in high-risk | **In force** | Origin metadata + ai-notice copy + audit |
+  | **Illinois** HB3773 (eff Jan 1 2026) | Employment-AI notice + no zip-proxy discrimination | **1 Jan 2026** | Trace + scope filter + audit; purge for bad entries |
+  | **NYC** LL144 | Annual independent bias audit + 10-business-day notice | **In force since 2023** | Audit + trace + retention feed the auditor |
+  | **Connecticut** CART Act (general Oct 1 2026; AEDT Oct 1 2027) | Checkout/HR disclosure; AEDT program | **Oct 2026 / Oct 2027** | Provenance + workflow lineage events |
+  | **Deepfake/election rules** (all states, conduct-triggered) | Takedown + disclaimers | Anytime | Purge/tombstone certificate + provenance |
 
   CA/CO/TX above are the representative rows a US reviewer asks for first; the pattern is "trace + retention
   report = reasonable oversight." Full 50-state operator map with all enacted duties, dates, and deployer checklists lives in
   `docs/US_STATE_MAP.md` (Sep 11 2026 round: TX TRAIGA Jan 1 2026 live, CA SB53/AB2013 Jan 1 2026 live, CA SB942 covered-provider Aug 2 2026 live, IL HB3773 Jan 1 2026 live, UT SB149 live as amended 2025, NYC LL144 live since 2023, CT Oct 1 2026 / Oct 1 2027 phased, CO SB26-189 Jan 1 2027 scheduled, CA ADMT Jan 1 2027 scheduled, plus FL/WA narrow + 40-state deepfake/election bucket).
+
+  Reverse-lookup gaps (code truth, with roadmap owners):
+  - **End-to-end red-team harness — missing.** September 2026 research (PipePoison, arXiv 2609.00523) shows poisoning optimized across the whole write→retrieve→utilize chain beats single-stage attacks and survives staged defenses. No harness exercises that chain here. Owner: v1.28.82 red-team lane.
+  - **Authorization-state integrity — partial.** EAL-Bench (arXiv 2609.01836) shows memory-stored permissions granting false authority. Delegation lineage events exist, but no invariant binds a stored permission to its source event. Owner: v2.0 Cortex (permission records carry source-event links).
+  - **Multimodal carriers — partial.** MMPIBench (arXiv 2609.09404) demonstrates image/audio injection vectors. Oversize images are withheld and remote images gated, but no EXIF/OCR/QR inspection exists. Owner: v1.28.82 screen lane.
+  - **MCP authorization metadata — missing on HTTP mode.** The 2026-07-28 MCP spec requires OAuth 2.0 Protected Resource Metadata. The stdio binary needs none; the Streamable HTTP mode serves none today. Owner: v1.28.82 MCP lane.
 
 ### 6.4 EU AI Act Art 4 (AI literacy)
 

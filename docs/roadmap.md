@@ -58,6 +58,8 @@ controls. The server core (retrieval, graph, governance) is stable and heavily t
 | **v1.28.46–1.28.55** | Foundation + Spire | The service-layer convergence (handler SQL enforced to zero) and the thin-binary law, machine-enforced |
 | **v1.28.58–1.28.62** | The Enterprise Line | Throughput (concurrent truth + the calendar as code), Headroom (durability + lock telemetry), Loom (opt-in parallelism), Standby (warm DR + CodeQL closure), Attestation (provenance marks, the principal kill-switch, approval-fatigue telemetry, the crypto inventory) |
 | **v1.28.63–1.28.80** | Hardening to Lockdown | Seam vocabulary, egress/process boundaries, operator/agent token split, screen + read-seam hygiene, key lifecycle, origin labels, dormant-exec hardening, finished erasure, unconditional quarantine, third-pass close-out, Lockdown (transport, quorum, visibility) |
+| **v1.28.82 (planned)** | September-research lane | End-to-end red-team harness (PipePoison-class write→retrieve→utilize chains), multimodal carrier screening (EXIF/OCR/QR per MMPIBench vectors), MCP OAuth Protected Resource Metadata on HTTP mode (2026-07-28 spec) |
+| **v2.0 "Cortex"** | Multi-team tenancy + authorization-state integrity | Tenancy plus EAL-class permission records bound to source events |
 
 ---
 
