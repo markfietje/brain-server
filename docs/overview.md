@@ -58,7 +58,7 @@ v2.0 "Cortex" milestone).
 
 ---
 
-## The five differentiators
+## The six differentiators
 
 ### ① Zero-token, deterministic recall — no LLM in the loop
 Every turn, the agent calls one `/recall` and gets the evidence to inject. No LLM

@@ -50,7 +50,8 @@ Brain Server is configured entirely through **environment variables**, all resol
 
 ### Retrieval profiles & embedding models
 
-`MODEL_PROFILE` (also `BRAIN_MODEL_PROFILE`) selects the retrieval profile. Each resolves to an
+`MODEL_PROFILE` selects the retrieval profile. (`BRAIN_MODEL_PROFILE` is not
+a config key; it appears only inside a re-embed hint string.) Each resolves to an
 embedding model via `config::model_id_for_profile` + `embed::embedder_for_profile`. Note: the old
 `multilingual` profile name is wrong — `potion-base-2M` is an **English** model (distilled from
 `BAAI/bge-base-en-v1.5`), not multilingual. It was renamed **`compact`** (the smallest static

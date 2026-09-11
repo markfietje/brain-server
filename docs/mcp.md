@@ -40,8 +40,8 @@ What you need to run it:
    it at the `stdin`/`stdout` of the `mcp` process — it's a stdio server, so
    there is nothing to install into the OS; the host spawns it.
 4. **Scope (optional, v1.28.67 "Pin").** `BRAIN_MCP_SCOPE` ∈ `read` | `full`
-   (default `full`). Under `read`, the write verbs — `brain_ingest`,
-   `ump.remember`, `ump.revise`, `ump.forget` — refuse at dispatch with
+    (default `full`). Under `read`, the five write verbs — `brain_ingest`,
+    `ump.remember`, `ump.revise`, `ump.forget`, `ump.feedback` — refuse at dispatch with
    `tool_out_of_scope` and `tools/list` annotates them
    `"x-brain-scope": "read-denied"` so recall-only hosts can render or hide
    them. Parsed fail-closed: an unknown value refuses to start (the startup
@@ -72,7 +72,7 @@ periodic second opinion.
 - **`tools/list`** is static and identical for every caller (compile-time
   constant — no external calls, no per-request query). The ONE exception is
   the `read` scope (above), which adds the additive `x-brain-scope:
-  "read-denied"` annotation on the four write verbs; the default `full`
+  "read-denied"` annotation on the five write verbs; the default `full`
   list is byte-identical to the pre-1.28.67 wire.
 - **Errors:** unknown tool names / bad params come back as JSON-RPC errors with
   a `message` the host injects into the calling LLM's context, so a bad call is
@@ -240,8 +240,8 @@ curl -s http://127.0.0.1:8766/mcp \
 - **HTTP mode changes the bind posture**: `MCP_TRANSPORT=http` / `MCP_HTTP_ADDR`
   opens a listener (loopback by default). Anything that can reach that port can
   drive the same tools, so set `MCP_HTTP_TOKEN` whenever the listener is not
-  strictly personal-loopback, and treat a non-loopback `MCP_HTTP_ADDR` without
-  a token as a misconfiguration.
+  strictly personal-loopback. A non-loopback `MCP_HTTP_ADDR` without a token
+  refuses to boot — the server treats it as a misconfiguration, not a warning.
 
 ## DeepSeek Harness (dsh)
 

@@ -5,7 +5,7 @@ personal AI assistant gateway. The integration is a TypeScript plugin
 (`@markfietje/brain-server-openclaw`) that lives in `plugin/` and calls the Rust server over
 **loopback HTTP**. It plugs into OpenClaw's **memory slot** (`kind: "memory"`).
 
-**Plugin version:** the in-tree package is at **0.6.1**. It is published as
+**Plugin version:** the in-tree package is at **0.6.4**. It is published as
 `@markfietje/brain-server-openclaw` (npm) (the openclaw monorepo ships it under
 `extensions/brain-server`, in sync with the `plugin/` tree). Per-version behavior lives in
 `plugin/CHANGELOG.md`; the server-side releases each version rides on are itemized in
@@ -13,7 +13,10 @@ personal AI assistant gateway. The integration is a TypeScript plugin
 fence-forgery closure, 0.4.5 the `BRAIN_TOKEN_FILE` env-token ladder, 0.4.6 recall-graph
 default-pinning, 0.4.7 drift reconciliation + hardening, 0.5.0 the Team Bridge, 0.5.1 the
 strip-set parity sync, 0.6.0 the origin labels, 0.6.1 the manifest schema
-declaration for `untrustedOrigins` — see the Security model below).
+declaration for `untrustedOrigins`, 0.6.2 the fail-closed token ladder plus
+origin pinning, 0.6.3 the multiline-token refusal plus redirect re-pin plus
+chat-gated mirrors, 0.6.4 the deny-default bridge gate — see the Security
+model below).
 
 The remembered, searchable, erased facts all live in the Rust brain-server. The plugin is a **thin
 TypeScript shim**: it implements the OpenClaw SDK contract (hooks, tools, config, gating) and

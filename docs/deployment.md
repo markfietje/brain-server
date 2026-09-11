@@ -626,10 +626,10 @@ Why each change (see `MEMORY_STACK_REPORT_2026-09-09.md` §1):
 
 | Setting | Personal default | Pilot value | Why |
 |---|---|---|---|
-| `autoCapture` | `true` | `false` | Every group/channel message auto-queues as a proposal — GhostWriter surface maximized |
-| `allowedChatTypes` | `["direct","explicit","group","channel"]` | `["direct","explicit"]` | Plugin recall in groups = cross-tenant prompt-injection via query |
+| `autoCapture` | `false` | `false` | Keep it off: every group/channel message would otherwise auto-queue as a proposal |
+| `allowedChatTypes` | `["direct","explicit"]` (group/channel excluded) | `["direct","explicit"]` | Plugin recall in groups = cross-tenant prompt-injection via query; keep the default exclusion |
 | `strictDomain` | `false` | `true` | Fail-closed on unknown domain instead of `global` sink |
-| `autoRecallTopK` / `recallMaxChars` | `8` / `4000` | `5` / `2500` | Tighter context injection per turn |
+| `autoRecallTopK` / `recallMaxChars` | `3` / `1000` | `5` / `2500` | Raise the ceiling slightly for pilot context depth; still bounded per turn |
 | `tools.fs.workspaceOnly` | `false` + `alsoAllow ["*"]` | `true` + explicit allowlist | Maximally permissive is personal-only |
 
 ### Pilot caveats (honest ceilings)
