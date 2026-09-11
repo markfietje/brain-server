@@ -136,6 +136,21 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 | 1.28.63 | Wardline | Reserved vocabulary at the workflow input seam: kernel-only outbox topics, closed run statuses, the valet fence — the SEAM LINE opens (the only code-false security law in repo history, made true) |
 | 1.28.64 | Blackout | Revocation at the authentication seam (`401 identity_revoked` everywhere), denylist real-exp, per-kid alg pinning, one public-path list + the reverse-direction guard |
 | 1.28.65 | Meridian | Content hygiene across the model seam, three trees: `/suggest` untrusted labels, plugin strip-set parity fixture, the openclaw merge-seam strip/neutralize, MCP results in the untrusted envelope; the line's first live end-to-end proof |
+| 1.28.66 | Truthglass | Approvals carry effective tool-call args; head-and-tail truncation with exact counts; DSAR/restore prompts |
+| 1.28.67 | Pin | MCP catalog sha256 pins + per-run reconcile; `BRAIN_MCP_SCOPE`; parcel `expected_signer` required |
+| 1.28.68 | Shutter | Image + beacon egress closed (fork gates; docs posture here) |
+| 1.28.69 | Deadbolt | Egress resolve-validate-pin; private-sink opt-out; absolute harness path; children die on drop — the SEAM LINE closes |
+| 1.28.70 | Twokeys | Token-file line 2 becomes a scoped agent principal; single-token keeps legacy posture with a warn |
+| 1.28.71 | Pores | Screen runs on stripped text; translation/typoglycemia/encoding tiers; optional ONNX classifier |
+| 1.28.72 | Scrim | Read-seam hostile-element strip; Write-gated suggestion evidence; pre-stream 403 on denied event subscribers |
+| 1.28.73 | Keyring | Deterministic operator key + one-deep rotation; chain-less restores refuse; bounded replay eviction |
+| 1.28.74 | Origin | Owner/channel origin context; channel-capture labels ride recall with exclude option |
+| 1.28.75 | Preflight | argv0 + allowlist canonicalization; installer review-posture default; SBOM selfcheck gate |
+| 1.28.76 | Selfheal | Bounded fixed-point strips; budgeted scorer input; kill-switch reach; gated live SSE |
+| 1.28.77 | Erasure | Session-arm erasure; export cap; restore-before-overwrite; valet crank/brief seams |
+| 1.28.78 | Unconditional | Quarantine on every leg; at-least-once channel delivery |
+| 1.28.79 | Parity | Multiline-token refusal; redirect re-pin; chat-gated mirrors; quarantine-closed reindex |
+| 1.28.80 | Lockdown | Manual-redirect transport; system-prompt merge sanitize; single-block tool envelope; signed pin acks; auth/wildcard admissions; optional approval quorum; `included_global`, `authn`, tripwire echoes |
 
 ## Milestone themes
 
