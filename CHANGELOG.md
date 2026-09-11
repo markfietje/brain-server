@@ -17,45 +17,79 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
-## [1.28.80] — 2026-09-11 — "Lockdown": the extreme-fix line, all gaps closed
+## [1.28.80] — 2026-09-11 — "Lockdown": transport, approval, and visibility hardening
 
-Ships every fix from the 2026-09-11 extreme audit (2 HIGH + 5 MEDIUM + 4 LOW).
-Fork-owned surfaces fixed in the fork (plugin 0.6.4 + merge seam + MCP
-envelope + pin acks); brain-server carries the auth/quorum/visibility
-controls. No schema; wire additive only (`included_global`, `authn`,
-`allow_policy_bypasses`, verify `authentication`); x-api-version unchanged.
+Authenticated plugin transport never follows redirects; the prompt merge
+seam sanitizes system-prompt input; multi-block tool results ride a single
+inseparable envelope; catalog-pin acknowledgments are signed; total-grant
+scopes and unauthenticated boot are fail-closed admissions; approvals can
+require two distinct principals; recall, health, and verify responses
+surface the posture that was previously implicit. No schema; wire additive
+only; x-api-version unchanged.
 
 ### Release notes
 
 **Security fixes**
 
-- **Authenticated transport never follows redirects.** The plugin fetch uses
-  `redirect: "manual"` — any 3xx refuses before the bearer can ride it
-  (pre-send pin + response re-pin stay as second layers).
-- **Merge-seam `systemPrompt` sanitized.** Plugin-supplied system prompts
-  pass the same invisible-strip + marker neutralization as every other
-  context segment (fork-side defense; upstream spec U2 stands).
-- **Single-block MCP envelope.** All instruction-capable text rides one
-  inseparable enveloped block through the full sanitizer; per-block 8k
-  bound; oversize images withheld as labeled placeholders.
-- **Signed catalog-pin acks.** Pin files carry a detached Ed25519
-  signature; forged or unsigned files rebuild loudly (all tools
-  re-notify, never silently).
-- **Total-grant scopes need admission.** `*/*` scopes grant nothing without
-  `BRAIN_ALLOW_WILDCARD_GRANT=1` (fail-closed; existing fixtures opt in).
-- **Opt-in two-principal approval.** `BRAIN_APPROVAL_QUORUM=2` requires two
-  distinct approvers (same-principal repeat 409s; first approval is a
-  hash-chained audit row).
+- **Authenticated transport never follows redirects.** The plugin HTTP
+  client sends `redirect: "manual"` and refuses any 3xx before the bearer
+  credential can ride it to another origin. The pre-send origin pin and
+  the response re-pin remain as second layers.
+- **Prompt merge seam sanitizes system-prompt input.** Plugin-supplied
+  system prompts pass the same invisible-character strip and forged-marker
+  neutralization as every other context segment at the single merge seam.
+- **Single-block envelope for multi-block tool results.** All
+  instruction-capable text from tool results is joined into one enveloped
+  block — prefix, payload, and suffix can no longer be separated by a
+  downstream concatenation or truncation. Every text block passes the full
+  sanitizer (invisible characters, forged boundary markers, model special
+  tokens); text blocks are bounded at 8,000 characters; oversize images
+  are withheld as labeled placeholders.
+- **Signed catalog-pin acknowledgments.** Pin files carry a detached
+  Ed25519 signature over their exact bytes (trust-on-first-use keypair
+  beside the pins, private key 0600). Forged, hand-edited, or unsigned
+  legacy pin files fail verification and rebuild loudly — every tool
+  re-notifies until re-acknowledged, never silently.
+- **Total-grant scopes require explicit admission.** A scope wildcarding
+  both team and domain (`*/*`) grants nothing unless
+  `BRAIN_ALLOW_WILDCARD_GRANT=1` is set (fail-closed parse; loud boot
+  warning when admitted). Wildcards over a named domain keep their prior
+  meaning.
+- **Unauthenticated boot requires explicit admission.** `BRAIN_REQUIRE_AUTH=1`
+  refuses to start when no token resolves (fail-closed parse). Without it,
+  a token-less boot logs a loud warning stating the single-user-loopback
+  posture it implies.
+- **Optional two-principal approval quorum.** `BRAIN_APPROVAL_QUORUM=2`
+  requires two distinct principals before a proposal promotes: the first
+  approval records a hash-chained audit row and returns `pending_second`;
+  a repeat approval by the same principal is refused with
+  `quorum_same_principal`. Default remains single approval; the
+  publish/remedy decision branches keep their own semantics.
 
 **Improvements**
 
-- `BRAIN_REQUIRE_AUTH=1` refuses unauthenticated boot; otherwise a loud
-  warn + `/health/db` `authn` echo.
-- `/recall` carries `included_global` so shim rescue-leg mixing is visible.
-- Verify JSON carries `authentication` (operator-pinned vs keyless
-  self-asserted); allow-policy tripwire `allow_policy_bypasses` on
-  `/health/db`; DSAR subject-table inventory pin; THREAT_MODEL through
-  v1.28.80; COMPLIANCE gains MSFT-v2 + LLM09 maps.
+- `/recall` responses carry `included_global`, always present, so mixing
+  of the global corpus into a domain-routed query is visible to every
+  consumer.
+- `/health/db` carries an `authn` object (`enabled`, `required`) and an
+  `allow_policy_bypasses` tripwire counting ingests that bypassed
+  screening under `INJECTION_POLICY=allow`.
+- Provenance verify output carries `authentication`
+  (`operator-pinned` vs `self-asserted (no operator key)`), so keyless
+  deployments are visibly self-asserted instead of implicitly trusted.
+- DSAR sweep coverage is pinned by an inventory test seeding every
+  subject table (runs, outbox including `channel/*` rows, channel
+  threads, case-status refs, steps, findings, contradictions, handover
+  offers, case notes, delegations) and asserting zero survivors.
+- Threat model current through v1.28.80, including the stated ceilings:
+  pin-ack keys are trust-on-first-use rather than operator-bound, quorum
+  defaults to single approval, domain scoping remains labeling rather
+  than storage isolation (`BRAIN_MULTI_DB` is the isolation answer), and
+  plugin-side DNS resolution between pin check and request remains a
+  documented limitation for non-loopback deployments.
+- Compliance mapping adds the Microsoft AI Red Team Taxonomy v2
+  one-line map and the LLM Top 10 2026 LLM09 (Vector/Embedding
+  Weaknesses) row; both are control maps, not conformance claims.
 
 **Bug fixes**
 
@@ -63,15 +97,17 @@ controls. No schema; wire additive only (`included_global`, `authn`,
 
 ### Engineering record
 
-Red-first pins per fix (redirect-manual, system-prompt sanitize,
-multi-block neutralize, forged-pin rebuild, wildcard refuse, quorum
-defer/refuse, tripwire counter, sweep inventory); full suite green
-(1,189 lib + full matrix incl. authz/parcels fixtures on the admission);
-clippy bench/default clean; fmt clean; fork suites green (envelope 8,
-pins 10, hygiene 9, transport 33). Ceilings: pin-ack keys are TOFU (not
-operator-bound); quorum default 1; shim stays label-not-boundary
-(`BRAIN_MULTI_DB` is the isolation answer); plugin DNS TOCTOU is the Loop
-line. CRATE_TEST_FLOOR unchanged at 1,381 (all additions above it).
+Red-first regression tests accompany every item above (manual-redirect
+refusal, system-prompt sanitization, multi-block neutralization,
+forged-pin rebuild, wildcard refusal, quorum defer/refuse, tripwire
+counter, sweep inventory). Full suite green (1,189 library tests; all 13
+test binaries including the authorization-matrix and parcel-signer
+fixtures, which opt into the wildcard admission); clippy clean across
+bench/default feature sets; rustfmt clean; lipstyk diff-strict clean;
+fork suites green (envelope, pins, prompt hygiene, transport). No
+database migration; no route changes; OpenAPI extended additively for the
+four new response fields. CRATE_TEST_FLOOR unchanged at 1,381 (all
+additions sit above it).
 
 ## [1.28.79] — 2026-09-10 — "Parity": third-pass close-out, gap ledger zero
 

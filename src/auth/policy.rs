@@ -237,6 +237,14 @@ mod tests {
 
     static SCOPE_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    fn restore_env(key: &str, prev: Option<String>) {
+        if let Some(v) = prev {
+            unsafe { std::env::set_var(key, v) };
+        } else {
+            unsafe { std::env::remove_var(key) };
+        }
+    }
+
     #[test]
     fn scope_parsing_round_trips() {
         let s = Scope::parse("read:team-alpha/l1").unwrap();
@@ -283,10 +291,7 @@ mod tests {
         assert!(s.grants(Action::Read, "any", "any"));
         assert!(s.grants(Action::Write, "any", "any"));
         assert!(s.grants(Action::Admin, "any", "any"));
-        match prev {
-            Some(v) => unsafe { std::env::set_var("BRAIN_ALLOW_WILDCARD_GRANT", v) },
-            None => unsafe { std::env::remove_var("BRAIN_ALLOW_WILDCARD_GRANT") },
-        }
+        restore_env("BRAIN_ALLOW_WILDCARD_GRANT", prev);
     }
 
     #[test]
@@ -297,10 +302,7 @@ mod tests {
         let s = Scope::parse("admin:*/*").unwrap();
         assert!(!s.grants(Action::Read, "any", "any"));
         assert!(!s.grants(Action::Admin, "any", "global"));
-        match prev {
-            Some(v) => unsafe { std::env::set_var("BRAIN_ALLOW_WILDCARD_GRANT", v) },
-            None => unsafe { std::env::remove_var("BRAIN_ALLOW_WILDCARD_GRANT") },
-        }
+        restore_env("BRAIN_ALLOW_WILDCARD_GRANT", prev);
     }
 
     #[test]
@@ -349,10 +351,7 @@ mod tests {
             kind: PrincipalKind::Jwt,
         };
         assert!(is_authorized(&admin, Action::Admin, "any", "any"));
-        match prev {
-            Some(v) => unsafe { std::env::set_var("BRAIN_ALLOW_WILDCARD_GRANT", v) },
-            None => unsafe { std::env::remove_var("BRAIN_ALLOW_WILDCARD_GRANT") },
-        }
+        restore_env("BRAIN_ALLOW_WILDCARD_GRANT", prev);
     }
 
     #[test]
@@ -406,10 +405,7 @@ mod tests {
                 assert!(is_authorized(&p, Action::Write, team, domain));
             }
         }
-        match prev {
-            Some(v) => unsafe { std::env::set_var("BRAIN_ALLOW_WILDCARD_GRANT", v) },
-            None => unsafe { std::env::remove_var("BRAIN_ALLOW_WILDCARD_GRANT") },
-        }
+        restore_env("BRAIN_ALLOW_WILDCARD_GRANT", prev);
     }
 
     fn auditor(roles: &[&str], scopes: &[&str]) -> Option<Principal> {

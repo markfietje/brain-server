@@ -641,6 +641,14 @@ mod tests {
 
     static QUORUM_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    fn restore_env(key: &str, prev: Option<String>) {
+        if let Some(v) = prev {
+            unsafe { std::env::set_var(key, v) };
+        } else {
+            unsafe { std::env::remove_var(key) };
+        }
+    }
+
     #[test]
     fn approval_quorum_parses_fail_closed() {
         let _guard = QUORUM_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -651,10 +659,7 @@ mod tests {
         assert_eq!(approval_quorum(), Ok(2));
         unsafe { std::env::set_var("BRAIN_APPROVAL_QUORUM", "3") };
         assert!(approval_quorum().is_err());
-        match prev {
-            Some(v) => unsafe { std::env::set_var("BRAIN_APPROVAL_QUORUM", v) },
-            None => unsafe { std::env::remove_var("BRAIN_APPROVAL_QUORUM") },
-        }
+        restore_env("BRAIN_APPROVAL_QUORUM", prev);
     }
 
     #[test]
@@ -681,10 +686,7 @@ mod tests {
             Ok(Quorum::Promote)
         ));
         drop(tx);
-        match prev {
-            Some(v) => unsafe { std::env::set_var("BRAIN_APPROVAL_QUORUM", v) },
-            None => unsafe { std::env::remove_var("BRAIN_APPROVAL_QUORUM") },
-        }
+        restore_env("BRAIN_APPROVAL_QUORUM", prev);
     }
 
     /// an ingested proposal records its agent `owner`, and
