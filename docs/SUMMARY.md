@@ -49,14 +49,35 @@
 # Operations
 
 - [Security policy](security.md)
+- [Threat model](THREAT_MODEL.md)
+- [Compliance posture](compliance.md)
 - [Warm standby](standby.md)
 - [Valet reminders](valet.md)
 - [Signed parcels](parcels.md)
 - [Principal kill-switch](kill-switch.md)
 - [Records pack (Art30/RoPA/breach/transfers)](records-pack.md)
 - [Observability](observability.md)
-- [Compliance posture](compliance.md)
-- [Threat model](THREAT_MODEL.md)
+
+# Trust & verification
+
+- [Proof map](./trust/proof-map.md)
+- [Reproduce on a throwaway instance](./trust/reproduce.md)
+- [WCAG 2.2 AA checklist](./trust/wcag22-aa-checklist.md)
+- [ACR / VPAT](./trust/acr-vpat.md)
+
+# Regulation & trust
+
+- [OWASP 2026 compliance matrix](OWASP_AGENTIC_2026.md)
+- [Memory-poisoning mitigation (MemGhost / ASI06)](MEMGHOST_MITIGATION.md)
+- [AI literacy playbook (EU AI Act Art 4)](AI_LITERACY.md)
+- [California ADMT transparency](admt.md)
+- [CRA evidentiary kit](cra.md)
+- [CRA reporting runbook](cra-reporting-runbook.md)
+- [CRA 30-minute DSAR drill](CRA_DSAR_DRILL_20260808.md)
+- [Crypto inventory](crypto-inventory.md)
+- [Risk register](risk-register.md)
+- [RFP response kit](RFP_RESPONSE_KIT.md)
+- [Contact center standards alignment](CONTACT_CENTER_STANDARDS.md)
 
 # Research
 
@@ -74,13 +95,6 @@
 - [Centroid Domain Auto-Routing](./research/11-domain-routing.md)
 - [Deterministic Consolidation](./research/12-consolidation.md)
 - [Benchmark landscape 2026](./research/13-benchmark-landscape-2026.md)
-
-# Trust & verification
-
-- [Proof map](./trust/proof-map.md)
-- [Reproduce on a throwaway instance](./trust/reproduce.md)
-- [WCAG 2.2 AA checklist](./trust/wcag22-aa-checklist.md)
-- [ACR / VPAT](./trust/acr-vpat.md)
 
 # Blog
 
@@ -104,20 +118,6 @@
 - [The redirect that never happens](./blog/17-the-redirect-that-never-happens.md)
 - [Signatures with a stated ceiling](./blog/18-signatures-with-a-stated-ceiling.md)
 - [Visible mixing beats pretend isolation](./blog/19-visible-mixing-beats-pretend-isolation.md)
-
-# Regulation & trust
-
-- [OWASP 2026 compliance matrix](OWASP_AGENTIC_2026.md)
-- [Memory-poisoning mitigation (MemGhost / ASI06)](MEMGHOST_MITIGATION.md)
-- [AI literacy playbook (EU AI Act Art 4)](AI_LITERACY.md)
-- [California ADMT transparency](admt.md)
-- [CRA evidentiary kit](cra.md)
-- [CRA reporting runbook](cra-reporting-runbook.md)
-- [CRA 30-minute DSAR drill](CRA_DSAR_DRILL_20260808.md)
-- [Crypto inventory](crypto-inventory.md)
-- [Risk register](risk-register.md)
-- [RFP response kit](RFP_RESPONSE_KIT.md)
-- [Contact center standards alignment](CONTACT_CENTER_STANDARDS.md)
 
 # Product site
 

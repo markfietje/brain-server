@@ -69,14 +69,14 @@ This is not a general-purpose memory layer for rapid prototyping.
 
 ## Guarantees
 
-* **Human promotion gate.** Agent captures become proposals. Promotion requires explicit approval bound to the SHA-256 of the exact bytes reviewed (`content_digest`). Drift returns 409.
+* **Human promotion gate.** Agent captures become proposals. Promotion requires explicit approval bound to the SHA-256 of the exact bytes reviewed (`content_digest`). Drift returns 409. High-risk queues can require two distinct approvers (`BRAIN_APPROVAL_QUORUM=2`).
 * **Ingest screening and quarantine.** Every write is screened. Suspect content is quarantined and excluded from vector, full-text, and graph retrieval.
 * **Untrusted fences.** Recalled content is rendered inside unforgeable boundaries, stripped of invisible-character and bidi smuggling plus auto-fetch constructs, and labelled untrusted.
 * **Deterministic retrieval with explicit verdicts.** Hybrid retrieval — vector KNN plus FTS5 via reciprocal rank fusion. Same query, same answer. Every recall carries a decision verdict and per-hit confidence instead of prose guesses, and `POST /verify` checks any claim against the stored text.
 * **Tamper-evident audit.** Append-only keyed hash chain with a verifiable head. `GET /audit/verify` checks it.
 * **Verifiable deletion.** DSAR and purge produce certificates and tombstones.
 * **Local-first, zero-token recall.** Static embeddings and hybrid retrieval. No LLM in the hot path. No data egress by default. Zero per query.
-* **Scoped principals.** Agents get least-privilege tokens limited to recall, store, and propose — separate from operator credentials.
+* **Scoped principals.** Agents get least-privilege tokens limited to recall, store, and propose — separate from operator credentials. A revoked principal is refused on every route from the moment of revocation, and re-provisioning does not resurrect it.
 
 ## Why this instead of a cloud memory service
 
@@ -84,12 +84,12 @@ This is not a general-purpose memory layer for rapid prototyping.
 |---|---|
 | Pay per read and write | Zero per query. Local static embeddings. |
 | Data in someone else's datacenter | Data stays in SQLite on your box. No telemetry. |
-| Extra round trip | Sub 50ms p99 recall on loopback. |
+| Extra round trip | p95 around 24 ms on loopback (measured table in `BENCHMARKS.md`) |
 
 ## Proof, not promises
 
 * UMP 1.0 L3, 13 of 13 conformance checks, pinned in CI
-* 1,477 tests passed, `cargo fmt` and `clippy -D warnings` clean
+* 1,511 tests passed, `cargo fmt` and `clippy -D warnings` clean
 * Append-only SHA-256 audit chain, `GET /audit/verify` to check it
 * Maps to ISO 42001, NIST AI RMF, SOC 2, GDPR. See `COMPLIANCE.md`
 
