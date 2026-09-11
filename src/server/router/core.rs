@@ -134,6 +134,10 @@ pub fn health_body(
             "compliance": {
                 "dpo_contact": crate::config::dpo_contact(),
             },
+            "authn": {
+                "enabled": !crate::config::auth_tokens().is_empty(),
+                "required": crate::config::require_auth().unwrap_or(false),
+            },
     // hardening observability. Lets ops see the
             // memory-safety posture at a glance. `unsafe_blocks` is the
             // audited count (each has a SAFETY comment); `panics_caught`

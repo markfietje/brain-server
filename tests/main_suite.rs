@@ -10131,6 +10131,7 @@ Final paragraph after the rule.";
             "webhook",
             "compliance",
             "pool",
+            "authn",
         ] {
             assert!(
                 !obj.contains_key(leaked),

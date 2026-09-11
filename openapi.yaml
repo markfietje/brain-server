@@ -1491,6 +1491,9 @@ paths:
                     type: array
                     items: { type: string }
                     description: "Domains of the returned hits. Always present (empty array when no hits); v1.13.3."
+                  included_global:
+                    type: boolean
+                    description: "True when the global corpus was mixed into a domain-routed query (shim rescue leg). Always present; cross-domain mixing is visible, never silent."
                   telemetry:
                     $ref: "#/components/schemas/SearchTelemetry"
                   trace_id:

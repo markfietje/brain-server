@@ -218,11 +218,13 @@ pub async fn recall(
     let include_decayed = req.include_decayed;
     let outcome = run_recall(&state, &principal.0, req, source_query.0).await?;
     let hits = results_to_hits(outcome.tagged, provenance, include_decayed, &principal.0);
+    let included_global = global_rescue_mixed(&outcome.primary_domain, &outcome.domains_searched);
     Ok(Json(RecallResponse {
         hits,
         decision: outcome.decision,
         domain: Some(outcome.primary_domain),
         domains_searched: outcome.domains_searched,
+        included_global,
         telemetry: provenance.then_some(outcome.tel),
         trace_id: outcome.trace_id,
     }))
@@ -779,8 +781,12 @@ pub(crate) fn principal_label(principal: &Option<crate::auth::Principal>) -> Str
 
 /// audit tenant for a recall read event — the JWT
 /// principal's tenant, or the default tenant in opaque/no-auth mode.
-pub(crate) fn principal_tenant(principal: &Option<crate::auth::Principal>) -> String {
-    principal
+/// True when the global corpus was mixed into a domain-routed query.
+pub(crate) fn global_rescue_mixed(primary_domain: &str, domains_searched: &[String]) -> bool {
+    domains_searched.iter().any(|d| d == "global") && primary_domain != "global"
+}
+
+pub(crate) fn principal_tenant(principal: &Option<crate::auth::Principal>) -> String {    principal
         .as_ref()
         .map(|p| p.tenant.clone())
         .unwrap_or_else(|| crate::audit::DEFAULT_TENANT.to_string())
@@ -966,6 +972,13 @@ mod tests {
             min_relevance: None,
             trace: false,
         }
+    }
+
+    #[test]
+    fn global_rescue_flag_marks_cross_domain_mixing() {
+        assert!(global_rescue_mixed("alpha", &["alpha".into(), "global".into()]));
+        assert!(!global_rescue_mixed("global", &["global".into()]));
+        assert!(!global_rescue_mixed("alpha", &["alpha".into()]));
     }
 
     #[test]

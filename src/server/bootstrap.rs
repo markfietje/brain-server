@@ -317,6 +317,19 @@ pub fn bootstrap() -> Result<BootOutcome> {
     if let Some(msg) = config::agent_token_misconfigured() {
         return Err(anyhow::anyhow!(msg));
     }
+    // No-auth boot is single-user loopback only; operators who need the
+    // guarantee set BRAIN_REQUIRE_AUTH=1 and a missing token refuses boot.
+    let require_auth = config::require_auth().map_err(|e| anyhow::anyhow!("fatal auth config: {e}"))?;
+    if require_auth && config::auth_tokens().is_empty() {
+        return Err(anyhow::anyhow!(
+            "BRAIN_REQUIRE_AUTH=1 is set but no token resolves (AUTH_TOKEN_FILE/AUTH_TOKEN) — refusing unauthenticated boot"
+        ));
+    }
+    if !require_auth && config::auth_tokens().is_empty() {
+        tracing::warn!(
+            "starting without authentication (no AUTH_TOKEN_FILE/AUTH_TOKEN): single-user loopback only — set BRAIN_REQUIRE_AUTH=1 to refuse this posture"
+        );
+    }
 
     // ── fail-closed write posture ─────────────────────
     // An unknown BRAIN_WRITE_POSTURE value refuses startup rather than

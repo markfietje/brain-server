@@ -173,6 +173,21 @@ pub fn egress_allow_private() -> Result<bool, String> {
     }
 }
 
+/// Refuses boot when set but no token resolves: with `BRAIN_REQUIRE_AUTH=1`
+/// an unauthenticated start is a misconfiguration, not a posture.
+pub fn require_auth() -> Result<bool, String> {
+    match std::env::var("BRAIN_REQUIRE_AUTH")
+        .unwrap_or_default()
+        .as_str()
+    {
+        "" => Ok(false),
+        "1" => Ok(true),
+        other => Err(format!(
+            "BRAIN_REQUIRE_AUTH='{other}' is invalid; must be 1 or unset"
+        )),
+    }
+}
+
 // ── export cap (SP-S9) ──────────────────────────────
 
 /// Default ceiling for the GDPR `/export` bundle: 1 GiB of materialized
@@ -1609,6 +1624,7 @@ mod tests {
         let prev_f = std::env::var("AUTH_TOKEN_FILE").ok();
         let prev_t = std::env::var("AUTH_TOKEN").ok();
         let prev_a = std::env::var("AGENT_TOKEN_FILE").ok();
+        let prev_r = std::env::var("BRAIN_REQUIRE_AUTH").ok();
         set_or_remove_env("AUTH_TOKEN_FILE", auth_token_file.map(str::to_string));
         set_or_remove_env("AUTH_TOKEN", auth_token.map(str::to_string));
         set_or_remove_env("AGENT_TOKEN_FILE", agent_token_file.map(str::to_string));
@@ -1616,6 +1632,19 @@ mod tests {
         set_or_remove_env("AUTH_TOKEN_FILE", prev_f);
         set_or_remove_env("AUTH_TOKEN", prev_t);
         set_or_remove_env("AGENT_TOKEN_FILE", prev_a);
+        set_or_remove_env("BRAIN_REQUIRE_AUTH", prev_r);
+    }
+
+    #[test]
+    fn require_auth_parses_fail_closed() {
+        let _guard = TOKEN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::remove_var("BRAIN_REQUIRE_AUTH") };
+        assert_eq!(require_auth(), Ok(false));
+        unsafe { std::env::set_var("BRAIN_REQUIRE_AUTH", "1") };
+        assert_eq!(require_auth(), Ok(true));
+        unsafe { std::env::set_var("BRAIN_REQUIRE_AUTH", "yes") };
+        assert!(require_auth().is_err());
+        unsafe { std::env::remove_var("BRAIN_REQUIRE_AUTH") };
     }
 
     /// The plugin's convention: line 2 of the token FILE is the agent's;

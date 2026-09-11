@@ -204,6 +204,10 @@ pub struct RecallResponse {
     /// domains of the returned hits. Always present
     /// (empty array when no hits); no longer gated on `provenance`.
     pub domains_searched: Vec<String>,
+    /// True when the global corpus was mixed into a domain-routed query
+    /// (the shim rescue leg). Always present so cross-domain mixing is
+    /// visible, never silent.
+    pub included_global: bool,
     /// Per-stage retrieval telemetry, included when `provenance` is requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<crate::search::SearchTelemetry>,
