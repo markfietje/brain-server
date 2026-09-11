@@ -319,7 +319,8 @@ pub fn bootstrap() -> Result<BootOutcome> {
     }
     // No-auth boot is single-user loopback only; operators who need the
     // guarantee set BRAIN_REQUIRE_AUTH=1 and a missing token refuses boot.
-    let require_auth = config::require_auth().map_err(|e| anyhow::anyhow!("fatal auth config: {e}"))?;
+    let require_auth =
+        config::require_auth().map_err(|e| anyhow::anyhow!("fatal auth config: {e}"))?;
     if require_auth && config::auth_tokens().is_empty() {
         return Err(anyhow::anyhow!(
             "BRAIN_REQUIRE_AUTH=1 is set but no token resolves (AUTH_TOKEN_FILE/AUTH_TOKEN) — refusing unauthenticated boot"

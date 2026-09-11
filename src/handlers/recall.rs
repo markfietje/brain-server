@@ -779,14 +779,15 @@ pub(crate) fn principal_label(principal: &Option<crate::auth::Principal>) -> Str
         .unwrap_or_else(|| "loopback".to_string())
 }
 
-/// audit tenant for a recall read event — the JWT
-/// principal's tenant, or the default tenant in opaque/no-auth mode.
 /// True when the global corpus was mixed into a domain-routed query.
 pub(crate) fn global_rescue_mixed(primary_domain: &str, domains_searched: &[String]) -> bool {
     domains_searched.iter().any(|d| d == "global") && primary_domain != "global"
 }
 
-pub(crate) fn principal_tenant(principal: &Option<crate::auth::Principal>) -> String {    principal
+/// audit tenant for a recall read event — the JWT
+/// principal's tenant, or the default tenant in opaque/no-auth mode.
+pub(crate) fn principal_tenant(principal: &Option<crate::auth::Principal>) -> String {
+    principal
         .as_ref()
         .map(|p| p.tenant.clone())
         .unwrap_or_else(|| crate::audit::DEFAULT_TENANT.to_string())
@@ -976,7 +977,10 @@ mod tests {
 
     #[test]
     fn global_rescue_flag_marks_cross_domain_mixing() {
-        assert!(global_rescue_mixed("alpha", &["alpha".into(), "global".into()]));
+        assert!(global_rescue_mixed(
+            "alpha",
+            &["alpha".into(), "global".into()]
+        ));
         assert!(!global_rescue_mixed("global", &["global".into()]));
         assert!(!global_rescue_mixed("alpha", &["alpha".into()]));
     }

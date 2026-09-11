@@ -428,9 +428,7 @@ pub(crate) fn quorum_gate(
                 tenant,
             );
             if row.is_none() {
-                return Err(
-                    "quorum first-approval audit refused — chain unavailable".to_string(),
-                );
+                return Err("quorum first-approval audit refused — chain unavailable".to_string());
             }
             Ok(Quorum::PendingSecond)
         }

@@ -4,7 +4,7 @@
 + Cheat Sheet Series (Context7-verified 2026-07-26), NIST SP 800-63B (digital
 identity), NIST SP 800-207 (zero-trust architecture).
 
-**Coverage current through:** v1.28.76 (2026-09-09). The v1.28.63–.75
+**Coverage current through:** v1.28.80 (2026-09-11). The v1.28.63–.75
 hardening line (§5b) is folded in; per-release detail lives in `CHANGELOG.md`
 and the close-out in `docs/AUDIT.md`.
 
@@ -281,6 +281,16 @@ controls below are the threat-model-relevant additions, in ship order:
 | Key + evidence lifecycle gaps | The operator signing key is deterministic (`operator.ed25519`; wrong-size/leaked seeds refuse LOUDLY); `brain key rotate` moves current→`.prev` (verify-only, one deep) with `signing_epoch` on agent cards; chain-less backup images REFUSE restore unless `--allow-chainless`; legacy-epoch chains restore disclosed as forgeable; the replay cache evicts the oldest quarter (not clear-all) and the revocation drain pages + writes `drain_incomplete` | v1.28.73 "Keyring" |
 | Taint laundering across sessions | `/ingest` accepts `origin_context: owner\|channel` (unknown = 400); channel captures store origin `channel-capture`; the label rides recall into the plugin fence (`[memory \| channel-capture]`) and the openclaw fork marks quoted/replayed memory prefixes as untrusted replay; plugin `untrustedOrigins: "exclude"` drops captured hits from auto-inject; OTLP span attributes pass ANSI/PII sanitization (collectors are untrusted infrastructure) | v1.28.74 "Origin" |
 | Dormant exec mediation (Loop-line precondition) | The dormant hostcall `exec` mediation hardened: argv0 AND allowlist entries canonicalize (planted symlinks and honest aliases distinguished), the danger screen is the documented tripwire and gained the pipe-to-shell family, `kill_on_drop` pinned at the spawn seam; dormancy is a machine-checked state (`hostcalls_mediation_stays_unwired_until_loop_line`); the installer writes `BRAIN_WRITE_POSTURE=review` on new installs only (operator-set values never stomped); `badges.sh --selfcheck` refuses without the committed SBOM artifact | v1.28.75 "Preflight" |
+| Authenticated-transport redirect bearer leak (fork) | `BrainClient` never follows redirects (`redirect: "manual"` — any 3xx refuses before auth can ride it); the pre-send origin pin + response re-pin stay as second layers | v1.28.80 (fork) |
+| Merge-seam `systemPrompt` bypass (upstream-hunk, fork-side defense) | The merged `systemPrompt` passes `sanitizePluginContext` at the fork-owned merge seam (upstream file untouched — filed as U2) | v1.28.80 (fork) |
+| MCP multi-block envelope shedding + image/URI pass-through | All instruction-capable text rides ONE enveloped block (prefix+payload+suffix inseparable); every block through the full sanitizer (invisible + forged markers + LLM special tokens); per-block 8k bound; oversize images withheld as labeled placeholders (filed as U1 upstream) | v1.28.80 (fork) |
+| Unsigned catalog-pin acks (fs-write re-pin) | Pin acks carry a detached Ed25519 signature (TOFU keypair beside the pins); forged/unsigned files rebuild LOUDLY; ceiling: filesystem writers can re-key — operator-bound keys are the Loop line | v1.28.80 (fork) |
+| No-auth boot as silent posture | `BRAIN_REQUIRE_AUTH=1` refuses unauthenticated boot (fail-closed parse); otherwise a loud boot warn + `/health/db` `authn` echo (`enabled`, `required`) | v1.28.80 |
+| Silent cross-domain mixing (shim rescue leg) | `/recall` carries `included_global` (always present) so global-corpus mixing into domain queries is visible, never silent | v1.28.80 |
+| Total-grant scope issuance (`*/*`) | A team+domain wildcard scope grants nothing without `BRAIN_ALLOW_WILDCARD_GRANT=1` (fail-closed parse, loud boot warn when admitted) | v1.28.80 |
+| Single-approver promotion (approval fatigue) | Opt-in `BRAIN_APPROVAL_QUORUM=2`: two DISTINCT principals before promotion (first records a hash-chained audit row, same-principal repeat 409s); publish/remedy branches keep their own semantics | v1.28.80 |
+| Keyless self-assertion invisible to consumers | Verify JSON carries `authentication: "operator-pinned" \| "self-asserted (no operator key)"` | v1.28.80 |
+| Allow-policy blindness (`INJECTION_POLICY=allow`) | Monotonic `allow_policy_bypasses` tripwire on `/health/db` beside the policy echo | v1.28.80 |
 
 **Ceilings this line explicitly keeps** (do not "fix" without amending the
 architecture):
@@ -296,6 +306,11 @@ architecture):
 - The audit chain detects SQL/application-level tampering, not host
   compromise; the live DB and `.bak` snapshots stay plaintext on the primary
   (§4 items 2/2b).
+- Single-tenant storage: the domain shim is a label, not a boundary —
+  `included_global` makes mixing visible; true isolation is `BRAIN_MULTI_DB`
+  (v2.0 Cortex). Quorum is opt-in (default 1); pin-ack signatures are TOFU,
+  not operator-bound; DNS-rebind of the plugin pin and keyless
+  self-assertion stay disclosed (v1.28.80 rows above).
 
 ---
 

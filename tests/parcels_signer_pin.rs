@@ -104,6 +104,10 @@ fn build_server() -> TestServer {
 }
 
 fn mint(srv: &TestServer) -> String {
+    // Admitted total grant — the fixture models the operator, and the
+    // production gate requires the explicit admission for `admin:*/*`.
+    static ADMIT_WILDCARD: std::sync::Once = std::sync::Once::new();
+    ADMIT_WILDCARD.call_once(|| unsafe { std::env::set_var("BRAIN_ALLOW_WILDCARD_GRANT", "1") });
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

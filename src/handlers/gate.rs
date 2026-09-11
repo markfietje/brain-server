@@ -592,7 +592,7 @@ pub async fn approve_proposal(
             let actor = super::recall::principal_label(&principal.0);
             let tenant = super::recall::principal_tenant(&principal.0);
             match crate::service::review::quorum_gate(&tx, id, &actor, &tenant)
-                .map_err(|e| HandlerError::internal(e))?
+                .map_err(HandlerError::internal)?
             {
                 crate::service::review::Quorum::Promote => {}
                 crate::service::review::Quorum::PendingSecond => {

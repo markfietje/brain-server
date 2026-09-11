@@ -316,6 +316,13 @@ hash-chained audit of every memory change, and a tombstone path for the entries
 an attacker would plant. See `docs/MEMGHOST_MITIGATION.md` for the operative
 playbook.
 
+**Adjacent taxonomies (one-line maps, same honest posture).** The **Microsoft
+AI Red Team Taxonomy v2** memory-safety / model-integrity / infrastructure
+classes map to the screen + HITL gate + hash-chained audit respectively; the
+**LLM Top 10 2026 LLM09 Vector/Embedding Weaknesses** entry maps to the vec0
+purge + verify-before-emit + tombstone path (§4, §9). Control maps, not
+conformance claims.
+
 ### 6.6 EU AI Act applicability after the Digital Omnibus (Regulation (EU) 2026/1744)
 
 **For procurement reviewers tracking the August 2026 headlines:** the EU AI

@@ -65,6 +65,10 @@ fn rsa_keypair(key_dir: &Path) -> rsa::RsaPrivateKey {
 }
 
 fn build_server() -> TestServer {
+    // The matrix's admin class is the admitted total grant (`admin:*/*`) —
+    // the fixture opts into the admission the production gate requires.
+    static ADMIT_WILDCARD: std::sync::Once = std::sync::Once::new();
+    ADMIT_WILDCARD.call_once(|| unsafe { std::env::set_var("BRAIN_ALLOW_WILDCARD_GRANT", "1") });
     let dir = tempfile::TempDir::new().expect("temp dir");
     let db_path = dir.path().join("brain.db");
     brain_server::register_sqlite_vec::register_sqlite_vec();
