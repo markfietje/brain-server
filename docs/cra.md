@@ -1,5 +1,8 @@
 # CRA Evidentiary Kit
 
+> Coverage current through v1.28.80 (2026-09-11; reporting duties live since
+> 2026-09-11 — see the [reporting runbook](./cra-reporting-runbook.md)).
+
 > v1.20.10 "Proof" — an assembly of already-shipped evidence for the EU Cyber
 > Resilience Act (CRA, in force 2026) "reporting + support + SBOM" bar. This is
 > **not** a claim of formal conformity assessment; it is the evidentiary bundle

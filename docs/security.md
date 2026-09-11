@@ -1,5 +1,7 @@
 # Security
 
+> Coverage current through v1.28.80 (2026-09-11).
+
 Brain Server is a local-first memory component for AI agents, so its security
 model centers on three questions: **who is allowed to talk to it, what can they
 do, and can anyone tamper with its records.** The full threat model lives in

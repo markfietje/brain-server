@@ -42,6 +42,8 @@
 - [MCP server](mcp.md)
 - [Client GUI](client-gui.md)
 - [Client console](client-complete-console.md)
+- [Dioxus WASM-split research](dioxus-wasm-split-research.md)
+- [WFM seam (workload, coverage, shifts)](wfm-seam.md)
 - [Universal Memory Protocol](universal-memory-protocol.md)
 - [Technical specification](SPECS.md)
 - [Glossary](glossary.md)
@@ -69,12 +71,14 @@
 - [Structure-Aware Markdown Chunking](./research/10-chunking.md)
 - [Centroid Domain Auto-Routing](./research/11-domain-routing.md)
 - [Deterministic Consolidation](./research/12-consolidation.md)
-- [Dioxus WASM-split research](dioxus-wasm-split-research.md)
+- [Benchmark landscape 2026](./research/13-benchmark-landscape-2026.md)
 
 # Trust & verification
 
 - [Proof map](./trust/proof-map.md)
 - [Reproduce on a throwaway instance](./trust/reproduce.md)
+- [WCAG 2.2 AA checklist](./trust/wcag22-aa-checklist.md)
+- [ACR / VPAT](./trust/acr-vpat.md)
 
 # Blog
 
@@ -102,7 +106,10 @@
 - [AI literacy playbook (EU AI Act Art 4)](AI_LITERACY.md)
 - [California ADMT transparency](admt.md)
 - [CRA evidentiary kit](cra.md)
+- [CRA reporting runbook](cra-reporting-runbook.md)
 - [CRA 30-minute DSAR drill](CRA_DSAR_DRILL_20260808.md)
+- [Crypto inventory](crypto-inventory.md)
+- [Risk register](risk-register.md)
 - [RFP response kit](RFP_RESPONSE_KIT.md)
 - [Contact center standards alignment](CONTACT_CENTER_STANDARDS.md)
 

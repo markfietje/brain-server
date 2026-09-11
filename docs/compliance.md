@@ -1,5 +1,7 @@
 # Compliance
 
+> Coverage current through v1.28.80 (2026-09-11).
+
 Brain Server is a single-node, loopback-first memory component for an AI system.
 This page summarizes its compliance posture for buyers and procurement. It is a
 **documented engineering posture, not a certification** — ISO/IEC 42001 and SOC 2
