@@ -1,6 +1,6 @@
 # RFP Response Kit — brain-server
 
-**Applies to:** brain-server 1.28.62 · **Last updated:** 2026-09-06
+**Applies to:** brain-server 1.28.80 · **Last updated:** 2026-09-11
 
 A two-to-three page map from common enterprise RFP sections to the concrete
 brain-server features that satisfy them, so a procurement response can cite
@@ -15,17 +15,20 @@ file (`COMPLIANCE.md`), threat model (`THREAT_MODEL.md`), security map
 > artifact. Do not copy claims you have not verified on your own deployment —
 > the point of the kit is truthful, evidence-backed answers.
 >
-> **Freshness note (2026-09-06, refreshed):** the kit now covers through
-> v1.28.62 "Attestation" — add to any security/traceability response: the
+> **Freshness note (2026-09-11, refreshed):** the kit now covers through
+> v1.28.80 "Lockdown" — add to any security/traceability response: the
 > warm-standby DR pair with its drilled RTO/RPO record (1.28.61),
 > **Art 50(2) provenance marks** — an Ed25519-signed AIGEN object on every
 > engine-generated text artifact (remedy drafts, ADR packets, outreach export
 > packets, KB build manifests), tamper-refusing and CI-pinned (1.28.62) — the
 > **principal kill-switch** (`POST /ops/agents/revoke`: fail-closed card and
 > delegation refusal + in-flight-run drain, audited in one tx; ASI03/07), the
-> **approval-fatigue telemetry** on the DPO scoreboard (ASI09), and
+> **approval-fatigue telemetry** on the DPO scoreboard (ASI09),
 > `docs/crypto-inventory.md` (SP 1800-38B-shaped algorithm inventory + PQC
-> swap paths). The Enterprise Line is complete; v2.0 tenancy remains the
+> swap paths), **two-principal approvals** (`BRAIN_APPROVAL_QUORUM=2`,
+> 1.28.80), **fail-closed auth admissions** (`BRAIN_REQUIRE_AUTH`,
+> `BRAIN_ALLOW_WILDCARD_GRANT`, 1.28.80), and the **`included_global`
+> recall flag** that makes cross-domain mixing explicit (1.28.80). The Enterprise Line is complete; v2.0 tenancy remains the
 > roadmap item (see §4).
 
 ## 1. Security & Access Control

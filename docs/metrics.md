@@ -140,6 +140,9 @@ aggregation remains Parcels federation). Gauges are scrape-time snapshots.
 echo of the connection-init policy (envelope defaults ⊕ the fail-closed
 `BRAIN_SYNCHRONOUS` / `BRAIN_WAL_AUTOCHECKPOINT` overrides), never a
 per-request pragma read.
+/health/db additive keys (v1.28.80): `authn.enabled` (a token resolves),
+`authn.required` (`BRAIN_REQUIRE_AUTH=1`), and `hardening.allow_policy_bypasses`
+(ingests unscreened under `INJECTION_POLICY=allow`, monotonic).
 
 ## Deliberately absent (scope guards)
 

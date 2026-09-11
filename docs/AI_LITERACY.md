@@ -1,7 +1,7 @@
 # AI Literacy — Deployer Playbook (EU AI Act Art 4)
 
-**Artifact for:** `COMPLIANCE.md` §6.4 · **Applies to:** brain-server 1.28.76
-· **Last updated:** 2026-09-09
+**Artifact for:** `COMPLIANCE.md` §6.4 · **Applies to:** brain-server 1.28.80
+· **Last updated:** 2026-09-11
 
 EU AI Act **Art 4** (Regulation (EU) 2024/1689) requires providers and
 deployers to take reasonable steps to ensure a sufficient level of AI literacy
