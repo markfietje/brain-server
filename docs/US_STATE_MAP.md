@@ -62,3 +62,55 @@ Plus openclaw.json enterprise posture: autoCapture false, allowedChatTypes direc
 ## What this does not claim
 
 ISO 42001 / SOC 2 attestation, BAA, bias-audit opinion, or legal advice are operator / external-auditor layers. This file + COMPLIANCE.md are the technical-file evidence those audits consume.
+
+## Operator checklist — proof in code
+
+Work top to bottom before operating in any listed state. Each row names the
+proof: a route, a command, or a test. Anything unchecked is a gap, not a
+deferral.
+
+Component (verify once per deployment):
+
+- [ ] Recall trace answers. `POST /recall?trace=true`, then
+  `GET /recall/{id}/trace` replays chunks, scores, abstention, scope,
+  principal, domains. Proves logic-explanation duties (CA ADMT, IL notice).
+- [ ] Audit chain verifies. `GET /audit/verify` returns ok;
+  `/metrics` chain-ok gauge reads 1. Proves oversight and record-keeping
+  duties (TX, CO, CT, NYC auditor feed).
+- [ ] Read events on with retention. `BRAIN_AUDIT_READ_EVENTS=on` and
+  `BRAIN_AUDIT_RETENTION_DAYS=180` (or higher for employment review).
+  Default is off on loopback: this is the most commonly missed row.
+- [ ] DSAR round-trips. `POST /dsar {subject, action: both}` exports,
+  purges, and returns a certificate; `GET /dsar/{id}/certificate`
+  re-verifies; `GET /tombstones` lists the registry. Proves deletion and
+  correction duties (CCPA, CO correction right).
+- [ ] Export carries provenance. `/export` rows include source, origin,
+  assertion_kind, confidence. Feeds deployer disclosures (UT, IL, CA).
+- [ ] Retention report runs. `GET /retention/report` returns per-kind
+  windows; legal holds report `held_ids` instead of purging (409
+  `legal_hold_active` under hold).
+- [ ] Write gate closed. `BRAIN_WRITE_POSTURE=review` (proposals, no
+  autonomous promotion) and `INJECTION_POLICY` left at default
+  `quarantine` (never `allow` where untrusted content arrives —
+  `/health/db` tripwire `allow_policy_bypasses` must read 0).
+- [ ] Region stamped. `BRAIN_REGION` set (e.g. `us-texas-1`); certificates
+  carry it.
+
+Operator process (verify per state you operate in):
+
+- [ ] Takedown SOP points at purge. CSAM / deepfake / bad-entry removal
+  runs `POST /dsar {action: purge}` with a named owner and a clock
+  (TX, FL, TN, election windows).
+- [ ] Disclosure copy live. AI-use notices in high-risk flows (UT),
+  hiring notices (IL), checkout/HR notices (CT Oct 2026), candidate
+  AEDT notices (NYC 10 business days, CT Oct 2027).
+- [ ] Opt-out and human review paths exist in your app (CA ADMT, CO).
+  The server provides the evidence; the buttons live in your surface.
+- [ ] Impact assessment written and filed per calendar (CO Jan 2027,
+  CA risk assessments Apr 2028). Trace + retention report are inputs,
+  not the assessment itself.
+- [ ] NYC bias audit hired yearly with published summary (LL144).
+  No component substitutes for the independent auditor.
+- [ ] Dates re-checked quarterly against primary sources (legislature
+  pages, AG offices, CPPA). This file is dated 2026-09-11; statutes and
+  stays move.
