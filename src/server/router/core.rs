@@ -167,7 +167,10 @@ pub fn health_body(
                 // the resolved INJECTION_POLICY (quarantine|reject|allow):
                 // `allow` disables the screen entirely, so it is never silent
                 // — the boot warn + this echo surface it.
-                "injection_policy": crate::config::injection_policy_echo()
+                "injection_policy": crate::config::injection_policy_echo(),
+                // tripwire: ingests screened-as-clean because the policy is
+                // `allow` (monotonic; >0 with untrusted sources = re-posture).
+                "allow_policy_bypasses": crate::screen::allow_policy_bypasses()
             }
         });
     if let Some(c) = capacity

@@ -315,6 +315,56 @@ mod tests {
     }
 
     #[test]
+    fn dsar_sweep_covers_all_subject_tables() {
+        // Inventory pin: one subject run carrying a row in EVERY swept
+        // table — after the sweep none of the subject's rows survive
+        // anywhere (outbox channel/* rows ride the run arm too).
+        let (pool, _tmp) = db();
+        let mut conn = pool.get().unwrap();
+        let run = seed_run(&conn, "acme", r#"{"subject":"jane@example.com"}"#);
+        conn.execute(
+            "INSERT INTO outbox(run_id, topic, payload_json, status, idempotency_key, created_at)
+             VALUES (?1, 'channel/ping', '{}', 'pending', 'inv-1', 1)",
+            rusqlite::params![run],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO channel_threads(channel, tenant, conversation_ref, domain, case_run_id, created_at)
+             VALUES ('signal', 'acme', 'conv-9', 'acme', ?1, 1)",
+            rusqlite::params![run],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO case_status_refs(run_id, ref, salt_version, minted_at)
+             VALUES (?1, 'SWPT000000000000000000001', 1, 1000)",
+            rusqlite::params![run],
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        let rep = sweep_subject(&tx, "jane@example.com").unwrap();
+        tx.commit().unwrap();
+        assert_eq!(rep.runs_deleted, 1);
+        for table in [
+            "workflow_runs",
+            "outbox",
+            "channel_threads",
+            "case_status_refs",
+            "workflow_steps",
+            "findings",
+            "contradictions",
+            "handover_offers",
+            "case_notes",
+            "delegations",
+        ] {
+            assert_eq!(
+                count(&conn, &format!("SELECT COUNT(*) FROM {table}")),
+                0,
+                "no subject row survives in {table}"
+            );
+        }
+    }
+
+    #[test]
     fn sweep_deletes_matching_runs_and_dependents() {
         let (pool, _tmp) = db();
         let mut conn = pool.get().unwrap();
