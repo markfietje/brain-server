@@ -583,6 +583,38 @@ pub async fn approve_proposal(
             ));
         }
 
+        // Second eyes: under BRAIN_APPROVAL_QUORUM=2 the generic promote
+        // path needs two distinct principals (the publish/remedy branches
+        // keep their own multi-step semantics and return before promotion).
+        if kind != crate::workflow::kcs::KIND_PUBLISH
+            && kind != crate::workflow::complaint::KIND_REMEDY
+        {
+            let actor = super::recall::principal_label(&principal.0);
+            let tenant = super::recall::principal_tenant(&principal.0);
+            match crate::service::review::quorum_gate(&tx, id, &actor, &tenant)
+                .map_err(|e| HandlerError::internal(e))?
+            {
+                crate::service::review::Quorum::Promote => {}
+                crate::service::review::Quorum::PendingSecond => {
+                    tx.commit()
+                        .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+                    return Ok(serde_json::json!({
+                        "id": id,
+                        "status": "pending_second",
+                    }));
+                }
+                crate::service::review::Quorum::SamePrincipal => {
+                    tx.rollback()
+                        .map_err(|e| HandlerError::internal(e.to_string()))?;
+                    return Err(HandlerError::conflict_with(
+                        "quorum_same_principal",
+                        "second approval must come from a different principal",
+                        serde_json::json!([]),
+                    ));
+                }
+            }
+        }
+
         // Crew presence rides the reviewer's own transaction (no worker): a
         // review act is "reviewing", whatever the proposal's fate turns out
         // to be. Best-effort — presence never gates the decision.

@@ -344,6 +344,8 @@ pub fn bootstrap() -> Result<BootOutcome> {
     if let Err(e) = config::validate_write_posture() {
         return Err(anyhow::anyhow!("fatal write posture: {e}"));
     }
+    crate::service::review::approval_quorum()
+        .map_err(|e| anyhow::anyhow!("fatal quorum config: {e}"))?;
 
     // ── fail-closed export cap (Erasure, SP-S9) ───────
     // An unknown BRAIN_EXPORT_MAX_BYTES value refuses the boot rather than

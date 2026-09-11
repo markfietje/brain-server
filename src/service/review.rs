@@ -371,6 +371,74 @@ pub(crate) fn pending_domain(conn: &Connection, id: i64) -> Option<String> {
     .ok()
 }
 
+/// Second-eyes quorum: `BRAIN_APPROVAL_QUORUM=2` requires two DISTINCT
+/// principals before a proposal promotes (default 1 = today's single
+/// approve). Fail-closed parse. No schema: the first approval is a
+/// hash-chained audit row (`proposal:{id}:quorum-first`), so the two acts
+/// commit or roll back with the decision tx like every other mutation.
+pub(crate) fn approval_quorum() -> Result<u64, String> {
+    match std::env::var("BRAIN_APPROVAL_QUORUM")
+        .unwrap_or_default()
+        .as_str()
+    {
+        "" | "1" => Ok(1),
+        "2" => Ok(2),
+        other => Err(format!(
+            "BRAIN_APPROVAL_QUORUM='{other}' is invalid; must be 1, 2, or unset"
+        )),
+    }
+}
+
+pub(crate) enum Quorum {
+    Promote,
+    PendingSecond,
+    SamePrincipal,
+}
+
+/// Quorum gate inside the decision tx (after the digest bind, before any
+/// CAS). First approval records the chained row and defers; a repeat by the
+/// same actor refuses; a distinct second actor promotes.
+pub(crate) fn quorum_gate(
+    tx: &rusqlite::Transaction,
+    proposal_id: i64,
+    actor: &str,
+    tenant: &str,
+) -> Result<Quorum, String> {
+    if approval_quorum()? < 2 {
+        return Ok(Quorum::Promote);
+    }
+    let marker = format!("proposal:{proposal_id}:quorum-first");
+    let prior: Option<String> = tx
+        .query_row(
+            "SELECT actor FROM audit_events WHERE target_hash = ?1 AND kind = 'workflow' ORDER BY id LIMIT 1",
+            params![crate::audit::hash(&marker)],
+            |r| r.get(0),
+        )
+        .ok()
+        .flatten();
+    match prior {
+        None => {
+            let row = crate::audit::record_tenant(
+                tx,
+                crate::audit::AuditKind::Workflow,
+                actor,
+                &marker,
+                crate::audit::AuditStatus::Ok,
+                "quorum/first_approval",
+                tenant,
+            );
+            if row.is_none() {
+                return Err(
+                    "quorum first-approval audit refused — chain unavailable".to_string(),
+                );
+            }
+            Ok(Quorum::PendingSecond)
+        }
+        Some(prev) if prev == actor => Ok(Quorum::SamePrincipal),
+        Some(_) => Ok(Quorum::Promote),
+    }
+}
+
 /// if the proposal is older than
 /// [`crate::config::proposal_ttl_secs`], mark it rejected + audit
 /// `proposal_expired` and return `false`. A stale auto-capture prompt's
@@ -572,6 +640,54 @@ pub(crate) fn stored_lint_json(conn: &Connection, id: i64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static QUORUM_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn approval_quorum_parses_fail_closed() {
+        let _guard = QUORUM_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("BRAIN_APPROVAL_QUORUM").ok();
+        unsafe { std::env::remove_var("BRAIN_APPROVAL_QUORUM") };
+        assert_eq!(approval_quorum(), Ok(1));
+        unsafe { std::env::set_var("BRAIN_APPROVAL_QUORUM", "2") };
+        assert_eq!(approval_quorum(), Ok(2));
+        unsafe { std::env::set_var("BRAIN_APPROVAL_QUORUM", "3") };
+        assert!(approval_quorum().is_err());
+        match prev {
+            Some(v) => unsafe { std::env::set_var("BRAIN_APPROVAL_QUORUM", v) },
+            None => unsafe { std::env::remove_var("BRAIN_APPROVAL_QUORUM") },
+        }
+    }
+
+    #[test]
+    fn quorum_gate_defers_first_and_refuses_same_principal() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let _guard = QUORUM_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("BRAIN_APPROVAL_QUORUM").ok();
+        unsafe { std::env::set_var("BRAIN_APPROVAL_QUORUM", "2") };
+        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
+        crate::migration::run_migration(&mut conn, 1).expect("migration");
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .unwrap();
+        assert!(matches!(
+            quorum_gate(&tx, 7, "ada", "global"),
+            Ok(Quorum::PendingSecond)
+        ));
+        assert!(matches!(
+            quorum_gate(&tx, 7, "ada", "global"),
+            Ok(Quorum::SamePrincipal)
+        ));
+        assert!(matches!(
+            quorum_gate(&tx, 7, "grace", "global"),
+            Ok(Quorum::Promote)
+        ));
+        drop(tx);
+        match prev {
+            Some(v) => unsafe { std::env::set_var("BRAIN_APPROVAL_QUORUM", v) },
+            None => unsafe { std::env::remove_var("BRAIN_APPROVAL_QUORUM") },
+        }
+    }
 
     /// an ingested proposal records its agent `owner`, and
     /// `pending_page` returns it alongside a `qa_score` — in-scope
