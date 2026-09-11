@@ -1,6 +1,6 @@
 # Security Policy
 
-**Last reviewed:** 2026-08-23 against OWASP Top 10:**2025** + Cheat Sheet Series (v1.28.17 "Settle" refresh: workflow role gates re-checked live, engine hostcall mediations current through Anvil/Settle, public-route list re-verified against a running server)
+**Last reviewed:** 2026-09-11 against OWASP Top 10:**2025** + Cheat Sheet Series (v1.28.80 "Lockdown" refresh: token lifetime/iat bounds, no-cache revocation checks, per-login refresh families, title-aware screening, hardened read seam, public-route list re-verified against openapi.yaml)
 (Context7-verified), OWASP Multi-Tenant Security Cheat Sheet, OWASP JSON Web
 Token Cheat Sheet, OWASP Secrets Management Cheat Sheet, OWASP gRPC + Microservices
 Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.
@@ -52,7 +52,7 @@ automatically FETCHES a remote URL that model-controlled content influenced —
 a rendered image, a favicon probe, a data-URI side channel, an auto-fetching
 preview of any kind — report it under this class (EchoLeak / CVE-2025-32711
 namesakes). The shipped posture is "no fetch without an operator-allowlisted
-host"; see `THREAT_MODEL.md` §5 (Exfiltration surfaces) for the closed seats
+host"; see `THREAT_MODEL.md` §5b (the hardening line) for the closed seats
 and the documented ceilings (bare URLs in prose are linkified-but-inert by
 contract; allowlists are trust, not safety).
 
@@ -290,8 +290,8 @@ no-role principals are unaffected):
 - `AUTH_TOKEN_FILE` (preferred; 0600 file) or `AUTH_TOKEN` env var.
 - Constant-time compare via `subtle::ConstantTimeEq` (v1.1.2).
 - Public routes (`/health`, `/ready`, `/version`, `/.well-known/*`,
-  `/ump/capabilities`) bypass. Everything else — including `/health/db`
-  (capacity + backup posture) and `/openapi.yaml` — requires the bearer
+  `/ump/capabilities`, `/openapi.yaml`) bypass. Everything else — including `/health/db`
+  (capacity + backup posture) — requires the bearer
   token.
 - Token files may carry multiple whitespace-separated rotation slots (the
   server accepts every slot); clients must send exactly ONE — the shared

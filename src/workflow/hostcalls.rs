@@ -71,6 +71,11 @@ fn argv0_allowed(argv0: &str, allowlist: &[String]) -> bool {
     // planted under an allowlisted prefix pointing OUTSIDE it must not slip
     // through. An entry that cannot be canonicalized (not on disk) falls
     // back to its textual form against the resolved argv0.
+    // Bare names (`ls`) would resolve through PATH search at spawn — refuse:
+    // allowlisted programs are named by path, never by PATH lookup.
+    if !argv0.contains('/') {
+        return false;
+    }
     std::fs::canonicalize(argv0).map_or(true, |resolved| {
         allowlist.iter().any(|e| match std::fs::canonicalize(e) {
             Ok(entry_resolved) => {
@@ -155,7 +160,7 @@ fn hostcall_clients() -> &'static Mutex<HashMap<String, reqwest::Client>> {
 pub(crate) fn hostcall_cache_len() -> usize {
     hostcall_clients()
         .lock()
-        .expect("hostcall cache lock")
+        .unwrap_or_else(|e| e.into_inner())
         .len()
 }
 
@@ -192,7 +197,7 @@ fn pinned_hostcall_client(host_name: &str) -> Result<reqwest::Client, String> {
     }
     if let Some(client) = hostcall_clients()
         .lock()
-        .expect("hostcall cache lock")
+        .unwrap_or_else(|e| e.into_inner())
         .get(host_name)
     {
         return Ok(client.clone());
@@ -216,7 +221,7 @@ fn pinned_hostcall_client(host_name: &str) -> Result<reqwest::Client, String> {
         let pinned = crate::webhook::egress_client_pinned_to(&host, &addrs);
         hostcall_clients()
             .lock()
-            .expect("hostcall cache lock")
+            .unwrap_or_else(|e| e.into_inner())
             .entry(host_name.to_string())
             .or_insert_with(|| pinned.clone());
         pinned
@@ -859,6 +864,12 @@ mod tests {
         assert!(
             !argv0_allowed(&planted_path.to_string_lossy(), &alias_allow),
             "an alias-entry allowlist must not admit a sibling the operator never named"
+        );
+        // Bare names resolve through PATH search at spawn — never admitted,
+        // even when textually allowlisted.
+        assert!(
+            !argv0_allowed("ls", &["ls".to_string()]),
+            "bare names must refuse (no PATH lookup)"
         );
     }
 

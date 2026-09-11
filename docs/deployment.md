@@ -54,7 +54,7 @@ Brain Server is configured through environment variables (all resolved in
 | `INJECTION_POLICY` | `quarantine` | `quarantine` \| `reject` \| `allow` |
 | `BRAIN_AUDIT_READ_EVENTS` | `on` (JWT) / `off` (loopback) | Read-event audit |
 | `BRAIN_AUDIT_RETENTION_DAYS` | unset = forever | Audit retention window |
-| `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED` | `0` | `1` = require the Standard Webhooks header set on `/webhooks/*` and verify `v1,` HMAC-SHA256 over `{id}.{timestamp}.{body}` (v1.20.4) — an opt-in hard replay window for first-party senders. GitHub sends no such timestamp; its replay protection is `x-github-delivery` idempotency, so the default `0` leaves the legacy `sha256=` path unchanged |
+| `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED` | off/unset | `1` = require the Standard Webhooks header set on `/webhooks/*` and verify `v1,` HMAC-SHA256 over `{id}.{timestamp}.{body}` (v1.20.4) — an opt-in hard replay window for first-party senders. GitHub sends no such timestamp; its replay protection is `x-github-delivery` idempotency, so leaving this unset keeps the legacy `sha256=` path unchanged |
 
 See [Configuration](./configuration.md) and `src/config.rs` for the full list,
 including the JWT key directory, PRF tuning, suggest kill-switch, and DSAR webhook.
@@ -247,7 +247,7 @@ See [Client GUI](./client-gui.md).
 
 - Set `BRAIN_WORKER_THREADS=2` to trim RSS and context-switch overhead.
 - The release profile is speed-optimized (`opt-level = 2`) and the memory ceiling is bounded and
-  configurable (default `CAPACITY_MAX_RSS_MIB=512` on a 4 GB ARM device; RSS is
+  configurable (`CAPACITY_MAX_RSS_MIB` defaults 512 on Jetson, 1024 on desktop targets; RSS is
   an advisory soft signal, not a hard kill).
 - No GPU, no embedding API, no Docker stack required.
 
@@ -613,6 +613,11 @@ profile for any internet-facing or group pilot:
   }
 }
 ```
+
+`${BRAIN_SERVER_AUTH_TOKEN}` is openclaw-host environment substitution for the
+plugin's `authToken` field. Prefer the plugin's own ladder where possible:
+`BRAIN_TOKEN_FILE` (0600 secret file) → `BRAIN_TOKEN` (env) → `authToken` —
+see the `authToken` row in the integration reference.
 
 Server side for the same pilot:
 

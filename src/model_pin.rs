@@ -38,6 +38,16 @@ pub fn verify_manifest_file(manifest: &Path) -> Result<usize, String> {
                 "manifest entry '{rel}': expected 64 hex chars, got '{want}'"
             ));
         }
+        // Relative entries stay under the manifest dir: `..` escapes the
+        // pinned tree into files the manifest was never meant to cover.
+        // Absolute paths remain operator-explicit (documented).
+        if !Path::new(rel).is_absolute()
+            && Path::new(rel)
+                .components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(format!("manifest entry '{rel}': escapes its directory"));
+        }
         let path = if Path::new(rel).is_absolute() {
             PathBuf::from(rel)
         } else {
@@ -111,5 +121,16 @@ mod tests {
         assert!(verify_manifest_file(&m).is_err());
         let bad = manifest_with(dir.path(), &[("x", "zz".to_string())]);
         assert!(verify_manifest_file(&bad).unwrap_err().contains("64 hex"));
+    }
+
+    #[test]
+    fn dotdot_entry_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = manifest_with(dir.path(), &[("../escape.bin", "0".repeat(64))]);
+        assert!(
+            verify_manifest_file(&m)
+                .unwrap_err()
+                .contains("escapes its directory")
+        );
     }
 }

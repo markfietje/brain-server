@@ -93,7 +93,8 @@ The `memory_store` agent tool is bound by the **same** `captureMode` rule — in
 
 ## Proposal mechanism (server-side lifecycle)
 
-The proposal path keeps writes **human-gated and auditable**. Flow (all in `src/handlers/gate.rs`):
+The proposal path keeps writes **human-gated and auditable**. Flow (handlers
+are protocol adapters; the storage core lives in `src/service/review.rs`):
 
 ```
 plugin (POST /ingest/proposal)  →  screen(content)
@@ -121,12 +122,13 @@ plugin (POST /ingest/proposal)  →  screen(content)
      becomes searchable memory        stays out of memory
 ```
 
-Server-side details (source of truth: `src/handlers/gate.rs`):
+Server-side details (HTTP adapter: `src/handlers/gate.rs`; storage core: `src/service/review.rs`):
 
 - **Injection screen runs at submit** (`ingest_proposal`): `Reject` → HTTP 400, never persisted;
   `Quarantine` → stored but badged so the reviewer sees the flag. A `screen_verdict` label is
   **recomputed deterministically at read time** (`list_proposals`), so no schema change was needed
-  to surface it. `content` is bounded by `MAX_QUERY`; `source_prompt` by `MAX_SOURCE_PROMPT`.
+  to surface it. `content` is bounded by `MAX_PROPOSAL_CONTENT` (10,000 chars),
+  `title` by `MAX_TITLE` (500), `source_prompt` by `MAX_SOURCE_PROMPT` (2,048 bytes).
 - **Deterministic scoring** on submit: `novelty` (vec0 KNN against existing memory), `conflict_with`
   (the consolidate machinery), `salience` (length/entity heuristic). First memory / empty index →
   maximal novelty.
@@ -178,7 +180,8 @@ fail-open on a server error.
 > (v1.20.25)**: an agent must not be able to autonomously hard-delete long-term memory with no
 > human gate. Recall/get/verify/graph (read) + the review-queued `memory_store` are the agent's
 > only surface. Erasure is a **human** action via the operator console or the HTTP API (the
-> CLI's only delete surface is `brain source-delete <id>`, which sweeps a whole source).
+> CLI delete surfaces are `brain source-delete <id>`, which sweeps a whole source, and the
+> client-scoped `brain client dsar --action purge` / `brain client end --purge`).
 
 ---
 

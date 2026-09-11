@@ -18,8 +18,8 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 | GET | `/health/db` | Admin-gated detail (v1.28.70: the full body — capacity, pool, hardening, model, otel, DPO, concurrency, durability — is operator telemetry); a Read credential gets the reduced probe `{status, version, db_ok}`; Read-only dashboards add the admin credential for the full body |
 | GET | `/stats`, `/version` | Counts, model, version |
 | GET | `/openapi.yaml` | Full API contract |
-| GET | `/.well-known/security.txt` · `/openid-configuration` · `/jwks.json` | RFC 9116 disclosure file, OIDC discovery (RFC 8414), JWKS key set (RFC 7517) — all public, no auth |
-| GET | `/.well-known/ump.json` · `/ai-notice` · `/ai-literacy` · `/cop-notice` | UMP discovery + EU AI Act transparency notices (Art 4 literacy, Art 50, CoP self-attestation) — all public |
+| GET | `/.well-known/security.txt` · `/.well-known/openid-configuration` · `/.well-known/jwks.json` | RFC 9116 disclosure file, OIDC discovery (RFC 8414), JWKS key set (RFC 7517) — all public, no auth |
+| GET | `/.well-known/ump.json` · `/.well-known/ai-notice` · `/.well-known/ai-literacy` · `/.well-known/cop-notice` | UMP discovery + EU AI Act transparency notices (Art 4 literacy, Art 50, CoP self-attestation) — all public |
 | POST | `/v1/embeddings` | OpenAI-compatible embeddings endpoint |
 | POST | `/ingest/memory` | Structured memory ingest |
 | POST | `/ingest/markdown` | Markdown ingest + graph extraction |

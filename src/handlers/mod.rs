@@ -347,9 +347,19 @@ impl HandlerError {
         }
     }
     pub fn internal(message: impl Into<String>) -> Self {
+        // Driver strings embed SQL text, constraint names, and filesystem
+        // paths — useful in logs, not in responses. Log verbatim, serve a
+        // stable incident id the operator can correlate.
+        static INCIDENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let id = INCIDENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let message = message.into();
+        tracing::error!(incident = id, error = %message, "internal error");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
-            inner: ApiError::new("internal_error", message.into()),
+            inner: ApiError::new(
+                "internal_error",
+                format!("internal error (incident {id}) — see server logs"),
+            ),
         }
     }
     /// The pool-checkout error seam (the Throughput milestone): every handler's
