@@ -627,6 +627,23 @@ BRAIN_AUDIT_READ_EVENTS=on
 BRAIN_AUDIT_RETENTION_DAYS=180
 ```
 
+Tuned enterprise retrieval (neural profiles + tuned classifier). Requires a
+`neural-embed` + `rerank-tier` build; switching embedding dimensions on an
+existing DB fails closed with the `--re-embed` instruction:
+
+```
+MODEL_PROFILE=enterprise
+BRAIN_RERANK_MODEL_DIR=models/mxbai-rerank-large-v1/
+BRAIN_INJECTION_CLASSIFIER=/path/to/tuned-model.onnx
+BRAIN_INJECTION_TOKENIZER=/path/to/tuned-tokenizer.json
+BRAIN_INJECTION_THRESHOLD_HIGH=0.9
+BRAIN_INJECTION_THRESHOLD_LOW=0.7
+```
+
+A nonexistent classifier path refuses boot; thresholds band reject vs
+quarantine without restart. `/health/db` echoes the resolved profile,
+rerank arming, and classifier state — verify there before piloting.
+
 Why each change (see `MEMORY_STACK_REPORT_2026-09-09.md` §1):
 
 | Setting | Personal default | Pilot value | Why |
