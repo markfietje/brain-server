@@ -64,6 +64,10 @@
 - [Reproduce on a throwaway instance](./trust/reproduce.md)
 - [WCAG 2.2 AA checklist](./trust/wcag22-aa-checklist.md)
 - [ACR / VPAT](./trust/acr-vpat.md)
+- [Headroom proof (durability)](HEADROOM_PROOF_20260905.md)
+- [Throughput proof (concurrency)](THROUGHPUT_PROOF_20260905.md)
+- [Loom proof (parallelism)](LOOM_PROOF_20260906.md)
+- [Meridian proof (content hygiene)](MERIDIAN_PROOF_20260907.md)
 
 # Regulation & trust
 
@@ -135,6 +139,7 @@
 - [Roadmap](roadmap.md)
 - [Benchmarks](BENCHMARKS.md)
 - [Audit register](AUDIT.md)
+- [Agent history](AGENTS_HISTORY.md)
 - [Release checklist](release-checklist.md)
 - [Media kit](media-kit.md)
 - [Contributing](CONTRIBUTING.md)

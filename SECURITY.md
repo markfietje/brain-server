@@ -7,8 +7,8 @@ Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.
 
 **Verify, don't trust:** every security claim below is mapped to the release
 that shipped it and the exact live `curl`/`brain` command that proves it in
-[`docs/trust/proof-map.md`](./docs/trust/proof-map.md) (scripted walk-through:
-[`docs/trust/reproduce.md`](./docs/trust/reproduce.md)).
+[`trust/proof-map.md`](trust/proof-map.md) (scripted walk-through:
+[`trust/reproduce.md`](trust/reproduce.md)).
 
 ---
 
@@ -599,7 +599,7 @@ client's connection-pool TTL remains the documented webhook ceiling.
 
 The 2026 enterprise zero-trust-for-AI posture, written against what actually
 ships. Control-by-control mapping to the two 2026 OWASP agentic frameworks is in
-[`docs/OWASP_AGENTIC_2026.md`](./docs/OWASP_AGENTIC_2026.md); this section states
+[`OWASP_AGENTIC_2026.md`](OWASP_AGENTIC_2026.md); this section states
 the posture itself.
 
 - **Workload identity.** brain-server principals are JWT (`sub`/`jti`) or the

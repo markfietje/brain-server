@@ -5637,14 +5637,14 @@ Self-assessed posture throughout — no certification is claimed.
   audited as `handover/dispute` — the complaints register IS the audit chain,
   zero new tables.
 - **Metrics dictionary:** every scoreboard field now has a normative entry in
-  [docs/metrics.md](docs/metrics.md) (formula, source lineage, window
+  [docs/metrics.md](metrics.md) (formula, source lineage, window
   semantics, industry citation), pinned by a docs↔code parity meta-test. The
   FCR repeat-attribution window is configurable (`BRAIN_FCR_WINDOW_DAYS`,
   default 7) and consumed by the scoreboard derivation when a run records
   its recurrence age.
 - **Accessibility as a gate:** WCAG 2.2 AA is release-blocking for the client
   (checklist-driven gate); the Accessibility Conformance Report ships at
-  [docs/trust/acr-vpat.md](docs/trust/acr-vpat.md) for web + desktop
+  [docs/trust/acr-vpat.md](trust/acr-vpat.md) for web + desktop
   (EN 301 549 clause-11 mapping), honestly listing the known ceilings.
 - **Global locales:** `ar` (RTL, full parity) and the `en-XA` pseudolocale
   join the shipped locale set under the existing key-parity wall; mirroring
@@ -6103,7 +6103,7 @@ A case lives in ONE run from intake to close — no new sessions, ever — and e
 - The transcript scrolls forever: the run panel renders a bounded keyset slice of the assembler's ordered nodes (live tail + pulled-up earlier ranges, pure `Vec` slicing — no new dependency); "Load earlier" extends the window; a ten-thousand-node run never renders ten thousand nodes.
 - Session-age badge on the composer (`N events · M checkpoints · oldest #id`) instead of any "new session" affordance — there is none anywhere in the GUI, and a source-scan test keeps it that way.
 - Stream resume: SSE consumers send `Last-Event-ID` (the workflow outbox id) on reconnect; the server replays stored rows past it (bounded to one drain batch per pass, same envelope shape, same read seam, fail-closed per-domain Read gate) before going live; `GET /workflow/runs/{id}/events?since=` backfills older gaps; client dedup admits the gap and drops replays (pinned).
-- Continuity contract documented for consumers ([docs/memory-lifecycle.md](docs/memory-lifecycle.md) §The continuity contract + plugin README): sessions are unbounded; LLM-side compaction is the CONSUMER's contract using the derivation API — brain-server never summarizes (zero-token rule); rewind replaces rotation.
+- Continuity contract documented for consumers ([docs/memory-lifecycle.md](memory-lifecycle.md) §The continuity contract + plugin README): sessions are unbounded; LLM-side compaction is the CONSUMER's contract using the derivation API — brain-server never summarizes (zero-token rule); rewind replaces rotation.
 - wasm-split enabled (operator-requested deviation from the plan's non-goals): `dx build --platform web --release --wasm-split` is green. `.cargo/config.toml` swaps `-C strip=symbols` → `strip=debuginfo` + `-C link-arg=--emit-relocs` (the splitter needs relocations + function names; DWARF-only stripping); `bundle-budget.sh` measures the SHIPPED posture (custom sections stripped via a pure section-frame walk) since the raw artifact legitimately carries splitter metadata. No `#[wasm_split]` boundaries annotated yet — see ceilings.
 
 **Security fixes**
