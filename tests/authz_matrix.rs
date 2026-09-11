@@ -524,6 +524,7 @@ const EMPTY_SAFE_200: &[&str] = &[
     "/ops/workload",
     "/ops/coverage",
     "/ops/agents/cards",
+    "/ops/agents/bom",
     "/parcels",
     "/kcs/articles",
     "/workflow/runs",
@@ -731,6 +732,45 @@ async fn authz_matrix_empty_safe_reads_are_literal_200() {
             "{method} {template} must be 200 for admin on an empty corpus"
         );
     }
+}
+
+/// AgBOM content: CycloneDX 1.6 envelope — service root, embedder and
+/// classifier models, at least the global knowledge store, enforcement
+/// posture properties. Regenerated per request (timestamp present).
+#[tokio::test]
+async fn agent_bom_is_cyclonedx_shaped() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "m-bom",
+        "user:bom",
+        "team-a",
+        &["admin:*/*"],
+        &["admin"],
+    );
+    let (st, body) = send_body(&srv, Some(&admin), "/ops/agents/bom", "GET", "").await;
+    assert_eq!(st, StatusCode::OK);
+    let v: serde_json::Value = serde_json::from_str(&body).expect("bom is JSON");
+    assert_eq!(v["bomFormat"], "CycloneDX");
+    assert_eq!(v["specVersion"], "1.6");
+    let comps = v["components"].as_array().expect("components array");
+    let refs: Vec<&str> = comps
+        .iter()
+        .filter_map(|c| c.get("bom-ref").and_then(|r| r.as_str()))
+        .collect();
+    assert!(
+        refs.contains(&"urn:bom:brain-server"),
+        "service root: {refs:?}"
+    );
+    assert!(
+        refs.contains(&"urn:bom:embedder"),
+        "embedder model: {refs:?}"
+    );
+    assert!(
+        refs.iter().any(|r| r.starts_with("urn:bom:domain:")),
+        "knowledge stores: {refs:?}"
+    );
+    assert!(v["metadata"]["timestamp"].is_string(), "timestamp present");
 }
 
 /// The opaque back-compat path per row: a verified bearer with no

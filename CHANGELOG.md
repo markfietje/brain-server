@@ -17,6 +17,36 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [1.28.81] — 2026-09-11 — "AgBOM": the live agent bill of materials
+
+`GET /ops/agents/bom` (Read on global) emits the dynamic half of the agent
+bill of materials in CycloneDX 1.6 shape — regenerated per request, never a
+build snapshot: the server service, the embedder and classifier models, the
+knowledge-store domains, and the enforcement posture (authn, write posture,
+quorum, injection policy), with the static SBOM artifact named. MCP tool
+inventory stays fork-side (catalog pins); the calling agent's own tools and
+models are out of this process by construction. No schema; x-api-version
+unchanged.
+
+### Release notes
+
+**Improvements**
+
+- Live AgBOM endpoint for procurement and runtime auditors: one call
+  inventories models, stores, and posture with `bom-ref` URNs and a
+  timestamp.
+
+**Bug fixes**
+
+- None.
+
+### Engineering record
+
+Red-first matrix coverage (literal-200 anchor plus CycloneDX shape test);
+route-coverage and authz guard tables extended in-commit; openapi.yaml
+carries the new path. Full suite green; clippy bench/default/otel clean;
+fmt clean.
+
 ## [1.28.80] — 2026-09-11 — "Lockdown": transport, approval, and visibility hardening
 
 Authenticated plugin transport never follows redirects; the prompt merge
@@ -25,7 +55,9 @@ inseparable envelope; catalog-pin acknowledgments are signed; total-grant
 scopes and unauthenticated boot are fail-closed admissions; approvals can
 require two distinct principals; recall, health, and verify responses
 surface the posture that was previously implicit. No schema; wire additive
-only; x-api-version unchanged. Also ships `docs/US_STATE_MAP.md`: a
+only (`included_global`, `authn`, `allow_policy_bypasses`, verify
+`authentication`, plus `GET /ops/agents/bom` — the live AgBOM inventory in
+CycloneDX 1.6 shape); x-api-version unchanged. Also ships `docs/US_STATE_MAP.md`: a
 date-verified (2026-09-11) operator runbook mapping TX/CA/CO/UT/IL/NYC/CT/FL/WA
 duties to live component evidence, with a live-now vs scheduled status
 snapshot — the US counterpart to the CRA reporting runbook.

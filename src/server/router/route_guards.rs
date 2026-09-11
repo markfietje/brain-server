@@ -223,6 +223,8 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     // The ASI03/07 principal kill-switch.
     "/ops/agents/revoke",
     "/ops/agents/revocations",
+    // Live agent bill of materials (AgBOM): read-only projection.
+    "/ops/agents/bom",
     // The scoreboard + its sign-off, and the plugin mount seam — always-on
     // registrations that were missing from this table (table debt; the
     // handler gates were verified correct at the same audit that found the
@@ -478,6 +480,8 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     // domain row) → Admin on global; the register view is a Read.
     ("/ops/agents/revoke", "Admin"),
     ("/ops/agents/revocations", "Read"),
+    // AgBOM: live inventory projection — a Read on global.
+    ("/ops/agents/bom", "Read"),
     // Delegation: requesting work from a named agent and returning its
     // result are Writes on the run's domain; the delegation view is a
     // Read (GET/POST share the path — Read is the checked gate, the

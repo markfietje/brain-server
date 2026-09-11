@@ -438,3 +438,77 @@ pub async fn get_revocations(
         "revocations": rows,
     })))
 }
+
+/// `GET /ops/agents/bom` — the live agent bill of materials (AgBOM,
+/// CycloneDX 1.6 shape): what this server can reach right now — models,
+/// knowledge stores, enforcement posture — regenerated per request, never
+/// a build-time snapshot. The static dependency SBOM ships per release
+/// (`sbom/brain-server-<version>.cdx.json`); this endpoint is its dynamic
+/// half. MCP tool inventory lives fork-side (catalog pins); the calling
+/// agent's own tools and models are out of this process by construction —
+/// both named as ceilings, not omitted silently.
+pub async fn get_bom(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    super::authorize(&principal, crate::auth::Action::Read, "", "global")?;
+    let model_id = state.model.model_id().to_string();
+    let domains = state.registry.known_domains();
+    let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+    let version = crate::config::SERVER_VERSION;
+    let mut components = vec![
+        serde_json::json!({
+            "type": "service",
+            "bom-ref": "urn:bom:brain-server",
+            "name": "brain-server",
+            "version": version,
+            "properties": [
+                {"name": "authn", "value": if crate::config::auth_tokens().is_empty() { "off" } else { "on" }},
+                {"name": "write_posture", "value": crate::config::write_posture()},
+                {"name": "approval_quorum", "value": crate::service::review::approval_quorum().map(|q| q.to_string()).unwrap_or_else(|_| "unknown".to_string())},
+                {"name": "injection_policy", "value": crate::config::injection_policy_echo()},
+                {"name": "static_sbom", "value": format!("sbom/brain-server-{version}.cdx.json")},
+            ],
+        }),
+        serde_json::json!({
+            "type": "machine-learning-model",
+            "bom-ref": "urn:bom:embedder",
+            "name": model_id,
+            "properties": [
+                {"name": "profile", "value": crate::config::model_profile()},
+                {"name": "role", "value": "retrieval-embeddings"},
+            ],
+        }),
+        serde_json::json!({
+            "type": "machine-learning-model",
+            "bom-ref": "urn:bom:injection-classifier",
+            "name": "injection-classifier",
+            "properties": [
+                {"name": "state", "value": crate::screen::screen_classifier_state()},
+                {"name": "role", "value": "ingest-screening"},
+            ],
+        }),
+    ];
+    for d in &domains {
+        components.push(serde_json::json!({
+            "type": "data",
+            "bom-ref": format!("urn:bom:domain:{d}"),
+            "name": crate::gate::sanitize_read(d, false, &principal),
+            "properties": [
+                {"name": "role", "value": "knowledge-store"},
+                {"name": "multi_db", "value": state.registry.is_multi_db().to_string()},
+            ],
+        }));
+    }
+    Ok(Json(serde_json::json!({
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.6",
+        "version": 1,
+        "metadata": {
+            "timestamp": now,
+            "component": {"type": "service", "bom-ref": "urn:bom:brain-server", "name": "brain-server", "version": version},
+        },
+        "components": components,
+    })))
+}

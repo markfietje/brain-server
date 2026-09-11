@@ -6089,6 +6089,35 @@ paths:
                         revoked_by: { type: string }
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
+  /ops/agents/bom:
+    get:
+      summary: Live agent bill of materials, CycloneDX 1.6 shape (Read on global)
+      description: >
+        AgBOM v1.28.81: regenerated per request, never a build snapshot —
+        models (embedder profile, classifier state), knowledge stores
+        (domains), and enforcement posture (authn, write posture, quorum,
+        injection policy) with the static SBOM artifact named. MCP tool
+        inventory lives fork-side (catalog pins); the calling agent's own
+        tools and models are out of this process by construction.
+      operationId: getAgentBom
+      responses:
+        "200":
+          description: Bill of materials
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bomFormat: { type: string }
+                  specVersion: { type: string }
+                  version: { type: integer }
+                  metadata: { type: object }
+                  components:
+                    type: array
+                    items:
+                      type: object
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
   /workflow/runs/{id}/delegations:
     post:
       summary: Delegate a task to a named agent on this run (Write on domain)

@@ -215,6 +215,9 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             "/ops/agents/revocations",
             get(handlers::mesh::get_revocations),
         )
+        // Live agent bill of materials (AgBOM, CycloneDX shape): models,
+        // knowledge stores, enforcement posture — regenerated per request.
+        .route("/ops/agents/bom", get(handlers::mesh::get_bom))
         .route(
             "/workflow/runs/{id}/delegations",
             post(handlers::mesh::post_delegation),
