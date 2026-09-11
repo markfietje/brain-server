@@ -45,6 +45,10 @@ are assumed; swap `BRAIN_TOKEN_FILE`/`-H 'authorization: Bearer …'` as needed.
 | **Approval-fatigue telemetry (ASI09)** (Attestation) | v1.28.62 | `GET /workflow/scoreboard` (DPO/admin) → `review_independence_risk` + `approval_uniformity_ratio` + `review_decisions_window`; pinned to the client detector's arithmetic by `scoreboard_uniformity_matches_client_math` |
 | **Calendar-as-code regulatory watches** (CRA/AI Act/PQC) | v1.28.58–.62 | `cargo test --lib reg_watch` — CRA Art 14 runbook + standby/revocation drill records + the Art 50 marking deliverable + the PQC inventory, each a CI gate |
 | **Provable embedding deletion — purge is not a row delete** (EDPB CEF, Preflight) | v1.28.75 | Ingest → note id, purge id, then `vec0` re-recall negative proves embedding gone (see `reproduce.md` § "Embedding deletion proof"); idempotent — a re-purge of the tombstoned id is a no-op (`purged: 0`), and ids are AUTOINCREMENT so nothing ever re-occupies the erased slot; pinned by DSAR cert `held_ids`/`chain_verifies` + the `/tombstones` registry |
+| **Transport never follows redirects** (Lockdown) | v1.28.80 | Plugin `fetchJson` sends `redirect: manual`; any 3xx refuses as `network` before the bearer can ride it (pinned by `a 3xx refuses without following`) |
+| **Two-principal approval quorum** (Lockdown) | v1.28.80 | `BRAIN_APPROVAL_QUORUM=2`: first approval returns `pending_second` with a hash-chained row; same-principal repeat gets `quorum_same_principal`; distinct second principal promotes (pinned by `quorum_gate_defers_first_and_refuses_same_principal`) |
+| **Visible cross-domain mixing** (Lockdown) | v1.28.80 | Domain-routed recall borrowing global rows returns `included_global: true` (pinned by `global_rescue_flag_marks_cross_domain_mixing`) |
+| **Signed catalog-pin acks** (Lockdown) | v1.28.80 | Pin file carries a detached Ed25519 signature; forged or unsigned files rebuild loudly with every tool re-notifying (pinned by `forged_pins_rebuild_loudly`) |
 
 ## Claims that are ceilings (owned, not shipped)
 
@@ -62,7 +66,7 @@ These are stated in the docs as **honest ceilings** — check them in
   owned.
 - **SOC 2 Type II evidence program** — v1.20.10 + the operator runs it; this
   map is the raw material (refreshed against the current surface in
-  v1.28.62 — the Attestation rows above).
+  v1.28.80 — the Attestation rows plus the Lockdown rows above).
 
 ## Reproduce end to end
 
