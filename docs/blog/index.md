@@ -12,17 +12,17 @@ proof map.
 - [What Mem0's own docs say about lock-in](./05-no-lock-in.md)
 - [OWASP 2026: our control matrix is the sales doc](./06-owasp-matrix.md)
 - [The honest ceiling](./07-honest-ceiling.md)
-- [From twelve products to one (a preview of Profiles)](./08-profiles-preview.md) — *Shipped in v1.21.0 — see docs/configuration.md for the real knobs; preview kept for the record.*
-- [Agent memory for a contact center: what has to be true before you trust it](./09-contact-center-vertex.md) — *BPO / support-center buyer*
-- [DeepSeek Harness (dsh) meets Brain Server: agent memory as an MCP server](./10-dsh-deepseek-harness.md) — *dsh / agent-harness interoperability*
-- [The loop runs: what it means for an engine to ask permission](./11-the-loop-runs.md) — *v1.28 FirstLight / Anvil / Settle*
-- [The 500 that proved the audit chain works](./12-the-500-that-proved-the-chain.md) — *failure post-mortem, fail-closed evidence*
-- [Dual-era MCP without the handshake tax](./13-dual-era-mcp.md) — *MCP 2026-07-28 + 2025-11-25 interoperability*
-- [Four copies of sha256_hex](./14-four-copies-of-sha256-hex.md) — *what happened when we let a machine audit our own repo*
-- [Prompt injection made stateful — and the memory layer that was built for it](./15-prompt-injection-made-stateful.md) — *the 2026 memory-poisoning research, and the architectural answer*
-- [Two people have to say yes](./16-two-people-have-to-say-yes.md) — *approval fatigue and the two-principal quorum*
-- [The redirect that never happens](./17-the-redirect-that-never-happens.md) — *bearer safety and manual-redirect transport*
-- [Signatures with a stated ceiling](./18-signatures-with-a-stated-ceiling.md) — *signed pin acks, TOFU limits stated plainly*
-- [Visible mixing beats pretend isolation](./19-visible-mixing-beats-pretend-isolation.md) — *the included_global flag and honest tenancy*
+- [From twelve products to one (a preview of Profiles)](./08-profiles-preview.md), *Shipped in v1.21.0, see docs/configuration.md for the real knobs; preview kept for the record.*
+- [Agent memory for a contact center: what has to be true before you trust it](./09-contact-center-vertex.md), *BPO / support-center buyer*
+- [DeepSeek Harness (dsh) meets Brain Server: agent memory as an MCP server](./10-dsh-deepseek-harness.md), *dsh / agent-harness interoperability*
+- [The loop runs: what it means for an engine to ask permission](./11-the-loop-runs.md), *v1.28 FirstLight / Anvil / Settle*
+- [The 500 that proved the audit chain works](./12-the-500-that-proved-the-chain.md), *failure post-mortem, fail-closed evidence*
+- [Dual-era MCP without the handshake tax](./13-dual-era-mcp.md), *MCP 2026-07-28 + 2025-11-25 interoperability*
+- [Four copies of sha256_hex](./14-four-copies-of-sha256-hex.md), *what happened when we let a machine audit our own repo*
+- [Prompt injection made stateful, and the memory layer that was built for it](./15-prompt-injection-made-stateful.md), *the 2026 memory-poisoning research, and the architectural answer*
+- [Two people have to say yes](./16-two-people-have-to-say-yes.md), *approval fatigue and the two-principal quorum*
+- [The redirect that never happens](./17-the-redirect-that-never-happens.md), *bearer safety and manual-redirect transport*
+- [Signatures with a stated ceiling](./18-signatures-with-a-stated-ceiling.md), *signed pin acks, TOFU limits stated plainly*
+- [Visible mixing beats pretend isolation](./19-visible-mixing-beats-pretend-isolation.md), *the included_global flag and honest tenancy*
 
 Positions and one-liners live in the [media kit](../media-kit.md).

@@ -6,7 +6,7 @@
 
 Vector + lexical retrieval find a chunk that *contains* the answer, but they
 cannot follow a multi-hop association ("who works at acme and reports to
-carol?"). Graph retrieval walks the knowledge graph to bridge that gap — yet a
+carol?"). Graph retrieval walks the knowledge graph to bridge that gap, yet a
 naive BFS over a noisy graph returns garbage.
 
 ## The reference
@@ -23,14 +23,14 @@ faithful to the reference:
 
 - `PPR_ALPHA = 0.5` (the reference's real default, not the 0.85 some drafts
   quote), `PPR_EPSILON = 1e-6`, `MAX_PPR_ITER = 50`, `MAX_VISITED = 256`.
-- **No LLM, no new schema, no embeddings in the graph leg** — the `< 5 W`
+- **No LLM, no new schema, no embeddings in the graph leg**, the `< 5 W`
   manifesto holds. Edge weight = `COUNT(DISTINCT knowledge_id)` per pair,
   scaled by relation-type (see the Discern explainer).
 - Seeds = query→entity-name containment via the existing linker vocabulary;
   top entities expand back to chunks (respecting `flagged=0` / `valid_to IS
   NULL` visibility).
 - Opt-in `?graph=true` as a **third RRF leg** (`RRF_K = 60`, rank-based, shared
-  with the in-domain fusion) — the disabled path pays zero latency.
+  with the in-domain fusion), the disabled path pays zero latency.
 
 ## Measured ceiling
 

@@ -7,15 +7,15 @@
 
 A single embedding store mixes unrelated corpora (engineering notes, HR policy,
 a client's GDPR posture). Retrieval is cheapest and cleanest when a query is
-answered **within one domain** (strict isolation — no cross-"noise") and only
+answered **within one domain** (strict isolation, no cross-"noise") and only
 falls back to federating across domains when no single domain is confident. The
 question: how to decide, at query time and at ingest time, *which* domain a
-chunk or query belongs to — **deterministically**, with no learned router and
+chunk or query belongs to, **deterministically**, with no learned router and
 no data egress.
 
 ## The reference
 
-- **Nearest-centroid classification** — represent each class by its
+- **Nearest-centroid classification**, represent each class by its
   arithmetic-mean prototype vector and assign a query to the nearest prototype
   by a similarity measure. The mean-vector class prototype is the Rocchio
   relevance-feedback idea (Rocchio, 1971, "Relevance Feedback in Information
@@ -34,7 +34,7 @@ no data egress.
    domain's mean embedding, stored once in the global DB as `domain_centroids`
    (a raw le-bytes blob). Compute sources the *live* `vec_knowledge` int8 index
    (`read_domain_vectors`, dequantized via `decode_embedding`), not the legacy
-   frozen `embeddings` table — the v1.13.0 fix that stopped centroids silently
+   frozen `embeddings` table, the v1.13.0 fix that stopped centroids silently
    zeroing on live DBs.
 2. **Query routing** (`route`): cosine(query, centroid) for every domain;
    keep the single best above `DOMAIN_CONFIDENCE_THRESHOLD` (default 0.30),
@@ -54,13 +54,13 @@ no data egress.
 
 ## Measured ceiling
 
-- The centroid is a **plain arithmetic mean, not learned** — the documented
+- The centroid is a **plain arithmetic mean, not learned**, the documented
   (and unit-tested) upgrade path is a per-domain probe-set or SVM if a corpus
   needs sharper separation. Routing confidence is one cosine threshold, not a
   calibrated probability.
 - Strict routing **hard-isolates**: a confident route searches that domain
   exclusively and cannot see a better answer in another domain. Both directions
-  of the isolation tradeoff are deliberate — the threshold + federation
+  of the isolation tradeoff are deliberate, the threshold + federation
   fallback is the escape valve.
 - `DOMAIN_MIN_COUNT = 1` means a single-vector domain keeps a centroid that is
   *exactly* that vector (nothing suppressed) unless the operator raises the
@@ -70,5 +70,5 @@ no data egress.
   `auth.rs`/`gate.rs` (v1.27.x), not this module.
 
 *Pinned by the unit tests (`route_picks_best_above_threshold`,
-`route_returns_none_below_threshold`, `route_domain_label_is_deterministic`) —
+`route_returns_none_below_threshold`, `route_domain_label_is_deterministic`),
 the routing arithmetic is proven, not asserted.*

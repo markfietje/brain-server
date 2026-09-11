@@ -17,7 +17,7 @@ rank-based method and stores vectors in a space-efficient quantized form.
 - **Reciprocal Rank Fusion (RRF).** Cormack, G. V., Clarke, C. L. A., &
   Büttcher, S. (2009). *Reciprocal Rank Fusion Outperforms Condorcet and
   Individual Rank Learning Methods.* SIGIR '09. RRF scores each document
-  `1/(k + rank)` and sums across result lists — it needs only ranks, not
+  `1/(k + rank)` and sums across result lists, it needs only ranks, not
   scores, so it fuses lists on incomparable scales. The paper reports it
   outperforming individual systems and Condorcet/CombMNZ on TREC + LETOR.
   Brain Server uses the same constant `RRF_K = 60` (`src/search/mod.rs:29`),
@@ -30,29 +30,29 @@ rank-based method and stores vectors in a space-efficient quantized form.
   TPAMI 33(1). Brain Server stores vectors in **int8 and binary** quantized
   form in a `vec0` table (`vec_quantize_int8(…,'unit')` +
   `vec_quantize_binary(…)`), trading a little precision for 4–32× smaller
-  storage and faster scans — the same quantization family PQ belongs to.
+  storage and faster scans, the same quantization family PQ belongs to.
 
 ## The implementation
 
-- **Vector leg** — a `vec0` KNN over int8/binary-quantized embeddings from the
+- **Vector leg**, a `vec0` KNN over int8/binary-quantized embeddings from the
   static local model (`model2vec` / `minishlab/potion-retrieval-32M`).
-- **Lexical leg** — SQLite FTS5 / BM25 for exact terms, phrases, exclusions,
+- **Lexical leg**, SQLite FTS5 / BM25 for exact terms, phrases, exclusions,
   and code paths.
-- **Graph leg (opt-in `?graph=true`)** — Personalized PageRank, fused as a
+- **Graph leg (opt-in `?graph=true`)**, Personalized PageRank, fused as a
   third RRF leg (see [Personalized PageRank](./04-ppr-graph.md)).
-- **Fusion** — `rrf_fuse` sums `1/(k + rank)` across the legs with
+- **Fusion**, `rrf_fuse` sums `1/(k + rank)` across the legs with
   `RRF_K = 60`. Because RRF is rank-based, the vector and lexical scores never
   need to be normalized against each other.
-- **Deterministic query expansion (PRF)** — only fires when the cross-retriever
+- **Deterministic query expansion (PRF)**, only fires when the cross-retriever
   evidence agrees (see [The PRF Gate](./07-prf-evidence.md)), so expansion is a
   *gate*, not a blanket rewrite.
-- **Structure-aware chunking** — `src/chunker.rs` splits CommonMark-aware
+- **Structure-aware chunking**, `src/chunker.rs` splits CommonMark-aware
   (heading splits, code-fence-safe) rather than at fixed byte boundaries, so a
   code path or a heading isn't torn across chunks.
 
 ## Measured ceiling
 
-- RRF is unsupervised and parameter-light — a strength (no tuning) and a
+- RRF is unsupervised and parameter-light, a strength (no tuning) and a
   ceiling (it does not learn per-query fusion weights; learned fusion is a v2.x
   option).
 - int8/binary quantization reduces precision relative to float32 embeddings;
@@ -68,7 +68,7 @@ rank-based method and stores vectors in a space-efficient quantized form.
 
 ## Related
 
-- [Personalized PageRank graph retrieval](./04-ppr-graph.md) — the third RRF leg.
-- [The PRF gate + evidence-faithful snippet](./07-prf-evidence.md) — when expansion fires.
-- [Bi-temporal knowledge graph](./01-bi-temporal.md) — the `?at=` filter applied across legs.
-- [Retrieval & recall](../retrieval-and-recall.md) — the operator view.
+- [Personalized PageRank graph retrieval](./04-ppr-graph.md), the third RRF leg.
+- [The PRF gate + evidence-faithful snippet](./07-prf-evidence.md), when expansion fires.
+- [Bi-temporal knowledge graph](./01-bi-temporal.md), the `?at=` filter applied across legs.
+- [Retrieval & recall](../retrieval-and-recall.md), the operator view.

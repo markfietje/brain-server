@@ -118,6 +118,7 @@
 - [The redirect that never happens](./blog/17-the-redirect-that-never-happens.md)
 - [Signatures with a stated ceiling](./blog/18-signatures-with-a-stated-ceiling.md)
 - [Visible mixing beats pretend isolation](./blog/19-visible-mixing-beats-pretend-isolation.md)
+- [Why I built the governance layer](./blog/20-why-i-built-the-governance-layer.md)
 
 # Product site
 

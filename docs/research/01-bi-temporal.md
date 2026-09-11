@@ -6,7 +6,7 @@
 ## The problem
 
 Memory stores usually overwrite a fact when a newer one arrives. That silently
-destroys *history* — the one thing an audit-driven agent memory must keep.
+destroys *history*, the one thing an audit-driven agent memory must keep.
 When was this fact true? When did it stop being true? A store that answers
 those two questions is bi-temporal: it tracks both **valid time** (when the
 fact holds in the world) and, via the audit chain, **when the store learned
@@ -24,21 +24,21 @@ old fact, never delete it** (`resolve_edge_contradictions`).
 brain-server stores `knowledge.valid_from` / `valid_to` (added v0.9.8, wired
 bi-temporal v1.4.0):
 
-- `src/temporal.rs::extract_interval(text, now)` — a **deterministic** marker
+- `src/temporal.rs::extract_interval(text, now)`, a **deterministic** marker
   extractor ("from 2011 to 2017", "since 2020", "currently" → `valid_at = now`).
   English, bounded marker set, no LLM.
 - The bi-temporal filter used by every retrieval leg is exactly the Graphiti
   shape: `valid_at <= ? AND (invalid_at IS NULL OR invalid_at > ?)`.
 - `/recall` and `/graph/traverse` accept `?at=<time>`; `?since=` is normalized
   alongside. Superseding a chunk sets `valid_to = now` (v1.6
-  `resolve_supersession`) — the old fact becomes invisible to *default* recall
+  `resolve_supersession`), the old fact becomes invisible to *default* recall
   but still retrievable with `?at=<past>`.
 
 Graph edges carry the **full SQL:2011 / Snodgrass four-timestamp model**
 (v1.27.22): the `relationships` table keeps `valid_at`/`invalid_at` (valid
 time) plus `created_at`/`superseded_at` (transaction time). A corrected belief
 on re-ingest (`src/graph_supersede.rs::resolve_edge_insert`) sets the old
-edge's `superseded_at` — not its `invalid_at` — because the valid interval of
+edge's `superseded_at`, not its `invalid_at`, because the valid interval of
 the old version is still the truth-as-believed; only the store's belief moved.
 The old row is preserved verbatim; `superseded_at IS NULL` marks the current
 belief, and `GET /graph/relationships/{id}/history` reconstructs the full
@@ -54,5 +54,5 @@ version lineage from any one version id.
 - The KG (`entities`/`relationships`) has its own `?at=` filter; chunk-level
   supersession is separate from graph-edge temporality.
 
-*See the audit-replay playbook in `COMPLIANCE.md` §3.6 — bi-temporal validity is
+*See the audit-replay playbook in `COMPLIANCE.md` §3.6, bi-temporal validity is
 what lets you answer "what did the agent believe at time T?"*

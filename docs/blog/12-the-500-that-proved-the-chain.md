@@ -1,6 +1,6 @@
 # The 500 that proved the audit chain works
 
-*2026. A scoreboard endpoint crashed on a column that never existed — and the repair is a better argument for the audit design than the feature ever was.*
+*2026. A scoreboard endpoint crashed on a column that never existed, and the repair is a better argument for the audit design than the feature ever was.*
 
 We ship an "honest ceilings" post because trust compounds when a vendor states
 its limits. This post is the same discipline pointed inward: a real bug we
@@ -9,7 +9,7 @@ systems that fail *closed*.
 
 ## The bug: querying a column that never existed
 
-`GET /workflow/scoreboard` — the DPO's outcome dashboard over governed runs —
+`GET /workflow/scoreboard`, the DPO's outcome dashboard over governed runs,
 returned `500` with an honest message:
 
 ```
@@ -19,8 +19,8 @@ FROM audit_events WHERE kind = 'workflow'
 
 The scoreboard's job is fail-closed green: a run only counts as "audited" when
 an audit row actually references it. The query assumed audit rows carried a
-plain-text integer target. They never did. **The audit schema stores hashes** —
-`target_hash`, `detail_hash`, SHA-256 over the canonical strings — so a
+plain-text integer target. They never did. **The audit schema stores hashes**,
+`target_hash`, `detail_hash`, SHA-256 over the canonical strings, so a
 reader cannot reconstruct references by casting; the information simply isn't
 there in plaintext.
 
@@ -31,27 +31,27 @@ the first live sweep.
 
 ## The repair: reconstruct honestly or don't reconstruct
 
-Deleting the linkage check would have been easy and wrong — "green" that
+Deleting the linkage check would have been easy and wrong, "green" that
 can't see the evidence isn't green, it's optimistic. Instead:
 
-1. **Name the canonical reference string.** Every run-bound substrate write —
-   open, CAS transition, answer, state read — targets the same string:
+1. **Name the canonical reference string.** Every run-bound substrate write,
+   open, CAS transition, answer, state read, targets the same string:
    `run:{id}`. Outbox rows target `outbox:{key}`; calibration rows other
    strings. The convention already existed; the fix just reads it.
 2. **Reconstruct via membership**: run `id` is audited iff
    `hash("run:{id}")` appears among workflow-kind `target_hash` values.
    One deterministic lookup per candidate run, bounded at 1,000 rows.
-3. **Fail closed**: unparseable store, missing table, absent hash — none of it
+3. **Fail closed**: unparseable store, missing table, absent hash, none of it
    counts as green. Absence never lights up.
 
-Pinned by an in-memory regression test with three rows — linked, unlinked,
-wrong-kind — asserting exactly one survives.
+Pinned by an in-memory regression test with three rows, linked, unlinked,
+wrong-kind, asserting exactly one survives.
 
 ## The sibling bug: contracts live at boundaries
 
 The same live sweep surfaced a second failure with the same lesson in a
 different costume. The token file supports rotation by holding multiple
-whitespace-separated slots — the **server** accepts every slot. Our five
+whitespace-separated slots, the **server** accepts every slot. Our five
 client binaries (`brain`, `mcp`, `bench`, both connectors) read the file,
 trimmed outer whitespace, and pasted *the whole multi-line blob* into one
 `Authorization` header. The embedded newline corrupted the request into an

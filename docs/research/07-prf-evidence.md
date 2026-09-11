@@ -11,17 +11,17 @@ snippet the server fabricates).
 
 ## The reference
 
-- **Pseudo-Relevance Feedback (PRF)** — the classical Rocchio/expansion idea:
+- **Pseudo-Relevance Feedback (PRF)**, the classical Rocchio/expansion idea:
   use the top pass-1 results to expand the query. The lesson from v0.9.x: the
   gate must be **reachable**, not decorative.
-- **Faithful evidence** — the "with_snippet" invariant: a snippet is a verbatim
+- **Faithful evidence**, the "with_snippet" invariant: a snippet is a verbatim
   substring of the source, and highlights are byte-offset ranges *within* it.
 
 ## The implementation
 
 1. **Reachable PRF gate** (`v0.9.1`): `prf_should_expand` fires expansion only
    when the top pass-1 result appears in **both** dense and lexical lists within
-   a bounded rank — cross-retriever agreement, so expansion never fires on
+   a bounded rank, cross-retriever agreement, so expansion never fires on
    noise. The prior gate compared an RRF-fused score against an unreachable
    `0.3` (top RRF ≈ `2/60 ≈ 0.033`) and never ran. Anti-injection guardrail
    skips quarantined rows.
@@ -36,13 +36,13 @@ snippet the server fabricates).
 
 ## Measured ceiling
 
-- PRF is a **deterministic, agreement-gated** expansion — no learned expansion
+- PRF is a **deterministic, agreement-gated** expansion, no learned expansion
   model. The anti-injection guardrail keeps quarantined content out of the
   expansion terms.
 - Highlights are on the snippet window (redaction by design); a client wanting
   highlights over the *full* chunk calls `/get/{id}`.
 - Legacy pre-v0.9.4 rows carry `None` source linkage (graceful), so their
-  `source_uri`/`revision_id` are absent — the "unlinked chunk" ceiling.
+  `source_uri`/`revision_id` are absent, the "unlinked chunk" ceiling.
 
-*The `Evidence` shape is what the `/ops` and `/register` console surfaces render —
+*The `Evidence` shape is what the `/ops` and `/register` console surfaces render,
 provenance as the retrieval primitive.*
