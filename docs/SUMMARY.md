@@ -124,6 +124,7 @@
 - [Signatures with a stated ceiling](./blog/18-signatures-with-a-stated-ceiling.md)
 - [Visible mixing beats pretend isolation](./blog/19-visible-mixing-beats-pretend-isolation.md)
 - [Why I built the governance layer](./blog/20-why-i-built-the-governance-layer.md)
+- [The week runtime enforcement got a standard](./blog/21-runtime-enforcement-got-a-standard.md)
 
 # Product site
 
