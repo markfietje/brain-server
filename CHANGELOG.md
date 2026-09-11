@@ -25,7 +25,10 @@ inseparable envelope; catalog-pin acknowledgments are signed; total-grant
 scopes and unauthenticated boot are fail-closed admissions; approvals can
 require two distinct principals; recall, health, and verify responses
 surface the posture that was previously implicit. No schema; wire additive
-only; x-api-version unchanged.
+only; x-api-version unchanged. Also ships `docs/US_STATE_MAP.md`: a
+date-verified (2026-09-11) operator runbook mapping TX/CA/CO/UT/IL/NYC/CT/FL/WA
+duties to live component evidence, with a live-now vs scheduled status
+snapshot — the US counterpart to the CRA reporting runbook.
 
 ### Release notes
 

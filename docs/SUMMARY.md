@@ -75,6 +75,7 @@
 - [Memory-poisoning mitigation (MemGhost / ASI06)](MEMGHOST_MITIGATION.md)
 - [AI literacy playbook (EU AI Act Art 4)](AI_LITERACY.md)
 - [California ADMT transparency](admt.md)
+- [US state AI map (operator runbook)](US_STATE_MAP.md)
 - [CRA evidentiary kit](cra.md)
 - [CRA reporting runbook](cra-reporting-runbook.md)
 - [CRA 30-minute DSAR drill](CRA_DSAR_DRILL_20260808.md)

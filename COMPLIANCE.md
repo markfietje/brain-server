@@ -256,9 +256,9 @@ explicit operator action.
   | **Texas TRAIGA** (signed Jun 2025) | Intent-based prohibition (no AI use with intent to discriminate/deceive/violate law), AG enforcement, no private right | **1 Jan 2026** (enforcement 2026) | Trace + retention report evidence "reasonable oversight" |
   | **California** ADMT full regime (see above) | ADMT right-to-know / opt-out | **1 Jan 2027** | As above |
 
-  Enumerating all ~13 state trackers would stale fast — CA/CO/TX are the
-  representative rows a US reviewer needs; the pattern is "trace + retention
-  report = reasonable oversight."
+  CA/CO/TX above are the representative rows a US reviewer asks for first; the pattern is "trace + retention
+  report = reasonable oversight." Full 50-state operator map with all enacted duties, dates, and deployer checklists lives in
+  `docs/US_STATE_MAP.md` (Sep 11 2026 round: TX TRAIGA Jan 1 2026 live, CA SB53/AB2013 Jan 1 2026 live, CA SB942 covered-provider Aug 2 2026 live, IL HB3773 Jan 1 2026 live, UT SB149 live as amended 2025, NYC LL144 live since 2023, CT Oct 1 2026 / Oct 1 2027 phased, CO SB26-189 Jan 1 2027 scheduled, CA ADMT Jan 1 2027 scheduled, plus FL/WA narrow + 40-state deepfake/election bucket).
 
 ### 6.4 EU AI Act Art 4 (AI literacy)
 
@@ -582,3 +582,9 @@ the boundary, encryption, and monitoring layers the operator positions.
   `ph-manila`), the evidence a residency clause or a jurisdiction map (§6.3)
   points at. A stamp is never rewritten, so history is preserved across a
   region change.
+
+## 11. US 50-State Round - Sep 11 2026 (append-only)
+
+Correction: prior rounds tracked CA/CO/TX only and listed SB942 as Jan 1 2026. Corrected timeline - SB942 covered-provider duties operative Aug 2 2026 per AB853 amendments (platform/hosting/capture phases 2027-2028), CO SB24-205 repealed by SB26-189 signed May 14 2026 with Jan 1 2027 ADMT regime (old Jun 30 2026 date dead), CT PA26-15/PA26-100 phased Oct 1 2026 then Oct 1 2027 AEDT.
+
+Scope statement for US reviewers: brain-server v1.28.80 as a memory component does not trigger frontier-developer duties (CA SB53), training-data duties (CA AB2013), or detection-tool duties (CA SB942) by itself. It supplies trace + audit + DSAR purge/tombstone/certificate + export provenance + retention report + legal hold + proposal gate that deployer impact assessments, bias audits (NYC LL144, IL HB3773), disclosure copy (UT, CT, CA deployer layer), and takedown SOPs (TX TRAIGA, FL, deepfake bucket) consume. All consequential-decision compliance (CO/CA ADMT assessments, notices, opt-outs, human review) remains operator duty. See docs/US_STATE_MAP.md for the full table and enterprise profile snippet. Within stated scope / subject to operator attestation - ISO 42001 / SOC 2 remain external audits.
