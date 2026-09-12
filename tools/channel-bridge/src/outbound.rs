@@ -229,6 +229,26 @@ pub(crate) async fn quarantine_media(app: &App, media_id: &str) -> Result<Quaran
         .context("graph media metadata missing url")?
         .to_string();
 
+    // Egress gate (2026-09-11 audit): the download URL comes from a Graph
+    // API RESPONSE BODY — validate scheme + host before attaching the
+    // bearer. https only; no IP literals (a URL host that IS an address
+    // bypasses name-based expectations); no .local names.
+    {
+        let parsed = reqwest::Url::parse(&download_url).context("media url invalid")?;
+        if parsed.scheme() != "https" {
+            anyhow::bail!("media download url refused: scheme {} (https only)", parsed.scheme());
+        }
+        let host = parsed
+            .host_str()
+            .context("media download url refused: no host")?;
+        if host.parse::<std::net::IpAddr>().is_ok() {
+            anyhow::bail!("media download url refused: IP-literal host {host}");
+        }
+        if host.ends_with(".local") || host.eq_ignore_ascii_case("localhost") {
+            anyhow::bail!("media download url refused: local name {host}");
+        }
+    }
+
     let bytes = app
         .http
         .get(download_url)

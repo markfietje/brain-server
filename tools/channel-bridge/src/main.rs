@@ -185,6 +185,10 @@ fn build_app(
 ) -> Result<App> {
     let http = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
+        // Egress law (2026-09-11 audit): the bearer NEVER rides a redirect —
+        // a compromised upstream answering 3xx must not aim the credential
+        // at another origin.
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("http client build failed")?;
     Ok(App {
