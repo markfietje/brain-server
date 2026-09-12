@@ -236,7 +236,10 @@ pub(crate) async fn quarantine_media(app: &App, media_id: &str) -> Result<Quaran
     {
         let parsed = reqwest::Url::parse(&download_url).context("media url invalid")?;
         if parsed.scheme() != "https" {
-            anyhow::bail!("media download url refused: scheme {} (https only)", parsed.scheme());
+            anyhow::bail!(
+                "media download url refused: scheme {} (https only)",
+                parsed.scheme()
+            );
         }
         let host = parsed
             .host_str()
