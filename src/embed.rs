@@ -23,6 +23,7 @@
 #![deny(unsafe_code)]
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // ── Error ───────────────────────────────────────────────────────────────────
 
@@ -91,6 +92,71 @@ pub trait Embedder: Send + Sync {
 /// same chunk. Pinned by `embed_input_is_budgeted`.
 pub const MAX_EMBED_CHARS: usize = 8_000;
 
+/// Saturation visibility for the embedder ceiling (std-only, zero new
+/// dependencies).
+///
+/// The model is the tier's serialization point (the neural backends hold the
+/// forward pass under a `Mutex`; the static backend is CPU-bound on the same
+/// box). This gauge answers "how deep was the queue at the model" without
+/// touching the lock discipline: `enter()` bumps in-flight and folds the
+/// peak into `max_observed` (both `Relaxed` — each counter is independent
+/// and only ever increases, the `concurrency.rs` precedent). The guard
+/// decrements on drop, so early returns and panics cannot leak the count.
+/// Read the peak from `/metrics`-side code via [`SatGauge::max_observed`];
+/// [`SatGauge::current`] is the live depth. Keep the `Mutex` — the gauge
+/// observes the ceiling, it never replaces the lock.
+#[derive(Debug, Default)]
+pub struct SatGauge {
+    current: AtomicUsize,
+    max_observed: AtomicUsize,
+}
+
+impl SatGauge {
+    /// Enter the ceiling: bumps in-flight, folds the peak. Hold the
+    /// returned guard for the whole critical section.
+    pub fn enter(&self) -> SatGuard<'_> {
+        let cur = self.current.fetch_add(1, Ordering::Relaxed) + 1;
+        // Fold the peak: only ever raises max_observed; a lost CAS race
+        // retries, a stale read just means another thread already raised it.
+        let mut peak = self.max_observed.load(Ordering::Relaxed);
+        while cur > peak {
+            match self.max_observed.compare_exchange_weak(
+                peak,
+                cur,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(actual) => peak = actual,
+            }
+        }
+        SatGuard { gauge: self }
+    }
+
+    /// Live queue depth at the model.
+    pub fn current(&self) -> usize {
+        self.current.load(Ordering::Relaxed)
+    }
+
+    /// Deepest queue observed since process start (monotonic).
+    pub fn max_observed(&self) -> usize {
+        self.max_observed.load(Ordering::Relaxed)
+    }
+}
+
+/// RAII slot at the embedder ceiling. Drops the in-flight count on scope
+/// exit — panic-safe by construction.
+#[derive(Debug)]
+pub struct SatGuard<'a> {
+    gauge: &'a SatGauge,
+}
+
+impl Drop for SatGuard<'_> {
+    fn drop(&mut self) {
+        self.gauge.current.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// Char-boundary-safe head truncation to [`MAX_EMBED_CHARS`].
 pub(crate) fn embed_input(text: &str) -> &str {
     text.char_indices()
@@ -106,6 +172,10 @@ pub(crate) fn embed_input(text: &str) -> &str {
 pub struct StaticEmbedder {
     inner: model2vec_rs::model::StaticModel,
     id: String,
+    /// Saturation gauge for the static ceiling (see [`SatGauge`]). Held for
+    /// the whole `encode` call — the queue depth at the model is visible
+    /// without changing the lock-free `&self` discipline of this backend.
+    sat: SatGauge,
 }
 
 impl StaticEmbedder {
@@ -115,12 +185,29 @@ impl StaticEmbedder {
         let id = id.into();
         let inner = model2vec_rs::model::StaticModel::from_pretrained(&id, None, Some(true), None)
             .map_err(|e| EmbedError::Load(format!("model2vec {id}: {e}")))?;
-        Ok(Self { inner, id })
+        Ok(Self {
+            inner,
+            id,
+            sat: SatGauge::default(),
+        })
+    }
+
+    /// Deepest encode queue observed on this backend (the ceiling signal).
+    pub fn saturation_peak(&self) -> usize {
+        self.sat.max_observed()
+    }
+
+    /// Live encodes in flight on this backend.
+    pub fn saturation_current(&self) -> usize {
+        self.sat.current()
     }
 }
 
 impl Embedder for StaticEmbedder {
     fn encode(&self, texts: &[&str]) -> Vec<Vec<f32>> {
+        // The gauge observes; the encode stays verbatim (byte-identical
+        // contract — the golden-vector test pins the output).
+        let _slot = self.sat.enter();
         // model2vec-rs 0.1.4: `encode(&self, sentences: &[String]) -> Vec<Vec<f32>>`.
         // It takes owned Strings (not generic AsRef<str>), so build the slice.
         // The one allocation per call is negligible vs the static-token lookup.
@@ -405,6 +492,113 @@ mod tests {
         // Multi-byte boundary: the cut lands ON a char edge, never mid-char.
         let wide = "é".repeat(MAX_EMBED_CHARS + 10);
         assert_eq!(embed_input(&wide).chars().count(), MAX_EMBED_CHARS);
+    }
+
+    #[test]
+    fn sat_gauge_tracks_peak_and_returns_to_rest() {
+        // Unit pin for the gauge alone: peak folds monotonically, the count
+        // returns to zero when every guard drops (early-return/panic safety
+        // comes from Drop, exercised here by scope exit).
+        let g = SatGauge::default();
+        assert_eq!(g.current(), 0);
+        assert_eq!(g.max_observed(), 0);
+        {
+            let _a = g.enter();
+            assert_eq!(g.current(), 1);
+            {
+                let _b = g.enter();
+                let _c = g.enter();
+                assert_eq!(g.current(), 3);
+                assert_eq!(g.max_observed(), 3);
+            }
+            assert_eq!(g.current(), 1, "dropped guards must decrement");
+            assert_eq!(g.max_observed(), 3, "the peak never comes down");
+        }
+        assert_eq!(g.current(), 0);
+        assert_eq!(g.max_observed(), 3);
+    }
+
+    /// Timed contention test (MEASURE): the embedder-ceiling shape — one
+    /// `Mutex` (kept, never replaced) + the [`SatGauge`] observing it. Eight
+    /// threads start together behind a barrier, each holding the ceiling for
+    /// a simulated 50 ms forward pass. Asserts: (1) every output is correct
+    /// (the ceiling never corrupts), (2) the gauge saw the full pile-up
+    /// (peak == 8 — saturation is VISIBLE), (3) wall time proves
+    /// serialization (≥ the better part of 8 × 50 ms — the ceiling works).
+    /// The measured numbers print to stderr (`-- --nocapture` to see them).
+    #[test]
+    fn embedder_ceiling_serializes_contention_and_reports_peak() {
+        use std::sync::{Barrier, Mutex};
+        use std::time::{Duration, Instant};
+
+        const THREADS: usize = 8;
+        const HOLD: Duration = Duration::from_millis(50);
+
+        struct CeiledStub {
+            ceiling: Mutex<()>,
+            sat: SatGauge,
+        }
+        impl Embedder for CeiledStub {
+            fn encode(&self, texts: &[&str]) -> Vec<Vec<f32>> {
+                let _slot = self.sat.enter();
+                let _hold = self.ceiling.lock().unwrap();
+                std::thread::sleep(HOLD); // the simulated forward pass
+                texts.iter().map(|t| vec![t.len() as f32]).collect()
+            }
+            fn model_id(&self) -> &str {
+                "ceiled-stub"
+            }
+        }
+
+        let stub = std::sync::Arc::new(CeiledStub {
+            ceiling: Mutex::new(()),
+            sat: SatGauge::default(),
+        });
+        let barrier = std::sync::Arc::new(Barrier::new(THREADS + 1));
+        let mut handles = Vec::with_capacity(THREADS);
+        for i in 0..THREADS {
+            let (s, b) = (
+                std::sync::Arc::clone(&stub),
+                std::sync::Arc::clone(&barrier),
+            );
+            handles.push(std::thread::spawn(move || {
+                b.wait(); // all threads enter the ceiling together
+                s.encode_one(&format!("payload-{i}"))
+            }));
+        }
+        let t0 = Instant::now();
+        barrier.wait(); // release the pile-up, start the clock
+        let mut outs = Vec::with_capacity(THREADS);
+        for h in handles {
+            outs.push(h.join().expect("worker"));
+        }
+        let wall = t0.elapsed();
+        let peak = stub.sat.max_observed();
+        eprintln!(
+            "embedder ceiling: {THREADS} threads × {} ms hold → wall={} ms peak={} rest={}",
+            HOLD.as_millis(),
+            wall.as_millis(),
+            peak,
+            stub.sat.current()
+        );
+        // (1) correctness under contention: each payload encodes to its own len.
+        let mut lens: Vec<usize> = outs.iter().map(|v| v[0] as usize).collect();
+        lens.sort_unstable();
+        assert_eq!(
+            lens,
+            vec![9; THREADS],
+            "every payload must survive the ceiling"
+        );
+        // (2) saturation visible: the gauge saw the whole pile-up.
+        assert_eq!(peak, THREADS, "the gauge must report the full queue depth");
+        assert_eq!(stub.sat.current(), 0, "all guards dropped at rest");
+        // (3) serialization proved by the clock: 8 × 50 ms serialized = 400
+        // ms; allow generous scheduler slop (barrier skew only ADDS time, and
+        // `sleep` never returns early, so this bound is one-sided safe).
+        assert!(
+            wall >= Duration::from_millis(300),
+            "wall={wall:?}: the ceiling must serialize, not parallelize"
+        );
     }
 
     #[test]

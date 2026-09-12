@@ -197,6 +197,51 @@ pub const SCHEMA_VERSION_V1_1_0: &str = "1.1.0";
 /// code should reference [`SCHEMA_VERSION_V1_1_0`].
 pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 
+/// The newest schema version this binary knows how to migrate *to*. MUST stay
+/// in lockstep with the `schema_version` stamp `run_migration` writes (the
+/// `INSERT INTO schema_meta ... '1.28.77'` in `migration.rs`) — the
+/// `latest_stamp_matches_migration` test below pins the equality so a version
+/// bump in one place without the other fails loudly instead of letting the
+/// rehearsal tool bless a DB it cannot reason about.
+///
+/// Security posture: a source DB stamped NEWER than this is refused loudly
+/// ([`refuse_newer_schema`]) — migrating *down* would silently drop columns
+/// the newer release added, i.e. data loss dressed as a migration.
+pub const LATEST_KNOWN_SCHEMA: &str = "1.28.77";
+
+/// Numeric dotted-version compare (std-only, no semver dependency).
+/// Non-numeric components are skipped (the `schema_ge` precedent in the
+/// rehearsal tool); a shorter prefix compares less (`"1.28" < "1.28.0"`).
+/// Pure — tests never touch process env or disk.
+pub fn schema_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let pa: Vec<u64> = a.split('.').filter_map(|s| s.parse().ok()).collect();
+    let pb: Vec<u64> = b.split('.').filter_map(|s| s.parse().ok()).collect();
+    pa.cmp(&pb)
+}
+
+/// True when `ver` is newer than anything this binary knows. `None`
+/// (pre-`schema_meta` legacy DB) is never "newer" — it is older than
+/// everything by definition.
+pub fn is_newer_than_known(ver: Option<&str>) -> bool {
+    ver.is_some_and(|v| schema_cmp(v, LATEST_KNOWN_SCHEMA) == std::cmp::Ordering::Greater)
+}
+
+/// Fail closed when a DB's stamped version is newer than
+/// [`LATEST_KNOWN_SCHEMA`]. Call BEFORE any migration/copy/verify work: a
+/// newer stamp means a newer release owns this file, and proceeding would
+/// either downgrade the stamp (lying about the schema) or run an old
+/// migration over new tables (data loss). `None` (unstamped legacy) passes —
+/// every known migration is an upgrade from there.
+pub fn refuse_newer_schema(found: Option<&str>) -> Result<(), StorageLayoutError> {
+    if is_newer_than_known(found) {
+        return Err(StorageLayoutError::SchemaTooNew {
+            found: found.unwrap_or("?").to_string(),
+            known: LATEST_KNOWN_SCHEMA,
+        });
+    }
+    Ok(())
+}
+
 /// Read the recorded schema version from `schema_meta`. Returns `None` for a
 /// pre-`schema_meta` DB (treated as "<= v0.8.x" by callers). Pure read; no side
 /// effects. Used by the rehearsal tool's parity check.
@@ -258,6 +303,9 @@ pub enum StorageLayoutError {
     InvalidRoot(String),
     /// Domain name failed validation (unsafe as a filename).
     InvalidDomain(String),
+    /// DB schema stamp is newer than [`LATEST_KNOWN_SCHEMA`] — a newer
+    /// release owns this file; proceeding would downgrade or corrupt it.
+    SchemaTooNew { found: String, known: &'static str },
 }
 
 impl std::fmt::Display for StorageLayoutError {
@@ -265,6 +313,11 @@ impl std::fmt::Display for StorageLayoutError {
         match self {
             Self::InvalidRoot(r) => write!(f, "invalid storage root: {r}"),
             Self::InvalidDomain(d) => write!(f, "invalid domain name {d:?}"),
+            Self::SchemaTooNew { found, known } => write!(
+                f,
+                "refusing: DB schema {found} is newer than this binary knows ({known}) — \
+                 upgrade brain-server before touching this file"
+            ),
         }
     }
 }
@@ -553,6 +606,91 @@ mod tests {
         // When BRAIN_DB_PATH is unset, legacy_db is root/brain.db.
         unsafe { std::env::remove_var("BRAIN_DB_PATH") };
         assert_eq!(layout.legacy_db(), PathBuf::from("/tmp/whatever/brain.db"));
+    }
+
+    #[test]
+    fn schema_cmp_is_numeric_not_lexicographic() {
+        // The pin that matters: lexicographic compare says "1.28.9" >
+        // "1.28.77" ("9" > "7"); numeric says otherwise. A lexicographic
+        // refuse-newer gate would let a 1.28.77 DB look "older" than a
+        // 1.28.9 binary knows — exactly the downgrade the gate exists to stop.
+        assert_eq!(schema_cmp("1.28.9", "1.28.77"), std::cmp::Ordering::Less);
+        assert_eq!(schema_cmp("1.28.77", "1.28.77"), std::cmp::Ordering::Equal);
+        assert_eq!(
+            schema_cmp("1.28.78", "1.28.77"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(schema_cmp("2.0.0", "1.99.99"), std::cmp::Ordering::Greater);
+        assert_eq!(schema_cmp("0.9.9", "1.10.0"), std::cmp::Ordering::Less);
+        assert_eq!(schema_cmp("1.28", "1.28.0"), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn refuse_newer_schema_fails_closed_only_on_newer() {
+        // Unstamped legacy: always an upgrade, never a refusal.
+        assert!(refuse_newer_schema(None).is_ok());
+        assert!(!is_newer_than_known(None));
+        // Known + older: pass.
+        assert!(refuse_newer_schema(Some("0.9.4")).is_ok());
+        assert!(refuse_newer_schema(Some(LATEST_KNOWN_SCHEMA)).is_ok());
+        assert!(!is_newer_than_known(Some(LATEST_KNOWN_SCHEMA)));
+        // Newer: loud refusal naming both versions.
+        let err = refuse_newer_schema(Some("9.99.99")).unwrap_err();
+        assert!(matches!(err, StorageLayoutError::SchemaTooNew { .. }));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("9.99.99"),
+            "must name the found version: {msg}"
+        );
+        assert!(
+            msg.contains(LATEST_KNOWN_SCHEMA),
+            "must name the known ceiling: {msg}"
+        );
+        // The lexicographic trap, end to end: 1.28.77 must NOT read as newer
+        // than a 1.28.9 ceiling (it is newer numerically — this asserts the
+        // gate agrees with numeric truth, not string truth).
+        assert!(is_newer_than_known(Some("1.28.78")));
+        assert!(!is_newer_than_known(Some("1.28.9")));
+    }
+
+    #[test]
+    fn latest_stamp_matches_migration() {
+        // Lockstep pin: every `schema_version` literal `run_migration` stamps
+        // must equal LATEST_KNOWN_SCHEMA. A release bump that edits the stamp
+        // but not the const (or vice versa) makes refuse-newer lie — either
+        // refusing its own DBs or blessing newer ones.
+        let src =
+            std::fs::read_to_string(format!("{}/src/migration.rs", env!("CARGO_MANIFEST_DIR")))
+                .expect("read migration.rs");
+        // Scan the joined source: other schema_meta keys share the same UPSERT
+        // shape (`vec_metric` → 'cosine'), so an upsert literal only counts
+        // when its statement names `schema_version` (both arms of the
+        // version stamp do; the `cosine` statement does not).
+        let flat = src.lines().collect::<Vec<_>>().join("\n");
+        let mut stamps = Vec::new();
+        for (i, _) in flat.match_indices("VALUES ('schema_version', '") {
+            let rest = &flat[i + "VALUES ('schema_version', '".len()..];
+            let end = rest.find('\'').expect("closing quote on stamp");
+            stamps.push(rest[..end].to_string());
+        }
+        for (i, _) in flat.match_indices("DO UPDATE SET value = '") {
+            let rest = &flat[i + "DO UPDATE SET value = '".len()..];
+            let end = rest.find('\'').expect("closing quote on upsert");
+            let window = &flat[flat[..i].rfind(';').map_or(0, |s| s + 1)..i];
+            if window.contains("schema_version") {
+                stamps.push(rest[..end].to_string());
+            }
+        }
+        assert!(
+            !stamps.is_empty(),
+            "no schema_version stamp found — migration moved it"
+        );
+        for s in &stamps {
+            assert_eq!(
+                s, LATEST_KNOWN_SCHEMA,
+                "migration stamps {s} but LATEST_KNOWN_SCHEMA is {LATEST_KNOWN_SCHEMA} — bump both"
+            );
+        }
     }
 
     #[test]

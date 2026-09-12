@@ -84,6 +84,21 @@ impl From<rusqlite::Error> for OfferError {
     }
 }
 
+/// Operator-safe rendering (the error-taxonomy pin in `tests/error_taxonomy.rs`):
+/// fixed prefixes, never raw `Debug` internals. The `Database` message carries
+/// the rusqlite text for server-side diagnosis — it is logged, never placed on
+/// the wire verbatim (the handler maps this type to a status + envelope).
+impl std::fmt::Display for OfferError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing(m) => write!(f, "handover offer incomplete: {m}"),
+            Self::Database(m) => write!(f, "handover store failed: {m}"),
+        }
+    }
+}
+
+impl std::error::Error for OfferError {}
+
 pub struct OfferDraft<'a> {
     pub domain: &'a str,
     pub run_id: i64,

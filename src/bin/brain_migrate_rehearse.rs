@@ -32,12 +32,29 @@ use std::path::{Path, PathBuf};
 use brain_server::backup;
 use brain_server::migration::run_migration;
 use brain_server::register_sqlite_vec::register_sqlite_vec;
-use brain_server::storage_layout::StorageLayout;
+use brain_server::storage_layout::{
+    StorageLayout, refuse_newer_schema, schema_version as read_schema_version_from,
+};
 
 /// Tables covered by the row-count parity check. Matches the schema
 /// surface (the tables `run_migration` creates). A new table added to
 /// the migration must be added here too — `test_migration_schema_contract`
-/// guards the migration side, this list guards the verify side.
+/// guards the migration side, this list guards the verify side, and
+/// `test_parity_tables_all_exist_after_migration` fails if an entry is not
+/// a real migrated table (a typo would count 0 = 0 and pass silently).
+///
+/// Deliberately EXCLUDED (with reason, not oversight):
+/// * `schema_meta` — its row count moves legitimately (version bump +
+///   audit-head pin); the dedicated `schema_version` check covers it.
+/// * `knowledge_fts` — a virtual table with its own explicit check below.
+/// * FTS5 shadows (`knowledge_fts_data/_idx/_content/_docsize/_config`) —
+///   tokenizer-version internals, not parity content.
+/// * `sqlite_sequence` — AUTOINCREMENT bookkeeping, not content.
+/// * `oversight_evidence` + `ropa_registry` — `#[cfg(feature =
+///   "compliance-pack")]`-gated; absent from default builds, so a default
+///   `test_parity_tables_all_exist_after_migration` run would fail on them.
+///   A compliance-pack rehearsal extends the list (0 = 0 under this build
+///   would be theater, not coverage).
 const PARITY_TABLES: &[&str] = &[
     "knowledge",
     "embeddings",
@@ -51,7 +68,49 @@ const PARITY_TABLES: &[&str] = &[
     "connector_checkpoints",
     "audit_events",
     "webhook_queue",
+    "webhook_seen",
     "evidence_links",
+    "revoked_tokens",
+    "refresh_chains",
+    "retention_policy",
+    "profiles",
+    "domain_profiles",
+    "legal_holds",
+    "roles",
+    "breach_events",
+    "breaches",
+    "transfers",
+    "clients",
+    "proposals",
+    "recall_traces",
+    "dsar_requests",
+    "suggest_feedback",
+    "shifts",
+    "presence",
+    "principal_skills",
+    "crew_config",
+    "handover_offers",
+    "case_notes",
+    "case_status_refs",
+    "kcs_translations",
+    "agent_cards",
+    "delegations",
+    "parcel_ledger",
+    "consent_registry",
+    "channel_threads",
+    "channel_user_map",
+    "valet_consents",
+    "workflow_runs",
+    "workflow_steps",
+    "outbox",
+    "findings",
+    "contradictions",
+    "case_articles",
+    "crm_cases",
+    "revoked_principals",
+    "rules",
+    "rule_rates",
+    "domain_centroids",
 ];
 
 /// Size of the random vec0 spot-check. ponytail: 50 is a heuristic — the formal
@@ -229,14 +288,29 @@ fn phase_copy(args: &ResolvedArgs) -> Result<()> {
     remove_sidecars(&args.dest);
 
     let (source_sha, source_size) = sha256_and_size(&args.source)?;
-    let schema_before = read_schema_version(&args.source)?;
 
-    // VACUUM INTO runs from a connection open on SOURCE and writes to dest.
-    // This is the existing primitive `run_migration` uses for pre-migration
-    // backup — defragmented, WAL-flattened.
+    // Open source ONCE: the schema version is read from the SAME session that
+    // runs VACUUM INTO, so the version describes exactly the snapshot being
+    // copied (single-session versioning — no TOCTOU reopen between "what
+    // version is this" and "copy it").
+    let src_conn = Connection::open(&args.source)
+        .with_context(|| format!("open source {}", args.source.display()))?;
+    let schema_before = read_schema_version_from(&src_conn);
+    // Refuse-newer BEFORE dest is touched: a source stamped newer than this
+    // binary knows belongs to a newer release — migrating it down would
+    // silently drop columns (data loss dressed as a migration).
+    refuse_newer_schema(schema_before.as_deref()).with_context(|| {
+        format!(
+            "refusing to rehearse {} (stamped {})",
+            args.source.display(),
+            schema_before.as_deref().unwrap_or("unstamped")
+        )
+    })?;
+
+    // VACUUM INTO runs from the version-checked source session and writes to
+    // dest. This is the existing primitive `run_migration` uses for
+    // pre-migration backup — defragmented, WAL-flattened.
     {
-        let src_conn = Connection::open(&args.source)
-            .with_context(|| format!("open source {}", args.source.display()))?;
         // VACUUM INTO cannot be parameterized; the dest path is operator-
         // supplied and we've already validated it lives under the storage root.
         let sql = format!("VACUUM INTO '{}'", args.dest.display());
@@ -244,6 +318,7 @@ fn phase_copy(args: &ResolvedArgs) -> Result<()> {
             .execute_batch(&sql)
             .with_context(|| format!("VACUUM INTO {}", args.dest.display()))?;
     }
+    drop(src_conn);
 
     // Now open dest separately and bring it up to current schema. This is the
     // exact code path the cutover will run — rehearsing it now is the
@@ -251,7 +326,7 @@ fn phase_copy(args: &ResolvedArgs) -> Result<()> {
     let mut dest_conn = Connection::open(&args.dest)
         .with_context(|| format!("open dest {}", args.dest.display()))?;
     run_migration(&mut dest_conn, 256).context("run_migration on dest")?;
-    let schema_after = read_schema_version(&args.dest)?;
+    let schema_after = read_schema_version_from(&dest_conn);
 
     let meta = CopyMeta {
         source_sha256: source_sha,
@@ -284,10 +359,25 @@ fn copy_meta_path(dest: &Path) -> PathBuf {
     PathBuf::from(p)
 }
 
+/// Atomic file write (tmp + rename): the version record in a sidecar must
+/// never exist half-written — a crash between open and close would leave a
+/// truncated JSON that `report` parses as a DIFFERENT version history. The
+/// rename is atomic on POSIX; the tmp name carries the pid so two concurrent
+/// rehearsals never share it.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(format!(".tmp-{}", std::process::id()));
+    let tmp_path = PathBuf::from(tmp);
+    fs::write(&tmp_path, bytes).with_context(|| format!("write {}", tmp_path.display()))?;
+    fs::rename(&tmp_path, path)
+        .with_context(|| format!("rename {} → {}", tmp_path.display(), path.display()))?;
+    Ok(())
+}
+
 fn write_copy_meta(dest: &Path, meta: &CopyMeta) -> Result<()> {
     let path = copy_meta_path(dest);
     let json = serde_json::to_string_pretty(meta)?;
-    fs::write(&path, json).with_context(|| format!("write {}", path.display()))?;
+    write_atomic(&path, json.as_bytes())?;
     Ok(())
 }
 
@@ -324,6 +414,7 @@ impl CheckRow {
     }
 }
 
+#[derive(Debug)]
 struct VerifyReport {
     rows: Vec<CheckRow>,
 }
@@ -346,6 +437,21 @@ fn phase_verify(args: &ResolvedArgs) -> Result<VerifyReport> {
         .with_context(|| format!("open source {}", args.source.display()))?;
     let dst = Connection::open(&args.dest)
         .with_context(|| format!("open dest {}", args.dest.display()))?;
+
+    // 0. Refuse-newer, first: the source may have been upgraded out from
+    // under the rehearsal since `copy` ran. Versions come from the SAME
+    // sessions the parity checks below read — the version and the rows it
+    // describes cannot skew.
+    {
+        let s = read_schema_version_from(&src);
+        refuse_newer_schema(s.as_deref()).with_context(|| {
+            format!(
+                "refusing to verify {} (stamped {})",
+                args.source.display(),
+                s.as_deref().unwrap_or("unstamped")
+            )
+        })?;
+    }
 
     // 1. Per-table row counts.
     for tbl in PARITY_TABLES {
@@ -419,10 +525,11 @@ fn phase_verify(args: &ResolvedArgs) -> Result<VerifyReport> {
         }
     }
 
-    // 5. Schema version: dest must be >= source.
+    // 5. Schema version: dest must be >= source. Read from the same sessions
+    // as the row checks above (single-session versioning).
     {
-        let s = read_schema_version(&args.source)?;
-        let d = read_schema_version(&args.dest)?;
+        let s = read_schema_version_from(&src);
+        let d = read_schema_version_from(&dst);
         let ok = match (s.as_deref(), d.as_deref()) {
             (Some(a), Some(b)) => schema_ge(b, a),
             // Source with no schema_meta predates schema stamping; any dest version is fine.
@@ -592,7 +699,7 @@ fn write_verify_report_file(dest: &Path, report: &VerifyReport) -> Result<()> {
             r.check, r.source, r.dest, r.status, r.note
         ));
     }
-    fs::write(&path, out).with_context(|| format!("write {}", path.display()))?;
+    write_atomic(&path, out.as_bytes())?;
     Ok(())
 }
 
@@ -936,6 +1043,94 @@ mod tests {
             schema_row
         );
         assert!(report.any_failed());
+    }
+
+    #[test]
+    fn test_copy_refuses_newer_source_loudly() {
+        // A source stamped NEWER than this binary knows (a newer release owns
+        // the file) must be refused BEFORE any copy/migration work — proceeding
+        // would run an old migration over new tables or downgrade the stamp.
+        let dir = build_source_db();
+        let source = dir.path().join("brain.db");
+        let dest = dir.path().join("global.db");
+        {
+            let conn = Connection::open(&source).unwrap();
+            conn.execute(
+                "UPDATE schema_meta SET value = '9.99.99' WHERE key = 'schema_version'",
+                [],
+            )
+            .unwrap();
+        }
+        let err = phase_copy(&resolve_args(source, dest)).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("9.99.99"),
+            "refusal must name the found version: {msg}"
+        );
+        assert!(
+            msg.contains("newer"),
+            "refusal must say NEWER loudly: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_verify_refuses_newer_source_loudly() {
+        let dir = build_source_db();
+        let source = dir.path().join("brain.db");
+        let dest = dir.path().join("global.db");
+        phase_copy(&resolve_args(source.clone(), dest.clone())).expect("copy");
+        // The source was replaced/upgraded out from under the rehearsal.
+        {
+            let conn = Connection::open(&source).unwrap();
+            conn.execute(
+                "UPDATE schema_meta SET value = '9.99.99' WHERE key = 'schema_version'",
+                [],
+            )
+            .unwrap();
+        }
+        let err = phase_verify(&resolve_args(source, dest)).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("newer"),
+            "verify must refuse: {err:#}"
+        );
+    }
+
+    #[test]
+    fn test_parity_tables_all_exist_after_migration() {
+        // Self-checking coverage list: every PARITY_TABLES entry must be a
+        // real table the current migration creates (a typo'd name would count
+        // 0 = 0 on both sides and pass silently — this test closes that hole).
+        // schema_meta is deliberately NOT in the list (its row count moves
+        // legitimately: version bump + audit-head pin), and knowledge_fts is
+        // checked explicitly, not via the list.
+        let dir = build_source_db();
+        let db_path = dir.path().join("brain.db");
+        let conn = Connection::open(&db_path).unwrap();
+        for tbl in PARITY_TABLES {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+                    rusqlite::params![tbl],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                n, 1,
+                "PARITY_TABLES lists {tbl:?} but the migration never creates it"
+            );
+        }
+        assert!(
+            !PARITY_TABLES.contains(&"schema_meta"),
+            "schema_meta count moves legitimately — keep it out"
+        );
+        assert!(
+            !PARITY_TABLES.contains(&"knowledge_fts"),
+            "knowledge_fts has its own explicit check — keep it out"
+        );
+        assert!(
+            !PARITY_TABLES.contains(&"sqlite_sequence"),
+            "AUTOINCREMENT bookkeeping is not parity content"
+        );
     }
 
     #[test]

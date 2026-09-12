@@ -424,12 +424,27 @@ pub fn mint_capability_token(
 }
 
 /// Token validation failures — mapped to `unauthorized` at the handler.
+/// `Display` is fixed strings only (the error-taxonomy pin in
+/// `tests/error_taxonomy.rs`): a rejected token must not echo key material,
+/// signatures, or offsets back at the caller, even in an error body.
 #[derive(Debug, PartialEq)]
 pub enum TokenError {
     Malformed,
     BadSignature,
     Expired,
 }
+
+impl std::fmt::Display for TokenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Malformed => write!(f, "malformed token"),
+            Self::BadSignature => write!(f, "bad token signature"),
+            Self::Expired => write!(f, "expired token"),
+        }
+    }
+}
+
+impl std::error::Error for TokenError {}
 
 #[cfg(test)]
 mod tests {

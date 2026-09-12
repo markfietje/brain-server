@@ -383,6 +383,26 @@ mod tests {
         assert!(cache.is_revoked(&conn, "jti-2", "iss").unwrap());
     }
 
+    /// A3 singularity pin: `RevocationCache` is a fieldless unit struct —
+    /// it CANNOT hold a cache, so no future edit can smuggle a TTL/
+    /// staleness window into the revocation decision without changing this
+    /// type (and this test). Ground truth behind the pin: `is_revoked`
+    /// runs one indexed SQL `EXISTS` per call (fail-closed on store error
+    /// at the middleware); the only TTLs anywhere near auth are NOT auth
+    /// decisions — the HTTP/MCP rate-limit windows (60s, `http_limit.rs` +
+    /// `mcp.rs` `McpLimiter`), the MCP SEP-2549 discovery/tools-list cache
+    /// HINTS (`DISCOVER_TTL_MS`/`TOOLS_TTL_MS`, client-side only), and the
+    /// v1.1 opaque-token rotation poll (5s, `config::TOKEN_ROTATION_POLL_SECS`).
+    /// There is no 60s revocation cache; JWT revocation staleness is zero.
+    #[test]
+    fn revocation_cache_is_stateless_unit_struct() {
+        assert_eq!(
+            std::mem::size_of::<RevocationCache>(),
+            0,
+            "RevocationCache must stay fieldless: any field is a future cache/staleness window"
+        );
+    }
+
     #[test]
     fn revoke_is_idempotent() {
         let conn = mem_db();
