@@ -7586,14 +7586,16 @@ Final paragraph after the rule.";
         }
     }
 
-    /// every stored-content read surface passes
+    /// every stored-content read surface LISTED BELOW passes
     /// through the single read seam (`sanitize_read(_opt)`/`sanitize_stored`).
-    /// Mirrors the `authz_gates`/`screen` source-scan style: a hand-maintained
-    /// site table of the response-forming functions that carry stored text,
-    /// each required to reference the seam somewhere in its body. A new read
-    /// path that emits stored content without the seam fails here — this is the
-    /// test the audit's six stragglers (F-17/F-18/F-19/F-21) would have caught.
-    /// The interactive UMP reads sanitize a CLONE of the row before emit (so
+    /// Source-scan style: a hand-maintained site table of the response-forming
+    /// functions that carry stored text, each required to reference the seam
+    /// somewhere in its body. HONEST SCOPE (fourth pass T4-01): this is a
+    /// REGRESSION LOCK for known sites, NOT a detector for new ones — a new
+    /// read path that emits stored content is caught by AUDIT (the six
+    /// stragglers were) and must be ADDED here in the same change. If you are
+    /// adding a stored-text read surface, adding its row here is part of the
+    /// change. The interactive UMP reads sanitize a CLONE of the row before emit (so
     /// integrity stays self-consistent), hence the `sanitize_ump_row_for_read`
     /// helper is the required symbol there rather than an inline seam call.
     #[test]
