@@ -79,6 +79,20 @@ Art 26(6) guidance).
   console or the HTTP API, never an agent call — the `memory_forget` agent tool was removed
   (v1.20.25). This keeps the *irreversible* GDPR Art 17 erasure act under a person's hand and
   audited on the chain, rather than delegable to the LLM.
+- **Erasure-path directive (v1.28.83, Art 17 vs Art 17(3)).** Three erasure
+  paths, three completeness postures — pick by the legal character of the
+  request: (1) **`POST /dsar` purge** = the Art 17 path: subject-wide sweep
+  (vec/FTS/graph/proposals/workflow/feedback arms) + tombstone + signed
+  certificate; (2) **`DELETE /memory/{id}?scrub_proposals=1`** = single-chunk
+  erasure that ALSO reaches the verbatim HITL decision-record copies (each
+  scrub writes its own audit row; the decision record's id/status/digests
+  survive, the content does not); (3) **bare `DELETE /memory/{id}`** =
+  chunk erasure that PRESERVES the approved decision record verbatim (the
+  response discloses `retained_proposal_copies` so the retention is never
+  silent). Path (3) is the default because the decision record is approval
+  evidence — the Art 17(3) balance (retention for legal claims / audit
+  purposes) recorded AT the seam. An Art 17 erasure DEMAND (no 17(3) basis)
+  must use path (1), or path (2) for a single chunk — never bare path (3).
 
 ---
 

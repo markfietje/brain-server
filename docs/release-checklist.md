@@ -26,6 +26,17 @@ cargo fmt --check
 scripts/badges.sh --selfcheck            # version + checklist completeness guards
 ```
 
+> **T5-01 law (2026-09-12): the gate is the FULL `cargo test` invocation —
+> sliced runs (`--lib`, `--test main_suite`, name filters) are diagnostic
+> ONLY and never count as green.** A sliced "green" certified a red tree
+> once: the v1.28.82 closure record listed lib + main_suite green while
+> `authz_matrix` (the binary that owns the kill-switch contract) was 7/22
+> red, and main was unreleasable. Every test binary ships a contract —
+> `authz_matrix` (kill-switch/authz), `main_suite` (seams), plus the lib
+> units — and `cargo test` with no `--test`/`--lib` selector is the only
+> invocation that runs all of them. If time forces a slice during
+> development, the release entry must still record the full run.
+
 The local gate above is not the whole CI matrix (the v1.28.29 and v1.28.31
 lessons). Before every main push, also run the CI dry-run from `AGENTS.md`:
 default-feature clippy/test, the crates + steward-harness + otel jobs, the
