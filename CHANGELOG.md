@@ -17,6 +17,93 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [1.28.82] — 2026-09-12 — "Vigil": the deep-round fix release
+
+Four parallel audit lanes (server auth/seams; storage/crypto/egress/
+workflow; fork-vs-upstream diff; docs reverse-truth) over v1.28.81 found
+19 findings — every code-closeable one is fixed here, the rest are
+disclosed ceilings with owners. Full disposition table in `docs/AUDIT.md`
+§2026-09-11 deep round. No schema; no routes; wire behavior only tightens.
+
+### Release notes
+
+**Security fixes**
+
+- **Cross-tenant channel drain/ack closed (HIGH).** The bridge HMAC
+  authenticates kind+tenant together, but the drain/ack queries dropped
+  the tenant — a same-kind foreign tenant's bridge could see, consume,
+  and ack another tenant's `channel/out` envelopes and handover pings.
+  Every predicate now scopes by the authenticated pair.
+- **Read-seam gaps closed.** `/get/{id}` sanitizes the stored `source`
+  label (the `/quarantine` sibling posture); `/procedure/{id}/steps`
+  passes root + step title/content through the seam; the trace replay
+  strips every string value. All three sites joined the machine seam
+  table.
+- **`traverse:` scopes are exact-kind.** A traverse scope can no longer
+  satisfy Read gates (the documented intent, now enforced); read/write/
+  admin still satisfy Traverse.
+- **Revocation drain actually pages.** Cancels run INSIDE the paging
+  loop — the old shape re-read the identical first 200 rows and capped
+  distinct victims at 200.
+- **DSAR `subject_exact` arms can match.** Exact mode now matches the
+  subject as a whole JSON string value (traces, dry-run counts);
+  object equality never matched a row.
+- **Plaintext temps locked down.** `write_atomic` + restore-verify
+  snapshots are 0600 at creation; the standby promote workdir is 0700
+  with its WAL chunk 0600 — decrypted store bytes are never
+  world-readable in shared dirs.
+- **Legal-hold re-application is honest.** Insert outcomes are counted;
+  a shortfall logs `error!` naming the id instead of claiming success.
+- **Provenance marks reject unknown fields.** Extra keys inside a
+  `provenance` object fail closed as `Tampered` — unbound data can no
+  longer ride a verified mark.
+- **Model-manifest pinning refuses symlinks** (the reader followed them
+  out of the pinned tree).
+- **Egress table gains RFC 8215** local-use NAT64 `64:ff9b:1::/48`
+  (edge-pinned beside its well-known twin).
+- **Channel-bridge egress hardened.** The bridge client never follows
+  redirects, and the Graph `download_url` (a response-body URL) is
+  validated (https only, no IP literals, no local names) before the
+  bearer-attached fetch.
+- **Input bounds.** `source` is capped at 64 bytes on both write seams;
+  `/auth/revoke` caps `jti`/`iss` (128/256).
+- **CodeQL: all 26 open alerts cleared** — every literal HMAC secret in
+  test fixtures replaced with generated key material (`testkeys`
+  helper; xorshift over a numeric seed, no literal key bytes reach a
+  crypto sink). House precedent honored: fixed in code, zero dismissals.
+
+**Improvements**
+
+- The fork's MCP catalog pins gained a PRODUCTION ack path
+  (`BRAIN_MCP_PINS_ACK=1` for one run — see the openclaw-fork changelog);
+  the plugin (0.6.5) refuses multi-line `BRAIN_TOKEN` env values.
+- The `/app` public seat matches the exact segment; the hostcalls
+  dormancy pin walks `src/` recursively (the docs claim is now true at
+  every depth).
+- Docs truth: THREAT_MODEL §5 names the `/export` verbatim + OTLP
+  ceilings; the architecture law names its one seam exception; the
+  deployment runbook carries the loopback-posture checklist
+  (`BRAIN_REQUIRE_AUTH=1`, adopted live on the reference deployment).
+
+**Bug fixes**
+
+- None beyond the above (every item here is also a behavior fix).
+
+### Engineering record
+
+Validation at the release commit: lib 1,202 passed / 1 ignored;
+main_suite 196; all 13 test binaries green under bench; default + otel
+clippy/test lanes clean; channel-bridge 39/39; signal-gateway green;
+fork suites green (pins 11/11, plugin 187/187); `cargo audit` exit 0;
+`merge-tree` vs upstream CLEAN (zero upstream-tracked fork files
+touched). Disclosed ceilings (owners in THREAT_MODEL §5b): OTLP exporter
+outside the validated client (operator-configured endpoint); fork pin
+coverage asymmetric until the U3 upstream PR (spec filed);
+upstream-owned `qs`/`hono`/`joi` advisory overrides (spec filed).
+`ponytail:` this release does NOT implement the OTLP guarded exporter,
+does NOT gate MCP tool first use, does NOT build the taint lattice, and
+does NOT add per-principal quotas.
+
 ## [1.28.81] — 2026-09-11 — "AgBOM": the live agent bill of materials
 
 `GET /ops/agents/bom` (Read on global) emits the dynamic half of the agent

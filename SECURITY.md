@@ -16,7 +16,7 @@ that shipped it and the exact live `curl`/`brain` command that proves it in
 
 | Version | Supported          | Notes |
 | ------- | ------------------ | ----- |
-| 1.28.x  | :white_check_mark: | Current — governed workflow + hostcall mediations + Lockdown transport/approval/visibility controls (through 1.28.81 + the 2026-09-11 deep-round hardening) |
+| 1.28.x  | :white_check_mark: | Current — governed workflow + hostcall mediations + Lockdown transport/approval/visibility controls (through 1.28.82 "Vigil", the deep-round fix release) |
 | 1.27.x  | :white_check_mark: | Previous minor — security fixes only (ends at the AuditRepair re-anchor line) |
 | < 1.27  | :x:                | Unsupported — upgrade before exposing beyond loopback |
 
@@ -715,7 +715,8 @@ rulings) — the runbook's quarterly re-check rule applies.
 
 | Version | Date | Changes |
 |---|---|---|
-| 1.28.81 | 2026-09-11 | "AgBOM" — live agent bill of materials (`GET /ops/agents/bom`, CycloneDX 1.6, regenerated per request). Same-day deep-round hardening on main (post-tag; ships with the next release): tenant-scoped channel drain/ack, exact-kind `traverse:` scopes, read-seam closure on `/get` source + procedure steps + trace replay, `MAX_SOURCE`/revoke-key bounds, in-loop revocation-drain paging, DSAR exact-mode quoted-JSON arms, 0600/0700 plaintext temps, legal-hold reapply honesty, provenance unknown-field rejection, model-manifest symlink refusal, RFC 8215 egress row, bridge redirect/media-URL gates, recursive dormancy pin, plugin 0.6.5 (env-token refusal), fork `BRAIN_MCP_PINS_ACK` production ack path. Record: `docs/AUDIT.md` §2026-09-11 deep round. |
+| 1.28.82 | 2026-09-12 | "Vigil" — the deep-round fix release: tenant-scoped channel drain/ack, read-seam closure (get source, procedure steps, trace replay), exact-kind `traverse:` scopes, revocation-drain paging, DSAR exact-mode arms, 0600/0700 plaintext temps, legal-hold reapply honesty, provenance unknown-field rejection, model-manifest symlink refusal, RFC 8215 egress row, bridge redirect/media gates, `MAX_SOURCE`/revoke-key bounds, recursive dormancy pin, all 26 CodeQL hard-coded-key alerts cleared via generated test keys, plugin 0.6.5. |
+| 1.28.81 | 2026-09-11 | "AgBOM" — live agent bill of materials (`GET /ops/agents/bom`, CycloneDX 1.6, regenerated per request). |
 | 1.28.80 | 2026-09-11 | "Lockdown" — manual-redirect transport, systemPrompt merge-seam sanitize, single-block MCP envelope, signed catalog-pin acks, `BRAIN_REQUIRE_AUTH` + `BRAIN_ALLOW_WILDCARD_GRANT` admissions, optional two-principal quorum (`BRAIN_APPROVAL_QUORUM=2`), `included_global` recall flag, `authn`/tripwire health echoes, JWT `iat`/lifetime bounds, SQL-only revocation checks, per-login refresh families. |
 | 1.28.79 | 2026-09-10 | "Parity" — third-pass close-out: multiline token refusal, redirect re-pin, chat-gated mirrors, quarantine-closed reindex (fork-only files fixed, upstream files spec'd). |
 | 1.28.78 | 2026-09-10 | "Unconditional" — quarantine on every retrieval and ingest leg; at-least-once channel delivery. |
