@@ -1,6 +1,8 @@
 import { describe, expect, test } from "vitest";
 import type { BrainRecallHit } from "./brain-client.js";
+import fixture from "../fixtures/invisible-classes.json";
 import {
+  INVISIBLE_CLASSES,
   MEMORY_BANNER,
   RECALL_ABSTENTION,
   STATIC_SYSTEM_GUIDANCE,
@@ -470,5 +472,45 @@ describe("origin labeling", () => {
     // the formatter itself has no exclusion knob — exclusion lives at the
     // auto-inject call site (index.ts) behind the config posture
     expect(excludeChannelCaptures([hit({ origin: "channel-capture" })])).toEqual([]);
+  });
+});
+
+// ── P4-01 (fourth pass): the four-tree invisible-set drift alarm, plugin lane.
+// The fixture (fixtures/invisible-classes.json, parity-synced into the fork's
+// extension tree) is asserted equal to INVISIBLE_CLASSES over EVERY in-range
+// codepoint — the server lane (src/strip_invisible.rs
+// invisible_set_fixture_is_exhaustive_truth) additionally proves the fixture
+// matches the Rust truth exhaustively, so one file pins four trees.
+describe("invisible set fixture parity (four trees)", () => {
+  test("INVISIBLE_CLASSES strips exactly the fixture's classes, every codepoint", () => {
+    // INVISIBLE_CLASSES carries the `g` flag for .replace() — .test() on a
+    // global regex is STATEFUL (lastIndex advances between calls). Probe via
+    // a non-global clone so each codepoint is tested from position 0.
+    const probe = new RegExp(INVISIBLE_CLASSES.source, "u");
+    const expand = (hex: string): number => parseInt(hex, 16);
+    let checked = 0;
+    for (const cls of fixture.classes as Array<{
+      name: string;
+      ranges: string[][];
+    }>) {
+      for (const [loHex, hiHex] of cls.ranges) {
+        const lo = expand(loHex);
+        const hi = expand(hiHex);
+        for (let cp = lo; cp <= hi; cp++) {
+          const ch = String.fromCodePoint(cp);
+          expect(
+            probe.test(ch),
+            `U+${cp.toString(16).toUpperCase()} (${cls.name}) must match INVISIBLE_CLASSES`,
+          ).toBe(true);
+          checked++;
+        }
+      }
+    }
+    // The full class population is a few hundred codepoints — a fixture that
+    // silently degenerated to nothing would otherwise pass vacuously.
+    expect(checked).toBeGreaterThan(300);
+    for (const v of fixture["visible-samples"] as string[]) {
+      expect(probe.test(String.fromCodePoint(expand(v))), `U+${v} must stay visible`).toBe(false);
+    }
   });
 });

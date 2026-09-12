@@ -2762,4 +2762,42 @@ mod tests {
         );
         assert_eq!(strip_invisible(""), "");
     }
+
+    /// P4-01 (fourth pass): the four-tree invisible-set drift alarm, CLIENT
+    /// lane. The wasm bundle cannot link the server crate, so the vendored
+    /// `is_invisible` below is a hand mirror — this pin holds it to the SAME
+    /// fixture the server proves exhaustively (src/strip_invisible.rs) and the
+    /// plugin probes per codepoint (plugin/src/format.test.ts): every
+    /// in-fixture codepoint stripped, every visible sample kept.
+    #[test]
+    fn invisible_set_fixture_parity() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../plugin/fixtures/invisible-classes.json"))
+                .expect("fixture parses");
+        let mut checked = 0usize;
+        for class in fixture["classes"].as_array().expect("classes") {
+            for r in class["ranges"].as_array().expect("ranges") {
+                let lo = u32::from_str_radix(r[0].as_str().expect("lo hex"), 16).expect("lo");
+                let hi = u32::from_str_radix(r[1].as_str().expect("hi hex"), 16).expect("hi");
+                for cp in lo..=hi {
+                    let c = char::from_u32(cp).expect("scalar value");
+                    assert!(
+                        is_invisible(c),
+                        "U+{cp:04X} ({}) must be stripped by the vendored mirror",
+                        class["name"].as_str().unwrap_or("?")
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(
+            checked > 300,
+            "the fixture degenerated to nothing ({checked})"
+        );
+        for v in fixture["visible-samples"].as_array().expect("visible") {
+            let cp = u32::from_str_radix(v.as_str().expect("hex"), 16).expect("cp");
+            let c = char::from_u32(cp).expect("scalar");
+            assert!(!is_invisible(c), "U+{cp:04X} must stay visible");
+        }
+    }
 }

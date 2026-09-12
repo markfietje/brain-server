@@ -130,4 +130,61 @@ mod tests {
         // NBSP is NOT a control char and is preserved (legit content).
         assert_eq!(strip_control_chars("a\u{00A0}b"), "a\u{00A0}b");
     }
+
+    /// The four-tree invisible-set drift alarm, server
+    /// lane — EXHAUSTIVE. The fixture (plugin/fixtures/invisible-classes.json,
+    /// parity-synced into the fork's extension tree) is asserted equal to
+    /// `is_invisible` over EVERY scalar value: a class added or removed on
+    /// either side fails here. The plugin/client/fork lanes consume the same
+    /// file, so one truth pins four trees.
+    #[test]
+    fn invisible_set_fixture_is_exhaustive_truth() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../plugin/fixtures/invisible-classes.json"))
+                .expect("fixture parses");
+        let mut expected_false_positives: Vec<u32> = Vec::new();
+        let mut expected_missed: Vec<u32> = Vec::new();
+        // Exhaustive membership from the fixture's inclusive ranges,
+        // pre-expanded once (the scan below is over every scalar value).
+        let mut fixture_set: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        for class in fixture["classes"].as_array().unwrap() {
+            for r in class["ranges"].as_array().unwrap() {
+                let lo = u32::from_str_radix(r[0].as_str().unwrap(), 16).unwrap();
+                let hi = u32::from_str_radix(r[1].as_str().unwrap(), 16).unwrap();
+                fixture_set.extend(lo..=hi);
+            }
+        }
+        for cp in 0u32..=0x10FFFF {
+            // Skip the surrogate block — not scalar values, not Rust `char`s.
+            if (0xD800..=0xDFFF).contains(&cp) {
+                continue;
+            }
+            let c = char::from_u32(cp).unwrap();
+            let actual = is_invisible(c);
+            let want = fixture_set.contains(&cp);
+            if actual && !want {
+                expected_false_positives.push(cp);
+            } else if want && !actual {
+                expected_missed.push(cp);
+            }
+        }
+        assert!(
+            expected_false_positives.is_empty(),
+            "is_invisible strips codepoints ABSENT from the fixture (update \
+             plugin/fixtures/invisible-classes.json in the same change): {:?}",
+            expected_false_positives
+        );
+        assert!(
+            expected_missed.is_empty(),
+            "fixture lists codepoints is_invisible does NOT strip (the fixture \
+             drifted ahead of the code): {:?}",
+            expected_missed
+        );
+        // Visible counter-samples stay visible on BOTH sides.
+        for v in fixture["visible-samples"].as_array().unwrap() {
+            let cp = u32::from_str_radix(v.as_str().unwrap(), 16).unwrap();
+            let c = char::from_u32(cp).unwrap();
+            assert!(!is_invisible(c), "U+{cp:04X} must stay visible");
+        }
+    }
 }

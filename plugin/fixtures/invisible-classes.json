@@ -1,0 +1,40 @@
+{
+  "comment": "Canonical invisible-Unicode classes — the four-tree drift alarm (fourth pass P4-01). Truth source: brain-server src/strip_invisible.rs is_invisible(). Consumers: (1) server Rust lib test (exhaustive scan of ALL scalar values vs this file), (2) plugin vitest plugin/src/format.test.ts (every in-range codepoint through INVISIBLE_CLASSES), (3) client cargo test client/src/main.rs (vendored is_invisible), (4) fork host vitest src/infra/unicode-visibility.fixture.test.ts (stripInvisibleUnicode, via the parity-synced extension tree). Changing the server set without this file fails lane 1; changing any consumer without the server fails its lane. Hex codepoints, inclusive ranges.",
+  "version": 1,
+  "classes": [
+    { "name": "tag-block", "ranges": [["E0000", "E007F"]] },
+    { "name": "variation-selectors", "ranges": [["FE00", "FE0F"]] },
+    { "name": "variation-selectors-supplemental", "ranges": [["E0100", "E01EF"]] },
+    { "name": "bidi-lrm-rlm", "ranges": [["200E", "200F"]] },
+    { "name": "bidi-embedding", "ranges": [["202A", "202E"]] },
+    { "name": "bidi-isolates", "ranges": [["2066", "2069"]] },
+    { "name": "arabic-letter-mark", "ranges": [["061C", "061C"]] },
+    {
+      "name": "zero-width",
+      "ranges": [
+        ["200B", "200B"],
+        ["200C", "200C"],
+        ["200D", "200D"],
+        ["2060", "2060"]
+      ]
+    },
+    {
+      "name": "legacy-invisible",
+      "ranges": [
+        ["00AD", "00AD"],
+        ["034F", "034F"],
+        ["2061", "2063"],
+        ["FEFF", "FEFF"]
+      ]
+    },
+    {
+      "name": "residual-invisible",
+      "ranges": [
+        ["180E", "180E"],
+        ["115F", "1160"]
+      ]
+    },
+    { "name": "interlinear-annotation", "ranges": [["FFF9", "FFFB"]] }
+  ],
+  "visible-samples": ["0041", "0020", "000A", "0009", "2028", "1F600", "0301", "3000"]
+}
