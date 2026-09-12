@@ -9116,6 +9116,50 @@ Final paragraph after the rule.";
         }
     }
 
+    // ── (fourth pass 2026-09-12, T4-02) ────────────────────────────────
+
+    /// T4-02: the `/get/{id}` source label is client free-text (proposal
+    /// promotion) and passes the read seam BEHAVIORALLY — the machine seam
+    /// table's substring row cannot distinguish which fields are sanitized,
+    /// so this pin holds the source label itself to the seam's output.
+    #[tokio::test]
+    async fn get_sanitizes_source_label_behaviorally() {
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let id = seed_chunk(&state, "alpha", None, None, "source seam pin content");
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "UPDATE knowledge SET source = ?1 WHERE id = ?2",
+                params![
+                    "bad [![img](https://evil.invalid/i.png)](https://evil.invalid/out) <script>alert(1)</script>\u{200B}source",
+                    id
+                ],
+            )
+            .unwrap();
+        }
+
+        let ok = get_chunk(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            domain_headers("alpha"),
+            Path(id),
+        )
+        .await
+        .expect("row resolves");
+        let source = ok.0["source"].as_str().unwrap();
+        assert!(
+            !source.contains("evil.invalid")
+                && !source.contains("<script")
+                && !source.contains('\u{200B}'),
+            "the source label rides the read seam: {source:?}"
+        );
+        assert!(
+            source.contains("img"),
+            "prose survives the seam (only the hostile constructs die): {source:?}"
+        );
+    }
+
     /// multi-get flags EACH row individually — a batch mixing clean and
     /// quarantined rows must not blur the marker across the batch.
     #[tokio::test]
