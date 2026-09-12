@@ -6,12 +6,12 @@ Governance is usually side work: nobody owns quality, access, or cleanup. This s
 
 <p align="center">
 
-[![Version](https://img.shields.io/badge/version-1.28.82-blue.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.28.83-blue.svg)](#)
 [![Docs](https://img.shields.io/badge/docs-brain--server-1f6feb.svg)](https://markfietje.github.io/brain-server/)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg?logo=rust)](#)
 [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
 [![Cost](https://img.shields.io/badge/cost-%240%20per%20query-success.svg)](#)
-[![Tests](https://img.shields.io/badge/tests-1526%20passed-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1537%20passed-brightgreen.svg)](#)
 
 </p>
 

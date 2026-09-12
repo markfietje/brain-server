@@ -95,7 +95,16 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// bare-`#[test]` pins: the four `auth_token_sets`/agent-source config
 /// pins and the `scoped_domain_label` pure pin — the ten tokio agent
 /// pins ride outside the needle like every tokio test before them).
-const CRATE_TEST_FLOOR: usize = 1_381;
+/// 1,381 → 1,418 at the Recall open (walk-measured): the revoke-advisory
+/// pair, the forget-evidence/bound/count pin, the threshold fail-closed
+/// pin, the multi-get source pin, the builder-driven origin pin, the
+/// middleware-500 + registry-poison pins (the tokio revoke/csp/forget
+/// pins ride outside the needle). NOTE: most of this delta accumulated
+/// while .78–.82 added pins without raising the stale floor — this
+/// re-measurement catches up honest; Recall's own bare additions are the
+/// threshold, origin, and registry-poison pins minus the deleted
+/// seam-identity pin.
+const CRATE_TEST_FLOOR: usize = 1_418;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows (security.txt + the

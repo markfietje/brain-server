@@ -16,7 +16,7 @@ that shipped it and the exact live `curl`/`brain` command that proves it in
 
 | Version | Supported          | Notes |
 | ------- | ------------------ | ----- |
-| 1.28.x  | :white_check_mark: | Current — governed workflow + hostcall mediations + Lockdown transport/approval/visibility controls (through 1.28.82 "Vigil", the deep-round fix release) |
+| 1.28.x  | :white_check_mark: | Current — governed workflow + hostcall mediations + Lockdown transport/approval/visibility controls (through 1.28.83 "Recall", the fifth-pass fix release) |
 | 1.27.x  | :white_check_mark: | Previous minor — security fixes only (ends at the AuditRepair re-anchor line) |
 | < 1.27  | :x:                | Unsupported — upgrade before exposing beyond loopback |
 
@@ -715,6 +715,7 @@ rulings) — the runbook's quarterly re-check rule applies.
 
 | Version | Date | Changes |
 |---|---|---|
+| 1.28.83 | 2026-09-12 | "Recall" — the fifth-pass fix release (+ untagged fourth-pass closures): availability-first kill-switch (warn-not-refuse, supersedes the untagged refuse), evidenced/complete/bounded single-chunk erasure, fail-closed injection thresholds, segment-exact CSP seat, 0700 secret dirs, multi-get source convergence, behavioral poison/lock pins, honest SQL guard, US map (TAKE IT DOWN 48h, CO HB26-1263, IL SB315) + Art 17 directive, no-slice gate law, plugin 0.6.6/0.6.7, fork turn-prepare hygiene fix. |
 | 1.28.82 | 2026-09-12 | "Vigil" — the deep-round fix release: tenant-scoped channel drain/ack, read-seam closure (get source, procedure steps, trace replay), exact-kind `traverse:` scopes, revocation-drain paging, DSAR exact-mode arms, 0600/0700 plaintext temps, legal-hold reapply honesty, provenance unknown-field rejection, model-manifest symlink refusal, RFC 8215 egress row, bridge redirect/media gates, `MAX_SOURCE`/revoke-key bounds, recursive dormancy pin, all 26 CodeQL hard-coded-key alerts cleared via generated test keys, plugin 0.6.5. |
 | 1.28.81 | 2026-09-11 | "AgBOM" — live agent bill of materials (`GET /ops/agents/bom`, CycloneDX 1.6, regenerated per request). |
 | 1.28.80 | 2026-09-11 | "Lockdown" — manual-redirect transport, systemPrompt merge-seam sanitize, single-block MCP envelope, signed catalog-pin acks, `BRAIN_REQUIRE_AUTH` + `BRAIN_ALLOW_WILDCARD_GRANT` admissions, optional two-principal quorum (`BRAIN_APPROVAL_QUORUM=2`), `included_global` recall flag, `authn`/tripwire health echoes, JWT `iat`/lifetime bounds, SQL-only revocation checks, per-login refresh families. |
