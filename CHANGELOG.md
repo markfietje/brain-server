@@ -17,184 +17,142 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
-## [1.28.83] — 2026-09-12 — "Recall": the fifth-pass fix release (+ unreleased fourth-pass closures)
+## [1.28.83] — 2026-09-12 — "Recall": security fix release
 
-Complete record of every commit from tag `v1.28.82` (`1fa1b77`) to this
-release — `git log v1.28.82..v1.28.83` reproduces the range, and every
-bullet below names its proof commit. The nine fourth-pass closure commits
-landed after the v1.28.82 tag and were never tagged, so they ship here
-alongside the six fifth-pass fix commits; the fork lane ships in the
-openclaw fork (proof `60fb64b6aea` there). No schema; no routes; wire
-additive only; x-api-version unchanged.
+Covers every commit from tag `v1.28.82` (`1fa1b77`) to this release —
+`git log v1.28.82..v1.28.83` reproduces the range, and every bullet below
+names its proof commit. Nine audit-round commits landed after the v1.28.82
+tag and were never tagged, so they ship here alongside the six follow-up
+fix commits; the openclaw-fork companion ships in that repo. No schema;
+no routes; wire additive only; x-api-version unchanged.
 
 ### Release notes
 
 **Security fixes**
 
-- **The kill-switch writes unconditionally (HIGH — A5-01, proof
-  `777676f`).** `POST /ops/agents/revoke` never refuses: a JWT identity
-  with no card/crew/delegation row is live, and revoking it returns 200
-  with `known:false` + a warning naming `agent@loopback`. This
-  SUPERSEDES the untagged fourth-pass closure `aacee4d` (400
-  `unknown_principal`), which the fifth pass proved broke revocation for
-  exactly those live identities — `cargo test --test authz_matrix` was
-  7/22 red and main unreleasable. The refusal never reached a tag, so
-  net user-visible behavior is warn-not-refuse from the start;
-  `allow_unknown` is accepted-and-ignored for wire compat. Pin
-  `revoke_unknown_principal_revokes_with_warning` fails on BOTH old
-  shapes (asserts the write landed via `known:true` on re-revoke);
-  `authz_matrix` 22/22 green again.
-- **Revoke input discipline + wedge surfacing (A5-05/A5-06, proof
-  `777676f` + `5ab0f3f`).** Length/whitespace gates run BEFORE the
-  5-table known-set probe (padded names are a loud 400
-  `principal_malformed` — trimming silently would target an identity the
-  operator did not type; pin `revoke_malformed_principal_refused_loud`).
-  The response carries `wedged_delegations` (new `wedged_delegations`
-  core): active runs the revoked principal owes results on stay active
-  with an uncompletable delegation, so the operator gets the ids to
-  cancel by hand instead of discovering the wedge (pin at the
-  core + response-shape leg).
-- **Forget disclosure base (F4-S-02, proof `b36a603`, fourth-pass,
-  untagged).** A promoted chunk's content survived verbatim in its HITL
-  decision record while `DELETE /memory/{id}` answered bare
-  `{"deleted":true}` (drill-proven). The response now names
-  `retained_proposal_copies`, and `?scrub_proposals=1` replaces retained
-  content with a dated marker (audit row per proposal, in-tx); pin
-  `forget_discloses_and_scrubs_retained_proposal_copy`.
-- **Forget evidenced, residue-free, bounded (A5-02/A5-03/A5-04, proof
-  `52b9060`, extends `b36a603`).** The erasure writes its own in-tx
-  audit row (the last mutation family without audit-per-write — loud
-  warn on drop); chunk-keyed `suggest_feedback` residue dies with the
-  chunk (the purge mirror; relationship-orphan + trace retention
-  documented as deliberate); the disclosure is capped at 500
-  (`retained_truncated` bit; exact-bytes correlation documented at the
-  seam) and `scrubbed_count` reports rows actually scrubbed. Pin
-  `forget_erasure_is_audited_bounded_and_counted` (audit row present,
-  feedback gone, 505-row flood discloses 500+truncated).
-- **Read-seam source labels, both by-id paths (T4-02 + A5-09, proof
-  `518c9fd` + `9324d88`).** `518c9fd` (fourth-pass, untagged) added the
-  behavioral pin the machine seam table could not express
-  (`get_sanitizes_source_label_behaviorally` — hostile source seeded,
-  hostile constructs dead, prose survives). `9324d88` converges
-  `/multi-get` onto the same shape: the batch projection carries
-  `k.source` and each row emits it seam-sanitized (pin
-  `multi_get_carries_seam_shaped_source`); `created_at` stays by-id-only
-  by documented non-need.
-- **Fail-closed injection thresholds (A5-08, proof `bc326df`).**
-  `BRAIN_INJECTION_THRESHOLD_HIGH/LOW` refused the boot on bad values
-  (high < low refuses too) via new `validate_injection_thresholds` —
-  the last fail-open env family. Pin
-  `injection_thresholds_refuse_bad_values`.
-- **CSP seat is segment-exact (R5-01, proof `bc326df`).** New
-  `is_client_path` (`/` | `/app` | `/app/*`) drives the middleware; the
-  old `starts_with("/app")` gave `/apple`-class paths the
-  `wasm-unsafe-eval` policy. The CSP pin now probes four near-miss
-  paths (was unasserted).
-- **Secret-parent dirs are 0700 (S5-03, proof `bc326df`).**
-  `install-service.sh`: token, audit-key, and classifier parents
-  `chmod 700` (files were already 0600; names/plist presence were
-  world-visible).
-- **Invisible-set four-tree fixture (P4-01, proof `5e7d503`,
-  fourth-pass, untagged) + plugin 0.6.6/0.6.7 (proof `d63ddcb`).**
-  One fixture (`plugin/fixtures/invisible-classes.json`), four lanes:
-  server exhaustive over all scalars
-  (`invisible_set_fixture_is_exhaustive_truth`), plugin per-codepoint,
-  client, fork-host canonical-subset (host extras U+2064/U+206A–206F
-  documented). Plugin releases carry the fixture (test/fixture only, no
-  runtime change) and align typebox four-way at 1.3.26 (closes K4-02).
-  `diff -rq plugin/src` ↔ fork extension: clean.
-- **Fork lane — turn-prepare hygiene bypass closed (S5-02, proof
-  `60fb64b6aea` in `~/Sites/openclaw`, HIGH-class wiring).**
-  `mergeAgentTurnPrepare` concatenated turn-prepare/heartbeat context
-  raw while `resolvePromptBuildHookResult` joins it STRAIGHT into the
-  model prompt on both runners (no later sanitize — traced embedded
-  `attempt-prompt-build.ts` + cli-runner `prepare.ts`). It now rides
-  the same joined-accumulator sanitize as prompt-build (red-first:
-  `hooks.turn-prepare-hygiene.test.ts`, 5 tests, 4 fail reverted).
-  **S5-01:** host invisible-set header states the canonical-subset
-  contract (extras documented, fixture pins subset, never equality).
+- **Revocation never refuses (proof `777676f`, supersedes untagged
+  `aacee4d`).** `POST /ops/agents/revoke` always writes: revoking an
+  identity the deployment has never seen returns 200 with `known:false`
+  plus a warning naming `agent@loopback`, instead of reporting blind
+  success or refusing. The earlier 400 refusal for unknown names never
+  reached a tag and is replaced here; net user-visible behavior is
+  warn-not-refuse from the start, and `allow_unknown` is
+  accepted-and-ignored for wire compatibility. Verified by revoking an
+  unseen identity, re-revoking it (second call reports `known:true`,
+  proving the write landed), and confirming the loopback agent revokes
+  cleanly.
+- **Revoke input discipline + wedge surfacing (proof `777676f` +
+  `5ab0f3f`).** Length and whitespace checks run before the identity
+  lookup — padded names get a loud 400 `principal_malformed` rather than
+  a silent trim onto an identity the operator did not type. The response
+  carries `wedged_delegations`: active runs the revoked principal still
+  owes results on stay active with an uncompletable delegation, so the
+  operator gets their ids to cancel by hand instead of discovering the
+  wedge.
+- **Erasure discloses retained decision-record copies (proof `b36a603`,
+  committed after the v1.28.82 tag, first tagged here).** A promoted
+  chunk's content survived verbatim in its approval decision record
+  while `DELETE /memory/{id}` answered bare `{"deleted":true}`. The
+  response now names `retained_proposal_copies`, and
+  `?scrub_proposals=1` replaces retained content with a dated marker
+  (one audit row per proposal, in the same transaction).
+- **Single-chunk erasure is evidenced, residue-free, and bounded
+  (proof `52b9060`, extends `b36a603`).** The erasure writes its own
+  audit row in the same transaction (every other mutation already did);
+  chunk-keyed suggestion-feedback residue is deleted with the chunk, as
+  the subject-purge path already does (relationship orphans and
+  read-trace retention stay, documented as deliberate); the retained-copy
+  disclosure is capped at 500 rows with a `retained_truncated` flag
+  (correlation is exact bytes — documented at the seam), and
+  `scrubbed_count` reports rows actually scrubbed.
+- **Read-seam source labels on both by-id paths (proof `518c9fd` +
+  `9324d88`).** `518c9fd` (committed after the v1.28.82 tag, first tagged
+  here) pins the `/get/{id}` source label against hostile markup with
+  prose preserved. `9324d88` converges `/multi-get` onto the same shape:
+  the batch projection carries the ingest-kind label and each row emits
+  it through the same sanitization; `created_at` stays by-id-only.
+- **Fail-closed injection thresholds (proof `bc326df`).**
+  Misconfigured `BRAIN_INJECTION_THRESHOLD_HIGH/LOW` values now refuse
+  startup instead of silently falling back to compiled defaults (an
+  inverted high/low pair refuses too) — matching every other
+  environment-gated setting.
+- **Segment-exact content-security-policy seat (proof `bc326df`).**
+  Only `/`, `/app`, and paths under `/app/` receive the
+  WebAssembly-friendly policy; lookalike paths such as `/apple` now get
+  the strict API policy. Covered by near-miss probes.
+- **Secret-parent directories are owner-only (proof `bc326df`).**
+  `install-service.sh` restricts the token, audit-key, and classifier
+  parent directories to mode 0700 (their files were already 0600).
+- **Invisible-character handling pinned across all four code trees
+  (proof `5e7d503`, committed after the v1.28.82 tag, first tagged
+  here) + plugin 0.6.6/0.6.7 (proof `d63ddcb`).** One shared fixture
+  (`plugin/fixtures/invisible-classes.json`) with a lane per tree —
+  server (exhaustive over all scalar values), plugin, client, and fork
+  host (which documents its deliberate superset) — so no tree can drift
+  silently. The plugin releases carry the fixture (test/fixture only, no
+  runtime change) and align the typebox dependency four-way at 1.3.26.
+- **Openclaw fork companion: turn-prepare context sanitized (proof
+  `60fb64b6aea` in the openclaw fork).** Turn-prepare and heartbeat
+  contributions joined the model prompt without sanitization on either
+  runner path; they now pass through the same joined-accumulator
+  sanitization as prompt-build contributions. Covered by a five-case
+  regression suite that fails with the fix reverted. The host
+  invisible-character set documents its canonical-subset contract.
 
 **Improvements**
 
-- **Regulatory map current (L5-01–L5-06, proof `c4a6254`,
-  primary-verified 2026-09-12).** New federal TAKE IT DOWN row (Pub.L.
-  119-12, 48h removal + identical-copy sweep, FTC — govinfo + FTC page)
-  with a federal-floor note in the deepfake bucket; CO HB26-1263 row
-  (signed May 29 2026, operative Jan 1 2027 — leg.colorado.gov) +
-  stay-note precision (stay attached to repealed SB24-205); IL SB315
-  row (PA 104-0538, eff Jan 1 2027, audits Jan 2028 — ILGA); CT sign
-  date May 27; FL 48h platform duty; WA final-report Jul 1 2026 cell.
-  **L5-07:** Art 17 vs 17(3) erasure-path directive in
-  `docs/compliance.md` (dsar purge vs `?scrub_proposals=1` vs bare
-  forget — bare forget preserves the decision record by default, and
-  the response says so).
-- **Art 50 application clock (L4-01, proof `947c531`, fourth-pass,
-  untagged).** `AI_ACT_APPLICATION = 2026-08-02` + pin
-  `ai_act_application_clock_recorded` (date + ordering + dual-date
-  carriage in `docs/compliance.md`) — the legacy-grace row alone let an
-  operator read duties as starting Dec 2026.
-- **Poison/lock arms behavioral (A5-10, proof `9324d88`).** New
-  `poisoned_for_tests` seam (`cfg(test)`, the `reload_parts_from`
-  precedent) drives the middleware 500 arm over a really poisoned lock
-  (`poisoned_token_store_denies_at_middleware_with_500`); new
-  `pool_for_propagates_a_poisoned_pools_lock`; agent-origin labeling
-  pinned at the real hit builder
-  (`results_to_hits_forwards_agent_origin_label`, moved out of the
-  mesh tests where it passed with the labeling deleted); the substring
-  meta-pin reworked into a denial-vocabulary stability registry naming
-  the six behavioral pins (revocation/alert/snapshot/token arms were
-  already behavioral in-module — verified, not assumed).
-- **SQL guard with teeth + honest scope (R5-02, proof `bc326df`).**
-  Needles match keyword + both-side identifier/whitespace boundaries
-  (catches TAB/LF forms; no false fire on `kind_update` or
-  `.insert(`/`.update(`; UTF-8 boundary-safe); one real comment residue
-  reworded that the stronger guard caught. Doc states the regression-lock
-  scope (`"SEL"+"ECT "` still evades; `rg` clean).
-- **Docs-truth (T4-01/T4-03, proof `0c3539d` + `69e0d68`, fourth-pass,
-  untagged).** Seam-table comment reworded to regression-lock scope;
-  exit-gate matrix honest-scope note (unchecked columns are future
-  major lines; the current line gates per-release).
-- **Gate-process law (T5-01, proof `c4a6254`).** Release checklist: the
-  gate is the FULL `cargo test` — sliced runs are diagnostic only (the
-  v1.28.82 closure record listed lib + main_suite green while
-  `authz_matrix` was 7/22 red).
-- **Audit trail.** Fourth-pass report + register entry (`cb189f3`,
-  fourth-pass, untagged — superseded by the fifth-pass report
-  `docs/SECURITY_AUDIT_20260912_FIFTH_PASS.md` this release carries).
-
+- **US state-law map current (proof `c4a6254`, verified against
+  primary sources 2026-09-12).** New federal TAKE IT DOWN row (48-hour
+  removal duty); new Colorado chatbot-safety and Illinois frontier-AI
+  rows with corrected dates; Connecticut/Florida/Washington precision
+  fixes; a federal-floor note in the deepfake section. Adds the
+  erasure-path directive to `docs/compliance.md`: subject-wide purge
+  for erasure demands, `?scrub_proposals=1` for single chunks, bare
+  single-delete preserves the decision record by default.
+- **EU AI Act application clock (proof `947c531`, committed after the
+  v1.28.82 tag, first tagged here).** The regulatory watch now tracks
+  both the general application date (2026-08-02) and the legacy-system
+  grace end, with the dual-date statement in `docs/compliance.md` — the
+  grace row alone could read as duties starting in December.
+- **Lock-poisoning coverage is behavioral end to end (proof
+  `9324d88`).** The middleware 500 path is now exercised over a genuinely
+  poisoned token store, registry-lock propagation is exercised in-module,
+  and agent-origin labeling is exercised through the real recall-hit
+  builder (moved there from a test that passed with the labeling
+  deleted). The remaining cross-gate checklist asserts the stable
+  operator-visible denial vocabulary.
+- **Handler SQL guard covers tab/newline forms and states its scope
+  (proof `bc326df`).** The statement counter matches keywords with
+  identifier boundaries on both sides (no false fire on identifiers such
+  as `kind_update` or method calls such as `.insert(`; UTF-8
+  boundary-safe), and its documentation now states plainly that it is a
+  regression lock for trusted committers, not an anti-concatenation
+  boundary.
+- **Documentation scope corrections (proof `0c3539d` + `69e0d68`,
+  committed after the v1.28.82 tag, first tagged here).** The read-seam
+  checklist comment states its regression-lock scope, and the
+  threat-model exit-gate matrix notes that unchecked columns are future
+  major lines while the current line gates per release.
+- **Release-checklist gate law (proof `c4a6254`).** The checklist now
+  states that only the full `cargo test` invocation counts as green —
+  sliced runs (`--lib`, single binaries, name filters) are diagnostic
+  only. A prior closure record had listed sliced runs as green while one
+  test binary was red.
 **Bug fixes**
 
-- Drain remainder dead bookkeeping removed (A5-11, proof `5ab0f3f` —
-  behavior identical, recount + loud `drain_incomplete` row preserved).
-- Transfer-register audit drop warns loudly (A5-07, proof `5ab0f3f` —
-  the last `let _ =` on a write is gone; best-effort kept, silence not).
-
-**Improvements**
-
-- US state map: federal TAKE IT DOWN 48h row, CO HB26-1263 + IL SB315
-  rows (both primary-verified), CT/FL/WA precision, federal-floor note;
-  Art 17 vs 17(3) erasure-path directive; release-checklist no-slice
-  gate law (the red-main lesson).
-- Poison/lock arms pinned behaviorally (middleware 500 over a really
-  poisoned lock, registry propagation); the SQL guard counts TAB/LF
-  forms with both-side boundaries and states its regression-lock scope
-  honestly.
-
-**Bug fixes**
-
-- Drain remainder dead bookkeeping removed (behavior identical, recount
-  + loud row preserved). Transfer-register audit drop warns loudly
-  (last `let _ =` on a write gone).
+- Drain remainder bookkeeping simplified with identical behavior
+  (proof `5ab0f3f` — recount + loud remainder row preserved).
+- Transfer-register audit writes warn loudly on drop instead of
+  discarding silently (proof `5ab0f3f` — best-effort kept, silence not).
 
 ### Engineering record
 
 Red-first pins per fix (revoke-advisory + malformed, forget
 evidence/bound/count, thresholds, multi-get source, builder-driven
 origin, middleware-500, registry-poison, CSP near-miss, needle
-tab/LF/left-boundary). Full gate: lib + main_suite + authz_matrix
-(22/22) green; clippy bench/default/otel clean; fmt + lipstyk clean;
-engine-crates + steward-harness green; badges selfcheck clean; fork
-vitest lanes green. CRATE_TEST_FLOOR 1,381 → 1,418 (walk-measured —
+tab/LF/left-boundary). Full gate: complete suite green (1,537 tests);
+clippy bench/default/otel clean; fmt + lipstyk clean; engine-crates +
+steward-harness green; badges selfcheck clean; fork vitest lanes green. CRATE_TEST_FLOOR 1,381 → 1,418 (walk-measured —
 the floor sat stale through .78–.82; this catches up honest).
 `ponytail:` this release does NOT add per-principal quotas, does NOT
 gate MCP tool first use, does NOT build the taint lattice, and does NOT
