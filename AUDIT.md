@@ -768,3 +768,72 @@ checklist (docs/deployment.md §Loopback posture).
 `ponytail:` this round does NOT implement the OTLP guarded exporter client,
 does NOT gate MCP tool first use, does NOT build the taint lattice, does NOT
 add per-principal quotas, and does NOT touch any upstream-tracked fork file.
+
+---
+
+## 2026-09-12 — Fourth-pass full-spectrum audit (v1.28.82 × fork)
+
+Dual-mode (forward + reverse) solo execution after the planned five-lane
+parallel spawn failed (usage limits — disclosed in the report's §0).
+Full report: `docs/SECURITY_AUDIT_20260912_FOURTH_PASS.md`. Live drill on a
+fresh DB / test port 9876 (canary welds dead at the seam, quarantine excludes
+from recall+suggest, kill-switch 401 live, digest approve 409 live, DSAR cert
+honest, erasure verified at table level). Register-worthy findings:
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| F4-S-01 | `/ops/agents/revoke` is name-blind — wrong-name revoke returns `revoked:true` while the identity stays live (drill-proven with "agent" vs "agent@loopback") | Medium | Open — v1.28.83 "Candor" (loud unknown-principal refusal + pin) |
+| F4-S-02 | Chunk forget leaves the approved proposal's full content copy in `proposals`; `{"deleted":true}` carries no retained-copy disclosure | Medium | Open — v1.28.83 (disclose-or-scrub + pin; Art 17(3) balance documented) |
+| P4-01 | Invisible-set parity: 4 implementations, 1 exhaustive cross-pin (server↔plugin); fork+client unpinned (both verified in-sync today) | Medium | Open — v1.28.84 (generated four-tree fixture) |
+| K4-01 | Fork 40 commits BEHIND upstream (premise "0 behind" stale); merge-tree clean today; semantic-conflict risk unassessed | High (operational) | Open — fork rebase lane |
+| L4-01 | reg_watch pins Art 50 legacy horizon (2026-12-02) but not the passed general-application date (2026-08-02, live-verified) | Low-Med | Open — v1.28.84 (second clock row) |
+| T4-01/02/03 | Seam-table comment overclaim; /get source fix lacks behavioral pin; THREAT_MODEL §6 matrix stale | Low | Open — v1.28.83 |
+
+Mode B verdicts (held): cross-tenant drain scoping, traverse exact-kind,
+provenance unknown-field rejection (14 tests green), RFC 8215 row,
+OWASP-2026 citation (live-verified against the GenAI repo), plugin 0.6.5
+byte-parity across repos, auto-update EdDSA signatures, badges selfcheck.
+Gates in-window: fmt, lib 1202/0/1, main_suite 196/0/6, targeted pins —
+all green; clippy/otel/side-lanes not run (green at release).
+Outstanding lanes honestly marked in the report's coverage grid (§7):
+the five subagent sweeps, fork hunk-audit, full worldwide regulatory matrix
+(CT leg verified 2026-09-12 vs official PA 26-15; CRA Art 14 primary text
+CLOSED same day — 24h/72h/14d + 11 Sept 2026 live date).
+
+### Closure record — 2026-09-12 (same-day remediation pass)
+
+All six registered findings closed; the fork finding verified closed by the
+operator's rebase. Every fix carries a red-first pin and a live re-drill
+where the finding was drill-proven. Full evidence in
+`docs/SECURITY_AUDIT_20260912_FOURTH_PASS.md` §3 rows.
+
+| # | Disposition | Evidence |
+|---|---|---|
+| F4-S-01 | **Closed** — `principal_known` core + 400 `unknown_principal` refusal (admission: `allow_unknown:true`), openapi extended | pin `revoke_unknown_principal_refused_loud`; live: typo → 400 naming `agent@loopback`, correct name → 200, admission → 200 |
+| F4-S-02 | **Closed** — forget response discloses `retained_proposal_copies` in-tx + `?scrub_proposals=1` (marker + audit row per proposal); openapi extended | pin `forget_discloses_and_scrubs_retained_proposal_copy`; live: disclosure leg + scrub leg (marker observed in-DB) |
+| P4-01 | **Closed** — one fixture (`plugin/fixtures/invisible-classes.json`), four lanes: server EXHAUSTIVE over all scalars, plugin per-codepoint (anti-vacuity), client, fork-host (canonical-subset contract; host extras documented) | server `invisible_set_fixture_is_exhaustive_truth`; plugin 58/58; client 240/240; fork 189/189 |
+| L4-01 | **Closed** — `AI_ACT_APPLICATION = 2026-08-02` clock + dual-date statement in docs/compliance.md | pin `ai_act_application_clock_recorded` (date + ordering + doc carriage) |
+| T4-01 | **Closed** — seam-table comment reworded to regression-lock scope | comment at `stored_text_fields_pass_the_read_seam` |
+| T4-02 | **Closed** — behavioral pin for the `/get` source label | `get_sanitizes_source_label_behaviorally` |
+| T4-03 | **Closed** — exit-gate matrix honest-scope note (future major lines; current line gated per-release) | THREAT_MODEL §6 |
+| K4-01 | **Verified closed** (operator rebase) — 0 behind/76 ahead, merge-base = upstream tip; plugin 187/187; byte-parity clean | Residual for operator: uncommitted fork `pnpm-lock.yaml` typebox hunk (1.3.18→1.3.26 vs 1.3.3 manifest) needs a decision — K4-02's class |
+
+Gates at closure: fmt (server+client) green; clippy `--all-targets -D warnings`
+green; lib 1204/0/1 (+2); main_suite 199/0/6 (+3); client 240/0 (+1);
+openapi + docs_truth + comment-hygiene guards green; lipstyk-gate green
+(real base); badges selfcheck green. Fork: plugin lane 189/189, parity
+restored (`plugin/src` ↔ `extensions/brain-server/src` byte-identical,
+fixtures synced). House-discipline note: the comment-hygiene guard caught
+audit-ID labels in the first draft of the fix comments — removed (the
+guard's own law applied to this remediation).
+
+### Plugin 0.6.6 parity sync — 2026-09-12
+
+The P4-01 fixture shipped as plugin **0.6.6** (test/fixture only, no runtime
+change): CHANGELOG + README updated, `scripts/sync-plugin.sh` run (oxfmt
+canonical-first, byte-identity verified post-sync), fork committed as
+`ab2b81486e4` (fixtures + format.test.ts lane + the fork-host lane
+`src/infra/unicode-visibility.fixture.test.ts`). Fork gates at the sync:
+vitest **188/188**, `tsc --noEmit` clean, `diff -rq` byte-parity OK. The
+fork's uncommitted `pnpm-lock.yaml` typebox hunk (1.3.18→1.3.26 vs the
+1.3.3 manifest pin) remains the operator's K4-02 decision, untouched.
