@@ -432,24 +432,29 @@ pub async fn post_revoke(
         // returns `known:false` + a `warning` naming the loopback agent, so
         // the typo that motivated the old refusal is still caught — loudly —
         // without ever refusing to kill.
-        let known =
-            mesh::principal_known(&conn, &body.principal).map_err(mesh_err)?;
+        let known = mesh::principal_known(&conn, &body.principal).map_err(mesh_err)?;
         let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn)
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         let drained = mesh::revoke_principal(tx.tx(), &body.principal, &reason, &actor, now)
             .map_err(mesh_err)?;
         tx.commit()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
-        Ok((body.principal.clone(), drained, known))
+        // Surface the delegatee-side wedge (A5-06): runs this principal owes
+        // results on stay active with an uncompletable delegation — the
+        // operator cancels them by hand, so the response names them instead
+        // of leaving the wedge to be discovered.
+        let wedged = mesh::wedged_delegations(&conn, &body.principal).map_err(mesh_err)?;
+        Ok((body.principal.clone(), drained, known, wedged))
     })
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?;
-    let (principal_label, drained, known) = outcome?;
+    let (principal_label, drained, known, wedged) = outcome?;
     let mut body = serde_json::json!({
         "principal": crate::gate::sanitize_read(&principal_label, false, &principal),
         "revoked": true,
         "runs_drained": drained,
         "known": known,
+        "wedged_delegations": wedged,
     });
     if !known {
         body["warning"] = serde_json::json!(format!(

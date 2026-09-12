@@ -89,10 +89,11 @@ pub async fn register_transfer(
         // the Art-30 audit row lands INSIDE the
         // write transaction (nested via SAVEPOINT) so the register row and its
         // audit are atomic — a crash between commit and audit can no longer
-        // leave an unmirrored register entry. Best-effort (record swallows its
-        // own errors) like every audit call site, so a broken audit row never
-        // rolls back the register write.
-        let _ = crate::audit::record(
+        // leave an unmirrored register entry. Best-effort for the response
+        // (a broken audit row never rolls back the register write), never
+        // silent for the operator: a dropped evidence row warns loudly (the
+        // edge-history precedent — `let _ =` on writes is forbidden).
+        if crate::audit::record(
             &tx,
             AuditKind::Transfer,
             "api",
@@ -102,7 +103,11 @@ pub async fn register_transfer(
                 "{}:{}->{}:{mechanism_label}",
                 dataset_for, origin, destination
             ),
-        );
+        )
+        .is_none()
+        {
+            tracing::warn!("transfer-register audit record dropped (id {id}) — evidence gap");
+        }
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
         Ok(id)

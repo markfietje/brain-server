@@ -6066,6 +6066,7 @@ paths:
                   revoked: { type: boolean }
                   runs_drained: { type: integer }
                   known: { type: boolean, description: 'Whether the name matched a card, crew record, delegation, prior revocation, or the loopback agent. false carries a warning — the revocation WAS written.' }
+                  wedged_delegations: { type: array, items: { type: integer }, description: 'Active run ids where the revoked principal owes an in-flight delegation result (delegatee-side wedge — the drain cancels owned work only; cancel these runs by hand).' }
                   warning: { type: string, description: 'Present only when known:false. Names the loopback agent; re-revoke the intended name if this was a typo (the written row is harmless).' }
         "400": { description: input_invalid | principal_malformed }
         "401": { description: Not authenticated }

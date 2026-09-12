@@ -287,19 +287,14 @@ pub(crate) fn revoke_principal(
             break;
         }
     }
-    let mut remaining = victims.len() as i64;
-    if pages >= DRAIN_MAX_PAGES && victims.len() as i64 == DRAIN_PAGE * DRAIN_MAX_PAGES as i64 {
-        // The cap bound us: count what the SAME predicate still matches
-        // (post-cancel, in a moment) — the loud remainder row is written
-        // after the drain below.
-        remaining = -1; // marker: recount after drain
-    }
-    let drained = victims.len();
     // The loud remainder: a drain capped by the page budget must NAME what
     // it could not finish (the old single-page drain was silent about runs
     // past 200). The row lands on the hash-chained audit trail (kind Auth,
-    // the revocation register's evidence) + the error log stream.
-    if remaining < 0 || pages >= DRAIN_MAX_PAGES {
+    // the revocation register's evidence) + the error log stream. The
+    // recount re-runs the SAME predicate post-cancel, so CAS-stale rows
+    // that stayed active are counted honestly.
+    let drained = victims.len();
+    if pages >= DRAIN_MAX_PAGES {
         let left: i64 = conn
             .query_row(
                 "SELECT COUNT(DISTINCT d.run_id) FROM delegations d
@@ -323,8 +318,33 @@ pub(crate) fn revoke_principal(
             );
         }
     }
-    let _ = remaining;
     Ok(drained)
+}
+
+/// Runs a revoked principal leaves WEDGED as a delegatee: active runs with
+/// in-flight (`requested`) delegations OWED to it (`to_principal`). The
+/// drain cancels work the principal OWNS (`from_principal`); work it owes
+/// stays `active` with an uncompletable delegation (the result path
+/// re-checks revocation and refuses forever), so the operator must cancel
+/// those runs by hand. This query surfaces them — the revoke response
+/// carries the ids (bounded, oldest first) instead of leaving the operator
+/// to discover the wedge.
+pub(crate) fn wedged_delegations(
+    conn: &Connection,
+    principal: &str,
+) -> Result<Vec<i64>, MeshError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT d.run_id FROM delegations d
+               JOIN workflow_runs r ON r.id = d.run_id
+              WHERE d.to_principal = ?1 AND d.state = ?2 AND r.status = 'active'
+              ORDER BY d.run_id LIMIT 500",
+        )
+        .map_err(|e| MeshError::Database(e.to_string()))?;
+    stmt.query_map(params![principal, STATE_REQUESTED], |r| r.get(0))
+        .map_err(|e| MeshError::Database(e.to_string()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| MeshError::Database(e.to_string()))
 }
 
 /// The revocation register for the operator surface (bounded, newest first).
@@ -1209,6 +1229,20 @@ mod tests {
         assert_eq!(
             drained, 0,
             "atlas OWNS no in-flight work here (it owes some)"
+        );
+        // A5-06: what atlas OWES is surfaced, not drained — the run stays
+        // active with an uncompletable delegation, and the operator needs
+        // the id to cancel it by hand.
+        let wedged = wedged_delegations(&conn, "atlas").expect("wedge query reads");
+        assert_eq!(
+            wedged,
+            vec![1],
+            "the delegatee-side wedge names the run the revoked principal owes"
+        );
+        let wedged_human = wedged_delegations(&conn, "human").expect("wedge query reads");
+        assert!(
+            wedged_human.is_empty(),
+            "the owner side is drained, not wedged"
         );
 
         // Card use: revoked, BEFORE any signature work — and probe-blind

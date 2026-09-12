@@ -9022,6 +9022,11 @@ Final paragraph after the rule.";
         .expect("the loopback agent principal is known without any seeding");
         assert_eq!(ok.0["revoked"], true);
         assert_eq!(ok.0["known"], true);
+        assert_eq!(
+            ok.0["wedged_delegations"].as_array().unwrap().len(),
+            0,
+            "no delegatee-side wedge on a clean revoke (field always present)"
+        );
 
         // Wire compat: v1.28.82 clients sending allow_unknown:true still
         // get 200 (the field is accepted and ignored).
@@ -9286,7 +9291,10 @@ Final paragraph after the rule.";
         .await
         .expect("capped forget succeeds");
         assert_eq!(
-            capped.0["retained_proposal_copies"].as_array().unwrap().len(),
+            capped.0["retained_proposal_copies"]
+                .as_array()
+                .unwrap()
+                .len(),
             500,
             "disclosure is bounded at 500 rows"
         );
