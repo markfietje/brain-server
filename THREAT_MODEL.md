@@ -322,6 +322,9 @@ controls below are the threat-model-relevant additions, in ship order:
 | Dormancy-pin coverage gap | `hostcalls_mediation_stays_unwired_until_loop_line` walks `src/` RECURSIVELY (the old top-level-only walk missed subdirectory wirings; the needle is concat-built so the test's own source cannot self-match) | 2026-09-11 audit round |
 | MCP catalog pins: no production ack path (fork) | `BRAIN_MCP_PINS_ACK=1` for ONE run is the operator's acknowledgment touch (reconcile records + signs the CURRENT catalog, returns zero drift, logs loudly; left set, every run re-acks and drift can never surface — the log names it). The hard-block + signed-ack machinery is now reachable in production; a missing pins file beside a surviving `.sig` logs the deletion downgrade LOUDLY | 2026-09-11 audit round (fork) |
 | `BRAIN_TOKEN` env rung multiline bypass (fork) | The env rung carries the file rung's refusal: a multi-line value (the pasted operator token file) throws instead of transmitting the operator token down the agent path | 2026-09-11 audit round (fork) |
+| Read-seam element-set gaps, inner-content leak (R-01 remainder) | The 26-name set closes the 11 survivors (math/style/details/body/button/select/marquee/dialog/animate/picture/noscript, §plan .85); the remainder makes `math`/`style` OPAQUE (tag + inner content vanish — `<math><mi>x</mi></math>` no longer leaks `<mi>x</mi>`, `<style>@import…` no longer survives as text) and pins a 30-name MathML-children appendix as defense in depth; per-element strip-mode table lives in `src/gate.rs`; four lanes (server/plugin/client/fork-fixture) with the v1 fixture read-only at 26 and the appendix pinned code-side until the deliberate v2 bump. OWASP Agentic LLM01 (stored-markup prompt injection): the seam is the control; `docs/OWASP_AGENTIC_2026.md` LLM01 row re-stamp is pending (docs/ boundary — operator action) | v1.28.85r (Scrim addendum; fork sync + fixture v2 pending operator) |
+| Revoked principal keeps its open SSE stream (R-02) | Bounded-kill, not instant-kill: BOTH SSE endpoints (`/events` alert feed, UMP `subscribe` change-signal) pump through one guarded loop (`src/sse_reauth.rs::pump_guarded`) that re-consults the identity kill-switch every `BRAIN_SSE_REAUTH_SECS` (default 30s, ceiling 3600s, fail-closed parse at boot); revoked-or-unreadable emits `{"revoked":true,"at":<ts>}` then closes, and reconnect meets the admission 403. `=0` restores admission-only (documented ceiling, loud boot warn). Poll/drain surfaces (`get_run_events`, channel drain/ack) re-auth per request through the bearer middleware already — only long-lived streams needed the heartbeat. Operator runbook: revoke → expect the `revoked` frame within N seconds on every open stream; if a stream outlives 2N, the registry read is failing (fail-closed kill fires instead of silent survival) | v1.28.86 "StreamKillSign" |
+| Unsigned alert/DSAR webhook sends (A-01) | `BRAIN_REQUIRE_WEBHOOK_SIGNING` defaults REQUIRED: a sink URL without its secret REFUSES the boot (no more warn-and-send-unsigned); explicit `=0` admits unsigned ALERT sends with loud warn + `/ready` `webhook_signing:off` + `signed:false` stamped on every payload (signed sends carry `signed:true`). The DSAR/Art-19 path has NO opt-out — the sender refuses unsigned too (`dsar_unsigned_send_refused`), and the signature header is unconditional. HMAC-SHA256 raw-body + constant-time compare unchanged (pre-existing `webhook.rs` verify/sign) | v1.28.86 "StreamKillSign" |
 
 **Ceilings this line explicitly keeps** (do not "fix" without amending the
 architecture):
@@ -360,6 +363,13 @@ architecture):
 ## 6. Per-release security exit gates
 
 Each major release must complete these exit gates (in addition to fmt/clippy/test).
+
+**Honest scope, ledger wording (v1.28.87 docs-truth):** a release whose
+audit names known residuals MUST NOT headline "gap ledger zero" — the
+standing phrase is "gap ledger balanced (N known residuals with owners)"
+with a residual table in the CHANGELOG entry (see the v1.28.79 correction
+note). "Balanced" means no UNOWNED gaps, not drift-impossible. Enforced
+by `grep -rn "gap ledger zer[o]" CHANGELOG.md docs/` returning zero hits.
 
 **Honest scope (fourth pass T4-03):** the columns below are the HISTORICAL
 v1.x matrix plus the FUTURE major lines (v2.0 Cortex, v2.1, v3.7 A2A —

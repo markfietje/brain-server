@@ -57,6 +57,60 @@ build (the 665-vs-659 drift this release fixed). Paste its output into the
 README badge block; `--selfcheck` guards the derivations + this checklist's
 own completeness.
 
+## Honest scope: SBOM + OpenAPI + well-known (v1.28.87 docs-truth)
+
+### SBOM scope (what the committed file does and does NOT cover)
+
+`sbom/brain-server-<version>.cdx.json` (1.28.83: **375 components** vs
+**520** `Cargo.lock` packages) covers the shipped runtime closure as
+emitted by `cargo-cyclonedx`. The ~145-package gap is dev-dependencies +
+build-transitive crates that never ship in the release binary — excluded by
+the generator's default scope, not by hand-editing. Per the CISA 2026
+Minimum Elements for SBOM (published 29 Jul 2026, supersedes the NTIA 2021
+baseline): this file satisfies the minimum-elements shape for the RUNTIME
+surface; it is NOT a whole-tree (dev + build) inventory, and the release
+notes MUST NOT claim it is. If a consumer needs the dev/build-transitive
+closure, regenerate with the dev-inclusive flag and commit it as a
+separate `-dev.cdx.json` — never silently widen the release file.
+
+### OpenAPI intentional exclusions (in the router, NOT in `openapi.yaml`)
+
+8 production registrations are deliberately absent from the contract —
+static seats and redirects, no auth/token surface, so excluding them keeps
+the API contract honest:
+
+| Path | Source | Why excluded |
+|---|---|---|
+| `/` | `src/server/router/core.rs` (301 → `/app/`) | redirect, not an API |
+| `/app/` + `/app/{*path}` | `core.rs:35-36` (SPA index + static) | static bundle seat |
+| `/app/boot.json` | `core.rs:37` | static boot manifest |
+| `/app/boot.js` | `core.rs:38` | static boot script |
+| `/app/boot.pub` | `core.rs:39` | static boot public key |
+| `/app/sw.js` | `core.rs:40` | static service worker |
+| `/app/sw-register.js` | `core.rs:42-45` | static SW registration |
+
+Correction to the plan's "9": `/private` and `/webhooks/gh` appear ONLY
+in auth-middleware unit tests (`src/server/router/auth.rs:599-600,689,802`
+`stub` apps) — they are NOT production routes, so they are not
+router-only exclusions. Counted production set: 8.
+
+### Well-known wiring table (each route confirmed individually)
+
+| Route | Router registration | Handler |
+|---|---|---|
+| `/.well-known/openid-configuration` | `src/server/router/auth.rs:518` | `src/handlers/well_known.rs:22` |
+| `/.well-known/jwks.json` | `auth.rs:521` | `well_known.rs:28` |
+| `/.well-known/security.txt` | `auth.rs:523` | `well_known.rs:44` |
+| `/.well-known/ai-notice` | `auth.rs:527` | `well_known.rs:74` |
+| `/.well-known/ai-literacy` | `auth.rs:531` | `well_known.rs:91` |
+| `/.well-known/cop-notice` | `auth.rs:535` | `well_known.rs:109` |
+| `/.well-known/ump.json` | `src/server/router/ump.rs:27` | `src/handlers/ump_ops.rs:1` (`capabilities`) |
+
+All 7 are also public-path listed (`route_guards.rs:19-40` `PUBLIC_PATHS`)
+and present in `openapi.yaml` (:2990 ump.json, :6538-:6651 the six).
+Standing rule: a new well-known route MUST land in all three places
+(router + `PUBLIC_PATHS` + openapi) or fail review.
+
 ## Scripts appendix
 
 | Script | Purpose | Documented |
@@ -65,6 +119,7 @@ own completeness.
 | `release.sh` | Tag + publish; blocks on green CI for the tagged SHA. | this page / AGENTS.md |
 | `release-sign.sh` | Sign release artifacts (also signs `brain kb build` tarballs). | cli-reference.md (kb) |
 | `badges.sh` | Regenerate README badges from the real build; `--selfcheck` drift guard. | this page |
+| `env-truth.sh` | Docs-vs-code env-var truth gate (tiers live, docs qualified + Loop-tracked). | this page |
 | `sbom.sh` | SBOM generation for CRA/security docs. | cra.md |
 | `cra-kit.sh` | CRA evidentiary kit generator. | cra.md |
 | `admt-kit.sh` | ADMT transparency kit generator. | admt.md |

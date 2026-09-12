@@ -38,7 +38,31 @@ if [[ "${1:-}" == "--selfcheck" ]]; then
     exit 1
   fi
   # The test-count badge can't be verified without a full cargo run; the
-  # release checklist carries that step instead.
+  # release checklist carries that step instead. What selfcheck CAN verify is
+  # that the README does not PRESENT the count as selfcheck-verified: the
+  # badge line must carry the explicit `not selfcheck-verified` disclaimer
+  # (v1.28.87 derive-or-drop — a drifted count passes the number, but the
+  # number is openly labeled unverified with its authoritative source).
+  if ! grep -q "not selfcheck-verified" "$README"; then
+    echo "ERR: README test-count claim lacks the 'not selfcheck-verified' disclaimer — run scripts/badges.sh and paste the block" >&2
+    exit 1
+  fi
+  # UMP level derives from the CI conformance gate, not from a literal in
+  # this script (v1.28.87 derive-or-drop). Two-sided guard: the gate must
+  # still exist in ci.yml, and the README must present the level as
+  # CI-derived (not a bare asserted "L3").
+  if ! grep -q 'UMP 1.0 / L3' "$REPO/.github/workflows/ci.yml"; then
+    echo "ERR: UMP conformance gate missing from .github/workflows/ci.yml — README L3 claim is now self-attested, reword it" >&2
+    exit 1
+  fi
+  if ! grep -q 'UMP 1\.0 L3' "$README"; then
+    echo "ERR: README UMP level drifts from the CI-derived 'UMP 1.0 L3' — reword to the derived form" >&2
+    exit 1
+  fi
+  if ! grep -qE 'UMP 1\.0.*L3.*(CI|ci.yml|conformance)' "$README"; then
+    echo "ERR: README UMP claim does not name its CI-conformance derivation — reword to the derived form" >&2
+    exit 1
+  fi
   # 3. the release-checklist names all six wrap artifacts (self-completeness guard).
   CK="$REPO/docs/release-checklist.md"
   if [[ ! -f "$CK" ]]; then
@@ -69,7 +93,22 @@ fi
 
 CLIENT="$(client_version)"
 TESTS="$(test_count)"
-UMP="L3"        # self-attested level, v1.17.4; asserted every push by the integration CI job
+# UMP level is DERIVED, not asserted: the `integration` CI job
+# ("release build + UMP conformance + recall gate" in
+# .github/workflows/ci.yml) boots a scratch keyed instance, runs the official
+# @universalmemoryprotocol/core reference conformance runner, and fails the
+# push unless the output contains "UMP 1.0 / L3". If that gate ever goes
+# missing, the level drops to self-attested LOUDLY (stderr) instead of
+# silently keeping the badge.
+ump_level() {
+  if grep -q 'UMP 1.0 / L3' "$REPO/.github/workflows/ci.yml" 2>/dev/null; then
+    printf 'L3'
+  else
+    echo "WARN: UMP conformance gate absent from .github/workflows/ci.yml — level is SELF-ATTESTED, not CI-derived" >&2
+    printf 'L3 self-attested'
+  fi
+}
+UMP="$(ump_level)"
 SBOM="$REPO/sbom/brain-server-${VERSION}.cdx.json"
 SBOM_FLAG=no; [[ -f "$SBOM" ]] && SBOM_FLAG=yes
 

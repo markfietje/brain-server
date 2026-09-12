@@ -131,7 +131,7 @@ Drill artifacts: `/tmp/audit4/` (server.log, canary.json, recall.json, tokens).
 | Read-seam machine table covers the 3 new sites | main_suite.rs:7630-7654 (procedure steps :7651, trace :7653) | /get source row is substring-weak | **WEAKENED** → T4-02 |
 | no_sql_in_handlers_enforced has teeth | service/mod.rs guard; repo-brief confirms present | (bypass hunt deferred — OUTSTANDING cell) | UNVERIFIED this pass (green at release) |
 | badges/test-count truth | `./scripts/badges.sh --selfcheck` | executed | **HELD** (exit 0) |
-| "Parity gap ledger zero" (v1.28.79) | plugin byte-parity `diff -rq` clean across repos | byte-compare executed | **HELD for the plugin tree**; the four-tree fixture gap (P4-01) shows "zero" means "no known gaps", not "drift-impossible" |
+| "Parity gap ledger balanced — 4 known residuals with owners" (v1.28.79, corrected v1.28.87: "zero" overstated) | plugin byte-parity `diff -rq` clean across repos | byte-compare executed | **HELD for the plugin tree**; the four-tree fixture gap (P4-01) shows "balanced" means "no UNOWNED gaps", not "drift-impossible" |
 | Kill-switch reach (opaque agent path) | `server/router/auth.rs:439` consults `is_revoked(AGENT_LOOPBACK_SUB)` | live revoke drill | **HELD** (401 identity_revoked) |
 | Quarantine-everywhere (v1.28.78) | live: canary excluded from recall AND suggest | query-by-anchor-words attack | **HELD live** |
 | Sanitize strips welds (Selfheal fixed-point) | live canary: nested weld → `alert(1)`, mixed-case gone, image weld delinked | new variant attempted (JSON \uXXXX escapes — parsed then stripped) | **HELD live** |

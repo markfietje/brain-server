@@ -17,6 +17,26 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [Unreleased] — docs-truth correction (v1.28.87 plan, no code)
+
+**Correction note (append-only; history not rewritten):** the v1.28.79
+headline carried a "zero" verdict on the gap ledger. That overstated: the release body itself
+lists 4 residuals with Loop-line owners, and the fourth-pass audit qualifies
+P4-01 the same way. The headline now reads "gap ledger balanced
+(4 known residuals with owners)". "Balanced" means no UNOWNED gaps — not
+"drift-impossible". Residual table:
+
+| # | Residual (from v1.28.79 body) | Owner line |
+|---|---|---|
+| 1 | DNS-rebind of the pinned host | Loop (accepted-risk disclosure, v1.28.79) |
+| 2 | First-use tool flagging | Loop (accepted-risk disclosure, v1.28.79) |
+| 3 | Shim tenancy | Loop (accepted-risk disclosure, v1.28.79) |
+| 4 | Writable pins file | Loop (accepted-risk disclosure, v1.28.79) |
+
+`grep -rn "gap ledger zer[o]" CHANGELOG.md docs/` must return zero hits;
+`scripts/env-truth.sh` and `scripts/badges.sh --selfcheck` are the
+standing docs-as-tests gates (see `docs/release-checklist.md`).
+
 ## [1.28.83] — 2026-09-12 — "Recall": security fix release
 
 Covers every commit from tag `v1.28.82` (`1fa1b77`) to this release —
@@ -372,7 +392,7 @@ database migration; no route changes; OpenAPI extended additively for the
 four new response fields. CRATE_TEST_FLOOR unchanged at 1,381 (all
 additions sit above it).
 
-## [1.28.79] — 2026-09-10 — "Parity": third-pass close-out, gap ledger zero
+## [1.28.79] — 2026-09-10 — "Parity": third-pass close-out, gap ledger balanced (4 known residuals with owners)
 
 Closes the fork-vs-upstream third-pass audit and every honest gap the
 final audit named. Fork-only files get code fixes; upstream-tracked files
