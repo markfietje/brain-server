@@ -1205,13 +1205,152 @@ pub fn dsar_webhook_url() -> Option<String> {
 }
 
 /// HMAC secret for the DSAR webhook signature (`X-Brain-Signature-256`).
-/// When unset, the webhook is sent unsigned (documented — the caller should
-/// still receive the notification; signing is best practice).
+/// Required whenever `BRAIN_DSAR_WEBHOOK_URL` is set (the DSAR
+/// path has no unsigned opt-out — see [`require_webhook_signing`] +
+/// [`webhook_boot_guard`]); the boot refuses a URL without a secret.
 pub fn dsar_webhook_secret() -> Option<String> {
     std::env::var("BRAIN_DSAR_WEBHOOK_SECRET")
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
+}
+
+/// Outbound webhook signing posture.
+/// `BRAIN_REQUIRE_WEBHOOK_SIGNING` — unset/empty/`1` = REQUIRED (the
+/// default whenever a sink is configured); explicit `0` = unsigned
+/// admitted with a loud boot warn + `/ready` `webhook_signing:off` + every
+/// unsigned payload carrying `signed:false`. Any other value refuses the
+/// boot (fail-closed parse, the `BRAIN_WRITE_POSTURE` pattern). NOTE: the
+/// DSAR/Art-19 path ignores the opt-out — [`webhook_boot_guard`] refuses a
+/// DSAR URL without a secret unconditionally.
+pub fn require_webhook_signing() -> Result<bool, String> {
+    match std::env::var("BRAIN_REQUIRE_WEBHOOK_SIGNING")
+        .unwrap_or_default()
+        .trim()
+    {
+        "" | "1" => Ok(true),
+        "0" => Ok(false),
+        other => Err(format!(
+            "BRAIN_REQUIRE_WEBHOOK_SIGNING='{other}' is invalid; must be 1, 0, or unset"
+        )),
+    }
+}
+
+/// The pure boot decision for outbound webhook
+/// signing. Inputs are presence-bits (URL set? secret set?) plus the
+/// parsed REQUIRE flag — no env reads, so unit tests pin it without
+/// touching the process environment. Returns the `/ready`-surfaced
+/// posture on success, or the fatal boot-refusal message:
+/// * DSAR URL without secret → ALWAYS refused (no opt-out: an Art-19
+///   onward-notice the receiver cannot authenticate is a forgery
+///   primitive, not a notification).
+/// * alert URL without secret + REQUIRE → refused (fail-closed default).
+/// * alert URL without secret + explicit `=0` → admitted UNSIGNED (loud
+///   warn at the call site, `/ready` `webhook_signing:off`, payloads
+///   carry `signed:false`).
+/// * no URL set → admitted, signing posture `on` (nothing unsigned can
+///   be sent; the flag is moot until a sink exists).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WebhookSigningPosture {
+    /// Every configured sink sends signed (or no sink is configured).
+    On,
+    /// Alert sink explicitly admitted unsigned (`=0`); DSAR still refused
+    /// without a secret (the `Err` arm) — `On`/`Off` never coexists with
+    /// an unsigned DSAR send.
+    Off,
+}
+
+impl WebhookSigningPosture {
+    pub fn as_ready_str(self) -> &'static str {
+        match self {
+            WebhookSigningPosture::On => "on",
+            WebhookSigningPosture::Off => "off",
+        }
+    }
+}
+
+pub fn webhook_boot_guard(
+    alert_url: bool,
+    alert_secret: bool,
+    dsar_url: bool,
+    dsar_secret: bool,
+    require: bool,
+) -> Result<WebhookSigningPosture, String> {
+    if dsar_url && !dsar_secret {
+        return Err(
+            "BRAIN_DSAR_WEBHOOK_URL is set but BRAIN_DSAR_WEBHOOK_SECRET is not — \
+             DSAR Art-19 notifications REQUIRE signing (no unsigned opt-out); \
+             set the secret or unset the URL"
+                .to_string(),
+        );
+    }
+    if alert_url && !alert_secret {
+        if require {
+            return Err(
+                "BRAIN_ALERT_WEBHOOK_URL is set but BRAIN_ALERT_WEBHOOK_SECRET is not — \
+                 alert webhook payloads REQUIRE signing by default; set the secret or \
+                 explicitly admit unsigned sends with BRAIN_REQUIRE_WEBHOOK_SIGNING=0"
+                    .to_string(),
+            );
+        }
+        return Ok(WebhookSigningPosture::Off);
+    }
+    Ok(WebhookSigningPosture::On)
+}
+
+/// The DSAR send-path refusal. Pure over presence
+/// bits so both the boot guard AND the sender consult it: a DSAR URL
+/// without a secret refuses the SEND (not just the boot) — there is no
+/// unsigned opt-out on the Art-19 path, whatever
+/// `BRAIN_REQUIRE_WEBHOOK_SIGNING` says.
+pub fn dsar_unsigned_send_refused(url_set: bool, secret_set: bool) -> bool {
+    url_set && !secret_set
+}
+
+/// Resolve the `/ready`-surfaced signing posture
+/// from the LIVE environment through the same guard the boot enforces —
+/// what the operator sees on `/ready` is what the boot admitted. A parse
+/// failure reads as REQUIRED (fail-closed); a guard failure reads as
+/// `On` (the boot would have refused, so `/ready` never serves — the
+/// strict posture is the only honest fallback).
+pub fn current_webhook_signing_posture() -> WebhookSigningPosture {
+    let require = require_webhook_signing().unwrap_or(true);
+    webhook_boot_guard(
+        alert_webhook_url().is_some(),
+        alert_webhook_secret().is_some(),
+        dsar_webhook_url().is_some(),
+        dsar_webhook_secret().is_some(),
+        require,
+    )
+    .unwrap_or(WebhookSigningPosture::On)
+}
+
+/// Default SSE/event-stream re-auth interval (seconds). A revoked principal's
+/// open stream is killed at most this long after revocation (bounded-kill,
+/// not instant-kill — documented in THREAT_MODEL §5b).
+pub const DEFAULT_SSE_REAUTH_SECS: u64 = 30;
+/// Hard ceiling: a larger interval would silently unbound the kill (an
+/// operator typo of `86400` must refuse the boot, not admit a day-long
+/// revoked stream).
+pub const MAX_SSE_REAUTH_SECS: u64 = 3600;
+
+/// Heartbeat re-auth cadence for SSE/event streams
+/// (`BRAIN_SSE_REAUTH_SECS`). Unset/empty = 30s default; `0` = admission-
+/// only (the pre-.86 ceiling, explicitly opted into); 1–3600 = that many
+/// seconds. Anything else (junk, negative, >3600) refuses the boot — a
+/// typo must not silently unbound the kill.
+pub fn sse_reauth_secs() -> Result<u64, String> {
+    let raw = std::env::var("BRAIN_SSE_REAUTH_SECS").unwrap_or_default();
+    let t = raw.trim();
+    if t.is_empty() {
+        return Ok(DEFAULT_SSE_REAUTH_SECS);
+    }
+    match t.parse::<i64>() {
+        Ok(n) if n >= 0 && (n as u64) <= MAX_SSE_REAUTH_SECS => Ok(n as u64),
+        _ => Err(format!(
+            "BRAIN_SSE_REAUTH_SECS='{raw}' is invalid; must be 0 (admission-only) or 1–{MAX_SSE_REAUTH_SECS}"
+        )),
+    }
 }
 
 /// The controller name for the Art 30 register (`GET /art30`). Defaults to
@@ -1403,6 +1542,206 @@ mod tests {
         set(Some("0"));
         assert!(export_max_bytes().is_err());
         set(prev.as_deref());
+    }
+
+    static STREAMKILL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_env(key: &str, v: Option<&str>, f: impl FnOnce()) {
+        let _guard = STREAMKILL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev = std::env::var(key).ok();
+        match v {
+            Some(val) => unsafe { std::env::set_var(key, val) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+        f();
+        match prev {
+            Some(val) => unsafe { std::env::set_var(key, val) },
+            None => unsafe { std::env::remove_var(key) },
+        }
+    }
+
+    /// R-02 (v1.28.86): the re-auth cadence parses fail-closed — unset is
+    /// the 30s default, `0` is the explicit admission-only ceiling, junk /
+    /// negative / over-ceiling refuse (a typo must not silently unbound
+    /// the kill).
+    #[test]
+    fn sse_reauth_secs_parses_fail_closed() {
+        with_env("BRAIN_SSE_REAUTH_SECS", None, || {
+            assert_eq!(sse_reauth_secs().unwrap(), DEFAULT_SSE_REAUTH_SECS);
+        });
+        with_env("BRAIN_SSE_REAUTH_SECS", Some(""), || {
+            assert_eq!(sse_reauth_secs().unwrap(), DEFAULT_SSE_REAUTH_SECS);
+        });
+        with_env("BRAIN_SSE_REAUTH_SECS", Some("0"), || {
+            assert_eq!(sse_reauth_secs().unwrap(), 0);
+        });
+        with_env("BRAIN_SSE_REAUTH_SECS", Some("10"), || {
+            assert_eq!(sse_reauth_secs().unwrap(), 10);
+        });
+        for junk in ["thirty", "-5", "3.5", "99999999999999999999999"] {
+            with_env("BRAIN_SSE_REAUTH_SECS", Some(junk), || {
+                assert!(sse_reauth_secs().is_err(), "{junk} must refuse the boot");
+            });
+        }
+        with_env("BRAIN_SSE_REAUTH_SECS", Some("3601"), || {
+            assert!(
+                sse_reauth_secs().is_err(),
+                "over-ceiling must refuse the boot"
+            );
+        });
+    }
+
+    /// A-01 (v1.28.86): REQUIRE flag polarity — unset is REQUIRED (the
+    /// fail-closed default), explicit `0` opts out, junk refuses.
+    #[test]
+    fn require_webhook_signing_polarity() {
+        with_env("BRAIN_REQUIRE_WEBHOOK_SIGNING", None, || {
+            assert!(require_webhook_signing().unwrap());
+        });
+        with_env("BRAIN_REQUIRE_WEBHOOK_SIGNING", Some("1"), || {
+            assert!(require_webhook_signing().unwrap());
+        });
+        with_env("BRAIN_REQUIRE_WEBHOOK_SIGNING", Some("0"), || {
+            assert!(!require_webhook_signing().unwrap());
+        });
+        with_env("BRAIN_REQUIRE_WEBHOOK_SIGNING", Some("never"), || {
+            assert!(
+                require_webhook_signing().is_err(),
+                "junk must refuse the boot"
+            );
+        });
+    }
+
+    /// A-01 (v1.28.86): the pure boot-guard matrix — DSAR unsigned ALWAYS
+    /// refused (no opt-out); alert unsigned refused by default, admitted
+    /// with explicit `=0`; no sink always admits.
+    #[test]
+    fn webhook_boot_guard_matrix() {
+        // No sink: moot, admits.
+        assert_eq!(
+            webhook_boot_guard(false, false, false, false, true),
+            Ok(WebhookSigningPosture::On)
+        );
+        // Alert signed: admits.
+        assert_eq!(
+            webhook_boot_guard(true, true, false, false, true),
+            Ok(WebhookSigningPosture::On)
+        );
+        // Alert unsigned, default REQUIRE: BOOT REFUSAL.
+        assert!(
+            webhook_boot_guard(true, false, false, false, true).is_err(),
+            "unsigned alert sink must refuse the boot by default"
+        );
+        // Alert unsigned, explicit =0: admitted unsigned.
+        assert_eq!(
+            webhook_boot_guard(true, false, false, false, false),
+            Ok(WebhookSigningPosture::Off)
+        );
+        // DSAR unsigned: refused EVEN with =0 (no opt-out).
+        assert!(
+            webhook_boot_guard(false, false, true, false, false).is_err(),
+            "unsigned DSAR sink must refuse the boot with no opt-out"
+        );
+        assert!(
+            webhook_boot_guard(false, false, true, false, true).is_err(),
+            "unsigned DSAR sink must refuse the boot by default"
+        );
+        // DSAR signed: admits.
+        assert_eq!(
+            webhook_boot_guard(false, false, true, true, true),
+            Ok(WebhookSigningPosture::On)
+        );
+        assert_eq!(WebhookSigningPosture::Off.as_ready_str(), "off");
+        assert_eq!(WebhookSigningPosture::On.as_ready_str(), "on");
+    }
+
+    /// A-01 red (v1.28.86r): the DSAR send path refuses unsigned sends
+    /// with NO opt-out — the boot guard alone is not the enforcement, the
+    /// sender consults this too. Fails until the helper exists.
+    #[test]
+    fn dsar_unsigned_send_is_refused_without_opt_out() {
+        // URL set + no secret → refused, whatever REQUIRE says.
+        assert!(dsar_unsigned_send_refused(true, false));
+        // Signed → sends.
+        assert!(!dsar_unsigned_send_refused(true, true));
+        // No sink → nothing to refuse.
+        assert!(!dsar_unsigned_send_refused(false, false));
+        assert!(!dsar_unsigned_send_refused(false, true));
+    }
+
+    /// Set several env vars under ONE lock acquisition (`with_env` holds
+    /// the non-reentrant `STREAMKILL_ENV_LOCK` — nesting it deadlocks).
+    fn with_envs(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
+        let _guard = STREAMKILL_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let prev: Vec<(&str, Option<String>)> = vars
+            .iter()
+            .map(|(k, _)| (*k, std::env::var(k).ok()))
+            .collect();
+        for (k, v) in vars {
+            match v {
+                Some(val) => unsafe { std::env::set_var(k, val) },
+                None => unsafe { std::env::remove_var(k) },
+            }
+        }
+        f();
+        for (k, v) in prev {
+            match v {
+                Some(val) => unsafe { std::env::set_var(k, val) },
+                None => unsafe { std::env::remove_var(k) },
+            }
+        }
+    }
+
+    /// A-01 red (v1.28.86r): `/ready` posture resolves from the live
+    /// environment through the same guard the boot uses — so what the
+    /// operator sees is what the boot enforced.
+    #[test]
+    fn ready_posture_resolves_through_boot_guard() {
+        // No sinks: On (moot), even with REQUIRE unset.
+        with_envs(
+            &[
+                ("BRAIN_ALERT_WEBHOOK_URL", None),
+                ("BRAIN_ALERT_WEBHOOK_SECRET", None),
+                ("BRAIN_DSAR_WEBHOOK_URL", None),
+                ("BRAIN_DSAR_WEBHOOK_SECRET", None),
+                ("BRAIN_REQUIRE_WEBHOOK_SIGNING", None),
+            ],
+            || {
+                assert_eq!(current_webhook_signing_posture(), WebhookSigningPosture::On);
+            },
+        );
+        // Alert URL without secret + explicit =0: Off (admitted unsigned).
+        with_envs(
+            &[
+                ("BRAIN_ALERT_WEBHOOK_URL", Some("https://hooks.example/x")),
+                ("BRAIN_ALERT_WEBHOOK_SECRET", None),
+                ("BRAIN_DSAR_WEBHOOK_URL", None),
+                ("BRAIN_REQUIRE_WEBHOOK_SIGNING", Some("0")),
+            ],
+            || {
+                assert_eq!(
+                    current_webhook_signing_posture(),
+                    WebhookSigningPosture::Off
+                );
+            },
+        );
+        // Alert URL without secret, default REQUIRE: the guard refuses the
+        // boot, so `/ready` falls back to the strict posture (never Off).
+        with_envs(
+            &[
+                ("BRAIN_ALERT_WEBHOOK_URL", Some("https://hooks.example/x")),
+                ("BRAIN_ALERT_WEBHOOK_SECRET", None),
+                ("BRAIN_DSAR_WEBHOOK_URL", None),
+                ("BRAIN_REQUIRE_WEBHOOK_SIGNING", None),
+            ],
+            || {
+                assert_eq!(current_webhook_signing_posture(), WebhookSigningPosture::On);
+            },
+        );
     }
 
     /// `INJECTION_POLICY=allow` warns EXACTLY ONCE at the boot seam — the

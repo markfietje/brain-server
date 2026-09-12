@@ -186,6 +186,22 @@ pub fn health_body(
     body
 }
 
+/// The `/ready` body. `status` keeps the historical
+/// `OK`/`NOT_READY` vocabulary (same 200 status, no consumer breaks on
+/// the envelope change from text to JSON); `webhook_signing` surfaces the
+/// posture the boot enforced (`on`, or `off` when the operator explicitly
+/// admitted unsigned alert sends with `BRAIN_REQUIRE_WEBHOOK_SIGNING=0`).
+/// Pure over its inputs so monitors and tests pin it without a server.
+pub(crate) fn ready_body(
+    db_ok: bool,
+    signing: crate::config::WebhookSigningPosture,
+) -> serde_json::Value {
+    serde_json::json!({
+        "status": if db_ok { "OK" } else { "NOT_READY" },
+        "webhook_signing": signing.as_ready_str(),
+    })
+}
+
 pub(crate) async fn ready(State(s): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
     let pool = s.pool.clone();
     let ready_future = task::spawn_blocking(move || {
@@ -195,10 +211,14 @@ pub(crate) async fn ready(State(s): State<Arc<AppState>>) -> impl axum::response
             .unwrap_or(false)
     });
 
-    match timeout(StdDuration::from_secs(3), ready_future).await {
-        Ok(Ok(true)) => "OK",
-        _ => "NOT_READY",
-    }
+    let db_ok = matches!(
+        timeout(StdDuration::from_secs(3), ready_future).await,
+        Ok(Ok(true))
+    );
+    Json(ready_body(
+        db_ok,
+        crate::config::current_webhook_signing_posture(),
+    ))
 }
 
 pub(crate) async fn version() -> impl axum::response::IntoResponse {
@@ -855,4 +875,34 @@ pub(crate) async fn stats(
 pub(crate) struct StatsQuery {
     #[serde(default)]
     domain: Option<String>,
+}
+
+#[cfg(test)]
+mod ready_body_tests {
+    use super::ready_body;
+    use crate::config::WebhookSigningPosture;
+
+    /// A-01 red (v1.28.86r): `/ready` surfaces the signing posture — a
+    /// monitor can distinguish fail-closed refusal-risk from admitted
+    /// unsigned. Fails until `ready_body` exists.
+    #[test]
+    fn ready_body_exposes_webhook_signing_posture() {
+        let on = ready_body(true, WebhookSigningPosture::On);
+        assert_eq!(on["status"], serde_json::Value::String("OK".to_string()));
+        assert_eq!(
+            on["webhook_signing"],
+            serde_json::Value::String("on".to_string())
+        );
+        let off = ready_body(true, WebhookSigningPosture::Off);
+        assert_eq!(off["status"], serde_json::Value::String("OK".to_string()));
+        assert_eq!(
+            off["webhook_signing"],
+            serde_json::Value::String("off".to_string())
+        );
+        let down = ready_body(false, WebhookSigningPosture::On);
+        assert_eq!(
+            down["status"],
+            serde_json::Value::String("NOT_READY".to_string())
+        );
+    }
 }

@@ -18,7 +18,6 @@ use axum::extract::State;
 use axum::response::sse::{Event, KeepAlive, KeepAliveStream, Sse};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio_stream::StreamExt;
 
 use crate::AppState;
 
@@ -177,11 +176,9 @@ pub async fn events(
         .as_deref()
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.split(',').map(|k| k.trim().to_string()).collect());
-    let handshake = tokio_stream::once(Ok::<Event, Infallible>(
-        Event::default()
-            .event("pending")
-            .data("{\"feed\":\"alert\"}"),
-    ));
+    let handshake = Event::default()
+        .event("pending")
+        .data("{\"feed\":\"alert\"}");
     let gate = crate::handlers::authorize(&principal.0, crate::auth::Action::Read, "", "global");
     // A denial BEFORE the stream opens is an HTTP status, not a
     // 200-then-error-event: monitors see the 403, connection errors
@@ -189,63 +186,75 @@ pub async fn events(
     // error-EVENT mechanism stays for MID-STREAM failures — a different
     // failure class (headers already sent, status already committed).
     gate?;
-    let stream: Pin<Box<dyn tokio_stream::Stream<Item = Result<Event, Infallible>> + Send>> =
-        {
-            let principal = principal.0;
-            // The resume replay (bounded): only when the subscriber asked for
-            // workflow events at all — other coordinate spaces have their own
-            // re-sync (the poll fallback).
-            let replay: Vec<Value> = match (last_event_id, kinds.as_ref()) {
-                (Some(since), Some(k)) if k.contains(ALERT_KIND_WORKFLOW) => {
-                    workflow_replay_since(&state, since, &principal).await
-                }
-                _ => Vec::new(),
-            };
-            Box::pin(
-                handshake
-                    .chain(tokio_stream::iter(replay.into_iter().map(|v| {
-                        Ok::<Event, Infallible>(
-                            Event::default()
-                                .event("alert")
-                                .json_data(v)
-                                .unwrap_or_default(),
-                        )
-                    })))
-                    .chain(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
-                        move |item| match item {
-                            Ok(v) => {
-                                let kind = v.get("kind").and_then(Value::as_str).unwrap_or("");
-                                // The live gate (see `live_event_admissible`):
-                                // workflow AND valet/due are additive,
-                                // default-off kinds (the label is
-                                // the operator's private reminder text).
-                                let domain = v
-                                    .get("payload")
-                                    .and_then(|p| p.get("domain"))
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("global");
-                                if !live_event_admissible(kind, domain, &principal, kinds.as_ref())
-                                {
-                                    return None;
-                                }
-                                // Drop events the caller didn't ask for (per-kind filter).
-                                if let Some(k) = &kinds
-                                    && !k.contains(kind)
-                                {
-                                    return None;
-                                }
-                                Some(Ok::<Event, Infallible>(
-                                    Event::default()
-                                        .event("alert")
-                                        .json_data(v)
-                                        .unwrap_or_default(),
-                                ))
-                            }
-                            Err(_) => None,
-                        },
-                    )),
-            )
+    // Heartbeat re-auth cadence. Invalid
+    // values never reach here in production (the boot refuses them) — the
+    // fallback is default-loud, never silent.
+    let reauth_secs = match crate::config::sse_reauth_secs() {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::warn!(
+                "BRAIN_SSE_REAUTH_SECS invalid ({e}); SSE re-auth falls back to default"
+            );
+            crate::config::DEFAULT_SSE_REAUTH_SECS
+        }
+    };
+    let stream: Pin<Box<dyn tokio_stream::Stream<Item = Result<Event, Infallible>> + Send>> = {
+        let principal = principal.0;
+        // The resume replay (bounded): only when the subscriber asked for
+        // workflow events at all — other coordinate spaces have their own
+        // re-sync (the poll fallback).
+        let replay: Vec<Value> = match (last_event_id, kinds.as_ref()) {
+            (Some(since), Some(k)) if k.contains(ALERT_KIND_WORKFLOW) => {
+                workflow_replay_since(&state, since, &principal).await
+            }
+            _ => Vec::new(),
         };
+        // The guarded pump: prelude first, then the live drain
+        // through the same per-event authz filter, with a heartbeat
+        // re-check that kills a revoked principal's stream.
+        let mut prelude = Vec::with_capacity(replay.len() + 1);
+        prelude.push(handshake);
+        prelude.extend(replay.into_iter().map(|v| {
+            Event::default()
+                .event("alert")
+                .json_data(v)
+                .unwrap_or_default()
+        }));
+        let (tx, rx_out) = tokio::sync::mpsc::channel(crate::sse_reauth::PUMP_CHANNEL_CAPACITY);
+        let pool = state.pool.clone();
+        let sub = principal.as_ref().map(|p| p.sub.clone());
+        tokio::spawn(async move {
+            crate::sse_reauth::pump_guarded(tx, rx, pool, sub, reauth_secs, prelude, move |v| {
+                let kind = v.get("kind").and_then(Value::as_str).unwrap_or("");
+                // The live gate (see `live_event_admissible`):
+                // workflow AND valet/due are additive,
+                // default-off kinds (the label is
+                // the operator's private reminder text).
+                let domain = v
+                    .get("payload")
+                    .and_then(|p| p.get("domain"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("global");
+                if !live_event_admissible(kind, domain, &principal, kinds.as_ref()) {
+                    return None;
+                }
+                // Drop events the caller didn't ask for (per-kind filter).
+                if let Some(k) = &kinds
+                    && !k.contains(kind)
+                {
+                    return None;
+                }
+                Some(
+                    Event::default()
+                        .event("alert")
+                        .json_data(v)
+                        .unwrap_or_default(),
+                )
+            })
+            .await;
+        });
+        Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx_out))
+    };
     Ok(Sse::new(stream).keep_alive(KeepAlive::default()))
 }
 
@@ -455,14 +464,35 @@ pub fn spawn_workflow_event_worker(state: Arc<AppState>) {
     });
 }
 
+/// Stamp the wire posture onto the payload itself.
+/// An unsigned-admitted send (`BRAIN_REQUIRE_WEBHOOK_SIGNING=0`) carries
+/// `signed:false` so the receiver never mistakes it for an authenticated
+/// notice; signed sends carry `signed:true`. Pure so tests pin it.
+pub(crate) fn mark_payload_signed(body: &str, signed: bool) -> String {
+    match serde_json::from_str::<Value>(body).ok() {
+        Some(mut v) => {
+            if let Some(o) = v.as_object_mut() {
+                o.insert("signed".to_string(), Value::Bool(signed));
+            }
+            v.to_string()
+        }
+        // Unreachable (the caller builds the body) — never drop bytes.
+        None => body.to_string(),
+    }
+}
+
 /// Webhook sink: an audit/idempotency `webhook_queue` record (kind='alert',
 /// delivery-id = `alert-<seq>`), then a Standard Webhooks POST (`webhook-id`/
 /// `webhook-timestamp`/`webhook-signature: v1,<base64>`), bounded retries, fail-soft.
 /// `webhook_seen` dedups replays; the receiver also has `alert.seq` for idempotency.
+/// Unsigned-admitted sends (`=0`) carry `signed:false` on the payload
+/// (see [`mark_payload_signed`]); the boot refuses unsigned sends by default.
 async fn sink(state: &Arc<AppState>, seq: u64, body: &str) {
     let Some(url) = crate::config::alert_webhook_url() else {
         return;
     };
+    let signed = crate::config::alert_webhook_secret().is_some();
+    let body = mark_payload_signed(body, signed);
     let delivery_id = format!("alert-{seq}");
     let queue = crate::webhook::WebhookQueue::new(Arc::new(state.pool.clone()));
     let _ = queue.enqueue("alert", "alert", &delivery_id, body.as_bytes());
@@ -493,7 +523,7 @@ async fn sink(state: &Arc<AppState>, seq: u64, body: &str) {
                 .header("webhook-timestamp", &ts)
                 .header("webhook-signature", sig);
         }
-        match req.body(body.to_string()).send().await {
+        match req.body(body.clone()).send().await {
             Ok(r) if r.status().is_success() => return,
             Ok(r) => last_err = Some(format!("http {}", r.status())),
             Err(e) => last_err = Some(e.to_string()),
@@ -781,6 +811,23 @@ mod tests {
             !r.chain_ok,
             "a poisoned watch must report NOT ok (fail closed)"
         );
+    }
+
+    /// A-01 (v1.28.86): the wire posture rides the payload — unsigned-
+    /// admitted sends carry `signed:false`, signed sends `signed:true`.
+    /// A receiver can never mistake an admitted-unsigned notice for an
+    /// authenticated one.
+    #[test]
+    fn alert_payload_carries_signed_posture() {
+        let body = r#"{"kind":"workflow","seq":7}"#;
+        let off = super::mark_payload_signed(body, false);
+        let v: Value = serde_json::from_str(&off).expect("valid JSON");
+        assert_eq!(v["signed"], Value::Bool(false));
+        assert_eq!(v["kind"], "workflow");
+        assert_eq!(v["seq"], 7);
+        let on = super::mark_payload_signed(body, true);
+        let w: Value = serde_json::from_str(&on).expect("valid JSON");
+        assert_eq!(w["signed"], Value::Bool(true));
     }
 
     #[test]

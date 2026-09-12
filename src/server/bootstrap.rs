@@ -1073,23 +1073,38 @@ pub fn bootstrap() -> Result<BootOutcome> {
     enforce_loopback_bind_guard(&addr, auth_mode)?;
 
     println!("🚀 Server: http://{}:{}", bind_host, bind_port);
-    // make the two unsigned-by-default egress signatures
-    // a visible startup warning, never a silent default — an operator shipping a
-    // webhook sink should know the payload integrity is off until the secret is
-    // set. `eprintln!` so it lands in `err.log` beside the rest of the warnings.
-    if crate::config::alert_webhook_url().is_some()
-        && crate::config::alert_webhook_secret().is_none()
-    {
+    // Outbound webhook signing is
+    // fail-closed by default. A configured sink without its secret REFUSES
+    // the boot (never a warn-and-send-unsigned startup); the DSAR/Art-19
+    // path has no opt-out at all. Explicit `BRAIN_REQUIRE_WEBHOOK_SIGNING=0`
+    // admits an unsigned ALERT sink with a loud warn + `/ready`
+    // `webhook_signing:off` + `signed:false` on every payload.
+    let require_signing = crate::config::require_webhook_signing()
+        .map_err(|e| anyhow::anyhow!("fatal webhook config: {e}"))?;
+    let signing_posture = crate::config::webhook_boot_guard(
+        crate::config::alert_webhook_url().is_some(),
+        crate::config::alert_webhook_secret().is_some(),
+        crate::config::dsar_webhook_url().is_some(),
+        crate::config::dsar_webhook_secret().is_some(),
+        require_signing,
+    )
+    .map_err(|e| anyhow::anyhow!("fatal webhook config: {e}"))?;
+    if signing_posture == crate::config::WebhookSigningPosture::Off {
         eprintln!(
-            "⚠️ BRAIN_ALERT_WEBHOOK_URL is set but BRAIN_ALERT_WEBHOOK_SECRET is not — \
-         alert webhook payloads are sent UNSIGNED (a receiver cannot verify integrity)."
+            "⚠️ BRAIN_REQUIRE_WEBHOOK_SIGNING=0: alert webhook payloads are sent UNSIGNED — \
+             receivers cannot verify integrity (each payload carries signed:false; \
+             /ready reports webhook_signing:off). DSAR Art-19 sends stay refused without a secret."
         );
     }
-    if crate::config::dsar_webhook_url().is_some() && crate::config::dsar_webhook_secret().is_none()
-    {
+    // The SSE re-auth cadence parses fail-closed — a typo must
+    // refuse the boot, never silently unbound the kill. `0` is admitted
+    // (the explicit admission-only ceiling) with a loud warn.
+    let reauth_secs =
+        crate::config::sse_reauth_secs().map_err(|e| anyhow::anyhow!("fatal SSE config: {e}"))?;
+    if reauth_secs == 0 {
         eprintln!(
-            "⚠️ BRAIN_DSAR_WEBHOOK_URL is set but BRAIN_DSAR_WEBHOOK_SECRET is not — \
-         DSAR Art-19 notifications are sent UNSIGNED."
+            "⚠️ BRAIN_SSE_REAUTH_SECS=0: SSE streams are admission-only — a principal revoked \
+             mid-stream keeps receiving until disconnect (pre-v1.28.86 ceiling, explicitly opted into)."
         );
     }
 

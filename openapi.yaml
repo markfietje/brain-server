@@ -152,10 +152,14 @@ paths:
       operationId: getReady
       responses:
         "200":
-          description: "OK when ready, NOT_READY otherwise"
+          description: "status OK when ready, NOT_READY otherwise, plus the boot-enforced webhook_signing posture (on, or off when unsigned alert sends were explicitly admitted)"
           content:
-            text/plain:
-              schema: { type: string, example: OK }
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: OK }
+                  webhook_signing: { type: string, example: "on" }
   /openapi.yaml:
     get:
       summary: This OpenAPI document (machine-readable route discovery)

@@ -156,6 +156,7 @@ pub mod search;
 pub mod secrets;
 pub mod service;
 pub mod sources;
+pub mod sse_reauth;
 pub mod standby;
 pub mod temporal;
 pub mod trace;

@@ -714,16 +714,31 @@ pub async fn get_dsar_certificate(
 // Art 19 webhook (opt-in, handler-owned egress) + the per-pool seam
 // ---------------------------------------------------------------------------
 
-/// Art 19 onward-notification. When
-/// `BRAIN_DSAR_WEBHOOK_URL` is set, a completed DSAR purge POSTs
-/// `{subject, certified_at, certificate_id}` to the URL, HMAC-SHA256-signed
-/// (`X-Brain-Signature-256: sha256=<hex>`) when `BRAIN_DSAR_WEBHOOK_SECRET`
-/// is set. Fail-soft: bounded retries, then a logged warning — a webhook
-/// failure NEVER rolls back the purge.
+/// Art 19 onward-notification. When `BRAIN_DSAR_WEBHOOK_URL` is set, a
+/// completed DSAR purge POSTs `{subject, certified_at, certificate_id}`
+/// to the URL, HMAC-SHA256-signed (`X-Brain-Signature-256: sha256=<hex>`).
+/// The secret is REQUIRED — a URL without
+/// `BRAIN_DSAR_WEBHOOK_SECRET` refuses the SEND, not just the boot (see
+/// `config::webhook_boot_guard` and `config::dsar_unsigned_send_refused`).
+/// There is no unsigned opt-out on this path: an Art-19 notice the
+/// receiver cannot authenticate is a forgery primitive, not a
+/// notification. Fail-soft otherwise: bounded retries, then a logged
+/// warning — a webhook failure NEVER rolls back the purge.
 pub fn notify_art19(subject: String, certificate_id: i64, certified_at: String) {
     let Some(url) = crate::config::dsar_webhook_url() else {
         return;
     };
+    if crate::config::dsar_unsigned_send_refused(
+        true,
+        crate::config::dsar_webhook_secret().is_some(),
+    ) {
+        tracing::error!(
+            "DSAR Art 19 webhook to {url} REFUSED unsigned (no opt-out): \
+             set BRAIN_DSAR_WEBHOOK_SECRET or unset BRAIN_DSAR_WEBHOOK_URL — \
+             the purge itself is unaffected"
+        );
+        return;
+    }
     let payload = serde_json::json!({
         "subject": subject,
         "certified_at": certified_at,
@@ -741,20 +756,18 @@ pub fn notify_art19(subject: String, certificate_id: i64, certified_at: String) 
                 return;
             }
         };
-        if crate::config::dsar_webhook_secret().is_none() {
-            tracing::warn!(
-                "DSAR Art 19 webhook to {url} is UNSIGNED (no BRAIN_DSAR_WEBHOOK_SECRET) — \
-                 set the secret so the receiver can verify provenance"
-            );
-        }
+        // Unsigned sends cannot reach here (refused above): the secret is
+        // present, so the signature header is unconditional.
         let mut last_err: Option<String> = None;
+        // The secret is guaranteed present (refused above), so the signature
+        // header is unconditional — no unsigned-send arm remains.
+        let secret = crate::config::dsar_webhook_secret().expect("DSAR secret checked above");
+        let sig = hmac_hex(secret.as_bytes(), payload.as_bytes()).expect("HMAC accepts any key");
         for attempt in 0..3u32 {
-            let mut req = client.post(&url).header("content-type", "application/json");
-            if let Some(secret) = crate::config::dsar_webhook_secret()
-                && let Some(sig) = hmac_hex(secret.as_bytes(), payload.as_bytes())
-            {
-                req = req.header("x-brain-signature-256", format!("sha256={sig}"));
-            }
+            let req = client
+                .post(&url)
+                .header("content-type", "application/json")
+                .header("x-brain-signature-256", format!("sha256={sig}"));
             match req.body(payload.clone()).send().await {
                 Ok(r) if r.status().is_success() => return,
                 Ok(r) => last_err = Some(format!("http {}", r.status())),
@@ -768,8 +781,10 @@ pub fn notify_art19(subject: String, certificate_id: i64, certified_at: String) 
 
 /// HMAC-SHA256 hex signature (the same scheme `webhook.rs` verifies for
 /// inbound GitHub webhooks — the DSAR webhook is the outbound mirror).
-/// `None` on an invalid key length — the caller signs with no header
-/// (fail-soft, matching `notify_art19`'s never-rolls-back posture).
+/// Always `Some` today (HMAC accepts keys of any length, including empty);
+/// the `Option` is retained for signature stability. The caller unwraps:
+/// a `None` would refuse the send, never degrade to unsigned (no unsigned
+/// arm remains on this path).
 fn hmac_hex(secret: &[u8], body: &[u8]) -> Option<String> {
     use hmac::{Hmac, KeyInit, Mac};
     type HmacSha256 = Hmac<sha2::Sha256>;

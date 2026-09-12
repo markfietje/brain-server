@@ -13,7 +13,6 @@ use axum::extract::{Path, State};
 use axum::response::sse::{Event, KeepAlive, KeepAliveStream, Sse};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tokio_stream::StreamExt;
 
 use crate::AppState;
 use crate::handlers::auth::{OptCapability, OptPrincipal};
@@ -855,9 +854,6 @@ pub async fn subscribe(
 ) -> Sse<KeepAliveStream<Pin<Box<dyn tokio_stream::Stream<Item = Result<Event, Infallible>> + Send>>>>
 {
     let rx = state.ump_events.subscribe();
-    let handshake = tokio_stream::once(Ok::<Event, Infallible>(
-        Event::default().event("pending").data("{\"ump\":\"1.0\"}"),
-    ));
     let gate = super::authorize(&principal, crate::auth::Action::Read, "", "global")
         .and_then(|()| super::cap_gate(&cap.0, "read"));
     let stream: Pin<Box<dyn tokio_stream::Stream<Item = Result<Event, Infallible>> + Send>> =
@@ -868,21 +864,41 @@ pub async fn subscribe(
                 Event::default().event("error").data(format!("{e:?}")),
             )))
         } else {
-            Box::pin(
-                handshake.chain(tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
-                    |item| {
-                        match item {
-                            Ok(v) => Some(Ok::<Event, Infallible>(
-                                Event::default()
-                                    .event("change")
-                                    .json_data(v)
-                                    .unwrap_or_default(),
-                            )),
-                            Err(_) => None,
-                        }
+            // The same guarded pump as the
+            // alert feed — the change-signal drain re-checks the principal
+            // every heartbeat and dies with the termination frame.
+            let reauth_secs = match crate::config::sse_reauth_secs() {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!(
+                        "BRAIN_SSE_REAUTH_SECS invalid ({e}); SSE re-auth falls back to default"
+                    );
+                    crate::config::DEFAULT_SSE_REAUTH_SECS
+                }
+            };
+            let (tx, rx_out) = tokio::sync::mpsc::channel(crate::sse_reauth::PUMP_CHANNEL_CAPACITY);
+            let pool = state.pool.clone();
+            let sub = principal.as_ref().map(|p| p.sub.clone());
+            tokio::spawn(async move {
+                crate::sse_reauth::pump_guarded(
+                    tx,
+                    rx,
+                    pool,
+                    sub,
+                    reauth_secs,
+                    vec![Event::default().event("pending").data("{\"ump\":\"1.0\"}")],
+                    |v| {
+                        Some(
+                            Event::default()
+                                .event("change")
+                                .json_data(v)
+                                .unwrap_or_default(),
+                        )
                     },
-                )),
-            )
+                )
+                .await;
+            });
+            Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx_out))
         };
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
