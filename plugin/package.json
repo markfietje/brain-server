@@ -1,12 +1,12 @@
 {
   "name": "@markfietje/brain-server-openclaw",
-  "version": "0.6.5",
+  "version": "0.6.7",
   "description": "OpenClaw memory plugin for the Rust brain-server: deterministic auto-recall, per-domain knowledge graphs, local static embeddings. Thin TS shim over loopback HTTP.",
   "license": "MIT",
   "type": "module",
   "main": "./index.ts",
   "dependencies": {
-    "typebox": "1.3.3"
+    "typebox": "1.3.26"
   },
   "devDependencies": {
     "@openclaw/plugin-sdk": "workspace:*",

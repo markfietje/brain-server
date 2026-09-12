@@ -4,6 +4,39 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.7] — 2026-09-12
+
+**Typebox truth repair** — the dependency pin agrees with reality everywhere
+(manifest = lockfile = workspace catalog = installed = tested):
+
+- `typebox` pinned `1.3.3` → `1.3.26`. The openclaw workspace catalog
+  (`pnpm-workspace.yaml`) resolves 1.3.26, the lockfile importer agreed after
+  the fork's post-rebase `pnpm install`, and 1.3.26 is the version the 188-test
+  suite actually runs against — the 1.3.3 pin was the stale side of the
+  documented manifest/lock drift (audit K4-02). No code change; the schema
+  usage is version-stable across the 1.3.x line.
+
+## [0.6.6] — 2026-09-12
+
+**Four-tree invisible-set drift alarm** — test/fixture only (no runtime
+behavior change); synced byte-identical to the fork mirror:
+
+- New `fixtures/invisible-classes.json`: the canonical invisible-Unicode
+  classes (truth source: brain-server `src/strip_invisible.rs`), consumed by
+  FOUR test lanes — the server lane proves the fixture exhaustively against
+  `is_invisible` over every scalar value; the plugin lane (`format.test.ts`)
+  asserts `INVISIBLE_CLASSES` strips every in-fixture codepoint
+  (anti-vacuity floor: >300 checked) and keeps the visible samples; the
+  client lane holds the vendored wasm mirror to the same file; the fork-host
+  lane (`src/infra/unicode-visibility.fixture.test.ts` in the openclaw
+  workspace) asserts the host `stripInvisibleUnicode` strips at least the
+  canonical set (the host keeps its documented extras U+2064/U+206A–206F).
+  Either tree changing its set without the fixture now fails CI in that
+  tree — the 0.5.1-era single-tree probe is superseded by the shared
+  fixture.
+- Ships with the fourth-pass audit's remediation pass
+  (`docs/SECURITY_AUDIT_20260912_FOURTH_PASS.md`, finding P4-01).
+
 ## [0.6.5] — 2026-09-11
 
 **Env-token refusal** — synced byte-identical to the fork mirror:
