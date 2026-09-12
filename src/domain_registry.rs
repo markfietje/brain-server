@@ -346,6 +346,47 @@ mod tests {
         ));
     }
 
+    /// A5-10: a poisoned pools lock propagates as `Poisoned` — never a
+    /// silent fallthrough to the global pool. Drives a really poisoned lock
+    /// (panic-while-holding, the in-module privilege integration tests lack);
+    /// dropping the `map_err(|_| Poisoned)` conversion fails this pin. The
+    /// old meta-pin only grepped the variant's NAME.
+    #[test]
+    fn pool_for_propagates_a_poisoned_pools_lock() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let dir = std::env::temp_dir().join(format!(
+            "brain-registry-poison-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let global_path = dir.join("brain.db");
+        let mgr = SqliteConnectionManager::file(&global_path);
+        let pool: BrainPool = r2d2::Pool::builder().build(mgr).expect("build global pool");
+        let reg = std::sync::Arc::new(DomainRegistry::new(pool, &global_path, true));
+        reg.seed_registered("work").expect("seed work");
+        // Poison ONLY the pools lock (the registered set stays healthy so the
+        // lookup reaches the poisoned lock instead of answering Unknown).
+        let handle = {
+            let reg = reg.clone();
+            std::thread::spawn(move || {
+                let _guard = reg.pools.lock().expect("lock before panic");
+                panic!("poison the pools lock");
+            })
+        };
+        let _ = handle.join();
+        let err = reg
+            .pool_for("work")
+            .expect_err("a poisoned pools lock must propagate, never fall through");
+        assert!(
+            matches!(err, DomainRegistryError::Poisoned),
+            "must be Poisoned, got: {err}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// Multi-db mode opens a real per-domain file and migrates it.
     #[test]
     fn multi_db_opens_per_domain_file() {

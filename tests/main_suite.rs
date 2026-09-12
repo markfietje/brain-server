@@ -9387,6 +9387,48 @@ Final paragraph after the rule.";
         }
     }
 
+    /// A5-09: /multi-get rows shape like /get rows — the ingest-kind label
+    /// rides the read seam per row (hostile constructs dead, prose
+    /// survives), instead of the key going missing.
+    #[tokio::test]
+    async fn multi_get_carries_seam_shaped_source() {
+        use axum::extract::{Json as AxumJson, State};
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let id = seed_chunk(&state, "alpha", None, None, "batch source pin content");
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "UPDATE knowledge SET source = ?1 WHERE id = ?2",
+                params![
+                    "bad [![img](https://evil.invalid/i.png)](https://evil.invalid/out) <script>alert(1)</script>\u{200B}img",
+                    id
+                ],
+            )
+            .unwrap();
+        }
+        let resp = multi_get(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            domain_headers("alpha"),
+            AxumJson(MultiGetRequest { ids: vec![id] }),
+        )
+        .await
+        .expect("multi-get succeeds");
+        let chunks = resp.0["chunks"].as_array().unwrap();
+        assert_eq!(chunks.len(), 1);
+        let source = chunks[0]["source"].as_str().unwrap();
+        assert!(
+            !source.contains("<script") && !source.contains("evil.invalid"),
+            "batch source must be seam-shaped, got: {source}"
+        );
+        assert!(
+            source.contains("img"),
+            "batch source must preserve prose, got: {source}"
+        );
+    }
+
     // ── (v1.28.77 Erasure M6 / SP-W1) ───────────────
     //
     // The valet crank drains or says why: a full backlog (>= 100 due
@@ -10161,57 +10203,37 @@ Final paragraph after the rule.";
         );
     }
 
-    /// v1.27.27 M1 (F-26 class, consolidated pin): every shared-state read that
-    /// feeds an authorization, scope, or security-posture decision must fail
-    /// CLOSED when its lock is poisoned or its store unreadable. The behavior
-    /// pins live next to each gate (TokenStore poisoning →
-    /// `poisoned_token_store_reads_as_read_failed` + the 500 arm asserted
-    /// below; chain-watch/snapshot poisoning → their module tests); this pin
-    /// holds the source shapes so a refactor cannot silently drop an arm.
+    /// v1.27.27 M1 (F-26 class), reworked v1.28.83 (A5-10): every
+    /// shared-state read feeding an authorization, scope, or
+    /// security-posture decision fails CLOSED — and every arm below is pinned
+    /// BEHAVIORALLY at its gate (the old shape asserted source substrings,
+    /// which kept the names while any refactor could drop the mappings):
+    /// opaque-middleware 500 → `poisoned_token_store_denies_at_middleware_
+    /// with_500` (router/auth.rs, drives a really poisoned lock);
+    /// TokenStore read → `poisoned_token_store_reads_as_read_failed`
+    /// (auth); JWT revocation error → `revocation_lookup_error_denies`
+    /// (above); registry propagation → `pool_for_propagates_a_poisoned_
+    /// pools_lock` (domain_registry.rs); chain-watch/snapshot defaults →
+    /// `poisoned_chain_watch_reads_as_not_ok` (alert) +
+    /// `poisoned_snapshot_reads_as_not_ok` (integrity). This registry holds
+    /// the inventory so a dropped arm is noticed in review; the BEHAVIOR is
+    /// held by the named pins, each of which fails if its arm is removed.
     #[test]
     fn poisoned_lock_denies_every_gate() {
-        let src = include_str!(concat!(
+        // The inventory above is documentation; the machine checks are the
+        // six named behavioral pins. This test asserts the one thing only a
+        // cross-gate test can: the denial VOCABULARY is stable — the codes
+        // operators alert on still exist at the seams that emit them.
+        let auth_src = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/server/router/auth.rs"
         ));
-        // 1. Opaque middleware: ReadFailed is a 500 deny, never a pass-through.
-        assert!(
-            src.contains("auth::TokenRead::ReadFailed =>"),
-            "auth_middleware must keep the ReadFailed arm"
-        );
-        assert!(
-            src.contains("\"auth_store_unavailable\""),
-            "the poisoned token store must answer auth_store_unavailable"
-        );
-        // 2. JWT middleware: the revocation lookup propagates its error into
-        // the deny path (mapped by revocation_lookup_error_denies above).
-        assert!(
-            src.contains("revocation store unavailable"),
-            "a revocation store error must surface as a denial"
-        );
-        // 3. Domain registry: a poisoned registry lock is a typed error, not a
-        // silent fallthrough to the global pool.
-        let reg = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/src/domain_registry.rs"
-        ));
-        assert!(
-            reg.contains("DomainRegistryError::Poisoned"),
-            "pool_for must propagate lock poisoning"
-        );
-        // 4. Health posture signals: the poisoned-lock reads default to the
-        // NOT-ok posture (chain_ok / integrity_ok false), pinned by behavior
-        // in alert::tests and integrity::tests.
-        let alert_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/alert.rs"));
-        assert!(
-            alert_src.contains("Default `chain_ok=false` until the first check"),
-            "the chain-watch default must be the fail-closed posture"
-        );
-        let integrity_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/integrity.rs"));
-        assert!(
-            integrity_src.contains("integrity_ok: false"),
-            "the snapshot failure path must report not-ok"
-        );
+        for code in ["auth_store_unavailable", "revocation store unavailable"] {
+            assert!(
+                auth_src.contains(code),
+                "the operator-visible denial vocabulary must stay stable: {code}"
+            );
+        }
     }
 
     /// §5.2: the capability-token acceptance decision. A token

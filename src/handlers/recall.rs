@@ -1161,6 +1161,86 @@ mod tests {
         assert_eq!(hits[0].region.as_deref(), Some("eu-west-1"));
     }
 
+    /// A5-10 (moved here from the workflow mesh tests, where it only
+    /// asserted the seam's identity on clean input): knowledge written by an
+    /// agent carries `origin='agent:…'` through the REAL hit builder, so any
+    /// other principal's recall hit shows provenance instead of anonymous
+    /// content. Deleting the `origin` line from `results_to_hits` fails this
+    /// pin — the old shape passed with the labeling gone.
+    #[test]
+    fn results_to_hits_forwards_agent_origin_label() {
+        let results = vec![SearchResult {
+            id: 9,
+            score: 0.9,
+            title: None,
+            content: "agent-authored content".into(),
+            source: None,
+            provenance: Default::default(),
+            flagged: false,
+            untrusted: true,
+            snippet: None,
+            evidence: None,
+            ingest_kind: None,
+            memory_kind: None,
+            lawful_basis: None,
+            region: None,
+            origin: Some("agent:atlas".into()),
+            ..Default::default()
+        }];
+        let hits = results_to_hits(
+            results
+                .into_iter()
+                .map(|r| (r, "global".to_string()))
+                .collect(),
+            false,
+            false,
+            &None,
+        );
+        assert_eq!(hits.len(), 1);
+        assert_eq!(
+            hits[0].origin.as_deref(),
+            Some("agent:atlas"),
+            "the agent origin label must survive the hit builder"
+        );
+        // And the seam still shapes hostile origins (label, not live markup).
+        let hostile = vec![SearchResult {
+            id: 10,
+            score: 0.9,
+            title: None,
+            content: "c".into(),
+            source: None,
+            provenance: Default::default(),
+            flagged: false,
+            untrusted: true,
+            snippet: None,
+            evidence: None,
+            ingest_kind: None,
+            memory_kind: None,
+            lawful_basis: None,
+            region: None,
+            origin: Some("<script>alert(1)</script>agent".into()),
+            ..Default::default()
+        }];
+        let hits = results_to_hits(
+            hostile
+                .into_iter()
+                .map(|r| (r, "global".to_string()))
+                .collect(),
+            false,
+            false,
+            &None,
+        );
+        let origin = hits[0].origin.as_deref().unwrap_or_default();
+        assert!(
+            !origin.contains("<script"),
+            "hostile origin markup must die at the seam, got: {origin}"
+        );
+        assert!(
+            origin.contains("agent"),
+            "origin prose must survive the seam, got: {origin}"
+        );
+    }
+
     #[test]
     fn results_to_hits_preserves_order_and_count() {
         // perform_search returns descending by score; mapping must not reorder.

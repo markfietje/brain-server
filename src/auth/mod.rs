@@ -232,6 +232,26 @@ impl TokenStore {
         }
     }
 
+    /// Test seam (never production): a store whose lock is already poisoned,
+    /// so middleware-level tests can drive the `ReadFailed` arm behaviorally
+    /// — the only producer of `ReadFailed` is a panicked write guard, and no
+    /// caller outside this module can reach the private lock. `#[cfg(test)]`
+    /// keeps it out of every shipped binary (the `reload_parts_from`
+    /// precedent: explicit test seams over env-racing fixtures).
+    #[cfg(test)]
+    pub(crate) fn poisoned_for_tests() -> TokenStore {
+        let inner = std::sync::Arc::new(std::sync::RwLock::new(TokenState::default()));
+        let handle = {
+            let inner = inner.clone();
+            std::thread::spawn(move || {
+                let _guard = inner.write().expect("lock before panic");
+                panic!("poison the token lock (test seam)");
+            })
+        };
+        let _ = handle.join();
+        TokenStore { inner, file: None }
+    }
+
     /// Reload from disk if the file's mtime advanced since the last load.
     /// Fail-safe: if the file is missing/unreadable/empty AFTER a successful
     /// initial load, keep the cached tokens and log a warning. Returns `true`

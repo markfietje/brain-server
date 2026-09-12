@@ -669,6 +669,49 @@ pub(crate) mod tests {
         assert_eq!(resp.status(), axum::http::StatusCode::OK);
     }
 
+    /// A5-10: the poisoned-lock arm WIRED — a poisoned token store denies at
+    /// the middleware with 500 `auth_store_unavailable`, never an allow-all
+    /// empty set. Drives the real middleware over a really poisoned lock
+    /// (the `poisoned_for_tests` seam); deleting the `ReadFailed` arm fails
+    /// this pin. The old meta-pin only grepped the arm's NAME, which kept
+    /// the string while any refactor could drop the mapping.
+    #[tokio::test]
+    async fn poisoned_token_store_denies_at_middleware_with_500() {
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        async fn stub() -> &'static str {
+            "ok"
+        }
+
+        let (state, _dir) = opaque_state(TokenStore::poisoned_for_tests());
+        let app = axum::Router::new()
+            .route("/private", get(stub))
+            .with_state(state.clone())
+            .layer(middleware::from_fn_with_state(state, auth_middleware));
+
+        let resp = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/private")
+                    .header("authorization", "Bearer anything")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "a poisoned token store must 500, never pass through"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16)
+            .await
+            .expect("readable body");
+        let v: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(v["code"], "auth_store_unavailable");
+    }
+
     /// the rate limiter keys buckets by the
     /// peer `SocketAddr` extension — the gap the audit flagged (pre-v1.27.16
     /// the extension was missing, so EVERY request shared one bucket). One

@@ -1167,30 +1167,6 @@ mod tests {
         assert!(!is_working_set_domain("other", &ws));
     }
 
-    /// cross_agent_recall_shows_origin_labels — knowledge written by an agent
-    /// carries `origin='agent'` through the read-seam shaping, so any other
-    /// principal's recall hit shows provenance instead of anonymous content.
-    #[test]
-    fn cross_agent_recall_shows_origin_labels() {
-        let peer: Option<crate::auth::Principal> = None;
-        // The exact shaping the recall hit builder applies to stored origin
-        // text (handlers/recall.rs): provenance labels pass the read seam
-        // intact for any viewer, agent-authored or not.
-        assert_eq!(
-            crate::gate::sanitize_read_opt(Some("agent".into()), false, &peer),
-            Some("agent".into())
-        );
-        assert_eq!(
-            crate::gate::sanitize_read_opt(Some("agent:atlas".into()), false, &peer),
-            Some("agent:atlas".into())
-        );
-        // And an agent-authored hit's label survives PII-mode shaping too.
-        assert_eq!(
-            crate::gate::sanitize_read_opt(Some("agent:atlas".into()), true, &peer),
-            Some("agent:atlas".into())
-        );
-    }
-
     /// revoked_principal_cards_fail_closed — the ASI03/07 kill-switch read
     /// side: after revocation, the card refuses BEFORE signature work
     /// (probe-blind: the refusal is `PrincipalRevoked`, not

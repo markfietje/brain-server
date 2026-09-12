@@ -144,8 +144,8 @@ pub(crate) struct ChunkRecord {
     pub domain: String,
     pub owner: Option<String>,
     pub access_scope: Option<String>,
-    /// the ingest kind (`k.source`) — by-id path only (the batch projection
-    /// never carried it).
+    /// the ingest kind (`k.source`) — seam-sanitized at the emission
+    /// boundary on both by-id and batch paths.
     pub source: Option<String>,
     /// the raw `created_at` TEXT — by-id path only.
     pub created_at: Option<String>,
@@ -225,7 +225,7 @@ pub(crate) fn chunks_in_domain(
     let sql = format!(
         "SELECT k.id, k.title, k.content, k.document_id, k.chunk_index,\
                 k.heading_path, k.line_start, k.line_end, s.uri, sr.id, k.pii,\
-                k.flagged, k.domain, k.owner, k.access_scope \
+                k.flagged, k.domain, k.owner, k.access_scope, k.source \
          FROM knowledge k \
          LEFT JOIN sources s ON k.source_id = s.id \
          LEFT JOIN source_revisions sr ON k.revision_id = sr.id \
@@ -256,8 +256,11 @@ pub(crate) fn chunks_in_domain(
             domain: row.get(12)?,
             owner: row.get(13)?,
             access_scope: row.get(14)?,
-            // the batch projection never carried these two columns.
-            source: None,
+            // the batch projection carries the ingest-kind label too (the
+            // v1.28.83 convergence: /multi-get rows shape like /get rows,
+            // seam-sanitized at the emission boundary). created_at stays
+            // by-id-only (no consumer need demonstrated).
+            source: row.get(15)?,
             created_at: None,
         })
     })?;
