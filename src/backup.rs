@@ -756,8 +756,24 @@ pub(crate) fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default()
     ));
-    fs::write(&tmp, data).with_context(|| format!("write temp {tmp:?}"))?;
-    let f = fs::File::open(&tmp).with_context(|| format!("open temp {tmp:?}"))?;
+    // 0600 at creation (2026-09-11 fix): this helper lands DECRYPTED store
+    // bytes (restore, standby promote) — the temp must never be world-
+    // readable during the write→rename window (mode + write in one open).
+    let mut opts = fs::OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut f = opts
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&tmp)
+        .with_context(|| format!("create temp {tmp:?}"))?;
+    use std::io::Write;
+    f.write_all(data)
+        .with_context(|| format!("write temp {tmp:?}"))?;
     f.sync_all()
         .with_context(|| format!("fsync temp {tmp:?}"))?;
     fs::rename(&tmp, path).with_context(|| format!("rename over {path:?}"))?;
@@ -1135,8 +1151,25 @@ fn verify_snapshot_chain_posture(
             .map(|d| d.subsec_nanos() as u64 + d.as_secs())
             .unwrap_or(0)
     ));
-    fs::write(&verify_path, snapshot)
-        .with_context(|| format!("materialize snapshot for verification at {verify_path:?}"))?;
+    // 0600 at creation (2026-09-11 fix): the materialized snapshot is the
+    // DECRYPTED store — the verify temp must never be world-readable in the
+    // DB's own directory (short-lived, but plaintext is plaintext).
+    {
+        let mut opts = fs::OpenOptions::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts
+            .write(true)
+            .create_new(true)
+            .open(&verify_path)
+            .with_context(|| format!("materialize snapshot for verification at {verify_path:?}"))?;
+        use std::io::Write;
+        f.write_all(snapshot)
+            .with_context(|| format!("write snapshot {verify_path:?}"))?;
+    }
     let _guard = TempFileGuard(verify_path.clone());
     let conn = rusqlite::Connection::open(&verify_path)
         .with_context(|| format!("open snapshot copy {verify_path:?} for verification"))?;
@@ -1185,22 +1218,45 @@ fn reapply_holds_and_disclose_resurrections(
     let Ok(conn) = rusqlite::Connection::open(db_path) else {
         return;
     };
+    // Count ACTUAL insertions (2026-09-11 fix): the old `let _ =` shape
+    // logged "re-applied N" unconditionally — a divergent/readonly restored
+    // legal_holds table failed every insert silently while the log claimed
+    // success (a litigation freeze could lapse with a clean audit story).
+    // Fail-closed law: the shortfall is disclosed loudly, never swallowed.
+    let mut reapplied = 0usize;
     for (kid, reason, placed_by) in active_holds {
         // INSERT OR IGNORE: a hold row for the id may already exist in the
         // restored data (the backup predates the RELEASE, not the hold).
-        let _ = conn.execute(
+        match conn.execute(
             "INSERT OR IGNORE INTO legal_holds (knowledge_id, reason, placed_by, created_at) \
              SELECT ?1, ?2, ?3, datetime('now') \
              WHERE NOT EXISTS (SELECT 1 FROM legal_holds WHERE knowledge_id = ?1)",
             rusqlite::params![kid, reason, placed_by],
-        );
+        ) {
+            Ok(n) => reapplied += n,
+            Err(e) => {
+                tracing::error!(
+                    "restore: legal-hold re-application FAILED for knowledge id {kid}: {e} \
+                     — the freeze may NOT be active post-restore; re-place the hold"
+                );
+            }
+        }
     }
     if !active_holds.is_empty() {
-        tracing::warn!(
-            "restore: re-applied {} active legal hold(s) from the pre-restore DB \
-             (a pre-hold backup no longer silently unfreezes them)",
-            active_holds.len()
-        );
+        if reapplied == active_holds.len() {
+            tracing::warn!(
+                "restore: re-applied {} active legal hold(s) from the pre-restore DB \
+                 (a pre-hold backup no longer silently unfreezes them)",
+                active_holds.len()
+            );
+        } else {
+            tracing::error!(
+                "restore: legal-hold re-application INCOMPLETE — {reapplied}/{} held id(s) \
+                 re-frozen (rests already held or inserts failed above); verify the \
+                 legal_holds table before relying on the freeze",
+                active_holds.len()
+            );
+        }
     }
     if !tombstoned.is_empty() {
         let ph = std::iter::repeat_n("?", tombstoned.len())

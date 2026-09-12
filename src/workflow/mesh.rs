@@ -183,8 +183,12 @@ pub(crate) fn revoke_principal(
     // The drain: active runs whose in-flight delegations this principal owns.
     // PAGED (the old single LIMIT 200 silently abandoned run 201+): up to
     // 10 pages of 200, then a loud `drain_incomplete` row naming the
-    // remainder. Cancelling a run removes it from the active set, so each
-    // page naturally advances.
+    // remainder. Pages advance because the cancels run INSIDE the loop —
+    // each CAS-cancel moves its run out of the active set, so the next
+    // page's predicate naturally walks forward (the 2026-09-11 fix: the
+    // old shape collected pages WITHOUT cancelling in between, so pages
+    // 2..N re-read the identical first 200 rows and the drain capped at
+    // 200 DISTINCT victims no matter the budget).
     const DRAIN_PAGE: i64 = 200;
     const DRAIN_MAX_PAGES: usize = 10;
     let mut victims: Vec<(i64, String, i64)> = Vec::new();
@@ -207,7 +211,43 @@ pub(crate) fn revoke_principal(
             .map_err(|e| MeshError::Database(e.to_string()))?;
         drop(stmt);
         let full = page.len() == DRAIN_PAGE as usize;
-        victims.extend(page);
+        // Cancel THIS page before querying the next — the cancels are what
+        // advance the predicate (CAS-stale rows stay for the recount).
+        for (run_id, state_json, revision) in page {
+            let cancelled = crate::workflow::state::cas_update(
+                conn,
+                run_id,
+                revision,
+                &state_json,
+                STATE_CANCELLED,
+                now,
+            );
+            if cancelled.is_err() {
+                // CAS-stale: the run advanced concurrently. Leave it — every
+                // later delegation/result decision still re-checks revocation.
+                continue;
+            }
+            let _ = super::outbox::append_lineage(
+                conn,
+                run_id,
+                TOPIC_REVOKED,
+                &serde_json::json!({
+                    "action": "revocation_drain",
+                    "principal": principal,
+                })
+                .to_string(),
+                &format!("revoked:{principal}:{run_id}"),
+                now,
+            );
+            super::audit_write(
+                conn,
+                run_id,
+                &format!("run:{run_id}"),
+                crate::audit::AuditStatus::Ok,
+                &format!("revocation drain (owner {principal})"),
+            );
+            victims.push((run_id, state_json, revision));
+        }
         pages += 1;
         if !full || pages >= DRAIN_MAX_PAGES {
             break;
@@ -220,42 +260,7 @@ pub(crate) fn revoke_principal(
         // after the drain below.
         remaining = -1; // marker: recount after drain
     }
-    let mut drained = 0usize;
-    for (run_id, state_json, revision) in victims {
-        let cancelled = crate::workflow::state::cas_update(
-            conn,
-            run_id,
-            revision,
-            &state_json,
-            STATE_CANCELLED,
-            now,
-        );
-        if cancelled.is_err() {
-            // CAS-stale: the run advanced concurrently. Leave it — every
-            // later delegation/result decision still re-checks revocation.
-            continue;
-        }
-        let _ = super::outbox::append_lineage(
-            conn,
-            run_id,
-            TOPIC_REVOKED,
-            &serde_json::json!({
-                "action": "revocation_drain",
-                "principal": principal,
-            })
-            .to_string(),
-            &format!("revoked:{principal}:{run_id}"),
-            now,
-        );
-        super::audit_write(
-            conn,
-            run_id,
-            &format!("run:{run_id}"),
-            crate::audit::AuditStatus::Ok,
-            &format!("revocation drain (owner {principal})"),
-        );
-        drained += 1;
-    }
+    let drained = victims.len();
     // The loud remainder: a drain capped by the page budget must NAME what
     // it could not finish (the old single-page drain was silent about runs
     // past 200). The row lands on the hash-chained audit trail (kind Auth,

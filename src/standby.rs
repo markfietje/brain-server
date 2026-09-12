@@ -452,7 +452,18 @@ pub fn promote_check(
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    std::fs::create_dir_all(&workdir).map_err(|e| format!("mkdir {}: {e}", workdir.display()))?;
+    // 0700 workdir + 0600 artifacts (2026-09-11 fix): the drill fully
+    // decrypts the store inside shared /tmp — the dir must be
+    // owner-only so no local user can read the plaintext brain.db during
+    // (or after — failures KEEP the dir for forensics) the rehearsal.
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        let mut dir_opts = std::fs::DirBuilder::new();
+        dir_opts.mode(0o700).recursive(true);
+        dir_opts
+            .create(&workdir)
+            .map_err(|e| format!("mkdir {}: {e}", workdir.display()))?;
+    }
     let t0 = Instant::now();
     let restored_db = workdir.join("brain.db");
     // The restore path is the SHIPPED one — checksum verify, KDF+GCM decrypt,
@@ -471,8 +482,19 @@ pub fn promote_check(
         std::fs::read(dir.join(&manifest.wal.file)).map_err(|e| format!("read chunk: {e}"))?;
     let chunk_plain = crate::backup::decrypt_v3_blob(&chunk_cipher, passphrase)
         .map_err(|e| format!("decrypt wal chunk (workdir {}): {e:#}", workdir.display()))?;
-    std::fs::write(workdir.join("brain.db-wal"), &chunk_plain)
-        .map_err(|e| format!("write restored wal: {e}"))?;
+    {
+        // 0600 at creation (create_private_file's open(2) idiom, inline: the
+        // helper only creates — we need the handle to write the bytes).
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(workdir.join("brain.db-wal"))
+            .map_err(|e| format!("write restored wal: {e}"))?;
+        std::io::Write::write_all(&mut f, &chunk_plain)
+            .map_err(|e| format!("write restored wal: {e}"))?;
+    }
     let restore_secs = t0.elapsed().as_secs_f64();
 
     let t1 = Instant::now();

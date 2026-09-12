@@ -767,10 +767,18 @@ pub fn run_pool(
     // future field that does embed personal data. Best-effort (short
     // common subjects over-match slightly; erasure-safe direction).
     if matches!(action, "purge" | "both") && !subject.is_empty() {
+        // Exact mode matches the subject as a WHOLE JSON string value
+        // (2026-09-11 fix): `trace_json = ?` is equality against a JSON
+        // OBJECT — it could never match, silently neutering the defensive
+        // sweep under subject_exact. The quoted form matches the subject
+        // appearing as a complete string field without the substring
+        // over-match exact mode exists to avoid.
         let (sql, pat): (&str, String) = if subject_exact {
             (
-                "DELETE FROM recall_traces WHERE trace_json = ?1",
-                subject.to_string(),
+                "DELETE FROM recall_traces WHERE trace_json LIKE ?1 ESCAPE '\\'",
+                crate::workflow::kcs::like_contains_pattern(
+                    &serde_json::to_string(subject).unwrap_or_default(),
+                ),
             )
         } else {
             (
@@ -789,6 +797,9 @@ pub fn run_pool(
         // is intentionally erased with the memory per Art 17.
         // was `let _ =` — a silent failure would leave
         // subject PII in a "complete" erasure; propagate (tx rolls back).
+        // ponytail: exact mode here is whole-content equality — the honest
+        // narrowed scope (a proposal whose ENTIRE body is the subject);
+        // containment is the default posture.
         let (sql, pat): (&str, String) = if subject_exact {
             (
                 "DELETE FROM proposals WHERE content = ?1",
@@ -816,10 +827,14 @@ pub fn run_pool(
     } else {
         // Dry-run/export: count what a live purge WOULD reach.
         if !subject.is_empty() {
+            // The trace-arm law (above): exact = whole JSON string value,
+            // never object equality (which can never match).
             let (sql, pat): (&str, String) = if subject_exact {
                 (
-                    "SELECT COUNT(*) FROM workflow_runs WHERE state_json = ?1",
-                    subject.to_string(),
+                    "SELECT COUNT(*) FROM workflow_runs WHERE state_json LIKE ?1 ESCAPE '\\'",
+                    crate::workflow::kcs::like_contains_pattern(
+                        &serde_json::to_string(subject).unwrap_or_default(),
+                    ),
                 )
             } else {
                 (
