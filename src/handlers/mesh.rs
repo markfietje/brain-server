@@ -361,8 +361,8 @@ pub struct RevokeRequest {
     pub principal: String,
     #[serde(default)]
     pub reason: String,
-    /// Retained for wire compatibility (v1.28.82 clients send it) and
-    /// accepted but IGNORED: since v1.28.83 every well-formed revoke writes
+    /// Retained for wire compatibility (older clients send it) and
+    /// accepted but IGNORED: every well-formed revoke writes
     /// unconditionally (kill-switch availability first — a JWT identity with
     /// no card/crew/delegation row is live and must be revocable), and an
     /// unseen name is reported advisory-style via the `known:false` +
@@ -422,11 +422,11 @@ pub async fn post_revoke(
                 "1..=256 chars",
             )));
         }
-        // Availability-first kill-switch (v1.28.83 "Recall", A5-01): the
+        // Availability-first kill-switch: the
         // revocation ALWAYS writes — a JWT `sub` with no card/crew/
         // delegation row is still a live identity (the middleware honors its
         // revocation row), and refusing it turned a typo-confusion bug into
-        // a kill-switch refusal bug (7/22 authz_matrix red). The known-set
+        // a kill-switch refusal bug. The known-set
         // (cards/presence/skills/delegations/prior revocations + the
         // loopback agent by construction) is now ADVISORY: an unseen name
         // returns `known:false` + a `warning` naming the loopback agent, so

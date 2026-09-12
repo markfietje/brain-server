@@ -2476,7 +2476,7 @@ pub async fn multi_get(
             let title = crate::gate::sanitize_read_opt(rec.title, pii_flag, &pii_principal);
             let heading_path =
                 crate::gate::sanitize_read_opt(rec.heading_path, pii_flag, &pii_principal);
-            // the /get convergence (v1.28.83, A5-09): the ingest-kind label
+            // the /get convergence: the ingest-kind label
             // rides the same seam as the by-id read — a consumer diffing the
             // two shapes sees the same seam-shaped key, not a missing one.
             let source = crate::gate::sanitize_read_opt(rec.source, pii_flag, &pii_principal);

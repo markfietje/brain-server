@@ -694,8 +694,8 @@ fn parse_threshold_env(name: &str, default: f32) -> Result<f32, String> {
     }
 }
 
-/// Fail-closed boot validation for the injection tripwire thresholds
-/// (v1.28.83 "Recall", A5-08): a typo'd `BRAIN_INJECTION_THRESHOLD_HIGH`
+/// Fail-closed boot validation for the injection tripwire thresholds:
+/// a typo'd `BRAIN_INJECTION_THRESHOLD_HIGH`
 /// used to degrade SILENTLY to the compiled default (`.parse().ok()` +
 /// `unwrap_or`), the one env family that failed open while every sibling
 /// refused boot. Unset/empty reads the default; a present-but-unparsable

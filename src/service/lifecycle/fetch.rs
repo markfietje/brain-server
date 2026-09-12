@@ -257,7 +257,7 @@ pub(crate) fn chunks_in_domain(
             owner: row.get(13)?,
             access_scope: row.get(14)?,
             // the batch projection carries the ingest-kind label too (the
-            // v1.28.83 convergence: /multi-get rows shape like /get rows,
+            // convergence: /multi-get rows shape like /get rows,
             // seam-sanitized at the emission boundary). created_at stays
             // by-id-only (no consumer need demonstrated).
             source: row.get(15)?,

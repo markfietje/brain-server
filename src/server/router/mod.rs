@@ -63,8 +63,8 @@ pub const CLIENT_CSP: &str = concat!(
     "base-uri 'self'"
 );
 
-/// Which paths ride the WASM-friendly CLIENT_CSP. Segment-exact (v1.28.83
-/// "Recall", R5-01): the seat is `/app` itself, everything under `/app/`,
+/// Which paths ride the WASM-friendly CLIENT_CSP. Segment-exact: the seat
+/// is `/app` itself, everything under `/app/`,
 /// and the console root `/` — a future `/app-*` route (or its error body,
 /// e.g. `/apple`) must NEVER inherit `wasm-unsafe-eval`; it gets the
 /// strict API_CSP. The old `starts_with("/app")` shape over-matched and is
