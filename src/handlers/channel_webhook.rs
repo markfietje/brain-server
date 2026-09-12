@@ -311,15 +311,20 @@ pub async fn drain_channel(
     }
     let batched = tokio::task::spawn_blocking({
         let kind = kind.clone();
+        // The HMAC authenticated kind+tenant TOGETHER (per-bridge secret
+        // files) — the drain must scope rows the same way (2026-09-11 fix:
+        // the tenant was dropped here, letting a same-kind bridge see and
+        // consume a foreign tenant's envelopes).
+        let tenant = cfg.tenant.clone();
         move || -> Result<(Vec<serde_json::Value>, Vec<serde_json::Value>), String> {
             let mut conn = state.pool.get().map_err(|e| format!("{e}"))?;
             let now = chrono::Utc::now().timestamp();
-            let envelopes =
-                channels::drain_out_batch(&mut conn, &kind, now).map_err(|e| format!("{e}"))?;
+            let envelopes = channels::drain_out_batch(&mut conn, &kind, &tenant, now)
+                .map_err(|e| format!("{e}"))?;
             // Herald: Relay handover pings ride the SAME claim law, delivered
             // by the same HMAC crank. Additive key; older bridges ignore it.
-            let pings =
-                channels::drain_ping_batch(&mut conn, &kind, now).map_err(|e| format!("{e}"))?;
+            let pings = channels::drain_ping_batch(&mut conn, &kind, &tenant, now)
+                .map_err(|e| format!("{e}"))?;
             Ok((envelopes, pings))
         }
     })
@@ -388,10 +393,12 @@ pub async fn ack_channel(
     }
     let batched = tokio::task::spawn_blocking({
         let kind = kind.clone();
+        // Same tenant law as the drain (the HMAC pair is kind+tenant).
+        let tenant = cfg.tenant.clone();
         move || -> Result<usize, String> {
             let mut conn = state.pool.get().map_err(|e| format!("{e}"))?;
             let now = chrono::Utc::now().timestamp();
-            channels::ack_out_batch(&mut conn, &kind, &req.event_ids, now)
+            channels::ack_out_batch(&mut conn, &kind, &tenant, &req.event_ids, now)
                 .map_err(|e| format!("{e}"))
         }
     })

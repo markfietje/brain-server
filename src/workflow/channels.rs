@@ -1240,30 +1240,35 @@ pub(crate) fn enqueue_handover_ping(
     Ok(())
 }
 
-/// Drain ONE pending `channel/ping` batch for a bridge kind — same claim law
-/// as [`drain_out_batch`]: rows mark delivered ATOMICALLY at claim (a crash
-/// replays at-least-once; the bridge dedupes on `event_id`). Each ping
-/// resolves platform refs + the case room against the THEN-current map; an
-/// unmapped/roomless ping is delivered-to-nowhere and audited LOUDLY rather
-/// than left pending forever.
+/// Drain ONE pending `channel/ping` batch for a bridge kind. Delivery
+/// semantics (honest, 2026-09-11): ping rows mark delivered ATOMICALLY AT
+/// CLAIM — unlike `channel/out` (at-least-once via ack), a bridge crash
+/// AFTER claiming a ping LOSES it (at-most-once). Accepted: pings are
+/// presence nudges (the offer + the case live on regardless); content
+/// delivery never rides this topic. Each ping resolves platform refs + the
+/// case room against the THEN-current map; an unmapped/roomless ping is
+/// delivered-to-nowhere and audited LOUDLY rather than left pending forever.
 pub(crate) fn drain_ping_batch(
     conn: &mut Connection,
     kind: &str,
+    tenant: &str,
     now: i64,
 ) -> Result<Vec<serde_json::Value>, rusqlite::Error> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     // Bridge-scoped like `drain_out_batch`: a ping belongs to the bridge
     // holding the run's thread (mount registration binds bridge ↔ tenant).
     // A foreign bridge's drain never sees — or consumes — another bridge's
-    // pings; unthreaded runs stay pending for the right bridge.
+    // pings; unthreaded runs stay pending for the right bridge. Tenant rides
+    // the predicate with the kind (the 2026-09-11 tenant-drop fix).
     let mut stmt = tx.prepare(
         "SELECT o.id, o.run_id, o.payload_json FROM outbox o
-          JOIN channel_threads t ON t.case_run_id = o.run_id AND t.channel = ?1
+          JOIN channel_threads t
+            ON t.case_run_id = o.run_id AND t.channel = ?1 AND t.tenant = ?2
           WHERE o.topic = 'channel/ping' AND o.status = 'pending'
-          ORDER BY o.id ASC LIMIT ?2",
+          ORDER BY o.id ASC LIMIT ?3",
     )?;
     let rows: Vec<(i64, i64, String)> = stmt
-        .query_map(params![kind, MAX_PING_BATCH], |r| {
+        .query_map(params![kind, tenant, MAX_PING_BATCH], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
         })?
         .collect::<Result<_, _>>()?;
@@ -1283,13 +1288,14 @@ pub(crate) fn drain_ping_batch(
         } else {
             let mut stmt = tx.prepare(
                 "SELECT platform_user_id FROM channel_user_map
-                  WHERE channel = ?1 AND principal = ?2
-                  ORDER BY platform_user_id LIMIT ?3",
+                  WHERE channel = ?1 AND tenant = ?2 AND principal = ?3
+                  ORDER BY platform_user_id LIMIT ?4",
             )?;
             let mapped: Vec<String> = stmt
-                .query_map(params![kind, to_principal, MAX_PING_REFS as i64], |r| {
-                    r.get(0)
-                })?
+                .query_map(
+                    params![kind, tenant, to_principal, MAX_PING_REFS as i64],
+                    |r| r.get(0),
+                )?
                 .collect::<Result<_, _>>()?;
             drop(stmt);
             mapped
@@ -1297,9 +1303,9 @@ pub(crate) fn drain_ping_batch(
         let case_channel: Option<String> = tx
             .query_row(
                 "SELECT conversation_ref FROM channel_threads
-                  WHERE case_run_id = ?1 AND channel = ?2
+                  WHERE case_run_id = ?1 AND channel = ?2 AND tenant = ?3
                   ORDER BY id DESC LIMIT 1",
-                params![run_id, kind],
+                params![run_id, kind, tenant],
                 |r| r.get(0),
             )
             .optional()?;
@@ -1692,18 +1698,24 @@ fn switchboard_consent_in_force(
 pub(crate) fn drain_out_batch(
     conn: &mut Connection,
     kind: &str,
+    tenant: &str,
     _now: i64,
 ) -> Result<Vec<serde_json::Value>, rusqlite::Error> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    // Tenant-scoped (the 2026-09-11 audit's tenant-drop fix): the HMAC
+    // authenticates kind+tenant together, and the rows must be scoped the
+    // same way — a same-kind foreign tenant's bridge must never see (or
+    // consume) another tenant's envelopes.
     let mut stmt = tx.prepare(
         "SELECT o.id, o.run_id, o.payload_json, t.conversation_ref
           FROM outbox o
-          JOIN channel_threads t ON t.case_run_id = o.run_id AND t.channel = ?1
+          JOIN channel_threads t
+            ON t.case_run_id = o.run_id AND t.channel = ?1 AND t.tenant = ?2
           WHERE o.topic = 'channel/out' AND o.status = 'pending'
-          ORDER BY o.id ASC LIMIT ?2",
+          ORDER BY o.id ASC LIMIT ?3",
     )?;
     let rows: Vec<(i64, i64, String, String)> = stmt
-        .query_map(params![kind, MAX_DRAIN_BATCH], |r| {
+        .query_map(params![kind, tenant, MAX_DRAIN_BATCH], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })?
         .collect::<Result<_, _>>()?;
@@ -1733,19 +1745,23 @@ pub(crate) fn drain_out_batch(
 pub(crate) fn ack_out_batch(
     conn: &mut Connection,
     kind: &str,
+    tenant: &str,
     event_ids: &[i64],
     now: i64,
 ) -> Result<usize, rusqlite::Error> {
     let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
     let mut n = 0;
     for id in event_ids {
+        // Ownership = kind AND tenant (the HMAC-authenticated pair) — a
+        // same-kind foreign tenant can never ack another tenant's rows.
         let owned: bool = tx
             .query_row(
                 "SELECT EXISTS(
                    SELECT 1 FROM outbox o
-                   JOIN channel_threads t ON t.case_run_id = o.run_id AND t.channel = ?1
-                   WHERE o.id = ?2 AND o.topic = 'channel/out' AND o.status = 'pending')",
-                params![kind, id],
+                   JOIN channel_threads t
+                     ON t.case_run_id = o.run_id AND t.channel = ?1 AND t.tenant = ?2
+                   WHERE o.id = ?3 AND o.topic = 'channel/out' AND o.status = 'pending')",
+                params![kind, tenant, id],
                 |r| r.get(0),
             )
             .unwrap_or(false);
@@ -2770,9 +2786,9 @@ mod tests {
 
         // Drain hands BOTH envelopes to the bridge; rows stay pending until
         // ack (at-least-once) — a silent bridge redrills the same rows.
-        let batch = drain_out_batch(&mut conn, "signal", now + 60).unwrap();
+        let batch = drain_out_batch(&mut conn, "signal", "acme", now + 60).unwrap();
         assert_eq!(batch.len(), 2);
-        let redrill = drain_out_batch(&mut conn, "signal", now + 70).unwrap();
+        let redrill = drain_out_batch(&mut conn, "signal", "acme", now + 70).unwrap();
         assert_eq!(
             redrill.len(),
             2,
@@ -2785,14 +2801,14 @@ mod tests {
             .map(|v| v["event_id"].as_i64().unwrap())
             .collect();
         assert_eq!(
-            ack_out_batch(&mut conn, "signal", &ids, now + 80).unwrap(),
+            ack_out_batch(&mut conn, "signal", "acme", &ids, now + 80).unwrap(),
             2
         );
         assert_eq!(
-            ack_out_batch(&mut conn, "signal", &ids, now + 90).unwrap(),
+            ack_out_batch(&mut conn, "signal", "acme", &ids, now + 90).unwrap(),
             0
         );
-        let gone = drain_out_batch(&mut conn, "signal", now + 100).unwrap();
+        let gone = drain_out_batch(&mut conn, "signal", "acme", now + 100).unwrap();
         assert!(gone.is_empty(), "acked envelopes never re-drain");
         assert!(batch.iter().all(|v| v["channel"] == "signal"));
     }
@@ -2816,19 +2832,38 @@ mod tests {
         )
         .unwrap();
         let mut conn2 = conn;
-        let first = drain_out_batch(&mut conn2, "signal", 5200).unwrap();
+        let first = drain_out_batch(&mut conn2, "signal", "acme", 5200).unwrap();
         assert_eq!(first.len(), 1, "the drain serves the row");
         let id = first[0]["event_id"].as_i64().unwrap();
-        // Foreign ack cannot kill it.
-        assert_eq!(ack_out_batch(&mut conn2, "slack", &[id], 5300).unwrap(), 0);
+        // Foreign ack cannot kill it (foreign KIND...).
+        assert_eq!(
+            ack_out_batch(&mut conn2, "slack", "acme", &[id], 5300).unwrap(),
+            0
+        );
+        // ...and the foreign TENANT under the same kind neither sees nor
+        // kills it (the 2026-09-11 tenant-drop fix).
+        assert_eq!(
+            drain_out_batch(&mut conn2, "signal", "zeta", 5350)
+                .unwrap()
+                .len(),
+            0,
+            "a same-kind foreign tenant's bridge drains nothing"
+        );
+        assert_eq!(
+            ack_out_batch(&mut conn2, "signal", "zeta", &[id], 5360).unwrap(),
+            0
+        );
         // Silence → redrill delivers the SAME row once.
-        let redrill = drain_out_batch(&mut conn2, "signal", 5400).unwrap();
+        let redrill = drain_out_batch(&mut conn2, "signal", "acme", 5400).unwrap();
         assert_eq!(redrill.len(), 1);
         assert_eq!(redrill[0]["event_id"].as_i64().unwrap(), id);
         // Real ack → gone.
-        assert_eq!(ack_out_batch(&mut conn2, "signal", &[id], 5500).unwrap(), 1);
+        assert_eq!(
+            ack_out_batch(&mut conn2, "signal", "acme", &[id], 5500).unwrap(),
+            1
+        );
         assert!(
-            drain_out_batch(&mut conn2, "signal", 5600)
+            drain_out_batch(&mut conn2, "signal", "acme", 5600)
                 .unwrap()
                 .is_empty()
         );
@@ -3223,7 +3258,7 @@ mod tests {
 
         // No mapping yet: the drain consumes + audits, delivers nothing.
         let mut conn2 = conn;
-        let pings = drain_ping_batch(&mut conn2, "signal", 5200).unwrap();
+        let pings = drain_ping_batch(&mut conn2, "signal", "acme", 5200).unwrap();
         assert!(pings.is_empty(), "unmapped principal = undeliverable");
         let pending: i64 = conn2
             .query_row(
@@ -3253,7 +3288,7 @@ mod tests {
         };
         apply_user_map_change(&conn2, &change, "approver", 5250).unwrap();
         enqueue_handover_ping(&conn2, run, 10, "ops@acme", 9500, 15, 5300).unwrap();
-        let pings = drain_ping_batch(&mut conn2, "signal", 5400).unwrap();
+        let pings = drain_ping_batch(&mut conn2, "signal", "acme", 5400).unwrap();
         assert_eq!(pings.len(), 1);
         let p = &pings[0];
         assert_eq!(p["platform_refs"], serde_json::json!(["UOPERATOR"]));
@@ -3277,8 +3312,12 @@ mod tests {
             .case_run_id;
         enqueue_handover_ping(&conn, run, 9, "ops@acme", 9000, 30, 5100).unwrap();
         let mut conn2 = conn;
-        let foreign = drain_ping_batch(&mut conn2, "slack", 5200).unwrap();
+        let foreign = drain_ping_batch(&mut conn2, "slack", "acme", 5200).unwrap();
         assert!(foreign.is_empty(), "foreign bridge sees nothing");
+        // Same-kind foreign tenant: the 2026-09-11 tenant-drop fix — a zeta
+        // bridge must not consume an acme ping.
+        let foreign_tenant = drain_ping_batch(&mut conn2, "signal", "zeta", 5250).unwrap();
+        assert!(foreign_tenant.is_empty(), "foreign tenant sees nothing");
         let pending: i64 = conn2
             .query_row(
                 "SELECT COUNT(*) FROM outbox WHERE topic = 'channel/ping' AND status = 'pending'",
