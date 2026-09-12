@@ -115,7 +115,7 @@ real rows behind it. The row-by-row depth for each lives in
 | **ISO/IEC 42001** | AI management-system posture documented; algorithmic-risk controls (abstention, human-in-the-loop write-back) |
 | **NIST AI RMF** | Govern / Map / Measure / Manage controls across the retrieval lifecycle |
 | **SOC 2** | Audit log, access control, encryption-at-rest (backup), change control |
-| **EU AI Act** | Art 12/26(6) logging posture; Art 50 origin metadata note + `/.well-known/ai-notice` disclosure; Art 4 literacy playbook ([AI_LITERACY.md](./AI_LITERACY.md)) |
+| **EU AI Act** | Art 12/26(6) logging posture; Art 50 origin metadata note + `/.well-known/ai-notice` disclosure; Art 4 literacy playbook ([AI_LITERACY.md](./AI_LITERACY.md)). **Two AI Act clocks, both live:** Art 50 transparency duties apply from **2026-08-02** (general application, Art 113 — verified against the act text 2026-09-12); the **2026-12-02** reg_watch row is the LEGACY-system grace END for systems placed on the market before Aug 2026 — not the start. Deployers of systems placed on the market from Aug 2026 owe the duties NOW. |
 | **GDPR / CCPA / PH DPA** | Data portability, erasure, DSAR workflow, jurisdiction posture |
 
 The full, row-by-row mapping with the intent-based-auditing coverage and the

@@ -68,6 +68,15 @@ fn stamped_application_date() -> String {
 /// Source: Regulation (EU) 2024/1689 Art 50(2); C(2026) 4935 guidelines
 /// (20 Jul 2026). https://eur-lex.europa.eu/eli/reg/2024/1689/oj
 const AI_ACT_ART50_MARKING: (i64, u32, u32) = deadline(2026, 12, 2);
+/// AI Act GENERAL APPLICATION (Art 113): Art 50 transparency duties apply
+/// from 2 Aug 2026 for systems placed on the market from that date — this
+/// clock has already started; the 2026-12-02 row above is the separate
+/// LEGACY-system grace horizon, NOT the start. Fourth-pass L4-01: an operator
+/// reading only the December row could conclude the duties begin then.
+/// Source: Regulation (EU) 2024/1689 Art 50 + Art 113 — verified live
+/// 2026-09-12 (artificialintelligenceact.eu/article/50: "Comes into force
+/// 2 August 2026, according to Article 113").
+const AI_ACT_APPLICATION: (i64, u32, u32) = deadline(2026, 8, 2);
 /// NIST IR 8547 / OMB M-26-15 / CNSA 2.0: PQC key-establishment across
 /// national security systems by 31 Dec 2030 (signatures 2031) — our seam is
 /// the crypto inventory + algorithm-agility doc (the Enterprise Line's
@@ -178,6 +187,36 @@ fn ai_act_art50_marking_deliverable() {
             && provenance.contains("fn tampered_provenance_fails_verify"),
         "the four-class meta-test + tamper pin are the Art 50 deliverable's \
          proof — they cannot be dropped silently"
+    );
+}
+
+/// AI Act GENERAL APPLICATION clock: the December
+/// marking row is the LEGACY grace horizon — the duties themselves started
+/// 2026-08-02 for systems placed on the market from that date, and this pin
+/// keeps BOTH truths visible: the date stamp AND the compliance doc's
+/// dual-date statement, so no operator reads December as the start.
+#[test]
+fn ai_act_application_clock_recorded() {
+    assert_eq!(
+        AI_ACT_APPLICATION,
+        deadline(2026, 8, 2),
+        "Art 50 duties apply from general application (Art 113) on 2026-08-02 — \
+         re-mapping it requires a source URL in the same change"
+    );
+    assert!(
+        AI_ACT_APPLICATION < AI_ACT_ART50_MARKING,
+        "the application date strictly precedes the legacy-grace end — inverting \
+         them is a transcription error"
+    );
+    let compliance = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/compliance.md"),
+    )
+    .expect("docs/compliance.md must exist — the compliance map carries both dates");
+    assert!(
+        compliance.contains("2026-08-02") && compliance.contains("2026-12-02"),
+        "docs/compliance.md must state BOTH AI Act dates: general application \
+         (2026-08-02) and the legacy-grace horizon (2026-12-02) — December alone \
+         misreads as the start"
     );
 }
 
