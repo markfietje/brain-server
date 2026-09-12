@@ -242,11 +242,6 @@ pub struct IngestResponse {
 }
 
 #[derive(Debug, Serialize)]
-pub struct ForgetResponse {
-    pub deleted: bool,
-}
-
-#[derive(Debug, Serialize)]
 pub struct ErrorBody {
     pub error: ApiError,
 }

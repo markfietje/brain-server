@@ -102,3 +102,71 @@ pub(crate) fn forget_one(tx: &rusqlite::Transaction<'_>, id: i64) -> Result<bool
 
     Ok(rows > 0)
 }
+
+/// The stored content for a chunk, pre-delete (None when the row is absent).
+/// The forget response correlates retained proposal
+/// copies by exact content — the approve path stores the proposal's content
+/// verbatim as the chunk, so identical bytes ARE the promoted-copy link.
+pub(crate) fn chunk_content(tx: &rusqlite::Transaction<'_>, id: i64) -> Option<String> {
+    tx.query_row(
+        "SELECT content FROM knowledge WHERE id = ?1",
+        params![id],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
+/// Proposal rows still carrying `content` verbatim — the HITL decision
+/// records that survive a chunk forget. Retention of the decision
+/// record is legitimate (approval evidence); SILENCE about the surviving
+/// content copy was not — the forget response now names every retained row.
+pub(crate) fn retained_proposal_copies(
+    tx: &rusqlite::Transaction<'_>,
+    content: &str,
+) -> Result<Vec<(i64, String)>, ForgetError> {
+    let mut stmt = tx
+        .prepare("SELECT id, status FROM proposals WHERE content = ?1")
+        .map_err(|e| ForgetError::Database(e.to_string()))?;
+    let rows = stmt
+        .query_map(params![content], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| ForgetError::Database(e.to_string()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| ForgetError::Database(e.to_string()))?;
+    Ok(rows)
+}
+
+/// Replace the retained copies' content with the scrub marker (the
+/// operator opt-in: `?scrub_proposals=1`). The decision record survives — id, status,
+/// digests, timestamps — but the erased content does not. One audit row per
+/// scrubbed proposal, inside the caller's tx (audit-per-write).
+pub(crate) fn scrub_proposal_content(
+    tx: &rusqlite::Transaction<'_>,
+    ids: &[i64],
+    now: i64,
+    actor: &str,
+) -> Result<usize, ForgetError> {
+    let mut n = 0usize;
+    for id in ids {
+        let rows = tx
+            .execute(
+                "UPDATE proposals SET content = ?2 WHERE id = ?1 AND content <> ?2",
+                params![
+                    id,
+                    format!("[content scrubbed: source chunk forgotten at {now}]")
+                ],
+            )
+            .map_err(|e| ForgetError::Database(e.to_string()))?;
+        if rows > 0 {
+            crate::audit::record(
+                tx,
+                crate::audit::AuditKind::Ingest,
+                actor,
+                &format!("proposal:{id}"),
+                crate::audit::AuditStatus::Ok,
+                "content_scrubbed_on_forget",
+            );
+            n += rows;
+        }
+    }
+    Ok(n)
+}

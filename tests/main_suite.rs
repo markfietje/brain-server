@@ -9008,6 +9008,114 @@ Final paragraph after the rule.";
         assert_eq!(admitted.0["revoked"], true);
     }
 
+    /// F4-S-02: forgetting a promoted chunk discloses (and can scrub) the
+    /// HITL decision-record copy that still carries the content verbatim —
+    /// `{"deleted":true}` alone was an erasure-completeness lie by omission.
+    #[tokio::test]
+    async fn forget_discloses_and_scrubs_retained_proposal_copy() {
+        use handlers::forget::{ForgetQuery, forget};
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let content = "Fourth pass: the promoted chunk's content survives in its proposal row.";
+        let id = seed_chunk(&state, "alpha", None, None, content);
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO proposals(kind, content, novelty, salience, status, created_at)
+                 VALUES ('fact', ?1, 0.5, 0.5, 'approved', 0)",
+                params![content],
+            )
+            .unwrap();
+        }
+
+        // Default: disclosed, NOT scrubbed — the decision record survives.
+        let ok = forget(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            Query(ForgetQuery {
+                scrub_proposals: false,
+            }),
+            Path(id),
+        )
+        .await
+        .expect("forget succeeds");
+        assert_eq!(ok.0["deleted"], true);
+        let retained = ok.0["retained_proposal_copies"].as_array().unwrap();
+        assert_eq!(
+            retained.len(),
+            1,
+            "the retained decision-record copy is named, not silent"
+        );
+        assert_eq!(retained[0]["status"], "approved");
+        assert_eq!(ok.0["scrubbed"], false);
+        {
+            let conn = state.pool.get().unwrap();
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM proposals WHERE content = ?1",
+                    params![content],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "default keeps the decision record verbatim");
+        }
+
+        // The scrub arm: a fresh chunk+proposal pair, scrubbed on forget.
+        let content2 = "Fourth pass scrub arm: erasure reaches the copy on request.";
+        let id2 = seed_chunk(&state, "alpha", None, None, content2);
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO proposals(kind, content, novelty, salience, status, created_at)
+                 VALUES ('fact', ?1, 0.5, 0.5, 'approved', 0)",
+                params![content2],
+            )
+            .unwrap();
+        }
+        let scrubbed = forget(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            Query(ForgetQuery {
+                scrub_proposals: true,
+            }),
+            Path(id2),
+        )
+        .await
+        .expect("scrub forget succeeds");
+        assert_eq!(scrubbed.0["scrubbed"], true);
+        {
+            let conn = state.pool.get().unwrap();
+            let surviving: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM proposals WHERE content = ?1",
+                    params![content2],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            assert_eq!(
+                surviving, 0,
+                "the scrub reached the retained copy (marker replaces content)"
+            );
+            let marker: String = conn
+                .query_row(
+                    "SELECT content FROM proposals WHERE id = (SELECT MIN(id) FROM proposals WHERE content LIKE '[content scrubbed:%')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(marker.contains("content scrubbed"));
+            let audits: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM audit_events WHERE kind = 'ingest' AND detail_hash = ?1",
+                    [&brain_server::audit::hash("content_scrubbed_on_forget")],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(audits, 1, "audit-per-write: the scrub is evidenced in-tx");
+        }
+    }
+
     /// multi-get flags EACH row individually — a batch mixing clean and
     /// quarantined rows must not blur the marker across the batch.
     #[tokio::test]

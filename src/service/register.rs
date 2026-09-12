@@ -1639,10 +1639,16 @@ mod tests {
         let id = seed_global_chunk(&state, "evidence under litigation");
         hold(&state.pool, &[id]);
 
-        let err =
-            crate::handlers::forget::forget(State(state.clone()), OptPrincipal(None), Path(id))
-                .await
-                .expect_err("a held id must refuse DELETE /memory/{id}");
+        let err = crate::handlers::forget::forget(
+            State(state.clone()),
+            OptPrincipal(None),
+            axum::extract::Query(crate::handlers::forget::ForgetQuery {
+                scrub_proposals: false,
+            }),
+            Path(id),
+        )
+        .await
+        .expect_err("a held id must refuse DELETE /memory/{id}");
         assert_eq!(err.status, StatusCode::CONFLICT);
         assert_eq!(err.inner.code, "legal_hold_active");
 
@@ -1661,11 +1667,17 @@ mod tests {
         let tx = conn.transaction().unwrap();
         crate::legal_hold::release(&tx, 1, 61).unwrap();
         tx.commit().unwrap();
-        let resp =
-            crate::handlers::forget::forget(State(state.clone()), OptPrincipal(None), Path(id))
-                .await
-                .expect("a released id deletes normally");
-        assert!(resp.deleted);
+        let resp = crate::handlers::forget::forget(
+            State(state.clone()),
+            OptPrincipal(None),
+            axum::extract::Query(crate::handlers::forget::ForgetQuery {
+                scrub_proposals: false,
+            }),
+            Path(id),
+        )
+        .await
+        .expect("a released id deletes normally");
+        assert_eq!(resp.0["deleted"], true);
     }
 
     #[tokio::test]
@@ -1674,9 +1686,16 @@ mod tests {
         let state = app_state(&dir);
         let id = seed_global_chunk(&state, "the deleted subject's evidence");
 
-        let _ = crate::handlers::forget::forget(State(state.clone()), OptPrincipal(None), Path(id))
-            .await
-            .expect("forget runs");
+        let _ = crate::handlers::forget::forget(
+            State(state.clone()),
+            OptPrincipal(None),
+            axum::extract::Query(crate::handlers::forget::ForgetQuery {
+                scrub_proposals: false,
+            }),
+            Path(id),
+        )
+        .await
+        .expect("forget runs");
 
         let (hash, doc): (Option<String>, Option<String>) = state
             .pool

@@ -3461,6 +3461,11 @@ paths:
           in: path
           required: true
           schema: { type: integer }
+        - name: scrub_proposals
+          in: query
+          required: false
+          description: 'F4-S-02: also replace the retained HITL decision-record copies` content with a dated scrub marker (audit row per proposal, in-tx). Default false — the decision record survives verbatim and is disclosed instead.'
+          schema: { type: boolean, default: false }
       responses:
         "200":
           description: Unverified response shape
@@ -3468,8 +3473,8 @@ paths:
             application/json:
               schema:
                 type: object
-                example: {"deleted": true}
-                description: 'true when the knowledge row existed and was erased (vec0 + FTS + graph + tombstone in one tx); false when the id was already gone'
+                example: {"deleted": true, "retained_proposal_copies": [{"id": 1, "status": "approved"}], "scrubbed": false}
+                description: 'true when the knowledge row existed and was erased (vec0 + FTS + graph + tombstone in one tx); retained_proposal_copies names every HITL decision record still carrying the content verbatim (empty for direct /add chunks); scrubbed echoes the query flag'
   /domains:
     get:
       summary: List domains with per-domain counts
