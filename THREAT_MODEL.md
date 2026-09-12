@@ -359,7 +359,16 @@ architecture):
 
 ## 6. Per-release security exit gates
 
-Each major release must complete these exit gates (in addition to fmt/clippy/test):
+Each major release must complete these exit gates (in addition to fmt/clippy/test).
+
+**Honest scope (fourth pass T4-03):** the columns below are the HISTORICAL
+v1.x matrix plus the FUTURE major lines (v2.0 Cortex, v2.1, v3.7 A2A —
+unchecked because those releases have not happened). The current line
+(v1.28.x) runs the per-release gate on EVERY release — THREAT_MODEL +
+SECURITY + OWASP matrix re-stamps, `cargo audit`, authz/authn matrix,
+chain-verify, docs-truth and reg_watch pins — recorded per release in
+`CHANGELOG.md §[version]` engineering records; the gate row matrix is
+re-drawn when a major line opens.
 
 | Gate | v1.0 ✅ | v1.1 | v1.2 | v2.0 | v2.1 | v3.7 |
 |---|---|---|---|---|---|---|
