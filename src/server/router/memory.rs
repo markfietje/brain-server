@@ -485,6 +485,17 @@ pub async fn add_chunk(
     // `manual` stays the loopback/operator default (the interactive path is
     // the one place human provenance is real).
     let source = req.source.trim().to_string();
+    // Bounds law (2026-09-11): source is a short trust LABEL, not prose —
+    // cap it at both /add write seams' shared ceiling (64 chars, the
+    // MAX_SOURCE_PROMPT sibling) so a hostile label can't smuggle payload
+    // bulk past the content caps.
+    if source.len() > crate::handlers::MAX_SOURCE {
+        return Json(AddResponse::error(format!(
+            "source exceeds {} bytes",
+            crate::handlers::MAX_SOURCE
+        )))
+        .into_response();
+    }
     if principal.0.is_some() && !ADD_SOURCES_FOR_JWT.contains(&source.as_str()) {
         return Json(AddResponse::error(format!(
             "invalid source: '{source}' is not allowed for token-authenticated \
@@ -2346,15 +2357,19 @@ pub async fn get_chunk(
         };
         let pii_flag = rec.pii;
         // title + heading_path ride the same read seam as
-        // content (PII redaction + invisible-Unicode strip).
+        // content (PII redaction + invisible-Unicode strip). `source` too
+        // (the 2026-09-11 audit's seam-gap fix): it is client free-text on
+        // the write side (proposal promotion carries it verbatim), so the
+        // by-id read must strip it exactly like /quarantine already does.
         let title = crate::gate::sanitize_read_opt(rec.title, pii_flag, &pii_principal);
         let heading_path =
             crate::gate::sanitize_read_opt(rec.heading_path, pii_flag, &pii_principal);
+        let source = crate::gate::sanitize_read_opt(rec.source, pii_flag, &pii_principal);
         let value = serde_json::json!({
             "id": rec.id,
             "title": title,
             "content": crate::gate::sanitize_read(&rec.content, pii_flag, &pii_principal),
-            "source": rec.source,
+            "source": source,
             "document_id": rec.document_id,
             "chunk_index": rec.chunk_index,
             "heading_path": heading_path,

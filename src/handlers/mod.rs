@@ -83,6 +83,12 @@ pub const MAX_INGEST_ENTRIES: usize = 500;
 /// The plugin sends ≤ 2000 chars; the server enforces its own bound so a
 /// malicious caller can't persist a multi-MiB prompt to the proposals table.
 pub const MAX_SOURCE_PROMPT: usize = 2_048;
+/// Bound on the `source` trust label at every write seam (`/add`, the
+/// proposal path). `source` is a short label (the vocabulary/origin badges),
+/// never prose — 64 chars is 4× the longest legitimate value
+/// (`channel-capture`) with room for a scoped name (2026-09-11 bounds-law
+/// fix: the field was unbounded up to the 1 MiB body cap).
+pub const MAX_SOURCE: usize = 64;
 pub const MAX_LIMIT: u32 = 100;
 pub const MIN_LIMIT: u32 = 1;
 pub const MAX_ENTITIES: usize = 200;

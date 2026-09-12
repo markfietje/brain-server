@@ -107,11 +107,38 @@ pub async fn get_trace(
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
     match trace {
         Some(t) => {
-            let v: serde_json::Value = serde_json::from_str(&t)
+            let mut v: serde_json::Value = serde_json::from_str(&t)
                 .map_err(|_| HandlerError::internal("stored trace is not valid JSON"))?;
+            // Read seam (2026-09-11 fix): the trace replays caller-written
+            // strings (the query on legacy rows, domain labels) on an operator
+            // surface — strip every string value through the seam so stored
+            // markup/invisible Unicode never rides the replay raw.
+            sanitize_trace_strings(&mut v, &principal.0);
             Ok(Json(v))
         }
         None => Err(HandlerError::not_found("no trace for this id")),
+    }
+}
+
+/// Recursive read-seam pass over every string value in a stored trace.
+/// Numbers/bools/ids pass through untouched; strings (query, domains, any
+/// future text field) are stripped (no PII arm — traces carry no pii flag).
+fn sanitize_trace_strings(v: &mut serde_json::Value, principal: &Option<crate::auth::Principal>) {
+    match v {
+        serde_json::Value::String(s) => {
+            *s = crate::gate::sanitize_read(s, false, principal);
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                sanitize_trace_strings(item, principal);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (_, val) in map.iter_mut() {
+                sanitize_trace_strings(val, principal);
+            }
+        }
+        _ => {}
     }
 }
 

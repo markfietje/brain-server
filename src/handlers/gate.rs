@@ -192,6 +192,17 @@ pub(crate) async fn create_proposal(
             format!("source_prompt exceeds {MAX_SOURCE_PROMPT} bytes"),
         ));
     }
+    // Bounds law, the `/add` sibling: `source` is a trust LABEL (max 64 —
+    // see MAX_SOURCE); the proposal write seam enforces the same ceiling
+    // the legacy path does (2026-09-11 fix: this seam was unbounded).
+    if let Some(s) = req.source.as_deref()
+        && s.len() > crate::handlers::MAX_SOURCE
+    {
+        return Err(HandlerError::bad_request(
+            "source_too_long",
+            format!("source exceeds {} bytes", crate::handlers::MAX_SOURCE),
+        ));
+    }
     // strict kind validation — the raw-string
     // round-trip, so unknown/mixed-case values (which `from_str` silently
     // resolves to Fact) are rejected, not stored as a different kind.

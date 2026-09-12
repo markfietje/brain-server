@@ -328,20 +328,26 @@ pub async fn steps(
             // steps live with their procedure).
             let rows = crate::service::procedure::step_chain(&conn, procedure_id, &label)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
+            // Read seam (audit fix): every emitted text field passes
+            // sanitize_read — stored procedure text is caller-written
+            // (screened at write, but storage is verbatim and the READ
+            // boundary is the strip point, the same law as every stored-text
+            // surface). Procedures carry no pii flag (that's the knowledge
+            // row's column) — the strip posture is the seam's non-PII arm.
             let steps: Vec<StepView> = rows
                 .into_iter()
                 .map(|(id, title, content, node_kind, step_index)| StepView {
                     id,
-                    title,
-                    content,
+                    title: crate::gate::sanitize_read_opt(title, false, &gate_principal),
+                    content: crate::gate::sanitize_read(&content, false, &gate_principal),
                     memory_kind: MemoryKind::from_str(&node_kind).as_str().to_string(),
                     step_index: step_index.unwrap_or(0),
                 })
                 .collect();
             Ok(ProcedureStepsResponse {
                 procedure_id,
-                title,
-                content: Some(content),
+                title: crate::gate::sanitize_read_opt(title, false, &gate_principal),
+                content: Some(crate::gate::sanitize_read(&content, false, &gate_principal)),
                 steps,
             })
         })

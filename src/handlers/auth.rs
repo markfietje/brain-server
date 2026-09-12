@@ -297,6 +297,23 @@ pub async fn revoke_handler(
     // it. `None` (no JWT) = superuser (v1.1 opaque back-compat).
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
         .map_err(|e| AuthHandlerError::forbidden(e.inner.message))?;
+    // Bounds law (2026-09-11): the denylist table is size-bounded — cap the
+    // caller-controlled key fields so each row stays a bounded record, not a
+    // ~1 MiB blob riding the body cap (jti is a UUID ≤ 36; iss a URL).
+    if req.jti.len() > 128 {
+        return Err(AuthHandlerError {
+            status: StatusCode::BAD_REQUEST,
+            code: "jti_too_long",
+            message: "jti exceeds 128 chars".to_string(),
+        });
+    }
+    if req.iss.len() > 256 {
+        return Err(AuthHandlerError {
+            status: StatusCode::BAD_REQUEST,
+            code: "iss_too_long",
+            message: "iss exceeds 256 chars".to_string(),
+        });
+    }
     let pool = s.pool.clone();
     // The operator supplies the target token's real `exp` when it is known;
     // the clamp bounds the row either way (a hostile or clock-wrong value

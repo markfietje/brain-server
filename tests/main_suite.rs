@@ -6934,6 +6934,10 @@ Final paragraph after the rule.";
             "/stats",
             "/auth/logout",
             "/healthz",
+            // Segment-exact seat rule (2026-09-11): a future `/app-*` route
+            // can never ride the prefix silently.
+            "/apple",
+            "/apprise",
         ] {
             assert!(!is_public_path(p), "{p} must NOT be public");
         }
@@ -7592,6 +7596,14 @@ Final paragraph after the rule.";
             env!("CARGO_MANIFEST_DIR"),
             "/src/handlers/ump_ops.rs"
         ));
+        let procedure_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/handlers/procedure.rs"
+        ));
+        let observe_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/handlers/observe.rs"
+        ));
         // (source, handler/helper name, the seam call it must reference).
         // The seam names deliberately pair with the response field each site
         // emits; the assert is a substring check on the handler body.
@@ -7614,6 +7626,11 @@ Final paragraph after the rule.";
             (recall_src, "results_to_hits", "sanitize_read_opt"),
             // F-10: interactive UMP reads sanitize a clone before emit_record.
             (ump_src, "sanitize_ump_row_for_read", "sanitize_stored"),
+            // 2026-09-11 audit: procedure step chains emit caller-written
+            // title/content — the seam at the emission boundary.
+            (procedure_src, "steps", "sanitize_read"),
+            // 2026-09-11 audit: the trace replay carries stored caller strings.
+            (observe_src, "get_trace", "sanitize_trace_strings"),
         ];
         for (src, name, seam) in sites {
             let body = handler_body(src, name)
