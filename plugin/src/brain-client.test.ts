@@ -410,6 +410,7 @@ describe("redirect re-pin", () => {
     );
     const err = await client.fetchJson("/recall", "POST", {}, 50).catch((e) => e);
     expect(err).toBeInstanceOf(BrainHttpError);
+    expect((err as BrainHttpError).kind).toBe("network");
     expect(seen[0]?.redirect).toBe("manual");
   });
 });

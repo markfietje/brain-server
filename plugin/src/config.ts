@@ -174,6 +174,15 @@ function resolveAuthToken(cfg: Partial<BrainConfig>): string | undefined {
   }
   const envToken = process.env.BRAIN_TOKEN?.trim();
   if (envToken) {
+    // Same refusal as the file rung (audit fix): an operator who pastes the
+    // server's two-line token file into BRAIN_TOKEN (service-env files make
+    // this easy) would transmit the OPERATOR token down the agent path.
+    if (/\s/.test(envToken)) {
+      throw new Error(
+        "brain-server plugin: BRAIN_TOKEN holds more than one token — " +
+          "set it to the single agent-token value, never the operator token",
+      );
+    }
     return envToken;
   }
   return cfg.authToken?.trim() || undefined;

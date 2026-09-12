@@ -4,6 +4,18 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.5] — 2026-09-11
+
+**Env-token refusal** — synced byte-identical to the fork mirror:
+
+- `BRAIN_TOKEN` carrying a multi-line value (a pasted two-line server token
+  file) now **refuses** with the same error as the file rung — the env rung
+  no longer bypasses the operator-token-leak refusal (2026-09-11 audit
+  round; the fork's `BRAIN_MCP_PINS_ACK` production ack path lives
+  host-side, not in the plugin).
+- Test parity: the redirect-refusal test asserts the error `kind` is
+  `network` in both trees.
+
 ## [0.6.4] — 2026-09-10
 
 **Gate correctness + lint-clean** — synced byte-identical to the fork
