@@ -43,47 +43,44 @@ pub async fn forget(
 
     let pool = state.pool.clone();
 
-    let outcome = tokio::task::spawn_blocking(
-        move || -> Result<ForgetOutcome, HandlerError> {
-            let mut conn = pool.get().map_err(HandlerError::db_down)?;
-            let tx = conn
-                .transaction()
-                .map_err(|e| HandlerError::internal(format!("transaction failed: {e}")))?;
+    let outcome = tokio::task::spawn_blocking(move || -> Result<ForgetOutcome, HandlerError> {
+        let mut conn = pool.get().map_err(HandlerError::db_down)?;
+        let tx = conn
+            .transaction()
+            .map_err(|e| HandlerError::internal(format!("transaction failed: {e}")))?;
 
-            // A held id is frozen against every erasure; refuse in-transaction so
-            // `/purge`'s 409 is the single hold-fence envelope.
-            crate::legal_hold::refuse_if_held(&tx, &[id])?;
+        // A held id is frozen against every erasure; refuse in-transaction so
+        // `/purge`'s 409 is the single hold-fence envelope.
+        crate::legal_hold::refuse_if_held(&tx, &[id])?;
 
-            // Capture the stored content BEFORE the delete so retained
-            // proposal copies can be correlated (exact bytes = the promoted-copy
-            // link; there is no fk between them by design).
-            let content = crate::service::forget::chunk_content(&tx, id);
+        // Capture the stored content BEFORE the delete so retained
+        // proposal copies can be correlated (exact bytes = the promoted-copy
+        // link; there is no fk between them by design).
+        let content = crate::service::forget::chunk_content(&tx, id);
 
-            let deleted = crate::service::forget::forget_one(&tx, id, &actor)
+        let deleted = crate::service::forget::forget_one(&tx, id, &actor)
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+
+        // Disclose (and optionally scrub) the retained decision-record copies
+        // in the SAME tx — the disclosure can never lag the erasure.
+        let mut retained: Vec<(i64, String)> = Vec::new();
+        let mut truncated = false;
+        let mut scrubbed_count = 0usize;
+        if deleted && let Some(content) = content.as_deref() {
+            (retained, truncated) = crate::service::forget::retained_proposal_copies(&tx, content)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
-
-            // Disclose (and optionally scrub) the retained decision-record copies
-            // in the SAME tx — the disclosure can never lag the erasure.
-            let mut retained: Vec<(i64, String)> = Vec::new();
-            let mut truncated = false;
-            let mut scrubbed_count = 0usize;
-            if deleted && let Some(content) = content.as_deref() {
-                (retained, truncated) =
-                    crate::service::forget::retained_proposal_copies(&tx, content)
+            if q.scrub_proposals && !retained.is_empty() {
+                let now = chrono::Utc::now().timestamp();
+                let ids: Vec<i64> = retained.iter().map(|(id, _)| *id).collect();
+                scrubbed_count =
+                    crate::service::forget::scrub_proposal_content(&tx, &ids, now, &actor)
                         .map_err(|e| HandlerError::internal(e.to_string()))?;
-                if q.scrub_proposals && !retained.is_empty() {
-                    let now = chrono::Utc::now().timestamp();
-                    let ids: Vec<i64> = retained.iter().map(|(id, _)| *id).collect();
-                    scrubbed_count =
-                        crate::service::forget::scrub_proposal_content(&tx, &ids, now, &actor)
-                            .map_err(|e| HandlerError::internal(e.to_string()))?;
-                }
             }
-            tx.commit()
-                .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
-            Ok((deleted, retained, truncated, scrubbed_count))
-        },
-    )
+        }
+        tx.commit()
+            .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
+        Ok((deleted, retained, truncated, scrubbed_count))
+    })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
