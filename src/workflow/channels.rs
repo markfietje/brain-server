@@ -3009,7 +3009,7 @@ mod tests {
             &format!("v1,{tampered}")
         ));
         assert!(!verify_bridge_signature(
-            b"other",
+            &crate::testkeys::unit_hmac_key(14),
             id,
             ts,
             body,
