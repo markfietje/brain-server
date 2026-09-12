@@ -247,6 +247,20 @@ Standing ceilings, documented honestly:
   shipped contract: a URL pasted as text renders as a link and does not
   fetch until a human clicks. Closing THAT is the documented `gate.rs`
   ceiling, still open by design.
+- **`GET /export` emits stored content VERBATIM, by design.** Portability
+  is the point: the export is the operator's cross-site transfer artifact
+  and the `untrusted: true` label travels WITH it — a sanitizer over it
+  would break byte-level verification at the destination (the same law as
+  the parcels content hash). Admin-gated; the read seam governs every
+  RENDERED surface (recall/get/proposals/notes/procedures/traces), not
+  this transfer surface.
+- **The OTLP exporter is operator-configured egress outside the validated
+  client.** The resolve→validate→pin law covers the webhook sinks; the
+  otel-otlp HTTP exporter builds its own reqwest client (per-request DNS,
+  redirect-following). Accepted because the collector endpoint is
+  operator-set (not attacker-controlled) and span attributes are ANSI/PII
+  sanitized before export (v1.28.74); a guarded exporter client is a
+  disclosed hardening follow-up.
 - **Operator allowlists are trust, not safety.** An allowlisted host is a
   place the operator vouches for; if the operator allowlists a hostile
   host, the gate is doing its job when it fetches exactly that host and
@@ -291,6 +305,23 @@ controls below are the threat-model-relevant additions, in ship order:
 | Single-approver promotion (approval fatigue) | Opt-in `BRAIN_APPROVAL_QUORUM=2`: two DISTINCT principals before promotion (first records a hash-chained audit row, same-principal repeat 409s); publish/remedy branches keep their own semantics | v1.28.80 |
 | Keyless self-assertion invisible to consumers | Verify JSON carries `authentication: "operator-pinned" \| "self-asserted (no operator key)"` | v1.28.80 |
 | Allow-policy blindness (`INJECTION_POLICY=allow`) | Monotonic `allow_policy_bypasses` tripwire on `/health/db` beside the policy echo | v1.28.80 |
+| Cross-tenant channel drain/ack (same-kind bridges) | The HMAC authenticates kind+tenant TOGETHER (per-bridge secret files) — `drain_out_batch`/`ack_out_batch`/`drain_ping_batch` scope every predicate by the SAME pair (the tenant was dropped after auth, letting a same-kind foreign tenant's bridge see + consume + suppress another tenant's envelopes/pings) | 2026-09-11 audit round |
+| `traverse:` scope silently satisfying Read | Traverse is exact-kind: a traverse scope grants ONLY Traverse gates; read/write/admin still satisfy Traverse (rank). The enum-doc contract ("traversal without broad read") is now the enforced behavior | 2026-09-11 audit round |
+| Read-seam gaps (by-id `source`, procedure step chains, trace replay) | `/get/{id}` sanitizes `source` (the /quarantine sibling posture — it is client free-text via proposal promotion); `/procedure/{id}/steps` sanitizes root + step title/content; `/recall/{id}/trace` strips every string value in the replayed JSON. All three sites added to the `stored_text_fields_pass_the_read_seam` machine table | 2026-09-11 audit round |
+| `source` label unbounded at write | `MAX_SOURCE` (64) enforced at `/add` and the proposal path (was: unbounded up to the 1 MiB body cap) | 2026-09-11 audit round |
+| Unbounded revoke keys | `/auth/revoke` caps `jti` ≤ 128 and `iss` ≤ 256 (denylist rows stay bounded records) | 2026-09-11 audit round |
+| Revocation-drain paging no-op past page 1 | The drain cancels INSIDE the paging loop (pages advance because each CAS-cancel leaves the active set); the old shape re-read the identical first 200 rows 10× (distinct cancels capped at 200) | 2026-09-11 audit round |
+| DSAR `subject_exact` dead residue arms | Exact mode matches the subject as a WHOLE JSON string value (quoted containment) for traces + the dry-run workflow count — object equality could never match; proposals keep whole-content equality with the narrowed scope disclosed | 2026-09-11 audit round |
+| Plaintext temps in shared dirs | `write_atomic` + the restore-verify snapshot create 0600 at open (no umask window); the standby promote workdir is 0700 and its WAL chunk 0600 — decrypted store bytes never world-readable in `/tmp` or the DB dir | 2026-09-11 audit round |
+| Legal-hold re-application silent shortfall | Hold re-inserts are counted; a failed/incomplete re-application logs `error!` naming the id — the freeze's survival is never claimed falsely | 2026-09-11 audit round |
+| Provenance extra keys riding a verified mark | Verification rejects unknown fields in the provenance object (fail-closed `Tampered`) — the claim binds exactly mark/generator/generated_at/actor; unverified data can no longer ride inside a "verified" mark | 2026-09-11 audit round |
+| Model-manifest symlink escape | Pinned artifacts refuse symlinked entries (`symlink_metadata` check — `fs::read` follows links out of the pinned tree) | 2026-09-11 audit round |
+| NAT64 local-use prefix gap | RFC 8215 `64:ff9b:1::/48` added to the egress deny table (edge-pinned alongside its well-known twin) | 2026-09-11 audit round |
+| Channel-bridge redirect + media-URL egress | The bridge client never follows redirects; the Graph `download_url` (a response-body URL) is validated (https, no IP literals, no local names) before the bearer-attached fetch | 2026-09-11 audit round |
+| `/app` public-prefix over-match | The SPA seat matches `/app` or `/app/…` exactly (segment boundary) — a future `/app-*` route can never ride the prefix silently | 2026-09-11 audit round |
+| Dormancy-pin coverage gap | `hostcalls_mediation_stays_unwired_until_loop_line` walks `src/` RECURSIVELY (the old top-level-only walk missed subdirectory wirings; the needle is concat-built so the test's own source cannot self-match) | 2026-09-11 audit round |
+| MCP catalog pins: no production ack path (fork) | `BRAIN_MCP_PINS_ACK=1` for ONE run is the operator's acknowledgment touch (reconcile records + signs the CURRENT catalog, returns zero drift, logs loudly; left set, every run re-acks and drift can never surface — the log names it). The hard-block + signed-ack machinery is now reachable in production; a missing pins file beside a surviving `.sig` logs the deletion downgrade LOUDLY | 2026-09-11 audit round (fork) |
+| `BRAIN_TOKEN` env rung multiline bypass (fork) | The env rung carries the file rung's refusal: a multi-line value (the pasted operator token file) throws instead of transmitting the operator token down the agent path | 2026-09-11 audit round (fork) |
 
 **Ceilings this line explicitly keeps** (do not "fix" without amending the
 architecture):
@@ -300,17 +331,29 @@ architecture):
 - Origin is ONE boolean-grade label (`owner` vs `channel-capture`), not a
   lattice or policy engine — no auto-promotion exists to protect.
 - MCP catalog drift is SURFACED (notify + `pendingAck`), not gated — the ack
-  is an explicit operator touch.
+  is an explicit operator touch. PIN COVERAGE IS ASYMMETRIC (fork): only
+  the embedded-agent run lane passes `catalogPinsPath` — the plugin-sdk
+  harness, compaction runtimes, and doctor projections reconcile through
+  the default path only after the U3 upstream PR lands; until then a
+  tool blocked in the main attempt is not blocked in those contexts.
 - Egress pinning defends the server's own sinks; operator allowlists (webhook
-  hosts, remote images) are trust, not safety.
+  hosts, remote images) are trust, not safety. The OTLP exporter and the
+  fork's pinned-host DNS resolution sit outside the validated client
+  (operator-configured endpoints — disclosed in §5).
 - The audit chain detects SQL/application-level tampering, not host
   compromise; the live DB and `.bak` snapshots stay plaintext on the primary
-  (§4 items 2/2b).
+  (§4 items 2/2b). Model-manifest pinning is boot-time-only (load-time
+  re-verification is host-compromise territory — the same ceiling).
 - Single-tenant storage: the domain shim is a label, not a boundary —
   `included_global` makes mixing visible; true isolation is `BRAIN_MULTI_DB`
   (v2.0 Cortex). Quorum is opt-in (default 1); pin-ack signatures are TOFU,
   not operator-bound; DNS-rebind of the plugin pin and keyless
   self-assertion stay disclosed (v1.28.80 rows above).
+- UPSTREAM SUPPLY CHAIN (fork, `pnpm audit --prod` 2026-09-11): 5 moderate +
+  2 low, all transitive in optional extension chains (`hono <4.13.5`,
+  `qs <6.16.0` — pinned there by UPSTREAM's own `pnpm-workspace.yaml`
+  security override gone stale, `joi <18.2.5`). Upstream-owned: PR spec
+  filed (override bumps + SDK bump); the fork does not edit upstream files.
 
 ---
 

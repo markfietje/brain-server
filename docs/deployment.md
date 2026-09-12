@@ -50,6 +50,7 @@ Brain Server is configured through environment variables (all resolved in
 | `BRAIN_DB_PATH` | `~/.openclaw/workspace/brain.db` | SQLite database path |
 | `CORS_ORIGINS` | `http://localhost:3000,http://localhost:8080` | CORS allowlist (scheme included) |
 | `AUTH_TOKEN` / `AUTH_TOKEN_FILE` | — | Opaque bearer token(s); newline-separated = live rotation; off if unset |
+| `BRAIN_REQUIRE_AUTH` | unset | `1` = refuse to boot when no token resolves (fail-closed; without it a token-less boot carries a loud warn — the single-user-loopback posture it implies). Recommended on ANY deployment with a token file present |
 | `BRAIN_JWT_ISSUER` | — | Enables JWT mode when set + keys loaded |
 | `INJECTION_POLICY` | `quarantine` | `quarantine` \| `reject` \| `allow` |
 | `BRAIN_AUDIT_READ_EVENTS` | `on` (JWT) / `off` (loopback) | Read-event audit |
@@ -98,6 +99,17 @@ envelope — reads are never blocked.
 ---
 
 ## Security operations runbook (v1.20.5)
+
+### Loopback posture (the one-line checklist)
+
+A token-bearing deployment should say so in the boot posture: set
+`BRAIN_REQUIRE_AUTH=1` in the service environment (the plist) so a missing,
+deleted, or mis-resolved token file REFUSES boot instead of degrading to an
+unauthenticated single-user server (v1.28.80's fail-closed admission). The
+`/health/db` `authn.required` echo names the live posture — `false` means
+you are relying on the loud-warn default. Verify after any install:
+`curl -s localhost:8765/health/db -H "Authorization: Bearer $(head -1 ~/.config/brain-server/auth-token)" | jq .authn`
+should read `{"enabled":true,"required":true}`.
 
 ### Token rotation
 

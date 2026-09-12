@@ -234,7 +234,10 @@ The seam list — what may cross the boundary, in both directions:
 What never crosses: pool handles, `AppState`, HTTP status codes, JSON body
 wrappers, or `serde` wire shapes. The read seam (`sanitize_read`, digest
 binding, PII masking) stays handler-side by contract — cores return stored
-bytes; the handler decides what a given reader sees.
+bytes; the handler decides what a given reader sees. One disclosed
+exception: `GET /export` emits stored content verbatim (portability is the
+point; the `untrusted: true` label travels with the rows — see
+`docs/THREAT_MODEL.md` §5) — every rendered surface goes through the seam.
 
 ---
 

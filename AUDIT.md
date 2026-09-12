@@ -712,3 +712,59 @@ zero upstream hunks.
 metadata only (not the bundle); refresh-family burn is the OWASP pattern;
 `INJECTION_POLICY=allow` is loud by design. KCS-draft screening recorded
 as a v1.28.80 follow-up (needs lifecycle design, not a guard).
+
+---
+
+## 2026-09-11 — deep round (all-layers, fork-diff, docs reverse-check)
+
+Four parallel audit lanes (server auth/seams; storage/crypto/egress/workflow;
+fork-vs-upstream diff; docs reverse-truth) over v1.28.81 (e39e285) + the fork
+(73 ahead / 10 behind upstream/main, `git merge-tree` CLEAN). The earlier
+threat-landscape round's eight findings all closed under verification
+(addendum in `research/security-compliance-audit-2026-09-11-threat-landscape.md`).
+
+### Findings + dispositions (all code fixes landed the same day)
+
+| # | Finding | Sev | Disposition |
+|---|---|---|---|
+| D1 | Cross-tenant channel drain/ack: tenant dropped after HMAC auth (same-kind foreign bridge could drain/consume/ack another tenant's `channel/out` + pings) | HIGH | **Closed** — kind+tenant thread every predicate (`drain_out_batch`/`ack_out_batch`/`drain_ping_batch`); tenant assertions added to the redrill + bridge-scope pins |
+| D2 | Fork MCP pins had NO production ack path (hard-block + signed-acks dead code; `pendingAck` on every tool forever) | HIGH | **Closed** (fork-only files) — `BRAIN_MCP_PINS_ACK=1` one-run acknowledgment + loud deletion note; stale header corrected; `env_ack_is_the_production_acknowledgment_path` pin |
+| D3 | Read-seam gaps: `/get/{id}` `source` raw (invisible at HITL via list_proposals sanitize, promoted verbatim), `/procedure/{id}/steps` title/content raw, trace replay raw | MED | **Closed** — all three through the seam; sites added to the `stored_text_fields_pass_the_read_seam` machine table |
+| D4 | `traverse:` scope satisfied every Read gate (rank collision vs the enum's own doc) | MED | **Closed** — exact-kind matching for Traverse scopes; `traverse_scope_grants_only_traverse` pin |
+| D5 | Revocation drain paging no-op past page 1 (distinct cancels capped at 200) | MED | **Closed** — cancels run inside the paging loop; pages advance; `drain_incomplete` recount unchanged |
+| D6 | Egress coverage: channel-bridge default-redirect client + bearer-attached fetch of a response-body URL | MED | **Closed** — `redirect::Policy::none()` + scheme/host gate (https, no IP literals, no local names) before the media fetch |
+| D7 | OTLP exporter builds its own client (outside resolve→validate→pin) | MED | **Disclosed ceiling** — operator-configured endpoint, span attrs sanitized (v1.28.74); guarded exporter client is a named follow-up (THREAT_MODEL §5) |
+| D8 | Standby promote + restore-verify + `write_atomic` temps plaintext-mode in shared dirs | LOW | **Closed** — 0700 workdir, 0600 at creation everywhere |
+| D9 | Legal-hold re-application could fail silently while logging success | LOW | **Closed** — inserts counted; failure/incompleteness logs `error!` naming the id |
+| D10 | DSAR `subject_exact` residue arms dead (equality vs JSON objects) | LOW | **Closed** — quoted-JSON containment for traces + dry-run count; proposals keep disclosed whole-content equality |
+| D11 | Provenance extra keys rode inside a verified mark | LOW | **Closed** — unknown-field rejection (fail-closed `Tampered`); `extra_provenance_key_fails_closed` pin |
+| D12 | Model-manifest symlink escape + `/app` prefix over-match + unbounded `source`/`jti`/`iss` | LOW | **Closed** — symlink refusal + segment-exact seat rule + `MAX_SOURCE` 64 / jti 128 / iss 256 caps |
+| D13 | Fork `BRAIN_TOKEN` env rung skipped the multiline/operator-token refusal | LOW | **Closed** (fork + canonical parity) — env rung refuses multi-line values |
+| D14 | Dormancy pin walked only top-level `src/*.rs` | LOW | **Closed** — recursive walk, concat-built needle (no self-match); the docs' "zero production call sites" claim is now true at every depth |
+| D15 | NAT64 local-use `64:ff9b:1::/48` missing from the deny table | LOW | **Closed** — RFC 8215 row + edge literals pinned |
+| D16 | Fork pin coverage asymmetric (harness/compaction/doctor lanes bypass reconcile) | MED | **Disclosed** — U3 upstream PR is the owner; ceiling named in THREAT_MODEL §5b |
+| D17 | Upstream `pnpm-workspace.yaml` pins `qs` 6.15.3 (< the patched 6.16.0); `hono`/`joi` advisories unaddressed | LOW | **Upstream PR spec filed** at `~/Sites/openclaw-private/upstream-pr-specs-2026-09-11.md` (override bumps + the U3 default-pins-path re-file + S3 reference-image strip; the fork cannot edit upstream files); disclosure row in THREAT_MODEL §5b |
+| D18 | Docs falsehoods: SECURITY.md history stopped at .80; "read seam unconditional" vs `/export` verbatim | LOW | **Closed** — .81 row + current line; export ceiling named in THREAT_MODEL §5 + architecture law wording |
+| D19 | Plugin test drift (fork carried one extra assertion) | INFO | **Closed** — synced; `plugin/src` trees byte-identical again |
+
+### Validation
+
+Lib 1,202 passed / 1 ignored (pre-existing HF-fetch ignore); all 13 test
+binaries green; `cargo clippy --all-targets` clean on bench + otel + default
+feature sets; `cargo fmt --check` clean; `cargo audit` exit 0; lipstyk
+diff-strict clean; fork suites green (pins 11/11 incl. the new env-ack pin,
+plugin 187/187); fork `git merge-tree HEAD upstream/main` CLEAN with ZERO
+upstream-tracked files touched by this round (the three fork edits live in
+fork-only files: `extensions/brain-server/src/config.ts`,
+`agent-bundle-mcp-catalog-pins.ts` + test). No schema; no routes; wire
+behavior tightens only (400s on over-bound inputs, tenant-scoped drains).
+
+**Ops adoption (same day):** the live deployment now runs `BRAIN_REQUIRE_AUTH=1`
+(plist env, bootout/bootstrap reload, verified `/health/db` →
+`authn.required:true`, no-token 401, agent-token recall 200 — the gateway
+plugin path unaffected). The deployment runbook carries the loopback-posture
+checklist (docs/deployment.md §Loopback posture).
+
+`ponytail:` this round does NOT implement the OTLP guarded exporter client,
+does NOT gate MCP tool first use, does NOT build the taint lattice, does NOT
+add per-principal quotas, and does NOT touch any upstream-tracked fork file.
