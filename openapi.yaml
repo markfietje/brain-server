@@ -6053,10 +6053,10 @@ paths:
               properties:
                 principal: { type: string, maxLength: 256 }
                 reason: { type: string, maxLength: 500 }
-                allow_unknown: { type: boolean, default: false, description: 'Refuse-unknown admission: a principal matching no card/crew/delegation/prior revocation refuses 400 unknown_principal unless this is explicitly true (the deliberate pre-revoke path)' }
+                allow_unknown: { type: boolean, default: false, description: 'DEPRECATED no-op (v1.28.83): accepted for wire compatibility and ignored. Every well-formed revoke writes unconditionally; an unseen name is reported via known:false + warning, never refused.' }
       responses:
         "200":
-          description: Revoked
+          description: Revoked (unconditional since v1.28.83 — availability-first kill-switch)
           content:
             application/json:
               schema:
@@ -6065,7 +6065,9 @@ paths:
                   principal: { type: string }
                   revoked: { type: boolean }
                   runs_drained: { type: integer }
-        "400": { description: input_invalid | unknown_principal }
+                  known: { type: boolean, description: 'Whether the name matched a card, crew record, delegation, prior revocation, or the loopback agent. false carries a warning — the revocation WAS written.' }
+                  warning: { type: string, description: 'Present only when known:false. Names the loopback agent; re-revoke the intended name if this was a typo (the written row is harmless).' }
+        "400": { description: input_invalid | principal_malformed }
         "401": { description: Not authenticated }
         "403": { description: Not authorized (Admin required) }
   /ops/agents/revocations:

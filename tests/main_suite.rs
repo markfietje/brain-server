@@ -8944,12 +8944,18 @@ Final paragraph after the rule.";
 
     // ── (fourth pass 2026-09-12, F4-S-01 / F4-S-02) ────────────────────
 
-    /// F4-S-01: the kill-switch refuses a name-blind success — a revoke for
-    /// a principal the deployment has never seen is a typo until the operator
-    /// explicitly says otherwise (`allow_unknown`), and the refusal names the
-    /// loopback agent so the right name is one copy-paste away.
+    /// F4-S-01 as reworked by v1.28.83 "Recall" (A5-01): the kill-switch
+    /// writes UNCONDITIONALLY — a revoke for a principal the deployment has
+    /// never seen (a JWT `sub` with no card/crew/delegation row is still a
+    /// live identity) returns 200 with `known:false` + a `warning` naming
+    /// the loopback agent, never a refusal. The old v1.28.82 shape (400
+    /// unknown_principal) broke the kill-switch for exactly those
+    /// identities (7/22 authz_matrix red); the older shape (bare
+    /// revoked:true) certified typo confusion silently. This pin fails on
+    /// BOTH: it asserts the write LANDED (second revoke sees known:true via
+    /// the prior-revocation row) and the warning is loud.
     #[tokio::test]
-    async fn revoke_unknown_principal_refused_loud() {
+    async fn revoke_unknown_principal_revokes_with_warning() {
         use axum::Json as AxumJson;
         use handlers::mesh::{RevokeRequest, post_revoke};
 
@@ -8957,9 +8963,8 @@ Final paragraph after the rule.";
         let state = drawbridge_state(&tmp);
 
         // The typo from the live drill: "agent" is NOT a principal —
-        // "agent@loopback" is. The old shape returned revoked:true here while
-        // the live identity stayed authenticated.
-        let refused = post_revoke(
+        // "agent@loopback" is. Availability first: the write lands anyway.
+        let warned = post_revoke(
             State(state.clone()),
             handlers::auth::OptPrincipal(None),
             AxumJson(RevokeRequest {
@@ -8969,16 +8974,38 @@ Final paragraph after the rule.";
             }),
         )
         .await
-        .expect_err("unknown principal must refuse, not report success");
+        .expect("unknown principal must revoke (advisory), not refuse");
+        assert_eq!(warned.0["revoked"], true);
         assert_eq!(
-            refused.status,
-            axum::http::StatusCode::BAD_REQUEST,
-            "the refusal is a distinct 400 unknown_principal"
+            warned.0["known"], false,
+            "an unseen name must be reported unknown, not silently known"
         );
-        assert_eq!(refused.inner.code, "unknown_principal");
         assert!(
-            refused.inner.message.contains("agent@loopback"),
-            "the refusal names the loopback agent so the right name is adjacent"
+            warned.0["warning"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("agent@loopback"),
+            "the warning names the loopback agent so the right name is adjacent"
+        );
+
+        // The write LANDED: a second revoke for the same name sees the
+        // prior-revocation row and reports known:true (no warning).
+        let again = post_revoke(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            AxumJson(RevokeRequest {
+                principal: "agent".to_string(),
+                reason: "drill typo again".to_string(),
+                allow_unknown: false,
+            }),
+        )
+        .await
+        .expect("repeat revoke writes idempotently");
+        assert_eq!(again.0["revoked"], true);
+        assert_eq!(again.0["known"], true);
+        assert!(
+            again.0.get("warning").is_none(),
+            "a now-known name carries no warning"
         );
 
         // The loopback agent IS known by construction — it revokes cleanly.
@@ -8994,8 +9021,10 @@ Final paragraph after the rule.";
         .await
         .expect("the loopback agent principal is known without any seeding");
         assert_eq!(ok.0["revoked"], true);
+        assert_eq!(ok.0["known"], true);
 
-        // The explicit admission keeps the defensive pre-revoke path open.
+        // Wire compat: v1.28.82 clients sending allow_unknown:true still
+        // get 200 (the field is accepted and ignored).
         let admitted = post_revoke(
             State(state.clone()),
             handlers::auth::OptPrincipal(None),
@@ -9006,8 +9035,50 @@ Final paragraph after the rule.";
             }),
         )
         .await
-        .expect("allow_unknown admits a deliberate pre-revoke");
+        .expect("allow_unknown stays wire-compatible");
         assert_eq!(admitted.0["revoked"], true);
+        assert_eq!(admitted.0["known"], false);
+    }
+
+    /// A5-05: revoke input discipline runs BEFORE the known-set probe —
+    /// surrounding whitespace is its own loud 400 (trimming silently would
+    /// target an identity the operator did not type), and the length bound
+    /// refuses without touching the 5-table UNION.
+    #[tokio::test]
+    async fn revoke_malformed_principal_refused_loud() {
+        use axum::Json as AxumJson;
+        use handlers::mesh::{RevokeRequest, post_revoke};
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+
+        let ws = post_revoke(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            AxumJson(RevokeRequest {
+                principal: " agent@loopback".to_string(),
+                reason: "whitespace probe".to_string(),
+                allow_unknown: false,
+            }),
+        )
+        .await
+        .expect_err("padded principal must refuse, not trim-and-revoke");
+        assert_eq!(ws.status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(ws.inner.code, "principal_malformed");
+
+        let big = post_revoke(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            AxumJson(RevokeRequest {
+                principal: "x".repeat(257),
+                reason: "length probe".to_string(),
+                allow_unknown: false,
+            }),
+        )
+        .await
+        .expect_err("over-long principal must refuse");
+        assert_eq!(big.status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(big.inner.code, "input_invalid");
     }
 
     /// F4-S-02: forgetting a promoted chunk discloses (and can scrub) the

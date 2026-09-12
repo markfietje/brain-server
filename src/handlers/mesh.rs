@@ -361,12 +361,12 @@ pub struct RevokeRequest {
     pub principal: String,
     #[serde(default)]
     pub reason: String,
-    /// A revoke naming a principal this deployment has
-    /// never seen refuses with `unknown_principal` instead of reporting
-    /// success on a typo (the drill killed `"agent"` while
-    /// `"agent@loopback"` stayed live). Explicit opt-in keeps the defensive
-    /// pre-revoke path (revoke-before-first-use) available — the
-    /// `--allow-chainless` admission pattern.
+    /// Retained for wire compatibility (v1.28.82 clients send it) and
+    /// accepted but IGNORED: since v1.28.83 every well-formed revoke writes
+    /// unconditionally (kill-switch availability first — a JWT identity with
+    /// no card/crew/delegation row is live and must be revocable), and an
+    /// unseen name is reported advisory-style via the `known:false` +
+    /// `warning` response fields instead of refusing.
     #[serde(default)]
     pub allow_unknown: bool,
 }
@@ -394,42 +394,73 @@ pub async fn post_revoke(
         let mut conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
-        // Refuse name-blind success. The known-set is the deployment's
-        // own truth (cards/presence/skills/delegations/prior revocations + the
-        // loopback agent by construction); an unseen name is a typo until the
-        // operator explicitly says otherwise.
-        if !body.allow_unknown
-            && !mesh::principal_known(&conn, &body.principal).map_err(mesh_err)?
-        {
+        // Input discipline BEFORE the known-set probe (the probe is a
+        // 5-table UNION — it never runs on an unbounded or untrimmed body
+        // string). Length refusal reuses the core's InvalidInput envelope
+        // (400 input_invalid); surrounding whitespace is its own loud 400 —
+        // `" agent@loopback"` is a distinct identity from `"agent@loopback"`,
+        // and silently trimming it would revoke a name the operator did not
+        // type.
+        if body.principal != body.principal.trim() {
             return Err(HandlerError::bad_request_with(
-                "unknown_principal",
+                "principal_malformed",
                 format!(
-                    "principal '{}' matches no agent card, crew record, delegation, prior \
-                     revocation, or the loopback agent ('{}') — a typo'd revoke would \
-                     report success while the live identity stays authenticated. Pass \
-                     allow_unknown:true only for a deliberate pre-revoke.",
+                    "principal '{}' has leading/trailing whitespace — revoking the \
+                     trimmed name would target an identity you did not type. \
+                     Re-issue with the exact principal (the loopback agent is '{}').",
                     body.principal,
                     crate::auth::AGENT_LOOPBACK_SUB,
                 ),
                 serde_json::json!({"principal": body.principal}),
             ));
         }
+        if body.principal.is_empty()
+            || body.principal.len() > crate::workflow::mesh::MAX_PRINCIPAL_LEN
+        {
+            return Err(mesh_err(crate::workflow::mesh::MeshError::InvalidInput(
+                "principal",
+                "1..=256 chars",
+            )));
+        }
+        // Availability-first kill-switch (v1.28.83 "Recall", A5-01): the
+        // revocation ALWAYS writes — a JWT `sub` with no card/crew/
+        // delegation row is still a live identity (the middleware honors its
+        // revocation row), and refusing it turned a typo-confusion bug into
+        // a kill-switch refusal bug (7/22 authz_matrix red). The known-set
+        // (cards/presence/skills/delegations/prior revocations + the
+        // loopback agent by construction) is now ADVISORY: an unseen name
+        // returns `known:false` + a `warning` naming the loopback agent, so
+        // the typo that motivated the old refusal is still caught — loudly —
+        // without ever refusing to kill.
+        let known =
+            mesh::principal_known(&conn, &body.principal).map_err(mesh_err)?;
         let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn)
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         let drained = mesh::revoke_principal(tx.tx(), &body.principal, &reason, &actor, now)
             .map_err(mesh_err)?;
         tx.commit()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
-        Ok((body.principal.clone(), drained))
+        Ok((body.principal.clone(), drained, known))
     })
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?;
-    let (principal_label, drained) = outcome?;
-    Ok(Json(serde_json::json!({
+    let (principal_label, drained, known) = outcome?;
+    let mut body = serde_json::json!({
         "principal": crate::gate::sanitize_read(&principal_label, false, &principal),
         "revoked": true,
         "runs_drained": drained,
-    })))
+        "known": known,
+    });
+    if !known {
+        body["warning"] = serde_json::json!(format!(
+            "principal '{principal_label}' matches no agent card, crew record, delegation, \
+             prior revocation, or the loopback agent ('{}') — the revocation WAS written \
+             (kill-switch availability first), but if this was a typo, re-revoke the \
+             intended name; this row is harmless.",
+            crate::auth::AGENT_LOOPBACK_SUB,
+        ));
+    }
+    Ok(Json(body))
 }
 
 /// `GET /ops/agents/revocations` — the kill-switch register (the drill's

@@ -139,12 +139,13 @@ pub(crate) fn is_revoked(conn: &Connection, principal: &str) -> Result<bool, Mes
 
 /// True when `principal` is a NAME this deployment has actually seen — an
 /// agent card, the opaque loopback agent, crew presence/skills, either side
-/// of a delegation, or a prior revocation. The revoke seam refuses names
-/// that match NOTHING (a name no card, crew record, delegation, or prior
-/// revocation knows): a typo'd revoke
-/// (`"agent"` for `"agent@loopback"`) used to report `revoked:true` while
-/// the live identity stayed authenticated — false success on the kill-switch
-/// is the one silence this seam must never certify.
+/// of a delegation, or a prior revocation. The revoke seam reports this as
+/// ADVISORY (`known:false` + `warning`) — it never refuses on it: since
+/// v1.28.83 the kill-switch writes unconditionally (a JWT `sub` with no row
+/// anywhere is still live, and refusing it broke the kill-switch for exactly
+/// those identities). A typo'd revoke (`"agent"` for `"agent@loopback"`)
+/// still warns loudly naming the loopback agent — the fourth-pass confusion
+/// is caught, never certified, and never a refusal.
 pub(crate) fn principal_known(conn: &Connection, principal: &str) -> Result<bool, MeshError> {
     // The opaque Twokeys agent principal has no card and may have no runs —
     // it is known by construction (config.rs line-2 authentication).
