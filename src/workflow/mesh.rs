@@ -137,6 +137,39 @@ pub(crate) fn is_revoked(conn: &Connection, principal: &str) -> Result<bool, Mes
     Ok(hit.is_some())
 }
 
+/// True when `principal` is a NAME this deployment has actually seen — an
+/// agent card, the opaque loopback agent, crew presence/skills, either side
+/// of a delegation, or a prior revocation. The revoke seam refuses names
+/// that match NOTHING (a name no card, crew record, delegation, or prior
+/// revocation knows): a typo'd revoke
+/// (`"agent"` for `"agent@loopback"`) used to report `revoked:true` while
+/// the live identity stayed authenticated — false success on the kill-switch
+/// is the one silence this seam must never certify.
+pub(crate) fn principal_known(conn: &Connection, principal: &str) -> Result<bool, MeshError> {
+    // The opaque Twokeys agent principal has no card and may have no runs —
+    // it is known by construction (config.rs line-2 authentication).
+    if principal == crate::auth::AGENT_LOOPBACK_SUB {
+        return Ok(true);
+    }
+    let known: bool = conn
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM agent_cards WHERE principal = ?1
+               UNION ALL
+               SELECT 1 FROM presence WHERE principal = ?1
+               UNION ALL
+               SELECT 1 FROM principal_skills WHERE principal = ?1
+               UNION ALL
+               SELECT 1 FROM delegations WHERE from_principal = ?1 OR to_principal = ?1
+               UNION ALL
+               SELECT 1 FROM revoked_principals WHERE principal = ?1)",
+            params![principal],
+            |r| r.get(0),
+        )
+        .map_err(|e| MeshError::Database(e.to_string()))?;
+    Ok(known)
+}
+
 /// Revoke a principal: the ASI03/07 kill-switch. One upsert (latest
 /// revocation wins), one hash-chained global audit row, and the drain —
 /// every ACTIVE run where the principal owns in-flight (`requested`)

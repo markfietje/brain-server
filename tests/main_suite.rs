@@ -8940,6 +8940,74 @@ Final paragraph after the rule.";
         assert_eq!(ok.0["flagged"], false, "a clean row reads flagged:false");
     }
 
+    // ── (fourth pass 2026-09-12, F4-S-01 / F4-S-02) ────────────────────
+
+    /// F4-S-01: the kill-switch refuses a name-blind success — a revoke for
+    /// a principal the deployment has never seen is a typo until the operator
+    /// explicitly says otherwise (`allow_unknown`), and the refusal names the
+    /// loopback agent so the right name is one copy-paste away.
+    #[tokio::test]
+    async fn revoke_unknown_principal_refused_loud() {
+        use axum::Json as AxumJson;
+        use handlers::mesh::{RevokeRequest, post_revoke};
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+
+        // The typo from the live drill: "agent" is NOT a principal —
+        // "agent@loopback" is. The old shape returned revoked:true here while
+        // the live identity stayed authenticated.
+        let refused = post_revoke(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            AxumJson(RevokeRequest {
+                principal: "agent".to_string(),
+                reason: "drill typo".to_string(),
+                allow_unknown: false,
+            }),
+        )
+        .await
+        .expect_err("unknown principal must refuse, not report success");
+        assert_eq!(
+            refused.status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "the refusal is a distinct 400 unknown_principal"
+        );
+        assert_eq!(refused.inner.code, "unknown_principal");
+        assert!(
+            refused.inner.message.contains("agent@loopback"),
+            "the refusal names the loopback agent so the right name is adjacent"
+        );
+
+        // The loopback agent IS known by construction — it revokes cleanly.
+        let ok = post_revoke(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            AxumJson(RevokeRequest {
+                principal: "agent@loopback".to_string(),
+                reason: "drill".to_string(),
+                allow_unknown: false,
+            }),
+        )
+        .await
+        .expect("the loopback agent principal is known without any seeding");
+        assert_eq!(ok.0["revoked"], true);
+
+        // The explicit admission keeps the defensive pre-revoke path open.
+        let admitted = post_revoke(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            AxumJson(RevokeRequest {
+                principal: "future-agent@not-yet-seen".to_string(),
+                reason: "pre-revoke before first use".to_string(),
+                allow_unknown: true,
+            }),
+        )
+        .await
+        .expect("allow_unknown admits a deliberate pre-revoke");
+        assert_eq!(admitted.0["revoked"], true);
+    }
+
     /// multi-get flags EACH row individually — a batch mixing clean and
     /// quarantined rows must not blur the marker across the batch.
     #[tokio::test]

@@ -6048,6 +6048,7 @@ paths:
               properties:
                 principal: { type: string, maxLength: 256 }
                 reason: { type: string, maxLength: 500 }
+                allow_unknown: { type: boolean, default: false, description: 'Refuse-unknown admission: a principal matching no card/crew/delegation/prior revocation refuses 400 unknown_principal unless this is explicitly true (the deliberate pre-revoke path)' }
       responses:
         "200":
           description: Revoked
@@ -6059,7 +6060,7 @@ paths:
                   principal: { type: string }
                   revoked: { type: boolean }
                   runs_drained: { type: integer }
-        "400": { description: input_invalid }
+        "400": { description: input_invalid | unknown_principal }
         "401": { description: Not authenticated }
         "403": { description: Not authorized (Admin required) }
   /ops/agents/revocations:

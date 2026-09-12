@@ -361,6 +361,14 @@ pub struct RevokeRequest {
     pub principal: String,
     #[serde(default)]
     pub reason: String,
+    /// A revoke naming a principal this deployment has
+    /// never seen refuses with `unknown_principal` instead of reporting
+    /// success on a typo (the drill killed `"agent"` while
+    /// `"agent@loopback"` stayed live). Explicit opt-in keeps the defensive
+    /// pre-revoke path (revoke-before-first-use) available — the
+    /// `--allow-chainless` admission pattern.
+    #[serde(default)]
+    pub allow_unknown: bool,
 }
 
 /// `POST /ops/agents/revoke` — the ASI03/07 kill-switch. Revokes a
@@ -386,6 +394,26 @@ pub async fn post_revoke(
         let mut conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
+        // Refuse name-blind success. The known-set is the deployment's
+        // own truth (cards/presence/skills/delegations/prior revocations + the
+        // loopback agent by construction); an unseen name is a typo until the
+        // operator explicitly says otherwise.
+        if !body.allow_unknown
+            && !mesh::principal_known(&conn, &body.principal).map_err(mesh_err)?
+        {
+            return Err(HandlerError::bad_request_with(
+                "unknown_principal",
+                format!(
+                    "principal '{}' matches no agent card, crew record, delegation, prior \
+                     revocation, or the loopback agent ('{}') — a typo'd revoke would \
+                     report success while the live identity stays authenticated. Pass \
+                     allow_unknown:true only for a deliberate pre-revoke.",
+                    body.principal,
+                    crate::auth::AGENT_LOOPBACK_SUB,
+                ),
+                serde_json::json!({"principal": body.principal}),
+            ));
+        }
         let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn)
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         let drained = mesh::revoke_principal(tx.tx(), &body.principal, &reason, &actor, now)
