@@ -674,6 +674,45 @@ pub fn injection_threshold_low() -> f32 {
         .unwrap_or(INJECTION_THRESHOLD_LOW)
 }
 
+fn parse_threshold_env(name: &str, default: f32) -> Result<f32, String> {
+    let raw = std::env::var(name)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .unwrap_or_default();
+    if raw.is_empty() {
+        return Ok(default);
+    }
+    let v = raw.parse::<f32>().map_err(|_| {
+        format!("{name}='{raw}' is not a number in 0..=1 — refusing boot (fail-closed)")
+    })?;
+    if (0.0..=1.0).contains(&v) {
+        Ok(v)
+    } else {
+        Err(format!(
+            "{name}='{raw}' is outside 0..=1 — refusing boot (fail-closed)"
+        ))
+    }
+}
+
+/// Fail-closed boot validation for the injection tripwire thresholds
+/// (v1.28.83 "Recall", A5-08): a typo'd `BRAIN_INJECTION_THRESHOLD_HIGH`
+/// used to degrade SILENTLY to the compiled default (`.parse().ok()` +
+/// `unwrap_or`), the one env family that failed open while every sibling
+/// refused boot. Unset/empty reads the default; a present-but-unparsable
+/// or out-of-range value — or high < low, which would invert the
+/// reject/quarantine ladder — refuses startup.
+pub fn validate_injection_thresholds() -> Result<(), String> {
+    let high = parse_threshold_env("BRAIN_INJECTION_THRESHOLD_HIGH", INJECTION_THRESHOLD_HIGH)?;
+    let low = parse_threshold_env("BRAIN_INJECTION_THRESHOLD_LOW", INJECTION_THRESHOLD_LOW)?;
+    if high < low {
+        return Err(format!(
+            "BRAIN_INJECTION_THRESHOLD_HIGH ({high}) < BRAIN_INJECTION_THRESHOLD_LOW ({low}) — \
+             the reject/quarantine ladder would invert; refusing boot (fail-closed)"
+        ));
+    }
+    Ok(())
+}
+
 /// Database file path. Reads `BRAIN_DB_PATH`; falls back to
 /// `~/.openclaw/workspace/brain.db`. Delegates to
 /// `StorageLayout::detect()?.legacy_db()` so this path and the layout's path
@@ -1510,6 +1549,56 @@ mod tests {
             unsafe { std::env::set_var("BRAIN_SYNCHRONOUS", v) };
         } else {
             unsafe { std::env::remove_var("BRAIN_SYNCHRONOUS") };
+        }
+    }
+
+    /// Recall (A5-08): the injection tripwire thresholds fail CLOSED —
+    /// unset reads the default, but a present-but-bad value (or high < low)
+    /// refuses the boot instead of degrading silently to the default.
+    #[test]
+    fn injection_thresholds_refuse_bad_values() {
+        let prev_high = std::env::var("BRAIN_INJECTION_THRESHOLD_HIGH").ok();
+        let prev_low = std::env::var("BRAIN_INJECTION_THRESHOLD_LOW").ok();
+        unsafe {
+            std::env::remove_var("BRAIN_INJECTION_THRESHOLD_HIGH");
+            std::env::remove_var("BRAIN_INJECTION_THRESHOLD_LOW");
+        }
+        assert!(
+            validate_injection_thresholds().is_ok(),
+            "unset thresholds read the defaults"
+        );
+        for bad in ["banana", "2", "-0.1", "NaN"] {
+            unsafe { std::env::set_var("BRAIN_INJECTION_THRESHOLD_HIGH", bad) };
+            assert!(
+                validate_injection_thresholds().is_err(),
+                "HIGH='{bad}' must refuse boot, not degrade to the default"
+            );
+        }
+        unsafe {
+            std::env::set_var("BRAIN_INJECTION_THRESHOLD_HIGH", "0.3");
+            std::env::set_var("BRAIN_INJECTION_THRESHOLD_LOW", "0.7");
+        }
+        assert!(
+            validate_injection_thresholds().is_err(),
+            "high < low would invert the ladder — must refuse"
+        );
+        unsafe {
+            std::env::set_var("BRAIN_INJECTION_THRESHOLD_HIGH", "0.9");
+            std::env::set_var("BRAIN_INJECTION_THRESHOLD_LOW", "0.5");
+        }
+        assert!(
+            validate_injection_thresholds().is_ok(),
+            "a sane ordered pair boots"
+        );
+        if let Some(v) = prev_high {
+            unsafe { std::env::set_var("BRAIN_INJECTION_THRESHOLD_HIGH", v) };
+        } else {
+            unsafe { std::env::remove_var("BRAIN_INJECTION_THRESHOLD_HIGH") };
+        }
+        if let Some(v) = prev_low {
+            unsafe { std::env::set_var("BRAIN_INJECTION_THRESHOLD_LOW", v) };
+        } else {
+            unsafe { std::env::remove_var("BRAIN_INJECTION_THRESHOLD_LOW") };
         }
     }
 

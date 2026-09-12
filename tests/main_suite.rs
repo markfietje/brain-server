@@ -10350,6 +10350,31 @@ Final paragraph after the rule.";
         assert!(!hdr.contains("wasm-unsafe-eval"));
         assert!(hdr.contains("default-src 'none'"));
 
+        // R5-01: the seat is segment-exact — a future `/app-*` path (or its
+        // error body) must get the STRICT policy, never wasm-unsafe-eval.
+        for near_miss in ["/apple", "/app-evil", "/appx", "/applications"] {
+            let res = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(near_miss)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let hdr = res
+                .headers()
+                .get(axum::http::header::CONTENT_SECURITY_POLICY)
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert_eq!(
+                hdr, API_CSP,
+                "near-miss path {near_miss} must get the strict CSP"
+            );
+        }
+
         // The boot-manifest seats ride the CLIENT CSP too (same-origin
         // scripts/JSON under /app — never the API's strict policy).
         for client_path in [

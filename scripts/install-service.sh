@@ -137,6 +137,7 @@ AUTH_VAL="$(plutil -extract EnvironmentVariables.AUTH_TOKEN raw "$PLIST" 2>/dev/
 if [[ -n "$AUTH_VAL" ]]; then
 	# Plaintext token in plist: relocate it verbatim to a 0600 file.
 	mkdir -p "$(dirname "$TOKEN_FILE")"
+	chmod 700 "$(dirname "$TOKEN_FILE")"
 	printf '%s' "$AUTH_VAL" > "$TOKEN_FILE"
 	chmod 600 "$TOKEN_FILE"
 	plutil -remove EnvironmentVariables.AUTH_TOKEN "$PLIST"
@@ -157,6 +158,7 @@ fi
 if [[ -n "$COMPLIANCE_FEATURE" ]]; then
 	AUDIT_KEY_FILE="$HOME/.config/brain-server/audit-signing-key"
 	mkdir -p "$(dirname "$AUDIT_KEY_FILE")"
+	chmod 700 "$(dirname "$AUDIT_KEY_FILE")"
 	if [[ ! -f "$AUDIT_KEY_FILE" ]]; then
 		openssl rand -hex 32 > "$AUDIT_KEY_FILE"
 		chmod 600 "$AUDIT_KEY_FILE"
@@ -224,6 +226,7 @@ fi
 #     log + /health/db echo the on|off|absent state).
 CLS_DIR="$HOME/.config/brain-server/models/injection-classifier"
 mkdir -p "$CLS_DIR" 2>/dev/null || true
+chmod 700 "$CLS_DIR" 2>/dev/null || true
 if [ ! -f "$CLS_DIR/model.onnx" ] || [ ! -f "$CLS_DIR/tokenizer.json" ]; then
 	log "injection classifier artifacts absent -> layer 2 stays off (place model.onnx + tokenizer.json in $CLS_DIR, or set BRAIN_INJECTION_CLASSIFIER=off to silence)"
 fi

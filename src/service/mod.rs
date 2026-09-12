@@ -86,15 +86,65 @@ mod pins {
 
     /// The SQL-statement counter, per the line's definition: one pass,
     /// case-insensitive, non-overlapping occurrences of the four statement
-    /// openers (`SELECT `, `INSERT `, `UPDATE `, `DELETE FROM`). Substring
-    /// semantics are deliberate — false positives (a comment naming a
-    /// keyword) only make the lock stricter, never looser.
+    /// openers — a keyword (`select`/`insert`/`update`) with an identifier
+    /// boundary on BOTH sides (v1.28.83 "Recall", R5-02: the old
+    /// trailing-space needle missed `SELECT<TAB>*` and `SELECT\n*`, while a
+    /// right-only boundary would false-fire on `kind_update\n` — the left
+    /// side must not be alphanumeric/`_`), the right side ASCII whitespace
+    /// whitespace + `from` (so `DELETE<TAB>FROM` counts). `(` is DELIBERATELY
+    /// not a boundary — handler Rust is full of `.insert(`/`.update(` method
+    /// calls, and `SELECT(*)` is not valid SQL anyway. Boundary semantics
+    /// are deliberate — a bare `updates` or `selected` never counts — and
+    /// HONESTLY SCOPED: this is a regression lock for trusted committers,
+    /// not an anti-malice boundary (`"SEL"+"ECT "` concatenation still
+    /// evades it; no live violation — `rg` clean at the broadening commit).
     fn count_sql_statements(source: &str) -> usize {
         let lower = source.to_ascii_lowercase();
-        ["select ", "insert ", "update ", "delete from"]
-            .iter()
-            .map(|p| lower.matches(p).count())
-            .sum()
+        let bytes = lower.as_bytes();
+        fn is_ident(b: u8) -> bool {
+            b.is_ascii_alphanumeric() || b == b'_'
+        }
+        fn is_boundary(b: u8) -> bool {
+            b.is_ascii_whitespace()
+        }
+        // `str::get` (never bare slicing): byte-walking a UTF-8 buffer must
+        // not split a multibyte char — `get` returns None off-boundary and
+        // the scan simply advances (handler comments carry em-dashes).
+        let mut n = 0usize;
+        let mut i = 0usize;
+        while i < bytes.len() {
+            let mut kw_len: Option<usize> = None;
+            for kw in ["select", "insert", "update"] {
+                if lower.get(i..i + kw.len()) == Some(kw) {
+                    kw_len = Some(kw.len());
+                    break;
+                }
+            }
+            if let Some(len) = kw_len {
+                let after = i + len;
+                let left_ok = i == 0 || bytes.get(i - 1).is_some_and(|b| !is_ident(*b));
+                if left_ok && bytes.get(after).is_some_and(|b| is_boundary(*b)) {
+                    n += 1;
+                }
+                i = after;
+            } else if lower.get(i..i + "delete".len()) == Some("delete") {
+                let left_ok = i == 0 || bytes.get(i - 1).is_some_and(|b| !is_ident(*b));
+                let mut j = i + "delete".len();
+                while bytes
+                    .get(j)
+                    .is_some_and(|b| *b == b' ' || *b == b'\t' || *b == b'\n' || *b == b'\r')
+                {
+                    j += 1;
+                }
+                if left_ok && lower.get(j..).is_some_and(|r| r.starts_with("from")) {
+                    n += 1;
+                }
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        n
     }
 
     /// v1.28.52 "Cornerstone" — the enforcing flip. The Foundation Line
@@ -185,8 +235,19 @@ mod pins {
         assert_eq!(
             count_sql_statements("no keywords here, updates deferred indefinitely"),
             0,
-            "`updates` (no following space) is not a statement opener"
+            "`updates` (no boundary after the keyword) is not a statement opener"
         );
+        // R5-02: the old trailing-space needles missed these — all count now.
+        assert_eq!(count_sql_statements("SELECT\t*\nFROM t"), 1);
+        assert_eq!(count_sql_statements("SELECT\n* FROM t"), 1);
+        assert_eq!(count_sql_statements("DELETE\tFROM u"), 1);
+        assert_eq!(count_sql_statements("delete\nfrom u"), 1);
+        assert_eq!(count_sql_statements("selected rows; updated_at set"), 0);
+        // `(` is not a boundary: Rust method calls (`.insert(`, `.update(`)
+        // are everywhere in handlers and `SELECT(*)` is not valid SQL.
+        assert_eq!(count_sql_statements("h.update(x); map.insert(k, v);"), 0);
+        // The left boundary matters too: `kind_update` is an identifier.
+        assert_eq!(count_sql_statements("kind == kcs::kind_update\n"), 0);
     }
 
     /// The layer contract as an executable grep: production source under

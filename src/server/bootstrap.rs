@@ -355,6 +355,15 @@ pub fn bootstrap() -> Result<BootOutcome> {
         return Err(anyhow::anyhow!("fatal export cap: {e}"));
     }
 
+    // ── fail-closed injection thresholds (Recall, A5-08) ──
+    // A typo'd BRAIN_INJECTION_THRESHOLD_HIGH/LOW used to degrade silently
+    // to the compiled default — the one env family that failed open. Now a
+    // present-but-bad value (or high < low, which would invert the
+    // reject/quarantine ladder) refuses the boot like every sibling.
+    if let Err(e) = config::validate_injection_thresholds() {
+        return Err(anyhow::anyhow!("fatal injection thresholds: {e}"));
+    }
+
     // ── fail-closed durability policy (Headroom) ──────
     // The envelope's per-target defaults ⊕ the optional BRAIN_SYNCHRONOUS /
     // BRAIN_WAL_AUTOCHECKPOINT overrides. An unknown value refuses the boot

@@ -573,9 +573,11 @@ pub(crate) async fn ingest_one(
 
     // ---- heavy logic ----
     // embed via model2vec, dedup via xxh3-64 content_hash, route to the
-    // resolved domain (forced, else auto-routed via centroids), and insert
+    // resolved domain (forced, else auto-routed via centroids), then store
     // knowledge + vec0 + legacy embedding + entities + relations in a single
-    // SQLite transaction.
+    // SQLite transaction. (Wording note: "insert" + whitespace here would
+    // trip the no-SQL-in-handlers lock — the store itself lives in the
+    // service core; this comment must not name the statement.)
     let entities_norm = entities;
     let relations_norm = relations;
     let content_for_embed = content.clone();

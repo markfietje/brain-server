@@ -63,6 +63,16 @@ pub const CLIENT_CSP: &str = concat!(
     "base-uri 'self'"
 );
 
+/// Which paths ride the WASM-friendly CLIENT_CSP. Segment-exact (v1.28.83
+/// "Recall", R5-01): the seat is `/app` itself, everything under `/app/`,
+/// and the console root `/` — a future `/app-*` route (or its error body,
+/// e.g. `/apple`) must NEVER inherit `wasm-unsafe-eval`; it gets the
+/// strict API_CSP. The old `starts_with("/app")` shape over-matched and is
+/// gone; the auth seat rule (`is_public_path`) already had this exactness.
+pub(crate) fn is_client_path(path: &str) -> bool {
+    path == "/" || path == "/app" || path.starts_with("/app/")
+}
+
 /// Request ID middleware - generates UUID v4 for tracing if not provided.
 pub async fn request_id_middleware(mut req: Request<Body>, next: Next) -> Response {
     let request_id = req
@@ -86,7 +96,7 @@ pub async fn request_id_middleware(mut req: Request<Body>, next: Next) -> Respon
 /// response. Path-aware CSP (strict for API, WASM-friendly for client).
 pub async fn security_headers_middleware(req: Request<Body>, next: Next) -> Response {
     // Read the path BEFORE next.run(req) consumes the request.
-    let is_client = req.uri().path().starts_with("/app") || req.uri().path() == "/";
+    let is_client = is_client_path(req.uri().path());
     let mut res = next.run(req).await;
     let headers = res.headers_mut();
     headers.insert(
