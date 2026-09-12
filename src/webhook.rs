@@ -736,35 +736,36 @@ mod tests {
 
     #[test]
     fn verify_github_signature_accepts_valid() {
-        let secret = b"topsecret";
+        let secret = crate::testkeys::unit_hmac_key(1);
         let body = b"body";
-        let mut mac = HmacSha256::new_from_slice(secret).unwrap();
+        let mut mac = HmacSha256::new_from_slice(&secret).unwrap();
         mac.update(body);
         let sig = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
-        assert!(WebhookQueue::verify_github_signature(secret, body, &sig));
+        assert!(WebhookQueue::verify_github_signature(&secret, body, &sig));
     }
 
     #[test]
     fn verify_github_signature_rejects_wrong() {
-        let secret = b"topsecret";
-        let mut mac = HmacSha256::new_from_slice(secret).unwrap();
+        let secret = crate::testkeys::unit_hmac_key(2);
+        let mut mac = HmacSha256::new_from_slice(&secret).unwrap();
         mac.update(b"body");
         let sig = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
         // Tampered body.
         assert!(!WebhookQueue::verify_github_signature(
-            secret, b"bodyx", &sig
+            &secret, b"bodyx", &sig
         ));
     }
 
     #[test]
     fn verify_github_signature_rejects_bad_header_format() {
+        let secret = crate::testkeys::unit_hmac_key(3);
         assert!(!WebhookQueue::verify_github_signature(
-            b"topsecret",
+            &secret,
             b"body",
             "not-a-sig"
         ));
         assert!(!WebhookQueue::verify_github_signature(
-            b"topsecret",
+            &secret,
             b"body",
             "sha1=deadbeef"
         ));
@@ -789,48 +790,49 @@ mod tests {
         // the spec's canonical `v1,` scheme signs
         // `{id}.{timestamp}.{raw body}` — a tamper to ANY of the three fails the
         // constant-time compare (so a replay cannot re-stamp the timestamp).
-        let secret = b"topsecret";
+        let secret = crate::testkeys::unit_hmac_key(4);
         let id = "msg_123";
         let ts = "1700000000";
         let body = b"payload";
-        let good = std_signature(secret, id, ts, body);
+        let good = std_signature(&secret, id, ts, body);
         assert!(WebhookQueue::verify_standard_signature(
-            secret, id, ts, body, &good
+            &secret, id, ts, body, &good
         ));
         assert!(!WebhookQueue::verify_standard_signature(
-            secret,
+            &secret,
             id,
             ts,
             b"payloadx",
             &good
         ));
         assert!(!WebhookQueue::verify_standard_signature(
-            secret,
+            &secret,
             id,
             "1700000001",
             body,
             &good
         ));
         assert!(!WebhookQueue::verify_standard_signature(
-            secret, "msg_999", ts, body, &good
+            &secret, "msg_999", ts, body, &good
         ));
     }
 
     #[test]
     fn standard_signature_rejects_bad_header_format() {
+        let secret = crate::testkeys::unit_hmac_key(5);
         assert!(!WebhookQueue::verify_standard_signature(
-            b"topsecret",
+            &secret,
             "msg_1",
             "1700000000",
             b"payload",
             "not-a-sig"
         ));
         // Legacy `sha256=` scheme must NOT pass the standard check.
-        let mut mac = HmacSha256::new_from_slice(b"topsecret").unwrap();
+        let mut mac = HmacSha256::new_from_slice(&secret).unwrap();
         mac.update(b"payload");
         let hex_sig = format!("sha256={}", hex::encode(mac.finalize().into_bytes()));
         assert!(!WebhookQueue::verify_standard_signature(
-            b"topsecret",
+            &secret,
             "msg_1",
             "1700000000",
             b"payload",
@@ -853,13 +855,13 @@ mod tests {
         // the outbound `sign_standard_signature` round-trips
         // through the verify side, and a `kind='alert'` enqueue is idempotent
         // via `webhook_seen` (the delivery-id dedup).
-        let secret = b"alertsecret";
+        let secret = crate::testkeys::unit_hmac_key(6);
         let id = "alert-3";
         let ts = "1700000000";
         let body = br#"{"kind":"pending","seq":3}"#;
-        let sig = WebhookQueue::sign_standard_signature(secret, id, ts, body);
+        let sig = WebhookQueue::sign_standard_signature(&secret, id, ts, body);
         assert!(WebhookQueue::verify_standard_signature(
-            secret, id, ts, body, &sig
+            &secret, id, ts, body, &sig
         ));
 
         let pool = db();

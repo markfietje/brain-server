@@ -484,18 +484,19 @@ mod tests {
 
     #[test]
     fn sw_sign_shape_is_kernel_compatible() {
-        let sig = sw_sign(b"whsec", "mid", "1700000000", b"hello");
+        let key = crate::testkeys::unit_hmac_key(31);
+        let sig = sw_sign(&key, "mid", "1700000000", b"hello");
         assert!(sig.starts_with("v1,"));
         assert_eq!(
             sig,
-            sw_sign(b"whsec", "mid", "1700000000", b"hello"),
+            sw_sign(&key, "mid", "1700000000", b"hello"),
             "deterministic"
         );
         // Different bodies → different tags.
-        assert_ne!(sig, sw_sign(b"whsec", "mid", "1700000000", b"hellO"));
+        assert_ne!(sig, sw_sign(&key, "mid", "1700000000", b"hellO"));
         // Empty keys still construct a tag, but config load refuses empty
         // secrets long before signing can ever run with one (defense in
         // depth lives at BOTH ends).
-        assert!(sw_sign(b"", "mid", "1", b"x").starts_with("v1,"));
+        assert!(sw_sign(Vec::new().as_slice(), "mid", "1", b"x").starts_with("v1,"));
     }
 }

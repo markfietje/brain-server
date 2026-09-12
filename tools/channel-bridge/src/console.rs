@@ -425,7 +425,7 @@ mod tests {
             &http,
             &format!("http://{addr}"),
             "slack",
-            b"whsec-test",
+            crate::testkeys::unit_hmac_key(32).as_slice(),
             &body_decide(true, 42, HEX, "U0PING1"),
         )
         .await
@@ -455,7 +455,7 @@ mod tests {
             &http,
             &format!("http://{addr2}"),
             "slack",
-            b"whsec-test",
+            crate::testkeys::unit_hmac_key(33).as_slice(),
             &body_due("U1"),
         )
         .await

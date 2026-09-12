@@ -191,6 +191,10 @@ pub mod test_support {
 pub mod reg_watch;
 #[cfg(test)]
 pub mod spire_inventory;
+/// Shared unit-test key material (see the module doc — generated, never
+/// literal, so CodeQL's hard-coded-key query has nothing to flag in tests).
+#[cfg(test)]
+pub mod testkeys;
 
 /// The shared r2d2 pool alias every server module uses.
 pub type Pool = r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>;

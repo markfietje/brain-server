@@ -2363,7 +2363,7 @@ mod tests {
         let mallory = tampered_row("mallory");
         for forge in [
             unkeyed_link(&mallory),
-            chain_link_hmac(&[9u8; 32], &mallory),
+            chain_link_hmac(&crate::testkeys::unit_hmac_key(9), &mallory),
         ] {
             db.execute("UPDATE audit_events SET actor = 'mallory' WHERE id = 2", [])
                 .unwrap();

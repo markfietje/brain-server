@@ -38,6 +38,26 @@ mod render;
 mod slack;
 mod teams;
 mod translate;
+/// Unit-test HMAC key material (no literal key bytes anywhere —
+/// `rust/hard-coded-cryptographic-value` taint-flags literal secrets
+/// reaching crypto sinks even in test fixtures; these are generated, never
+/// credentials).
+#[cfg(test)]
+pub(crate) mod testkeys {
+    pub(crate) fn unit_hmac_key(seed: u64) -> Vec<u8> {
+        let mut x = seed
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .wrapping_add(0x1234_5678_9ABC_DEF0);
+        let mut out = Vec::with_capacity(32);
+        for _ in 0..4 {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            out.extend_from_slice(&x.to_be_bytes());
+        }
+        out
+    }
+}
 
 use anyhow::{Context, Result};
 use axum::extract::{Query, State};

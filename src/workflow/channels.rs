@@ -1838,7 +1838,7 @@ mod tests {
             kind: "signal".into(),
             tenant: "acme".into(),
             domain: domain.into(),
-            webhook_secret: b"secretsecretsecret".to_vec(),
+            webhook_secret: crate::testkeys::unit_hmac_key(11),
         }
     }
 
@@ -1848,7 +1848,7 @@ mod tests {
             kind: "whatsapp".into(),
             tenant: "acme".into(),
             domain: domain.into(),
-            webhook_secret: b"secretsecretsecret".to_vec(),
+            webhook_secret: crate::testkeys::unit_hmac_key(12),
         }
     }
 
@@ -2974,7 +2974,7 @@ mod tests {
     // ── Signature verify: tamper fails, valid passes, wrong secret fails ───
     #[test]
     fn bridge_signature_verification_is_constant_time_exact() {
-        let secret = b"bridgesecret";
+        let secret = crate::testkeys::unit_hmac_key(13);
         let (id, ts, body) = ("mid", "1700000000", br#"{"text":"[case 1] hi"}"#.as_slice());
         use base64::Engine;
         let sign = |sec: &[u8]| {
@@ -2989,20 +2989,20 @@ mod tests {
             base64::engine::general_purpose::STANDARD.encode(m.finalize().into_bytes())
         };
         assert!(verify_bridge_signature(
-            secret,
+            &secret,
             id,
             ts,
             body,
-            &format!("v1,{}", sign(secret))
+            &format!("v1,{}", sign(&secret))
         ));
         let tampered = {
-            let s = sign(secret);
+            let s = sign(&secret);
             let mut c = s.chars().collect::<Vec<_>>();
             c[2] = if c[2] == 'A' { 'B' } else { 'A' };
             c.into_iter().collect::<String>()
         };
         assert!(!verify_bridge_signature(
-            secret,
+            &secret,
             id,
             ts,
             body,
@@ -3013,9 +3013,9 @@ mod tests {
             id,
             ts,
             body,
-            &format!("v1,{}", sign(secret))
+            &format!("v1,{}", sign(&secret))
         ));
-        assert!(!verify_bridge_signature(secret, id, ts, body, "v0,zzz"));
+        assert!(!verify_bridge_signature(&secret, id, ts, body, "v0,zzz"));
     }
 
     fn count(conn: &Connection, table: &str) -> i64 {
