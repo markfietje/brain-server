@@ -3473,8 +3473,8 @@ paths:
             application/json:
               schema:
                 type: object
-                example: {"deleted": true, "retained_proposal_copies": [{"id": 1, "status": "approved"}], "scrubbed": false}
-                description: 'true when the knowledge row existed and was erased (vec0 + FTS + graph + tombstone in one tx); retained_proposal_copies names every HITL decision record still carrying the content verbatim (empty for direct /add chunks); scrubbed echoes the query flag'
+                example: {"deleted": true, "retained_proposal_copies": [{"id": 1, "status": "approved"}], "retained_truncated": false, "scrubbed": false, "scrubbed_count": 0}
+                description: 'true when the knowledge row existed and was erased (vec0 + FTS + graph + suggest_feedback residue + tombstone + in-tx erasure audit row, one tx); retained_proposal_copies names up to 500 HITL decision records still carrying the content verbatim (exact-bytes correlation; retained_truncated signals overflow; empty for direct /add chunks); scrubbed echoes the query flag and scrubbed_count the rows actually scrubbed. Art-17-grade demands: use /dsar purge (subject-wide) or ?scrub_proposals=1 — single-forget default preserves the decision record (see the Art 17(3) directive in docs/compliance.md).'
   /domains:
     get:
       summary: List domains with per-domain counts

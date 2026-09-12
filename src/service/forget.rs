@@ -13,9 +13,18 @@
 //! FK-children map: `knowledge` is the parent — deleting it cascades
 //! `embeddings` and SET-NULLs `relationships`; `evidence_links` and
 //! `case_articles` reference it by soft ref (registry outlives row). The
-//! tombstone's `knowledge_id` is a soft ref BY DESIGN. This aggregate has
-//! no delete path for graph edges — the purge core owns that family's
-//! ordering; forget is the single-chunk immediate erasure.
+//! tombstone's `knowledge_id` is a soft ref BY DESIGN. Chunk-keyed residue
+//! the FKs do NOT cover is deleted explicitly, mirroring the purge core
+//! (`service/purge.rs`): `suggest_feedback` rows addressed by `chunk_id`
+//! (a certified erasure must not leave feedback queryable against a
+//! tombstoned id). DELIBERATELY RETAINED (documented, not deleted):
+//! `relationships` rows whose `knowledge_id` SET-NULLs to an orphan edge
+//! (graph archaeology — the edge's other endpoint still names it), and
+//! `recall_traces` rows naming the chunk (read-event evidence — the audit
+//! chain's replay artifact outlives the content by design, same as the
+//! audit rows themselves). This aggregate has no delete path for graph
+//! edges — the purge core owns that family's ordering; forget is the
+//! single-chunk immediate erasure.
 //!
 //! The rows-affected check is the certified-silence inverse: a tombstone
 //! is written ONLY when the row actually deleted (never for a row that
@@ -54,10 +63,16 @@ impl From<rusqlite::Error> for ForgetError {
 /// envelope matches `/purge`).
 ///
 /// Order, verbatim: document_id capture → content digest → explicit vec0
-/// delete → knowledge row delete (FK CASCADE/SET NULL) → tombstone ONLY
-/// when a row actually deleted. Returns whether a row was deleted (the
-/// caller owns the 404).
-pub(crate) fn forget_one(tx: &rusqlite::Transaction<'_>, id: i64) -> Result<bool, ForgetError> {
+/// delete → knowledge row delete (FK CASCADE/SET NULL) → chunk-keyed
+/// residue delete (`suggest_feedback`, the purge mirror) → tombstone ONLY
+/// when a row actually deleted → in-tx erasure audit row (audit-per-write:
+/// the erasure and its evidence commit or roll back together). Returns
+/// whether a row was deleted (the caller owns the 404).
+pub(crate) fn forget_one(
+    tx: &rusqlite::Transaction<'_>,
+    id: i64,
+    actor: &str,
+) -> Result<bool, ForgetError> {
     // Capture document_id + content digest for the tombstone (the registry
     // must carry the same SHA-256 evidence as every erasure path).
     let doc_id: Option<String> = tx
@@ -91,6 +106,14 @@ pub(crate) fn forget_one(tx: &rusqlite::Transaction<'_>, id: i64) -> Result<bool
         .map_err(|e| ForgetError::Database(format!("delete failed: {e}")))?;
 
     if rows > 0 {
+        // Chunk-keyed residue the FKs cannot reach (the purge mirror,
+        // `service/purge.rs`): feedback addressed by chunk_id must not
+        // survive against a tombstoned id.
+        tx.execute(
+            "DELETE FROM suggest_feedback WHERE chunk_id = ?1",
+            params![id],
+        )
+        .map_err(|e| ForgetError::Database(format!("feedback residue delete failed: {e}")))?;
         // Tombstone for provenance (content gone; SHA-256 digest survives).
         tx.execute(
             "INSERT INTO tombstones (knowledge_id, document_id, content_hash)
@@ -98,6 +121,21 @@ pub(crate) fn forget_one(tx: &rusqlite::Transaction<'_>, id: i64) -> Result<bool
             params![id, doc_id, content_digest],
         )
         .map_err(|e| ForgetError::Database(format!("tombstone failed: {e}")))?;
+        // The erasure's own evidence, in the SAME tx (audit-per-write —
+        // the one mutation family that had none). Best-effort for the
+        // write, never silent for the operator: a dropped row warns loudly.
+        if crate::audit::record(
+            tx,
+            crate::audit::AuditKind::Ingest,
+            actor,
+            &format!("chunk:{id}"),
+            crate::audit::AuditStatus::Ok,
+            "forget",
+        )
+        .is_none()
+        {
+            tracing::warn!("forget audit record dropped (chunk {id}) — evidence gap");
+        }
     }
 
     Ok(rows > 0)
@@ -120,19 +158,36 @@ pub(crate) fn chunk_content(tx: &rusqlite::Transaction<'_>, id: i64) -> Option<S
 /// records that survive a chunk forget. Retention of the decision
 /// record is legitimate (approval evidence); SILENCE about the surviving
 /// content copy was not — the forget response now names every retained row.
+///
+/// Correlation is EXACT bytes (the approve path stores the proposal's
+/// content verbatim as the chunk, so identical bytes ARE the
+/// promoted-copy link) and BOUNDED: at most [`RETAINED_COPIES_CAP`] rows
+/// materialize, with the overflow reported as `truncated` — the response
+/// never grows without bound no matter how many proposals share one
+/// content string. Edited/whitespace-variant copies are NOT correlated
+/// (documented at the API seam, not silently missed).
+pub(crate) const RETAINED_COPIES_CAP: i64 = 500;
+
 pub(crate) fn retained_proposal_copies(
     tx: &rusqlite::Transaction<'_>,
     content: &str,
-) -> Result<Vec<(i64, String)>, ForgetError> {
+) -> Result<(Vec<(i64, String)>, bool), ForgetError> {
     let mut stmt = tx
-        .prepare("SELECT id, status FROM proposals WHERE content = ?1")
+        .prepare("SELECT id, status FROM proposals WHERE content = ?1 LIMIT ?2")
         .map_err(|e| ForgetError::Database(e.to_string()))?;
     let rows = stmt
-        .query_map(params![content], |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map(params![content, RETAINED_COPIES_CAP + 1], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
         .map_err(|e| ForgetError::Database(e.to_string()))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| ForgetError::Database(e.to_string()))?;
-    Ok(rows)
+    let truncated = rows.len() as i64 > RETAINED_COPIES_CAP;
+    let rows = rows
+        .into_iter()
+        .take(RETAINED_COPIES_CAP as usize)
+        .collect();
+    Ok((rows, truncated))
 }
 
 /// Replace the retained copies' content with the scrub marker (the

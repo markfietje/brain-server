@@ -9189,6 +9189,111 @@ Final paragraph after the rule.";
         }
     }
 
+    /// v1.28.83 "Recall" (A5-02/A5-03/A5-04): the single-chunk erasure is
+    /// fully evidenced and bounded — (a) the erasure itself writes an
+    /// in-tx audit row (the one mutation family that had none); (b)
+    /// chunk-keyed `suggest_feedback` residue dies with the chunk (the
+    /// purge mirror); (c) the retained-copy disclosure is capped at 500
+    /// with a `truncated` bit, and `scrubbed_count` reports rows actually
+    /// scrubbed (not the request flag).
+    #[tokio::test]
+    async fn forget_erasure_is_audited_bounded_and_counted() {
+        use handlers::forget::{ForgetQuery, forget};
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let content = "Recall: erasure evidence, residue, and bounds pin content.";
+        let id = seed_chunk(&state, "alpha", None, None, content);
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO suggest_feedback(chunk_id, feedback, ts, session, tenant_id)
+                 VALUES (?1, 'helpful', 0, 'probe-session', 'default')",
+                params![id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO proposals(kind, content, novelty, salience, status, created_at)
+                 VALUES ('fact', ?1, 0.5, 0.5, 'approved', 0)",
+                params![content],
+            )
+            .unwrap();
+        }
+        let ok = forget(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            Query(ForgetQuery {
+                scrub_proposals: true,
+            }),
+            Path(id),
+        )
+        .await
+        .expect("forget succeeds");
+        assert_eq!(ok.0["scrubbed"], true);
+        assert_eq!(
+            ok.0["scrubbed_count"], 1,
+            "scrubbed_count reports rows scrubbed, not the request flag"
+        );
+        assert_eq!(ok.0["retained_truncated"], false);
+        {
+            let conn = state.pool.get().unwrap();
+            let erasure_audits: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM audit_events WHERE detail_hash = ?1",
+                    [&brain_server::audit::hash("forget")],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                erasure_audits, 1,
+                "audit-per-write: the erasure itself is evidenced in-tx"
+            );
+            let feedback_left: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM suggest_feedback WHERE chunk_id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                feedback_left, 0,
+                "chunk-keyed feedback residue dies with the chunk (purge mirror)"
+            );
+        }
+
+        // The bound: 505 same-content proposals disclose 500 + truncated.
+        let content2 = "Recall: disclosure-cap flood content.";
+        let id2 = seed_chunk(&state, "alpha", None, None, content2);
+        {
+            let conn = state.pool.get().unwrap();
+            for _ in 0..505 {
+                conn.execute(
+                    "INSERT INTO proposals(kind, content, novelty, salience, status, created_at)
+                     VALUES ('fact', ?1, 0.5, 0.5, 'approved', 0)",
+                    params![content2],
+                )
+                .unwrap();
+            }
+        }
+        let capped = forget(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            Query(ForgetQuery {
+                scrub_proposals: false,
+            }),
+            Path(id2),
+        )
+        .await
+        .expect("capped forget succeeds");
+        assert_eq!(
+            capped.0["retained_proposal_copies"].as_array().unwrap().len(),
+            500,
+            "disclosure is bounded at 500 rows"
+        );
+        assert_eq!(capped.0["retained_truncated"], true);
+        assert_eq!(capped.0["scrubbed_count"], 0);
+    }
+
     // ── (fourth pass 2026-09-12, T4-02) ────────────────────────────────
 
     /// T4-02: the `/get/{id}` source label is client free-text (proposal

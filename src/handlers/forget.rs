@@ -38,7 +38,7 @@ pub async fn forget(
     let pool = state.pool.clone();
 
     let outcome = tokio::task::spawn_blocking(
-        move || -> Result<(bool, Vec<(i64, String)>), HandlerError> {
+        move || -> Result<(bool, Vec<(i64, String)>, bool, usize), HandlerError> {
             let mut conn = pool.get().map_err(HandlerError::db_down)?;
             let tx = conn
                 .transaction()
@@ -53,31 +53,35 @@ pub async fn forget(
             // link; there is no fk between them by design).
             let content = crate::service::forget::chunk_content(&tx, id);
 
-            let deleted = crate::service::forget::forget_one(&tx, id)
+            let deleted = crate::service::forget::forget_one(&tx, id, &actor)
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
 
             // Disclose (and optionally scrub) the retained decision-record copies
             // in the SAME tx — the disclosure can never lag the erasure.
             let mut retained: Vec<(i64, String)> = Vec::new();
+            let mut truncated = false;
+            let mut scrubbed_count = 0usize;
             if deleted && let Some(content) = content.as_deref() {
-                retained = crate::service::forget::retained_proposal_copies(&tx, content)
-                    .map_err(|e| HandlerError::internal(e.to_string()))?;
+                (retained, truncated) =
+                    crate::service::forget::retained_proposal_copies(&tx, content)
+                        .map_err(|e| HandlerError::internal(e.to_string()))?;
                 if q.scrub_proposals && !retained.is_empty() {
                     let now = chrono::Utc::now().timestamp();
                     let ids: Vec<i64> = retained.iter().map(|(id, _)| *id).collect();
-                    crate::service::forget::scrub_proposal_content(&tx, &ids, now, &actor)
-                        .map_err(|e| HandlerError::internal(e.to_string()))?;
+                    scrubbed_count =
+                        crate::service::forget::scrub_proposal_content(&tx, &ids, now, &actor)
+                            .map_err(|e| HandlerError::internal(e.to_string()))?;
                 }
             }
             tx.commit()
                 .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
-            Ok((deleted, retained))
+            Ok((deleted, retained, truncated, scrubbed_count))
         },
     )
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
 
-    let (deleted, retained) = outcome;
+    let (deleted, retained, truncated, scrubbed_count) = outcome;
 
     if !deleted {
         return Err(HandlerError::not_found(format!("no memory with id {id}")));
@@ -87,10 +91,16 @@ pub async fn forget(
         "deleted": true,
         // The honest erasure census: decision records that still carry the
         // content verbatim (empty when none — e.g. direct /add chunks).
+        // Correlation is exact bytes (see the core); edited variants are
+        // NOT correlated — use `/dsar purge` (subject-wide sweep) when the
+        // erasure request is an Art-17-grade demand, or `?scrub_proposals=1`
+        // for the verbatim copies named here.
         "retained_proposal_copies": retained
             .into_iter()
             .map(|(id, status)| serde_json::json!({"id": id, "status": status}))
             .collect::<Vec<_>>(),
+        "retained_truncated": truncated,
         "scrubbed": q.scrub_proposals,
+        "scrubbed_count": scrubbed_count,
     })))
 }
