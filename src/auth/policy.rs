@@ -43,6 +43,12 @@ impl Action {
     fn rank(self) -> u8 {
         match self {
             Action::Read => 0,
+            // Traverse shares Read's RANK so strictly stronger actions
+            // (read/write/admin) satisfy a Traverse gate — but grants() below
+            // gives a Traverse SCOPE exact-kind matching: it can never satisfy
+            // Read (the enum-doc contract, honored since the 2026-09-11 fix —
+            // the old rank-only check let `traverse:` scopes read full chunk
+            // content, silently contradicting the documented intent).
             Action::Traverse => 0,
             Action::Write => 1,
             Action::Admin => 2,
@@ -174,7 +180,16 @@ impl Scope {
     /// specific domain requires naming it: `read:<team>/acme-us`. This
     /// matches `client_authorized_domains`, which already strips `*`/`global`.
     fn grants(&self, action: Action, team: &str, domain: &str) -> bool {
-        let action_ok = self.action.rank() >= action.rank();
+        // Traverse is a DISTINCT permission, not a rank peer of Read: a
+        // `traverse:` scope grants exactly Traverse (an integration that
+        // walks the graph must not thereby read chunk content), while
+        // strictly stronger scopes (read/write/admin) still satisfy a
+        // Traverse gate (they outrank it by rank).
+        let action_ok = if self.action == Action::Traverse {
+            action == Action::Traverse
+        } else {
+            self.action.rank() >= action.rank()
+        };
         // The total grant (`*/*`) needs the explicit admission: without
         // BRAIN_ALLOW_WILDCARD_GRANT=1 it grants nothing (fail closed).
         // A wildcard team over a NAMED domain keeps its prior meaning.
@@ -311,6 +326,25 @@ mod tests {
         assert!(s.grants(Action::Read, "team", "l1"), "writer can read");
         assert!(s.grants(Action::Write, "team", "l1"));
         assert!(!s.grants(Action::Admin, "team", "l1"), "writer can't admin");
+    }
+
+    #[test]
+    fn traverse_scope_grants_only_traverse() {
+        // 2026-09-11 fix pin: a `traverse:` scope NEVER satisfies a Read gate
+        // (the enum-doc contract — an integration that walks the graph must
+        // not thereby read chunk content), while read outranks traverse.
+        let s = Scope::parse("traverse:team/l1").unwrap();
+        assert!(s.grants(Action::Traverse, "team", "l1"));
+        assert!(
+            !s.grants(Action::Read, "team", "l1"),
+            "traverse must never satisfy Read"
+        );
+        assert!(!s.grants(Action::Write, "team", "l1"));
+        let r = Scope::parse("read:team/l1").unwrap();
+        assert!(
+            r.grants(Action::Traverse, "team", "l1"),
+            "read outranks traverse"
+        );
     }
 
     #[test]

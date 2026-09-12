@@ -49,7 +49,10 @@ pub fn is_public_path(path: &str) -> bool {
     PUBLIC_PATHS.contains(&path)
         || path.starts_with("/webhooks/")
         || path == "/"
-        || path.starts_with("/app")
+        // `/app` or `/app/...` — exact segment match so a future route like
+        // `/apple` can never ride the prefix silently (2026-09-11 fix).
+        || path == "/app"
+        || path.starts_with("/app/")
 }
 
 /// Every path registered by `build_app`, in registration order.
