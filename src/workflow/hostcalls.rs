@@ -874,25 +874,35 @@ mod tests {
     }
 
     /// The dormancy pin: the exec mediation is HARDENED but UNWIRED —
-    /// `hostcalls::build` has zero production call sites (grep the way the
-    /// audit did). When the 1.32.x Loop line wires this, DELETE this pin
-    /// and inherit the hardened mediation. A silent partial wiring must
-    /// fail here first.
+    /// `hostcalls::build` has zero production call sites anywhere under
+    /// `src/` (recursive walk — the 2026-09-11 fix: the old top-level-only
+    /// walk would miss a wiring inside `src/handlers/` etc.). When the
+    /// 1.32.x Loop line wires this, DELETE this pin and inherit the hardened
+    /// mediation. A silent partial wiring must fail here first.
     #[test]
     fn hostcalls_mediation_stays_unwired_until_loop_line() {
+        fn walk(dir: &std::path::Path, hits: &mut usize, files: &mut usize) {
+            // Built by concatenation so THIS test's own source (which names
+            // the needle to scan for) never self-matches — the recursion now
+            // reaches this file too, where the literal would live.
+            let needle = concat!("hostcalls::bu", "ild(");
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if entry.file_type().unwrap().is_dir() {
+                    walk(&path, hits, files);
+                    continue;
+                }
+                *files += 1;
+                let body = std::fs::read_to_string(&path).unwrap();
+                *hits += body.matches(needle).count();
+            }
+        }
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut hits = 0usize;
         let mut files = 0usize;
-        for entry in std::fs::read_dir(manifest.join("src")).unwrap() {
-            let entry = entry.unwrap();
-            if entry.file_type().unwrap().is_dir() {
-                continue;
-            }
-            files += 1;
-            let body = std::fs::read_to_string(entry.path()).unwrap();
-            hits += body.matches("hostcalls::build(").count();
-        }
-        assert!(files > 10, "sanity: the walk scanned {files} files");
+        walk(&manifest.join("src"), &mut hits, &mut files);
+        assert!(files > 100, "sanity: the walk scanned {files} files");
         assert_eq!(
             hits, 0,
             "hostcalls::build must stay UNWIRED until the Loop line (delete this pin when wiring)"

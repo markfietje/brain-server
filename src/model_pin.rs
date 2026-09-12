@@ -53,6 +53,20 @@ pub fn verify_manifest_file(manifest: &Path) -> Result<usize, String> {
         } else {
             base.join(rel)
         };
+        // Symlink refusal (2026-09-11 fix): `fs::read` FOLLOWS symlinks, so a
+        // relative entry naming a link pointing OUTSIDE the manifest tree
+        // would verify a file the manifest never named. Pin the file ITSELF,
+        // not its destination.
+        #[cfg(unix)]
+        if std::fs::symlink_metadata(&path)
+            .map_err(|e| format!("artifact '{}': {}", path.display(), e))?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(format!(
+                "manifest entry '{rel}': symlinks are not pinnable (resolve the real file)"
+            ));
+        }
         let bytes =
             std::fs::read(&path).map_err(|e| format!("artifact '{}': {}", path.display(), e))?;
         let got = hex_encode(&Sha256::digest(&bytes));
@@ -131,6 +145,26 @@ mod tests {
             verify_manifest_file(&m)
                 .unwrap_err()
                 .contains("escapes its directory")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_entry_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let target = outside.path().join("real.onnx");
+        write(&target, b"weights");
+        let link = dir.path().join("linked.onnx");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let pinned = hex_encode(&Sha256::digest(b"weights"));
+        // The hash matches the DESTINATION's bytes — refusal is about the
+        // file being a link at all, not a mismatch.
+        let m = manifest_with(dir.path(), &[("linked.onnx", pinned)]);
+        assert!(
+            verify_manifest_file(&m)
+                .unwrap_err()
+                .contains("symlinks are not pinnable")
         );
     }
 }

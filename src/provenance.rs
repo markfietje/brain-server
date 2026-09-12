@@ -203,6 +203,24 @@ pub fn verify_artifact_detailed(value: &Value, pinned_did: Option<&str>) -> Prov
     if !crate::ump_integrity::verify_manifest_bytes(signed_by, sig, &message) {
         return ProvenanceVerify::Tampered;
     }
+    // Unknown-field rejection (2026-09-11 fix): the claim binds exactly the
+    // four known keys — any EXTRA key in the provenance object is data the
+    // signature never covered riding inside a "verified" mark. The single
+    // emitter never adds fields, so a stranger key means the object was
+    // modified post-signing: fail closed as Tampered.
+    let known = [
+        "mark",
+        "generator",
+        "generated_at",
+        "actor",
+        "signed_by",
+        "sig",
+    ];
+    if let Some(obj) = p.as_object()
+        && obj.keys().any(|k| !known.contains(&k.as_str()))
+    {
+        return ProvenanceVerify::Tampered;
+    }
     // The pin check runs LAST and ONLY on a cryptographically valid mark:
     // tampering reports Tampered even under a pin (the pin never masks it).
     if let Some(pin) = pinned_did
@@ -366,6 +384,24 @@ mod tests {
         assert_eq!(h[FIELD]["mark"], MARK_HUMAN);
         assert_eq!(h[FIELD]["actor"], "user:maria");
         assert!(verify_artifact(&h));
+    }
+
+    /// 2026-09-11 fix pin: a cryptographically-valid mark carrying an EXTRA
+    /// key fails closed — the claim binds exactly the four known fields, so
+    /// unknown data must never ride inside a "verified" provenance object.
+    #[test]
+    fn extra_provenance_key_fails_closed() {
+        let _guard = lock_env();
+        let _key = OperatorKey::new();
+        let mut a = artifact();
+        assert!(attach_aigen(&mut a, 1790000000));
+        assert!(verify_artifact(&a), "sanity: the mark verifies clean");
+        a[FIELD]["attacker_note"] = serde_json::json!("not signed");
+        assert_eq!(
+            verify_artifact_detailed(&a, None),
+            ProvenanceVerify::Tampered,
+            "extra keys are post-signing modification — never Ok"
+        );
     }
 
     /// provenance_marks_present_on_all_four_classes — THE deliverable pin

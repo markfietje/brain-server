@@ -397,6 +397,9 @@ const IPV6_DENY: &[(u128, u8, &str)] = &[
     (0xFF00 << 112, 8, "multicast ff00::/8"),
     (0x2001_0DB8 << 96, 32, "documentation 2001:db8::/32"),
     (0x64_FF9B << 96, 96, "nat64 64:ff9b::/96"),
+    // Local-use NAT64 prefix (RFC 8215 — sites embedding their own v4
+    // addresses; the 2026-09-11 audit row the well-known twin above lacked).
+    (0x0064_FF9B_0001 << 80, 48, "nat64-local-use 64:ff9b:1::/48"),
     (0x2002 << 112, 16, "6to4 2002::/16"),
     (0x2001_0000 << 96, 32, "teredo 2001::/32"),
     (0x0100 << 112, 64, "discard-only 100::/64"),
@@ -1133,6 +1136,10 @@ mod tests {
             ("::ffff:100.64.0.1", "cgnat 100.64/10"),
             ("64:ff9b::a00:1", "nat64 64:ff9b::/96"),
             ("64:ff9b::c0a8:14b", "nat64 64:ff9b::/96"),
+            // RFC 8215 local-use twin (2026-09-11): a site-local NAT64
+            // prefix embedding a private v4 payload refuses too.
+            ("64:ff9b:1::a00:1", "nat64-local-use 64:ff9b:1::/48"),
+            ("64:ff9b:1::c0a8:14b", "nat64-local-use 64:ff9b:1::/48"),
             ("2002:a00:1::", "6to4 2002::/16"),
             ("2002:c0a8:101::", "6to4 2002::/16"),
             ("2001:0:a00:1:0:0:0:1", "teredo 2001::/32"),
