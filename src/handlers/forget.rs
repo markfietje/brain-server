@@ -16,6 +16,12 @@ pub struct ForgetQuery {
     pub scrub_proposals: bool,
 }
 
+/// The blocking closure's outcome: (row deleted, retained proposal copies
+/// as (id, status), disclosure truncated at the cap, proposals actually
+/// scrubbed). Named so the closure signature stays under the
+/// `type_complexity` lint.
+type ForgetOutcome = (bool, Vec<(i64, String)>, bool, usize);
+
 /// `DELETE /memory/{id}`
 ///
 /// The promoted chunk's content survives in its HITL
@@ -38,7 +44,7 @@ pub async fn forget(
     let pool = state.pool.clone();
 
     let outcome = tokio::task::spawn_blocking(
-        move || -> Result<(bool, Vec<(i64, String)>, bool, usize), HandlerError> {
+        move || -> Result<ForgetOutcome, HandlerError> {
             let mut conn = pool.get().map_err(HandlerError::db_down)?;
             let tx = conn
                 .transaction()

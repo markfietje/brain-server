@@ -837,3 +837,76 @@ canonical-first, byte-identity verified post-sync), fork committed as
 vitest **188/188**, `tsc --noEmit` clean, `diff -rq` byte-parity OK. The
 fork's uncommitted `pnpm-lock.yaml` typebox hunk (1.3.18→1.3.26 vs the
 1.3.3 manifest pin) remains the operator's K4-02 decision, untouched.
+
+---
+
+## 2026-09-12 (evening) — Fifth-pass full-spectrum audit (v1.28.82 + closures × fork)
+
+Second audit of the day; five parallel lanes all completed (server /
+satellites / claims / fork / regulatory). Full report:
+`docs/SECURITY_AUDIT_20260912_FIFTH_PASS.md`. All six fourth-pass closures
+re-verified HELD in code and live (fresh DB, test port 9879: typo revoke →
+400 naming `agent@loopback`; loopback revoke → 200 → agent 401; forget →
+`retained_proposal_copies` + `scrubbed`). But the F4-S-01 closure carries a
+**HIGH availability regression**: `unknown_principal` refusal fires for
+never-seen JWT subs too, so **7/22 `authz_matrix` tests fail and main is
+RED** (release.sh blocks tags — unreleasable until fixed).
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| A5-01 | F4-S-01 fix refuses revoke for live JWT identities with no DB row (`user:ghost` → 400 live); 7/22 authz_matrix red | HIGH | Open — v1.28.83 "Recall" (warn-not-refuse: always write, 200 + `"known":false` + hint) |
+| T5-01 | Closure gates never ran the `authz_matrix` binary — "all green" record missed the red it created | MED | Open — v1.28.83 (checklist runs every test binary) |
+| A5-02 | `DELETE /memory/{id}` emits no in-tx audit row (audit-per-write violation) | MED | Open — v1.28.83 |
+| A5-03 | Forget cascade narrower than purge (`suggest_feedback`-by-chunk, trace/evidence refs survive) | MED-LOW | Open — v1.28.83 |
+| A5-04/R5-03 | Forget correlation exact-byte-only, unbounded, `scrubbed` echoes flag | LOW | Open — v1.28.84 |
+| A5-05–A5-11 | Bounds-after-probe, delegatee-drain wedge, `let _` audit write, fail-open threshold envs, get/multi-get skew, 2 vacuous-adjacent pins, dead drain bookkeeping | LOW/INFO | Open — v1.28.84 |
+| R5-01/R5-02 | CSP `/app` over-match; `no_sql` needle evadable (wording) | LOW | Open — v1.28.84 |
+| S5-01–S5-04 | Host superset wording, second merge seam unproven, secret-dir modes, ack wording | LOW/INFO | Open — v1.28.84 / fork lane |
+| K5-01/04/05 | Fork 111-behind (velocity, merge-tree clean); LAN-bind note; npm provenance open | INFO/OPEN | Fork lane |
+| L5-01–L5-07 | Map misses CO HB26-1263 + IL SB315 + federal 48h takedown clock; CT/FL/WA precision; single-forget Art 17 directive | LOW-MED | Open — v1.28.84 "Quarterly" |
+
+Mode B: all six closures' pins revert-tested behavioral (not vacuous);
+weld/approval/provenance/egress/twokeys attacks all failed (HELD).
+Parity rebuilt (plugin 0.6.7 byte-clean; typebox 4-way aligned).
+Regulatory: L4-01 closed; US/EU core rows re-verified vs primary sources;
+component-vs-deployer split preserved. Gates: authz_matrix RED (7);
+fmt/client-fmt/badges green; drill green. **Main is red: fix A5-01 first.**
+
+---
+
+## 2026-09-12 — v1.28.83 "Recall" SHIPPED (fifth-pass fix release + untagged fourth-pass closures)
+
+Range `v1.28.82..v1.28.83` (15 commits: 9 fourth-pass closures never
+tagged + 6 fifth-pass fixes; fork lane `60fb64b6aea` in `~/Sites/openclaw`).
+Every fifth-pass finding CLOSED; full record with proof commits per bullet:
+`CHANGELOG.md §[1.28.83]` (complete 1.28.82→1.28.83 account, superseding the
+split "fifth-pass + carried closures" draft).
+
+| # | Disposition | Evidence |
+|---|---|---|
+| A5-01 (HIGH) | **Closed** — revoke writes unconditionally (`known:false` + warning advisory); the untagged `unknown_principal` refusal never shipped | `revoke_unknown_principal_revokes_with_warning` (fails on both old shapes); `authz_matrix` 22/22; live drill: `user:ghost` → 200+warning, padded → 400 `principal_malformed`, loopback → 200, agent token → 401 |
+| T5-01 | **Closed** — release-checklist no-slice law (full `cargo test` only) | checklist text; this release's gates all ran full invocations |
+| A5-02/A5-03/A5-04 | **Closed** — erasure audit row in-tx; feedback-residue delete; 500-cap + `scrubbed_count`; exactness documented + Art 17 directive | `forget_erasure_is_audited_bounded_and_counted`; live: `retained_truncated:false`, `scrubbed_count:0` shape observed |
+| A5-05/A5-06 | **Closed** — pre-probe input gate; `wedged_delegations` surfaced | `revoke_malformed_principal_refused_loud`; core wedge assertion; live `wedged_delegations:[]` |
+| A5-07/A5-11 | **Closed** — transfers loud warn; drain dead code out | code + existing suites green |
+| A5-08/R5-01/R5-02/S5-03 | **Closed** — threshold boot refusal; `is_client_path`; both-side needles + honest scope; installer 0700 dirs | new pins green; live: `/apple` → API_CSP, `/app/` → CLIENT_CSP |
+| A5-09/A5-10 | **Closed** — multi-get source convergence; builder-driven origin pin; poison arms behavioral; meta-pin reworked | `multi_get_carries_seam_shaped_source` + 3 in-src behavioral pins |
+| L5-01–L5-07 | **Closed** — map rows (TAKE IT DOWN, HB26-1263, SB315 primary-verified 2026-09-12; CT/FL/WA precision) + Art 17 directive | primary-source URLs in the verification transcript |
+| S5-01/S5-02 (fork) | **Closed** — turn-prepare bypass fixed + 5-test lane (4 fail reverted); superset contract | fork `60fb64b6aea`; vitest lanes green |
+| K5-02 | **Closed** (typebox 1.3.26 four-way) | grep-verified |
+| K5-01/K5-04/K5-05 | **Accepted open** — upstream velocity (rebase is mechanical per survival table); LAN-bind note; npm provenance unchecked | disclosed, owned |
+
+Gates at ship: `cargo test --features bench,migrate` **1,537 passed / 0
+failed** (1,526 at .82 + 11: 5 fourth-pass cargo pins + 7 session pins −1
+removed seam-identity pin; reconciled per-target against a tag worktree);
+`authz_matrix` 22/22; clippy bench + default `-D warnings` clean (the
+default lane caught a `type_complexity` on the new forget 4-tuple —
+fixed via named alias before ship); fmt (server+client) clean;
+comment-hygiene guard green (8 new src comments de-labeled);
+`badges.sh --selfcheck` clean; SBOM `sbom/brain-server-1.28.83.cdx.json`
+committed; CRATE_TEST_FLOOR 1,381 → 1,418 (stale since .77, honest
+catch-up); live drill on the release build all legs green; `diff -rq
+plugin/src` ↔ fork extension clean. Lipstyk + otel/engine-crates/
+steward lanes: see release checklist (run before push per AGENTS.md).
+NOT tagged/pushed here — `scripts/release.sh` (CI watch, fail-closed) is
+the operator's step.
