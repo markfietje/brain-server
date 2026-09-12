@@ -192,6 +192,136 @@ function stripSentinels(s: string): string {
 export const INVISIBLE_CLASSES =
   /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}\uFE00-\uFE0F\u061C\u2060-\u2063\u00AD\u034F\u180E\u115F\u1160\uFFF9-\uFFFB]/gu;
 
+/**
+ * R-01 (v1.28.85 + remainder): the hostile-ELEMENT mirror of the server
+ * read seam (`src/gate.rs` `strip_hostile_elements`). Closed 26-name base
+ * set pinned by `plugin/fixtures/hostile-elements.json` v1 (the vitest
+ * lane below fails if the two drift), plus the code-side 30-name
+ * MathML-children appendix (documented v1 delta until the fixture takes
+ * its deliberate v2 bump — the fork tree cannot take it yet either).
+ *
+ * Two modes, mirroring the server exactly: TAG (tags die, inner prose
+ * survives) for the base 24 + all children; OPAQUE (tag + inner content
+ * vanish, same-name nesting counted, unterminated opener drops the tail)
+ * for `math`/`style`. Runs to a bounded fixpoint like the server
+ * (`FIXPOINT_PASSES` there; `STRIP_FIXPOINT_PASSES` here) so healed
+ * same-name forms (`<scr<script>ipt>`) die on a later pass.
+ */
+export const HOSTILE_ELEMENTS: ReadonlySet<string> = new Set([
+  "script", "img", "iframe", "svg", "object", "embed", "link", "meta", "form", "input",
+  "video", "audio", "source", "track", "base", "math", "style", "details", "body",
+  "button", "select", "marquee", "dialog", "animate", "picture", "noscript",
+]);
+
+export const MATHML_CHILDREN: ReadonlySet<string> = new Set([
+  "mi", "mo", "mn", "mtext", "mspace", "mrow", "mfrac", "msqrt", "mroot",
+  "mtable", "mtr", "mtd", "msub", "msup", "msubsup", "munder", "mover",
+  "munderover", "mmultiscripts", "maction", "menclose", "mfenced", "mpadded",
+  "mphantom", "merror", "mstyle", "mlabeledtr", "semantics", "annotation",
+  "annotation-xml",
+]);
+
+const OPAQUE_ELEMENTS: ReadonlySet<string> = new Set(["math", "style"]);
+
+const STRIP_FIXPOINT_PASSES = 10;
+
+function isHostileElement(name: string): boolean {
+  return HOSTILE_ELEMENTS.has(name) || MATHML_CHILDREN.has(name);
+}
+
+function readTagName(s: string, from: number): { name: string; end: number } {
+  let k = from;
+  while (k < s.length && /[A-Za-z0-9]/.test(s[k] ?? "")) k++;
+  return { name: s.slice(from, k).toLowerCase(), end: k };
+}
+
+function isSelfCloser(s: string, nameEnd: number, gt: number): boolean {
+  for (let q = gt - 1; q >= nameEnd; q--) {
+    const c = s[q];
+    if (c === " " || c === "\t" || c === "\n" || c === "\r") continue;
+    return c === "/";
+  }
+  return false;
+}
+
+/** Opaque-skip mirror of the server `skip_opaque`: resume index past the
+ * matching closer, or `s.length` (drop the tail) when unterminated. */
+function skipOpaque(s: string, from: number, target: string): number {
+  let depth = 1;
+  let j = from;
+  while (j < s.length) {
+    if (s[j] !== "<") {
+      j++;
+      continue;
+    }
+    const closing = s[j + 1] === "/";
+    const ns = closing ? j + 2 : j + 1;
+    if (!/[A-Za-z]/.test(s[ns] ?? "")) {
+      j++;
+      continue;
+    }
+    const { name, end } = readTagName(s, ns);
+    if (name !== target) {
+      j++;
+      continue;
+    }
+    const gt = s.indexOf(">", end);
+    if (gt === -1) return s.length;
+    if (closing) {
+      depth--;
+      if (depth === 0) return gt + 1;
+    } else if (!isSelfCloser(s, end, gt)) {
+      depth++;
+    }
+    j = gt + 1;
+  }
+  return s.length;
+}
+
+export function stripHostileElementsOnce(s: string): string {
+  let out = "";
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] !== "<") {
+      out += s[i];
+      i++;
+      continue;
+    }
+    const closing = s[i + 1] === "/";
+    const nameStart = closing ? i + 2 : i + 1;
+    if (!/[A-Za-z]/.test(s[nameStart] ?? "")) {
+      out += "<";
+      i++;
+      continue;
+    }
+    const { name, end } = readTagName(s, nameStart);
+    if (!isHostileElement(name)) {
+      out += "<";
+      i++;
+      continue;
+    }
+    const gt = s.indexOf(">", end);
+    if (gt === -1) break; // unterminated tag drops the tail
+    if (OPAQUE_ELEMENTS.has(name) && !closing && !isSelfCloser(s, end, gt)) {
+      i = skipOpaque(s, gt + 1, name);
+      continue;
+    }
+    i = gt + 1;
+  }
+  return out;
+}
+
+export function stripHostileElements(s: string): string {
+  let cur = s;
+  for (let pass = 0; pass < STRIP_FIXPOINT_PASSES; pass++) {
+    const next = stripHostileElementsOnce(cur);
+    if (next === cur) return next;
+    cur = next;
+  }
+  // Fixpoint bound fails closed: no `<` → no tags.
+  return cur.replace(/</g, "");
+}
+
 export function sanitizeForBlock(text: string): string {
   // Ordering is the unforgeability argument (see stripSentinels): every step
   // that can synthesize a marker (invisible-strip, whitespace collapse,

@@ -119,6 +119,164 @@ pub(crate) fn strip_invisible_counted(input: &str) -> (String, usize) {
     (out, removed)
 }
 
+/// R-01 (v1.28.85 + remainder): the hostile-ELEMENT vendored mirror of the
+/// server read seam (`src/gate.rs` `strip_hostile_elements`). The wasm
+/// bundle cannot link the server crate, so the 26-name base set + the
+/// 30-name MathML-children appendix + the math/style opaque mode are
+/// mirrored by hand and kept in lockstep in the same change. The pins in
+/// `hostile_elements_fixture_parity` below are the client-side drift
+/// alarm: the base 26 must equal `plugin/fixtures/hostile-elements.json`
+/// v1 exactly, and every appendix child must strip.
+/// Pure + idempotent; the raw bytes are never rewritten at rest.
+const VENDORED_HOSTILE_ELEMENTS: [&str; 26] = [
+    "script", "img", "iframe", "svg", "object", "embed", "link", "meta", "form", "input",
+    "video", "audio", "source", "track", "base", "math", "style", "details", "body",
+    "button", "select", "marquee", "dialog", "animate", "picture", "noscript",
+];
+
+const VENDORED_MATHML_CHILDREN: [&str; 30] = [
+    "mi", "mo", "mn", "mtext", "mspace", "mrow", "mfrac", "msqrt", "mroot",
+    "mtable", "mtr", "mtd", "msub", "msup", "msubsup", "munder", "mover",
+    "munderover", "mmultiscripts", "maction", "menclose", "mfenced", "mpadded",
+    "mphantom", "merror", "mstyle", "mlabeledtr", "semantics", "annotation",
+    "annotation-xml",
+];
+
+/// Opaque-skip mirror of the server `skip_opaque`: resume index past the
+/// matching closer, or `len` (drop the tail) when unterminated.
+fn vendored_skip_opaque(bytes: &[u8], from: usize, target: &str) -> usize {
+    let mut depth = 1usize;
+    let mut j = from;
+    while j < bytes.len() {
+        if bytes[j] != b'<' {
+            j += 1;
+            continue;
+        }
+        let closing = bytes.get(j + 1) == Some(&b'/');
+        let ns = if closing { j + 2 } else { j + 1 };
+        if !bytes.get(ns).is_some_and(|c| c.is_ascii_alphabetic()) {
+            j += 1;
+            continue;
+        }
+        let mut k = ns;
+        while k < bytes.len() && bytes[k].is_ascii_alphanumeric() {
+            k += 1;
+        }
+        if String::from_utf8_lossy(&bytes[ns..k]).to_ascii_lowercase() != target {
+            j += 1;
+            continue;
+        }
+        let gt = bytes[k..]
+            .iter()
+            .position(|&b| b == b'>')
+            .map_or(bytes.len(), |rel| k + rel + 1);
+        if gt >= bytes.len() {
+            return bytes.len();
+        }
+        if closing {
+            depth -= 1;
+            if depth == 0 {
+                return gt;
+            }
+        } else {
+            let self_closing = bytes
+                .get(ns..gt.saturating_sub(1))
+                .and_then(|tail| {
+                    tail.iter().rev().find_map(|b| {
+                        if b.is_ascii_whitespace() {
+                            None
+                        } else {
+                            Some(*b == b'/')
+                        }
+                    })
+                })
+                .unwrap_or(false);
+            if !self_closing {
+                depth += 1;
+            }
+        }
+        j = gt;
+    }
+    bytes.len()
+}
+
+pub(crate) fn strip_hostile_elements(input: &str) -> String {
+    fn is_hostile(name: &str) -> bool {
+        VENDORED_HOSTILE_ELEMENTS.contains(&name) || VENDORED_MATHML_CHILDREN.contains(&name)
+    }
+    // Bounded fixpoint like the server: healed same-name forms die on a
+    // later pass; the bound fails closed by dropping remaining `<` bytes.
+    let mut cur = input.to_string();
+    for _ in 0..10 {
+        let next = strip_hostile_elements_once(&cur, is_hostile);
+        if next == cur {
+            return next;
+        }
+        cur = next;
+    }
+    cur.chars().filter(|c| *c != '<').collect()
+}
+
+fn strip_hostile_elements_once(s: &str, is_hostile: fn(&str) -> bool) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'<' {
+            let ch = s[i..].chars().next().unwrap_or('<');
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        let after_open = i + 1;
+        let name_start = match bytes.get(after_open) {
+            Some(b'/') => i + 2,
+            Some(c) if c.is_ascii_alphabetic() => i + 1,
+            _ => {
+                out.push('<');
+                i += 1;
+                continue;
+            }
+        };
+        let mut k = name_start;
+        while k < bytes.len() && bytes[k].is_ascii_alphanumeric() {
+            k += 1;
+        }
+        let name = String::from_utf8_lossy(&bytes[name_start..k]).to_ascii_lowercase();
+        if name.is_empty() || !is_hostile(&name) {
+            out.push('<');
+            i += 1;
+            continue;
+        }
+        let gt = bytes[k..]
+            .iter()
+            .position(|&b| b == b'>')
+            .map_or(bytes.len(), |rel| k + rel + 1);
+        let is_closing = bytes.get(after_open) == Some(&b'/');
+        if (name.as_str() == "math" || name.as_str() == "style") && !is_closing && gt < bytes.len()
+        {
+            let self_closing = bytes
+                .get(name_start..gt.saturating_sub(1))
+                .and_then(|tail| {
+                    tail.iter().rev().find_map(|b| {
+                        if b.is_ascii_whitespace() {
+                            None
+                        } else {
+                            Some(*b == b'/')
+                        }
+                    })
+                })
+                .unwrap_or(false);
+            if !self_closing {
+                i = vendored_skip_opaque(bytes, gt, &name);
+                continue;
+            }
+        }
+        i = gt;
+    }
+    out
+}
+
 /// True for a char that renders invisibly and is used to smuggle
 /// instruction/exfiltration bytes or defeat substring matching.
 fn is_invisible(c: char) -> bool {
@@ -2799,5 +2957,74 @@ mod tests {
             let c = char::from_u32(cp).expect("scalar");
             assert!(!is_invisible(c), "U+{cp:04X} must stay visible");
         }
+    }
+
+    /// R-01 (v1.28.85 + remainder): the four-tree hostile-elements drift
+    /// alarm, CLIENT lane. The vendored `strip_hostile_elements` above is a
+    /// hand mirror of the server seam — this pin holds it to the SAME
+    /// fixture the server proves (src/gate.rs) and the plugin probes
+    /// (plugin/src/format.test.ts): base 26 equal exactly, every listed
+    /// tag strips, math/style strip opaque, every appendix child strips
+    /// as a tag with prose surviving.
+    #[test]
+    fn hostile_elements_fixture_parity() {
+        let fixture: serde_json::Value =
+            serde_json::from_str(include_str!("../../plugin/fixtures/hostile-elements.json"))
+                .expect("fixture parses");
+        assert_eq!(fixture["version"], 1, "fixture version drift");
+        let elements = fixture["elements"].as_array().expect("elements");
+        assert_eq!(
+            elements.len(),
+            VENDORED_HOSTILE_ELEMENTS.len(),
+            "fixture/vendored base-set length drift: change both together"
+        );
+        for el in elements {
+            let name = el["name"].as_str().expect("element name");
+            assert!(
+                VENDORED_HOSTILE_ELEMENTS.contains(&name),
+                "fixture <{name}> is not in the vendored base set"
+            );
+            assert!(
+                el["reason"].as_str().is_some_and(|r| !r.is_empty()),
+                "<{name}> needs a documented why-hostile reason"
+            );
+            for probe in [
+                format!("before <{name} src=x onerror=\"alert(1)\">inner</{name}> after"),
+                format!("a </{name}> b"),
+                format!("<{}>x</{}>", name.to_uppercase(), name.to_uppercase()),
+            ] {
+                let out = strip_hostile_elements(&probe).to_ascii_lowercase();
+                assert!(
+                    !out.contains(&format!("<{name}")) && !out.contains(&format!("</{name}")),
+                    "vendored <{name}> must strip: {probe:?} -> {out:?}"
+                );
+                assert!(
+                    !out.contains("onerror"),
+                    "handler must die with vendored <{name}>: {out:?}"
+                );
+                if name == "math" || name == "style" {
+                    assert!(
+                        !out.contains("inner"),
+                        "vendored opaque <{name}> must swallow content: {out:?}"
+                    );
+                }
+            }
+        }
+        // The documented v1-delta appendix + mode pins.
+        assert_eq!(VENDORED_MATHML_CHILDREN.len(), 30, "appendix length drift");
+        for name in VENDORED_MATHML_CHILDREN {
+            let out = strip_hostile_elements(&format!("<{name}>x</{name}>"));
+            assert!(
+                !out.to_ascii_lowercase().contains(&format!("<{name}")),
+                "vendored appendix <{name}> must strip"
+            );
+        }
+        assert_eq!(strip_hostile_elements("<math><mi>x</mi></math>"), "");
+        assert_eq!(
+            strip_hostile_elements("<style>@import url(https://evil/x.css)</style>"),
+            ""
+        );
+        assert_eq!(strip_hostile_elements("<mi>x</mi>"), "x");
+        assert_eq!(strip_hostile_elements("a<mfrac><mn>1</mn></mfrac>b"), "a1b");
     }
 }

@@ -368,20 +368,29 @@ pub use crate::fence::strip_markdown_refs;
 
 /// Strip a CLOSED set of hostile element names from emitted text — not all
 /// tags: prose angle-brackets ("x < y", "<3", "a<b>c") must survive. The set
-/// is the fetch/script/embed class: the elements that execute or auto-fetch
-/// by their mere presence (script/img/iframe/svg/object/embed/link/meta/
-/// form/input/video/audio/source/track/base). Case-insensitive;
-/// attribute-greedy to the matching `>`; both the opening form and the
-/// closing form (`</script>`) are stripped, leaving any inner content as
-/// inert prose. Deterministic, zero deps — a closed name-set, NOT an HTML
-/// parser (markup the system never intentionally stores does not justify a
-/// parser dependency). Read-seam ONLY: storage stays verbatim.
+/// is the fetch/script/embed/interactive class: the elements that execute,
+/// auto-fetch, fire handlers without user action, or spoof page chrome by
+/// their mere presence (script/img/iframe/svg/object/embed/link/meta/
+/// form/input/video/audio/source/track/base/math/style/details/body/button/
+/// select/marquee/dialog/animate/picture/noscript — the set extension closes the gap).
+/// Case-insensitive; attribute-greedy to the matching `>`; both the opening
+/// form and the closing form (`</script>`) are stripped, leaving any inner
+/// content as inert prose. Deterministic, zero deps — a closed name-set,
+/// NOT an HTML parser (markup the system never intentionally stores does not
+/// justify a parser dependency). Read-seam ONLY: storage stays verbatim.
+///
+/// The list above names the members; per-name why-hostile rationale lives
+/// with the set itself (`strip_hostile_elements_once`), and the lane-1
+/// fixture test pins both to `plugin/fixtures/hostile-elements.json` v1.
 ///
 /// ponytail ceiling, stated honestly: this is a NAME-set, not an attribute
 /// sanitizer — `on*=` handler attributes and `javascript:` hrefs on elements
-/// OUTSIDE the set (a/details/marquee/body…) survive, so a downstream HTML
-/// consumer still needs its own CSP. The KB surface ships `default-src
+/// OUTSIDE the set (a/table/font/option…) survive, so a downstream
+/// HTML consumer still needs its own CSP. The KB surface ships `default-src
 /// 'none'`; arbitrary third-party renderers are the consumer's contract.
+/// The set is pinned by `plugin/fixtures/hostile-elements.json` v1 —
+/// changing the set without the fixture fails the lane-1 test, and vice
+/// versa (no silent expansion in either direction).
 ///
 /// The strip runs to its FIXED POINT (bounded): a single pass heals nested
 /// forms — `<scr<script>ipt>` re-emits `<scr` + the post-strip tail and
@@ -396,11 +405,175 @@ pub(crate) fn strip_hostile_elements(s: &str) -> String {
     })
 }
 
+/// The closed 26-name set, pinned by
+/// `plugin/fixtures/hostile-elements.json` v1 (lane 1 test
+/// `hostile_elements_fixture_pins_server_set` fails if the two drift in
+/// EITHER direction — the set and the fixture change together, never one
+/// without the other). Why-hostile per name: script (executes JS by mere
+/// presence); img/video/audio/source/track (auto-fetch + handler hosts;
+/// source covers BOTH media and picture contexts, no safe-context
+/// exception); iframe (foreign browsing context); svg/animate (scriptable
+/// hosts; SMIL onbegin/onrepeat/onend fire without script, standalone AND
+/// nested); object/embed (plugin execution contexts); link/meta
+/// (stylesheet prefetch, @import, http-equiv refresh, CSP meddling);
+/// form/input/button/select (credential harvest, formaction=javascript:
+/// override, event-handler spoof controls); math (MathML href/xlink remote
+/// load, scriptable subtree); style (@import fetch + selector/property
+/// exfiltration); details (ontoggle fires on render); body (page-level
+/// handler smuggling into fragment consumers); marquee (behavior +
+/// onstart/onfinish handlers); dialog (showModal page-spoof phishing);
+/// picture (art-direction wrapper auto-fetching attacker srcsets);
+/// noscript — DECIDED include: the JS/no-JS differential itself is a
+/// phishing cloak, and it wraps link/style payloads (inner content still
+/// survives as inert prose like every other set member).
+pub(crate) const HOSTILE_ELEMENTS: [&str; 26] = [
+    "script", "img", "iframe", "svg", "object", "embed", "link", "meta", "form", "input", "video",
+    "audio", "source", "track", "base", "math", "style", "details", "body", "button", "select",
+    "marquee", "dialog", "animate", "picture", "noscript",
+];
+
+/// Strip MODE per element (remainder addendum). Two modes, no third:
+///
+/// * OPAQUE (tag + inner content vanish): `math`, `style`. A MathML
+///   subtree is scriptable and remote-loads via href/xlink, and a
+///   stylesheet's inner text IS the payload (@import fetch, selector/
+///   property exfiltration) — leaving it as "prose" would ship the
+///   attack. So the opener swallows to its matching closer (same-name
+///   nesting counted; `<math/>`/`<style/>` self-closers swallow nothing;
+///   an unterminated opener drops the tail, the same fail-closed rule as
+///   a cut mid-tag). A lone closer (`</math>`) strips as one tag and
+///   swallows nothing — there is no content to own.
+/// * TAG (tags die, inner prose survives as inert text): the other 24
+///   base names + every `MATHML_CHILDREN` name below. Audit of the 11
+///   New-set additions: details/body/button/select/marquee/dialog/
+///   animate/picture/noscript carry no network-active inner language —
+///   once the tags (and their handler/javascript: attributes, which die
+///   WITH the tag) are gone, the remainder is inert prose or UI text.
+///   Nested hostile tags inside die in the same pass (the scanner visits
+///   every `<`), same-name healed forms (`<scr<script>ipt>`) via the
+///   fixpoint.
+///
+/// `MATHML_CHILDREN` is defense in depth for the opaque pair: even if a
+/// future edit bypasses the outer opaque-strip, the MathML-namespace
+/// children strip as tags, so a nested/split `<mi>`/`<mo>`/… smuggle
+/// cannot re-arm. Code-side appendix to the fixture-pinned 26-set:
+/// `plugin/fixtures/hostile-elements.json` v1 stays read-only at 26, so
+/// the lane-1 test pins `fixture == HOSTILE_ELEMENTS` exactly AND pins
+/// this appendix as the documented delta (any OTHER drift fails) until
+/// the fixture takes its deliberate v2 bump.
+/// (`annotation-xml` matches via its `annotation` prefix — the name scan
+/// stops at `-`, and the greedy-to-`>` strip takes the whole tag.)
+pub(crate) const MATHML_CHILDREN: [&str; 30] = [
+    "mi",
+    "mo",
+    "mn",
+    "mtext",
+    "mspace",
+    "mrow",
+    "mfrac",
+    "msqrt",
+    "mroot",
+    "mtable",
+    "mtr",
+    "mtd",
+    "msub",
+    "msup",
+    "msubsup",
+    "munder",
+    "mover",
+    "munderover",
+    "mmultiscripts",
+    "maction",
+    "menclose",
+    "mfenced",
+    "mpadded",
+    "mphantom",
+    "merror",
+    "mstyle",
+    "mlabeledtr",
+    "semantics",
+    "annotation",
+    "annotation-xml",
+];
+
+/// The opaque-strip pair — the only names whose inner content is removed.
+/// Everything else hostile tag-strips. Closed: adding a name here is a
+/// reviewed set change (the mode test pins the pair).
+pub(crate) const OPAQUE_ELEMENTS: [&str; 2] = ["math", "style"];
+
+/// True when `name` (already lowercased) strips in either mode.
+fn is_hostile_element(name: &str) -> bool {
+    HOSTILE_ELEMENTS.contains(&name) || MATHML_CHILDREN.contains(&name)
+}
+
+/// Opaque-skip for `math`/`style`: from `from` (just past the opener's
+/// `>`), swallow to the matching `</target>`, counting same-name nesting
+/// (`<math>` inside `<math>` must not end the skip early). Matching is
+/// ASCII case-insensitive; only `<`+name candidates are examined, all
+/// other bytes are skipped blind. Returns the resume index: just past the
+/// final closer's `>`, or `bytes.len()` (drop the tail) when no closer
+/// exists — an unterminated opaque opener must not leak its content.
+fn skip_opaque(bytes: &[u8], from: usize, target: &str) -> usize {
+    let mut depth = 1usize;
+    let mut j = from;
+    while j < bytes.len() {
+        if bytes[j] != b'<' {
+            j += 1;
+            continue;
+        }
+        let closing = bytes.get(j + 1) == Some(&b'/');
+        let ns = if closing { j + 2 } else { j + 1 };
+        let is_alpha = bytes.get(ns).is_some_and(|c| c.is_ascii_alphabetic());
+        if !is_alpha {
+            j += 1;
+            continue;
+        }
+        let mut k = ns;
+        while k < bytes.len() && bytes[k].is_ascii_alphanumeric() {
+            k += 1;
+        }
+        let nm = String::from_utf8_lossy(&bytes[ns..k]).to_ascii_lowercase();
+        if nm != target {
+            j += 1;
+            continue;
+        }
+        // The candidate's `>` (attributes greedy); unterminated → drop tail.
+        let gt = bytes[k..]
+            .iter()
+            .position(|&b| b == b'>')
+            .map_or(bytes.len(), |rel| k + rel + 1);
+        if gt >= bytes.len() {
+            return bytes.len();
+        }
+        if closing {
+            depth -= 1;
+            if depth == 0 {
+                return gt;
+            }
+        } else {
+            // A nested self-closer (`<math/>`) opens nothing.
+            let self_closing = bytes
+                .get(ns..gt.saturating_sub(1))
+                .and_then(|tail| {
+                    tail.iter().rev().find_map(|b| {
+                        if b.is_ascii_whitespace() {
+                            None
+                        } else {
+                            Some(*b == b'/')
+                        }
+                    })
+                })
+                .unwrap_or(false);
+            if !self_closing {
+                depth += 1;
+            }
+        }
+        j = gt;
+    }
+    bytes.len()
+}
+
 fn strip_hostile_elements_once(s: &str) -> String {
-    const ELEMENTS: [&str; 15] = [
-        "script", "img", "iframe", "svg", "object", "embed", "link", "meta", "form", "input",
-        "video", "audio", "source", "track", "base",
-    ];
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
     let mut i = 0usize;
@@ -431,15 +604,40 @@ fn strip_hostile_elements_once(s: &str) -> String {
             .take_while(|b| b.is_ascii_alphanumeric())
             .collect();
         let name = String::from_utf8_lossy(&name_bytes).to_ascii_lowercase();
-        if ELEMENTS.contains(&name.as_str()) {
+        if is_hostile_element(&name) {
             // Greedy to the matching `>` (the attribute class this strip
             // exists for carries spaces, quotes, and `=`). An unterminated
             // tag drops the tail: a stored fragment cut mid-tag must not
             // emit a live open tag either.
-            i = bytes[name_start..]
+            let gt = bytes[name_start..]
                 .iter()
                 .position(|&b| b == b'>')
                 .map_or(bytes.len(), |gt_rel| name_start + gt_rel + 1);
+            let is_closing = bytes.get(after_open) == Some(&b'/');
+            // Opaque mode (math/style openers only): swallow to the
+            // matching closer so inner content never survives as text.
+            // Self-closers (`<math/>`, `<math />`) own no content.
+            if OPAQUE_ELEMENTS.contains(&name.as_str()) && !is_closing && gt < bytes.len() {
+                // Self-closers (`<math/>`, `<math />`) own no content:
+                // the last non-blank byte before `>` decides.
+                let self_closing = bytes
+                    .get(name_start..gt.saturating_sub(1))
+                    .and_then(|tail| {
+                        tail.iter().rev().find_map(|b| {
+                            if b.is_ascii_whitespace() {
+                                None
+                            } else {
+                                Some(*b == b'/')
+                            }
+                        })
+                    })
+                    .unwrap_or(false);
+                if !self_closing {
+                    i = skip_opaque(bytes, gt, &name);
+                    continue;
+                }
+            }
+            i = gt;
         } else {
             out.push('<');
             i += 1;
@@ -1055,14 +1253,17 @@ mod tests {
 
     /// The read seam strips every member of the closed element-name set —
     /// opening and closing forms, attributes greedy to the matching `>`.
+    /// Opaque members (math/style) swallow inner content, so their
+    /// attribute probe is closed; an UNCLOSED opaque opener drops the tail
+    /// (fail-closed, pinned by `hostile_opaque_and_children_modes`).
     #[test]
     fn hostile_elements_stripped_table() {
-        let elements = [
-            "script", "img", "iframe", "svg", "object", "embed", "link", "meta", "form", "input",
-            "video", "audio", "source", "track", "base",
-        ];
-        for el in elements {
-            let hostile = format!("before <{el} src=x onerror=\"alert(1)\"> after");
+        for el in super::HOSTILE_ELEMENTS {
+            let hostile = if super::OPAQUE_ELEMENTS.contains(&el) {
+                format!("before <{el} src=x onerror=\"alert(1)\">inner</{el}> after")
+            } else {
+                format!("before <{el} src=x onerror=\"alert(1)\"> after")
+            };
             let out = sanitize_read(&hostile, false, &None);
             assert_eq!(
                 out, "before  after",
@@ -1173,5 +1374,215 @@ mod tests {
             sanitize_read_cow(clean, false, &None),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+
+    /// R-01 red (v1.28.85): the seam-attack survivors — every one of these
+    /// sailed through the 15-name set. Each must strip (tags gone; any
+    /// handler/javascript: payload dies WITH its tag, inner prose survives).
+    #[test]
+    fn hostile_elements_cover_math_style_details() {
+        // (input, forbidden-substrings): the substrings must be absent
+        // case-insensitively from the sanitized output.
+        let cases = [
+            (
+                "<math><mi>x</mi></math>",
+                ["<math", "</math", "<mi", "x</mi"].as_slice(),
+            ),
+            // R-01 remainder (v1.28.85r): opaque-strip + math-namespace
+            // children — nested/split smuggling must die even if the outer
+            // strip is bypassed, and style inner content must not survive
+            // as text.
+            (
+                "<math><mrow><mi>x</mi><mo>+</mo></mrow></math>",
+                ["<math", "</math", "<mi", "<mo", "<mrow"].as_slice(),
+            ),
+            (
+                "<MATH><MI>X</MI></MATH>",
+                ["<math", "</math", "<mi", ">x</mi", ">X</mi"].as_slice(),
+            ),
+            (
+                "<math><math><mi>nested</mi></math></math>",
+                ["<math", "</math", "<mi", "nested"].as_slice(),
+            ),
+            (
+                "<mi>x</mi><mo>+</mo><mn>1</mn>",
+                ["<mi", "<mo", "<mn", "</mi", "</mo", "</mn"].as_slice(),
+            ),
+            (
+                "<style>body{color:red}</style>",
+                ["<style", "</style", "color"].as_slice(),
+            ),
+            (
+                "<STYLE>@IMPORT url(https://evil/x.css)</STYLE>",
+                ["<style", "</style", "@import", "evil"].as_slice(),
+            ),
+            (
+                "<style>@import url(https://evil/x.css)",
+                ["<style", "@import", "evil"].as_slice(),
+            ),
+            ("<math>x", ["<math", "x"].as_slice()),
+            ("<math/>", ["<math"].as_slice()),
+            ("<style/>", ["<style"].as_slice()),
+            (
+                "<details ontoggle=\"alert(1)\">hidden</details>",
+                ["<details", "ontoggle", "</details>"].as_slice(),
+            ),
+            (
+                "<style>@import url(https://evil/x.css)</style>",
+                ["<style", "@import", "</style>"].as_slice(),
+            ),
+            (
+                "<body onload=\"alert(1)\">hi</body>",
+                ["<body", "onload", "</body>"].as_slice(),
+            ),
+            (
+                "<button formaction=\"javascript:alert(1)\">go</button>",
+                ["<button", "formaction", "javascript:", "</button>"].as_slice(),
+            ),
+            (
+                "<marquee behavior=slide>win</marquee>",
+                ["<marquee", "</marquee>"].as_slice(),
+            ),
+            (
+                "<dialog open>sign in</dialog>",
+                ["<dialog", "</dialog>"].as_slice(),
+            ),
+            (
+                "<svg><animate onbegin=\"alert(1)\"/></svg>",
+                ["<animate", "onbegin"].as_slice(),
+            ),
+            (
+                "<animate attributeName=x values=a;b dur=1s/>",
+                ["<animate"].as_slice(),
+            ),
+            (
+                "<picture><source srcset=\"https://evil/x.avif\"></picture>",
+                ["<picture", "<source", "srcset", "</picture>"].as_slice(),
+            ),
+            (
+                "<select onchange=\"alert(1)\"><option>a</select>",
+                ["<select", "onchange", "</select>"].as_slice(),
+            ),
+            (
+                "<noscript><link rel=stylesheet href=https://evil/x.css></noscript>",
+                ["<noscript", "<link", "</noscript>"].as_slice(),
+            ),
+        ];
+        for (hostile, forbidden) in cases {
+            let out = sanitize_read(hostile, false, &None);
+            let low = out.to_ascii_lowercase();
+            for f in forbidden {
+                assert!(
+                    !low.contains(f),
+                    "R-01 survivor {hostile:?} leaks {f:?}: {out:?}"
+                );
+            }
+        }
+    }
+
+    /// R-01 remainder (v1.28.85r): strip-MODE pins. Opaque elements (math,
+    /// style) remove tag + inner content entirely; math-namespace children
+    /// tag-strip, so their inner prose survives as inert text.
+    #[test]
+    fn hostile_opaque_and_children_modes() {
+        // Opaque: nothing of the subtree survives.
+        for hostile in [
+            "<math><mi>x</mi></math>",
+            "<math><mrow><mi>x</mi></mrow></math>",
+            "<style>@import url(https://evil/x.css)</style>",
+            "<style>body{color:red}</style>",
+            "<math>x",
+            "<style>@import url(https://evil/x.css)",
+            "<math/>",
+            "<style/>",
+        ] {
+            let out = sanitize_read(hostile, false, &None);
+            assert_eq!(out, "", "opaque element {hostile:?} must vanish: {out:?}");
+        }
+        // Children tag-strip: markup dies, inert prose survives.
+        assert_eq!(sanitize_read("<mi>x</mi>", false, &None), "x");
+        assert_eq!(sanitize_read("<mo>+</mo>", false, &None), "+");
+        assert_eq!(
+            sanitize_read("a<mfrac><mn>1</mn></mfrac>b", false, &None),
+            "a1b"
+        );
+        // A lone close tag strips without swallowing neighbours.
+        assert_eq!(sanitize_read("a</math>b", false, &None), "ab");
+        assert_eq!(sanitize_read("a</mi>b", false, &None), "ab");
+    }
+
+    /// R-01 lane 1 (v1.28.85 + remainder): the fixture pins the server
+    /// set. Every element in `plugin/fixtures/hostile-elements.json` v1
+    /// strips through `sanitize_read` (open, close, uppercase); the
+    /// fixture version and the set length pin silent expansion in EITHER
+    /// direction. Remainder delta (fixture is read-only at v1/26): the
+    /// code-side `MATHML_CHILDREN` appendix is pinned HERE as the single
+    /// documented delta — the base 26-set must equal the fixture EXACTLY,
+    /// and every appendix name must strip (open, close, uppercase) — so
+    /// any other drift in either direction still fails, until the fixture
+    /// takes its deliberate v2 bump.
+    #[test]
+    fn hostile_elements_fixture_pins_server_set() {
+        let raw = include_str!("../plugin/fixtures/hostile-elements.json");
+        let fixture: serde_json::Value =
+            serde_json::from_str(raw).expect("hostile-elements fixture parses");
+        assert_eq!(
+            fixture["version"], 1,
+            "fixture version drift: bump deliberately, with the set"
+        );
+        let elements = fixture["elements"].as_array().expect("elements array");
+        assert_eq!(
+            elements.len(),
+            super::HOSTILE_ELEMENTS.len(),
+            "fixture/server set length drift: change both together"
+        );
+        // Exact two-way pin on the base set: every fixture name IS a
+        // base-set member (no fixture-only freeloaders).
+        for el in elements {
+            let name = el["name"].as_str().expect("element name");
+            assert!(
+                super::HOSTILE_ELEMENTS.contains(&name),
+                "fixture element <{name}> is not in HOSTILE_ELEMENTS: change both together"
+            );
+        }
+        // The documented v1-delta appendix: every MathML child strips
+        // (open, close, uppercase) like a base member.
+        for name in super::MATHML_CHILDREN {
+            for probe in [
+                format!("before <{name}>x</{name}> after"),
+                format!("a </{name}> b"),
+                format!("<{}>y</{}>", name.to_uppercase(), name.to_uppercase()),
+            ] {
+                let out = sanitize_read(&probe, false, &None);
+                assert!(
+                    !out.to_ascii_lowercase().contains(&format!("<{name}"))
+                        && !out.to_ascii_lowercase().contains(&format!("</{name}")),
+                    "appendix child <{name}> must strip: {probe:?} -> {out:?}"
+                );
+            }
+        }
+        for el in elements {
+            let name = el["name"].as_str().expect("element name");
+            assert!(
+                el["reason"].as_str().is_some_and(|r| !r.is_empty()),
+                "{name} needs a documented why-hostile reason"
+            );
+            for probe in [
+                format!("before <{name} src=x onerror=\"alert(1)\"> after"),
+                format!("a </{name}> b"),
+                format!("<{}>", name.to_uppercase()),
+            ] {
+                let out = sanitize_read(&probe, false, &None);
+                assert!(
+                    !out.to_ascii_lowercase().contains(&format!("<{name}"))
+                        && !out.to_ascii_lowercase().contains(&format!("</{name}")),
+                    "fixture element <{name}> must strip: {probe:?} -> {out:?}"
+                );
+                assert!(
+                    !out.contains("onerror"),
+                    "handler attribute must die with <{name}>: {out:?}"
+                );
+            }
+        }
     }
 }

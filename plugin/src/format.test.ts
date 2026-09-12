@@ -1,8 +1,11 @@
 import { describe, expect, test } from "vitest";
 import type { BrainRecallHit } from "./brain-client.js";
 import fixture from "../fixtures/invisible-classes.json";
+import hostileFixture from "../fixtures/hostile-elements.json";
 import {
+  HOSTILE_ELEMENTS,
   INVISIBLE_CLASSES,
+  MATHML_CHILDREN,
   MEMORY_BANNER,
   RECALL_ABSTENTION,
   STATIC_SYSTEM_GUIDANCE,
@@ -15,6 +18,7 @@ import {
   normalizeRecallQuery,
   originLinePrefix,
   sanitizeForBlock,
+  stripHostileElements,
 } from "./format.js";
 
 // v1.20.28 "Fencepost": the default fixture sets `untrusted: true` so the
@@ -512,5 +516,73 @@ describe("invisible set fixture parity (four trees)", () => {
     for (const v of fixture["visible-samples"] as string[]) {
       expect(probe.test(String.fromCodePoint(expand(v))), `U+${v} must stay visible`).toBe(false);
     }
+  });
+});
+
+// ── R-01 (v1.28.85 + remainder): the hostile-elements drift alarm, plugin lane.
+// The fixture (fixtures/hostile-elements.json v1, 26 names) must equal the TS
+// base set exactly; every listed tag strips through stripHostileElements
+// (open, close, uppercase, hostile-attribute shapes); math/style strip OPAQUE
+// (inner content vanishes); every MathML child strips as a tag (inner prose
+// survives). The server lane (src/gate.rs hostile_elements_fixture_pins_
+// server_set) proves the same against the Rust truth, so one file pins the
+// plugin tree to the server. Remainder delta: the 30-name children appendix
+// is code-side (fixture read-only at v1) — pinned here + server-side until
+// the deliberate v2 bump.
+describe("hostile elements fixture parity (plugin lane)", () => {
+  test("fixture v1 pins the 26-name TS base set exactly", () => {
+    expect(hostileFixture.version).toBe(1);
+    const names = (hostileFixture.elements as Array<{ name: string; reason: string }>).map(
+      (e) => e.name,
+    );
+    expect(names).toHaveLength(26);
+    expect(names).toHaveLength(HOSTILE_ELEMENTS.size);
+    for (const e of hostileFixture.elements as Array<{ name: string; reason: string }>) {
+      expect(e.reason, `<${e.name}> needs a documented why-hostile reason`).not.toBe("");
+      expect(HOSTILE_ELEMENTS.has(e.name), `fixture <${e.name}> must be in HOSTILE_ELEMENTS`).toBe(
+        true,
+      );
+    }
+    for (const name of HOSTILE_ELEMENTS) {
+      expect(names, `TS <${name}> must be in the fixture`).toContain(name);
+    }
+  });
+
+  test("every fixture tag strips (open, close, uppercase, hostile attrs)", () => {
+    const names = (hostileFixture.elements as Array<{ name: string }>).map((e) => e.name);
+    for (const name of names) {
+      const opaque = name === "math" || name === "style";
+      for (const probe of [
+        `before <${name} src=x onerror="alert(1)">inner</${name}> after`,
+        `a </${name}> b`,
+        `<${name.toUpperCase()}>x</${name.toUpperCase()}>`,
+      ]) {
+        const out = stripHostileElements(probe).toLowerCase();
+        expect(out, `<${name}> must strip: ${probe}`).not.toContain(`<${name}`);
+        expect(out, `</${name}> must strip: ${probe}`).not.toContain(`</${name}>`);
+        expect(out, `handler must die with <${name}>: ${probe}`).not.toContain("onerror");
+        if (opaque) {
+          expect(out, `opaque <${name}> must swallow content: ${probe}`).not.toContain("inner");
+        }
+      }
+    }
+  });
+
+  test("opaque math/style swallow subtrees; children tag-strip, prose survives", () => {
+    expect(stripHostileElements("<math><mi>x</mi></math>")).toBe("");
+    expect(stripHostileElements("<math><mrow><mi>x</mi><mo>+</mo></mrow></math>")).toBe("");
+    expect(stripHostileElements("<MATH><MI>X</MI></MATH>")).toBe("");
+    expect(stripHostileElements("<style>@import url(https://evil/x.css)</style>")).toBe("");
+    expect(stripHostileElements("<style>body{color:red}</style>")).toBe("");
+    expect(stripHostileElements("<mi>x</mi>")).toBe("x");
+    expect(stripHostileElements("<mo>+</mo>")).toBe("+");
+    expect(stripHostileElements("a<mfrac><mn>1</mn></mfrac>b")).toBe("a1b");
+    for (const child of MATHML_CHILDREN) {
+      expect(
+        stripHostileElements(`<${child}>x</${child}>`).toLowerCase(),
+        `<${child}> must strip`,
+      ).not.toContain(`<${child}`);
+    }
+    expect(MATHML_CHILDREN.size).toBe(30);
   });
 });
