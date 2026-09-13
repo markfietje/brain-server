@@ -4,6 +4,22 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.8] — 2026-09-13
+
+**Hostile-element mirror release** — numbers the R-01 strip that shipped
+in-tree under v1.28.84/v1.28.85 without a plugin version (patch per the
+semver rule above: behavioral security fix):
+
+- `src/format.ts` mirrors the server read seam (`src/gate.rs`
+  `strip_hostile_elements`): the closed 26-name base set pinned by
+  `fixtures/hostile-elements.json` v1 plus the 30-name MathML-children
+  appendix; `math`/`style` opaque-strip (tag AND inner content), the rest
+  tag-strip; bounded fixpoint like the server. Prose angle-brackets
+  survive. Plugin vitest lane 61/61.
+- Synced byte-identical to the fork mirror (the v1.28.85 "SixthPass" G6-01
+  closure — that note labels this content "plugin 0.6.7"; the number is
+  cut here, and this entry is the correction of record).
+
 ## [0.6.7] — 2026-09-12
 
 **Typebox truth repair** — the dependency pin agrees with reality everywhere
