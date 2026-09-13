@@ -1,1 +1,77 @@
-{"comment":"Canonical hostile-element set — the read-seam element drift alarm (v1.28.85). Truth source: brain-server src/gate.rs HOSTILE_ELEMENTS. Consumers: (1) server Rust lib test (every listed tag through sanitize_read: opening, closing, uppercase, hostile-attribute shapes), (2) plugin vitest plugin/src/format.test.ts (every tag through stripHostileElements), (3) client cargo test client/src/main.rs (vendored mirror vs this file), (4) fork host fixture test via the parity-synced extension tree. Changing the server set without this file fails lane 1; changing any consumer without the server fails its lane. Version 1 pins the 26-name set that closes R-01.","elements":[{"name":"script","reason":"executes JavaScript by mere presence; script-src of every stored-XSS forge"},{"name":"img","reason":"auto-fetch on render plus onerror/onload handler host"},{"name":"iframe","reason":"embeds a foreign browsing context; clickjack/phish host"},{"name":"svg","reason":"scriptable vector host; onload fires without user action"},{"name":"object","reason":"plugin/external content embed with its own execution context"},{"name":"embed","reason":"plugin content embed; same class as object"},{"name":"link","reason":"stylesheet/script prefetch and @import host; exfiltration via URL"},{"name":"meta","reason":"http-equiv refresh redirect and charset/CSP manipulation"},{"name":"form","reason":"credential-harvesting action target; posts prose out of the seam"},{"name":"input","reason":"form field plus per-control formaction override"},{"name":"video","reason":"media auto-fetch host plus event-handler surface"},{"name":"audio","reason":"media auto-fetch host plus event-handler surface"},{"name":"source","reason":"src/srcset auto-fetch for media AND picture; no safe-context exception"},{"name":"track","reason":"loads remote cue files (VTT) that carry their own markup"},{"name":"base","reason":"hijacks every relative URL on the consuming page at once"},{"name":"math","reason":"MathML HTML-integration point; href/xlink attributes load remote content and the subtree is scriptable"},{"name":"style","reason":"@import fetch plus selector/property exfiltration (CSS data theft); inline handler-free yet network-active"},{"name":"details","reason":"ontoggle handler fires on open-attribute render with no click; disclosure-spoof control"},{"name":"body","reason":"global-handler host (onload/onerror/onhashchange); a second body smuggles page-level script into a fragment consumer"},{"name":"button","reason":"formaction/javascript: override plus form-submission hijack; clickable phishing control"},{"name":"select","reason":"event-handler host (onchange/onfocus) and form-spoof control; dropdown UI spoofing"},{"name":"marquee","reason":"behavior/start/stop scripting surface plus onstart/onfinish event handlers"},{"name":"dialog","reason":"showModal traps the user in a page-spoofed modal; browser-chrome phishing primitive"},{"name":"animate","reason":"SMIL onbegin/onrepeat/onend handlers, standalone AND inside svg; script without script"},{"name":"picture","reason":"art-direction wrapper whose source/srcset children auto-fetch attacker URLs"},{"name":"noscript","reason":"DECIDED include: conditional-render element enabling JS/no-JS differential rendering (phishing cloak); wraps link/style payloads that strip independently, but the differential itself is hostile. Inner content survives as inert prose like every other set member."}],"version":1}
+{
+  "comment": "Canonical hostile-element set — the read-seam element drift alarm (v1.28.85). Truth source: brain-server src/gate.rs HOSTILE_ELEMENTS. Consumers: (1) server Rust lib test (every listed tag through sanitize_read: opening, closing, uppercase, hostile-attribute shapes), (2) plugin vitest plugin/src/format.test.ts (every tag through stripHostileElements), (3) client cargo test client/src/main.rs (vendored mirror vs this file), (4) fork host fixture test via the parity-synced extension tree. Changing the server set without this file fails lane 1; changing any consumer without the server fails its lane. Version 1 pins the 26-name set that closes R-01.",
+  "elements": [
+    {
+      "name": "script",
+      "reason": "executes JavaScript by mere presence; script-src of every stored-XSS forge"
+    },
+    { "name": "img", "reason": "auto-fetch on render plus onerror/onload handler host" },
+    { "name": "iframe", "reason": "embeds a foreign browsing context; clickjack/phish host" },
+    { "name": "svg", "reason": "scriptable vector host; onload fires without user action" },
+    { "name": "object", "reason": "plugin/external content embed with its own execution context" },
+    { "name": "embed", "reason": "plugin content embed; same class as object" },
+    {
+      "name": "link",
+      "reason": "stylesheet/script prefetch and @import host; exfiltration via URL"
+    },
+    { "name": "meta", "reason": "http-equiv refresh redirect and charset/CSP manipulation" },
+    {
+      "name": "form",
+      "reason": "credential-harvesting action target; posts prose out of the seam"
+    },
+    { "name": "input", "reason": "form field plus per-control formaction override" },
+    { "name": "video", "reason": "media auto-fetch host plus event-handler surface" },
+    { "name": "audio", "reason": "media auto-fetch host plus event-handler surface" },
+    {
+      "name": "source",
+      "reason": "src/srcset auto-fetch for media AND picture; no safe-context exception"
+    },
+    { "name": "track", "reason": "loads remote cue files (VTT) that carry their own markup" },
+    { "name": "base", "reason": "hijacks every relative URL on the consuming page at once" },
+    {
+      "name": "math",
+      "reason": "MathML HTML-integration point; href/xlink attributes load remote content and the subtree is scriptable"
+    },
+    {
+      "name": "style",
+      "reason": "@import fetch plus selector/property exfiltration (CSS data theft); inline handler-free yet network-active"
+    },
+    {
+      "name": "details",
+      "reason": "ontoggle handler fires on open-attribute render with no click; disclosure-spoof control"
+    },
+    {
+      "name": "body",
+      "reason": "global-handler host (onload/onerror/onhashchange); a second body smuggles page-level script into a fragment consumer"
+    },
+    {
+      "name": "button",
+      "reason": "formaction/javascript: override plus form-submission hijack; clickable phishing control"
+    },
+    {
+      "name": "select",
+      "reason": "event-handler host (onchange/onfocus) and form-spoof control; dropdown UI spoofing"
+    },
+    {
+      "name": "marquee",
+      "reason": "behavior/start/stop scripting surface plus onstart/onfinish event handlers"
+    },
+    {
+      "name": "dialog",
+      "reason": "showModal traps the user in a page-spoofed modal; browser-chrome phishing primitive"
+    },
+    {
+      "name": "animate",
+      "reason": "SMIL onbegin/onrepeat/onend handlers, standalone AND inside svg; script without script"
+    },
+    {
+      "name": "picture",
+      "reason": "art-direction wrapper whose source/srcset children auto-fetch attacker URLs"
+    },
+    {
+      "name": "noscript",
+      "reason": "DECIDED include: conditional-render element enabling JS/no-JS differential rendering (phishing cloak); wraps link/style payloads that strip independently, but the differential itself is hostile. Inner content survives as inert prose like every other set member."
+    }
+  ],
+  "version": 1
+}
