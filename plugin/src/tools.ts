@@ -80,6 +80,19 @@ type SanitizedHit = {
   conflict?: boolean;
 };
 
+/** Deep per-field boundary for structured (unknown-typed) fields: every
+ * string leaf rides sanitizeForBlock; numbers/booleans/null ride unchanged. */
+function sanitizeUnknownLeaf(v: unknown): unknown {
+  if (typeof v === "string") return sanitizeForBlock(v);
+  if (Array.isArray(v)) return v.map(sanitizeUnknownLeaf);
+  if (v !== null && typeof v === "object") {
+    return Object.fromEntries(
+      Object.entries(v as Record<string, unknown>).map(([k, x]) => [k, sanitizeUnknownLeaf(x)]),
+    );
+  }
+  return v;
+}
+
 function sanitizeHit(h: BrainRecallHitLike): SanitizedHit {
   return {
     id: h.id,
@@ -91,8 +104,8 @@ function sanitizeHit(h: BrainRecallHitLike): SanitizedHit {
     // label channel must be too)
     ...(h.domain !== undefined ? { domain: sanitizeForBlock(h.domain) } : {}),
     ...(h.source !== undefined ? { source: sanitizeForBlock(h.source) } : {}),
-    ...(h.provenance !== undefined ? { provenance: sanitizeForBlock(h.provenance) } : {}),
-    ...(h.evidence !== undefined ? { evidence: sanitizeForBlock(h.evidence) } : {}),
+    ...(h.provenance !== undefined ? { provenance: sanitizeUnknownLeaf(h.provenance) } : {}),
+    ...(h.evidence !== undefined ? { evidence: sanitizeUnknownLeaf(h.evidence) } : {}),
     // v1.27.14 "Fencepost2" (F-01): `snippet` carries the same smuggling class
     // as title/content — run it through the shared block boundary too (it was
     // the one field the detail seam passed raw).
