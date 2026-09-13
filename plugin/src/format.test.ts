@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
-import type { BrainRecallHit } from "./brain-client.js";
-import fixture from "../fixtures/invisible-classes.json";
 import hostileFixture from "../fixtures/hostile-elements.json";
+import fixture from "../fixtures/invisible-classes.json";
+import type { BrainRecallHit } from "./brain-client.js";
 import {
   HOSTILE_ELEMENTS,
   INVISIBLE_CLASSES,
