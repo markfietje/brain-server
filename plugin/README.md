@@ -187,6 +187,7 @@ context tokens when set.
 | `test/team-bridge.test.ts`        | Integration: bridge gating + mirror flow (`fetch`)                                                    |
 | `src/*.test.ts`                   | Unit tests: config, gating, format, brain-client transport                                            |
 | `fixtures/invisible-classes.json` | Canonical invisible-Unicode classes (four-tree drift alarm; truth: brain-server `strip_invisible.rs`) |
+| `fixtures/hostile-elements.json`  | Closed 26-name hostile-element set + MathML-children appendix (v1; truth: brain-server `strip_hostile_elements`) |
 
 ## Testing
 
@@ -218,6 +219,14 @@ What the suite covers (brain-server-specific):
   counter-samples. The same fixture drives the brain-server Rust lane
   (exhaustive over all scalar values), the client lane, and the openclaw
   host lane — one file pins four trees.
+- **Hostile-element fixture parity (v0.6.8)** — `format.test.ts` consumes
+  `fixtures/hostile-elements.json` (the closed 26-name set + 30-name
+  MathML-children appendix, truth: brain-server `strip_hostile_elements`)
+  and asserts `stripHostileElements` strips every in-fixture element with
+  `math`/`style` opaque (tag + inner content) while prose
+  angle-brackets survive. Same four-lane shape as the invisible-set
+  fixture: server lane, plugin lane, client vendored strip, fork-host
+  lane.
 
 ## Team Bridge (v0.5.0) — put your agents on the dashboard
 
