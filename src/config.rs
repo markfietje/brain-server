@@ -1551,15 +1551,9 @@ mod tests {
             .lock()
             .unwrap_or_else(|p| p.into_inner());
         let prev = std::env::var(key).ok();
-        match v {
-            Some(val) => unsafe { std::env::set_var(key, val) },
-            None => unsafe { std::env::remove_var(key) },
-        }
+        set_or_remove_env(key, v.map(str::to_string));
         f();
-        match prev {
-            Some(val) => unsafe { std::env::set_var(key, val) },
-            None => unsafe { std::env::remove_var(key) },
-        }
+        set_or_remove_env(key, prev);
     }
 
     /// R-02 (v1.28.86): the re-auth cadence parses fail-closed — unset is
@@ -1682,17 +1676,11 @@ mod tests {
             .map(|(k, _)| (*k, std::env::var(k).ok()))
             .collect();
         for (k, v) in vars {
-            match v {
-                Some(val) => unsafe { std::env::set_var(k, val) },
-                None => unsafe { std::env::remove_var(k) },
-            }
+            set_or_remove_env(k, (*v).map(str::to_string));
         }
         f();
         for (k, v) in prev {
-            match v {
-                Some(val) => unsafe { std::env::set_var(k, val) },
-                None => unsafe { std::env::remove_var(k) },
-            }
+            set_or_remove_env(k, v);
         }
     }
 

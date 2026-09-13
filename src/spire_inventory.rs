@@ -104,7 +104,15 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// re-measurement catches up honest; Recall's own bare additions are the
 /// threshold, origin, and registry-poison pins minus the deleted
 /// seam-identity pin.
-const CRATE_TEST_FLOOR: usize = 1_418;
+/// 1,418 → 1,448 at the Quarterly open (walk-measured): the
+/// sse_reauth kill/drain/admission trio, the webhook signing set
+/// (required-default, boot-refusal, loud-opt-out posture), the
+/// hostile-element completion set (opaque math/style, MathML
+/// fallbacks, fixture parity), the newer-schema open-refusal +
+/// rehearse-parity pair, the saturation-gauge pins, the
+/// revocation-statelessness pin, the singularity septet, and the
+/// error-taxonomy operator-safety set.
+const CRATE_TEST_FLOOR: usize = 1_448;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows (security.txt + the

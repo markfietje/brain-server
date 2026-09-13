@@ -129,16 +129,41 @@ pub(crate) fn strip_invisible_counted(input: &str) -> (String, usize) {
 /// v1 exactly, and every appendix child must strip.
 /// Pure + idempotent; the raw bytes are never rewritten at rest.
 const VENDORED_HOSTILE_ELEMENTS: [&str; 26] = [
-    "script", "img", "iframe", "svg", "object", "embed", "link", "meta", "form", "input",
-    "video", "audio", "source", "track", "base", "math", "style", "details", "body",
-    "button", "select", "marquee", "dialog", "animate", "picture", "noscript",
+    "script", "img", "iframe", "svg", "object", "embed", "link", "meta", "form", "input", "video",
+    "audio", "source", "track", "base", "math", "style", "details", "body", "button", "select",
+    "marquee", "dialog", "animate", "picture", "noscript",
 ];
 
 const VENDORED_MATHML_CHILDREN: [&str; 30] = [
-    "mi", "mo", "mn", "mtext", "mspace", "mrow", "mfrac", "msqrt", "mroot",
-    "mtable", "mtr", "mtd", "msub", "msup", "msubsup", "munder", "mover",
-    "munderover", "mmultiscripts", "maction", "menclose", "mfenced", "mpadded",
-    "mphantom", "merror", "mstyle", "mlabeledtr", "semantics", "annotation",
+    "mi",
+    "mo",
+    "mn",
+    "mtext",
+    "mspace",
+    "mrow",
+    "mfrac",
+    "msqrt",
+    "mroot",
+    "mtable",
+    "mtr",
+    "mtd",
+    "msub",
+    "msup",
+    "msubsup",
+    "munder",
+    "mover",
+    "munderover",
+    "mmultiscripts",
+    "maction",
+    "menclose",
+    "mfenced",
+    "mpadded",
+    "mphantom",
+    "merror",
+    "mstyle",
+    "mlabeledtr",
+    "semantics",
+    "annotation",
     "annotation-xml",
 ];
 

@@ -6,12 +6,12 @@ Governance is usually side work: nobody owns quality, access, or cleanup. This s
 
 <p align="center">
 
-[![Version](https://img.shields.io/badge/version-1.28.83-blue.svg)](#)
+[![Version](https://img.shields.io/badge/version-1.28.84-blue.svg)](#)
 [![Docs](https://img.shields.io/badge/docs-brain--server-1f6feb.svg)](https://markfietje.github.io/brain-server/)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg?logo=rust)](#)
 [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
 [![Cost](https://img.shields.io/badge/cost-%240%20per%20query-success.svg)](#)
-[![Tests](https://img.shields.io/badge/tests-1537%20passed-brightgreen.svg)](#)
+[![Tests](https://img.shields.io/badge/tests-1572%20passed-brightgreen.svg)](#)
 
 </p>
 
@@ -87,7 +87,7 @@ This is not a general-purpose memory layer for quick prototypes. It is for place
 ## Proof, not promises
 
 * UMP 1.0 L3, 13 of 13 reference-suite checks, derived from the CI `integration` conformance gate (asserted every push, not hand-claimed)
-* 1,523 tests passed — count not selfcheck-verified (`scripts/badges.sh --selfcheck` guards the disclaimer, not the number); authoritative count is the full `cargo test --features bench,migrate` run / CI `integration` job for the tagged commit. `cargo fmt` and `clippy -D warnings` clean
+* 1,572 tests passed — count not selfcheck-verified (`scripts/badges.sh --selfcheck` guards the disclaimer, not the number); authoritative count is the full `cargo test --features bench,migrate` run / CI `integration` job for the tagged commit. `cargo fmt` and `clippy -D warnings` clean
 * Append-only SHA-256 audit chain, `GET /audit/verify` to check it
 * Maps to ISO 42001, NIST AI RMF, SOC 2, GDPR. See `COMPLIANCE.md`
 

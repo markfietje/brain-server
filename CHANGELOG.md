@@ -37,6 +37,105 @@ P4-01 the same way. The headline now reads "gap ledger balanced
 `scripts/env-truth.sh` and `scripts/badges.sh --selfcheck` are the
 standing docs-as-tests gates (see `docs/release-checklist.md`).
 
+## [1.28.84] — 2026-09-13 — "Quarterly": security fix release
+
+Covers every commit from tag `v1.28.83` (`9f1180e`) to this release —
+`git log v1.28.83..v1.28.84` reproduces the range, and every bullet below
+names its proof commit. The fifth-pass audit's remediation track, plus the
+docs-truth pass. No schema; no routes; the `/ready` probe response changes
+shape (text/plain → JSON object, openapi updated in-commit — load-balancer
+probes reading the body must read `status` instead of the raw text);
+x-api-version unchanged.
+
+### Release notes
+
+**Security fixes**
+
+- **Revoked principals can no longer hold a live SSE stream (proof
+  `60c344c`).** Both SSE endpoints ran their authorization check once at
+  subscribe time — a principal revoked mid-stream kept receiving events
+  until the connection dropped. A single guarded pump loop (`sse_reauth`)
+  re-consults the revocation registry every `BRAIN_SSE_REAUTH_SECS`
+  (default 30; fail-closed on parse), kills the stream with a
+  `{revoked:true}` frame, and the reconnect gets 403. Setting `=0`
+  restores the old admission-only behavior, pinned. The default is ON —
+  operators who need the old cadence must opt out loudly.
+- **Alert/DSAR webhooks are signed by default (proof `60c344c`).** When a
+  webhook sink is configured, the server now signs every send
+  (HMAC-SHA256 over the raw body, constant-time compare on the receiver
+  side) and REFUSES BOOT with a URL but no secret — an unsigned exfil
+  channel can no longer be configured by omission. `=0` disables loudly
+  and the posture is surfaced at `/ready`; the DSAR/Art-19 path has no
+  opt-out. Receivers verify against the existing audit-key convention.
+- **The read seam strips the complete hostile-element set (proof
+  `2567d84`).** The element strip grew from the .72 set to 26 elements —
+  `math` and `style` now opaque-strip (tag AND inner content; a
+  demonstrated `math` inner-content leak was the red-first proof), with
+  `details`, `body`, `button`, `select`, `marquee`, `dialog`, `animate`,
+  `picture`, `noscript` added plus 30 MathML child fallbacks. Storage
+  stays verbatim; `review_digest` moves only for rows that carried the
+  newly-stripped markup (re-review required at approve, same
+  digest-invalidation discipline as the .76 fixed-point change).
+- **Embedder saturation is measured, not guessed (proof `935d215`,
+  design track).** The static embedder path gains a std-only saturation
+  gauge (`SatGauge`/`SatGuard`; contention measured 8×50ms) so the
+  serialized-inference cost class that pinned all screened writes in .76
+  is now visible in-process instead of discovered under load.
+
+**Improvements**
+
+- **Newer-schema databases refuse to open (proof `935d215`).** The boot
+  gate now refuses to open a database written by a NEWER schema (was:
+  undefined behavior on unknown columns), with a migrate-rehearse parity
+  check (55 tables) proving the refusal matches the rehearsal path.
+- **Honest-by-construction docs gates (proof `89a6233`, docs/scripts
+  only — zero code paths).** The README UMP badge derives from the CI
+  conformance gate (loud degrade to "self-attested" when the gate is
+  absent); the tests badge carries a count disclaimer with the log hash;
+  the gap ledger reads "balanced (4 known residuals with owners)" —
+  balanced, not zero, per the append-only correction note; and
+  `scripts/env-truth.sh` stands as the docs-vs-code env-var gate. The
+  release checklist gains the SBOM scope disclosure per CISA-2026
+  (runtime closure, NOT the whole dev+build tree — 375 vs 520 packages
+  at .83), the 8-route intentional OpenAPI exclusion table, and the
+  7-route well-known wiring table.
+- **Error taxonomy as a test (proof `935d215`).** A 25-row error
+  taxonomy with operator-safe `Display` impls is pinned by
+  `tests/error_taxonomy.rs` — error strings an operator sees can no
+  longer leak internals by drift; `tests/singularity_pins.rs` adds 7
+  pins over the singular invariants (revocation-cache statelessness —
+  the "60s staleness" claim debunked, zero staleness by construction —
+  included).
+
+### Engineering record
+
+- Range: 5 commits, `v1.28.83..v1.28.84` (`7d63f32`, `2567d84`,
+  `60c344c`, `935d215`, `89a6233`). Red-first discipline held: the hostile-element
+  and SSE-kill/signing tests failed pre-fix and green post-fix (14/14 on
+  the signing lane).
+- CodeQL hard-coded-key alert #73 cleared (proof `7d63f32`). The
+  wrong-secret leg of the bridge signature constant-time pin used a
+  literal test key; the same generated-key fix as the Vigil set
+  (`testkeys::unit_hmac_key`) replaces it. Test-only — no shipped
+  behavior change.
+- The four fixture lanes for the hostile-element set (server scan vs
+  `plugin/fixtures/hostile-elements.json`, plugin vitest 61/61, client
+  vendored strip, fork host fixture) close the R-01 drift class: no tree
+  can widen or narrow its strip alone.
+- Validation: full `cargo test` green at the release commit; clippy
+  `-D warnings` clean (bench/migrate, default, otel); fmt clean;
+  engine-crates + steward-harness green; badges `--selfcheck` clean.
+  CRATE_TEST_FLOOR 1,418 → 1,448 (walk-measured).
+- Ceilings (honest): the SSE re-auth interval is polling, not
+  push-reactive — a revocation lands within `BRAIN_SSE_REAUTH_SECS`, not
+  instantly; `=0` is a supported posture, not a hidden default. Webhook
+  signing covers the two env sinks; the hostcall HTTP path keeps its
+  allowlist (loopback mediation, unchanged since .69). The saturation
+  gauge observes the static embedder; the neural backends' serialization
+  remains mutex-observed only. The `/ready` shape change is the release's
+  only wire-visible delta and is additive JSON — but consumers scraping
+  the plain-text body must migrate.
+
 ## [1.28.83] — 2026-09-12 — "Recall": security fix release
 
 Covers every commit from tag `v1.28.82` (`1fa1b77`) to this release —
