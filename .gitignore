@@ -102,3 +102,6 @@ audit-chain.key
 
 # dep-research scratch (crate extraction) — never commit
 .depcheck/
+
+# plugin-sync baseline (scripts/sync-plugin.sh) — local drift-guard state, never commit
+/.plugin-sync-baseline
