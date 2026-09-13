@@ -14978,6 +14978,215 @@ Final paragraph after the rule.";
             "entity_type outside [a-z0-9_-] must 400 on the structured path"
         );
     }
+
+    // ── audit-per-write: caller-content write paths carry in-tx evidence ──
+
+    /// A stored procedure is caller content: its evidence row must exist on
+    /// the hash chain (kind='procedure', target = the hashed root id) when
+    /// the response returns, and the row must ride the SAME tx as the
+    /// write — the rollback twin poisons the second step's edge insert and
+    /// proves the audit row rolls back WITH the chunks (a post-commit
+    /// recorder would survive the abort). RED-first: the happy leg found
+    /// zero rows (no Procedure kind existed).
+    #[tokio::test]
+    async fn procedure_writes_carry_in_tx_audit() {
+        use tower::ServiceExt;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = graph_seam_state(&dir);
+        let app = axum::Router::new()
+            .route(
+                "/procedure",
+                axum::routing::post(brain_server::handlers::procedure::create),
+            )
+            .with_state(state.clone());
+
+        // Happy leg: the evidence row exists when the response is returned.
+        let body = serde_json::json!({
+            "title": "deploy runbook",
+            "content": "how to deploy",
+            "steps": [
+                { "title": "build", "content": "cargo build" },
+                { "title": "ship", "content": "install-service.sh" }
+            ]
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/procedure")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let root_id = v["id"].as_i64().expect("procedure root id");
+        let conn = state.pool.get().unwrap();
+        let target_hash = brain_server::audit::hash(&root_id.to_string());
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'procedure' AND target_hash = ?1",
+                [&target_hash],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(rows >= 1, "procedure write must carry its audit row");
+
+        // Rollback twin: poison the SECOND step's next_step edge — the tx
+        // aborts, and the audit row (written in-tx after the root insert)
+        // rolls back WITH the chunks.
+        conn.execute(
+            "CREATE TRIGGER audit_poison AFTER INSERT ON evidence_links
+             WHEN NEW.step_index = 1
+             BEGIN SELECT RAISE(ABORT, 'poisoned'); END;",
+            [],
+        )
+        .unwrap();
+        let body = serde_json::json!({
+            "title": "poisoned runbook",
+            "content": "how to fail",
+            "steps": [
+                { "title": "one", "content": "first" },
+                { "title": "two", "content": "second" }
+            ]
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/procedure")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "the poison must abort the write"
+        );
+        let chunks: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE title = 'poisoned runbook'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(chunks, 0, "the poisoned tx rolls back its chunks");
+        let audits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'procedure'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            audits, 1,
+            "the aborted tx rolls back its audit row too — the evidence was in-tx"
+        );
+        conn.execute("DROP TRIGGER audit_poison", []).unwrap();
+    }
+
+    /// The two legacy ingest paths audit INSIDE their transactions (the
+    /// record precedes the commit and rides the tx, never the pooled
+    /// connection — the post-commit window is the crash window the
+    /// audit-per-write law closed). The source-order lock is the red leg:
+    /// both handlers recorded AFTER `tx.commit()` on `&conn`. The
+    /// behavioral legs prove the row exists when the response is returned.
+    #[tokio::test]
+    async fn ingest_row_audit_precedes_commit() {
+        use tower::ServiceExt;
+
+        let router_mem_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/server/router/memory.rs"
+        ));
+        for name in ["add_chunk", "ingest_markdown"] {
+            let body = handler_body(router_mem_src, name)
+                .unwrap_or_else(|| panic!("`fn {name}` not found"));
+            let record = body
+                .find("audit::record(")
+                .unwrap_or_else(|| panic!("{name} carries no audit call"));
+            let commit = body
+                .find("tx.commit()")
+                .unwrap_or_else(|| panic!("{name} carries no commit"));
+            assert!(
+                record < commit,
+                "{name} must record its audit INSIDE the tx — before the commit"
+            );
+            let site = &body[record..commit];
+            assert!(
+                site.contains("&tx"),
+                "{name} must audit on the tx (in-tx), not the pooled connection"
+            );
+            assert!(
+                !site.contains("&conn"),
+                "{name} post-commit conn recording is the crash window the law closed"
+            );
+        }
+
+        // Behavioral legs: the evidence row exists when the response returns.
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = graph_seam_state(&dir);
+        let app = brain_server::server::router::memory::legacy_router()
+            .merge(brain_server::server::router::memory::router())
+            .with_state(state.clone());
+
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/add")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"text": "audit ride-along", "source": "manual"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ingest/markdown")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({"text": "x", "content": "# md doc\n\nbody", "title": "md doc"})
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        let conn = state.pool.get().unwrap();
+        let ingests: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'ingest'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            ingests >= 2,
+            "/add + /ingest/markdown each carry an audit row"
+        );
+    }
 }
 
 // ── SCRIM (read-seam shaping, write-on-read gating, SSE denial status,

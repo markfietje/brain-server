@@ -160,6 +160,7 @@ pub async fn create(
         .unwrap_or(state.pool.clone());
     let title_for_task = title.clone();
     let content_for_task = content.clone();
+    let owner_principal = principal.0.clone();
 
     let (root_id, step_ids) =
         tokio::task::spawn_blocking(move || -> Result<(i64, Vec<i64>), HandlerError> {
@@ -167,6 +168,7 @@ pub async fn create(
             let tx = conn
                 .transaction()
                 .map_err(|e| HandlerError::internal(format!("tx begin failed: {e}")))?;
+            let owner = crate::handlers::gate::principal_to_owner(&owner_principal);
             let (root_id, step_ids) = crate::service::procedure::store_procedure(
                 &tx,
                 &title_for_task,
@@ -175,6 +177,7 @@ pub async fn create(
                 &steps,
                 root_quarantine,
                 &step_quarantine,
+                &owner,
             )
             .map_err(|e| HandlerError::internal(e.to_string()))?;
             tx.commit()

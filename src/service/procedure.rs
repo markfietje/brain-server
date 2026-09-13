@@ -65,6 +65,7 @@ impl From<rusqlite::Error> for ProcedureError {
 /// the ROOT is clean, and their `ON CONFLICT DO UPDATE` makes a re-ingest
 /// of the same pair idempotent. `domain` defaults to `global`; `origin` is
 /// `operator`, `source` `manual` — both verbatim.
+#[allow(clippy::too_many_arguments)] // the (pii-less) screen flags + owner ride alongside the write params; a struct would add ceremony to the single call site
 pub(crate) fn store_procedure(
     tx: &rusqlite::Transaction<'_>,
     title: &str,
@@ -73,6 +74,7 @@ pub(crate) fn store_procedure(
     steps: &[(String, String, MemoryKind)],
     root_quarantine: bool,
     step_quarantine: &[bool],
+    owner: &Option<String>,
 ) -> Result<(i64, Vec<i64>), ProcedureError> {
     // Root chunk: memory_kind = 'procedure'.
     let content_hash = crate::audit::hash(&format!("{title}|{content}"));
@@ -83,6 +85,18 @@ pub(crate) fn store_procedure(
     )
     .map_err(|e| ProcedureError::Storage(format!("procedure insert failed: {e}")))?;
     let root_id = tx.last_insert_rowid();
+    // audit-per-write: the procedure's evidence row rides the CALLER'S tx —
+    // a transition and its evidence commit or roll back together. One row
+    // per write (the step count in the detail); identifiers only, never
+    // caller content.
+    crate::audit::record(
+        tx,
+        crate::audit::AuditKind::Procedure,
+        owner.as_deref().unwrap_or("operator"),
+        &root_id.to_string(),
+        crate::audit::AuditStatus::Ok,
+        &format!("steps:{}", steps.len()),
+    );
     // flag the root if the screen quarantined. Excluded from
     // recall via `WHERE flagged = 0`, KG edges skipped below.
     let root_flagged = crate::screen::flag_if_quarantined(tx, root_id, root_quarantine)

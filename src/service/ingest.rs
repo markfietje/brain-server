@@ -370,6 +370,18 @@ pub fn store_record(
     .map_err(|e| IngestError::Database(format!("insert knowledge failed: {e}")))?;
     let id = tx.last_insert_rowid();
 
+    // audit-per-write: the knowledge row's evidence rides the CALLER'S tx,
+    // beside the edge audits below — a stored row and its evidence commit
+    // or roll back together. Identifier only (the row id), never content.
+    crate::audit::record(
+        tx,
+        crate::audit::AuditKind::Ingest,
+        input.owner.unwrap_or("auto"),
+        &id.to_string(),
+        crate::audit::AuditStatus::Ok,
+        "created",
+    );
+
     // under Quarantine policy, a chunk that trips the
     // injection screen is stored but flagged (excluded from retrieval) and
     // its KG edges are skipped so a quarantined plant can't pollute the
@@ -779,8 +791,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            audits, 1,
-            "the edge audit rides the caller's tx, not a second write"
+            audits, 2,
+            "the row audit + the edge audit ride the caller's tx, not a second write"
         );
         let vec_rows: i64 = tx
             .query_row("SELECT COUNT(*) FROM vec_knowledge", [], |r| r.get(0))
@@ -880,7 +892,11 @@ mod tests {
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(audits, 0, "no edge audits — no edges were made");
+            assert_eq!(
+                audits, 1,
+                "no edge audits (no edges were made) — but the row audit still lands: \
+                 a stored (flagged) row carries its own evidence"
+            );
             tx.commit().unwrap();
         }
 

@@ -652,19 +652,21 @@ pub async fn add_chunk(
             // target. The `embeddings` table is retained read-only for one-time
             // backfill of DBs created before the vec0 store existed (see run_migration).
 
-            if let Err(e) = tx.commit() {
-                return AddResponse::error(format!("Commit failed: {}", e));
-            }
-
-            // audit successful ingest (hash only, never raw text).
+            // audit successful ingest (hash only, never raw text) —
+            // INSIDE the tx: the evidence row commits or rolls back WITH
+            // the write (the post-commit form was the crash window).
             audit::record(
-                &conn,
+                &tx,
                 audit::AuditKind::Ingest,
                 "api",
                 &content_hash,
                 audit::AuditStatus::Ok,
                 &source,
             );
+
+            if let Err(e) = tx.commit() {
+                return AddResponse::error(format!("Commit failed: {}", e));
+            }
 
             AddResponse {
                 success: true,
@@ -1892,10 +1894,11 @@ pub(crate) async fn ingest_markdown(
             quarantine_flagged,
             &owner,
         )?;
-        tx.commit().map_err(|e| AppError::Internal(e.to_string()))?;
-        // audit successful markdown ingest (identifier only).
+        // audit successful markdown ingest (identifier only) — INSIDE the
+        // tx: the evidence row commits or rolls back WITH the write (the
+        // post-commit form was the crash window).
         audit::record(
-            &conn,
+            &tx,
             audit::AuditKind::Ingest,
             "api",
             &doc_id,
@@ -1904,6 +1907,7 @@ pub(crate) async fn ingest_markdown(
                 .clone()
                 .unwrap_or_else(|| "markdown".to_string()),
         );
+        tx.commit().map_err(|e| AppError::Internal(e.to_string()))?;
         Ok(r)
     })
     .await

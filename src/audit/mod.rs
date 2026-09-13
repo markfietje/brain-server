@@ -44,7 +44,7 @@
 //! CREATE TABLE IF NOT EXISTS audit_events(
 //!   id INTEGER PRIMARY KEY AUTOINCREMENT,
 //!   ts TEXT DEFAULT CURRENT_TIMESTAMP,
-//!   kind TEXT NOT NULL,     -- 'auth'|'ingest'|'webhook'|'reconcile'|'backup'|'connector'|'forget'|...
+//!   kind TEXT NOT NULL,     -- 'auth'|'ingest'|'webhook'|'reconcile'|'backup'|'connector'|'forget'|'procedure'|...
 //!   actor TEXT,             -- connector kind/instance, 'api', or 'loopback'
 //!   target_hash TEXT,       -- SHA-256 of the affected uri/id (NOT the content)
 //!   status TEXT,            -- 'ok'|'denied'|'error'
@@ -123,6 +123,11 @@ pub enum AuditKind {
     /// so kind-filtered audit consumers can find erasures without
     /// detail-hash mining.
     Forget,
+    /// stored-procedure writes (root + ordered step chunks): one row per
+    /// procedure write, target = the hashed root chunk id, detail names the
+    /// step count. Caller content got no evidence row before this kind
+    /// existed — the audit-per-write law applies to every write path.
+    Procedure,
 }
 
 impl AuditKind {
@@ -146,6 +151,7 @@ impl AuditKind {
             AuditKind::Anchor => "anchor",
             AuditKind::Decision => "decision",
             AuditKind::Forget => "forget",
+            AuditKind::Procedure => "procedure",
         }
     }
 }
