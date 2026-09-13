@@ -610,8 +610,8 @@ fn scan_tag_end(bytes: &[u8], from: usize) -> Option<usize> {
 /// hostile names so the element kill (not the sweep) owns them.
 fn region_has_hostile_element(region: &str) -> bool {
     let bytes = region.as_bytes();
-    for i in 0..bytes.len() {
-        if bytes[i] != b'<' {
+    for (i, b) in bytes.iter().enumerate() {
+        if *b != b'<' {
             continue;
         }
         let name_start = match bytes.get(i + 1) {
@@ -686,8 +686,8 @@ fn sweep_surviving_tag(tag: &str) -> String {
 /// whitespace/control bytes removed — the browser URL rule — then a
 /// case-insensitive prefix match). Everything else keeps.
 fn attr_is_hostile(token: &str) -> bool {
-    let (name, value) = match token.find('=') {
-        Some(eq) => (&token[..eq], Some(&token[eq + 1..])),
+    let (name, value) = match token.split_once('=') {
+        Some((n, v)) => (n, Some(v)),
         None => (token, None),
     };
     let lower = name.to_ascii_lowercase();
@@ -761,9 +761,10 @@ fn decode_entities_once(s: &str) -> String {
             if de > ds && rest.get(de) == Some(&b';') {
                 let text = &s[i + 1 + ds..i + 1 + de];
                 let value = u32::from_str_radix(text, if hex { 16 } else { 10 }).unwrap_or(0);
-                match char::from_u32(value) {
-                    Some(ch) => out.push(ch),
-                    None => out.push_str(&s[i..i + de + 2]),
+                if let Some(ch) = char::from_u32(value) {
+                    out.push(ch);
+                } else {
+                    out.push_str(&s[i..i + de + 2]);
                 }
                 i += de + 2;
                 continue;
