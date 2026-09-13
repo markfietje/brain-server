@@ -910,3 +910,46 @@ plugin/src` ↔ fork extension clean. Lipstyk + otel/engine-crates/
 steward lanes: see release checklist (run before push per AGENTS.md).
 NOT tagged/pushed here — `scripts/release.sh` (CI watch, fail-closed) is
 the operator's step.
+
+---
+
+## 2026-09-13 — Seventh-pass full-spectrum audit (v1.28.85 × fork @ 94d5de789c3)
+
+Full report: `docs/SECURITY_AUDIT_20260913_SEVENTH_PASS.md` (all five lanes completed:
+server-layers, satellites/supply-chain, Mode-B claims falsification, fork diff +
+rebase-survival, worldwide regulatory web-verification — plus a live drill on a fresh DB /
+test port and the §4 four-tree parity matrix). IDs `*7-*`. Theme of the pass, from the
+evidence: **the machinery is strong; the seams added after the law are where the gaps
+live** — ratchet erosion in miniature, plus a class the .75 vacuous-pin lesson predicted:
+defenses built, fixture-tested, and never wired.
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| F7-03 | Graph route family (`/graph/entity`, `/graph/relations`, `/graph/traverse`, `/graph/relationships/{id}/history`) emits `entities.name`/`relation_type` RAW — no `sanitize_read`; markdown ingest makes entity names attacker-writable (headings/bold/wikilinks, no charset validation) | HIGH | Open — v1.28.86 "Attrbane" (read-seam the four mappers + `normalize_name` on the write edge + charset-validate `entity_type` + site-table rows) |
+| F7-01 | Read seam has NO attribute tier: `on*` handlers + `javascript:`/`data:`/entity-encoded hrefs on surviving elements pass verbatim (live-demonstrated on /recall); architecture.md "cannot smuggle through a rendered URL" falsified at the raw wire | HIGH | Open — v1.28.86 (attribute tier, bounded fixed-point, fail-closed drop; four-tree fixture extension) |
+| K7-01 | Fork/update chain: NO end-to-end signature verification on any channel (npm registry-trust, same-origin-only Node SHASUMS, git install without verify-tag, Sparkle EdDSA with no shipped `SUPublicEDKey`) — compromised channel = RCE; fork adds zero hardening over upstream | HIGH (inherited) | **ACCEPTED RISK (operator call 2026-09-13)** — not fixed in the fork: every touched file is upstream-owned (permanent rebase divergence); zero-conflict vehicle = upstream issue/PR the fork inherits by rebase; re-examine if the fork ships to third parties |
+| F7-04 | Audit-per-write holes: `POST /procedure` stores caller content with NO audit row; structured `/ingest` + `/ump/remember` audit edges only (not the knowledge row); `/add` + markdown audit AFTER commit (the crash window the law closed) | MED | Open — v1.28.86 (AuditKind::Procedure + row audit + in-tx moves) |
+| S7-01/S7-02 | Plugin hostile-element mirror NEVER CALLED (both trees); raw proposal/graph/decision fields bypass `sanitizeForBlock` into tool details/text | MED | Open — v1.28.86 (wire the mirror; route the fields) |
+| L7-01 | CRA runbook final-report clock wrong for vulns (law: ≤14 days after a fix is available; runbook says one month for both triggers); reg_watch cites pre-OJ numbering (14(1)/(4)/(6), 69(2) → 14(1)-(2)/(3)-(4)/(5), 71(2)) | MED | Open — v1.28.88 "Clocktruth" + reg_watch pin extension |
+| K7-03 | Today's 0.6.8 mirror-sync silently reverted the fork's typebox truth repair (manifest 1.3.27→1.3.26 vs lock) — the rebase-survival table's predicted class, realized day one | MED | Open — v1.28.89 (re-apply + sync-script fork-field patching) |
+| K7-02/K7-04 | Sparkle trust anchor absent in-tree; shipped fly.toml sample tokenless on a public IP | MED | **ACCEPTED RISK (same operator call — upstream-owned files cluster)** |
+| R7-09 | `service_layer_free_of_http_types` walks non-recursively — blind to `src/service/dsar/` + `lifecycle/` (4 files; no live violation verified) | MED-LOW | Open — v1.28.88 (recursive walker + red-proof plant) |
+| R7-10/R7-11, F7-05/F7-06/F7-07, T7-01..T7-06, S7-03..S7-12, P7-01, L7-02..L7-07 | Hygiene + docs-truth band (typoglycemia doc math, chunker tag-split scope, crew roster seam, admin evidence surfaces, site-table guard, 60s-staleness re-stamp ×3, rot-guard direction, coverage stamps, verify-surface clarification, sync-plugin exception, env-truth coarseness, signal-gateway unbounded cache, serde_yaml deprecated, release.yml permission scope, TIDA date inversion, CA 09-10 package missing, SBOM CycloneDX 1.3, client mirror dormant) | LOW/INFO | Open — v1.28.87/.88/.89 per the report's sequencing table |
+
+Held (the honest other half): 30+ claims falsification-attempted static (weld families,
+opaque strips, 64-pass overflow fail-closed, JWT algs, constant-time compares, egress IANA
+rows, redirect policy, insert-only pins, AgBOM, spire arithmetic 169=152+13+4+8 exact);
+live drill green on digest-bound approvals (409/200/404-replay), revocation kill-switch
+(write 401 + SSE 401 pre-stream), quarantine exclusion, DSAR certificate + digest-only
+tombstones (physical residue = the documented `secure_delete off` ceiling, disclosed on
+the certificate), audit-chain census, `/ready` JSON posture; tamper demonstration confirmed
+the X-C5 host-compromise ceiling's shape (business-row tamper behind the chain undetected —
+T7-02 docs note); four-tree invisible-set parity HELD (exhaustive fixture), plugin↔fork
+byte-identical at 0.6.8; fork hardening survived today's 614-commit upstream rebase on
+every reachable path; 5 of 6 sampled pins BEHAVIORAL; supply chain fresh (SBOM 375/375
+match, typebox pinned). Gates: fmt/clippy bench/test bench/clippy default/test default/
+client fmt/lipstyk(base=v1.28.85) ALL GREEN. Remediation: v1.28.86 "Attrbane" →
+v1.28.87 "Ownerstamp" → v1.28.88 "Clocktruth" → v1.28.89 "Bounded", floor +13 (1,448 →
+1,461 walk-estimate). Ceilings: drill legs b/c (fork-gateway session, console GUI) not
+driven live; compliance-map rows beyond reg_watch dates spot-checked only; per-lane
+coverage notes in the report.
