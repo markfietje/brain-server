@@ -383,12 +383,13 @@ pub use crate::fence::strip_markdown_refs;
 /// with the set itself (`strip_hostile_elements_once`), and the lane-1
 /// fixture test pins both to `plugin/fixtures/hostile-elements.json` v1.
 ///
-/// ponytail ceiling, stated honestly: this is a NAME-set, not an attribute
-/// sanitizer — `on*=` handler attributes and `javascript:` hrefs on elements
-/// OUTSIDE the set (a/table/font/option…) survive, so a downstream
-/// HTML consumer still needs its own CSP. The KB surface ships `default-src
-/// 'none'`; arbitrary third-party renderers are the consumer's contract.
-/// The set is pinned by `plugin/fixtures/hostile-elements.json` v1 —
+/// Two tiers, one pass: the closed NAME-set above, plus the attribute tier
+/// inside the same fixpoint (`sweep_surviving_tag` — the `on[a-z]+` handler
+/// family and `javascript:`/`vbscript:`/`data:` schemes on SURVIVING
+/// elements die; the tier is scheme-hostile, not attribute-hostile, so a
+/// benign http(s) href survives whole). The KB surface still ships
+/// `default-src 'none'`; arbitrary third-party renderers are the consumer's
+/// contract. The set is pinned by `plugin/fixtures/hostile-elements.json` v1 —
 /// changing the set without the fixture fails the lane-1 test, and vice
 /// versa (no silent expansion in either direction).
 ///
@@ -573,6 +574,225 @@ fn skip_opaque(bytes: &[u8], from: usize, target: &str) -> usize {
     bytes.len()
 }
 
+// ── the attribute tier ─────────────────────────────────────────────────
+// SCHEME-HOSTILE, not attribute-hostile: the sweep fires only on SURVIVING
+// opening tags, only drops the `on[a-z]+` handler family and URL attributes
+// carrying a `javascript:`/`vbscript:`/`data:` scheme; a benign http(s)
+// href/source survives whole and prose angle brackets never reach it
+// (byte-identical passthrough, so the digest only moves for rows the tier
+// actually touches). Fail-closed by DELETION: the attribute dies, the
+// element and its remaining attributes stay, no prose is synthesized.
+
+/// Quote-aware tag-end scan — the first `>` OUTSIDE a single/double-quoted
+/// attribute value (the tokenizer's rule, so `<a title="a>b" href="…">` is
+/// ONE tag, not two). `from` is just past the tag name. Returns the index
+/// just past the closing `>`, or None when the tag never closes (the
+/// caller falls back to prose — today's unterminated behavior).
+fn scan_tag_end(bytes: &[u8], from: usize) -> Option<usize> {
+    let mut quote: Option<u8> = None;
+    for (rel, b) in bytes[from..].iter().enumerate() {
+        match quote {
+            Some(q) => {
+                if *b == q {
+                    quote = None;
+                }
+            }
+            None if *b == b'"' || *b == b'\'' => quote = Some(*b),
+            None if *b == b'>' => return Some(from + rel + 1),
+            None => {}
+        }
+    }
+    None
+}
+
+/// True when any `<`(optional `/`)+alpha construct inside `region` names a
+/// hostile element. The attribute sweep only fires on regions free of
+/// hostile names so the element kill (not the sweep) owns them.
+fn region_has_hostile_element(region: &str) -> bool {
+    let bytes = region.as_bytes();
+    for i in 0..bytes.len() {
+        if bytes[i] != b'<' {
+            continue;
+        }
+        let name_start = match bytes.get(i + 1) {
+            Some(b'/') => i + 2,
+            Some(c) if c.is_ascii_alphabetic() => i + 1,
+            _ => continue,
+        };
+        let name_bytes: Vec<u8> = bytes[name_start.min(bytes.len())..]
+            .iter()
+            .copied()
+            .take_while(|b| b.is_ascii_alphanumeric())
+            .collect();
+        if is_hostile_element(&String::from_utf8_lossy(&name_bytes).to_ascii_lowercase()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Delete-only attribute sweep over ONE surviving tag (`<name …>`
+/// including both brackets — the caller guarantees the shape). Whitespace
+/// between kept tokens is preserved verbatim, so an all-clean tag returns
+/// byte-identical and the sweep is idempotent.
+fn sweep_surviving_tag(tag: &str) -> String {
+    let bytes = tag.as_bytes();
+    let name_len = &bytes[1..]
+        .iter()
+        .position(|b| !b.is_ascii_alphanumeric())
+        .unwrap_or(bytes.len() - 1);
+    let mut out = String::with_capacity(tag.len());
+    out.push('<');
+    out.push_str(&tag[1..1 + name_len]);
+    let rest = &tag[1 + name_len..bytes.len() - 1];
+    let mut j = 0usize;
+    while j < rest.len() {
+        let b = rest.as_bytes()[j];
+        if b.is_ascii_whitespace() {
+            out.push(b as char);
+            j += 1;
+            continue;
+        }
+        // One attribute token: to the next whitespace, but a quoted value
+        // runs to its closing quote (spaces inside ride along).
+        let start = j;
+        let mut quote: Option<u8> = None;
+        while j < rest.len() {
+            let b = rest.as_bytes()[j];
+            match quote {
+                Some(q) => {
+                    if b == q {
+                        quote = None;
+                    }
+                }
+                None if b == b'"' || b == b'\'' => quote = Some(b),
+                None if b.is_ascii_whitespace() => break,
+                None => {}
+            }
+            j += 1;
+        }
+        let tok = &rest[start..j];
+        if !attr_is_hostile(tok) {
+            out.push_str(tok);
+        }
+    }
+    out.push('>');
+    out
+}
+
+/// Hostility decision for ONE attribute token (`name`, `name=value`,
+/// `name="value"`). The `on[a-z]+` handler family dies by NAME; the URL
+/// attributes die by SCHEME (one bounded entity-decode pass, then all
+/// whitespace/control bytes removed — the browser URL rule — then a
+/// case-insensitive prefix match). Everything else keeps.
+fn attr_is_hostile(token: &str) -> bool {
+    let (name, value) = match token.find('=') {
+        Some(eq) => (&token[..eq], Some(&token[eq + 1..])),
+        None => (token, None),
+    };
+    let lower = name.to_ascii_lowercase();
+    if lower.len() > 2
+        && lower.starts_with("on")
+        && lower[2..].bytes().all(|b| b.is_ascii_lowercase())
+    {
+        return true;
+    }
+    if matches!(
+        lower.as_str(),
+        "href" | "src" | "action" | "formaction" | "xlink:href" | "poster" | "background"
+    ) && let Some(v) = value
+    {
+        return scheme_is_dangerous(v);
+    }
+    false
+}
+
+/// The scheme probe: trim whitespace/control bytes and one layer of
+/// surrounding quotes, ONE bounded entity-decode pass, remove every
+/// remaining whitespace/control byte (browsers strip tab/newline/CR
+/// anywhere in a URL, so `jav&#x0A;ascript:` and `java\tscript:` are the
+/// same scheme), then case-insensitive prefix match.
+fn scheme_is_dangerous(value: &str) -> bool {
+    let unquoted = value
+        .trim_matches(|c: char| c.is_whitespace() || c.is_control())
+        .trim_matches(|c| c == '"' || c == '\'');
+    let decoded = decode_entities_once(unquoted);
+    let lowered: String = decoded
+        .chars()
+        .filter(|c| !c.is_whitespace() && !c.is_control())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    lowered.starts_with("javascript:")
+        || lowered.starts_with("vbscript:")
+        || lowered.starts_with("data:")
+}
+
+/// ONE bounded entity-decode pass: `&#xHH;`/`&#DD;` (≤6 hex / ≤7 dec
+/// digits) and the `&colon;`/`&tab;`/`&newline;` named forms
+/// (case-insensitive). Decoded output is NOT rescanned (no recursive
+/// decode — the same one-decode rule a browser's attribute parser
+/// applies); undecodable numerics stay literal.
+fn decode_entities_once(s: &str) -> String {
+    const NAMED: [(&[u8], char); 3] = [(b"colon", ':'), (b"tab", '\t'), (b"newline", '\n')];
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'&' {
+            let ch = s[i..].chars().next().unwrap_or('&');
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        let rest = &bytes[i + 1..];
+        if rest.first() == Some(&b'#') {
+            let (hex, ds) = match rest.get(1) {
+                Some(b'x') | Some(b'X') => (true, 2usize),
+                _ => (false, 1usize),
+            };
+            let max_digits = if hex { 6 } else { 7 };
+            let mut de = ds;
+            while de < rest.len()
+                && de - ds < max_digits
+                && (rest[de].is_ascii_digit() || (hex && rest[de].is_ascii_hexdigit()))
+            {
+                de += 1;
+            }
+            if de > ds && rest.get(de) == Some(&b';') {
+                let text = &s[i + 1 + ds..i + 1 + de];
+                let value = u32::from_str_radix(text, if hex { 16 } else { 10 }).unwrap_or(0);
+                match char::from_u32(value) {
+                    Some(ch) => out.push(ch),
+                    None => out.push_str(&s[i..i + de + 2]),
+                }
+                i += de + 2;
+                continue;
+            }
+            out.push('&');
+            i += 1;
+            continue;
+        }
+        let mut matched = false;
+        for (name, ch) in NAMED {
+            if rest.len() > name.len()
+                && rest[name.len()] == b';'
+                && rest[..name.len()].eq_ignore_ascii_case(name)
+            {
+                out.push(ch);
+                i += name.len() + 2;
+                matched = true;
+                break;
+            }
+        }
+        if matched {
+            continue;
+        }
+        out.push('&');
+        i += 1;
+    }
+    out
+}
+
 fn strip_hostile_elements_once(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = String::with_capacity(s.len());
@@ -638,6 +858,25 @@ fn strip_hostile_elements_once(s: &str) -> String {
                 }
             }
             i = gt;
+        } else if bytes.get(after_open) != Some(&b'/') {
+            // SURVIVING opening tag: the attribute tier sweeps it in the
+            // same pass. A hostile element name anywhere
+            // inside the region falls back to prose so the ELEMENT kill
+            // still owns it on this pass — the sweep never shields a
+            // `<script>`-class name (the weld family keeps its output).
+            let Some(tag_end) = scan_tag_end(bytes, name_start) else {
+                out.push('<');
+                i += 1;
+                continue;
+            };
+            let region = &s[i..tag_end];
+            if region_has_hostile_element(region) {
+                out.push('<');
+                i += 1;
+                continue;
+            }
+            out.push_str(&sweep_surviving_tag(region));
+            i = tag_end;
         } else {
             out.push('<');
             i += 1;
@@ -1235,6 +1474,81 @@ mod tests {
         let out = sanitize_read("a\x1b[31mred", false, &None);
         assert!(!out.contains('\u{1B}'), "no ESC rides read JSON: {out:?}");
         assert!(out.contains("red"));
+    }
+
+    // ── the attribute tier ─────────────────────────────────────────────
+    // The element tier kills whole hostile ELEMENTS; attributes on SURVIVING
+    // elements rode the seam verbatim (drill-proven on /recall). The tier is SCHEME-HOSTILE, not
+    // attribute-hostile: `on*` handlers and `javascript:`/`vbscript:`/`data:`
+    // schemes die; benign http(s) hrefs and prose angle brackets survive.
+
+    /// the drill canary family — every event-handler
+    /// attribute and every dangerous URI scheme on a SURVIVING element must
+    /// die at the read seam (each canary failed against the pre-tier tree).
+    #[test]
+    fn recall_hits_carry_no_event_handlers_or_dangerous_schemes() {
+        let canaries = [
+            "<span onclick=alert(7)>hover</span>",
+            "<div onpointerover=alert(8)>wide</div>",
+            "<a href=\"javascript:alert(1)\">click</a>",
+            "<a href=\"data:text/html;base64,PHNjcmlwdD4=\">drag</a>",
+            "<a href=\"  JAVASCRIPT:alert(1)\">mixed case</a>",
+            "<a href=\"jav&#x0A;ascript:alert(1)\">entity encoded</a>",
+            "<a href=\"vbscript:msgbox(1)\">legacy</a>",
+            "<section onfocusin=alert(9)>focus</section>",
+        ];
+        for c in canaries {
+            let out = sanitize_read(c, false, &None);
+            let lowered = out.to_ascii_lowercase();
+            for handler in ["onclick", "onpointerover", "onfocusin"] {
+                assert!(
+                    !lowered.contains(handler),
+                    "event-handler attribute must not survive the seam: {c:?} -> {out:?}"
+                );
+            }
+            for scheme in ["javascript:", "vbscript:", "data:"] {
+                assert!(
+                    !lowered.contains(scheme),
+                    "dangerous scheme must not survive the seam: {c:?} -> {out:?}"
+                );
+            }
+            assert!(
+                !out.contains("alert(") && !out.contains("msgbox("),
+                "handler payload must not survive: {c:?} -> {out:?}"
+            );
+        }
+    }
+
+    /// the tier is idempotent and pure (same idiom as the invisible-strip
+    /// tests): a second pass is the identity, and the CLEAN corpus is
+    /// byte-untouched — benign http(s) hrefs survive whole, prose angle
+    /// brackets survive, a quoted `>` inside an attribute does not split
+    /// the sweep, and the .76 weld family keeps its element-tier behavior.
+    #[test]
+    fn sanitize_read_attr_tier_idempotent() {
+        let hostile = "<a href=\"jav&#x0A;ascript:alert(1)\" onclick=x title=\"t\">go</a>";
+        let once = sanitize_read(hostile, false, &None);
+        let twice = sanitize_read(&once, false, &None);
+        assert_eq!(
+            once, twice,
+            "attr tier must be idempotent: {once:?} vs {twice:?}"
+        );
+        // Clean corpus — byte-identical passthrough.
+        let benign = "<a href=\"https://example.com/page\" title=\"ok\">docs</a>";
+        assert_eq!(sanitize_read(benign, false, &None), benign);
+        let prose = "1 < 2 and a > b, plain comparison prose";
+        assert_eq!(sanitize_read(prose, false, &None), prose);
+        let quoted = "<span title=\"a>b\" data-x=1>keep</span>";
+        assert_eq!(sanitize_read(quoted, false, &None), quoted);
+        // Weld family unchanged: the element sweep still heals the weld —
+        // the attribute tier must not shield a hostile element name sitting
+        // inside a surviving tag's region.
+        let weld = "<scr<script>ipt onclick=x>hi";
+        let out = sanitize_read(weld, false, &None);
+        assert!(
+            !out.contains("script"),
+            "weld must still die at the element tier: {out:?}"
+        );
     }
 
     #[test]
