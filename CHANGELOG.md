@@ -37,6 +37,29 @@ P4-01 the same way. The headline now reads "gap ledger balanced
 `scripts/env-truth.sh` and `scripts/badges.sh --selfcheck` are the
 standing docs-as-tests gates (see `docs/release-checklist.md`).
 
+## [1.28.85] — 2026-09-13 — "SixthPass": sixth-pass closures
+
+### Release notes
+
+**Security fixes**
+
+- **Forget erasure audit rows carry the Forget kind (G6-02).** The chunk-forget path wrote its in-tx evidence row as kind `ingest`, so kind-filtered audit consumers missed erasures. Both rows (the erasure itself and the per-proposal scrub row) now write kind `forget`. Historical `ingest`-kind forget rows keep their meaning; new rows are labeled what they are.
+- **Fork extension carries the hostile-element mirror (G6-01).** The R-01 26-element strip plus MathML fallbacks and the fixture lane were missing from the deployed fork extension (last sync 0.6.0). Synced to plugin 0.6.7; byte-parity verified, 70 extension tests green, typecheck clean.
+
+**Bug fixes**
+
+- None.
+
+**Improvements**
+
+- Stale forward-plan files (`.85_SeamElements`, `.86_StreamKillSign`, `.87_DocsTruth`) marked superseded: their contents shipped inside v1.28.83/v1.28.84 without consuming those numbers. The queue head is now `IMPLEMENTATION_PLAN_v1.28.85_SixthPass.md`.
+
+### Engineering record
+
+- Range: sixth-pass audit on v1.28.84 found 2 findings (G6-01 MED, G6-02 LOW); both closed red-first (forget-kind pins failed pre-fix, green post-fix; fork diff empty post-sync). Commits: `2a40aa4` (Forget kind), `ace4f986` (fork sync, fork repo), `023e89a` (oxfmt churn from the sync pass).
+- Live drill (fresh DB, test port, Twokeys): 26-element strips held incl. opaque math/style; revoke-unknown returns 200 `known:false` + warning (A5-01 availability-first holds); kill-switch 401 live; forget response carries `retained_proposal_copies` + `scrubbed_count`; webhook-without-secret refuses boot; live DB untouched.
+- Ceilings: full `cargo test` gate per the T5-01 law; client rendering leg code-shape only; webhook-gate bind ordering flagged INFO (verify config gate precedes listen).
+
 ## [1.28.84] — 2026-09-13 — "Quarterly": security fix release
 
 Covers every commit from tag `v1.28.83` (`9f1180e`) to this release —
