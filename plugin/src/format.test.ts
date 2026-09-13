@@ -107,7 +107,7 @@ describe("sanitizeForBlock", () => {
       "<span onclick=alert(7)>hover</span>",
       "<style>@import url(https://evil/x.css)</style>",
       "<math><mi>xlink:href</mi></math>",
-      "<details ontoggle=\"alert(1)\">hidden</details>",
+      '<details ontoggle="alert(1)">hidden</details>',
     ];
     for (const f of fixtures) {
       const out = sanitizeForBlock(f);

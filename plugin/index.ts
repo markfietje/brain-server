@@ -491,7 +491,9 @@ function hitToCorpusResult(hit: CorpusHit): CorpusResult {
     score: hit.score,
     snippet: sanitizeForBlock(hit.content),
     id: String(hit.id),
-    ...(hit.domain ? { kind: sanitizeForBlock(hit.domain), source: sanitizeForBlock(hit.domain) } : {}),
+    ...(hit.domain
+      ? { kind: sanitizeForBlock(hit.domain), source: sanitizeForBlock(hit.domain) }
+      : {}),
   };
 }
 

@@ -820,16 +820,15 @@ describe("per-field boundary — tool details carry no raw untrusted text", () =
       ]),
     );
     const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
-    const res = await tools
-      .get("memory_proposal_list")!
-      .execute("call-1", { status: "pending" });
+    const res = await tools.get("memory_proposal_list")!.execute("call-1", { status: "pending" });
     const raw = JSON.stringify((res as { details: unknown }).details);
     expect(raw).not.toContain("onerror");
     expect(raw).not.toContain("<script");
     expect(raw).not.toContain("alert(9)");
     expect(raw).not.toContain("sourcePrompt");
-    expect((res as { details: { proposals: Array<Record<string, unknown>> } }).details.proposals[0])
-      .toMatchObject({ id: 7, novelty: 0.4, salience: 0.2 });
+    expect(
+      (res as { details: { proposals: Array<Record<string, unknown>> } }).details.proposals[0],
+    ).toMatchObject({ id: 7, novelty: 0.4, salience: 0.2 });
 
     // (2) graph traverse details: traversal rows + explain paths carry
     // stored entity names — every string field rides the boundary.
@@ -849,7 +848,11 @@ describe("per-field boundary — tool details carry no raw untrusted text", () =
         paths: [
           {
             hops: [
-              { from: { id: "1", name: "seed" }, relation: "references", to: { id: "2", name: "<img src=x onerror=y>" } },
+              {
+                from: { id: "1", name: "seed" },
+                relation: "references",
+                to: { id: "2", name: "<img src=x onerror=y>" },
+              },
             ],
             depth: 1,
             domain: "d",

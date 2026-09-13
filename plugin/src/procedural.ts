@@ -406,9 +406,7 @@ export function registerProceduralTools(
           // both ride the per-field boundary on the text AND details seams.
           const resultText = sanitizeForBlock(out.result);
           const conditionText =
-            out.matchedCondition !== undefined
-              ? sanitizeForBlock(out.matchedCondition)
-              : undefined;
+            out.matchedCondition !== undefined ? sanitizeForBlock(out.matchedCondition) : undefined;
           const text = out.usedDefault
             ? `Decision #${p.id}: ${resultText} (default — no branch matched).`
             : `Decision #${p.id}: ${resultText} (matched: ${conditionText ?? "?"}).`;

@@ -640,8 +640,7 @@ export function registerBrainTools(
                 depth: r.depth,
                 path: sanitizeForBlock(r.path),
                 edgePath: sanitizeForBlock(r.edgePath),
-                fromEntity:
-                  r.fromEntity != null ? sanitizeForBlock(r.fromEntity) : r.fromEntity,
+                fromEntity: r.fromEntity != null ? sanitizeForBlock(r.fromEntity) : r.fromEntity,
                 domain: sanitizeForBlock(r.domain),
               })),
               // explain paths carry stored entity names — every string
