@@ -686,10 +686,9 @@ fn sweep_surviving_tag(tag: &str) -> String {
 /// whitespace/control bytes removed — the browser URL rule — then a
 /// case-insensitive prefix match). Everything else keeps.
 fn attr_is_hostile(token: &str) -> bool {
-    let (name, value) = match token.split_once('=') {
-        Some((n, v)) => (n, Some(v)),
-        None => (token, None),
-    };
+    let (name, value) = token
+        .split_once('=')
+        .map_or((token, None), |(n, v)| (n, Some(v)));
     let lower = name.to_ascii_lowercase();
     if lower.len() > 2
         && lower.starts_with("on")
