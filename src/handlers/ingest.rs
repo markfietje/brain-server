@@ -503,15 +503,35 @@ pub(crate) async fn ingest_one(
     let mut entities: Vec<(String, Option<String>)> = Vec::with_capacity(req.entities.len());
     for e in &req.entities {
         let name = normalize_name(&e.name)?;
-        if let Some(t) = &e.kind
-            && t.len() > 64
-        {
-            return Err(HandlerError::bad_request(
-                "entity_invalid",
-                "entity type exceeds 64 characters",
-            ));
-        }
-        entities.push((name, e.kind.clone()));
+        // entity_type carries the closed graph charset (the
+        // normalize_rel_type posture): trim + lowercase, then every byte
+        // must be [a-z0-9_-] within the 64-cap. The structured path is the
+        // explicit API contract — a non-conforming type is a 400, never a
+        // verbatim hostile row on the graph surfaces.
+        let kind = match &e.kind {
+            Some(t) => {
+                if t.len() > 64 {
+                    return Err(HandlerError::bad_request(
+                        "entity_invalid",
+                        "entity type exceeds 64 characters",
+                    ));
+                }
+                let lt = t.trim().to_lowercase();
+                if !lt.is_empty()
+                    && !lt.chars().all(|c| {
+                        c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-'
+                    })
+                {
+                    return Err(HandlerError::bad_request(
+                        "entity_invalid",
+                        "entity type must match ^[a-z0-9_-]{0,64}$",
+                    ));
+                }
+                Some(lt)
+            }
+            None => None,
+        };
+        entities.push((name, kind));
     }
     // (from, to, kind, explicit valid_at, explicit invalid_at). The
     // temporal pair is optional caller override; None ⇒ run the extractor.

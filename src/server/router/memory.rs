@@ -1834,7 +1834,7 @@ pub(crate) async fn ingest_markdown(
     let replace = payload.replace;
     // record the creating principal (see add_chunk).
     let owner = crate::handlers::gate::principal_to_owner(&principal.0);
-    let result = task::spawn_blocking(move || -> Result<(i64, usize, usize), AppError> {
+    let result = task::spawn_blocking(move || -> Result<(i64, usize, usize, usize), AppError> {
         let mut conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
         let tx = conn
             .transaction()
@@ -1909,7 +1909,7 @@ pub(crate) async fn ingest_markdown(
     .await
     .map_err(|_| AppError::Internal("Task join error".into()))??;
 
-    let (first_id, inserted, duplicates) = result;
+    let (first_id, inserted, duplicates, edges_skipped) = result;
 
     // Apply domain from frontmatter or payload field. When the domain differs
     // from the default ("global"), update every chunk for this document_id.
@@ -1958,6 +1958,7 @@ pub(crate) async fn ingest_markdown(
         "document_id": document_id,
         "chunks_inserted": inserted,
         "chunks_duplicate": duplicates,
+        "edges_skipped": edges_skipped,
         "total_chunks": total_chunks
     })))
 }
@@ -1998,7 +1999,7 @@ pub fn write_markdown_ingest(
     raw_content: &str,
     quarantine_flagged: bool,
     owner: &Option<String>,
-) -> Result<(i64, usize, usize), AppError> {
+) -> Result<(i64, usize, usize, usize), AppError> {
     let mut first_id = 0;
     let mut inserted = 0usize;
     let mut duplicates = 0usize;
@@ -2040,7 +2041,7 @@ pub fn write_markdown_ingest(
             // break a previously-working ingest. The chunks themselves are unchanged.
             let _ = link_vault_source(tx, sp, doc_title, raw_content, &existing_ids);
             let first = existing_ids.first().copied().unwrap_or(0);
-            return Ok((first, 0, chunks.len()));
+            return Ok((first, 0, chunks.len(), 0));
         }
         // Changed file: sweep old chunks (+ their vec0 rows) for this path.
         let stale_ids: Vec<i64> = {
@@ -2163,8 +2164,26 @@ pub fn write_markdown_ingest(
     //
     // quarantined evidence must NOT become durable graph
     // structure — skip edge creation when this ingest was flagged.
+    //
+    // The graph's write edge is DECLINE-AND-COUNT: every edge endpoint here
+    // is prose-derived (headings, bold terms, code spans, wikilink targets,
+    // frontmatter tags/aliases, legacy `[[rel::entity]]` annotations), so
+    // each name/type is normalized into the graph's closed charset before
+    // any row is written. A non-conforming endpoint SKIPS its edge — counted
+    // into the response's `edges_skipped` + one audit note — never a 400
+    // (a hostile heading must not fail a document) and never a verbatim
+    // entity row (the graph stays a closed set the read seam can vouch for).
+    let mut edges_skipped = 0usize;
     if !quarantine_flagged && first_id != 0 && !edges.is_empty() {
         for (rel, from, to) in edges {
+            let (Some(rel), Some(from), Some(to)) = (
+                crate::handlers::normalize_rel_type(rel).ok(),
+                crate::handlers::normalize_name(from).ok(),
+                crate::handlers::normalize_name(to).ok(),
+            ) else {
+                edges_skipped += 1;
+                continue;
+            };
             tx.execute(
                 "INSERT OR IGNORE INTO entities (name) VALUES (?1)",
                 params![from],
@@ -2198,8 +2217,20 @@ pub fn write_markdown_ingest(
             .map_err(|e| AppError::Internal(e.to_string()))?;
         }
     }
+    if edges_skipped > 0 {
+        // one evidence note per ingest naming the decline count —
+        // identifiers only (the doc id + the count), inside the caller's tx.
+        crate::audit::record(
+            tx,
+            crate::audit::AuditKind::Ingest,
+            "api",
+            doc_id,
+            crate::audit::AuditStatus::Ok,
+            &format!("edges_skipped:{edges_skipped}"),
+        );
+    }
 
-    Ok((first_id, inserted, duplicates))
+    Ok((first_id, inserted, duplicates, edges_skipped))
 }
 
 /// compose the source/revision/link calls for one vault file into a
@@ -2789,11 +2820,24 @@ pub(crate) async fn get_entity(
             return Ok(serde_json::json!({"error": "Entity not found"}));
         };
 
-        let relations = entity_relations(&conn, id, limit, domain_scope.as_deref())?;
+        // The graph family is a stored-text read surface: entity names and
+        // types are markdown-derived, so every emitted string passes the
+        // read seam (graph rows carry no PII flag — `false` keeps the mask
+        // arm off; the strip arms are principal-independent).
+        let relations = entity_relations(
+            &conn,
+            id,
+            limit,
+            domain_scope.as_deref(),
+            false,
+            &principal.0,
+        )?;
 
         Ok(serde_json::json!({
-            "name": name,
-            "type": etype.unwrap_or_else(|| "concept".to_string()),
+            "name": crate::gate::sanitize_read_cow(&name, false, &principal.0).into_owned(),
+            "type": etype
+                .map(|t| crate::gate::sanitize_read_cow(&t, false, &principal.0).into_owned())
+                .unwrap_or_else(|| "concept".to_string()),
             "relations": relations
         }))
     })
@@ -2815,6 +2859,8 @@ pub fn entity_relations(
     id: i64,
     limit: i64,
     domain_scope: Option<&str>,
+    pii: bool,
+    principal: &Option<crate::auth::Principal>,
 ) -> Result<Vec<serde_json::Value>, AppError> {
     let mut stmt = conn
         .prepare(
@@ -2831,9 +2877,11 @@ pub fn entity_relations(
 
     let relations = stmt
         .query_map(params![id, limit, domain_scope], |r| {
+            let name = r.get::<_, String>(0)?;
+            let rel = r.get::<_, String>(1)?;
             Ok(serde_json::json!({
-                "to_entity": r.get::<_, String>(0)?,
-                "relation_type": r.get::<_, String>(1)?,
+                "to_entity": crate::gate::sanitize_read_cow(&name, pii, principal).into_owned(),
+                "relation_type": crate::gate::sanitize_read_cow(&rel, pii, principal).into_owned(),
                 "direction": r.get::<_, String>(2)?
             }))
         })
@@ -2889,6 +2937,8 @@ pub(crate) async fn get_relations(
             direction,
             limit,
             domain_scope.as_deref(),
+            false,
+            &principal.0,
         )?;
         Ok(serde_json::json!({ "relations": results }))
     })
@@ -2902,6 +2952,7 @@ pub(crate) async fn get_relations(
 /// (newest ids first). Extracted for the LIMIT contract to be unit-testable.
 /// `domain_scope` restricts edges by their chunk
 /// provenance label (see `entity_relations`).
+#[allow(clippy::too_many_arguments)] // the read seam's (pii, principal) pair rides every mapper; a struct would add ceremony to the single call site
 pub fn relations_for(
     conn: &rusqlite::Connection,
     param_lower: &str,
@@ -2909,6 +2960,8 @@ pub fn relations_for(
     direction: &str,
     limit: i64,
     domain_scope: Option<&str>,
+    pii: bool,
+    principal: &Option<crate::auth::Principal>,
 ) -> Result<Vec<serde_json::Value>, AppError> {
     let query = if is_from {
         "SELECT e.name, r.relation_type FROM relationships r
@@ -2934,9 +2987,11 @@ pub fn relations_for(
 
     let results = stmt
         .query_map(params![param_lower, limit, domain_scope], |r| {
+            let name = r.get::<_, String>(0)?;
+            let rel = r.get::<_, String>(1)?;
             Ok(serde_json::json!({
-                "entity": r.get::<_, String>(0)?,
-                "relation": r.get::<_, String>(1)?,
+                "entity": crate::gate::sanitize_read_cow(&name, pii, principal).into_owned(),
+                "relation": crate::gate::sanitize_read_cow(&rel, pii, principal).into_owned(),
                 "direction": direction,
             }))
         })
@@ -3020,12 +3075,17 @@ pub(crate) async fn get_edge_history(
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let versions: Vec<serde_json::Value> = stmt
             .query_map(params![from_id, to_id, kind], |r| {
+                let from_name = r.get::<_, String>(0)?;
+                let to_name = r.get::<_, String>(1)?;
+                let rel = r.get::<_, String>(2)?;
+                // The history surface carries retired entity names — the
+                // same read-seam law applies to every version row.
                 Ok(serde_json::json!({
                     "id": r.get::<_, i64>(8)?,
                     "relation_id": r.get::<_, i64>(8)?,
-                    "from_entity": r.get::<_, String>(0)?,
-                    "to_entity": r.get::<_, String>(1)?,
-                    "relation_type": r.get::<_, String>(2)?,
+                    "from_entity": crate::gate::sanitize_read_cow(&from_name, false, &principal.0).into_owned(),
+                    "to_entity": crate::gate::sanitize_read_cow(&to_name, false, &principal.0).into_owned(),
+                    "relation_type": crate::gate::sanitize_read_cow(&rel, false, &principal.0).into_owned(),
                     "knowledge_id": r.get::<_, Option<i64>>(3)?,
                     "valid_at": r.get::<_, Option<String>>(4)?,
                     "invalid_at": r.get::<_, Option<String>>(5)?,
@@ -3163,6 +3223,9 @@ pub(crate) async fn traverse_graph(
     // shim-mode JWT edge scoping (the entity tables carry no
     // domain column; the chunk link is the domain atom).
     let domain_scope = handlers::graph_domain_scope(&principal.0, &state.registry, &scope_label);
+    // the read seam rides the closure: every traversal row's string fields
+    // pass sanitize_read_cow (the graph family is a stored-text surface).
+    let seam_principal = principal.0.clone();
 
     let result = task::spawn_blocking(move || -> Result<serde_json::Value, AppError> {
         // bi-temporal edge filter. When `at` is set, an
@@ -3346,49 +3409,49 @@ pub(crate) async fn traverse_graph(
                 domain_scope.as_ref(),
             ) {
                 (Some(at), Some(k), Some(sc)) => stmt
-                    .query_map(params![eid, depth, at, k, sc], graph_read::traverse_row_mapper(domain))
+                    .query_map(params![eid, depth, at, k, sc], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
                 (Some(at), Some(k), None) => stmt
-                    .query_map(params![eid, depth, at, k], graph_read::traverse_row_mapper(domain))
+                    .query_map(params![eid, depth, at, k], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
                 (Some(at), None, Some(sc)) => stmt
-                    .query_map(params![eid, depth, at, sc], graph_read::traverse_row_mapper(domain))
+                    .query_map(params![eid, depth, at, sc], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
                 (Some(at), None, None) => stmt
-                    .query_map(params![eid, depth, at], graph_read::traverse_row_mapper(domain))
+                    .query_map(params![eid, depth, at], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
                 (None, Some(k), Some(sc)) => stmt
-                    .query_map(params![eid, depth, k, sc], graph_read::traverse_row_mapper(domain))
+                    .query_map(params![eid, depth, k, sc], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
                 (None, Some(k), None) => stmt
-                    .query_map(params![eid, depth, k], graph_read::traverse_row_mapper(domain))
+                    .query_map(params![eid, depth, k], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
                 (None, None, Some(sc)) => stmt
-                    .query_map(params![eid, depth, sc], graph_read::traverse_row_mapper(domain))
+                    .query_map(params![eid, depth, sc], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))
                     .collect(),
                 (None, None, None) => stmt
-                    .query_map(params![eid, depth], graph_read::traverse_row_mapper(domain))
+                    .query_map(params![eid, depth], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
                     .map_err(|e| AppError::Internal(e.to_string()))?
                     .filter_map(|r| r.ok())
                     .take(trace::MAX_VISITED.saturating_sub(total_visited))

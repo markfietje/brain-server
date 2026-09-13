@@ -147,10 +147,10 @@ mod tests {
         let c = graph_db(1000); // hub id 1 with 1000 out-edges
         // The entity query joins both endpoints, so a 1000-edge hub yields
         // >1000 rows without a cap; the LIMIT keeps the response finite.
-        let bounded = entity_relations(&c, 1, 500, None).unwrap();
+        let bounded = entity_relations(&c, 1, 500, None, false, &None).unwrap();
         assert_eq!(bounded.len(), 500, "bounded to the cap");
         // A small explicit limit is honored.
-        let tiny = entity_relations(&c, 1, 3, None).unwrap();
+        let tiny = entity_relations(&c, 1, 3, None, false, &None).unwrap();
         assert_eq!(tiny.len(), 3);
         // The clamp (handler-side) keeps limits in 1..=MAX_GRAPH_EDGES.
         assert_eq!(graph_read::clamp_graph_limit(None), MAX_GRAPH_EDGES);
@@ -170,11 +170,11 @@ mod tests {
     fn graph_relations_respects_limit_from_and_to() {
         let c = graph_db(1000);
         // from-branch: hub (id 1, name "hub") fans out 1000 edges.
-        let from = relations_for(&c, "hub", true, "out", 2, None).unwrap();
+        let from = relations_for(&c, "hub", true, "out", 2, None, false, &None).unwrap();
         assert_eq!(from.len(), 2);
         assert_eq!(from[0]["direction"], "out");
         // to-branch: create an entity every edge points into and query "in".
-        let to = relations_for(&c, "e1005", false, "in", 1, None).unwrap();
+        let to = relations_for(&c, "e1005", false, "in", 1, None, false, &None).unwrap();
         assert_eq!(to.len(), 1);
         assert_eq!(to[0]["direction"], "in");
         assert_eq!(to[0]["entity"], "hub");
@@ -197,14 +197,14 @@ mod tests {
         // entity_relations: the retired edge is hidden; the other 3 remain. Its
         // join matches both endpoints (2 rows per edge: hub + target), so 3
         // live edges → 6 rows; the point is e1001 is absent.
-        let rels = entity_relations(&c, 1, 100, None).unwrap();
+        let rels = entity_relations(&c, 1, 100, None, false, &None).unwrap();
         assert_eq!(rels.len(), 6, "3 live edges, 2 join rows each");
         assert!(
             !rels.iter().any(|v| v["to_entity"] == "e1001"),
             "e1001 must not appear as current"
         );
         // relations_for (both branches): e1001 is gone from the fan-out.
-        let from = relations_for(&c, "hub", true, "out", 100, None).unwrap();
+        let from = relations_for(&c, "hub", true, "out", 100, None, false, &None).unwrap();
         assert_eq!(
             from.len(),
             3,
@@ -2627,7 +2627,7 @@ mod tests {
         let embs = vec![fake_embedding(0.1)];
         let sp = Some("/vault/note.md".to_string());
         let tx = db.transaction().unwrap();
-        let (id, inserted, _dup) = write_markdown_ingest(
+        let (id, inserted, _dup, _edges_skipped) = write_markdown_ingest(
             &tx,
             &chunks,
             &embs,
@@ -2666,7 +2666,7 @@ mod tests {
         let sp = Some("/vault/same.md".to_string());
 
         let tx = db.transaction().unwrap();
-        let (id1, ins1, _) = write_markdown_ingest(
+        let (id1, ins1, _, _edges_skipped) = write_markdown_ingest(
             &tx,
             &chunks,
             &embs,
@@ -2684,7 +2684,7 @@ mod tests {
 
         // Re-ingest identical content + path → true no-op (inserted == 0).
         let tx = db.transaction().unwrap();
-        let (id2, ins2, _) = write_markdown_ingest(
+        let (id2, ins2, _, _edges_skipped) = write_markdown_ingest(
             &tx,
             &chunks,
             &embs,
@@ -2746,7 +2746,7 @@ mod tests {
             line_end: 1,
         }];
         let tx = db.transaction().unwrap();
-        let (_, ins2, _) = write_markdown_ingest(
+        let (_, ins2, _, _edges_skipped) = write_markdown_ingest(
             &tx,
             &chunks_v2,
             &[fake_embedding(0.2)],
@@ -2797,7 +2797,7 @@ mod tests {
             line_end: 1,
         }];
         let tx = db.transaction().unwrap();
-        let (first_id, inserted, _) = write_markdown_ingest(
+        let (first_id, inserted, _, _edges_skipped) = write_markdown_ingest(
             &tx,
             &chunks,
             &[fake_embedding(0.7)],
@@ -2950,7 +2950,7 @@ mod tests {
         }];
         let sp_opt = Some(sp.clone());
         let tx = db.transaction().unwrap();
-        let (id_again, ins, _) = write_markdown_ingest(
+        let (id_again, ins, _, _edges_skipped) = write_markdown_ingest(
             &tx,
             &chunks,
             &[fake_embedding(0.1)],
@@ -3271,7 +3271,7 @@ Final paragraph after the rule.";
         // is created, and the chunks round-trip back from the DB intact.
         let embs = vec![fake_embedding(0.42); chunks.len()];
         let tx = db.transaction().unwrap();
-        let (first_id, inserted, _) = write_markdown_ingest(
+        let (first_id, inserted, _, _edges_skipped) = write_markdown_ingest(
             &tx,
             &chunks,
             &embs,
@@ -3331,7 +3331,7 @@ Final paragraph after the rule.";
         // (inserted == 0, same first_id). Proves the hash isn't perturbed by
         // the `#` / `-` / unicode / space bytes in source_path.
         let tx = db.transaction().unwrap();
-        let (id2, ins2, _) = write_markdown_ingest(
+        let (id2, ins2, _, _edges_skipped) = write_markdown_ingest(
             &tx,
             &chunks,
             &embs,
@@ -7622,6 +7622,8 @@ Final paragraph after the rule.";
             env!("CARGO_MANIFEST_DIR"),
             "/src/handlers/procedure.rs"
         ));
+        let graph_read_src =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/graph_read.rs"));
         let observe_src = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/handlers/observe.rs"
@@ -7653,6 +7655,14 @@ Final paragraph after the rule.";
             (procedure_src, "steps", "sanitize_read"),
             // 2026-09-11 audit: the trace replay carries stored caller strings.
             (observe_src, "get_trace", "sanitize_trace_strings"),
+            // Attrbane M2: the graph family is a stored-text read surface —
+            // entity names and relation types are markdown-derived; the four
+            // graph handlers + the traverse mapper emit them through the seam.
+            (router_mem_src, "get_entity", "sanitize_read_cow"),
+            (router_mem_src, "entity_relations", "sanitize_read_cow"),
+            (router_mem_src, "relations_for", "sanitize_read_cow"),
+            (router_mem_src, "get_edge_history", "sanitize_read_cow"),
+            (graph_read_src, "traverse_row_mapper", "sanitize_read_cow"),
         ];
         for (src, name, seam) in sites {
             let body = handler_body(src, name)
@@ -9757,14 +9767,14 @@ Final paragraph after the rule.";
         .unwrap();
 
         // Scoped to alpha: neither the beta edge nor the unlinked edge shows.
-        let scoped = entity_relations(&conn, hub, 50, Some("alpha")).unwrap();
+        let scoped = entity_relations(&conn, hub, 50, Some("alpha"), false, &None).unwrap();
         assert_eq!(scoped.len(), 0, "foreign + unlinked edges invisible");
         // Scoped to beta: only the linked beta edge shows (the query emits
         // one row per endpoint entity — 2 rows for the one edge).
-        let beta_scoped = entity_relations(&conn, hub, 50, Some("beta")).unwrap();
+        let beta_scoped = entity_relations(&conn, hub, 50, Some("beta"), false, &None).unwrap();
         assert_eq!(beta_scoped.len(), 2, "beta principal sees its own edge");
         // Unrestricted (loopback): both edges, all endpoint rows.
-        let all = entity_relations(&conn, hub, 50, None).unwrap();
+        let all = entity_relations(&conn, hub, 50, None, false, &None).unwrap();
         assert_eq!(all.len(), 4, "loopback sees every edge");
     }
 
@@ -14703,6 +14713,270 @@ Final paragraph after the rule.";
             }
         }
         assert!(scanned > 30, "sanity: the walk scanned {scanned} files");
+    }
+
+    // ── the graph family read seam + the write-edge decline ──────────────
+
+    /// Full AppState on a fresh temp DB — the drill harness shape (opaque
+    /// auth, static embedder, no classifier artifact in the test env).
+    fn graph_seam_state(dir: &tempfile::TempDir) -> Arc<AppState> {
+        register_sqlite_vec();
+        let db_path = dir.path().join("brain.db");
+        let mgr = SqliteConnectionManager::file(&db_path);
+        let pool: brain_server::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
+        Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                pool.clone(),
+                db_path.clone(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
+            loom: Default::default(),
+            pool: pool.clone(),
+            registry: domain_registry::DomainRegistry::new(pool.clone(), dir.path(), false),
+            model: Arc::new(
+                brain_server::embed::StaticEmbedder::new(brain_server::config::MODEL_ID)
+                    .expect("model"),
+            ),
+            db_path,
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))
+                .expect("empty key store"),
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
+        })
+    }
+
+    /// Every string leaf of a JSON response, flattened for seam assertions.
+    #[cfg(test)]
+    fn collect_json_strings(v: &serde_json::Value, out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::String(s) => out.push(s.clone()),
+            serde_json::Value::Array(a) => a.iter().for_each(|x| collect_json_strings(x, out)),
+            serde_json::Value::Object(o) => o.values().for_each(|x| collect_json_strings(x, out)),
+            _ => {}
+        }
+    }
+
+    /// The graph route family is a stored-text read surface: every emitted
+    /// string field passes the read seam on all four routes + the traverse
+    /// mapper. Two legs: (a) the wire path — a hostile heading and a
+    /// bidi-bearing wikilink target ingested via /ingest/markdown must
+    /// never surface raw; (b) the legacy path — hostile entity rows written
+    /// by older builds (seeded raw via SQL) still come out stripped.
+    /// RED-first: the mappers emitted row strings verbatim.
+    #[tokio::test]
+    async fn graph_route_text_passes_sanitize_read() {
+        use tower::ServiceExt;
+
+        async fn get_json(app: &axum::Router, uri: &str) -> serde_json::Value {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), axum::http::StatusCode::OK, "{uri}");
+            let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = graph_seam_state(&dir);
+        let app = brain_server::server::router::memory::router().with_state(state.clone());
+
+        // Leg (a): the wire path.
+        // one conforming wikilink so the wire leg proves conforming names
+        // still link while the hostile ones decline.
+        let content = "# seed doc\n\n## <img src=x onerror=alert(3)>\n\nsee [[other\u{202E}note]] and [[clean note]]\n";
+        let body = serde_json::json!({ "content": content, "title": "seed doc" });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ingest/markdown")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+
+        // Leg (b): legacy rows, seeded raw (what an older build stored).
+        // INSERT OR IGNORE: leg (a) may have already created the hostile
+        // name on this tree — the ids resolve either way.
+        let conn = state.pool.get().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO entities (name) VALUES ('seed node')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO entities (name) VALUES ('<img src=x onerror=alert(3)>')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO entities (name) VALUES ('bad\u{202E}name')",
+            [],
+        )
+        .unwrap();
+        let seed_id: i64 = conn
+            .query_row(
+                "SELECT id FROM entities WHERE name = 'seed node'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let hostile_id: i64 = conn
+            .query_row(
+                "SELECT id FROM entities WHERE name = '<img src=x onerror=alert(3)>'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO relationships (from_entity_id, to_entity_id, relation_type, knowledge_id)
+             VALUES (?1, ?2, 'references', NULL)",
+            params![seed_id, hostile_id],
+        )
+        .unwrap();
+        let edge_id: i64 = conn.last_insert_rowid();
+        drop(conn);
+
+        let surfaces = [
+            "/graph/traverse?start=seed%20node&max_depth=1".to_string(),
+            "/graph/relations?from=seed%20node".to_string(),
+            "/graph/entity/seed%20node".to_string(),
+            format!("/graph/relationships/{edge_id}/history"),
+            "/graph/traverse?start=seed%20doc&max_depth=2".to_string(),
+            "/graph/relations?from=seed%20doc".to_string(),
+        ];
+        for uri in &surfaces {
+            let v = get_json(&app, uri).await;
+            let mut strings = Vec::new();
+            collect_json_strings(&v, &mut strings);
+            assert!(!strings.is_empty(), "surface must emit fields: {uri}");
+            for s in &strings {
+                assert!(!s.contains('<'), "no tag byte may ride {uri}: {s:?}");
+                assert!(
+                    !s.contains("onerror"),
+                    "handler attribute must not ride {uri}: {s:?}"
+                );
+                assert!(
+                    !s.contains('\u{202E}'),
+                    "bidi override must not ride {uri}: {s:?}"
+                );
+            }
+        }
+    }
+
+    /// The markdown write edge is DECLINE-AND-COUNT, never a 400: a
+    /// non-conforming entity name (hostile heading, bidi wikilink target,
+    /// hostile tag/alias) skips its edge — counted into the response's
+    /// `edges_skipped` + one audit note — while the ingest itself stays
+    /// 200 and no entity row is created. The structured path is the
+    /// explicit API contract and 400s on a non-conforming `entity_type`
+    /// (closed charset beyond the 64-cap). RED-first: names were stored
+    /// verbatim and no skip accounting existed.
+    #[tokio::test]
+    async fn graph_names_reject_nonconforming_charset() {
+        use tower::ServiceExt;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = graph_seam_state(&dir);
+        let app = brain_server::server::router::memory::router().with_state(state.clone());
+
+        // one conforming wikilink so the wire leg proves conforming names
+        // still link while the hostile ones decline.
+        let content = "# seed doc\n\n## <img src=x onerror=alert(3)>\n\nsee [[other\u{202E}note]] and [[clean note]]\n";
+        let body = serde_json::json!({ "content": content, "title": "seed doc" });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ingest/markdown")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::OK,
+            "a hostile heading must not 400 a document"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let skipped = v["edges_skipped"].as_u64().unwrap_or(0);
+        assert!(
+            skipped >= 1,
+            "the declined edges must be counted in the response: {v}"
+        );
+
+        let conn = state.pool.get().unwrap();
+        let hostile_entities: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM entities WHERE name LIKE '%onerror%' OR name LIKE '%\u{202E}%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            hostile_entities, 0,
+            "a non-conforming name must not become an entity row"
+        );
+
+        // The structured path keeps its explicit contract: a non-conforming
+        // entity_type is a 400 (closed charset beyond the 64-cap).
+        let body = serde_json::json!({
+            "title": "typed",
+            "content": "a typed record",
+            "entities": [{ "name": "ok name", "type": "Person X" }]
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ingest")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            axum::http::StatusCode::BAD_REQUEST,
+            "entity_type outside [a-z0-9_-] must 400 on the structured path"
+        );
     }
 }
 

@@ -13,17 +13,36 @@ pub fn clamp_graph_limit(limit: Option<i64>) -> i64 {
 /// row mapper for the recursive CTE. Extracted so all four
 /// param-shape branches share one definition (DRY; the only thing that varies
 /// is which params are bound, not how the row maps).
+///
+/// Every emitted string field rides the read seam (the graph family is a
+/// stored-text surface: entity names and relation types are markdown-derived
+/// and attacker-writable). `entity`/`from_entity`/`path`/`edge_path`/`domain`
+/// pass through `sanitize_read_cow` — the fast path makes conforming ids
+/// free; server-formed id paths (`1->2->3`) and vocabulary (`references`)
+/// are byte-identical under the seam. `pii` stays a parameter for seam
+/// uniformity with the row-backed surfaces; graph rows carry no PII flag,
+/// so callers pass `false` and the principal feeds the (inactive) mask arm.
+/// `principal` is taken BY VALUE so the signature stays needle-compatible
+/// with the site-table wiring guard (`fn traverse_row_mapper(`) — one
+/// borrowed input keeps the elided return lifetime unambiguous.
 pub(crate) fn traverse_row_mapper(
     domain: &str,
+    pii: bool,
+    principal: Option<crate::auth::Principal>,
 ) -> impl Fn(&rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value> + '_ {
     move |r| {
+        let name = r.get::<_, String>(0)?;
+        let path = r.get::<_, String>(2)?;
+        let edge_path = r.get::<_, String>(3)?;
+        let from_entity = r.get::<_, Option<String>>(4)?;
         Ok(serde_json::json!({
-            "entity": r.get::<_, String>(0)?,
+            "entity": crate::gate::sanitize_read_cow(&name, pii, &principal).into_owned(),
             "depth": r.get::<_, i64>(1)?,
-            "path": r.get::<_, String>(2)?,
-            "edge_path": r.get::<_, String>(3)?,
-            "from_entity": r.get::<_, Option<String>>(4)?,
-            "domain": domain,
+            "path": crate::gate::sanitize_read_cow(&path, pii, &principal).into_owned(),
+            "edge_path": crate::gate::sanitize_read_cow(&edge_path, pii, &principal).into_owned(),
+            "from_entity": from_entity
+                .map(|s| crate::gate::sanitize_read_cow(&s, pii, &principal).into_owned()),
+            "domain": crate::gate::sanitize_read_cow(domain, pii, &principal).into_owned(),
         }))
     }
 }
