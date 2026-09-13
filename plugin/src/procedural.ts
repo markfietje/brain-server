@@ -402,12 +402,25 @@ export function registerProceduralTools(
               details: { evaluated: false, id: p.id },
             };
           }
+          // result + matchedCondition derive from an agent-stored rule —
+          // both ride the per-field boundary on the text AND details seams.
+          const resultText = sanitizeForBlock(out.result);
+          const conditionText =
+            out.matchedCondition !== undefined
+              ? sanitizeForBlock(out.matchedCondition)
+              : undefined;
           const text = out.usedDefault
-            ? `Decision #${p.id}: ${out.result} (default — no branch matched).`
-            : `Decision #${p.id}: ${out.result} (matched: ${out.matchedCondition ?? "?"}).`;
+            ? `Decision #${p.id}: ${resultText} (default — no branch matched).`
+            : `Decision #${p.id}: ${resultText} (matched: ${conditionText ?? "?"}).`;
           return {
             content: [{ type: "text" as const, text }],
-            details: { evaluated: true, ...out },
+            details: {
+              evaluated: true,
+              result: resultText,
+              usedDefault: out.usedDefault,
+              ...(conditionText !== undefined ? { matchedCondition: conditionText } : {}),
+              ...(out.citation !== undefined ? { citation: out.citation } : {}),
+            },
           };
         } catch (err) {
           return {

@@ -199,7 +199,7 @@ export default definePluginEntry({
             content: sanitizeForBlock(chunk.content),
             fromLine: 1,
             lineCount: 1,
-            ...(chunk.source_uri ? { sourcePath: chunk.source_uri } : {}),
+            ...(chunk.source_uri ? { sourcePath: sanitizeForBlock(chunk.source_uri) } : {}),
           };
         } catch {
           return null;
@@ -491,7 +491,7 @@ function hitToCorpusResult(hit: CorpusHit): CorpusResult {
     score: hit.score,
     snippet: sanitizeForBlock(hit.content),
     id: String(hit.id),
-    ...(hit.domain ? { kind: hit.domain, source: hit.domain } : {}),
+    ...(hit.domain ? { kind: sanitizeForBlock(hit.domain), source: sanitizeForBlock(hit.domain) } : {}),
   };
 }
 

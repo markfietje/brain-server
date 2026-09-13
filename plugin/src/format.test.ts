@@ -93,6 +93,47 @@ describe("sanitizeForBlock", () => {
   test("trims leading/trailing space", () => {
     expect(sanitizeForBlock("   hello   ")).toBe("hello");
   });
+  test("plugin_recall_output_survives_no_hostile_element", () => {
+    // The seam-level assertion: sanitizeForBlock is the single chokepoint
+    // every memory/proposal/graph/procedure field rides into model context.
+    // The hostile-element mirror must be INVOKED here, not merely exported
+    // and fixture-tested (a defense's test passing proves it exists, not
+    // that anything calls it). Server-canonical position: the strip runs
+    // inside the same pipeline, so its output carries no element residue.
+    const fixtures = [
+      "<img src=x onerror=alert(3)>",
+      '<a href="javascript:alert(1)">click</a>',
+      '<a href="  JAVASCRIPT:alert(1)">mixed case</a>',
+      "<span onclick=alert(7)>hover</span>",
+      "<style>@import url(https://evil/x.css)</style>",
+      "<math><mi>xlink:href</mi></math>",
+      "<details ontoggle=\"alert(1)\">hidden</details>",
+    ];
+    for (const f of fixtures) {
+      const out = sanitizeForBlock(f);
+      // element residue dies: no live construct of any fixture element
+      expect(out, `${f} -> ${out}`).not.toMatch(/<img|<script|<math|<style|<details/i);
+      // payloads that rode KILLED elements' attributes die with the tag
+      // (the attribute tier itself is the server seam's job — the mirror
+      // is the element backstop for fields the server does not own)
+      if (!f.startsWith("<a") && !f.startsWith("<span")) {
+        expect(out, `${f} -> ${out}`).not.toMatch(/onerror|onclick|ontoggle/i);
+        expect(out, `${f} -> ${out}`).not.toContain("alert(");
+        expect(out, `${f} -> ${out}`).not.toContain("@import");
+        expect(out, `${f} -> ${out}`).not.toContain("xlink:href");
+      }
+    }
+    // Weld families: the element residue dies at the fixpoint; the payload
+    // that rode between the tags is inert prose (the same posture as the
+    // server's element tier — prose is not a live construct).
+    const welded = sanitizeForBlock("<scr<script>ipt>alert(1)</scr<script>ipt>");
+    expect(welded).not.toMatch(/<script/i);
+    // The clean corpus rides untouched: benign hrefs and prose survive the
+    // same pipeline (the tier is scheme-hostile, not attribute-hostile).
+    expect(sanitizeForBlock('<a href="https://example.com">docs</a>')).toContain(
+      '<a href="https://example.com">docs</a>',
+    );
+  });
   test("strips the bidi/zero-width smuggling class (v1.20.24)", () => {
     // Zero-width space, ZWNJ/ZWJ, LRM/RLM, RLO override, LRI isolate, BOM.
     for (const c of [

@@ -86,10 +86,13 @@ function sanitizeHit(h: BrainRecallHitLike): SanitizedHit {
     ...(h.title !== undefined ? { title: sanitizeForBlock(h.title) } : {}),
     content: sanitizeForBlock(h.content),
     score: h.score,
-    ...(h.domain !== undefined ? { domain: h.domain } : {}),
-    ...(h.source !== undefined ? { source: h.source } : {}),
-    ...(h.provenance !== undefined ? { provenance: h.provenance } : {}),
-    ...(h.evidence !== undefined ? { evidence: h.evidence } : {}),
+    // label fields ride the same per-field boundary: a short label is
+    // still agent-influenceable text (the prose channel is closed; the
+    // label channel must be too)
+    ...(h.domain !== undefined ? { domain: sanitizeForBlock(h.domain) } : {}),
+    ...(h.source !== undefined ? { source: sanitizeForBlock(h.source) } : {}),
+    ...(h.provenance !== undefined ? { provenance: sanitizeForBlock(h.provenance) } : {}),
+    ...(h.evidence !== undefined ? { evidence: sanitizeForBlock(h.evidence) } : {}),
     // v1.27.14 "Fencepost2" (F-01): `snippet` carries the same smuggling class
     // as title/content — run it through the shared block boundary too (it was
     // the one field the detail seam passed raw).
@@ -635,12 +638,33 @@ export function registerBrainTools(
               traversal: res.traversal.map((r) => ({
                 entity: sanitizeForBlock(r.entity),
                 depth: r.depth,
-                path: r.path,
-                edgePath: r.edgePath,
-                fromEntity: r.fromEntity,
-                domain: r.domain,
+                path: sanitizeForBlock(r.path),
+                edgePath: sanitizeForBlock(r.edgePath),
+                fromEntity:
+                  r.fromEntity != null ? sanitizeForBlock(r.fromEntity) : r.fromEntity,
+                domain: sanitizeForBlock(r.domain),
               })),
-              ...(res.paths ? { paths: res.paths } : {}),
+              // explain paths carry stored entity names — every string
+              // field rides the boundary
+              ...(res.paths
+                ? {
+                    paths: res.paths.map((p) => ({
+                      depth: p.depth,
+                      domain: sanitizeForBlock(p.domain),
+                      hops: p.hops.map((h) => ({
+                        from: {
+                          id: sanitizeForBlock(h.from.id),
+                          name: sanitizeForBlock(h.from.name),
+                        },
+                        relation: sanitizeForBlock(h.relation),
+                        to: {
+                          id: sanitizeForBlock(h.to.id),
+                          name: sanitizeForBlock(h.to.name),
+                        },
+                      })),
+                    })),
+                  }
+                : {}),
             },
           };
         } catch (err) {
@@ -702,7 +726,24 @@ export function registerBrainTools(
               .join("\n");
             return {
               content: [{ type: "text" as const, text: lines }],
-              details: { count: proposals.length, proposals },
+              // details are a model-context seam (the code's own note on
+              // memory_recall): the sanitized projection replaces the raw
+              // rows — sourcePrompt (the capture-trigger turn text) is
+              // DROPPED, counts not bodies.
+              details: {
+                count: proposals.length,
+                proposals: proposals.map((pr) => ({
+                  id: pr.id,
+                  kind: sanitizeForBlock(pr.kind),
+                  novelty: pr.novelty,
+                  salience: pr.salience,
+                  verdict: sanitizeForBlock(pr.screenVerdict),
+                  ...(pr.conflictWith !== undefined && pr.conflictWith !== null
+                    ? { conflictWith: pr.conflictWith }
+                    : {}),
+                  content: sanitizeForBlock(pr.content),
+                })),
+              },
             };
           } catch (err) {
             return {

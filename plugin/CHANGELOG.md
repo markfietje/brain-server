@@ -4,6 +4,36 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.9] — 2026-09-13
+
+**Attrbane wiring release** (patch: behavioral security fix) — the
+built-but-never-wired defenses at the plugin chokepoint get wired:
+
+- `src/format.ts` `sanitizeForBlock` now CALLS the hostile-element mirror
+  (exported since 0.6.8 with zero production callers — the mirror was
+  fixture-pinned but never invoked, so enforcement for the element class
+  rode the server read seam alone). Server-canonical position: after the
+  markdown-ref strip, before the final sentinel strip. The tier is the
+  element backstop; the attribute tier (`on*` handlers, dangerous schemes)
+  remains the server seam's job — recall hits arrive pre-sanitized and the
+  mirror covers the fields the server does not own.
+- `src/tools.ts`: the per-field boundary now covers the label fields
+  (`sanitizeHit` routes `domain`/`source`/`provenance`/`evidence` through
+  `sanitizeForBlock`), the proposal-list `details` (a sanitized projection
+  replaces the raw rows; `sourcePrompt` — the capture-trigger turn text —
+  is dropped, counts not bodies), and the graph-traverse `details`
+  (traversal rows + explain-path hops sanitized field-by-field).
+- `src/procedural.ts`: decision-evaluate `result` + `matchedCondition`
+  (both derive from an agent-stored rule) pass `sanitizeForBlock` on the
+  text and details seams.
+- `index.ts`: corpus `sourcePath` + hit `kind`/`source` label fields ride
+  the boundary.
+- Red-first pins: `plugin_recall_output_survives_no_hostile_element`
+  (format lane — the canary survived `sanitizeForBlock` verbatim pre-fix)
+  and `tool_details_carry_no_raw_proposal_text` (tools lane — the raw
+  proposal row, traverse paths, and decision condition all rode raw
+  pre-fix). Format lane 62/62.
+
 ## [0.6.8] — 2026-09-13
 
 **Hostile-element mirror release** — numbers the R-01 strip that shipped

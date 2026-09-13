@@ -391,6 +391,12 @@ export function sanitizeForBlock(text: string): string {
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, "[$1]")
     .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
     .replace(/\s+/g, " ");
+  // E. Hostile elements + attributes — the server-canonical position
+  //    (after the ref strip, before the final sentinel strip, mirroring the
+  //    Rust read seam's ordering). The mirror was fixture-pinned but never
+  //    INVOKED — enforcement for the element class rode the server seam
+  //    alone, leaving raw tool `details` fields unwired.
+  out = stripHostileElements(out);
   // F. FINAL strip — only trim follows, so no marker can synthesize after it.
   return stripSentinels(out).trim();
 }

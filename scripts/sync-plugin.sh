@@ -122,11 +122,33 @@ fi
 # 5. Live sync (only reached with a clean guard).
 rsync -rc --delete "${RSYNC_EXCLUDES[@]}" "$SRC/" "$TARGET/"
 
-# 6. Post-sync byte-identity check, fail-closed. Excludes mirror the rsync
-# set (plus macOS metadata); --delete above means anything else must match.
-if ! diff -rq "$SRC" "$TARGET" -x node_modules -x package-lock.json -x .DS_Store; then
-	echo "SYNC UNVERIFIED: post-sync trees differ — investigate before committing the target" >&2
-	exit 1
+# 6. Post-sync byte-identity check, fail-closed, modulo the DECLARED
+# exception list below. Excludes mirror the rsync set (plus macOS
+# metadata); --delete above means anything else must match. An exception
+# is not a pass: each entry names its file + reason, and the check then
+# verifies the declared delta is EXACTLY the reason (anything more fails).
+#   - format.test.ts: the fork workspace's import-order formatter reorders
+#     the header imports; the delta must be import-lines-only (verified by
+#     diffing with import lines stripped) — the test bodies stay
+#     byte-identical, so test-count parity is structural.
+DIFF_OUT="$(diff -rq "$SRC" "$TARGET" -x node_modules -x package-lock.json -x .DS_Store || true)"
+if [[ -z "$DIFF_OUT" ]]; then
+	: # byte-identical — the common case
+else
+	DECLARED="format.test.ts"
+	UNDECLARED="$(printf '%s\n' "$DIFF_OUT" | grep -v "$DECLARED" || true)"
+	if [[ -n "$UNDECLARED" ]]; then
+		echo "SYNC UNVERIFIED: drift outside the declared exception list ($DECLARED):" >&2
+		printf '%s\n' "$UNDECLARED" >&2
+		exit 1
+	fi
+	if ! diff <(grep -v '^import' "$SRC/src/$DECLARED") \
+			<(grep -v '^import' "$TARGET/src/$DECLARED") >/dev/null; then
+		echo "SYNC UNVERIFIED: $DECLARED differs beyond import order —" >&2
+		echo "  merge the change into the canonical tree and re-sync" >&2
+		exit 1
+	fi
+	echo ">> declared delta verified: $DECLARED differs by import order only"
 fi
 
 git -C "$REPO" rev-parse HEAD > "$BASELINE_FILE"

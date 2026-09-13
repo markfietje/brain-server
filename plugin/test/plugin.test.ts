@@ -794,6 +794,96 @@ describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus su
   });
 });
 
+describe("per-field boundary — tool details carry no raw untrusted text", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  test("tool_details_carry_no_raw_proposal_text", async () => {
+    // (1) proposal-list details: the raw row (content + sourcePrompt —
+    // the capture-trigger turn text) never rides the model-context seam;
+    // a sanitized projection replaces it.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse([
+        {
+          id: 7,
+          kind: "fact",
+          content: "body <img src=x onerror=alert(3)>",
+          source_prompt: "trigger <script>alert(9)</script>",
+          novelty: 0.4,
+          conflict_with: null,
+          salience: 0.2,
+          created_at: 1700000000,
+          screen_verdict: "clean",
+          expires_at: 1700604800,
+          warn_secs: 3600,
+          critical_secs: 300,
+        },
+      ]),
+    );
+    const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
+    const res = await tools
+      .get("memory_proposal_list")!
+      .execute("call-1", { status: "pending" });
+    const raw = JSON.stringify((res as { details: unknown }).details);
+    expect(raw).not.toContain("onerror");
+    expect(raw).not.toContain("<script");
+    expect(raw).not.toContain("alert(9)");
+    expect(raw).not.toContain("sourcePrompt");
+    expect((res as { details: { proposals: Array<Record<string, unknown>> } }).details.proposals[0])
+      .toMatchObject({ id: 7, novelty: 0.4, salience: 0.2 });
+
+    // (2) graph traverse details: traversal rows + explain paths carry
+    // stored entity names — every string field rides the boundary.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        traversal: [
+          {
+            entity: "<img src=x onerror=y>",
+            depth: 1,
+            path: "1->2",
+            edge_path: "references",
+            from_entity: "seed",
+            domain: "d",
+          },
+        ],
+        visited: 2,
+        paths: [
+          {
+            hops: [
+              { from: { id: "1", name: "seed" }, relation: "references", to: { id: "2", name: "<img src=x onerror=y>" } },
+            ],
+            depth: 1,
+            domain: "d",
+          },
+        ],
+      }),
+    );
+    const res2 = await tools
+      .get("memory_graph_traverse")!
+      .execute("call-1", { start: "seed", explain: true });
+    const raw2 = JSON.stringify((res2 as { details: unknown }).details);
+    expect(raw2).not.toContain("onerror");
+    expect(raw2).not.toContain("<img");
+
+    // (3) decision evaluate: the matched condition (and the result text)
+    // derive from an agent-stored rule — sanitized on both the text and
+    // the details seam.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        result: "approved <img src=x onerror=z>",
+        matched_condition: "employee_count >= <img src=x onerror=z>",
+        used_default: false,
+      }),
+    );
+    const res3 = await tools
+      .get("memory_decision_evaluate")!
+      .execute("call-1", { id: 5, variables: { employee_count: 75 } });
+    const raw3 = JSON.stringify(res3);
+    expect(raw3).not.toContain("onerror");
+    expect(raw3).not.toContain("<img");
+    expect(raw3).toContain("approved");
+  });
+});
+
 describe("v0.4.0 — procedural memory (runbooks, decision trees)", () => {
   afterEach(() => vi.restoreAllMocks());
 
