@@ -109,8 +109,18 @@ x-api-version unchanged.
 
 ### Engineering record
 
-- Range: 5 commits, `v1.28.83..v1.28.84` (`7d63f32`, `2567d84`,
-  `60c344c`, `935d215`, `89a6233`). Red-first discipline held: the hostile-element
+- Range: 5 remediation commits, `v1.28.83..v1.28.84` (`7d63f32`,
+  `2567d84`, `60c344c`, `935d215`, `89a6233`), plus the release-line
+  commits: the release prep (`4e20302` — version bump, SBOM artifact,
+  README badges, and the gate repairs it carried: the env-mutation test
+  helpers route through the existing `set_or_remove_env` after lipstyk
+  flagged four verbose-match matches on the webhook/SSE lane, and the
+  client vendored arrays were rustfmt'd) and the CI client-gate fix
+  (`strip_hostile_elements` + the two vendored tables carry the house
+  `allow(dead_code)` reservation — the mirror's non-test caller is the
+  wasm read seam, still pending; CI clippy `-D warnings` caught the
+  dead code the local client-gate skip let through — the v1.28.31
+  lesson again). Red-first discipline held: the hostile-element
   and SSE-kill/signing tests failed pre-fix and green post-fix (14/14 on
   the signing lane).
 - CodeQL hard-coded-key alert #73 cleared (proof `7d63f32`). The

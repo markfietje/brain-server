@@ -128,12 +128,16 @@ pub(crate) fn strip_invisible_counted(input: &str) -> (String, usize) {
 /// alarm: the base 26 must equal `plugin/fixtures/hostile-elements.json`
 /// v1 exactly, and every appendix child must strip.
 /// Pure + idempotent; the raw bytes are never rewritten at rest.
+/// Reserved non-test (wasm seam pending — see `strip_hostile_elements`).
+#[allow(dead_code)]
 const VENDORED_HOSTILE_ELEMENTS: [&str; 26] = [
     "script", "img", "iframe", "svg", "object", "embed", "link", "meta", "form", "input", "video",
     "audio", "source", "track", "base", "math", "style", "details", "body", "button", "select",
     "marquee", "dialog", "animate", "picture", "noscript",
 ];
 
+/// Reserved non-test (wasm seam pending — see `strip_hostile_elements`).
+#[allow(dead_code)]
 const VENDORED_MATHML_CHILDREN: [&str; 30] = [
     "mi",
     "mo",
@@ -225,6 +229,11 @@ fn vendored_skip_opaque(bytes: &[u8], from: usize, target: &str) -> usize {
     bytes.len()
 }
 
+/// Reserved for the wasm read seam: the desktop binary's own read path
+/// links no markdown renderer today, so the mirror has no non-test caller
+/// yet — the parity pins in `hostile_elements_fixture_parity` are the
+/// deliverable (same reservation pattern as the `Lookup`/`Run` rows).
+#[allow(dead_code)]
 pub(crate) fn strip_hostile_elements(input: &str) -> String {
     fn is_hostile(name: &str) -> bool {
         VENDORED_HOSTILE_ELEMENTS.contains(&name) || VENDORED_MATHML_CHILDREN.contains(&name)
