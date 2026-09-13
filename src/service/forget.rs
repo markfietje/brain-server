@@ -126,7 +126,7 @@ pub(crate) fn forget_one(
         // write, never silent for the operator: a dropped row warns loudly.
         if crate::audit::record(
             tx,
-            crate::audit::AuditKind::Ingest,
+            crate::audit::AuditKind::Forget,
             actor,
             &format!("chunk:{id}"),
             crate::audit::AuditStatus::Ok,
@@ -214,7 +214,7 @@ pub(crate) fn scrub_proposal_content(
         if rows > 0 {
             crate::audit::record(
                 tx,
-                crate::audit::AuditKind::Ingest,
+                crate::audit::AuditKind::Forget,
                 actor,
                 &format!("proposal:{id}"),
                 crate::audit::AuditStatus::Ok,

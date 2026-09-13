@@ -44,7 +44,7 @@
 //! CREATE TABLE IF NOT EXISTS audit_events(
 //!   id INTEGER PRIMARY KEY AUTOINCREMENT,
 //!   ts TEXT DEFAULT CURRENT_TIMESTAMP,
-//!   kind TEXT NOT NULL,     -- 'auth'|'ingest'|'webhook'|'reconcile'|'backup'|'connector'
+//!   kind TEXT NOT NULL,     -- 'auth'|'ingest'|'webhook'|'reconcile'|'backup'|'connector'|'forget'|...
 //!   actor TEXT,             -- connector kind/instance, 'api', or 'loopback'
 //!   target_hash TEXT,       -- SHA-256 of the affected uri/id (NOT the content)
 //!   status TEXT,            -- 'ok'|'denied'|'error'
@@ -118,6 +118,11 @@ pub enum AuditKind {
     /// ledger inherits the audit chain's tamper-evidence (extended, never a
     /// separate trust root).
     Decision,
+    /// erasure evidence: chunk-forget rows and
+    /// forget-driven proposal-scrub rows. A dedicated kind (not `Ingest`)
+    /// so kind-filtered audit consumers can find erasures without
+    /// detail-hash mining.
+    Forget,
 }
 
 impl AuditKind {
@@ -140,6 +145,7 @@ impl AuditKind {
             AuditKind::Workflow => "workflow",
             AuditKind::Anchor => "anchor",
             AuditKind::Decision => "decision",
+            AuditKind::Forget => "forget",
         }
     }
 }

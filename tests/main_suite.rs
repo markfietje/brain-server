@@ -9185,7 +9185,7 @@ Final paragraph after the rule.";
             assert!(marker.contains("content scrubbed"));
             let audits: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM audit_events WHERE kind = 'ingest' AND detail_hash = ?1",
+                    "SELECT COUNT(*) FROM audit_events WHERE kind = 'forget' AND detail_hash = ?1",
                     [&brain_server::audit::hash("content_scrubbed_on_forget")],
                     |r| r.get(0),
                 )
@@ -9244,7 +9244,7 @@ Final paragraph after the rule.";
             let conn = state.pool.get().unwrap();
             let erasure_audits: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM audit_events WHERE detail_hash = ?1",
+                    "SELECT COUNT(*) FROM audit_events WHERE kind = 'forget' AND detail_hash = ?1",
                     [&brain_server::audit::hash("forget")],
                     |r| r.get(0),
                 )
