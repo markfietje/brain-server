@@ -334,8 +334,11 @@ Graph edges are superseded two ways, both retire-never-delete:
   proposals** keep the memory honest without an LLM.
 - **Read-seam sanitization** — every emitted text field passes redaction →
   invisible-Unicode strip → markdown-reference strip (EchoLeak) → hostile-element
-  strip before leaving the server, so a stored chunk cannot smuggle context out
-  through a rendered URL or bidi/zero-width trickery (v1.20.3 / v1.20.27 / v1.28.72).
+  strip (element tier + attribute tier: `on*` handlers and
+  `javascript:`/`vbscript:`/`data:` schemes on surviving elements die; the tier
+  is scheme-hostile, not attribute-hostile) before leaving the server, so a
+  stored chunk cannot smuggle context out through a rendered URL or
+  bidi/zero-width trickery (v1.20.3 / v1.20.27 / v1.28.72 / v1.28.86).
 - **Fail-closed bind + SSRF-hardened egress** — startup refuses a non-loopback
   bind without auth (v1.20.29); outbound webhook/alert calls follow no redirects
   (v1.20.26).

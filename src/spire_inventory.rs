@@ -112,7 +112,7 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// rehearse-parity pair, the saturation-gauge pins, the
 /// revocation-statelessness pin, the singularity septet, and the
 /// error-taxonomy operator-safety set.
-const CRATE_TEST_FLOOR: usize = 1_448;
+const CRATE_TEST_FLOOR: usize = 1_450;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows (security.txt + the

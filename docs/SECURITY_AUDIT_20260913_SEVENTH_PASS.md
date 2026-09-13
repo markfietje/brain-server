@@ -427,6 +427,17 @@ pages) — except the CA 2026-09-10 package the map predates (L7-03).
 
 ## 10. Remediation plan (sequenced, naming discipline)
 
+> **Closure stamp (2026-09-14, v1.28.86 "Attrbane" shipped):** F7-03, F7-01,
+> F7-04, S7-01, S7-02, S7-03, S7-04, T7-01 CLOSED (register rows in `AUDIT.md`
+> flipped). Live drill: same canary rows raw on 1.28.85 / attribute-free on
+> 1.28.86; digest-409 on the pre-M1 approval + 200 after re-review;
+> hostile-heading ingest 200 with `edges_skipped:2` and zero hostile entity
+> rows; procedure evidence row on the chain (`/ump/audit/verify` ok, 6/6
+> signed); live DB untouched. The plugin attribute tier stays server-side by
+> design (the mirror is the element backstop; recall hits arrive
+> pre-sanitized) — disclosed ceiling, not a gap in the server seam.
+
+
 | Release | Theme | Items | Red-first pin(s) | Floor |
 |---|---|---|---|---|
 | **v1.28.86 "Attrbane"** | Close every open seam-door + wire the dormant defenses | **F7-03: graph family read-seam + `normalize_name` on the markdown/linker write edge + `entity_type` charset validation**; F7-01: `sanitize_read` attribute tier (on* handlers + dangerous schemes, bounded fixed-point, fail-closed drop), four-tree fixture lane extension, THREAT_MODEL:294 + architecture.md wording (T7-01); **F7-04: `AuditKind::Procedure` + row-audit in `store_record` + move the two post-commit audit calls inside their txs**; S7-01: call `stripHostileElements` inside `sanitizeForBlock` (both trees via sync); S7-02: route proposals/paths/matchedCondition through the per-field boundary; S7-03 label fields ride-along | `graph_route_text_passes_sanitize_read` + `graph_names_reject_nonconforming_charset` (both red on today's tree) + `procedure_writes_carry_in_tx_audit` + `recall_hits_carry_no_event_handlers_or_dangerous_schemes` (drill canary = fixture) + `sanitize_read_attr_tier_idempotent` + seam-level `plugin_recall_output_survives_no_hostile_element` / `tool_details_carry_no_raw_proposal_text` | +7 |

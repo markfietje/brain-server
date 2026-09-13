@@ -37,6 +37,109 @@ P4-01 the same way. The headline now reads "gap ledger balanced
 `scripts/env-truth.sh` and `scripts/badges.sh --selfcheck` are the
 standing docs-as-tests gates (see `docs/release-checklist.md`).
 
+## [1.28.86] — 2026-09-13 — "Attrbane": seventh-pass closures, release 1 of 4
+
+### Release notes
+
+**Security fixes**
+
+- **Attribute tier on the read seam (F7-01, HIGH).** Event-handler attributes
+  (`onclick`, `onpointerover`, …) and dangerous URI schemes
+  (`javascript:`/`vbscript:`/`data:`, including mixed-case, entity-encoded, and
+  whitespace-split forms) on SURVIVING elements no longer pass `sanitize_read`
+  verbatim — the drill demonstrated all five classes riding raw on v1.28.85
+  recall output. The tier is scheme-hostile, not attribute-hostile: benign
+  `http(s)` hrefs and prose angle brackets survive byte-identically, a dropped
+  attribute never synthesizes prose, and the weld family's pinned behavior is
+  unchanged.
+- **The graph route family rides the read seam (F7-03, HIGH).** `/graph/entity`,
+  `/graph/relations`, `/graph/traverse`, and `/graph/relationships/{id}/history`
+  emitted stored entity names and relation types raw; markdown ingest made those
+  names attacker-writable (a `## <img src=x onerror=…>` heading became a graph
+  entity). Every emitted string field now passes the read seam, and the markdown
+  write edge DECLINES non-conforming names: the ingest stays 200, the skipped
+  edges are counted in the response's new `edges_skipped` field (plus one audit
+  note), and no entity row is created. The structured path 400s on an
+  `entity_type` outside `[a-z0-9_-]` (explicit API contract; values are
+  lowercased first, so existing "Person"-style types become "person").
+- **Caller-content write paths carry in-tx evidence (F7-04, MED).** `POST
+  /procedure` stored caller content with no audit row; structured `/ingest`
+  audited only graph edges; `/add` and `/ingest/markdown` recorded their audit
+  AFTER the commit (the crash window the audit-per-write law closed). All three
+  holes closed: a `procedure` audit kind on the hash chain, a row audit beside
+  the edge audits, and both legacy recordings moved inside their transactions.
+- **The plugin's dormant defenses are wired (S7-01/S7-02/S7-03, MED — plugin
+  0.6.9).** The hostile-element mirror (exported since 0.6.8, never called) is
+  now invoked inside `sanitizeForBlock` at the server-canonical position; the
+  raw proposal rows, graph-traverse paths, decision-evaluate rule text, and
+  label fields no longer bypass the per-field boundary (the capture-trigger
+  `sourcePrompt` is dropped from proposal details entirely — counts, not
+  bodies).
+- **Sync guard passes its own live pair (S7-04, LOW).** `sync-plugin.sh`'s
+  post-sync check is now the declared-exception form (a named exception with a
+  verified reason), and the sanctioned `format.test.ts` delta was eliminated
+  canonical-side by adopting the fork's import order — the check passes on the
+  live pair and still fails real drift.
+
+**Digest invalidation (expected, disclosed):** the attribute tier widens
+`sanitize_read`, so every stored row whose read-canonical form contained a
+strip target moves its `review_digest`. Outstanding approvals for such rows
+fail closed with 409 at approve time and must be re-reviewed — observed live in
+the release drill (409 on the pre-upgrade digest, 200 after re-fetching the
+re-rendered digest). Rows without strip targets keep their digests.
+
+**Bug fixes**
+
+- None.
+
+**Improvements**
+
+- Markdown ingest responses carry `edges_skipped` so declined graph edges are
+  visible to callers.
+- Docs truth: THREAT_MODEL's hostile-markup row and architecture.md's read-seam
+  sentence state the attribute tier (T7-01). The seventh-pass register rows
+  F7-03/F7-01/F7-04/S7-01/S7-02/S7-03/S7-04/T7-01 are CLOSED in `AUDIT.md`.
+
+### Engineering record
+
+- Range: 7 commits on main (`713748a` M1 attribute tier, `0d797ba` M2 graph
+  seam, `48fef68` M3 audit law, `15a7c99`/`7bcbecb`/`8830209`/`e2cc810` M4
+  plugin wiring incl. the sync-script-mandated oxfmt pass and the
+  S7-04 delta elimination, this commit M5) + fork commit `5b64e7a` (sync 0.6.9,
+  vitest 71/71, tsc clean, byte-parity verified). M4 is 4 commits, not 1: the
+  sync script refuses to ride an uncommitted format pass, and the typebox-class
+  import-order alignment eliminated the declared delta.
+- Red-first pins (all failed against their pre-fix trees): the drill canary
+  family survived `sanitize_read` verbatim; the hostile heading emitted raw
+  through `/graph/traverse`; the procedure write carried zero audit rows; the
+  source-order lock proved both legacy handlers recorded after `tx.commit()`;
+  the plugin img canary survived `sanitizeForBlock` verbatim; the tools-lane
+  pin rode the raw proposal row against the 0.6.8 fork.
+- In-tx rollback proof: a trigger poison on the second step's edge insert
+  aborts the procedure tx and the audit row rolls back WITH the chunks
+  (`procedure_writes_carry_in_tx_audit`'s twin, in-suite — a live server tx
+  cannot be poisoned externally, disclosed honestly).
+- Live drill (fresh DB `/tmp/brain-attrbane/brain.db`, port 18766, Twokeys
+  token file, copies-only; live DB hash verified unchanged): canary rows raw on
+  the 1.28.85 binary → attribute-free on 1.28.86; pre-M1 approval → 409
+  `conflict` → re-review 200; hostile-heading ingest 200 `edges_skipped:2`,
+  zero hostile entity rows, traverse clean; procedure write → `procedure`
+  audit row on the chain; `/ump/audit/verify` `ok:true` (6/6 signed).
+- Gates: full `cargo test --features bench,migrate` green per milestone; clippy
+  `-D warnings` bench + fmt clean; plugin vitest 62/62; floor walked at this
+  commit: 1,450 crate `#[test]` pins (1,448 + 2; the plan's +6 are real but
+  four ride `#[tokio::test]`, which the spire needle does not count —
+  CRATE_TEST_FLOOR set to the walk-measured 1,450).
+- Ceilings (honest): the plugin mirror is the ELEMENT backstop — the attribute
+  tier remains the server seam's job (recall hits arrive pre-sanitized; the
+  mirror covers fields the server does not own); `style="url(javascript:)"`
+  and CSS-class vectors stay out of scope (style is a stripped element on
+  every other path; inline style attributes on surviving elements are the
+  documented bare-URL-class ceiling); the entity_type lowercasing changes
+  stored values on the structured path (disclosed above); DSAR purge of
+  digest-moved proposals is unnecessary (proposals re-review, they do not
+  re-bind old bytes).
+
 ## [1.28.85] — 2026-09-13 — "SixthPass": sixth-pass closures
 
 ### Release notes
