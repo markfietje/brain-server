@@ -286,6 +286,12 @@ jobs:
         #   - a bullet OUTSIDE the user-facing category set → error naming
         #     the offending line (it must move below the block);
         #   - zero bullets → error;
+        #   - NO prose summary between the heading and the block → error
+        #     (the published body OPENS with that summary — the v1.28.84
+        #     shape; v1.28.85/.86 shipped without it);
+        #   - audit/finding IDs in the published surface → error (user-facing
+        #     bullets name PROOF COMMITS; IDs live in the Engineering record —
+        #     v1.28.85/.86 shipped `(G6-02)`/`(F7-01, HIGH)` markers);
         #   - primary per-platform binaries absent from dist/ → error (the
         #     guard against publishing an empty release; see next step).
         run: |
@@ -338,6 +344,10 @@ jobs:
             /^\*\*M[0-9]/ { exit }
             { print }
           ' CHANGELOG.md > RELEASE_INTRO.md
+          if ! grep -q '[^[:space:]]' RELEASE_INTRO.md; then
+            echo "::error::CHANGELOG.md section '## [$version]' carries no prose summary between the heading and '### Release notes'. The published body opens with that summary — write it (the v1.28.84 shape), then re-tag."
+            exit 1
+          fi
 
           # 3. The `### Release notes` block is MANDATORY: a release without
           #    it FAILS here (no release is created) rather than shipping a
@@ -389,6 +399,16 @@ jobs:
             exit 1
           fi
           grep -v '^UNCATEGORIZED ' NOTES_BULLETS.raw > NOTES_BULLETS.tmp && mv NOTES_BULLETS.tmp NOTES_BULLETS.raw
+
+          # Audit/finding IDs never publish (v1.28.85/.86 regression): the
+          # user-facing bullets name PROOF COMMITS; IDs live in the
+          # Engineering record below the block. Checked on the intro too.
+          ids=$(grep -nE '\b([A-Z]{1,2}[0-9]+-[0-9]+|[A-Z]-[0-9]+)\b' RELEASE_INTRO.md NOTES_BULLETS.raw || true)
+          if [ -n "$ids" ]; then
+            echo "::error::audit/finding IDs must not appear in the published notes — put them in the Engineering record and name proof commits in the bullets. Offending lines:"
+            printf '%s\n' "$ids" | head -5 | sed 's/^/::error::  /'
+            exit 1
+          fi
 
           if [ "$(grep -c '^- ' NOTES_BULLETS.raw)" -lt 1 ]; then
             echo "::error::CHANGELOG.md '### Release notes' block for $version produced no bullets. Add real notes, then re-tag."
