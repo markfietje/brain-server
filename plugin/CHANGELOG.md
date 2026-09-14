@@ -4,6 +4,19 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.10] — 2026-09-14
+
+**Uniformity release** (patch: hygiene fixes) — the two seams where
+team-bridge drifted from the plugin's own discipline:
+
+- `src/team-bridge.ts`: the `before_agent_run` catch site now wraps the
+  error detail in `sanitizeForBlock`, matching the sibling catch sites
+  (card-ensure, pause) — the one log seam that interpolated raw error text.
+- `src/team-bridge.ts`: the C0/DEL-collapse regex in `intentLabel` is
+  written in escaped form (`\u0000-\u001F\u007F`) instead of raw control
+  bytes — the file no longer classifies as binary for text tools and
+  grep-based guards see it.
+
 ## [0.6.9] — 2026-09-13
 
 **Attrbane wiring release** (patch: behavioral security fix) — the
