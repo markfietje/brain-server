@@ -20,6 +20,19 @@
 // rust-analyzer attaches to only the one it finds first, so the other trees show
 // as plain text with no diagnostics. Listing every manifest attaches one analysis
 // session per workspace.
+//
+// Disk-churn posture (2026-09-14: the flycheck of six linked sessions sharing
+// target/debug with CLI feature-flip builds filled the disk once — each side's
+// fingerprints invalidate the other's, so every save rewrote multi-GB caches).
+// Three knobs, no diagnostics lost:
+// - cargo.targetDir: rust-analyzer checks build into target/rust-analyzer —
+//   its artifacts never collide with CLI builds (and vice versa) again;
+// - CARGO_INCREMENTAL=0 for both cargo+check: flycheck doesn't need
+//   incremental caches (the single biggest writer); unchanged crates still
+//   don't rebuild (cargo fingerprints do that);
+// - check.allTargets=false: per-save checks cover lib+bins, not every test
+//   target of six workspaces (in-IDE test diagnostics remain available by
+//   editing a test file — the save then checks that target).
 {
   "languages": {
     "CSS": {
@@ -47,7 +60,19 @@
           "./crates/brain-interview-core/Cargo.toml",
           "./crates/brain-troubleshoot-core/Cargo.toml",
           "./crates/legal-rules-db/Cargo.toml"
-        ]
+        ],
+        "cargo": {
+          "targetDir": true,
+          "extraEnv": {
+            "CARGO_INCREMENTAL": "0"
+          }
+        },
+        "check": {
+          "allTargets": false,
+          "extraEnv": {
+            "CARGO_INCREMENTAL": "0"
+          }
+        }
       }
     }
   }
