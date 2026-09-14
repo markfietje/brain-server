@@ -56,8 +56,6 @@ pub mod harness;
 #[cfg(feature = "harness-kernel")]
 pub mod hostcall;
 #[cfg(feature = "harness-kernel")]
-pub mod loader;
-#[cfg(feature = "harness-kernel")]
 pub mod plugin;
 #[cfg(feature = "harness-kernel")]
 pub mod prompt;
