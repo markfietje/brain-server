@@ -39,11 +39,24 @@ standing docs-as-tests gates (see `docs/release-checklist.md`).
 
 ## [1.28.86] — 2026-09-13 — "Attrbane": seventh-pass closures, release 1 of 4
 
+Covers every commit from tag `v1.28.85` (`884ee17`) to this release —
+`git log v1.28.85..v1.28.86` reproduces the range, and every bullet below names
+its proof commit. The seventh-pass audit's first remediation release: the read
+seam's attribute tier, the graph family on the seam with a decline-and-count
+write edge, in-tx evidence for every caller-content write, and the plugin's
+dormant defenses wired (0.6.9). **Digest invalidation (expected, disclosed):**
+stored rows whose text contains a newly-stripped attribute move their
+`review_digest` — outstanding approvals for such rows fail closed with 409 at
+approve time and must be re-reviewed (observed live in the release drill: 409
+on the pre-upgrade digest, 200 after re-approval). Additive wire only
+(`edges_skipped`); no schema; no routes; no new dependencies.
+
 ### Release notes
 
 **Security fixes**
 
-- **Attribute tier on the read seam (F7-01, HIGH).** Event-handler attributes
+- **Event-handler attributes and dangerous URL schemes no longer survive the
+  read seam (proof `713748a`).** Event-handler attributes
   (`onclick`, `onpointerover`, …) and dangerous URI schemes
   (`javascript:`/`vbscript:`/`data:`, including mixed-case, entity-encoded, and
   whitespace-split forms) on SURVIVING elements no longer pass `sanitize_read`
@@ -52,7 +65,8 @@ standing docs-as-tests gates (see `docs/release-checklist.md`).
   `http(s)` hrefs and prose angle brackets survive byte-identically, a dropped
   attribute never synthesizes prose, and the weld family's pinned behavior is
   unchanged.
-- **The graph route family rides the read seam (F7-03, HIGH).** `/graph/entity`,
+- **The graph surfaces are no longer a raw read seam, and a hostile heading can
+  no longer become graph structure (proof `0d797ba`).** `/graph/entity`,
   `/graph/relations`, `/graph/traverse`, and `/graph/relationships/{id}/history`
   emitted stored entity names and relation types raw; markdown ingest made those
   names attacker-writable (a `## <img src=x onerror=…>` heading became a graph
@@ -62,31 +76,27 @@ standing docs-as-tests gates (see `docs/release-checklist.md`).
   note), and no entity row is created. The structured path 400s on an
   `entity_type` outside `[a-z0-9_-]` (explicit API contract; values are
   lowercased first, so existing "Person"-style types become "person").
-- **Caller-content write paths carry in-tx evidence (F7-04, MED).** `POST
+- **Every caller-content write carries its evidence row, inside the write's
+  own transaction (proof `48fef68`).** `POST
   /procedure` stored caller content with no audit row; structured `/ingest`
   audited only graph edges; `/add` and `/ingest/markdown` recorded their audit
   AFTER the commit (the crash window the audit-per-write law closed). All three
   holes closed: a `procedure` audit kind on the hash chain, a row audit beside
   the edge audits, and both legacy recordings moved inside their transactions.
-- **The plugin's dormant defenses are wired (S7-01/S7-02/S7-03, MED — plugin
-  0.6.9).** The hostile-element mirror (exported since 0.6.8, never called) is
+- **The plugin's dormant defenses are wired (plugin 0.6.9; proof `15a7c99` +
+  `e2cc810`, fork `5b64e7a`).** The hostile-element mirror (exported since
+  0.6.8, never called) is
   now invoked inside `sanitizeForBlock` at the server-canonical position; the
   raw proposal rows, graph-traverse paths, decision-evaluate rule text, and
   label fields no longer bypass the per-field boundary (the capture-trigger
   `sourcePrompt` is dropped from proposal details entirely — counts, not
   bodies).
-- **Sync guard passes its own live pair (S7-04, LOW).** `sync-plugin.sh`'s
+- **The plugin-sync guard passes on its own live pair and still fails real
+  drift (proof `8830209`).** `sync-plugin.sh`'s
   post-sync check is now the declared-exception form (a named exception with a
   verified reason), and the sanctioned `format.test.ts` delta was eliminated
   canonical-side by adopting the fork's import order — the check passes on the
   live pair and still fails real drift.
-
-**Digest invalidation (expected, disclosed):** the attribute tier widens
-`sanitize_read`, so every stored row whose read-canonical form contained a
-strip target moves its `review_digest`. Outstanding approvals for such rows
-fail closed with 409 at approve time and must be re-reviewed — observed live in
-the release drill (409 on the pre-upgrade digest, 200 after re-fetching the
-re-rendered digest). Rows without strip targets keep their digests.
 
 **Bug fixes**
 
@@ -95,14 +105,14 @@ re-rendered digest). Rows without strip targets keep their digests.
 **Improvements**
 
 - Markdown ingest responses carry `edges_skipped` so declined graph edges are
-  visible to callers.
+  visible to callers (proof `0d797ba`).
 - Docs truth: THREAT_MODEL's hostile-markup row and architecture.md's read-seam
-  sentence state the attribute tier (T7-01). The seventh-pass register rows
-  F7-03/F7-01/F7-04/S7-01/S7-02/S7-03/S7-04/T7-01 are CLOSED in `AUDIT.md`.
+  sentence state the attribute tier, and the seventh-pass register's closed
+  findings are recorded in `AUDIT.md` (proof `5145f4b`).
 
 ### Engineering record
 
-- Range: 7 commits on main (`713748a` M1 attribute tier, `0d797ba` M2 graph
+- Range: 10 commits on main (`713748a` M1 attribute tier, `0d797ba` M2 graph
   seam, `48fef68` M3 audit law, `15a7c99`/`7bcbecb`/`8830209`/`e2cc810` M4
   plugin wiring incl. the sync-script-mandated oxfmt pass and the
   S7-04 delta elimination, this commit M5) + fork commit `5b64e7a` (sync 0.6.9,
@@ -142,12 +152,25 @@ re-rendered digest). Rows without strip targets keep their digests.
 
 ## [1.28.85] — 2026-09-13 — "SixthPass": sixth-pass closures
 
+Covers the sixth-pass audit's two findings, closed red-first — `git log
+v1.28.84..v1.28.85` reproduces the range, and every bullet below names its
+proof commit. No schema; no routes; no wire change; no new dependencies.
+
 ### Release notes
 
 **Security fixes**
 
-- **Forget erasure audit rows carry the Forget kind (G6-02).** The chunk-forget path wrote its in-tx evidence row as kind `ingest`, so kind-filtered audit consumers missed erasures. Both rows (the erasure itself and the per-proposal scrub row) now write kind `forget`. Historical `ingest`-kind forget rows keep their meaning; new rows are labeled what they are.
-- **Fork extension carries the hostile-element mirror (G6-01).** The R-01 26-element strip plus MathML fallbacks and the fixture lane were missing from the deployed fork extension (last sync 0.6.0). Synced to plugin 0.6.7; byte-parity verified, 70 extension tests green, typecheck clean.
+- **Forget erasure audit rows carry the Forget kind (proof `2a40aa4`).** The
+  chunk-forget path wrote its in-tx evidence row as kind `ingest`, so
+  kind-filtered audit consumers missed erasures. Both rows (the erasure itself
+  and the per-proposal scrub row) now write kind `forget`. Historical
+  `ingest`-kind forget rows keep their meaning; new rows are labeled what they
+  are.
+- **The deployed fork extension carries the hostile-element mirror (proof
+  `ace4f986` in the openclaw fork).** The server's 26-element strip, the MathML
+  fallbacks, and the fixture lane were missing from the fork extension (last
+  sync 0.6.0). Synced to plugin 0.6.7; byte-parity verified, 70 extension
+  tests green, typecheck clean.
 
 **Bug fixes**
 
@@ -155,7 +178,9 @@ re-rendered digest). Rows without strip targets keep their digests.
 
 **Improvements**
 
-- Stale forward-plan files (`.85_SeamElements`, `.86_StreamKillSign`, `.87_DocsTruth`) marked superseded: their contents shipped inside v1.28.83/v1.28.84 without consuming those numbers. The queue head is now `IMPLEMENTATION_PLAN_v1.28.85_SixthPass.md`.
+- Stale forward-plan files marked superseded: their contents had already
+  shipped inside earlier releases without consuming those numbers, and the
+  release queue now names the real head (proof `cf380eb`).
 
 ### Engineering record
 
