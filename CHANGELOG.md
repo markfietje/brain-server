@@ -17,6 +17,144 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [1.28.89] — 2026-09-14 — "Bounded": seventh-pass closures, release 4 of 4
+
+Closes the satellites/supply-chain band and the one fork regression from the
+seventh-pass security audit (register rows in `AUDIT.md`; finding IDs in the
+Engineering record below). Theme: bounded and truthful — the unbounded cache
+wearing an LRU label, the deprecated parser in the dependency closure, the
+CI gate that existed only as a procedure, and the manifest/lock mismatch the
+mirror-sync created. Zero wire change; zero route change; no schema.
+
+### Release notes
+
+**Security fixes**
+
+- The Signal edge tool's recipient cache (documented as an LRU) was in
+  fact two plain hash maps with no size limit and no eviction — a slow
+  memory leak on a long-lived daemon. It is now bounded at 4,096 entries
+  with oldest-quarter eviction (the same law the replay cache has used
+  since v1.28.73), and its documentation now says what the structure
+  actually is.
+- The deprecated, archived YAML parser (serde_yaml 0.9.34+deprecated,
+  RUSTSEC-2024-0320 class) is out of the dependency closure of both
+  lockfiles. The only consumer was a dormant manifest loader with zero
+  callers anywhere in the workspace; the loader is removed rather than
+  re-implemented (hand-rolling a YAML parser for dead code would trade one
+  hazard for another).
+- The release pipeline now enforces the green-CI gate in the workflow
+  itself: before anything publishes, the workflow queries the CI run for
+  the exact tagged commit and refuses to publish if it is red OR absent.
+  Previously the check lived only in the tagging helper script, so a raw
+  `git tag && git push` bypassed it. Workflow permissions dropped to
+  read-only with write access scoped to the single job that publishes the
+  release.
+- The OpenClaw memory plugin (v0.6.10) closes two discipline drifts: one
+  error-log site now passes error text through the same sanitizer as its
+  sibling sites, and a regex written with raw control characters moves to
+  escaped form so the file is readable as text by security grep tooling.
+- The deployed extension's package manifest is re-pinned to the typebox
+  version the workspace actually runs (1.3.27) — a mirror-sync had
+  silently reverted it to 1.3.26, misstating what ships and breaking
+  frozen-lockfile installs. The repair is mechanical: the sync script now
+  patches declared fork-side fields from the workspace's own catalog and
+  fails closed if the manifest and lockfile ever disagree again.
+  `pnpm install --frozen-lockfile` passes; the lockfile itself needed no
+  changes.
+
+**Improvements**
+
+- None.
+
+**Bug fixes**
+
+- None.
+
+### Engineering record
+
+- **M1 (S7-06) — the bounded cache.** `tools/signal-gateway/src/cache.rs`:
+  `RECIPIENT_CACHE_CAP = 4096` (the replay-cache convention) + an
+  insertion-order `VecDeque`; at the cap the oldest quarter drains from
+  BOTH legs together (phone→uuid and uuid→phone are 1:1 by construction).
+  TTL stays lazy on the forward leg only, as before. The "LRU" label is
+  gone: the structure is insertion-ordered with cap+quarter-evict, and the
+  doc comment says so. `signal_gateway_cache_is_bounded` RED→GREEN (red:
+  "cache grew to 4608 entries — unbounded"). Ceilings (honest): the LIVE
+  twin — `signal/worker.rs:31`'s `RecipientCache`, the map the API and
+  worker insert paths actually hit — is also unbounded and was LEFT
+  AS-IS: signal-gateway is a standalone crate the operator does not
+  deploy, and per the operator call 2026-09-14 no CI lane was added for
+  it (the pin runs locally only). Bounding the live twin is a five-line
+  follow-up for whoever next ships the crate.
+- **M2 (S7-07) — serde_yaml out, by deletion.** The `harness-kernel`
+  feature's only serde_yaml consumer was `loader.rs` (the declarative
+  plugin-mount manifest parser): ZERO callers across the workspace and
+  zero doc references (the `cordis.yml` in docs/mcp.md is the MCP client
+  config, unrelated). The ponytail ladder call is DROP — a hand-rolled
+  YAML-subset parser for dead code would be a new parsing hazard, not a
+  fix. `serde` (derive) had no other user in the feature either, so
+  `harness-kernel = ["dep:serde_json"]` now; serde_json stays
+  (workflow_state.rs). serde_yaml + unsafe-libyaml are out of
+  `Cargo.lock`, `crates/Cargo.lock`, AND `tools/steward-harness/Cargo.lock`
+  (the third lock surfaced at release time — steward-harness path-depends
+  on the SDK with the kernel feature; found dirty at the final gate, diff
+  verified to be exactly this closure shrink). SDK semver note: the crate's own doc calls a public-item removal
+  a breaking release; the crate is `publish = false`, workspace-only, and
+  no in-tree engine consumes the loader — removal recorded here instead
+  of a version ceremony.
+- **M3 (S7-08/S7-09) — plugin uniformity, 0.6.10.** team-bridge.ts:451's
+  catch now wraps `String(err)` in `sanitizeForBlock` (the sibling
+  discipline at the card-ensure and pause catches); the C0/DEL-collapse
+  regex moves to escaped `\u0000-\u001F\u007F` form (format.ts's style) —
+  the file no longer classifies as binary and grep-based guards see it.
+  Shipped as plugin 0.6.10 (CHANGELOG entry in plugin/CHANGELOG.md); the
+  fork receives it via the M5 sync — zero hand edits to openclaw code.
+- **M4 (S7-10/S7-11) — the gate in the system.** release.yml: a pre-publish
+  step in the release job queries the ci.yml run conclusion for the tagged
+  SHA (`gh api .../actions/runs?head_sha=`) — wait windows mirror
+  release.sh (≤10 min registration, ≤60 min completion); red OR absent ⇒
+  refuse publish with a `::error::`. Workflow-level
+  `permissions: contents: write` → `contents: read`; the release job
+  carries the only `contents: write`; docs-deploy keeps its existing
+  scoped block; the four build jobs are read-only now. The normal
+  release.sh path already waited for green before tagging, so the step
+  finds a completed run instantly there; it exists for the
+  `git tag && git push --tags` bypass.
+- **M5 (K7-03) — the sync script is the fork's writer.**
+  `scripts/sync-plugin.sh` gains: (1) the fork-field patch table — after
+  rsync, declared fork-side fields are rewritten from the fork's own
+  truth (typebox specifier ← the pnpm-workspace catalog), line-targeted
+  so the rest of the manifest stays byte-identical; (2) the
+  manifest==lockfile post-check, fail-closed on absent/mismatch (RED
+  demonstrated live pre-fix: manifest 1.3.26 vs lock 1.3.27; GREEN
+  post-patch); (3) package.json joins the declared-exception list with
+  the delta verified typebox-lines-only. Re-run sync: the manifest
+  mechanically returned to 1.3.27 and the lockfile is BYTE-UNTOUCHED (it
+  already recorded 1.3.27 — the manifest moved to meet it, stronger than
+  the plan's "regenerate the lockfile"). Fork acceptance:
+  `pnpm install --frozen-lockfile` passes (the K7-03 acceptance test),
+  fork vitest 71/71, fork tsc clean; fork commit `58767515d46` = sync
+  outputs only (package.json, team-bridge.ts, plugin CHANGELOG).
+- **Pins**: `signal_gateway_cache_is_bounded` (RED→GREEN);
+  `extension_manifest_matches_lock_specifier` lives in the sync script as
+  the post-check — NOT a cargo test, so it does not ride the crate floor
+  (per plan §4, said so here). Floor walk: **1,455 needle-visible
+  `#[test]`, UNCHANGED** — the cache pin rides `tools/signal-gateway`
+  (a standalone crate outside the floor needle's server src/+tests/
+  walk), and the manifest pin is bash. No floor movement to claim.
+- **Remaining open (correcting the plan's §7 claim):** S7-05
+  (env-truth.sh `implemented()` bare-substring match) was NOT in this
+  release's scope and stays open — the last actionable seventh-pass LOW;
+  it rides the next hygiene line or L8. S7-12 was a
+  verified-good confirmation (no action). P7-01 stays the accepted
+  wasm-seam-day ceiling; L7-07 carries to L8; K7-01/02/04 remain
+  accepted risk (operator call 2026-09-13).
+- No schema; no routes; openapi.yaml untouched; `x-api-version` moves
+  with the crate version stamp (informational; the wire contract delta
+  this release: none). Proof commits: `905bb47` (M1), `a0e7ab0` (M2),
+  `e5b3376` (M3), `b711ebc` (M4), `4fd9069` (M5 script); fork
+  `58767515d46`.
+
 ## [Unreleased] — docs-truth correction (v1.28.87 plan, no code)
 
 **Correction note (append-only; history not rewritten):** the v1.28.79
