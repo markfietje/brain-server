@@ -17,6 +17,77 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [1.28.90] — 2026-09-14 — "Refresh": the service bump — nine Dependabot PRs applied and verified
+
+A maintenance release with ZERO code changes: the nine open Dependabot
+dependency PRs (#31–#39) are applied on main in one verified pass and
+shipped together instead of nine sequential merge-rebase-CI cycles. All
+three Rust lockfiles move; the only manifest change is the `dirs` major
+bump. No wire change, no route change, no schema, no behavior change of
+any kind — the full gate proves the bumps are inert.
+
+### Release notes
+
+**Security fixes**
+
+- `github/codeql-action` (`init` + `analyze`) moves from the 4.37.9 pin
+  (`cdf488f5…`) to v4.38.0 (`b96794f0…`) — the static analyzer that scans
+  this repo stays current (PRs #38, #39).
+- reqwest 0.13.4 → 0.13.5 across ALL THREE Rust workspaces (root, client,
+  tools/steward-harness; PRs #36, #34, #32) — the shared egress client
+  (the DNS-rebind-pin seam, v1.28.69) rides the patch current; the
+  insert-only pin suite (`pinned_client_survives_dns_rebind` family) and
+  the private-address refusal table pass unchanged.
+
+**Improvements**
+
+- dirs 6.0.0 → 7.0.0 (the release's one manifest change; the only
+  consumer API in-tree is `dirs::home_dir()`, unchanged across the
+  major — hf-hub keeps its own dirs 6.0.0 in the lock, per the PR's
+  resolution) (PR #31).
+- fastembed 6.0.2 → 6.0.3 with tokenizers 0.22.2 → 0.23.2 transitively —
+  the static embedder tier compiles and the eval floor holds (PR #37).
+- uuid 1.26.0 → 1.26.1 (PR #33); zerocopy 0.8.56 → 0.8.57 (PR #35).
+- reqwest 0.13.5 pulls base64 0.23.1 into the client and
+  steward-harness closures (0.22.1 stays for the dependents that need
+  it) — lockfile shape per the PRs.
+
+**Bug fixes**
+
+- None.
+
+### Engineering record
+
+- **Why one commit, not nine merges:** each Dependabot branch rewrites
+  the same lockfiles from the same base, so sequential merges would
+  conflict-and-rebase nine times and trigger nine CI matrix runs to
+  verify one lockfile state. The union of the nine diffs is applied
+  atomically (manifest `dirs` bump + `cargo update -p` per package,
+  `--precise 6.0.3` pinning fastembed to the PR's target rather than the
+  newer 6.1.0 the resolver prefers), then verified once. The working
+  diff was checked package-by-package against each PR's lockfile delta —
+  identical resolutions, including the two-version coexistence shapes
+  (dirs 6+7 in root, reqwest 0.12+0.13 everywhere, base64 0.22+0.23 in
+  client/steward-harness).
+- **Verification (the full CI-dry-run battery, run sequentially — the
+  first parallel attempt tripped the known load-race class once, passed
+  clean in isolation and in the sequential reruns):** compile check;
+  `cargo fmt --check`; clippy `-D warnings` on bench / default / otel /
+  engine-crates / steward-harness / client (incl. the desktop feature);
+  full `cargo test --features bench` (exit 0 through doc-tests);
+  default-features full run 1,591 passed / 0 failed across 15 binaries;
+  otel full run 1,595 passed / 0 failed; client suite 241 passed + wasm
+  build + desktop check; steward-harness + engine-crates suites green.
+  lipstyk: nothing to lint — the release touches no Rust under
+  `src`/`client`/`plugin` (Cargo.toml, three lockfiles, codeql.yml, docs
+  only).
+- **Ceilings (honest):** aarch64 remains untested-by-CI (the standing
+  known issue — local macOS arm64 gate is the arm evidence); the SBOM
+  component count moves with the closure (dirs+1, tokenizers±, base64
+  additions) and is regenerated in-commit; no benchmark re-run — the
+  bumps are a patch/minor refresh and the embedder eval floor tests
+  cover the fastembed/tokenizers move.
+
 ## [1.28.89] — 2026-09-14 — "Bounded": seventh-pass closures, release 4 of 4
 
 Closes the satellites/supply-chain band and the one fork regression from the
