@@ -141,10 +141,12 @@ mod tests {
         for i in 0..(cap + 512) {
             cache.insert(format!("+{i}"), format!("uuid-{i}"));
         }
+        // No cache-derived value in the message (CodeQL #74): a tainted
+        // receiver's `.len()` flowing into a panic/log sink reads as
+        // cleartext logging; the cap literal alone diagnoses the breach.
         assert!(
             cache.len() <= cap,
-            "cache grew to {} entries — unbounded",
-            cache.len()
+            "cache grew beyond the {cap}-entry cap — unbounded"
         );
         // Oldest evicted first (insertion order, not arbitrary).
         assert_eq!(cache.get_uuid("+0"), None, "oldest entry must evict first");
