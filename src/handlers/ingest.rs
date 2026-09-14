@@ -668,8 +668,9 @@ pub(crate) async fn ingest_one(
         .as_ref()
         .is_some_and(crate::profile::Profile::pii_strict);
     // Resolve the owner label before the closure (the reference can't cross
-    // the spawn_blocking boundary).
-    let owner = super::gate::principal_to_owner(principal);
+    // the spawn_blocking boundary). Every content write is attributable —
+    // the opaque superuser stamps the loopback-operator label.
+    let owner = super::gate::content_owner_stamp(principal);
 
     let result = tokio::task::spawn_blocking(move || -> Result<IngestResponse, HandlerError> {
         let mut conn = pool.get().map_err(HandlerError::db_down)?;

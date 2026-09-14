@@ -112,7 +112,7 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | GET | `/export` | Portable JSON export |
 | POST | `/purge` | Hard, audited deletion by id or owner |
 | DELETE | `/memory/{id}` | Hard, audited deletion of one chunk (human-only erasure; the agent tool was removed v1.20.25) |
-| POST | `/dsar` | Locate → export → purge → deletion certificate (supports `dry_run` footprint preview) |
+| POST | `/dsar` | Locate → export → purge → deletion certificate (supports `dry_run` footprint preview). Since v1.28.87 every content write is owner-stamped — the acting principal's `sub`, or the fixed `loopback` label for opaque-mode (no-principal) writes — so the locate covers operator-authored ingests; pre-.87 rows with a NULL owner stay stamp-blind by declaration (F7-02) |
 | GET | `/dsar` | DSAR ledger (admin, newest-first, per-row deadline) |
 | GET | `/tombstones?subject=&since=` | Deletion registry |
 | GET | `/dsar/{id}/certificate` | Re-fetch certificate + live chain check |

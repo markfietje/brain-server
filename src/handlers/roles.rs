@@ -37,6 +37,9 @@ pub async fn list_roles(
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    // operator-authored role descriptions ride the read seam.
+    let mut roles = serde_json::to_value(&roles).unwrap_or_default();
+    super::sanitize_value_strings(&mut roles);
     Ok(Json(serde_json::json!({ "roles": roles })))
 }
 
@@ -62,7 +65,13 @@ pub async fn get_role(
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
     match r {
-        Some(r) => Ok(Json(serde_json::to_value(r).unwrap_or_default())),
+        // the description (and any operator-authored string) rides the
+        // read seam at emission.
+        Some(r) => {
+            let mut v = serde_json::to_value(&r).unwrap_or_default();
+            super::sanitize_value_strings(&mut v);
+            Ok(Json(v))
+        }
         None => Err(HandlerError::not_found(format!(
             "no role named '{name_for_err}'"
         ))),

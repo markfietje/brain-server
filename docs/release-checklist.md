@@ -111,6 +111,19 @@ and present in `openapi.yaml` (:2990 ump.json, :6538-:6651 the six).
 Standing rule: a new well-known route MUST land in all three places
 (router + `PUBLIC_PATHS` + openapi) or fail review.
 
+### Standing rule (v1.28.87, F7-07): site-table row in the same commit
+
+A new content-returning route — any read surface that emits stored text —
+adds its row to the `stored_text_fields_pass_the_read_seam` site table
+(`tests/main_suite.rs`) in the SAME commit as the route, with the seam call
+it requires (`sanitize_read` / `sanitize_read_cow` / `sanitize_read_opt` /
+`sanitize_stored` / a named composition such as `sanitize_value_strings`).
+The guard's `handler_body` extractor comment-strips sources before matching
+(a comment naming the symbol cannot false-pass), but it is a regression lock
+for LISTED sites, not a detector for new ones — the same-commit row is the
+process that keeps the table honest. Same rule for a new direct write
+surface: add it to `ingest_write_sites_route_through_screen`.
+
 ## Scripts appendix
 
 | Script | Purpose | Documented |

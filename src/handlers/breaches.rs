@@ -307,7 +307,7 @@ pub async fn list_breaches(
     require_dpo_role(&principal.0, &pool)?;
     let limit = q.limit.unwrap_or(100).clamp(1, MAX_LIMIT as i64 * 10);
     let pool_for = pool.clone();
-    let body =
+    let mut body =
         tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>, HandlerError> {
             let conn = pool_for.get().map_err(HandlerError::db_down)?;
             let rows = crate::breach::list(&conn, limit)?;
@@ -318,6 +318,9 @@ pub async fn list_breaches(
         })
         .await
         .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    // breach narratives are evidence surfaces — the read seam at the
+    // emission boundary (Admin writers don't exempt the law).
+    body.iter_mut().for_each(super::sanitize_value_strings);
     Ok(Json(serde_json::json!({ "breaches": body })))
 }
 
@@ -340,7 +343,9 @@ pub async fn get_breach(
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
     let view = view.ok_or_else(|| HandlerError::not_found("no breach with this id"))?;
-    Ok(Json(serde_json::to_value(view).unwrap_or_default()))
+    let mut view = serde_json::to_value(view).unwrap_or_default();
+    super::sanitize_value_strings(&mut view);
+    Ok(Json(view))
 }
 #[cfg(test)]
 mod tests {

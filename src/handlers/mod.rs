@@ -483,6 +483,23 @@ impl From<crate::service::purge::PurgeError> for HandlerError {
 // AuthZ gate
 // ---------------------------------------------------------------------------
 
+/// The deep string-leaf pass for evidence surfaces whose response shape
+/// is dynamic (serialized structs, JSON pre-fills). Every string VALUE
+/// rides `sanitize_read` — the unconditional read seam applied at the
+/// emission boundary; keys are server-defined names and pass untouched.
+/// Idempotent on clean content (no shape change, no digest surface — none of
+/// these fields bind `review_digest`).
+pub fn sanitize_value_strings(v: &mut serde_json::Value) {
+    match v {
+        serde_json::Value::String(s) => {
+            *s = crate::gate::sanitize_read(s, false, &None);
+        }
+        serde_json::Value::Array(a) => a.iter_mut().for_each(sanitize_value_strings),
+        serde_json::Value::Object(o) => o.values_mut().for_each(sanitize_value_strings),
+        _ => {}
+    }
+}
+
 /// The single AuthZ gate every handler passes through. Returns Ok(()) if the
 /// principal is authorized for (action, team, domain), or a 403 HandlerError.
 /// `principal = None` is the v1.1 opaque-token / no-auth back-compat path:

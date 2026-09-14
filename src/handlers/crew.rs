@@ -79,17 +79,22 @@ pub async fn get_ops_crew(
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
         let enabled = crew::presence_enabled(&conn, &domain);
         let members = crew::roster(&conn, &domain, now).map_err(crew_err)?;
+        // every emitted string rides the read seam. The roster core
+        // already invisible-strips `principal`/`current_case_ref`; the seam
+        // here is the canonical pass (roles, skills, and the Watchbill site
+        // otherwise ship verbatim) — the fast path keeps clean rows free.
+        let seam = |s: &str| crate::gate::sanitize_read(s, false, &None);
         let members: Vec<serde_json::Value> = members
             .iter()
             .map(|m| {
                 serde_json::json!({
-                    "principal": m.principal,
+                    "principal": seam(&m.principal),
                     "state": m.state.as_str(),
                     "activity_kind": m.activity_kind,
-                    "current_case_ref": m.current_case_ref,
-                    "site": m.site,
-                    "roles": m.roles,
-                    "skills": m.skills,
+                    "current_case_ref": m.current_case_ref.as_deref().map(&seam),
+                    "site": m.site.as_deref().map(&seam),
+                    "roles": m.roles.iter().map(|r| seam(r)).collect::<Vec<_>>(),
+                    "skills": m.skills.iter().map(|r| seam(r)).collect::<Vec<_>>(),
                 })
             })
             .collect();
@@ -125,19 +130,21 @@ pub async fn get_ops_skills(
             .get()
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
         let rows = crew::list_skills(&conn, &domain).map_err(crew_err)?;
-        // Group by principal; every emitted string rides the invisible-strip
-        // seam (same posture as the roster view).
+        // Group by principal; every emitted string rides the read seam
+        // (same posture as the roster view — the skill strings ride it
+        // too, not just the principal).
         let mut order: Vec<String> = Vec::new();
         let mut by_principal: std::collections::HashMap<String, Vec<String>> =
             std::collections::HashMap::new();
         for (p, s) in rows {
-            let p = crate::strip_invisible::strip_invisible(&p);
+            let p = crate::gate::sanitize_read(&p, false, &None);
             if p.is_empty() {
                 continue;
             }
             if !by_principal.contains_key(&p) {
                 order.push(p.clone());
             }
+            let s = crate::gate::sanitize_read(&s, false, &None);
             by_principal.entry(p).or_default().push(s);
         }
         let grouped: Vec<(String, Vec<String>)> = order

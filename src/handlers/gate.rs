@@ -1294,7 +1294,7 @@ pub async fn approve_proposal(
                 kind: &kind,
                 assertion,
                 confidence,
-                owner: principal_to_owner(&principal.0).as_deref(),
+                owner: content_owner_stamp(&principal.0).as_deref(),
                 origin: &origin,
                 flagged,
             },
@@ -1431,6 +1431,25 @@ pub struct ApproveQuery {
 /// (fixing the DSAR locate gap — a real DSAR could find nothing by subject).
 pub fn principal_to_owner(p: &Option<crate::auth::Principal>) -> Option<String> {
     p.as_ref().map(|pr| pr.sub.clone())
+}
+
+/// The fixed owner stamp for the principal-less writer: a static bearer
+/// has no JWT `sub`, so the opaque-mode superuser's content writes carry
+/// this label instead of a NULL `owner`. The DSAR locate keys on
+/// `knowledge.owner`, so an unstamped row is invisible to the subject it
+/// belongs to — the label makes the operator's own ingests reachable under
+/// their subject. Historical rows keep NULL and stay stamp-blind by
+/// declaration (dated disclosure in the changelog); the stamp is
+/// write-side only, never a migration.
+pub const LOOPBACK_OPERATOR_OWNER: &str = "loopback";
+
+/// The owner value EVERY content write carries: the acting principal's
+/// `sub`, or [`LOOPBACK_OPERATOR_OWNER`] when no principal resolved
+/// (opaque-token superuser / loopback). Always `Some` — a content row is
+/// always attributable; the DSAR root matcher never meets a stamp-blind
+/// new row again.
+pub fn content_owner_stamp(p: &Option<crate::auth::Principal>) -> Option<String> {
+    principal_to_owner(p).or_else(|| Some(LOOPBACK_OPERATOR_OWNER.to_string()))
 }
 
 /// record-level access-scope filter for retrieval. In JWT
@@ -2567,6 +2586,32 @@ mod tests {
             kind: crate::auth::PrincipalKind::Jwt,
         };
         assert_eq!(principal_to_owner(&Some(p)), Some("user-42".to_string()));
+    }
+
+    #[test]
+    fn content_owner_stamp_always_attributes() {
+        // the opaque superuser (no principal) stamps the fixed
+        // operator label — a content row is always attributable, and the
+        // DSAR root matcher (owner = subject) covers the operator's own
+        // ingests under that subject.
+        assert_eq!(
+            content_owner_stamp(&None).as_deref(),
+            Some(LOOPBACK_OPERATOR_OWNER)
+        );
+        let p = crate::auth::Principal {
+            sub: "user-42".to_string(),
+            tenant: "alpha".to_string(),
+            scopes: vec![],
+            jti: "token-1".to_string(),
+            roles: vec![],
+            manages: vec![],
+            kind: crate::auth::PrincipalKind::Jwt,
+        };
+        assert_eq!(
+            content_owner_stamp(&Some(p)).as_deref(),
+            Some("user-42"),
+            "a resolved principal stamps its own sub, unchanged"
+        );
     }
 
     // the review-queue read pins (the owner/scorecard round-trip, the

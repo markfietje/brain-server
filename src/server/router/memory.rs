@@ -560,8 +560,9 @@ pub async fn add_chunk(
     let pool = s.pool.clone();
     let title = req.title.filter(|t| !t.is_empty());
     // record the creating principal (JWT `sub`) so `/dsar` + `/purge`
-    // can locate by subject. `None` (loopback/opaque) keeps the legacy NULL.
-    let owner = crate::handlers::gate::principal_to_owner(&principal.0);
+    // can locate by subject; a principal-less (opaque) write stamps the
+    // fixed loopback-operator label — no stamp-blind rows.
+    let owner = crate::handlers::gate::content_owner_stamp(&principal.0);
 
     let add_future = task::spawn_blocking(move || {
         let screen_result = screen::screen(&text, title.as_deref().unwrap_or(""));
@@ -1065,8 +1066,8 @@ pub async fn ingest_memory(
     let model = Arc::clone(&s.model);
     let pool = s.pool.clone();
     let tracker = std::sync::Arc::clone(&s.connection_tracker);
-    // record the creating principal (see add_chunk).
-    let owner = crate::handlers::gate::principal_to_owner(&principal.0);
+    // record the creating principal (see add_chunk; the owner stamp).
+    let owner = crate::handlers::gate::content_owner_stamp(&principal.0);
 
     // the two rejections the closure can raise
     // before any write happens. Everything else keeps the legacy wire shape.
@@ -1834,8 +1835,8 @@ pub(crate) async fn ingest_markdown(
     let edges = kg_edges.clone();
     let raw_content_for_source = payload.content.clone();
     let replace = payload.replace;
-    // record the creating principal (see add_chunk).
-    let owner = crate::handlers::gate::principal_to_owner(&principal.0);
+    // record the creating principal (see add_chunk; the owner stamp).
+    let owner = crate::handlers::gate::content_owner_stamp(&principal.0);
     let result = task::spawn_blocking(move || -> Result<(i64, usize, usize, usize), AppError> {
         let mut conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
         let tx = conn

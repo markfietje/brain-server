@@ -357,6 +357,17 @@ architecture):
   `qs <6.16.0` — pinned there by UPSTREAM's own `pnpm-workspace.yaml`
   security override gone stale, `joi <18.2.5`). Upstream-owned: PR spec
   filed (override bumps + SDK bump); the fork does not edit upstream files.
+- DSAR root matching vs principal-less writes (F7-02, seventh pass): every
+  content write now carries an owner stamp — the acting principal's `sub`,
+  or the fixed `loopback` label for the opaque-mode superuser (a static
+  bearer has no JWT sub; the writes were NULL and the DSAR locate, which
+  keys on `knowledge.owner`, never saw them). Write-side only — historical
+  pre-v1.28.87 rows keep their NULL owner and stay stamp-blind by
+  declaration (dated; re-import to stamp). Residual: `suggest_feedback`
+  rows keep the principal-sub-or-NULL shape (the DSAR sweep's feedback arm
+  is unchanged), and the DSAR subject vocabulary is the WRITER's identity —
+  rows ABOUT a person but written by another principal are located via the
+  derived_from walk, not the owner column (unchanged semantics).
 
 ---
 

@@ -178,7 +178,11 @@ pub async fn get_tia(
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
     let tia = tia.ok_or_else(|| HandlerError::not_found("no transfer with this id"))?;
-    Ok(Json(serde_json::to_value(tia).unwrap_or_default()))
+    // the register pre-fills carry stored text into the emitted template
+    // — the read seam at the emission boundary.
+    let mut tia = serde_json::to_value(tia).unwrap_or_default();
+    super::sanitize_value_strings(&mut tia);
+    Ok(Json(tia))
 }
 
 /// `GET /transfers/{id}/dpa` — the DPA (Art 28 sub-processor terms) fields,
@@ -192,13 +196,17 @@ pub async fn get_dpa(
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
     let pool_for = pool.clone();
-    let value = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
-        let conn = pool_for.get().map_err(HandlerError::db_down)?;
-        let t = crate::transfers::transfer_by_id(&conn, id)?
-            .ok_or_else(|| HandlerError::not_found("no transfer with this id"))?;
-        Ok(crate::transfers::dpa_fields(&t))
-    })
-    .await
-    .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    let mut value =
+        tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
+            let conn = pool_for.get().map_err(HandlerError::db_down)?;
+            let t = crate::transfers::transfer_by_id(&conn, id)?
+                .ok_or_else(|| HandlerError::not_found("no transfer with this id"))?;
+            Ok(crate::transfers::dpa_fields(&t))
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    // the register pre-fills carry stored text — the read seam at the
+    // emission boundary.
+    super::sanitize_value_strings(&mut value);
     Ok(Json(value))
 }

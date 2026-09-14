@@ -4888,6 +4888,306 @@ Final paragraph after the rule.";
         drop(tx);
     }
 
+    /// F7-02 (seventh pass): the opaque-mode operator's ingest writes carry a
+    /// real owner stamp, so the DSAR locate covers them. RED-first: operator
+    /// rows wrote `owner` NULL and a purge for the operator subject found 0
+    /// roots while operator rows existed (seventh-pass drill leg f-obs). The
+    /// stamp is write-side only — no migration; historical NULL rows stay
+    /// stamp-blind by declaration (CHANGELOG, dated).
+    #[tokio::test]
+    async fn dsar_roots_cover_operator_ingests_or_documented() {
+        use tower::ServiceExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = graph_seam_state(&dir);
+        let app = brain_server::server::router::memory::router().with_state(state.clone());
+        let marker = "dsar owner stamp probe operator markdown row";
+        let body = serde_json::json!({
+            "content": format!("# stamp probe\n\n{marker}\n"),
+            "title": "stamp probe",
+        });
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ingest/markdown")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let mut conn = state.pool.get().unwrap();
+        let id: i64 = conn
+            .query_row(
+                "SELECT id FROM knowledge WHERE content LIKE ?1 ORDER BY id DESC",
+                [format!("%{marker}%")],
+                |r| r.get(0),
+            )
+            .unwrap_or_else(|_| panic!("marker row stored"));
+        let tx = conn.transaction().unwrap();
+        let (roots, _) = brain_server::service::dsar::dsar_locate(&tx, "loopback")
+            .expect("locate by the operator subject");
+        assert!(
+            roots.contains(&id),
+            "a DSAR for the operator subject must find the operator's own ingests (F7-02)"
+        );
+    }
+
+    /// F7-05 (seventh pass): the `/ops/crew` roster emits its stored strings
+    /// through the read seam — no invisible/bidi bytes survive, even when the
+    /// underlying fields carry them. RED-first: the roster CORE invisible-
+    /// strips `principal`/`current_case_ref` (workflow/crew.rs), but the
+    /// emitted map shipped `roles`/`skills`/`site` verbatim while
+    /// `get_ops_skills` claimed the roster shared its strip posture.
+    #[tokio::test]
+    async fn crew_roster_strings_pass_the_seam() {
+        use tower::ServiceExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = graph_seam_state(&dir);
+        // Plant hostile stored text the way a hostile IdP sub / upstream
+        // roster feed would land it. The principal's bidi override and the
+        // case ref's zero-widths already die at the roster core; the pin's
+        // teeth are the fields the core does NOT touch: roles (presence
+        // roles_json), skills (principal_skills), and the Watchbill site.
+        {
+            let conn = state.pool.get().unwrap();
+            let ts = chrono::Utc::now().timestamp() - 10;
+            conn.execute(
+                "INSERT INTO presence(domain, principal, ts, activity_kind, current_case_ref, roles_json)
+                 VALUES ('global', ?1, ?2, 'reading', ?3, ?4)",
+                rusqlite::params![
+                    "agent@loopback\u{202E}evil",
+                    ts,
+                    "case\u{200B}-42\u{FEFF}",
+                    "[\"\u{202E}lead\u{200B}:\u{FEFF}oncall\"]",
+                ],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO principal_skills(domain, principal, skill, created_at)
+                 VALUES ('global', ?1, ?2, ?3)",
+                rusqlite::params!["agent@loopback\u{202E}evil", "\u{200B}triage\u{FEFF}", ts],
+            )
+            .unwrap();
+            // The site join matches the STRIPPED principal (the view's
+            // site_of runs on the post-strip id).
+            conn.execute(
+                "INSERT INTO shifts(domain, site, tz, start_epoch, end_epoch, overlap_minutes, roster_json, created_at)
+                 VALUES ('global', ?1, 'UTC', ?2, ?3, 0, ?4, ?2)",
+                rusqlite::params![
+                    "\u{FEFF}manila\u{202E}-desk",
+                    ts - 60,
+                    ts + 3600,
+                    "[\"agent@loopbackevil\"]",
+                ],
+            )
+            .unwrap();
+            let now = ts + 10;
+            let app = brain_server::server::router::app(state.clone());
+            let uri = format!("/ops/crew?domain=global&now={now}");
+            let resp = app
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), axum::http::StatusCode::OK);
+            let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            let members = body["members"].as_array().expect("members array");
+            assert!(
+                !members.is_empty(),
+                "the planted presence row must appear in the roster"
+            );
+            // Every emitted string — principal, state, activity kind, case
+            // ref, site, roles, skills — must be free of invisible/bidi
+            // bytes (the read seam's minimum guarantee on short labels).
+            fn walk(v: &serde_json::Value) -> bool {
+                match v {
+                    serde_json::Value::String(s) => {
+                        !s.chars().any(brain_server::strip_invisible::is_invisible)
+                    }
+                    serde_json::Value::Array(a) => a.iter().all(walk),
+                    serde_json::Value::Object(o) => o.values().all(walk),
+                    _ => true,
+                }
+            }
+            assert!(
+                walk(&body),
+                "roster output carries invisible/bidi bytes — the read seam did not run"
+            );
+        }
+    }
+
+    /// F7-06 (seventh pass): the admin-evidence surfaces emit their stored
+    /// text through the read seam. RED-first: breach narratives, transfer
+    /// TIA/DPA pre-fills, role descriptions, and the /audit actor shipped
+    /// verbatim. Admin writers lower the exploitability, not the law — the
+    /// read seam is unconditional.
+    #[tokio::test]
+    async fn admin_evidence_surfaces_pass_the_seam() {
+        use tower::ServiceExt;
+        let dir = tempfile::TempDir::new().unwrap();
+        let state = graph_seam_state(&dir);
+        let app = brain_server::server::router::app(state.clone());
+        let now = chrono::Utc::now().timestamp();
+        // Walk helper: every string leaf must be free of invisible/bidi
+        // bytes — the seam's minimum guarantee on stored text.
+        fn walk(v: &serde_json::Value) -> bool {
+            match v {
+                serde_json::Value::String(s) => {
+                    !s.chars().any(brain_server::strip_invisible::is_invisible)
+                }
+                serde_json::Value::Array(a) => a.iter().all(walk),
+                serde_json::Value::Object(o) => o.values().all(walk),
+                _ => true,
+            }
+        }
+        async fn get_json(app: &axum::Router, uri: &str) -> serde_json::Value {
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(uri)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), axum::http::StatusCode::OK, "{uri}");
+            let bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+
+        // ── breaches: hostile narrative + event body + noted_by ──────────
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO breaches(scope, description, severity, discovered_at,
+                                      affected_estimate, jurisdictions, status,
+                                      opened_by, opened_at)
+                 VALUES ('global', ?1, 'low', ?2, 1, '[]', 'open', ?3, ?2)",
+                rusqlite::params![
+                    "breach\u{200B} narrative \u{FEFF}probe",
+                    now,
+                    "dpo\u{202E}oncall",
+                ],
+            )
+            .unwrap();
+            let breach_id: i64 = conn
+                .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+                .unwrap();
+            conn.execute(
+                "INSERT INTO breach_events(breach_id, event_type, jurisdiction, body, noted_by, created_at)
+                 VALUES (?1, 'detected', 'de', ?2, ?3, ?4)",
+                rusqlite::params![
+                    breach_id,
+                    "event\u{200B}body\u{FEFF}probe",
+                    "noter\u{202E}id",
+                    now,
+                ],
+            )
+            .unwrap();
+            drop(conn);
+            let body = get_json(&app, "/breaches").await;
+            assert!(
+                walk(&body),
+                "breach evidence carries invisible/bidi bytes — the read seam did not run"
+            );
+            let body = get_json(&app, &format!("/breaches/{breach_id}")).await;
+            assert!(
+                walk(&body),
+                "breach detail carries invisible/bidi bytes — the read seam did not run"
+            );
+        }
+
+        // ── transfers: hostile register row → TIA + DPA pre-fills ─────────
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO transfers(dataset, origin_jurisdiction, destination_jurisdiction,
+                                       mechanism, counterparty, lawful_basis, purpose)
+                 VALUES (?1, 'de', 'us', ?2, ?3, 'legitimate_interests', ?4)",
+                rusqlite::params![
+                    "dataset\u{200B}probe",
+                    "scc\u{FEFF}mechanism",
+                    "vendor\u{202E}gmbh",
+                    "purpose\u{200B}probe\u{FEFF}",
+                ],
+            )
+            .unwrap();
+            let transfer_id: i64 = conn
+                .query_row("SELECT last_insert_rowid()", [], |r| r.get(0))
+                .unwrap();
+            drop(conn);
+            let body = get_json(&app, &format!("/transfers/{transfer_id}/tia")).await;
+            assert!(
+                walk(&body),
+                "TIA pre-fill carries invisible/bidi bytes — the read seam did not run"
+            );
+            let body = get_json(&app, &format!("/transfers/{transfer_id}/dpa")).await;
+            assert!(
+                walk(&body),
+                "DPA pre-fill carries invisible/bidi bytes — the read seam did not run"
+            );
+        }
+
+        // ── roles: hostile description rides the pick list ────────────────
+        {
+            let role_body = serde_json::json!({
+                "description": "role\u{200B}desc\u{FEFF}probe",
+                "scopes": [],
+                "can": ["read"],
+                "owner_filter": "self",
+            });
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/roles/probe-role")
+                        .header("content-type", "application/json")
+                        .body(Body::from(role_body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), axum::http::StatusCode::OK);
+            let body = get_json(&app, "/roles/probe-role").await;
+            assert!(
+                walk(&body),
+                "role description carries invisible/bidi bytes — the read seam did not run"
+            );
+        }
+
+        // ── audit: hostile actor (the row's one free-text field) ──────────
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO audit_events(kind, actor, status) VALUES ('ingest', ?1, 'ok')",
+                rusqlite::params!["sub\u{202E}spoof"],
+            )
+            .unwrap();
+            drop(conn);
+            let body = get_json(&app, "/audit").await;
+            assert!(
+                walk(&body),
+                "audit rows carry invisible/bidi bytes — the read seam did not run"
+            );
+        }
+    }
+
     /// a purge must cascade to `recall_traces`. The trace side table
     /// embeds hit chunk ids in its JSON; a purged chunk must not leave a trace
     /// that still "proves" it was returned. (Round 11 finding: purge/DSAR did
@@ -7595,7 +7895,10 @@ Final paragraph after the rule.";
     /// read path that emits stored content is caught by AUDIT (the six
     /// stragglers were) and must be ADDED here in the same change. If you are
     /// adding a stored-text read surface, adding its row here is part of the
-    /// change. The interactive UMP reads sanitize a CLONE of the row before emit (so
+    /// change (now a release-checklist standing rule — Ownerstamp F7-07).
+    /// Ownerstamp F7-07: `handler_body` comment-strips each source before
+    /// matching, so the assert reads CODE — a comment naming the seam symbol
+    /// no longer false-passes; only a real call site satisfies the row. The interactive UMP reads sanitize a CLONE of the row before emit (so
     /// integrity stays self-consistent), hence the `sanitize_ump_row_for_read`
     /// helper is the required symbol there rather than an inline seam call.
     #[test]
@@ -7627,6 +7930,29 @@ Final paragraph after the rule.";
         let observe_src = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/handlers/observe.rs"
+        ));
+        let crew_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/handlers/crew.rs"));
+        let breaches_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/handlers/breaches.rs"
+        ));
+        let transfers_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/handlers/transfers.rs"
+        ));
+        let roles_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/handlers/roles.rs"
+        ));
+        let profiles_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/handlers/profiles.rs"
+        ));
+        let handlers_mod_src =
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/handlers/mod.rs"));
+        let audit_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/server/router/core.rs"
         ));
         // (source, handler/helper name, the seam call it must reference).
         // The seam names deliberately pair with the response field each site
@@ -7663,6 +7989,25 @@ Final paragraph after the rule.";
             (router_mem_src, "relations_for", "sanitize_read_cow"),
             (router_mem_src, "get_edge_history", "sanitize_read_cow"),
             (graph_read_src, "traverse_row_mapper", "sanitize_read_cow"),
+            // Ownerstamp M2: the crew roster + skills feed are stored-text
+            // read surfaces (presence/shift/skill strings) — both views ride
+            // the seam (F7-05).
+            (crew_src, "get_ops_crew", "sanitize_read"),
+            (crew_src, "get_ops_skills", "sanitize_read"),
+            // Ownerstamp M3: the admin-evidence sweep (F7-06) — breach
+            // narratives, transfer TIA/DPA pre-fills, role/profile
+            // descriptions, and the /audit listing emit through the deep
+            // string-leaf composition of the seam.
+            (handlers_mod_src, "sanitize_value_strings", "sanitize_read"),
+            (breaches_src, "list_breaches", "sanitize_value_strings"),
+            (breaches_src, "get_breach", "sanitize_value_strings"),
+            (transfers_src, "get_tia", "sanitize_value_strings"),
+            (transfers_src, "get_dpa", "sanitize_value_strings"),
+            (roles_src, "list_roles", "sanitize_value_strings"),
+            (roles_src, "get_role", "sanitize_value_strings"),
+            (profiles_src, "list_profiles", "sanitize_value_strings"),
+            (profiles_src, "get_profile", "sanitize_value_strings"),
+            (audit_src, "list_audit", "sanitize_value_strings"),
         ];
         for (src, name, seam) in sites {
             let body = handler_body(src, name)
@@ -7676,14 +8021,19 @@ Final paragraph after the rule.";
 
     /// Extract the body of `async fn {name}` (brace-balanced, string-aware) so
     /// the wiring guard can assert the gate lives inside the handler.
-    fn handler_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+    /// F7-07: the source is comment-stripped FIRST (string-aware, line +
+    /// block comments) and the body is returned owned — a comment naming the
+    /// required symbol can never false-pass the substring assert again; the
+    /// assert reads code, not prose.
+    fn handler_body(src: &str, name: &str) -> Option<String> {
+        let stripped = strip_line_comments(src);
         let needle = format!("fn {name}(");
-        let start = src.find(&needle)?;
+        let start = stripped.find(&needle)?;
         let mut parens = 0i32;
         let mut in_str = false;
         let mut esc = false;
-        let mut chars = src[start..].char_indices();
-        while let Some((i, c)) = chars.next() {
+        let chars = stripped[start..].char_indices();
+        for (i, c) in chars {
             if in_str {
                 if esc {
                     esc = false;
@@ -7700,9 +8050,13 @@ Final paragraph after the rule.";
                 ')' => parens -= 1,
                 '{' if parens == 0 => {
                     let mut depth = 1i32;
-                    let mut inner = chars.as_str().char_indices();
-                    for (j, c) in inner.by_ref() {
-                        if c == '"' && !esc {
+                    let mut inner = stripped[start + i + 1..].char_indices();
+                    while let Some((j, c)) = inner.next() {
+                        if !in_str && c == '\'' && inner.as_str().starts_with('"') {
+                            // the `'"'` char literal — consume it whole so the
+                            // quoted double quote never opens string mode.
+                            inner.next();
+                        } else if c == '"' && !esc {
                             in_str = !in_str;
                             esc = false;
                         } else if in_str {
@@ -7713,7 +8067,7 @@ Final paragraph after the rule.";
                             depth -= 1;
                             if depth == 0 {
                                 let end = start + i + 1 + j;
-                                return Some(&src[start + i + 1..end]);
+                                return Some(stripped[start + i + 1..end].to_string());
                             }
                         }
                     }
@@ -7723,6 +8077,165 @@ Final paragraph after the rule.";
             }
         }
         None
+    }
+
+    /// F7-07: string-aware comment removal for the source-scan guards.
+    /// Handles `//` line comments, `/* … */` block comments, `"…"` strings
+    /// with escapes, the `'"'` char literal, and `r#"…"#` raw strings
+    /// (any `#` count). Residual ceiling: exotic lexed forms outside these
+    /// classes could desync the scan — the same heuristic class the body
+    /// extractor itself lives in; the guard is a regression lock, not a
+    /// parser (its own HONEST SCOPE note).
+    fn strip_line_comments(src: &str) -> String {
+        let mut out = String::with_capacity(src.len());
+        let mut it = src.chars().peekable();
+        while let Some(c) = it.next() {
+            match c {
+                // raw string: r#"…"# / br#"…"# (any # count) — consume to the
+                // matching close so embedded quotes/refs never desync the scan.
+                'r' if matches!(it.peek(), Some('#') | Some('"')) => {
+                    let mut hashes = 0usize;
+                    let mut lookahead: Vec<char> = Vec::new();
+                    while matches!(it.peek(), Some('#')) {
+                        lookahead.push('#');
+                        it.next();
+                        hashes += 1;
+                    }
+                    if it.peek() == Some(&'"') && hashes > 0 {
+                        it.next();
+                        out.push('r');
+                        out.extend(&lookahead);
+                        out.push('"');
+                        let mut closing = 0usize;
+                        for n in it.by_ref() {
+                            out.push(n);
+                            if n == '"' {
+                                closing = 1;
+                            } else if closing > 0 && n == '#' {
+                                closing += 1;
+                                if closing == hashes + 1 {
+                                    break;
+                                }
+                            } else {
+                                closing = 0;
+                            }
+                        }
+                    } else {
+                        out.push('r');
+                        out.extend(&lookahead);
+                    }
+                }
+                '"' => {
+                    out.push(c);
+                    while let Some(n) = it.next() {
+                        out.push(n);
+                        match n {
+                            '\\' => {
+                                if let Some(&e) = it.peek() {
+                                    out.push(e);
+                                    it.next();
+                                }
+                            }
+                            '"' => break,
+                            _ => {}
+                        }
+                    }
+                }
+                // the `'"'` char literal — a double quote inside single
+                // quotes must not open string mode.
+                '\'' if it.peek() == Some(&'"') => {
+                    out.push(c);
+                    out.push('"');
+                    it.next();
+                    if let Some(&close) = it.peek()
+                        && close == '\''
+                    {
+                        out.push(close);
+                        it.next();
+                    }
+                }
+                '/' if it.peek() == Some(&'/') => {
+                    it.next();
+                    for n in it.by_ref() {
+                        if n == '\n' {
+                            out.push('\n');
+                            break;
+                        }
+                    }
+                }
+                '/' if it.peek() == Some(&'*') => {
+                    it.next();
+                    let mut closed = false;
+                    let mut prev = ' ';
+                    for n in it.by_ref() {
+                        if prev == '*' && n == '/' {
+                            closed = true;
+                            break;
+                        }
+                        prev = n;
+                    }
+                    if !closed {
+                        // unterminated block comment: keep a newline so the
+                        // remainder reads as stripped prose, never code.
+                        out.push('\n');
+                    }
+                }
+                _ => {
+                    out.push(c);
+                }
+            }
+        }
+        out
+    }
+
+    /// F7-07 red-proof: a comment naming the seam symbol cannot false-pass
+    /// the site-table assert — `handler_body` strips comments (line, block,
+    /// doc) before matching, while the honest call site still matches.
+    #[test]
+    fn handler_body_ignores_comments_naming_the_symbol() {
+        let commented = r#"
+            fn fake_handler(p: &Option<Principal>) -> String {
+                // sanitize_read is the seam this handler MUST call
+                /* sanitize_value_strings elsewhere */
+                /// sanitize_read doc prose
+                todo_promise(&p)
+            }
+        "#;
+        let body = handler_body(commented, "fake_handler").expect("body");
+        assert!(
+            !body.contains("sanitize_read") && !body.contains("sanitize_value_strings"),
+            "comment residue leaked into the guard's view"
+        );
+        // and the honest call still matches after the strip (the fixture's
+        // string literal survives — strings are never comment-stripped).
+        let honest = r#"
+            fn honest_handler() -> String {
+                let kept = "sanitize_read in a string literal is data";
+                sanitize_read(kept, false, &None)
+            }
+        "#;
+        let body = handler_body(honest, "honest_handler").expect("body");
+        assert!(
+            body.contains("sanitize_read("),
+            "the strip ate a real call site"
+        );
+        // the raw-string + char-literal lexing hazards keep their contents.
+        let tricky = r##"
+            fn tricky_handler() -> &'static str {
+                let q: char = '"';
+                let raw = r#"sanitize_read stays a string here — // not a comment"#;
+                raw
+            }
+        "##;
+        let body = handler_body(tricky, "tricky_handler").expect("body");
+        assert!(
+            body.contains("sanitize_read stays a string"),
+            "raw-string content must survive the strip intact"
+        );
+        assert!(
+            body.contains("// not a comment"),
+            "line-comment scanning fired inside a raw string and ate data"
+        );
     }
 
     /// the serve wiring MUST inject the peer

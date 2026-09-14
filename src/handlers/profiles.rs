@@ -35,6 +35,9 @@ pub async fn list_profiles(
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
+    // operator-authored profile descriptions ride the read seam.
+    let mut profiles = serde_json::to_value(&profiles).unwrap_or_default();
+    super::sanitize_value_strings(&mut profiles);
     Ok(Json(serde_json::json!({ "profiles": profiles })))
 }
 
@@ -60,7 +63,12 @@ pub async fn get_profile(
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
     match p {
-        Some(p) => Ok(Json(serde_json::to_value(p).unwrap_or_default())),
+        // operator-authored profile descriptions ride the read seam.
+        Some(p) => {
+            let mut v = serde_json::to_value(p).unwrap_or_default();
+            super::sanitize_value_strings(&mut v);
+            Ok(Json(v))
+        }
         None => Err(HandlerError::not_found(format!(
             "no profile named '{name_for_err}'"
         ))),

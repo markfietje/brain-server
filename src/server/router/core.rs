@@ -452,6 +452,9 @@ pub(crate) async fn list_audit(
             ) {
                 for r in page {
                     let mut v = serde_json::to_value(&r).unwrap_or(serde_json::Value::Null);
+                    // the row's free-text fields (the actor sub is the one
+                    // non-hash string) ride the read seam at emission.
+                    crate::handlers::sanitize_value_strings(&mut v);
                     v["domain"] = serde_json::Value::String(domain.to_owned());
                     merged.push(v);
                 }

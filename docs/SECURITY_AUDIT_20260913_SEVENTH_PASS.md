@@ -437,6 +437,20 @@ pages) — except the CA 2026-09-10 package the map predates (L7-03).
 > design (the mirror is the element backstop; recall hits arrive
 > pre-sanitized) — disclosed ceiling, not a gap in the server seam.
 
+> **Closure stamp (2026-09-14, v1.28.87 "Ownerstamp" shipped):** F7-02,
+> F7-05, F7-06, F7-07 CLOSED (register rows in `AUDIT.md` flipped). M1 chose
+> stamping over documenting (the product-honest default; the drill's own
+> probe subject `loopback` became the operator stamp; historical rows stay
+> stamp-blind by declaration, dated). Live drill: markdown ingest → `/dsar`
+> export for `loopback` → `roots:1` (was 0 at the drill that found this);
+> sqlite readback `owner=loopback`; planted-invisible roster + breach
+> surfaces emit clean text with the planted rows visibly present (the
+> roster's `principal`/`current_case_ref` were already core-stripped — the
+> pin's teeth are roles/skills/site); live DB untouched. F7-05's first pin
+> attempt passed pre-fix (it planted only the two core-stripped fields) and
+> was reshaped before the fix — recorded here so the red-first ledger stays
+> honest.
+
 
 | Release | Theme | Items | Red-first pin(s) | Floor |
 |---|---|---|---|---|

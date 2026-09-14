@@ -37,13 +37,130 @@ P4-01 the same way. The headline now reads "gap ledger balanced
 `scripts/env-truth.sh` and `scripts/badges.sh --selfcheck` are the
 standing docs-as-tests gates (see `docs/release-checklist.md`).
 
-## [1.28.86] — 2026-09-13 — "Attrbane": seventh-pass closures, release 1 of 4
+## [1.28.87] — 2026-09-14 — "Ownerstamp": seventh-pass closures, release 2 of 4
+
+Closes F7-02 (LOW), F7-05 (LOW), F7-06 (LOW), F7-07 (INFO) from
+`docs/SECURITY_AUDIT_20260913_SEVENTH_PASS.md` §7.2/§7.4. Theme: the seams'
+last mile — the DSAR root semantics question, the one roster that attested a
+seam it lacked, the admin-evidence surfaces the unconditional read-seam law
+hadn't reached, and the site-table guard hardened to read code, not prose.
 
 ### Release notes
 
 **Security fixes**
 
-- **Attribute tier on the read seam (F7-01, HIGH).** Event-handler attributes
+- DSAR roots now cover operator-authored ingests (F7-02). Every content
+  write carries an owner stamp: the acting principal's `sub`, or the fixed
+  `loopback` label when no principal resolved (opaque-token superuser). The
+  locate query keys on `knowledge.owner`, so a purge/export for the operator
+  subject now finds the operator's own ingests (live drill: the seventh-pass
+  probe that found 0 roots now finds the row). Write-side only — historical
+  rows keep their NULL owner and stay stamp-blind by declaration (dated;
+  no migration, no OR-arm sweep: a legacy arm would mis-attribute every
+  NULL-owner row in multi-principal trees). Residual disclosed:
+  `suggest_feedback` keeps the principal-sub-or-NULL shape (the sweep's
+  feedback arm is unchanged).
+- The `/ops/crew` roster and the `/ops/skills` feed emit their stored strings
+  through the read seam (F7-05): `principal`/`current_case_ref` were already
+  invisible-stripped at the roster core; `roles`, `skills`, and the Watchbill
+  `site` now ride `sanitize_read` too. The skills view's "same posture as
+  the roster view" comment is true now.
+- Admin-evidence surfaces ride the seam (F7-06): breach list/detail
+  (narrative, event bodies, `noted_by`), transfer TIA/DPA pre-fills, role +
+  profile descriptions, and the `/audit` listing (the `actor` sub is the
+  row's one non-hash string) pass a deep string-leaf composition of
+  `sanitize_read` at the emission boundary. No digest impact — none of these
+  fields bind `review_digest`. Idempotent on clean content.
+- The read-seam wiring guard reads code, not prose (F7-07): the site table's
+  `handler_body` extractor comment-strips sources (string-aware: line,
+  block, and doc comments; `"…"` strings with escapes; the `'"'` char
+  literal; `r#"…"#` raw strings) before the substring assert, closing the
+  comment-naming-the-symbol false pass. The same-commit site-table row is
+  now a release-checklist standing rule.
+
+**Bug fixes**
+
+- None. (The F7-05 roster gap was attestation drift on two of five fields —
+  the fix widens an existing strip, it changes no valid output.)
+
+**Improvements**
+
+- None user-visible. The hardening is byte-identical on clean content
+  (the seam's fast path).
+
+### Engineering record
+
+- **M1 (F7-02) — stamp decision: (a) stamping, not documentation.** The
+  product-honest default per the plan: `owner` becomes a total attribution
+  ledger. One helper (`content_owner_stamp`, beside `principal_to_owner`) +
+  the fixed `LOOPBACK_OPERATOR_OWNER` label; five write edges swapped
+  (`/add`, `/ingest`, `/ingest/markdown`, structured `/ingest`, the approve
+  promotion insert — proposal creation stamps the candidate the approver
+  later promotes). Deliberately NOT swapped: `store_procedure`'s owner feeds
+  the audit actor only (procedure rows carry no owner column — schema-level
+  gap beyond this release's no-schema scope), and the QA-scoping owner on
+  `/ingest/proposal` keeps its declared legacy default (proposals are not
+  DSAR-locate targets). UMP owner uses are redaction decisions — stamping
+  there would have let a principal-less request claim rows.
+- **M2 (F7-05)** — the strip lands at the handler emission map (both crew
+  views), the roster core's narrower invisible pass stays as defense in
+  depth. Red-first proof: the first pin attempt planted only
+  `principal`/`current_case_ref` and PASSED (the core already strips them) —
+  the shipped pin plants hostile `roles_json`, a `principal_skills` skill,
+  and a hostile site shift so the guard has teeth against the actual gap.
+- **M3 (F7-06)** — one sweep, one helper (`sanitize_value_strings` in
+  `handlers/mod.rs`), nine emission sites. The deep pass shapes string
+  VALUES only; keys are server-defined. Static TIA prompt text verified
+  seam-clean (no markdown-ref/tag constructs) before shipping.
+- **M4 (F7-07)** — `handler_body` returns an owned, comment-stripped body;
+  every consuming guard (authz-gate coverage, screen routing, read-seam
+  table, audit-order) inherits the hardening. Red-proof pin covers the
+  comment false-pass, the honest call site, and the raw-string/char-literal
+  lexing hazards. The extractor's residual ceiling (heuristic lexer, not a
+  parser) is stated in its own doc comment.
+- **Pins**: `dsar_roots_cover_operator_ingests_or_documented` (RED→GREEN),
+  `crew_roster_strings_pass_the_seam` (RED→GREEN),
+  `admin_evidence_surfaces_pass_the_seam` (RED→GREEN),
+  `handler_body_ignores_comments_naming_the_symbol`,
+  `content_owner_stamp_always_attributes`. Site table +12 rows (both crew
+  views; the helper; four breach/transfer pairs... breach list+detail,
+  TIA+DPA, roles list+get, profiles list+get, `/audit`) — every row
+  verified against real sources through the hardened extractor. Floor walk:
+  1,452 needle-visible `#[test]` (1,450 → 1,452; the three surface pins ride
+  `#[tokio::test]`, which the spire needle does not count — same
+  walk-measured-truth rule as .86).
+- **Live drill (fresh DB, test port, opaque mode)**: the F7-02 probe
+  (markdown ingest → `/dsar` export for `loopback` → the operator's own row
+  in the bundle) + planted-invisible checks on the roster and breach
+  surfaces; live DB hash-verified untouched.
+- No schema; no routes; openapi.yaml untouched; `x-api-version` unchanged
+  (no wire contract move — the hardening is content-level at existing
+  surfaces). Ceilings (honest): historical rows stay stamp-blind;
+  `suggest_feedback` owner shape unchanged; procedure rows carry no owner
+  column at all (schema-level, beyond the no-schema scope); the site table
+  remains a regression lock, not a detector (the checklist rule is process,
+  not code).
+
+## [1.28.86] — 2026-09-13 — "Attrbane": seventh-pass closures, release 1 of 4
+
+Covers every commit from tag `v1.28.85` (`884ee17`) to this release —
+`git log v1.28.85..v1.28.86` reproduces the range, and every bullet below names
+its proof commit. The seventh-pass audit's first remediation release: the read
+seam's attribute tier, the graph family on the seam with a decline-and-count
+write edge, in-tx evidence for every caller-content write, and the plugin's
+dormant defenses wired (0.6.9). **Digest invalidation (expected, disclosed):**
+stored rows whose text contains a newly-stripped attribute move their
+`review_digest` — outstanding approvals for such rows fail closed with 409 at
+approve time and must be re-reviewed (observed live in the release drill: 409
+on the pre-upgrade digest, 200 after re-approval). Additive wire only
+(`edges_skipped`); no schema; no routes; no new dependencies.
+
+### Release notes
+
+**Security fixes**
+
+- **Event-handler attributes and dangerous URL schemes no longer survive the
+  read seam (proof `713748a`).** Event-handler attributes
   (`onclick`, `onpointerover`, …) and dangerous URI schemes
   (`javascript:`/`vbscript:`/`data:`, including mixed-case, entity-encoded, and
   whitespace-split forms) on SURVIVING elements no longer pass `sanitize_read`
@@ -52,7 +169,8 @@ standing docs-as-tests gates (see `docs/release-checklist.md`).
   `http(s)` hrefs and prose angle brackets survive byte-identically, a dropped
   attribute never synthesizes prose, and the weld family's pinned behavior is
   unchanged.
-- **The graph route family rides the read seam (F7-03, HIGH).** `/graph/entity`,
+- **The graph surfaces are no longer a raw read seam, and a hostile heading can
+  no longer become graph structure (proof `0d797ba`).** `/graph/entity`,
   `/graph/relations`, `/graph/traverse`, and `/graph/relationships/{id}/history`
   emitted stored entity names and relation types raw; markdown ingest made those
   names attacker-writable (a `## <img src=x onerror=…>` heading became a graph
@@ -62,31 +180,27 @@ standing docs-as-tests gates (see `docs/release-checklist.md`).
   note), and no entity row is created. The structured path 400s on an
   `entity_type` outside `[a-z0-9_-]` (explicit API contract; values are
   lowercased first, so existing "Person"-style types become "person").
-- **Caller-content write paths carry in-tx evidence (F7-04, MED).** `POST
+- **Every caller-content write carries its evidence row, inside the write's
+  own transaction (proof `48fef68`).** `POST
   /procedure` stored caller content with no audit row; structured `/ingest`
   audited only graph edges; `/add` and `/ingest/markdown` recorded their audit
   AFTER the commit (the crash window the audit-per-write law closed). All three
   holes closed: a `procedure` audit kind on the hash chain, a row audit beside
   the edge audits, and both legacy recordings moved inside their transactions.
-- **The plugin's dormant defenses are wired (S7-01/S7-02/S7-03, MED — plugin
-  0.6.9).** The hostile-element mirror (exported since 0.6.8, never called) is
+- **The plugin's dormant defenses are wired (plugin 0.6.9; proof `15a7c99` +
+  `e2cc810`, fork `5b64e7a`).** The hostile-element mirror (exported since
+  0.6.8, never called) is
   now invoked inside `sanitizeForBlock` at the server-canonical position; the
   raw proposal rows, graph-traverse paths, decision-evaluate rule text, and
   label fields no longer bypass the per-field boundary (the capture-trigger
   `sourcePrompt` is dropped from proposal details entirely — counts, not
   bodies).
-- **Sync guard passes its own live pair (S7-04, LOW).** `sync-plugin.sh`'s
+- **The plugin-sync guard passes on its own live pair and still fails real
+  drift (proof `8830209`).** `sync-plugin.sh`'s
   post-sync check is now the declared-exception form (a named exception with a
   verified reason), and the sanctioned `format.test.ts` delta was eliminated
   canonical-side by adopting the fork's import order — the check passes on the
   live pair and still fails real drift.
-
-**Digest invalidation (expected, disclosed):** the attribute tier widens
-`sanitize_read`, so every stored row whose read-canonical form contained a
-strip target moves its `review_digest`. Outstanding approvals for such rows
-fail closed with 409 at approve time and must be re-reviewed — observed live in
-the release drill (409 on the pre-upgrade digest, 200 after re-fetching the
-re-rendered digest). Rows without strip targets keep their digests.
 
 **Bug fixes**
 
@@ -95,14 +209,14 @@ re-rendered digest). Rows without strip targets keep their digests.
 **Improvements**
 
 - Markdown ingest responses carry `edges_skipped` so declined graph edges are
-  visible to callers.
+  visible to callers (proof `0d797ba`).
 - Docs truth: THREAT_MODEL's hostile-markup row and architecture.md's read-seam
-  sentence state the attribute tier (T7-01). The seventh-pass register rows
-  F7-03/F7-01/F7-04/S7-01/S7-02/S7-03/S7-04/T7-01 are CLOSED in `AUDIT.md`.
+  sentence state the attribute tier, and the seventh-pass register's closed
+  findings are recorded in `AUDIT.md` (proof `5145f4b`).
 
 ### Engineering record
 
-- Range: 7 commits on main (`713748a` M1 attribute tier, `0d797ba` M2 graph
+- Range: 10 commits on main (`713748a` M1 attribute tier, `0d797ba` M2 graph
   seam, `48fef68` M3 audit law, `15a7c99`/`7bcbecb`/`8830209`/`e2cc810` M4
   plugin wiring incl. the sync-script-mandated oxfmt pass and the
   S7-04 delta elimination, this commit M5) + fork commit `5b64e7a` (sync 0.6.9,
@@ -142,12 +256,25 @@ re-rendered digest). Rows without strip targets keep their digests.
 
 ## [1.28.85] — 2026-09-13 — "SixthPass": sixth-pass closures
 
+Covers the sixth-pass audit's two findings, closed red-first — `git log
+v1.28.84..v1.28.85` reproduces the range, and every bullet below names its
+proof commit. No schema; no routes; no wire change; no new dependencies.
+
 ### Release notes
 
 **Security fixes**
 
-- **Forget erasure audit rows carry the Forget kind (G6-02).** The chunk-forget path wrote its in-tx evidence row as kind `ingest`, so kind-filtered audit consumers missed erasures. Both rows (the erasure itself and the per-proposal scrub row) now write kind `forget`. Historical `ingest`-kind forget rows keep their meaning; new rows are labeled what they are.
-- **Fork extension carries the hostile-element mirror (G6-01).** The R-01 26-element strip plus MathML fallbacks and the fixture lane were missing from the deployed fork extension (last sync 0.6.0). Synced to plugin 0.6.7; byte-parity verified, 70 extension tests green, typecheck clean.
+- **Forget erasure audit rows carry the Forget kind (proof `2a40aa4`).** The
+  chunk-forget path wrote its in-tx evidence row as kind `ingest`, so
+  kind-filtered audit consumers missed erasures. Both rows (the erasure itself
+  and the per-proposal scrub row) now write kind `forget`. Historical
+  `ingest`-kind forget rows keep their meaning; new rows are labeled what they
+  are.
+- **The deployed fork extension carries the hostile-element mirror (proof
+  `ace4f986` in the openclaw fork).** The server's 26-element strip, the MathML
+  fallbacks, and the fixture lane were missing from the fork extension (last
+  sync 0.6.0). Synced to plugin 0.6.7; byte-parity verified, 70 extension
+  tests green, typecheck clean.
 
 **Bug fixes**
 
@@ -155,7 +282,9 @@ re-rendered digest). Rows without strip targets keep their digests.
 
 **Improvements**
 
-- Stale forward-plan files (`.85_SeamElements`, `.86_StreamKillSign`, `.87_DocsTruth`) marked superseded: their contents shipped inside v1.28.83/v1.28.84 without consuming those numbers. The queue head is now `IMPLEMENTATION_PLAN_v1.28.85_SixthPass.md`.
+- Stale forward-plan files marked superseded: their contents had already
+  shipped inside earlier releases without consuming those numbers, and the
+  release queue now names the real head (proof `cf380eb`).
 
 ### Engineering record
 
