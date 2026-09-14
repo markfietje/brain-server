@@ -39,17 +39,18 @@ standing docs-as-tests gates (see `docs/release-checklist.md`).
 
 ## [1.28.87] — 2026-09-14 — "Ownerstamp": seventh-pass closures, release 2 of 4
 
-Closes F7-02 (LOW), F7-05 (LOW), F7-06 (LOW), F7-07 (INFO) from
-`docs/SECURITY_AUDIT_20260913_SEVENTH_PASS.md` §7.2/§7.4. Theme: the seams'
-last mile — the DSAR root semantics question, the one roster that attested a
-seam it lacked, the admin-evidence surfaces the unconditional read-seam law
-hadn't reached, and the site-table guard hardened to read code, not prose.
+Closes the four LOW/INFO surface findings from the seventh-pass security
+audit (register rows in `AUDIT.md`; finding IDs in the Engineering record
+below). Theme: the seams' last mile — the DSAR root semantics question, the
+one roster that attested a seam it lacked, the admin-evidence surfaces the
+unconditional read-seam law hadn't reached, and the site-table guard
+hardened to read code, not prose.
 
 ### Release notes
 
 **Security fixes**
 
-- DSAR roots now cover operator-authored ingests (F7-02). Every content
+- DSAR roots now cover operator-authored ingests. Every content
   write carries an owner stamp: the acting principal's `sub`, or the fixed
   `loopback` label when no principal resolved (opaque-token superuser). The
   locate query keys on `knowledge.owner`, so a purge/export for the operator
@@ -61,17 +62,17 @@ hadn't reached, and the site-table guard hardened to read code, not prose.
   `suggest_feedback` keeps the principal-sub-or-NULL shape (the sweep's
   feedback arm is unchanged).
 - The `/ops/crew` roster and the `/ops/skills` feed emit their stored strings
-  through the read seam (F7-05): `principal`/`current_case_ref` were already
+  through the read seam: `principal`/`current_case_ref` were already
   invisible-stripped at the roster core; `roles`, `skills`, and the Watchbill
   `site` now ride `sanitize_read` too. The skills view's "same posture as
   the roster view" comment is true now.
-- Admin-evidence surfaces ride the seam (F7-06): breach list/detail
+- Admin-evidence surfaces ride the seam: breach list/detail
   (narrative, event bodies, `noted_by`), transfer TIA/DPA pre-fills, role +
   profile descriptions, and the `/audit` listing (the `actor` sub is the
   row's one non-hash string) pass a deep string-leaf composition of
   `sanitize_read` at the emission boundary. No digest impact — none of these
   fields bind `review_digest`. Idempotent on clean content.
-- The read-seam wiring guard reads code, not prose (F7-07): the site table's
+- The read-seam wiring guard reads code, not prose: the site table's
   `handler_body` extractor comment-strips sources (string-aware: line,
   block, and doc comments; `"…"` strings with escapes; the `'"'` char
   literal; `r#"…"#` raw strings) before the substring assert, closing the
@@ -80,8 +81,8 @@ hadn't reached, and the site-table guard hardened to read code, not prose.
 
 **Bug fixes**
 
-- None. (The F7-05 roster gap was attestation drift on two of five fields —
-  the fix widens an existing strip, it changes no valid output.)
+- None. (The roster gap was attestation drift on two of five fields — the
+  fix widens an existing strip, it changes no valid output.)
 
 **Improvements**
 
