@@ -451,6 +451,29 @@ pages) — except the CA 2026-09-10 package the map predates (L7-03).
 > was reshaped before the fix — recorded here so the red-first ledger stays
 > honest.
 
+> **Closure stamp (2026-09-14, v1.28.88 "Clocktruth" shipped):** L7-01,
+> L7-02, L7-03, L7-04, L7-05, L7-06, R7-09, R7-10, R7-11, T7-02, T7-03,
+> T7-04, T7-05, T7-06 CLOSED (register rows in `AUDIT.md` flipped) — the
+> claims lane and the docs half of the regulatory lane are empty; the
+> seventh-pass docs-truth band is closed. Deviations, honestly: L7-05's
+> "spec 1.7" is unreachable — cargo-cyclonedx 0.5.9 (latest) emits
+> 1.3/1.4/1.5 only and reads no config file (the plan's
+> `.cargo/cyclonedx.toml` route does not exist); shipped spec 1.5 pinned in
+> `scripts/sbom.sh` with the ceiling disclosed, one-flag bump when upstream
+> ships 1.6/1.7. The OJ number for the AI Act amending package CONFIRMED
+> (Regulation (EU) 2026/1744, OJ L 24.7.2026 — the plan's fallback citation
+> was not needed). R7-09's pin floors subdirectory files at the measured 4,
+> not the plan's draft "≥ 5" (walk-measured truth rules). Red-proofs: the
+> clock anchor failed on the missing 14-day wording; the coverage pin
+> failed at 0 subdirectory files; a planted `use axum::` in `lifecycle/`
+> failed the recursive guard (plant never landed); a planted `p256`
+> dependency failed the T7-04 census (never landed). S7-05 (env-truth
+> code-shape match) was named in the sequencing table's Clocktruth row but
+> is NOT in the release plan's scope — it moves to "Bounded" with the other
+> hygiene items. All legal citations re-verified 2026-09-14 (CRA Art 14
+> structure/clocks + Art 71(2); 2026/1744 recitals 38/40; TIDA §2/§3;
+> SB 1119, GA SB 540, OR SB 1546).
+
 
 | Release | Theme | Items | Red-first pin(s) | Floor |
 |---|---|---|---|---|

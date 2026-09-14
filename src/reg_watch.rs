@@ -50,9 +50,18 @@ const fn deadline(y: i64, m: u32, d: u32) -> (i64, u32, u32) {
 // ── the deadlines (source URLs + verified dates live in each doc comment) ────
 
 /// CRA Art 14 vulnerability & incident reporting goes live: 24 h early
-/// warning / 72 h notification / final report to ENISA + the national CSIRT.
-/// Source: Regulation (EU) 2024/2847, Art 14(1)/(4)/(6) — reporting
-/// obligations apply from 11 September 2026 (Art 69(2) application dates).
+/// warning / 72 h notification / final report via the single reporting
+/// platform to the CSIRT designated as coordinator + ENISA simultaneously.
+/// Source: Regulation (EU) 2024/2847, FINAL-OJ numbering — the two trigger
+/// schedules sit at 14(1)-(2) (vulnerabilities: early warning 14(2)(a),
+/// notification 14(2)(b), final report ≤ 14 days after a corrective or
+/// mitigating measure is available 14(2)(c)) and 14(3)-(4) (severe
+/// incidents: final report within one month of the incident notification
+/// 14(4)(c)), with the severe-incident definition at 14(5). Reporting
+/// obligations apply from 11 September 2026 (Art 71(2) — the pre-OJ
+/// numbering this file previously cited named Art 69(2)).
+/// Re-verified 2026-09-14 vs the EUR-Lex full text + the Commission
+/// reporting page (digital-strategy.ec.europa.eu/en/policies/cra-reporting).
 /// Re-verify at: https://eur-lex.europa.eu/eli/reg/2024/2847/oj
 const CRA_ART14_APPLIES: (i64, u32, u32) = deadline(2026, 9, 11);
 
@@ -65,8 +74,17 @@ fn stamped_application_date() -> String {
 }
 /// AI Act Art 50 transparency: provider machine-readable marking of synthetic
 /// content — legacy-system grace ends 2 Dec 2026.
-/// Source: Regulation (EU) 2024/1689 Art 50(2); C(2026) 4935 guidelines
-/// (20 Jul 2026). https://eur-lex.europa.eu/eli/reg/2024/1689/oj
+/// Source: Regulation (EU) 2024/1689 Art 50(2) as amended by Regulation
+/// (EU) 2026/1744 (the "Digital Omnibus on AI" package; adopted 8 Jul 2026,
+/// OJ L 24.7.2026, in force 27 Jul 2026): recital 38 grants a four-month
+/// transitional period for systems placed on the market before 2 Aug 2026 —
+/// i.e. through 2 Dec 2026. The pre-1.28.88 comment cited the C(2026) 4935
+/// guidelines as the horizon's legal basis; the amending regulation is the
+/// instrument (L7-04; OJ number confirmed 2026-09-14).
+/// DEPLOYER horizons from the same regulation (recital 40; no component duty
+/// moves — tracked in docs, not in code): Annex III high-risk obligations
+/// apply from 2 Dec 2027, Annex I (embedded in regulated products) from
+/// 2 Aug 2028. https://eur-lex.europa.eu/eli/reg/2024/1689/oj
 const AI_ACT_ART50_MARKING: (i64, u32, u32) = deadline(2026, 12, 2);
 /// AI Act GENERAL APPLICATION (Art 113): Art 50 transparency duties apply
 /// from 2 Aug 2026 for systems placed on the market from that date — this
@@ -119,6 +137,36 @@ fn reg_watch_cra_pin_is_green() {
     assert!(
         runbook.contains("scripts/cra-report-drill.sh"),
         "CRA runbook must reference the timed drill script (the rehearsal is part of readiness)"
+    );
+}
+
+/// L7-01 (seventh pass): the runbook's final-report section carried the
+/// INCIDENT trigger's one-month clock for BOTH triggers — legally wrong for
+/// actively exploited VULNERABILITIES, whose final report is due no later
+/// than 14 days after a corrective or mitigating measure is available
+/// (Art 14(2)(c), final-OJ numbering; re-verified 2026-09-14 vs the EUR-Lex
+/// full text + the Commission reporting page). The lesson of L7-01 is that
+/// a pin checked anchors, not clocks — this pin anchors the clock words
+/// themselves, so a revert of the runbook to the one-month-for-both form
+/// fails here.
+#[test]
+fn reg_watch_runbook_clock_anchor() {
+    let runbook = doc("docs/cra-reporting-runbook.md");
+    assert!(
+        runbook.contains("14 days") && runbook.contains("corrective"),
+        "CRA runbook lost the VULNERABILITY trigger's final-report clock \
+         (Art 14(2)(c): no later than 14 days after a corrective or \
+         mitigating measure is available) — the one-month clock binds the \
+         severe-INCIDENT trigger only (Art 14(4)(c))"
+    );
+    // The split must be visible as a split: both trigger labels ride the
+    // section, so a reader cannot mistake one clock for the whole rule.
+    assert!(
+        runbook.contains("corrective or mitigating measure is available")
+            && runbook.contains("one month"),
+        "CRA runbook must carry BOTH final-report clocks with their trigger \
+         labels — vulnerability (14 days after the fix/mitigation is \
+         available) and severe incident (one month after the notification)"
     );
 }
 
@@ -287,6 +335,83 @@ fn pqc_inventory_seam_deliverable() {
         "auth/jwt.rs lost ALLOWED_ALGS — the ML-DSA landing procedure's seam \
          moved; update the inventory in the same change"
     );
+}
+
+/// T7-04 (seventh pass): the census direction the hardcoded inventory
+/// name-list cannot cover — a NEWLY shipped primitive crate never failed
+/// anything before, because the list only checked the names it already
+/// knew. The census is CLOSED both ways: every dependency in
+/// `[dependencies]` whose name matches a crypto-family heuristic must
+/// appear in CENSUS (ship the mapping row + the crypto-inventory.md entry
+/// in the same change), and every CENSUS row must still be a real
+/// dependency and still inventoried (prune both when the crate goes).
+#[test]
+fn crypto_inventory_census_maps_every_crypto_crate() {
+    let toml = doc("Cargo.toml");
+    let inventory = doc("docs/crypto-inventory.md");
+    const CENSUS: &[(&str, &str)] = &[
+        ("ed25519-dalek", "Ed25519"),
+        ("hmac", "HMAC-SHA256"),
+        ("sha2", "SHA-256"),
+        ("blake3", "BLAKE3"),
+        ("aes-gcm", "AES-256-GCM"),
+        ("argon2", "Argon2id"),
+        ("rsa", "RS256/RS384/RS512"),
+        ("jsonwebtoken", "RS256/RS384/RS512"),
+    ];
+    for (crate_name, inv_name) in CENSUS {
+        assert!(
+            inventory.contains(inv_name),
+            "crypto-inventory.md lost `{inv_name}` — the census row for \
+             {crate_name} dangles; re-map or remove it in the same change"
+        );
+        assert!(
+            toml.contains(crate_name),
+            "{crate_name} left the dependency tree — prune its census row \
+             and its inventory entry in the same change"
+        );
+    }
+    const FAMILIES: &[&str] = &[
+        "sha",
+        "hmac",
+        "aes",
+        "rsa",
+        "dsa",
+        "ed25519",
+        "ecdsa",
+        "p256",
+        "p384",
+        "argon",
+        "blake",
+        "chacha",
+        "kyber",
+        "ml-dsa",
+        "sphincs",
+        "jsonwebtoken",
+    ];
+    let mut in_deps = false;
+    for line in toml.lines() {
+        let l = line.trim();
+        if l.starts_with('[') {
+            in_deps = l == "[dependencies]";
+            continue;
+        }
+        if !in_deps || l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        let Some((name, _)) = l.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if FAMILIES.iter().any(|f| name.contains(f)) && !CENSUS.iter().any(|(c, _)| *c == name) {
+            panic!(
+                "new crypto-family dependency `{name}` is unmapped — add a \
+                 CENSUS row and the crypto-inventory.md entry in the same \
+                 change (the inventory must never trail the shipped \
+                 primitives)"
+            );
+        }
+    }
 }
 
 /// The watch's clock machinery, kept alive by its own pin: both 2026 watch

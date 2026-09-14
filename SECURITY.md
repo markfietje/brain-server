@@ -1,6 +1,7 @@
 # Security Policy
 
-**Last reviewed:** 2026-09-11 against OWASP Top 10:**2025** + Cheat Sheet Series (v1.28.80 "Lockdown" refresh: token lifetime/iat bounds, no-cache revocation checks, per-login refresh families, title-aware screening, hardened read seam, public-route list re-verified against openapi.yaml)
+**Last reviewed:** 2026-09-14 against OWASP Top 10:**2025** + Cheat Sheet Series (v1.28.88 "Clocktruth" refresh: CRA Art 14 final-report clock split by trigger — 14 days after the fix for exploited vulnerabilities, one month after notification for severe incidents; revocation rows re-stamped to zero-staleness; verify-JSON scoped as the consumer's out-of-band act; transport-free layer guard made recursive)
+**Stamp policy:** this "Last reviewed" line moves in the same commit as any security-relevant claim it covers — a stamp N releases behind HEAD is itself a finding.
 (Context7-verified), OWASP Multi-Tenant Security Cheat Sheet, OWASP JSON Web
 Token Cheat Sheet, OWASP Secrets Management Cheat Sheet, OWASP gRPC + Microservices
 Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.

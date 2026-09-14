@@ -37,6 +37,190 @@ P4-01 the same way. The headline now reads "gap ledger balanced
 `scripts/env-truth.sh` and `scripts/badges.sh --selfcheck` are the
 standing docs-as-tests gates (see `docs/release-checklist.md`).
 
+## [1.28.88] — 2026-09-14 — "Clocktruth": seventh-pass closures, release 3 of 4
+
+Closes the claims-lane and regulatory-lane findings from the seventh-pass
+security audit (register rows in `AUDIT.md`; finding IDs in the Engineering
+record below). Theme: clocks, labels, and guards at law — the one
+legally-wrong clock in the repo, the guard that couldn't see two
+subdirectories, and the docs rows that outlived their debunkings. Zero wire
+change; zero route change; no schema.
+
+### Release notes
+
+**Security fixes**
+
+- The CRA reporting runbook's final-report clock was legally wrong for one
+  of its two triggers: it carried "no later than one month after the 72 h
+  notification" for BOTH. The regulation splits the triggers: a final report
+  for an actively exploited VULNERABILITY is due no later than **14 days
+  after a corrective or mitigating measure is available** (the clock anchors
+  on the fix, not the notification); one month after the incident
+  notification binds the severe-INCIDENT trigger only. The runbook now
+  carries both clocks with their trigger labels, the CSIRT framing matches
+  the regulation (one submission via the single reporting platform reaches
+  the CSIRT designated as coordinator for the manufacturer's main
+  establishment + ENISA simultaneously — not "the deployment's member
+  state"), and a new reg_watch pin anchors the 14-day wording so the
+  runbook cannot silently regress to the one-clock form. Citations
+  re-verified 2026-09-14 against the EUR-Lex full text and the Commission's
+  CRA reporting page.
+- The regulatory calendar's article citations moved to final-OJ numbering:
+  the CRA two-trigger schedules sit at Art 14(1)–(2)/(3)–(4) with the
+  severe-incident definition at 14(5), and the reporting obligations apply
+  from 11 September 2026 per Art 71(2) (the pre-OJ cites named
+  14(1)/(4)/(6) and Art 69(2)). The AI Act 2026-12-02 marking horizon now
+  cites the amending regulation itself — Regulation (EU) 2026/1744 (OJ
+  L 24.7.2026; the pre-1.28.88 comment cited Commission guidelines as the
+  legal basis) — and stamps the Annex III (2027-12-02) / Annex I
+  (2028-08-02) deployer horizons from the same instrument.
+- The transport-free layer guard (production code under `src/service/` must
+  never name HTTP/pool types) walked only the TOP LEVEL of the service
+  tree — the four files under `src/service/dsar/` and
+  `src/service/lifecycle/` were invisible to it. It reuses the recursive
+  walker the no-SQL guard already had, and a new pin counts the
+  subdirectory files it must see. Red-proof: a planted violation in
+  `lifecycle/` passed the old guard and fails the new one (the plant never
+  landed).
+- Security-docs staleness re-stamped: the revocation rows in the threat
+  model and risk register described a "≤60s negative cache" that does not
+  exist (revocation is a per-request registry lookup since v1.28.85 — zero
+  staleness; the residual is registry unavailability, which fails closed).
+  The threat model + security policy stamps moved to this release and both
+  files now carry a self-declaring stamp policy. The verify-JSON row is
+  scoped honestly: verification is the consumer's out-of-band act; the
+  server-side pin enforcement lives at parcels import only.
+- The committed SBOM moves from CycloneDX specVersion 1.3 to **1.5** — the
+  highest the generator supports (cargo-cyclonedx 0.5.9 emits
+  1.3/1.4/1.5 only; it reads no config file, so the pin lives in
+  `scripts/sbom.sh` as a CLI flag). 1.6/1.7 are a one-line bump when the
+  upstream tool ships them. Scope disclosure unchanged (runtime closure,
+  375 components).
+- A new crypto-inventory census closes the rot direction the inventory's
+  hardcoded name-list could not: a NEWLY shipped crypto-family dependency
+  (anything matching the sha/hmac/aes/rsa/dsa/ed25519/ecdsa/argon/blake/
+  … family names) now fails CI until it is mapped to a
+  `docs/crypto-inventory.md` row in the same change.
+
+**Improvements**
+
+- The CRA drill script's emitted template and timing report carry both
+  final-report clocks with their article cites (the drill's vulnerability
+  scenario previously printed the one-month clock); the incident trigger's
+  deadline stays computed, the vulnerability trigger's is carried as a
+  fix-anchored formula (the fix date is unknowable at awareness time).
+- The US state map gains the missing 2026-09-10 California package
+  (SB 1119 "Adam's Law" companion-chatbot child safety + companions) and a
+  companion-chatbot family row (GA SB 540, OR SB 1546 — the family is now
+  multi-state); the federal TAKE IT DOWN row's two dates are un-inverted
+  (criminal §2 from enactment 2025-05-19; FTC §3 enforcement live
+  2026-05-19); status refreshed to 2026-09-14. NIST AI RMF carries a
+  mid-revision footnote (input window closes 2026-09-16).
+
+**Bug fixes**
+
+- The screen's typoglycemia tier docstrings named an example the mechanism
+  mathematically cannot match ("systme" changes the last character vs
+  "system"; the tier requires equal first AND last characters). Examples
+  corrected to same-first/last scrambles ("sysetm") and the boundary is now
+  pinned by a negative assertion. No behavior change — docstring + test
+  fixture level only.
+
+### Engineering record
+
+- **M1 (L7-01) — the clock split.** Runbook: the Final report section now
+  states both triggers with their anchors (vuln: 14 days after the
+  corrective/mitigating measure is available, Art 14(2)(c); incident: one
+  month after the incident notification, Art 14(4)(c); severe definition
+  14(5)); the "three clocks run from awareness" preamble is corrected (the
+  final report's clock does not); the channel table names the single
+  reporting platform → coordinator CSIRT (main establishment, Art 14(1)/
+  14(7) fallback chain) + ENISA simultaneously; the downstream-deployers row
+  notes that fix availability also starts the 14-day clock.
+  `reg_watch.rs`: CRA doc comment carries the final-OJ structure + Art
+  71(2) + the re-verification date; the AI Act horizon cites Regulation
+  (EU) 2026/1744 (adopted 8 Jul 2026, OJ L 24.7.2026, in force 27 Jul 2026;
+  EP approval 16 Jun / Council 29 Jun) with recital 38 (four-month
+  transitional period) and recital 40 (Annex III → 2027-12-02, Annex I →
+  2028-08-02) — the plan's fallback citation ("EP approval + watch row")
+  was NOT needed: the OJ number confirmed. Drill script: template + timing
+  report carry both clocks (`DUE_FINAL` split into the incident date and
+  the fix-anchored vulnerability formula).
+- **M2 (R7-09) — the recursive walk.** `collect_service_rs_files` extracted
+  and made recursive (the `no_sql_in_handlers_enforced` idiom); the guard's
+  production-region split and message unchanged.
+  `transport_free_guard_walks_recursively` counts subdirectory files ≥ 4
+  (the plan's draft said "≥ 5"; the walk-measured truth is 4 —
+  `dsar/sweep.rs` + `lifecycle/{decay,fetch,purge}.rs` — the floor is set
+  to the tree's truth, unforwardable padding declined). Red-proofs: (1)
+  against the old top-level collector the coverage pin FAILED at 0
+  subdirectory files; (2) with the fix, a planted `use axum::` in
+  `lifecycle/` FAILED the guard naming the file (plant never landed); (3)
+  the census direction was red-proofed the same way with a planted `p256`
+  dependency (below).
+- **M3 — the docs-truth batch.** T7-02: the tamper-evidence scope sentence
+  (chain + UMP evidence rows; business rows behind the chain = the
+  host-compromise ceiling) in the threat model's §4 item 2b. T7-03: three
+  THREAT_MODEL rows + risk-register R-14 re-stamped to per-request/zero-
+  staleness (R-06 carried the same dead "≤60s" cell — fixed in the same
+  stroke); residual reworded to registry-unavailability-fails-closed.
+  T7-04: chose the census over the comment-softening (~15-line budget; the
+  census is the class-closing direction): `crypto_inventory_census_maps_
+  every_crypto_crate` — a closed 8-row crate→inventory mapping (every row
+  must still be a real dependency AND still inventoried) + a crypto-family
+  heuristic over `[dependencies]` (a matching unmapped crate fails with a
+  ship-the-row-in-the-same-change message). Red-proof: planted `p256` →
+  FAIL naming the crate; removed → green. T7-05: THREAT_MODEL + SECURITY
+  stamps moved to this release; both files gained the standing
+  "stamp moves in the same commit as the claim it covers" policy line.
+  T7-06: the verify-JSON row gains the out-of-band-act scope sentence (the
+  zero-production-call-sites finding). R7-10: docstring fix per the plan's
+  default (the tier is an additive tripwire; widening changes verdicts and
+  needs its own evaluation — not done): "systme" → "sysetm" at both
+  docstrings, the test fixture aligned, and a negative assertion pins the
+  first/last-char boundary. R7-11: scope disclosure at both sites (the
+  THREAT_MODEL standing-ceilings bullet + the chunker's byte-split arm
+  comment); the tag-aware split was NOT taken (it changes chunk shapes and
+  needs its own evaluation). L7-02/L7-03/L7-06: map rows as in the Release
+  notes; the COMPLIANCE AI Act row also gained the 2026/1744 recital-40
+  deployer horizons (the docs half of L7-04).
+- **M4 (L7-05) — the SBOM spec, honestly.** The plan's target (spec 1.7)
+  is unreachable with the current toolchain: cargo-cyclonedx 0.5.9 is the
+  latest published crate, its `--spec-version` tops at **1.5**, and (found
+  during execution) it reads NO config file — env/CLI only (verified in its
+  source; the `.cargo/cyclonedx.toml` route the plan guessed does not
+  exist). Shipped: `--spec-version 1.5` pinned in `scripts/sbom.sh` with
+  the ceiling comment; `sbom/brain-server-1.28.88.cdx.json` regenerated
+  (specVersion 1.5, 375 components — the runtime-closure scope disclosure
+  is unchanged); the tool upgrade path is a one-flag bump. No consumer of
+  the specVersion string exists in the repo (grepped) — nothing else moved.
+- **Pins**: `reg_watch_runbook_clock_anchor` (RED→GREEN: failed on the
+  missing 14-day clock, green on the split runbook) +
+  `transport_free_guard_walks_recursively` (RED→GREEN: 0 subdirectory files
+  → ≥4) + `crypto_inventory_census_maps_every_crypto_crate` (green on
+  arrival, red-proofed by plant). `typoglycemia_scramble_caught` extended
+  with the boundary assertion. Floor walk: 1,455 needle-visible `#[test]`
+  (1,452 → 1,455; the three new pins all ride plain `#[test]`).
+- **Citations re-verified at execution date (2026-09-14)**: CRA Art 14
+  paragraph structure + clocks (EUR-Lex full text + the Commission
+  reporting page + the Art 14 mirror); Art 71(2) application date;
+  Regulation (EU) 2026/1744 OJ number + recitals 38/40; TIDA §2/§3 dates;
+  SB 1119 (signed 2026-09-10), GA SB 540 (eff 2027-07-01), OR SB 1546
+  (signed 2026-03-31), CycloneDX current-spec status. The runbook's
+  "verified YYYY-MM-DD" line and the reg_watch doc comments carry the
+  fresh date.
+- No schema; no routes; openapi.yaml untouched; `x-api-version` unchanged
+  (no wire contract move — it stamps from the crate version at compile
+  time, which moved as part of the release itself). Ceilings (honest):
+  SBOM spec 1.5 is the tool ceiling (1.6/1.7 await upstream);
+  `transport_free_guard` scans text, not AST (cfg(test)-region exemption
+  is a split heuristic, unchanged); the census's family heuristic can be
+  evaded by an innocuously-named crypto crate (closed names fail, stealth
+  names are the supply-chain lane's problem, not the inventory's); the
+  US map's SB 1119 operative dates are marked verify-with-counsel (the
+  bill's effective-date section was not re-verified against primary text
+  this pass).
+
 ## [1.28.87] — 2026-09-14 — "Ownerstamp": seventh-pass closures, release 2 of 4
 
 Closes the four LOW/INFO surface findings from the seventh-pass security

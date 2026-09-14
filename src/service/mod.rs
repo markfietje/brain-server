@@ -261,12 +261,7 @@ mod pins {
     fn service_layer_free_of_http_types() {
         const FORBIDDEN: &[&str] = &["axum", "StatusCode", "Json", "AppState", "Pool"];
         let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/service");
-        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
-            .expect("src/service must exist")
-            .filter_map(|e| e.ok())
-            .map(|e| e.path())
-            .filter(|p| p.extension().map(|x| x == "rs").unwrap_or(false))
-            .collect();
+        let mut files = collect_service_rs_files();
         assert!(
             files.len() >= 2,
             "sanity: expected the service tree (mod + at least one core), found {}",
@@ -293,6 +288,66 @@ mod pins {
                 );
             }
         }
+    }
+
+    /// The collector behind `service_layer_free_of_http_types`, extracted so
+    /// the recursive-coverage pin can observe what the guard actually scans
+    /// (the R7-09 class: a guard that scans the wrong set can never say so).
+    /// The walk is RECURSIVE since v1.28.88 — the `no_sql_in_handlers_
+    /// enforced` idiom: the top-level walk never saw `src/service/dsar/`
+    /// or `src/service/lifecycle/`, so a subdirectory could quietly escape
+    /// the layer law.
+    #[cfg(test)]
+    fn collect_service_rs_files() -> Vec<std::path::PathBuf> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/service");
+        let mut files: Vec<std::path::PathBuf> = Vec::new();
+        fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("src/service must exist") {
+                let entry = entry.expect("readable dir entry");
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().map(|x| x == "rs").unwrap_or(false) {
+                    out.push(path);
+                }
+            }
+        }
+        walk(&dir, &mut files);
+        files.sort();
+        files
+    }
+
+    /// R7-09 (seventh pass): the transport-free guard's walk was TOP-LEVEL
+    /// only — `src/service/dsar/sweep.rs` and
+    /// `src/service/lifecycle/{decay,fetch,purge}.rs` (4 files) were
+    /// invisible to it. No live violation at pass time (grep-verified); the
+    /// gap, not an exploit, is the finding — the same class the 2026-09-11
+    /// round fixed on the dormancy pin. Red-proof: against the top-level
+    /// collector this pin failed at 0 subdirectory files, and a planted
+    /// `use axum::` in src/service/lifecycle/ PASSED the guard; with the
+    /// recursive walk the same plant FAILS the guard. The plant never
+    /// lands — its proof lives in this release's commit message. The walk
+    /// idiom is the no-SQL guard's (`no_sql_in_handlers_enforced`), which
+    /// was already recursive.
+    #[test]
+    fn transport_free_guard_walks_recursively() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/service");
+        let files = collect_service_rs_files();
+        let sub: Vec<String> = files
+            .iter()
+            .filter_map(|p| p.strip_prefix(&dir).ok())
+            .filter(|rel| rel.components().count() > 1)
+            .map(|rel| rel.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            sub.len() >= 4,
+            "the transport-free guard's collector found {} subdirectory files \
+             under src/service (expected ≥ 4: dsar/sweep.rs + \
+             lifecycle/{{decay,fetch,purge}}.rs) — a top-level walk is the \
+             R7-09 neutering class; a subdirectory cannot quietly escape the \
+             layer law",
+            sub.len()
+        );
     }
 
     /// v1.28.53 "Triage" — the extraction law for the review core the

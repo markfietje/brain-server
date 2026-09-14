@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<bom xmlns="http://cyclonedx.org/schema/bom/1.3" serialNumber="urn:uuid:abaa2ded-3f49-4209-916b-676e5bb1d968" version="1">
+<bom xmlns="http://cyclonedx.org/schema/bom/1.5" serialNumber="urn:uuid:f02b2a9c-961a-48c0-9cf7-a158ed576824" version="1">
   <metadata>
-    <timestamp>2026-09-14T00:13:55.962079000Z</timestamp>
+    <timestamp>2026-09-14T03:40:43.888025000Z</timestamp>
     <tools>
       <tool>
         <vendor>CycloneDX</vendor>
@@ -9,65 +9,65 @@
         <version>0.5.9</version>
       </tool>
     </tools>
-    <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.87">
+    <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.88">
       <name>brain-server</name>
-      <version>1.28.87</version>
+      <version>1.28.88</version>
       <description>Local-first agent memory server: UMP 1.0 L3, zero-token embeddings, human-in-the-loop write gate, tamper-evident audit chain, DSAR/GDPR tooling.</description>
       <scope>required</scope>
       <licenses>
         <expression>MIT</expression>
       </licenses>
-      <purl>pkg:cargo/brain-server@1.28.87?download_url=file://.</purl>
+      <purl>pkg:cargo/brain-server@1.28.88?download_url=file://.</purl>
       <externalReferences>
         <reference type="vcs">
           <url>https://github.com/markfietje/brain-server</url>
         </reference>
       </externalReferences>
       <components>
-        <component type="library" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.87 bin-target-0">
+        <component type="library" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.88 bin-target-0">
           <name>brain_server</name>
-          <version>1.28.87</version>
-          <purl>pkg:cargo/brain-server@1.28.87?download_url=file://.#src/lib.rs</purl>
+          <version>1.28.88</version>
+          <purl>pkg:cargo/brain-server@1.28.88?download_url=file://.#src/lib.rs</purl>
         </component>
-        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.87 bin-target-1">
+        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.88 bin-target-1">
           <name>bench</name>
-          <version>1.28.87</version>
-          <purl>pkg:cargo/brain-server@1.28.87?download_url=file://.#src/bin/bench.rs</purl>
+          <version>1.28.88</version>
+          <purl>pkg:cargo/brain-server@1.28.88?download_url=file://.#src/bin/bench.rs</purl>
         </component>
-        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.87 bin-target-2">
+        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.88 bin-target-2">
           <name>brain</name>
-          <version>1.28.87</version>
-          <purl>pkg:cargo/brain-server@1.28.87?download_url=file://.#src/bin/brain.rs</purl>
+          <version>1.28.88</version>
+          <purl>pkg:cargo/brain-server@1.28.88?download_url=file://.#src/bin/brain.rs</purl>
         </component>
-        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.87 bin-target-3">
+        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.88 bin-target-3">
           <name>brain-connector-crm</name>
-          <version>1.28.87</version>
-          <purl>pkg:cargo/brain-server@1.28.87?download_url=file://.#src/bin/brain-connector-crm.rs</purl>
+          <version>1.28.88</version>
+          <purl>pkg:cargo/brain-server@1.28.88?download_url=file://.#src/bin/brain-connector-crm.rs</purl>
         </component>
-        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.87 bin-target-4">
+        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.88 bin-target-4">
           <name>brain-connector-gh</name>
-          <version>1.28.87</version>
-          <purl>pkg:cargo/brain-server@1.28.87?download_url=file://.#src/bin/brain-connector-gh.rs</purl>
+          <version>1.28.88</version>
+          <purl>pkg:cargo/brain-server@1.28.88?download_url=file://.#src/bin/brain-connector-gh.rs</purl>
         </component>
-        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.87 bin-target-5">
+        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.88 bin-target-5">
           <name>brain-connector-stub</name>
-          <version>1.28.87</version>
-          <purl>pkg:cargo/brain-server@1.28.87?download_url=file://.#src/bin/brain-connector-stub.rs</purl>
+          <version>1.28.88</version>
+          <purl>pkg:cargo/brain-server@1.28.88?download_url=file://.#src/bin/brain-connector-stub.rs</purl>
         </component>
-        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.87 bin-target-6">
+        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.88 bin-target-6">
           <name>brain-migrate-rehearse</name>
-          <version>1.28.87</version>
-          <purl>pkg:cargo/brain-server@1.28.87?download_url=file://.#src/bin/brain_migrate_rehearse.rs</purl>
+          <version>1.28.88</version>
+          <purl>pkg:cargo/brain-server@1.28.88?download_url=file://.#src/bin/brain_migrate_rehearse.rs</purl>
         </component>
-        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.87 bin-target-7">
+        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.88 bin-target-7">
           <name>brain-server</name>
-          <version>1.28.87</version>
-          <purl>pkg:cargo/brain-server@1.28.87?download_url=file://.#src/main.rs</purl>
+          <version>1.28.88</version>
+          <purl>pkg:cargo/brain-server@1.28.88?download_url=file://.#src/main.rs</purl>
         </component>
-        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.87 bin-target-8">
+        <component type="application" bom-ref="path+file:///Users/mark/Sites/brain-server#1.28.88 bin-target-8">
           <name>mcp</name>
-          <version>1.28.87</version>
-          <purl>pkg:cargo/brain-server@1.28.87?download_url=file://.#src/bin/mcp.rs</purl>
+          <version>1.28.88</version>
+          <purl>pkg:cargo/brain-server@1.28.88?download_url=file://.#src/bin/mcp.rs</purl>
         </component>
       </components>
     </component>
@@ -8180,7 +8180,7 @@
     </component>
   </components>
   <dependencies>
-    <dependency ref="path+file:///Users/mark/Sites/brain-server#1.28.87">
+    <dependency ref="path+file:///Users/mark/Sites/brain-server#1.28.88">
       <dependency ref="registry+https://github.com/rust-lang/crates.io-index#aes-gcm@0.11.1" />
       <dependency ref="registry+https://github.com/rust-lang/crates.io-index#aho-corasick@1.1.5" />
       <dependency ref="registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104" />

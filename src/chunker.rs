@@ -260,6 +260,12 @@ fn split_oversized_code(chunk: Chunk) -> Vec<Chunk> {
         // Degenerate: one single line longer than the cap. The newline-
         // boundary rule has no boundary to respect — split by byte (char-
         // boundary-safe) and keep the parts as their own one-line pieces.
+        // SCOPE: this arm can cut a hostile element across chunks
+        // (`<scr` / `ipt>`); each piece then sanitizes independently-clean.
+        // Disclosed ceiling, not a gap: every in-repo consumer re-joins
+        // through the read seam (per-hit fence segments) — the weld class
+        // only opens for a downstream consumer that concatenates raw
+        // pieces (THREAT_MODEL §standing ceilings).
         // Fenced pieces keep a trailing newline so a
         // re-attached closer lands at a line start; PROSE pieces stay strict
         // verbatim substrings of the source (no synthesis on the non-fenced

@@ -63,7 +63,11 @@ own completeness.
 
 `sbom/brain-server-<version>.cdx.json` (1.28.83: **375 components** vs
 **520** `Cargo.lock` packages) covers the shipped runtime closure as
-emitted by `cargo-cyclonedx`. The ~145-package gap is dev-dependencies +
+emitted by `cargo-cyclonedx`. **Spec version (v1.28.88):** the file is
+CycloneDX **1.5** — the ceiling of cargo-cyclonedx 0.5.9 (latest; it emits
+1.3/1.4/1.5 and reads no config file), pinned as `--spec-version 1.5` in
+`scripts/sbom.sh`; bump that one flag when upstream ships 1.6/1.7. The
+~145-package gap is dev-dependencies +
 build-transitive crates that never ship in the release binary — excluded by
 the generator's default scope, not by hand-editing. Per the CISA 2026
 Minimum Elements for SBOM (published 29 Jul 2026, supersedes the NTIA 2021

@@ -24,7 +24,12 @@ fi
 
 # Generate JSON CycloneDX for this package; cargo-cyclonedx drops
 # brain-server.cdx.json in the repo root (default naming).
-( cd "$REPO" && cargo cyclonedx --format json >/dev/null )
+# --spec-version 1.5: the L7-05 bump (the committed SBOM rode the generator
+# default, 1.3). 1.5 is the tool's CEILING, not the choice: cargo-cyclonedx
+# 0.5.9 (latest as of 2026-09-14) supports 1.3/1.4/1.5 only, and it reads no
+# config file (env/CLI only — verified in its source). 1.6/1.7 land when the
+# upstream cyclonedx-bom crate ships them; bump this one flag then.
+( cd "$REPO" && cargo cyclonedx --format json --spec-version 1.5 >/dev/null )
 
 SRC="$REPO/brain-server.cdx.json"
 if [[ ! -f "$SRC" ]]; then

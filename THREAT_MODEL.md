@@ -4,9 +4,12 @@
 + Cheat Sheet Series (Context7-verified 2026-07-26), NIST SP 800-63B (digital
 identity), NIST SP 800-207 (zero-trust architecture).
 
-**Coverage current through:** v1.28.80 (2026-09-11). The v1.28.63–.75
+**Coverage current through:** v1.28.88 (2026-09-14). The v1.28.63–.75
 hardening line (§5b) is folded in; per-release detail lives in `CHANGELOG.md`
 and the close-out in `docs/AUDIT.md`.
+**Stamp policy:** every release that moves a security-relevant row in this
+file moves this stamp in the same commit — staleness is self-declaring by the
+version gap (do not trust a stamp N releases behind HEAD).
 
 This document is the engineering-side threat model. For per-release progress
 against the controls below, see [`SECURITY.md`](./SECURITY.md).
@@ -137,7 +140,7 @@ control verified by a unit/integration test (308 green).
 
 | Threat | Attack | v1.2 mitigation | Test |
 |---|---|---|---|
-| **Token replay** | Stolen access token reused after legitimate logout | Access tokens short-lived (≤15 min `exp`) + `(jti, iss)` denylist lookup on every authenticated request; 60s negative cache (bounded eventual consistency — see residual risk §6) | `missing_jti_rejected`, revocation tests |
+| **Token replay** | Stolen access token reused after legitimate logout | Access tokens short-lived (≤15 min `exp`) + `(jti, iss)` denylist lookup on EVERY authenticated request — per-request and fieldless (`RevocationCache`, v1.28.85): ZERO staleness; the residual is registry unavailability, which fails closed (see residual risk §6) | `missing_jti_rejected`, revocation tests |
 | **Algorithm confusion** | Attacker sends `alg:none`, or HS256 with the server's public key as the HMAC secret, hoping the verifier falls back to HMAC verification with the public key as the secret | `ALLOWED_ALGS` whitelist (RS256/384/512, ES256/384, EdDSA) checked **before** key lookup; `none`, all HS\*, all PS\* rejected unconditionally | `none_algorithm_rejected`, `hs256_rejected_even_with_matching_key`, `algorithm_whitelist_rejects_ps256` |
 | **Cross-tenant data access** | Tenant A's token attempts to read tenant B's chunks | `tenant` claim is taken from the **signed** token (never from query string / body — OWASP Multi-Tenant Cheat Sheet); AuthZ at the data-access layer (`authorize(principal, action, team, domain)`) — handlers cannot resolve a pool they aren't authorized for; default-deny → **403, never 404** (no existence leakage — OWASP A01:2025) | AuthZ cross-tenant integration test |
 | **Key compromise** | Signing key exfiltrated from `BRAIN_JWT_KEY_DIR` | Private keys mode 0600, dir mode 0700; `brain key generate` + `prune` rotation keeps two keys live during the overlap window; revocation burns the compromised `jti` set without re-issuing unaffected tokens; future KMS (v3.7) moves keys off the filesystem entirely | key rotation tests, `revoke` tests |
@@ -156,10 +159,14 @@ The `tenant` claim is verified by signature before any data-access call.
 
 ### v1.2 honest ceilings (accepted risks, see §5 exit-gate matrix)
 
-- **Revocation is eventually consistent (≤60s).** A stolen token has at most
-  60s of access after `/auth/logout` or `/auth/revoke`. Tighter would require
-  a per-request DB lookup (latency cost); the bounded cache is the standard
-  JWT trade-off. Distributed revocation (Redis-backed denylist) is v2.1.
+- **Revocation has NO staleness window.** Every authenticated request resolves
+  `(jti, iss)` against the registry directly (the per-request, fieldless
+  `RevocationCache` — v1.28.85). The pre-.85 "≤60s negative cache /
+  eventual consistency" text was the debunked claim (re-stamped T7-03,
+  seventh pass). Residual: registry unavailability DENIES the request
+  (fail-closed) — an availability trade-off, never a stale-acceptance
+  window. Distributed revocation (Redis-backed denylist) remains v2.1 for
+  multi-node deployments.
 - **Refresh-chain reuse detection burns the chain silently.** The legit user
   is not notified out-of-band; they discover the burn on their next refresh.
   A user-facing notification channel is v2.1.
@@ -196,8 +203,12 @@ a `ponytail:` comment naming the ceiling and upgrade path.
    integrity against SQL/application-level tampering (a flipped row, a
    truncated history, an old image restored over a newer one), NOT against
    an attacker who owns the host — host compromise is disk encryption's
-   problem (statement 2). Reporters: demonstrating ".bak extraction on a
-   stolen disk" is a KNOWN CEILING, not a novel finding (see SECURITY.md).
+   problem (statement 2). Scope: the tamper evidence covers the audit chain
+   and the UMP evidence rows bound to it; tampering with a BUSINESS row
+   behind the chain's back (direct DB write) is inside the host-compromise
+   ceiling — demonstrated live at the seventh pass (R7-08). Reporters:
+   demonstrating ".bak extraction on a stolen disk" is a KNOWN CEILING, not
+   a novel finding (see SECURITY.md).
 
 3. **Prompt-injection guard is heuristic, not ML-classifier-based.** Ceiling
    documented in `contains_suspicious_pattern`. Accepted because: edge-only
@@ -219,11 +230,11 @@ a `ponytail:` comment naming the ceiling and upgrade path.
    from request input. Accepted because: pre-existing pattern across
    `backup.rs`, `migration.rs`, and the rehearsal tool.
 
-6. **Token revocation is eventually consistent (≤60s).** Mitigation: the
-   negative cache TTL is bounded; an attacker with a stolen token has at most
-   60s of access after revocation. Accepted because: this is the standard
-   JWT revocation tradeoff; tighter would require per-request DB lookup
-   (latency cost).
+6. **Token revocation rides a per-request registry lookup.** Mitigation:
+   zero staleness by construction (fieldless per-request `RevocationCache`,
+   v1.28.85 — the "≤60s negative cache" claim was debunked; re-stamped T7-03,
+   seventh pass). Accepted residual: registry unavailability fails CLOSED
+   (the request is denied) — an availability cost, not a security window.
 
 ---
 
@@ -247,6 +258,13 @@ Standing ceilings, documented honestly:
   shipped contract: a URL pasted as text renders as a link and does not
   fetch until a human clicks. Closing THAT is the documented `gate.rs`
   ceiling, still open by design.
+- **The read-seam fixed point is per-STRING, not cross-chunk.** The
+  chunker's oversized-line arm splits at arbitrary char-boundary offsets,
+  so a hostile element cut across a chunk boundary (`<scr` / `ipt>`)
+  sanitizes independently-clean in each piece — every in-repo consumer
+  re-joins through the seam (per-hit fence segments), so the weld class is
+  a DOWNSTREAM-CONSUMER risk, disclosed (seventh-pass R7-11); a tag-aware
+  split would change chunk shapes and needs its own evaluation.
 - **`GET /export` emits stored content VERBATIM, by design.** Portability
   is the point: the export is the operator's cross-site transfer artifact
   and the `untrusted: true` label travels WITH it — a sanitizer over it
@@ -303,7 +321,7 @@ controls below are the threat-model-relevant additions, in ship order:
 | Silent cross-domain mixing (shim rescue leg) | `/recall` carries `included_global` (always present) so global-corpus mixing into domain queries is visible, never silent | v1.28.80 |
 | Total-grant scope issuance (`*/*`) | A team+domain wildcard scope grants nothing without `BRAIN_ALLOW_WILDCARD_GRANT=1` (fail-closed parse, loud boot warn when admitted) | v1.28.80 |
 | Single-approver promotion (approval fatigue) | Opt-in `BRAIN_APPROVAL_QUORUM=2`: two DISTINCT principals before promotion (first records a hash-chained audit row, same-principal repeat 409s); publish/remedy branches keep their own semantics | v1.28.80 |
-| Keyless self-assertion invisible to consumers | Verify JSON carries `authentication: "operator-pinned" \| "self-asserted (no operator key)"` | v1.28.80 |
+| Keyless self-assertion invisible to consumers | Verify JSON carries `authentication: "operator-pinned" \| "self-asserted (no operator key)"` — verify is the CONSUMER's out-of-band act: `verify_artifact_json`/`_detailed` have no production call site in this tree; the server-side pin enforcement lives at parcels import only (v1.28.88 T7-06 correction — the artifact is signed at serve, never re-verified server-side) | v1.28.80 |
 | Allow-policy blindness (`INJECTION_POLICY=allow`) | Monotonic `allow_policy_bypasses` tripwire on `/health/db` beside the policy echo | v1.28.80 |
 | Cross-tenant channel drain/ack (same-kind bridges) | The HMAC authenticates kind+tenant TOGETHER (per-bridge secret files) — `drain_out_batch`/`ack_out_batch`/`drain_ping_batch` scope every predicate by the SAME pair (the tenant was dropped after auth, letting a same-kind foreign tenant's bridge see + consume + suppress another tenant's envelopes/pings) | 2026-09-11 audit round |
 | `traverse:` scope silently satisfying Read | Traverse is exact-kind: a traverse scope grants ONLY Traverse gates; read/write/admin still satisfy Traverse (rank). The enum-doc contract ("traversal without broad read") is now the enforced behavior | 2026-09-11 audit round |

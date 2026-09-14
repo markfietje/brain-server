@@ -1,11 +1,12 @@
 # CRA Art 14 Incident & Vulnerability Reporting Runbook
 
 > **The clock:** Regulation (EU) 2024/2847 (CRA) Art 14 reporting obligations
-> apply from **2026-09-11**. This runbook is the operator's drill card for the
-> three statutory clocks. It is deliberately short: in the window you have no
-> time to read a manual — you need the template, the channel, and the
-> checklist. Pinned by `reg_watch_cra_pin_is_green` in `src/reg_watch.rs`
-> (the calendar as code — if this file loses its anchors, CI goes red).
+> apply from **2026-09-11** (Art 71(2)). This runbook is the operator's drill
+> card for the three statutory clocks. It is deliberately short: in the window
+> you have no time to read a manual — you need the template, the channel, and
+> the checklist. Pinned by `reg_watch_cra_pin_is_green` +
+> `reg_watch_runbook_clock_anchor` in `src/reg_watch.rs` (the calendar as code
+> — if this file loses its anchors, CI goes red).
 >
 > Rehearsal: `scripts/cra-report-drill.sh` (timed tabletop; baseline record at
 > the bottom of this file).
@@ -25,9 +26,12 @@ by the gates; experimental-branch issues in unshipped code.
 
 ## The three clocks
 
-All three run from **awareness** (the moment the operator/manufacturer becomes
-aware of the vulnerability/incident — log the timestamp, everything else hangs
-off it):
+The first two run from **awareness** (the moment the operator/manufacturer
+becomes aware of the vulnerability/incident — log the timestamp, everything
+else hangs off it). The final report does NOT: its clock anchors on the
+trigger (vulnerability → the fix/mitigation becoming available; severe
+incident → the 72 h notification). That split is the L7-01 correction —
+one month was never the vulnerability trigger's final-report clock.
 
 ## 24-hour early warning
 
@@ -36,8 +40,9 @@ off it):
   a one-paragraph description, the suspected impact, and whether exploitation
   is observed. Unknown fields are filled with `unknown (under assessment)` —
   the early warning is not blocked by incomplete facts.
-- **To:** ENISA via the EU reporting portal, AND the national CSIRT/PSIRT of
-  the deployment's member state (see channel table).
+- **To:** ONE submission via the CRA **single reporting platform** (Art 14(1):
+  the platform's electronic notification end-point of the CSIRT designated as
+  coordinator, simultaneously accessible to ENISA). See channel table.
 - **Template:** `scripts/cra-report-drill.sh` emits a filled sample from this
   section; keep the shape stable so downstream automation can parse it.
 
@@ -47,28 +52,41 @@ off it):
   initial assessment: severity (CVSS or documented equivalent), root cause,
   indicators of compromise (if any), and the mitigation/containment already
   shipped or advised.
-- **To:** the same ENISA + CSIRT pair, referencing the early warning's
-  submission receipt so the clocks visibly chain.
+- **To:** the same coordinator-CSIRT + ENISA pair, referencing the early
+  warning's submission receipt so the clocks visibly chain.
 
 ## Final report
 
-- **What:** the closure report, due **no later than one month** after the 72 h
-  notification (and on request of ENISA/CSIRT): root cause, full timeline
-  (awareness → containment → fix → release), the remediation shipped
-  (version + signed release), lessons applied to the secure-development
-  process, and evidence cross-references (SBOM version, audit-drill records).
+The final report's clock depends on the trigger (final-OJ numbering,
+re-verified 2026-09-14 vs the EUR-Lex full text + the Commission reporting
+page):
+
+- **Actively exploited vulnerability** (Art 14(2)(c)): due **no later than
+  14 days after a corrective or mitigating measure is available** — the clock
+  anchors on the FIX, not the notification. Log the fix-availability moment
+  the way you log awareness.
+- **Severe incident** (Art 14(4)(c)): due **within one month after the
+  submission of the incident notification** (the 72 h notification under
+  point (b) of that paragraph).
+
+- **What:** the closure report: root cause, full timeline (awareness →
+  containment → fix → release), the remediation shipped (version + signed
+  release), lessons applied to the secure-development process, and evidence
+  cross-references (SBOM version, audit-drill records). The coordinator CSIRT
+  may also request an intermediate status report at any point (Art 14(6)).
 - **To:** the same channel pair.
 
 ## Channels
 
 | Channel | When | How |
 |---|---|---|
-| **ENISA** (EU agency portal) | every Art 14 report (all three clocks) | the EU reporting portal entry point published under CRA Art 14(2); operator submits under the manufacturer identity registered in SUPPORT.md |
-| **National CSIRT / PSIRT** | every Art 14 report (all three clocks) | the member state where the affected deployment is operated. The live install's CSIRT is the operator's own jurisdiction — record it HERE in the blank below at deploy time, not during an incident |
+| **Single reporting platform** → CSIRT designated as coordinator + ENISA | every Art 14 report (all three clocks) | the ENISA-operated platform (live from 2026-09-11): ONE submission reaches the CSIRT designated as coordinator for the manufacturer's **main establishment in the Union** — NOT the deployment's member state — and ENISA simultaneously (Art 14(1), 14(7)). Non-EU manufacturers fall back through the authorised-representative → importer → distributor chain (Art 14(7)); the operator submits under the manufacturer identity registered in SUPPORT.md |
 | **GitHub Security Advisory** (private) | inbound vulnerability intake (pre-Art 14) | SECURITY.md §"Report a vulnerability" — the intake that STARTS the clock |
-| **Downstream deployers** (release notes + SECURITY feed) | fix availability | signed release + advisory; never the only channel for a live incident |
+| **Downstream deployers** (release notes + SECURITY feed) | fix availability | signed release + advisory; never the only channel for a live incident. NOTE: for the vulnerability trigger this moment ALSO starts the 14-day final-report clock |
 
-**Operator blank — fill at deploy time:** national CSIRT for this deployment:
+**Operator blank — fill at deploy time:** coordinator CSIRT for this
+manufacturer (main establishment in the Union; if the platform's end-point
+list has not been consulted recently, re-check it):
 `________________________________` (endpoint/contact), verified on: `________`.
 
 ## Artifact checklist (what you assemble before sending)

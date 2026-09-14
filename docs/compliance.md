@@ -127,9 +127,9 @@ real rows behind it. The row-by-row depth for each lives in
 | Framework | Posture |
 |---|---|
 | **ISO/IEC 42001** | AI management-system posture documented; algorithmic-risk controls (abstention, human-in-the-loop write-back) |
-| **NIST AI RMF** | Govern / Map / Measure / Manage controls across the retrieval lifecycle |
+| **NIST AI RMF** | Govern / Map / Measure / Manage controls across the retrieval lifecycle. *Mid-revision note (L7-06): AI RMF 1.0 is under formal revision — the input window closes 2026-09-16; re-check the revision status at the next compliance review and re-map if the frame restructures.* |
 | **SOC 2** | Audit log, access control, encryption-at-rest (backup), change control |
-| **EU AI Act** | Art 12/26(6) logging posture; Art 50 origin metadata note + `/.well-known/ai-notice` disclosure; Art 4 literacy playbook ([AI_LITERACY.md](./AI_LITERACY.md)). **Two AI Act clocks, both live:** Art 50 transparency duties apply from **2026-08-02** (general application, Art 113 — verified against the act text 2026-09-12); the **2026-12-02** reg_watch row is the LEGACY-system grace END for systems placed on the market before Aug 2026 — not the start. Deployers of systems placed on the market from Aug 2026 owe the duties NOW. |
+| **EU AI Act** | Art 12/26(6) logging posture; Art 50 origin metadata note + `/.well-known/ai-notice` disclosure; Art 4 literacy playbook ([AI_LITERACY.md](./AI_LITERACY.md)). **AI Act clocks:** Art 50 transparency duties apply from **2026-08-02** (general application, Art 113 — verified against the act text 2026-09-12); the **2026-12-02** reg_watch row is the LEGACY-system grace END for systems placed on the market before Aug 2026 — not the start (four-month transitional period, Regulation (EU) 2026/1744 recital 38). Deployers of systems placed on the market from Aug 2026 owe the duties NOW. **Deployer horizons from the same amending regulation (recital 40; no component duty moves):** Annex III high-risk obligations apply from **2027-12-02**, Annex I (embedded in regulated products) from **2028-08-02** — the L7-04 docs stamp; this component's Art 50 posture is unchanged by the amendment. |
 | **GDPR / CCPA / PH DPA** | Data portability, erasure, DSAR workflow, jurisdiction posture |
 
 The full, row-by-row mapping with the intent-based-auditing coverage and the
