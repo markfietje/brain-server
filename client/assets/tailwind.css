@@ -1337,7 +1337,7 @@
   }
   .tab-badge {
     position: absolute;
-    inset-inline-end: calc(var(--spacing) * 1);
+    inset-inline-end: var(--spacing);
     top: calc(var(--spacing) * -0.5);
     border-radius: calc(infinity * 1px);
     background-color: color-mix(in srgb, #5b9dff 15%, transparent);
@@ -1360,7 +1360,7 @@
   }
   .drawer {
     position: fixed;
-    inset-inline-end: calc(var(--spacing) * 0);
+    inset-inline-end: 0px;
     top: 0px;
     height: 100vh;
     width: calc(var(--spacing) * 80);

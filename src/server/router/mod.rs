@@ -43,17 +43,18 @@ use std::time::Duration as StdDuration;
 pub const API_CSP: &str = "default-src 'none'; frame-ancestors 'none'; form-action 'none'";
 
 /// CSP for client routes — allows WASM compilation, same-origin API calls,
-/// self-hosted fonts/CSS. No CDN, no inline scripts, NO eval.
-/// The old `'unsafe-eval'` rung existed because wasm-bindgen emitted a
-/// `new Function()` for module instantiation; since wasm-bindgen 0.2.109 the
-/// glue uses `WebAssembly.instantiateStreaming`-shaped code that only needs
-/// `'wasm-unsafe-eval'` — and this client pins 0.2.126. MANUAL GATE: boot the
-/// built client once under the trimmed policy before shipping; if a glue path
-/// still demands eval, restore `'unsafe-eval'` and re-document with evidence.
+/// self-hosted fonts/CSS. No CDN, no inline scripts. `'unsafe-eval'` IS
+/// required: the wasm-bindgen glue (0.2.127, Dioxus 0.8.0-alpha.1) emits
+/// `new Function()` (`__wbg_new_with_args_*`), which is JS eval and is
+/// blocked by `'wasm-unsafe-eval'` alone — proven live 2026-09-14
+/// ("call to Function() blocked by CSP", blank /app/). This is the SECOND
+/// time the trimmed policy failed (first: v1.16.x live fix, same symptom);
+/// do NOT drop `'unsafe-eval'` again on a version-bump claim without a
+/// real browser boot of the built bundle under the trimmed policy.
 /// style-src 'unsafe-inline' covers Dioxus runtime <style> injection.
 pub const CLIENT_CSP: &str = concat!(
     "default-src 'self'; ",
-    "script-src 'self' 'wasm-unsafe-eval'; ",
+    "script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval'; ",
     "style-src 'self' 'unsafe-inline'; ",
     "connect-src 'self'; ",
     "img-src 'self' data:; ",

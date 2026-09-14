@@ -138,7 +138,7 @@ CSP so the WASM fetch works:
 
 ```
 default-src 'self';
-script-src 'self' 'wasm-unsafe-eval';
+script-src 'self' 'wasm-unsafe-eval' 'unsafe-eval';
 connect-src 'self' <brain-server-origin>;
 object-src 'none';
 ```

@@ -10953,8 +10953,8 @@ Final paragraph after the rule.";
                 "client CSP must allow WASM"
             );
             assert!(
-                !hdr.contains("'unsafe-eval'"),
-                "client CSP must NOT allow JS eval (wasm-bindgen >= 0.2.109 needs only wasm-unsafe-eval)"
+                hdr.contains("'unsafe-eval'"),
+                "client CSP must allow the wasm-bindgen glue's new Function() (live-proven 2026-09-14)"
             );
             assert!(
                 hdr.contains("connect-src 'self'"),
