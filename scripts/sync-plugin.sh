@@ -122,6 +122,69 @@ fi
 # 5. Live sync (only reached with a clean guard).
 rsync -rc --delete "${RSYNC_EXCLUDES[@]}" "$SRC/" "$TARGET/"
 
+# 5b. Fork-field patch table. Fields the FORK workspace owns by declaration —
+# the canonical tree's values are wrong for the deployed extension and the
+# rsync must not get to keep them. (K7-03: the mirror-sync overwrote the
+# fork's typebox truth repair with the canonical 1.3.26 manifest while the
+# workspace catalog/lock said 1.3.27 — a misstating manifest plus a
+# `--frozen-lockfile` mismatch, in one silent copy.) Each row: file, field,
+# source of truth. The patch runs AFTER rsync; the byte-identity check below
+# then verifies the file's delta is EXACTLY these fields, and the post-check
+# (5c) pins manifest == lock forever.
+FORK_WS="$OC_DIR/pnpm-workspace.yaml"
+FORK_LOCK="$OC_DIR/pnpm-lock.yaml"
+
+patch_fork_fields() {
+	local manifest="$TARGET/package.json"
+	local want
+	# Fork catalog truth: the workspace-level typebox pin.
+	want="$(awk '/^[[:space:]]+typebox:/ {print $2; exit}' "$FORK_WS")"
+	if [[ -z "$want" ]]; then
+		echo "fork-field patch: no typebox entry found in $FORK_WS — refusing (fail-closed)" >&2
+		exit 1
+	fi
+	# Line-targeted rewrite only — the rest of the manifest must stay
+	# byte-identical to the canonical tree (formatting included).
+	if ! LC_ALL=C sed -i '' "s/^\([[:space:]]*\"typebox\": \)\"[^\"]*\"$/\1\"$want\"/" "$manifest"; then
+		echo "fork-field patch: sed rewrite of $manifest failed" >&2
+		exit 1
+	fi
+	if ! grep -q "\"typebox\": \"$want\"" "$manifest"; then
+		echo "fork-field patch: typebox line not found/rewritten in $manifest — refusing" >&2
+		exit 1
+	fi
+	echo ">> fork-field patch: package.json dependencies.typebox <- $want (fork workspace catalog truth)"
+}
+
+# 5c. The fork-pair pin: the extension manifest's declared specifier must
+# equal the lockfile's recorded specifier. This is the mechanical check the
+# 0.6.8 sync regression would have failed (K7-03 — red-first demonstrated
+# 2026-09-14: manifest 1.3.26 vs lock 1.3.27); it runs in THIS repo and
+# enforces the pair forever.
+check_manifest_matches_lock() {
+	local manifest_typebox lock_spec
+	manifest_typebox="$(sed -n 's/.*"typebox": "\([^"]*\)".*/\1/p' "$TARGET/package.json" | head -1)"
+	lock_spec="$(awk '
+		/^  extensions\/brain-server:$/ { inblk = 1; next }
+		inblk && /^  [^ ]/ { exit }
+		inblk && /^      typebox:/ { getline; sub(/^[[:space:]]*specifier:[[:space:]]*/, ""); print; exit }
+	' "$FORK_LOCK")"
+	if [[ -z "$manifest_typebox" || -z "$lock_spec" || "$manifest_typebox" != "$lock_spec" ]]; then
+		echo "SYNC UNVERIFIED: extension manifest typebox ('${manifest_typebox:-absent}') != lockfile specifier ('${lock_spec:-absent}')" >&2
+		echo "  the manifest misstates what runs and --frozen-lockfile will refuse — fix the pair, then re-run" >&2
+		exit 1
+	fi
+	echo ">> extension manifest matches lock specifier ($lock_spec)"
+}
+
+if [[ -f "$FORK_WS" && -f "$FORK_LOCK" ]]; then
+	patch_fork_fields
+	check_manifest_matches_lock
+else
+	echo "SYNC UNVERIFIED: fork workspace files missing ($FORK_WS / $FORK_LOCK)" >&2
+	exit 1
+fi
+
 # 6. Post-sync byte-identity check, fail-closed, modulo the DECLARED
 # exception list below. Excludes mirror the rsync set (plus macOS
 # metadata); --delete above means anything else must match. An exception
@@ -131,27 +194,35 @@ rsync -rc --delete "${RSYNC_EXCLUDES[@]}" "$SRC/" "$TARGET/"
 #     the header imports; the delta must be import-lines-only (verified by
 #     diffing with import lines stripped) — the test bodies stay
 #     byte-identical, so test-count parity is structural.
+#   - package.json: the fork-field patch table (5b) owns the typebox
+#     specifier; the delta must be typebox-lines-only.
 DIFF_OUT="$(diff -rq "$SRC" "$TARGET" -x node_modules -x package-lock.json -x .DS_Store || true)"
-if [[ -z "$DIFF_OUT" ]]; then
-	: # byte-identical — the common case
-else
-	DECLARED="format.test.ts"
-	UNDECLARED="$(printf '%s\n' "$DIFF_OUT" | grep -v "$DECLARED" || true)"
+DECLARED_FILES=()
+if [[ -n "$DIFF_OUT" ]]; then
+	DECLARED_FILES=("format.test.ts" "package.json")
+	UNDECLARED="$(printf '%s\n' "$DIFF_OUT" | grep -v -e 'format.test.ts' -e 'package.json' || true)"
 	if [[ -n "$UNDECLARED" ]]; then
-		echo "SYNC UNVERIFIED: drift outside the declared exception list ($DECLARED):" >&2
+		echo "SYNC UNVERIFIED: drift outside the declared exception list (format.test.ts, package.json):" >&2
 		printf '%s\n' "$UNDECLARED" >&2
 		exit 1
 	fi
-	if ! diff <(grep -v '^import' "$SRC/src/$DECLARED") \
-			<(grep -v '^import' "$TARGET/src/$DECLARED") >/dev/null; then
-		echo "SYNC UNVERIFIED: $DECLARED differs beyond import order —" >&2
+	if ! diff <(grep -v '^import' "$SRC/src/format.test.ts") \
+			<(grep -v '^import' "$TARGET/src/format.test.ts") >/dev/null; then
+		echo "SYNC UNVERIFIED: format.test.ts differs beyond import order —" >&2
 		echo "  merge the change into the canonical tree and re-sync" >&2
 		exit 1
 	fi
-	echo ">> declared delta verified: $DECLARED differs by import order only"
+	if ! diff <(grep -v '"typebox"' "$SRC/package.json") \
+			<(grep -v '"typebox"' "$TARGET/package.json") >/dev/null; then
+		echo "SYNC UNVERIFIED: package.json differs beyond the fork-field patch table —" >&2
+		echo "  only dependencies.typebox may differ; merge the rest into the canonical tree" >&2
+		exit 1
+	fi
+	echo ">> declared deltas verified: format.test.ts (import order), package.json (typebox specifier only)"
 fi
 
 git -C "$REPO" rev-parse HEAD > "$BASELINE_FILE"
-echo "synced $SRC -> $TARGET (byte-identical; baseline updated)"
-echo "next: cd $OC_DIR && node_modules/.bin/vitest run extensions/brain-server/test && \\"
-echo "      node_modules/.bin/tsc --noEmit -p extensions/brain-server/tsconfig.json, then commit the synced tree."
+echo "synced $SRC -> $TARGET (byte-identical modulo declared deltas; baseline updated)"
+echo "next: cd $OC_DIR && pnpm install --frozen-lockfile \\"
+echo "      && node_modules/.bin/vitest run extensions/brain-server/test \\"
+echo "      && node_modules/.bin/tsc --noEmit -p extensions/brain-server/tsconfig.json, then commit the synced tree."
