@@ -114,6 +114,10 @@ r2d2_sqlite = "0.35.0"
 axum = "0.8.9"
 tower-http = { version = "0.7", features = ["cors", "limit", "trace", "timeout", "catch-panic", "compression-full", "sensitive-headers", "request-id", "add-extension", "set-header", "fs" ] }
 tokio = { version = "1.53.0", features = ["full"] }
+# Cancellation for the agent loop: every await point in a loop turn selects
+# on a CancellationToken, and the token propagates to child work (the .69
+# TimeoutLayer lesson: cancellation must DROP cleanly, never leak a task).
+tokio-util = { version = "0.7", default-features = false }
 
 # Serialization - Latest Releases
 serde = { version = "1.0.229", features = ["derive"] }

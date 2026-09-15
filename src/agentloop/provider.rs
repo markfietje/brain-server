@@ -71,7 +71,7 @@ pub(crate) struct ProviderRequest {
 }
 
 /// Token accounting for one assistant message.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Usage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -84,7 +84,7 @@ impl Usage {
 }
 
 /// A completed tool invocation request inside a stream.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ToolCall {
     pub id: String,
     pub name: String,
