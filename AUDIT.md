@@ -959,3 +959,16 @@ v1.28.87 "Ownerstamp" → v1.28.88 "Clocktruth" → v1.28.89 "Bounded", floor +1
 1,461 walk-estimate). Ceilings: drill legs b/c (fork-gateway session, console GUI) not
 driven live; compliance-map rows beyond reg_watch dates spot-checked only; per-lane
 coverage notes in the report.
+
+## 2026-09-15 — v1.28.91 "Notary" — the operator-held evidence pair
+
+Operator-directed closures of two standing disclosed ceilings; no pass
+ran (the seventh pass's remediation line was complete; this release is the
+follow-through on the residual-risk review, not an audit's findings).
+
+| Item | Finding | Sev | Disposition |
+|---|---|---|---|
+| Ceiling narrowing | Business-row tamper behind the audit chain passes every in-tree verifier (R7-08 live-demonstrated 2026-09-13: `/ump/audit/verify` ok + `/verify` supports the tampered text — the chain protects its own rows, nothing binds business bytes) | MED (detection gap) | **NARROWED v1.28.91 "Notary"** — `brain anchor` / `--verify`: deterministic state fingerprint (chain head + knowledge content census + counts) recorded OFF-HOST by the operator; `anchor_detects_business_row_tamper` reproduces the R7-08 attack and names the census move on a still-green chain; `anchor_detects_chain_truncation`, reopen determinism, VACUUM-stability, line round-trip/refusal pins. Residual ceilings (disclosed): operator-chosen cadence = detection latency; COUNT-only census for proposals/workflow/dsar rows; detection, never prevention |
+| Ceiling narrowing | DSAR physical residue: logical purge leaves purged bytes in freelist/WAL page images (disclosed on every certificate); strict-profile domains cover only their own run's deletes | MED (privacy posture) | **NARROWED v1.28.91 "Notary"** — `brain shred`: secure_delete=ON (readback asserted) → wal_checkpoint(TRUNCATE) → VACUUM → second TRUNCATE → integrity_check → one hash-chained `forget` row; freelist reads back 0; `shred_removes_deleted_row_residue` proves the marker greppable pre-shred (fixture teeth) and absent from main AND wal post-shred; `shred_writes_forget_evidence_and_keeps_chain_verifiable`. Residual ceilings (printed per run): filesystem copies, `.bak`, standby chunks, SSD wear-leveling; VACUUM needs ~DB-size free disk |
+| CI gap closure | "Tests run on x86_64 only; shipped aarch64 binaries never executed by CI; keep the local Jetson smoke before fleet deploys" | LOW (Known Issues, open) | **CLOSED 2026-09-15 as NOT-APPLICABLE** — operator disposition: no Jetson deployment exists and brain-server is not installed on any aarch64 host; the advisory's precondition (fleet deploys) is absent. Reopen trigger: the first aarch64 fleet deployment (then: an ARM-hosted CI test lane, not the manual smoke) |
+| Ride-alongs | CodeQL #74 (cleared pre-release, `b695c77`); K7-01/02/04 FINAL disposition docs | LOW/INFO | CodeQL fix rode main ahead of this release (assert-message taint hygiene); the K7 final disposition (no upstream PRs; procedural compensating controls) is recorded in THREAT_MODEL §5b + the seventh-pass register row above |

@@ -17,6 +17,76 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [1.28.91] — 2026-09-15 — "Notary": the off-host witness and the physical shred
+
+Two operator-held evidence verbs close standing disclosed ceilings, and
+the release carries the prior CodeQL hygiene fix plus two register
+dispositions. No routes, no schema, no wire change — the x-api-version
+stamp is untouched (CLI-only surface).
+
+### Release notes
+
+**Security fixes**
+
+- **`brain anchor` — the off-host tamper witness.** The seventh-pass
+  live drill demonstrated that business-row tamper behind the audit chain
+  passes every in-tree verifier (`/ump/audit/verify` censuses evidence
+  rows; `/verify` checks claims against CURRENT bytes). The anchor closes
+  the detection gap the honest way this architecture allows: a
+  deterministic state fingerprint (chain head + knowledge content census
+  + row counts) the operator records OFF-HOST and later recomputes with
+  `--verify`. Detection, not prevention — periodic, not continuous; the
+  host can forge everything on it, never the copy in your pocket.
+- **`brain shred` — the physical residue drop.** Logical DSAR purge left
+  purged bytes in freelist/WAL page images (the certificate's disclosed
+  posture). The shred rewrites the file — `secure_delete=ON` with
+  readback asserted, `wal_checkpoint(TRUNCATE)`, `VACUUM`, a second
+  TRUNCATE checkpoint, `integrity_check` — and evidences the act with one
+  hash-chained `forget` row. Freelist reads back zero. Filesystem copies,
+  `<db>.bak` snapshots, standby chunks, and SSD wear-leveling remain the
+  printed operator-level ceiling.
+- CodeQL #74 cleared (rode main ahead of this release): the bounded-cache
+  pin's assert message no longer formats a cache-derived value — a
+  tainted receiver's `.len()` reaching the panic/log sink reads as
+  cleartext logging.
+
+**Improvements**
+
+- New CLI reference section "Evidence & physical erasure"; `verify`
+  joins the value-flag vocabulary.
+- CRATE_TEST_FLOOR 1,455 → 1,462 (seven new pins, all red-first-shaped:
+  the tamper fixture must be greppable pre-shred and detectable
+  post-anchor before the asserts mean anything).
+
+**Bug fixes**
+
+- None.
+
+### Engineering record
+
+- Two new lib modules, CLI-only consumers (the standby precedent):
+  `src/anchor.rs` (fingerprint — fail-closed on any unreadable census
+  input; no DB writes by design) and `src/shred.rs` (the rewrite — every
+  step asserted, an unevidenced shred is an error, never a warning).
+- Pins: `anchor_detects_business_row_tamper` (the R7-08 closure — the
+  chain stays green while the census names the tamper),
+  `anchor_detects_chain_truncation`, `anchor_is_deterministic_across_reopen`,
+  `anchor_ignores_page_layout_vacuum` (shred/anchor compose: a VACUUM
+  never trips the anchor), `anchor_line_round_trips_and_refuses_garbage`,
+  `shred_removes_deleted_row_residue` (marker greppable pre-shred — the
+  fixture's teeth — then absent from main AND wal post-shred),
+  `shred_writes_forget_evidence_and_keeps_chain_verifiable`.
+- Register dispositions riding this release (docs-only): the fork
+  update-chain accepted risk FINAL (no upstream PRs; compensating
+  controls procedural — THREAT_MODEL §5b row added); the aarch64
+  CI-execution gap CLOSED as not-applicable (no Jetson/fleet deployment
+  exists; reopen trigger = first aarch64 fleet deploy).
+- Ceilings, honestly: the anchor's cadence is operator-chosen (detection
+  latency = that cadence); proposals/workflow/dsar rows are censused by
+  COUNT, not content (bulk-tamper canaries); the shred is SQL-layer only;
+  VACUUM needs free disk ~ DB size; the shred's own `forget` row moves
+  the chain head (re-anchor after shredding — printed by the verb).
+
 ## [1.28.90] — 2026-09-14 — "Refresh": the service bump — nine Dependabot PRs applied and verified
 
 A maintenance release with ZERO code changes: the nine open Dependabot
