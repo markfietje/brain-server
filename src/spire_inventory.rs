@@ -116,7 +116,7 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// anchor (the 14-day vulnerability final-report clock, pinned against
 /// the doc), the recursive transport-free guard walk, and the
 /// crypto-inventory primitive census.
-const CRATE_TEST_FLOOR: usize = 1_455;
+const CRATE_TEST_FLOOR: usize = 1_462;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows (security.txt + the

@@ -144,6 +144,14 @@ step. There is NO hot failover and NO RPO=0 claim anywhere.
 | `brain standby status [--to <dir>]` | Integrity self-check of the follower: verifies the manifest's Ed25519 signature and recomputes artifact hashes — any tamper or torn cycle FAILS (exit 1). Prints cycle, age, cycles behind, and `rpo_max = interval + checkpoint lag`. |
 | `brain standby promote-check --from <dir>` `[--passphrase-file PATH]` | THE DRILL: restores the follower into a temp dir (the shipped restore path), replays the WAL chunk, runs `PRAGMA integrity_check`, and prints measured RTO plus computed RPO. Exit code gates. |
 
+## Evidence & physical erasure (v1.28.91)
+
+| Command | Purpose |
+|---|---|
+| `brain anchor` [`--db PATH`] | Prints the deterministic state fingerprint (audit chain head + knowledge content census + row counts) — record the line OFF-HOST (paper, password manager, second machine). Read-only, audited by nothing on purpose: the anchor's own audit row would move the chain head it just fingerprinted; the off-host copy IS the evidence. Run per domain DB. |
+| `brain anchor --verify "<recorded line>"` [`--db PATH`] | Recomputes and diffs against a recorded line. ANY state change since the record trips it — legitimate writes too (the audit chain explains those); what it uniquely catches is a moved knowledge census on a chain that still verifies: business-row tamper behind the chain, the class no in-tree verifier detected (seventh pass, R7-08). |
+| `brain shred` [`--db PATH`] [`--yes`] | The operator-invoked physical residue drop after a logical purge: `secure_delete=ON` (readback asserted) → `wal_checkpoint(TRUNCATE)` → `VACUUM` (rebuild from live pages only) → `wal_checkpoint(TRUNCATE)` → `integrity_check`, evidenced by one hash-chained `forget` audit row. Freelist reads back 0. Does NOT touch filesystem copies, `<db>.bak` snapshots, standby follower chunks, or SSD wear-leveling — printed on every run. Run per domain DB, ideally in a quiet moment (VACUUM holds the writer). |
+
 ## Examples
 
 ```bash

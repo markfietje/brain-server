@@ -366,6 +366,17 @@ architecture):
   compromise; the live DB and `.bak` snapshots stay plaintext on the primary
   (§4 items 2/2b). Model-manifest pinning is boot-time-only (load-time
   re-verification is host-compromise territory — the same ceiling).
+  NARROWED (v1.28.91 "Notary"): `brain anchor` extends detection past the
+  SQL layer — an OFF-HOST recorded state fingerprint (chain head +
+  knowledge content census + counts; `--verify` recomputes) catches
+  business-row rewrites the chain itself cannot see (the seventh-pass
+  R7-08 demonstration class), at an operator-chosen cadence (detection
+  latency = that cadence; proposals/workflow/dsar rows censused by COUNT
+  only). `brain shred` closes the SQL-layer half of erasure residue
+  (secure_delete + checkpoint(TRUNCATE) + VACUUM, freelist reads back 0,
+  one `forget` row) — filesystem copies, `.bak`, standby chunks, and SSD
+  wear-leveling stay operator-level ceilings, and the host compromise
+  ceiling itself stands: the anchor is detection, never prevention.
 - Single-tenant storage: the domain shim is a label, not a boundary —
   `included_global` makes mixing visible; true isolation is `BRAIN_MULTI_DB`
   (v2.0 Cortex). Quorum is opt-in (default 1); pin-ack signatures are TOFU,

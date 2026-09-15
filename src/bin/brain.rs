@@ -305,6 +305,18 @@ const SUBCOMMANDS: &[Subcommand] = &[
         usage: "brain standby start --to <dir> [--interval-secs 30] [--passphrase-file PATH]\n  brain standby status [--to <dir>]\n  brain standby promote-check --from <dir> [--passphrase-file PATH] [--expected-signer DID]\n                 (warm standby: encrypted base + WAL chunks + a rehearsed\n                  promote — operator-run, never a server daemon; NO hot failover)",
     },
     Subcommand {
+        name: "anchor",
+        json: false,
+        run: cmd_anchor,
+        usage: "brain anchor [--db PATH]\n  brain anchor --verify \"<recorded line>\" [--db PATH]\n                 (off-host tamper witness: state fingerprint to record OUTSIDE this\n                  machine; verify later — any state change trips it, the audit chain\n                  explains legitimate ones)",
+    },
+    Subcommand {
+        name: "shred",
+        json: false,
+        run: cmd_shred,
+        usage: "brain shred [--db PATH] [--yes]\n                 (physical residue drop: secure_delete=ON + wal_checkpoint(TRUNCATE)\n                  + VACUUM + integrity_check + one audited forget row; run per domain\n                  DB after a purge — filesystem copies/.bak/standby chunks excepted)",
+    },
+    Subcommand {
         name: "key",
         json: false,
         run: cmd_key,
@@ -623,6 +635,7 @@ const VALUE_FLAGS: &[&str] = &[
     "sub-sub",
     "to",
     "var",
+    "verify",
     "webhook-secret-file",
 ];
 
@@ -2765,6 +2778,120 @@ fn cmd_operator_key_rotate(args: &[String]) -> Result<(), String> {
     );
     println!("new signer did: {new_did}");
     println!("re-provision the old generation's cards at leisure; a SECOND rotate orphans them.");
+    Ok(())
+}
+
+/// `brain anchor` — the OFF-HOST tamper witness (the "Notary" verb pair).
+/// Computes the deterministic state fingerprint (chain head + knowledge
+/// content census + row counts) for the operator to record OUTSIDE this
+/// machine, and `--verify` recomputes + diffs against a recorded line.
+/// Read-only: nothing is written, no audit row rides (the anchor's own row
+/// would move the chain head it just fingerprinted — the off-host line IS
+/// the evidence). Any legitimate write between anchor events also trips
+/// verify; the audit chain explains those. What verify uniquely catches:
+/// business-row changes the chain does NOT explain (the demonstrated
+/// behind-the-chain tamper class).
+fn cmd_anchor(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    if !positionals.is_empty() {
+        return usage_err(
+            "usage: brain anchor [--db PATH] [--verify \"<recorded line>\"]".to_string(),
+        );
+    }
+    let db = flags
+        .get("db")
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_db_path);
+    if !db.exists() {
+        return Err(format!(
+            "no DB at {db:?} — pass --db PATH or set BRAIN_DB_PATH"
+        ));
+    }
+    let conn = rusqlite::Connection::open(&db).map_err(|e| format!("open {db:?}: {e}"))?;
+    match flags.get("verify").and_then(|o| o.clone()) {
+        Some(line) => {
+            let recorded = brain_server::anchor::parse(&line).ok_or_else(|| {
+                LAST_ERR_IS_USAGE.store(true, std::sync::atomic::Ordering::SeqCst);
+                "not a brain-anchor v1 line — record the exact output of 'brain anchor'".to_string()
+            })?;
+            let current = brain_server::anchor::fingerprint(&conn)?;
+            let diffs = brain_server::anchor::compare(&recorded, &current);
+            if diffs.is_empty() {
+                println!("anchor VERIFY OK — no state change since the record");
+                println!("{}", brain_server::anchor::render(&current));
+                return Ok(());
+            }
+            for d in &diffs {
+                println!("moved: {d}");
+            }
+            Err(format!(
+                "anchor VERIFY FAILED — {} component(s) moved since the record. Legitimate writes\n\
+                 also trip this (the audit chain explains them); a moved knowledge census on a\n\
+                 clean chain is the behind-the-chain tamper class — investigate.",
+                diffs.len()
+            ))
+        }
+        None => {
+            let a = brain_server::anchor::fingerprint(&conn)?;
+            println!("{}", brain_server::anchor::render(&a));
+            println!("record this line OFF-HOST (paper, password manager, second machine).");
+            println!(
+                "verify later: brain anchor --verify \"<line>\" — nothing about this machine's\n\
+                 storage can forge the copy in your pocket."
+            );
+            Ok(())
+        }
+    }
+}
+
+/// `brain shred` — the operator-invoked PHYSICAL residue drop (the
+/// "Notary" verb pair). Complements the logical DSAR purge: after `brain client dsar
+/// --action purge`, the purged bytes still sit in freelist/WAL page images
+/// (the certificate's disclosed posture). This rewrites the file —
+/// secure_delete=ON + wal_checkpoint(TRUNCATE) + VACUUM + integrity_check —
+/// and evidences the act with one hash-chained `forget` row. What it does
+/// NOT touch: filesystem copies, `<db>.bak` snapshots, standby chunks, SSD
+/// wear-leveling (operator-level disposal, printed on every run).
+fn cmd_shred(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    if !positionals.is_empty() {
+        return usage_err("usage: brain shred [--db PATH] [--yes]".to_string());
+    }
+    let db = flags
+        .get("db")
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_db_path);
+    if !db.exists() {
+        return Err(format!(
+            "no DB at {db:?} — pass --db PATH or set BRAIN_DB_PATH"
+        ));
+    }
+    let abs = std::fs::canonicalize(&db).unwrap_or_else(|_| db.clone());
+    let size = std::fs::metadata(&abs).map(|m| m.len()).unwrap_or(0);
+    if !flags.contains_key("yes") {
+        println!("brain shred — rewrites {abs:?} ({} bytes):", size);
+        println!("  secure_delete=ON (readback asserted) -> wal_checkpoint(TRUNCATE) -> VACUUM");
+        println!("  -> wal_checkpoint(TRUNCATE) -> integrity_check -> one audited forget row");
+        println!("residue this does NOT touch: filesystem copies, <db>.bak snapshots,");
+        println!("standby follower chunks, SSD wear-leveling — dispose of those separately.");
+        return usage_err("pass --yes to proceed".to_string());
+    }
+    let mut conn = rusqlite::Connection::open(&abs).map_err(|e| format!("open {abs:?}: {e}"))?;
+    let report = brain_server::shred::shred(&mut conn)?;
+    println!(
+        "shredded {}: pages {}->{}, freelist {}->0, secure_delete={}, integrity ok, forget row {}",
+        abs.display(),
+        report.pages_before,
+        report.pages_after,
+        report.freelist_before,
+        report.secure_delete_readback,
+        report.audit_row
+    );
+    println!(
+        "the forget row moved the chain head — re-anchor if you keep an off-host witness: brain anchor"
+    );
     Ok(())
 }
 

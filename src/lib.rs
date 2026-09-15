@@ -131,6 +131,7 @@ pub mod server {
 }
 
 pub mod alert;
+pub mod anchor;
 pub mod auth;
 pub mod breach;
 pub mod chunker;
@@ -155,6 +156,7 @@ pub mod screen;
 pub mod search;
 pub mod secrets;
 pub mod service;
+pub mod shred;
 pub mod sources;
 pub mod sse_reauth;
 pub mod standby;
