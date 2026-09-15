@@ -191,17 +191,26 @@ impl LoopDriver {
     /// Drive the multi-turn loop for one user input against `run_id`'s
     /// session log: input → context → stream → tool-exec, repeated until the
     /// model ends a turn tool-free or a bound (cap/cancel) stops the loop.
+    ///
+    /// Callable more than once per run (the GDL phase machine drives one
+    /// exchange per phase): every idempotency key this call draws carries a
+    /// per-call salt — the session length observed BEFORE this call's first
+    /// append — so the exactly-once guard cannot silently no-op a later
+    /// call's events onto an earlier call's keys (the collision the GDL
+    /// phase machine found: the original run loop assumed one call per
+    /// run).
     pub(crate) async fn run_turns(
         &self,
         run_id: i64,
         input: &str,
         cancel: &CancellationToken,
     ) -> Result<RunOutcome, LoopError> {
+        let salt = self.replay(run_id).await?.len();
         let mut events: Vec<(String, String, String)> = Vec::new();
         events.push((
             self.kind("user"),
             input.to_string(),
-            format!("{}run{run_id}:user:0", self.session_prefix),
+            format!("{}run{run_id}:u{salt}:0", self.session_prefix),
         ));
         self.append_events(run_id, events).await?;
 
@@ -235,7 +244,7 @@ impl LoopDriver {
                 vec![(
                     self.kind("assistant"),
                     assistant_json.clone(),
-                    format!("{}run{run_id}:asst:t{turn}", self.session_prefix),
+                    format!("{}run{run_id}:a{salt}:t{turn}", self.session_prefix),
                 )],
             )
             .await?;
@@ -270,7 +279,7 @@ impl LoopDriver {
                         self.kind("tool_result"),
                         payload,
                         format!(
-                            "{}run{run_id}:tool:t{turn}:{}",
+                            "{}run{run_id}:x{salt}:t{turn}:{}",
                             self.session_prefix, call.id
                         ),
                     )],
@@ -357,13 +366,14 @@ impl LoopDriver {
     /// finish — the queue drains, `RunEnd` audits denied), append the
     /// `canceled` marker, return the outcome.
     async fn cancel_settle(&self, run_id: i64, turn: u32) -> Result<RunOutcome, LoopError> {
+        let salt = self.replay(run_id).await?.len();
         self.harness.abort()?;
         self.append_events(
             run_id,
             vec![(
                 self.kind("canceled"),
                 format!(r#"{{"turn":{turn}}}"#),
-                format!("{}run{run_id}:cancel:t{turn}", self.session_prefix),
+                format!("{}run{run_id}:c{salt}:t{turn}", self.session_prefix),
             )],
         )
         .await?;

@@ -32,6 +32,7 @@ pub(crate) mod driver;
 pub(crate) mod entitlement;
 pub(crate) mod frontdesk;
 pub(crate) mod frontdoor;
+pub(crate) mod gdl;
 pub mod host;
 pub(crate) mod hostcalls;
 pub(crate) mod interview;
