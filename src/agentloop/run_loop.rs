@@ -59,6 +59,9 @@ pub(crate) struct LoopConfig {
     pub tool_output_cap: usize,
     pub tool_timeout: Duration,
     pub compaction: crate::agentloop::compaction::CompactionPolicy,
+    /// Cumulative provider-token ceiling for this loop (None = uncapped;
+    /// subagents delegate with Some). Crossing it stops the loop loudly.
+    pub token_budget: Option<u64>,
 }
 
 impl Default for LoopConfig {
@@ -69,6 +72,7 @@ impl Default for LoopConfig {
             tool_output_cap: TOOL_OUTPUT_CAP,
             tool_timeout: TOOL_TIMEOUT,
             compaction: crate::agentloop::compaction::DEFAULT_COMPACTION_POLICY,
+            token_budget: None,
         }
     }
 }
@@ -84,7 +88,10 @@ pub(crate) enum RunOutcome {
     /// `denied`), a `canceled` session event was appended.
     Canceled,
     /// Every turn asked for tools until the cap; `turns` == the cap.
-    TurnCapReached { turns: u32 },
+    TurnCapReached { turns: u32, usage: Usage },
+    /// The cumulative token budget was crossed; the loop stopped loudly
+    /// at the turn boundary (a subagent's share, typically).
+    BudgetExceeded { turns: u32, usage: Usage },
 }
 
 /// Loop failure vocabulary — infrastructure and contract breaches, loud.
@@ -142,6 +149,10 @@ pub(crate) struct LoopDriver {
     env: ExecutionEnv,
     tools: Vec<ToolDef>,
     config: LoopConfig,
+    /// Prefix on session-event kinds so a child loop's narrative is
+    /// distinguishable from the parent's in the same run log
+    /// (`child:<name>:`); empty for the parent loop.
+    session_prefix: String,
 }
 
 impl LoopDriver {
@@ -154,6 +165,7 @@ impl LoopDriver {
         tools: Vec<ToolDef>,
         env: ExecutionEnv,
         config: LoopConfig,
+        session_prefix: &str,
     ) -> Self {
         let mut registry = ToolRegistry::new();
         for def in &tools {
@@ -172,6 +184,7 @@ impl LoopDriver {
             env,
             tools,
             config,
+            session_prefix: session_prefix.to_string(),
         }
     }
 
@@ -184,8 +197,12 @@ impl LoopDriver {
         input: &str,
         cancel: &CancellationToken,
     ) -> Result<RunOutcome, LoopError> {
-        let mut events: Vec<(&'static str, String, String)> = Vec::new();
-        events.push(("user", input.to_string(), format!("run{run_id}:user:0")));
+        let mut events: Vec<(String, String, String)> = Vec::new();
+        events.push((
+            self.kind("user"),
+            input.to_string(),
+            format!("{}run{run_id}:user:0", self.session_prefix),
+        ));
         self.append_events(run_id, events).await?;
 
         let mut usage = Usage::default();
@@ -216,15 +233,20 @@ impl LoopDriver {
             self.append_events(
                 run_id,
                 vec![(
-                    "assistant",
+                    self.kind("assistant"),
                     assistant_json.clone(),
-                    format!("run{run_id}:asst:t{turn}"),
+                    format!("{}run{run_id}:asst:t{turn}", self.session_prefix),
                 )],
             )
             .await?;
             self.harness.finish_run()?;
             usage.input_tokens += assistant.usage.input_tokens;
             usage.output_tokens += assistant.usage.output_tokens;
+            if let Some(budget) = self.config.token_budget
+                && usage.total() > budget
+            {
+                return Ok(RunOutcome::BudgetExceeded { turns: turn, usage });
+            }
 
             if assistant.tool_calls.is_empty() {
                 return Ok(RunOutcome::Completed { turns: turn, usage });
@@ -245,9 +267,12 @@ impl LoopDriver {
                 self.append_events(
                     run_id,
                     vec![(
-                        "tool_result",
+                        self.kind("tool_result"),
                         payload,
-                        format!("run{run_id}:tool:t{turn}:{}", call.id),
+                        format!(
+                            "{}run{run_id}:tool:t{turn}:{}",
+                            self.session_prefix, call.id
+                        ),
                     )],
                 )
                 .await?;
@@ -256,6 +281,7 @@ impl LoopDriver {
         }
         Ok(RunOutcome::TurnCapReached {
             turns: self.config.max_turns,
+            usage,
         })
     }
 
@@ -288,7 +314,7 @@ impl LoopDriver {
         self.append_events(
             run_id,
             vec![(
-                "compaction",
+                self.kind("compaction"),
                 payload,
                 format!(
                     "run{run_id}:compact:{}",
@@ -335,9 +361,9 @@ impl LoopDriver {
         self.append_events(
             run_id,
             vec![(
-                "canceled",
+                self.kind("canceled"),
                 format!(r#"{{"turn":{turn}}}"#),
-                format!("run{run_id}:cancel:t{turn}"),
+                format!("{}run{run_id}:cancel:t{turn}", self.session_prefix),
             )],
         )
         .await?;
@@ -497,32 +523,48 @@ impl LoopDriver {
         .map_err(|e| LoopError::Persist(format!("replay join failed: {e}")))?
     }
 
+    /// The session-event kind under this loop's prefix (parent: `user`;
+    /// child: `child:<name>:user`).
+    fn kind(&self, k: &'static str) -> String {
+        format!("{}{k}", self.session_prefix)
+    }
+
     /// Append session events in ONE workflow transaction: all rows and all
     /// their audit rows commit together or not at all.
     async fn append_events(
         &self,
         run_id: i64,
-        events: Vec<(&'static str, String, String)>,
+        events: Vec<(String, String, String)>,
     ) -> Result<(), LoopError> {
-        let pool = self.pool.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut conn = pool
-                .get()
-                .map_err(|e| LoopError::Persist(format!("pool: {e}")))?;
-            let mut wtx =
-                WorkflowTx::begin(&mut conn).map_err(|e| LoopError::Persist(e.to_string()))?;
-            let now = chrono::Utc::now().timestamp();
-            for (kind, payload, key) in events {
-                session_log::append(wtx.tx(), run_id, kind, &payload, &key, now)
-                    .map_err(|e| LoopError::Persist(e.to_string()))?;
-            }
-            wtx.commit()
-                .map_err(|e| LoopError::Persist(e.to_string()))?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| LoopError::Persist(format!("append join failed: {e}")))?
+        append_session_events(&self.pool, run_id, events).await
     }
+}
+
+/// Append session events in one workflow transaction on a pool — the shared
+/// writer for the parent loop and the subagent delegation surface.
+pub(crate) async fn append_session_events(
+    pool: &Pool,
+    run_id: i64,
+    events: Vec<(String, String, String)>,
+) -> Result<(), LoopError> {
+    let pool = pool.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut conn = pool
+            .get()
+            .map_err(|e| LoopError::Persist(format!("pool: {e}")))?;
+        let mut wtx =
+            WorkflowTx::begin(&mut conn).map_err(|e| LoopError::Persist(e.to_string()))?;
+        let now = chrono::Utc::now().timestamp();
+        for (kind, payload, key) in events {
+            session_log::append(wtx.tx(), run_id, &kind, &payload, &key, now)
+                .map_err(|e| LoopError::Persist(e.to_string()))?;
+        }
+        wtx.commit()
+            .map_err(|e| LoopError::Persist(e.to_string()))?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| LoopError::Persist(format!("append join failed: {e}")))?
 }
 
 /// Terminal state of one streamed turn.
@@ -682,6 +724,7 @@ mod tests {
             vec![brain_engine_sdk::env::create_read_tool()],
             env,
             config,
+            "",
         );
         Fixture {
             driver,
@@ -784,12 +827,13 @@ mod tests {
         let outcome = rt()
             .block_on(f.driver.run_turns(1, "keep reading", &cancel))
             .unwrap();
-        assert_eq!(
+        assert!(matches!(
             outcome,
             RunOutcome::TurnCapReached {
-                turns: DEFAULT_MAX_TURNS
+                turns: DEFAULT_MAX_TURNS,
+                ..
             }
-        );
+        ));
         assert_eq!(f.provider.requests().len() as u32, DEFAULT_MAX_TURNS);
     }
 
@@ -906,6 +950,7 @@ mod tests {
                 allowed_commands: vec![],
             },
             LoopConfig::default(),
+            "",
         )
     }
 
@@ -1021,6 +1066,7 @@ mod tests {
                 tool_timeout: Duration::from_millis(30),
                 ..LoopConfig::default()
             },
+            "",
         );
         let cancel = CancellationToken::new();
         let outcome = rt()
@@ -1045,6 +1091,10 @@ mod tests {
         assert_eq!(c.session_replay_cap, 500);
         assert_eq!(c.tool_output_cap, 16 * 1024);
         assert_eq!(c.tool_timeout, Duration::from_secs(30));
+        assert_eq!(
+            c.token_budget, None,
+            "the parent loop is uncapped; children cap"
+        );
     }
 
     #[test]
@@ -1103,6 +1153,7 @@ mod tests {
                 allowed_commands: vec![],
             },
             LoopConfig::default(),
+            "",
         );
         let cancel = CancellationToken::new();
         let outcome = rt()

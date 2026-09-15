@@ -14,3 +14,4 @@
 pub(crate) mod compaction;
 pub(crate) mod provider;
 pub(crate) mod run_loop;
+pub(crate) mod subagents;
