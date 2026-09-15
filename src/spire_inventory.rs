@@ -121,7 +121,9 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// floor (the run-loop suite, session store, compaction, subagents, the
 /// exec bridge), and the GDL case machine adds its own 15 — the floor
 /// re-measures to the walk truth so the next drop is loud.
-const CRATE_TEST_FLOOR: usize = 1_515;
+/// 1,515 → 1,528 same release: the 8-type evidence suite (8) and the
+/// proficiency suite (4) + the two driver-level authority pins.
+const CRATE_TEST_FLOOR: usize = 1_528;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows (security.txt + the

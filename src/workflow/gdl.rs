@@ -1236,6 +1236,7 @@ pub(crate) enum GdlOutcome {
 pub(crate) struct GdlDriver {
     pool: Pool,
     loop_driver: LoopDriver,
+    proficiency: super::proficiency::Proficiency,
 }
 
 impl GdlDriver {
@@ -1248,6 +1249,32 @@ impl GdlDriver {
         env: ExecutionEnv,
         config: LoopConfig,
     ) -> Self {
+        Self::new_with_proficiency(
+            pool,
+            host,
+            provider,
+            tools,
+            env,
+            config,
+            super::proficiency::Proficiency::L3,
+        )
+    }
+
+    /// The proficiency constructor: the level narrows BOTH the execution
+    /// env (capability subtraction — L1 observes, L2 acts, L3 remediates)
+    /// and the phase/step authority matrix. Escalation is never narrowed:
+    /// a phase above the level's authority escalates WITH the bundle.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_proficiency(
+        pool: Pool,
+        host: Arc<SqliteWorkflowHost>,
+        provider: Arc<dyn LlmProvider>,
+        tools: Vec<ToolDef>,
+        env: ExecutionEnv,
+        config: LoopConfig,
+        proficiency: super::proficiency::Proficiency,
+    ) -> Self {
+        let env = super::proficiency::env_for(&env, proficiency);
         let harness = Arc::new(AgentHarness::new(host.clone(), "gdl", GDL_METHOD_PROMPT));
         let loop_driver = LoopDriver::new(
             pool.clone(),
@@ -1259,7 +1286,11 @@ impl GdlDriver {
             config,
             "",
         );
-        GdlDriver { pool, loop_driver }
+        GdlDriver {
+            pool,
+            loop_driver,
+            proficiency,
+        }
     }
 
     /// Run one case from its current phase to a terminal outcome. The
@@ -1279,6 +1310,25 @@ impl GdlDriver {
                 continue;
             }
             case.phase = phase;
+            // The authority matrix rides BEFORE the model is asked: a
+            // phase owned by a higher tier escalates with the bundle,
+            // never silently attempts then fails (escalation is the one
+            // capability that is never narrowed away).
+            if self.proficiency < super::proficiency::phase_owner(phase) {
+                self.append_gate_event(
+                    run_id,
+                    phase,
+                    "route",
+                    1,
+                    &[format!(
+                        "authority: phase {} is owned by a higher tier — escalating with the bundle",
+                        phase.as_str()
+                    )],
+                )
+                .await?;
+                let bundle = case.escalation_bundle();
+                return Ok(GdlOutcome::Escalated { at: phase, bundle });
+            }
             let mut retry_errors: Vec<String> = Vec::new();
             let mut attempts = 0u32;
             let artifact_json = loop {
@@ -1306,6 +1356,30 @@ impl GdlDriver {
                 }
                 let text = self.last_assistant_text(run_id).await?;
                 let (gate, artifact) = parse_and_gate(phase, &case, &text);
+                // The act-row authority check rides the arbiter's verdict:
+                // a passing artifact whose rows act above the tier is a
+                // named violation, retried and routed like any law break.
+                let gate = match (&gate, phase) {
+                    (Gate::Pass, GdlPhase::Act) => {
+                        let auth = serde_json::from_str::<ActArtifact>(
+                            artifact.as_deref().unwrap_or_default(),
+                        )
+                        .map(|a| {
+                            super::proficiency::act_authority_errors(
+                                &case,
+                                &a.rows,
+                                self.proficiency,
+                            )
+                        })
+                        .unwrap_or_default();
+                        if auth.is_empty() {
+                            gate
+                        } else {
+                            Gate::Fail(auth)
+                        }
+                    }
+                    _ => gate,
+                };
                 match gate {
                     Gate::Pass => break artifact,
                     Gate::Route(reason) => {
@@ -2183,6 +2257,135 @@ mod tests {
         assert!(
             verify_chain(&conn),
             "cancel settlement keeps the chain green"
+        );
+    }
+
+    #[test]
+    fn l1_escalates_at_hypothesize_with_the_bundle() {
+        // The authority matrix, end to end: L1 runs Intake + Triage, then
+        // Hypothesize (owned by L3) escalates WITH the bundle — the
+        // escalation path is the one capability never narrowed away.
+        let f = fixture(happy_script());
+        let cancel = CancellationToken::new();
+        // Rebuild the driver at L1 over the same substrate.
+        let pool: Pool = {
+            let mgr = r2d2_sqlite::SqliteConnectionManager::file(f.tmp.path());
+            r2d2::Pool::builder().max_size(4).build(mgr).unwrap()
+        };
+        let l1 = GdlDriver::new_with_proficiency(
+            pool.clone(),
+            Arc::new(SqliteWorkflowHost::new(pool)),
+            f.provider.clone(),
+            vec![],
+            ExecutionEnv {
+                fs: Arc::new(DenyAll),
+                read_only: false,
+                allow_process: true,
+                root: "/".into(),
+                allowed_commands: vec!["/usr/bin/racadm".into()],
+            },
+            LoopConfig::default(),
+            super::super::proficiency::Proficiency::L1,
+        );
+        let outcome = rt()
+            .block_on(l1.run_case(1, "node-042 rebuild is slow", &cancel))
+            .unwrap();
+        match &outcome {
+            GdlOutcome::Escalated { at, bundle } => {
+                assert_eq!(*at, GdlPhase::Hypothesize);
+                assert!(
+                    bundle.complete,
+                    "escalation carries the workable bundle (IS/NOT + telemetry)"
+                );
+            }
+            other => panic!("L1 escalates at the engineer's phase: {other:?}"),
+        }
+        // Intake and Triage consumed the first two scripted turns only.
+        assert_eq!(f.provider.requests().len(), 2);
+    }
+
+    #[test]
+    fn l1_cannot_launder_higher_gated_steps_through_act() {
+        // A passing Act artifact whose row acts on an L3-gated plan step
+        // is a named authority violation — retried, then routed.
+        let f = fixture(happy_script());
+        let cancel = CancellationToken::new();
+        let pool: Pool = {
+            let mgr = r2d2_sqlite::SqliteConnectionManager::file(f.tmp.path());
+            r2d2::Pool::builder().max_size(4).build(mgr).unwrap()
+        };
+        let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));
+        // L1 cannot pass Hypothesize/Plan — seed the case state directly:
+        // a case handed DOWN to L1 with a plan whose step 2 is L3-gated.
+        {
+            let mut conn = pool.get().unwrap();
+            let mut wtx = crate::workflow::tx::WorkflowTx::begin(&mut conn).unwrap();
+            let mut case = GdlCase::fresh("t");
+            case.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
+            case.triage = Some(serde_json::from_str(TRIAGE_JSON).unwrap());
+            let mut plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
+            plan.steps[1].skill_gate = "L3".into();
+            case.plan = plan.steps.clone();
+            case.verify_step = Some(plan.verify_step.clone());
+            case.dead_end = Some(plan.dead_end.clone());
+            case.phase = GdlPhase::Act;
+            wtx.tx()
+                .execute(
+                    "UPDATE workflow_runs SET state_json = ?1 WHERE id = 1",
+                    rusqlite::params![serde_json::to_string(&case).unwrap()],
+                )
+                .unwrap();
+            wtx.commit().unwrap();
+        }
+        // The act artifact tries to execute BOTH rows — row 2 acts on the
+        // L3-gated step: a named authority violation, retried, then routed.
+        let launder = r#"{"rows":[
+            {"order":1,"kind":"check","description":"query battery state","playbook_ref":"P-STORAGE-0104","variables":["battery state"],"expected":"Ready","actual":"Failed","verdict":"fail","evidence_ref":"TSR p.12","dtfvc":{"diagnose":"d","test":"t","fix":null,"verify":null,"capture":null},"invasiveness":0,"justification":null},
+            {"order":2,"kind":"action","description":"replace battery","playbook_ref":"P-STORAGE-0104","variables":["battery"],"expected":"Ready","actual":"Ready","verdict":"pass","evidence_ref":"TSR p.13","dtfvc":{"diagnose":"d","test":"t","fix":"ring 3","verify":"14%/h","capture":"row"},"invasiveness":2,"justification":null}
+        ],"complete":true}"#;
+        let pool2: Pool = {
+            let mgr = r2d2_sqlite::SqliteConnectionManager::file(f.tmp.path());
+            r2d2::Pool::builder().max_size(4).build(mgr).unwrap()
+        };
+        let provider2 = LoopbackProvider::new(
+            "loopback",
+            vec![crate::agentloop::provider::scripted_text(launder); 3],
+        );
+        let l1 = GdlDriver::new_with_proficiency(
+            pool2,
+            host,
+            provider2.clone(),
+            vec![],
+            ExecutionEnv {
+                fs: Arc::new(DenyAll),
+                read_only: false,
+                allow_process: false,
+                root: "/".into(),
+                allowed_commands: vec![],
+            },
+            LoopConfig::default(),
+            super::super::proficiency::Proficiency::L1,
+        );
+        let outcome = rt().block_on(l1.run_case(1, "t", &cancel)).unwrap();
+        match &outcome {
+            GdlOutcome::Routed { at, reason } => {
+                assert_eq!(*at, GdlPhase::Act);
+                assert!(
+                    reason.contains("authority") && reason.contains("L3"),
+                    "the route names the authority violation: {reason}"
+                );
+            }
+            other => panic!("an L3-gated step routes, not launders: {other:?}"),
+        }
+        // The retry instruction carried the violation back to the model.
+        let requests = provider2.requests();
+        assert_eq!(requests.len(), 3);
+        assert!(
+            requests[1]
+                .messages
+                .iter()
+                .any(|m| m.text.contains("authority")),
+            "the corrective instruction names the authority error"
         );
     }
 
