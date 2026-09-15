@@ -49,6 +49,16 @@ stamp is untouched (CLI-only surface).
   pin's assert message no longer formats a cache-derived value — a
   tainted receiver's `.len()` reaching the panic/log sink reads as
   cleartext logging.
+- rustls 0.23.43 → 0.23.45 across ALL THREE Rust workspaces (root,
+  client, steward-harness) — **RUSTSEC-2026-0285** (published 2026-09-14:
+  TLS 1.3 handshake messages incorrectly accepted across encryption level
+  boundaries; patched ≥0.23.45). CI's advisory scan caught it on the
+  first push of this release and the release gate refused the tag until
+  fixed — the fail-closed bridge working as designed. Practical exposure
+  here is low (outbound HTTPS egress only; the handshake transcript
+  remains authenticated), but the bump is SemVer-compatible and inert to
+  the egress-pin suite (34/34 webhook+egress family green on the bumped
+  lockfile).
 
 **Improvements**
 
