@@ -187,6 +187,11 @@ pub(crate) struct Hypothesis {
     /// Independent evidence sources currently supporting the statement.
     #[serde(default)]
     pub sources: Vec<String>,
+    /// The model's stated confidence, if any — recorded as typed
+    /// `confidence` evidence (never trusted as confirmation: triangulation
+    /// is arbiter-computed from distinct sources).
+    #[serde(default)]
+    pub confidence: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1072,6 +1077,120 @@ pub(crate) fn phase_instruction(
     parts.join("\n\n")
 }
 
+/// The typed evidence a phase pass emits (the 8-type vocabulary's emit
+/// points): Hypothesize → hypothesis (+confidence when stated); Act →
+/// test/expected/actual per row; Verify → verification; Handoff → capture.
+/// Intake/Triage/Plan emit NOTHING typed — their outputs are case state
+/// (a bounded problem statement, a routing verdict, a step plan), not
+/// evidence claims, and pretending otherwise would inflate the
+/// evidence-per-phase signal the eval reports.
+pub(crate) fn typed_evidence_for(
+    phase: GdlPhase,
+    artifact_json: &str,
+    now: i64,
+) -> Vec<super::evidence::TypedEvidence> {
+    use super::evidence::{EvidenceKind, TypedEvidence};
+    let line = |kind, claim: &str, evidence: String, source: &str, confidence: f64| TypedEvidence {
+        kind,
+        claim: claim.to_string(),
+        evidence,
+        source: source.to_string(),
+        confidence,
+        ts: now,
+    };
+    match phase {
+        GdlPhase::Hypothesize => {
+            let Ok(a) = serde_json::from_str::<HypothesizeArtifact>(artifact_json) else {
+                return Vec::new();
+            };
+            let mut out = Vec::new();
+            for h in &a.hypotheses {
+                out.push(line(
+                    EvidenceKind::Hypothesis,
+                    &h.statement,
+                    h.prediction.clone(),
+                    "gdl",
+                    0.5,
+                ));
+                if let Some(c) = h.confidence {
+                    out.push(line(
+                        EvidenceKind::Confidence,
+                        &h.statement,
+                        format!("{c}"),
+                        "model",
+                        c,
+                    ));
+                }
+            }
+            out
+        }
+        GdlPhase::Act => {
+            let Ok(a) = serde_json::from_str::<ActArtifact>(artifact_json) else {
+                return Vec::new();
+            };
+            let mut out = Vec::new();
+            for r in &a.rows {
+                let source = r
+                    .playbook_ref
+                    .clone()
+                    .unwrap_or_else(|| "experimental".into());
+                out.push(line(
+                    EvidenceKind::Test,
+                    &r.description,
+                    r.dtfvc.test.clone(),
+                    &source,
+                    0.5,
+                ));
+                out.push(line(
+                    EvidenceKind::Expected,
+                    &r.description,
+                    r.expected.clone(),
+                    &source,
+                    0.5,
+                ));
+                if let Some(actual) = &r.actual {
+                    out.push(line(
+                        EvidenceKind::Actual,
+                        &r.description,
+                        actual.clone(),
+                        &source,
+                        0.9,
+                    ));
+                }
+            }
+            out
+        }
+        GdlPhase::Verify => {
+            let Ok(a) = serde_json::from_str::<VerifyArtifact>(artifact_json) else {
+                return Vec::new();
+            };
+            vec![line(
+                EvidenceKind::Verification,
+                &a.re_run,
+                format!(
+                    "pass={} window={}min negative={}",
+                    a.pass, a.stability_window_min, a.negative_check
+                ),
+                "gdl",
+                if a.pass { 0.9 } else { 0.4 },
+            )]
+        }
+        GdlPhase::Handoff => {
+            let Ok(a) = serde_json::from_str::<HandoffArtifact>(artifact_json) else {
+                return Vec::new();
+            };
+            vec![line(
+                EvidenceKind::Capture,
+                &a.capture.resolution,
+                a.capture.bundle_hash.clone(),
+                "gdl",
+                0.9,
+            )]
+        }
+        _ => Vec::new(),
+    }
+}
+
 // ── the outcome vocabulary ─────────────────────────────────────────────────
 
 /// How a case ended. Only [`GdlOutcome::Resolved`] closed it; everything
@@ -1412,6 +1531,15 @@ impl GdlDriver {
                     );
                 }
             }
+            // The phase's typed evidence lands in the SAME tx — one
+            // mutation, one chain. Handoff's capture still reads an
+            // 'active' run row here: the closing CAS below is what seals
+            // it, in this same transaction.
+            let batch = typed_evidence_for(phase, &artifact_json, now);
+            if !batch.is_empty() {
+                super::evidence::record(wtx.tx(), run_id, &batch, None)
+                    .map_err(|e| LoopError::Persist(format!("evidence: {e:?}")))?;
+            }
             let (state_json, rev) = super::state::read_state_and_revision(wtx.tx(), run_id)
                 .map_err(|e| LoopError::Persist(e.to_string()))?
                 .ok_or_else(|| LoopError::Persist(format!("run {run_id} gone")))?;
@@ -1437,6 +1565,7 @@ impl GdlDriver {
 pub(crate) fn run_artifacts_of(
     case: &GdlCase,
     audit_ok: bool,
+    open_contradictions: usize,
 ) -> brain_engine_sdk::pure::qa_score::RunArtifacts {
     use brain_engine_sdk::pure::qa_score::{RunArtifacts, StepRow};
     let steps = case
@@ -1457,7 +1586,7 @@ pub(crate) fn run_artifacts_of(
             .iter()
             .map(|h| h.statement.clone())
             .collect(),
-        contradictions: 0,
+        contradictions: open_contradictions,
         audit_ok,
         repeat_contact: false,
         handoff_complete: case.escalation_bundle().complete,
@@ -1543,7 +1672,7 @@ mod tests {
     // instructions name, one scripted model turn per phase.
     const INTAKE_JSON: &str = r#"{"is_not":{"what":{"is":"PERC H740P write-cache write-through","is_not":"read cache"},"where":{"is":"node-042 RAID-10 VDs","is_not":"node-041"},"when":{"is":"since 03:12 during rebuild","is_not":"before 03:12"},"extent":{"is":"VD 5 only","is_not":"all VDs"}},"telemetry_refs":["tsr://node-042","sel://events"],"what_changed":"fw 2.10 flashed last week","known_good":"node-041 same fw"}"#;
     const TRIAGE_JSON: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["P-STORAGE-0104"],"verdict":"accept"}"#;
-    const HYPOTHESIZE_JSON: &str = r#"{"hypotheses":[{"statement":"PERC battery dead","prediction":"racadm battery state reports Failed","sources":["SEL event 0x42","racadm get storageservices.battery"]}]}"#;
+    const HYPOTHESIZE_JSON: &str = r#"{"hypotheses":[{"statement":"PERC battery dead","prediction":"racadm battery state reports Failed","sources":["SEL event 0x42","racadm get storageservices.battery"],"confidence":0.7}]}"#;
     const PLAN_JSON: &str = r#"{"steps":[{"order":1,"kind":"check","skill_gate":"L1","description":"query battery state","command":"racadm get storageservices.battery","expected":"Ready","fail_action":2,"invasiveness":0,"justification":null},{"order":2,"kind":"action","skill_gate":"L2","description":"replace battery ring 3","command":"hw replace battery","expected":"battery Ready","fail_action":null,"invasiveness":2,"justification":null}],"verify_step":{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h"},"dead_end":{"escalate_to":"eng-storage","required_evidence":["TSR","test log"]}}"#;
     const ACT_JSON: &str = r#"{"rows":[{"order":1,"kind":"check","description":"query battery state","playbook_ref":"P-STORAGE-0104","variables":["battery state"],"expected":"Ready","actual":"Failed","verdict":"fail","evidence_ref":"TSR p.12","dtfvc":{"diagnose":"battery fault hypothesis","test":"racadm query","fix":"replace battery ring 3","verify":"rebuild rate 14%/h","capture":"battery replacement row"},"invasiveness":2,"justification":null}],"complete":true}"#;
     const VERIFY_JSON: &str = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass":true,"stability_window_min":15,"negative_check":true}"#;
@@ -1646,6 +1775,79 @@ mod tests {
         );
         // The system prompt is the pinned method prompt (cache-stable).
         assert!(requests[0].system_prompt.contains("7-phase method"));
+        // Typed evidence landed in the findings table, one batch per
+        // emitting phase: hypothesis + confidence (Hypothesize), test +
+        // expected + actual (Act), verification (Verify), capture
+        // (Handoff) — 7 lines, deterministic order, zero contradictions.
+        let claims: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT claim FROM findings WHERE run_id = 1 ORDER BY id")
+                .unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+            rows.collect::<Result<_, _>>().unwrap()
+        };
+        assert_eq!(
+            claims,
+            vec![
+                "confidence: PERC battery dead",
+                "hypothesis: PERC battery dead",
+                "actual: query battery state",
+                "expected: query battery state",
+                "test: query battery state",
+                "verification: rebuild rate on VD 5 under the customer load",
+                "capture: write-through during rebuild -> dead PERC battery -> replaced ring 3 -> verified 14%/h",
+            ],
+            "phase-batch order, claim-sorted within each batch, kinds on prefixes"
+        );
+        assert_eq!(super::super::evidence::open_contradictions(&conn, 1), 0);
+    }
+
+    #[test]
+    fn resolved_case_rejects_unjustified_evidence_writes() {
+        // The revisit law, end to end: after the machine resolves a case
+        // (verify passed, run row closed), a further evidence write is
+        // denied unless it carries a recorded justification.
+        let f = fixture(happy_script());
+        let cancel = CancellationToken::new();
+        let outcome = rt()
+            .block_on(f.driver.run_case(1, "node-042 rebuild is slow", &cancel))
+            .unwrap();
+        assert!(matches!(outcome, GdlOutcome::Resolved { .. }));
+        let mut conn = Connection::open(f.tmp.path()).unwrap();
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM findings WHERE run_id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let mut wtx = crate::workflow::tx::WorkflowTx::begin(&mut conn).unwrap();
+        let denied = super::super::evidence::record(
+            wtx.tx(),
+            1,
+            &[super::super::evidence::TypedEvidence {
+                kind: super::super::evidence::EvidenceKind::Actual,
+                claim: "sneaked late row".into(),
+                evidence: "Ready".into(),
+                source: "gdl".into(),
+                confidence: 0.5,
+                ts: 9,
+            }],
+            None,
+        );
+        assert_eq!(
+            denied.unwrap_err(),
+            super::super::evidence::EvidenceError::RevisitDenied
+        );
+        drop(wtx); // roll back the denied attempt entirely
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM findings WHERE run_id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(before, after, "nothing persisted on the denial");
+        assert!(
+            crate::audit::verify_chain(&conn),
+            "the denied audit row keeps the chain green"
+        );
     }
 
     #[test]
@@ -1768,6 +1970,7 @@ mod tests {
             statement: "battery dead".into(),
             prediction: "state Failed".into(),
             sources: vec!["SEL event".into(), "SEL event".into()],
+            confidence: None,
         };
         assert_eq!(hypothesis_status(&one), HypothesisStatus::Hypothesis);
         let two = Hypothesis {
@@ -1892,7 +2095,7 @@ mod tests {
         let mut case = GdlCase::fresh("t");
         case.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
         case.test_log = serde_json::from_str::<ActArtifact>(ACT_JSON).unwrap().rows;
-        let artifacts = run_artifacts_of(&case, true);
+        let artifacts = run_artifacts_of(&case, true, 0);
         // The happy act row carries dtfvc.verify — no skip.
         assert!(!artifacts.steps[0].skipped_verify);
         assert_eq!(
