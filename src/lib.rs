@@ -130,6 +130,12 @@ pub mod server {
     pub mod router;
 }
 
+// The agent-loop driver (the Loop line): the kernel-side async runtime
+// that drives the SDK harness — provider/stream seam, session store
+// wiring, the 5-step run loop, compaction, subagents. Server surface
+// only (driver, no routes); the SDK stays dependency-free.
+pub mod agentloop;
+
 pub mod alert;
 pub mod anchor;
 pub mod auth;
