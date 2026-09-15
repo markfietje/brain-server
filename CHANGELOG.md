@@ -20,9 +20,11 @@ been run, it is marked **pending** rather than asserted.
 ## [1.28.91] — 2026-09-15 — "Notary": the off-host witness and the physical shred
 
 Two operator-held evidence verbs close standing disclosed ceilings, and
-the release carries the prior CodeQL hygiene fix plus two register
-dispositions. No routes, no schema, no wire change — the x-api-version
-stamp is untouched (CLI-only surface).
+the release carries the prior CodeQL hygiene fix, a rustls RUSTSEC bump
+the release gate caught, and the seventh-pass register remainder closed
+(S7-05 + L7-07 — the register now has zero open rows). No routes, no
+schema, no wire change — the x-api-version stamp is untouched (CLI-only
+surface).
 
 ### Release notes
 
@@ -59,6 +61,19 @@ stamp is untouched (CLI-only surface).
   remains authenticated), but the bump is SemVer-compatible and inert to
   the egress-pin suite (34/34 webhook+egress family green on the bumped
   lockfile).
+- **S7-05 closed: the env-truth gate learns the code shape** —
+  `scripts/env-truth.sh`'s `implemented()` was a bare substring match, so
+  a comment, doc-string, log line, or fixture string naming a `BRAIN_*`
+  knob counted as "implemented" (demonstrated red-first: a knob whose
+  only in-scope occurrence was a comment passed the old gate). Now the
+  name must sit on an `env::var/var_os/set_var/remove_var` read line;
+  the three runtime-derived/external-consumer stragglers ride an
+  explicit printed PINNED_CALLSITES inventory (the secrets-ladder
+  `resolve("case_status")` derive ×2, and `BRAIN_SERVER_AUTH_TOKEN` =
+  openclaw-host substitution), and `BRAIN_MODEL_PROFILE` is a declared
+  non-knob (the docs say so themselves). `--selfcheck` builds clean +
+  hostile fixture trees — the hostile one is the red proof kept
+  permanent. All 84 scoped names measured and resolved honestly.
 
 **Improvements**
 
@@ -90,7 +105,11 @@ stamp is untouched (CLI-only surface).
   update-chain accepted risk FINAL (no upstream PRs; compensating
   controls procedural — THREAT_MODEL §5b row added); the aarch64
   CI-execution gap CLOSED as not-applicable (no Jetson/fleet deployment
-  exists; reopen trigger = first aarch64 fleet deploy).
+  exists; reopen trigger = first aarch64 fleet deploy); S7-05 (above)
+  and L7-07 re-verified 2026-09-15 (Singapore MGF for Agentic AI
+  2026-01-22 voluntary; CoE CETS 225 in force 2025-11-01; US AI
+  Diffusion rescinded 2025-05-13 — all unchanged-risk at component
+  level). **The seventh-pass register is fully dispositioned.**
 - Ceilings, honestly: the anchor's cadence is operator-chosen (detection
   latency = that cadence); proposals/workflow/dsar rows are censused by
   COUNT, not content (bulk-tamper canaries); the shred is SQL-layer only;
