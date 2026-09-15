@@ -58,6 +58,7 @@ pub(crate) struct LoopConfig {
     pub session_replay_cap: usize,
     pub tool_output_cap: usize,
     pub tool_timeout: Duration,
+    pub compaction: crate::agentloop::compaction::CompactionPolicy,
 }
 
 impl Default for LoopConfig {
@@ -67,6 +68,7 @@ impl Default for LoopConfig {
             session_replay_cap: session_log::REPLAY_CAP,
             tool_output_cap: TOOL_OUTPUT_CAP,
             tool_timeout: TOOL_TIMEOUT,
+            compaction: crate::agentloop::compaction::DEFAULT_COMPACTION_POLICY,
         }
     }
 }
@@ -188,6 +190,12 @@ impl LoopDriver {
 
         let mut usage = Usage::default();
         for turn in 1..=self.config.max_turns {
+            // ── compaction admission (Idle boundary, just-before-call) ────
+            if self.config.compaction.just_before_call
+                && let Compacted::Canceled = self.maybe_compact(run_id, cancel).await?
+            {
+                return self.cancel_settle(run_id, turn).await;
+            }
             // ── steps 1-2: input → context (snapshot + replayed history) ──
             let snapshot = self.harness.start_run(run_id)?;
             let history = self.replay(run_id).await?;
@@ -251,6 +259,74 @@ impl LoopDriver {
         })
     }
 
+    /// Compaction admission at the loop top (the harness is Idle between
+    /// turns — the structural gate's own law). Rides the SDK's pressure
+    /// policy, produces the summary via the loop's OWN provider, appends
+    /// the single `compaction` event. The log is never rewritten.
+    async fn maybe_compact(
+        &self,
+        run_id: i64,
+        cancel: &CancellationToken,
+    ) -> Result<Compacted, LoopError> {
+        let events = self.replay(run_id).await?;
+        let Some(split) = crate::agentloop::compaction::plan(&events) else {
+            return Ok(Compacted::No);
+        };
+        // The structural gate: `compact()` is Idle-only by harness law, so
+        // this call both performs the admission and pins the phase boundary.
+        self.harness.compact()?;
+        let request = ProviderRequest {
+            system_prompt: crate::agentloop::compaction::COMPACTION_SYSTEM_PROMPT.into(),
+            messages: crate::agentloop::compaction::summary_input(&split, self.config.compaction),
+            tools: Vec::new(),
+        };
+        let summary = match self.stream_summary(request, cancel).await? {
+            Streamed::Turn(s) => s,
+            Streamed::Canceled => return Ok(Compacted::Canceled),
+        };
+        let payload = crate::agentloop::compaction::compaction_event_json(&summary, &split);
+        self.append_events(
+            run_id,
+            vec![(
+                "compaction",
+                payload,
+                format!(
+                    "run{run_id}:compact:{}",
+                    split.head.last().map(|e| e.seq).unwrap_or(0)
+                ),
+            )],
+        )
+        .await?;
+        Ok(Compacted::Yes)
+    }
+
+    /// Stream a summary call to its text (deltas folded, no tools possible).
+    async fn stream_summary(
+        &self,
+        request: ProviderRequest,
+        cancel: &CancellationToken,
+    ) -> Result<Streamed<String>, LoopError> {
+        let mut rx = self.provider.stream(request)?;
+        let mut text = String::new();
+        loop {
+            let event = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Ok(Streamed::Canceled),
+                ev = rx.recv() => ev,
+            };
+            let Some(event) = event else {
+                return Err(LoopError::Provider(ProviderError::Unavailable(
+                    "summary stream ended without MessageEnd".into(),
+                )));
+            };
+            match event? {
+                StreamEvent::TextDelta(delta) => text.push_str(&delta),
+                StreamEvent::MessageEnd { .. } => return Ok(Streamed::Turn(text)),
+                StreamEvent::MessageStart | StreamEvent::ToolCallDelta { .. } => {}
+            }
+        }
+    }
+
     /// Cancel settlement: abort the in-flight harness turn (same path as
     /// finish — the queue drains, `RunEnd` audits denied), append the
     /// `canceled` marker, return the outcome.
@@ -269,35 +345,40 @@ impl LoopDriver {
     }
 
     /// Prefix-stable request assembly: the snapshot's cache-stable system
-    /// prefix first, replayed history after, tool specs as the trailing
-    /// semi-dynamic block. Compaction events reshape the history window
-    /// (summary + verbatim tail) — that policy rides the compaction worker.
+    /// prefix first, then the context window — reshaped around the LATEST
+    /// compaction event (summary leads, verbatim tail after) — with tool
+    /// specs as the trailing semi-dynamic block.
     fn build_request(
         &self,
         snapshot: &TurnSnapshot,
         history: &[SessionEventRow],
     ) -> ProviderRequest {
-        let messages = history
-            .iter()
-            .filter_map(|ev| match ev.kind.as_str() {
-                "user" => Some(ChatMessage {
-                    role: Role::User,
-                    text: ev.payload_json.clone(),
-                }),
-                "assistant" => Some(ChatMessage {
-                    role: Role::Assistant,
-                    text: text_of(&ev.payload_json).unwrap_or_default(),
-                }),
-                "tool_result" => Some(ChatMessage {
-                    role: Role::User,
-                    text: format!(
-                        "tool result: {}",
-                        text_of(&ev.payload_json).unwrap_or_default()
-                    ),
-                }),
-                _ => None,
-            })
-            .collect();
+        let (summary, tail) = crate::agentloop::compaction::context_window(history);
+        let mut messages: Vec<ChatMessage> = Vec::new();
+        if let Some(summary) = summary {
+            messages.push(ChatMessage {
+                role: Role::User,
+                text: format!("context summary of earlier session: {summary}"),
+            });
+        }
+        messages.extend(tail.iter().filter_map(|ev| match ev.kind.as_str() {
+            "user" => Some(ChatMessage {
+                role: Role::User,
+                text: ev.payload_json.clone(),
+            }),
+            "assistant" => Some(ChatMessage {
+                role: Role::Assistant,
+                text: text_of(&ev.payload_json).unwrap_or_default(),
+            }),
+            "tool_result" => Some(ChatMessage {
+                role: Role::User,
+                text: format!(
+                    "tool result: {}",
+                    text_of(&ev.payload_json).unwrap_or_default()
+                ),
+            }),
+            _ => None,
+        }));
         ProviderRequest {
             system_prompt: snapshot.prompt(),
             messages,
@@ -447,6 +528,14 @@ impl LoopDriver {
 /// Terminal state of one streamed turn.
 enum Streamed<T> {
     Turn(T),
+    Canceled,
+}
+
+/// Outcome of a loop-top compaction check.
+enum Compacted {
+    /// Pressure under threshold, or a compaction landed.
+    No,
+    Yes,
     Canceled,
 }
 
@@ -956,5 +1045,113 @@ mod tests {
         assert_eq!(c.session_replay_cap, 500);
         assert_eq!(c.tool_output_cap, 16 * 1024);
         assert_eq!(c.tool_timeout, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn loop_compacts_under_pressure_via_its_own_provider() {
+        // Seed a session already over the pressure line: 24 tool_result
+        // events at ~1,000 tokens each (~24k window tokens ≥ 16k). The
+        // script's FIRST turn is the compaction summary call; the second
+        // is the turn's completion.
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mgr = r2d2_sqlite::SqliteConnectionManager::file(tmp.path());
+        let pool: Pool = r2d2::Pool::builder().max_size(4).build(mgr).unwrap();
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('acme', 'troubleshoot', '{}', 0, 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            let mut wtx = WorkflowTx::begin(&mut conn).unwrap();
+            for i in 0..24 {
+                let payload = serde_json::json!({"id": format!("c{i}"), "name": "read", "ok": true, "output": "x".repeat(4_000)});
+                session_log::append(
+                    wtx.tx(),
+                    1,
+                    "tool_result",
+                    &payload.to_string(),
+                    &format!("seed:{i}"),
+                    i as i64,
+                )
+                .unwrap();
+            }
+            wtx.commit().unwrap();
+        }
+        let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));
+        let harness = Arc::new(AgentHarness::new(host.clone(), "m", "s"));
+        let provider = LoopbackProvider::new(
+            "loopback",
+            vec![scripted_text("the compact brief"), scripted_text("done")],
+        );
+        let driver = LoopDriver::new(
+            pool,
+            host,
+            harness,
+            provider.clone(),
+            vec![],
+            ExecutionEnv {
+                fs: Arc::new(DenyAll),
+                read_only: true,
+                allow_process: false,
+                root: "/".into(),
+                allowed_commands: vec![],
+            },
+            LoopConfig::default(),
+        );
+        let cancel = CancellationToken::new();
+        let outcome = rt()
+            .block_on(driver.run_turns(1, "continue", &cancel))
+            .unwrap();
+        assert!(
+            matches!(outcome, RunOutcome::Completed { turns: 1, .. }),
+            "one compacted turn completes: {outcome:?}"
+        );
+        let requests = provider.requests();
+        assert_eq!(requests.len(), 2, "summary call + turn call, in order");
+        // The summary call: compaction system prompt, no tools, the head's
+        // tool-result bodies CLEARED (policy default), user turns retained.
+        assert!(requests[0].system_prompt.contains("session compactor"));
+        assert!(requests[0].tools.is_empty());
+        assert!(requests[0].messages.iter().any(|m| {
+            m.text
+                .contains(crate::agentloop::compaction::CLEARED_TOOL_RESULT)
+        }));
+        // The turn call: context reshaped — the summary leads, and the
+        // verbatim tail (not the head) follows.
+        assert!(requests[1].messages[0].text.contains("the compact brief"));
+        assert!(
+            requests[1].messages.iter().all(
+                |m| !m.text.contains("context summary") || m.text.contains("the compact brief")
+            )
+        );
+        // The log was never rewritten: every seeded row still replays, the
+        // compaction event appended after them.
+        let conn = Connection::open(tmp.path()).unwrap();
+        let events = session_log::replay(&conn, 1, session_log::REPLAY_CAP).unwrap();
+        assert_eq!(
+            events.len(),
+            27,
+            "24 seeded + user + compaction + assistant"
+        );
+        assert_eq!(events[24].kind, "user");
+        assert_eq!(events[25].kind, "compaction");
+        assert_eq!(events[26].kind, "assistant");
+        let payload: serde_json::Value = serde_json::from_str(&events[25].payload_json).unwrap();
+        assert_eq!(payload["summary"], serde_json::json!("the compact brief"));
+        // The verbatim-tail budget (20k tokens) keeps the newest ~20 events;
+        // the head ends where the tail begins — assert the recorded boundary
+        // against the replay, not a magic number.
+        let through = payload["compacted_through_seq"].as_i64().unwrap();
+        let from = payload["tail_from_seq"].as_i64().unwrap();
+        assert_eq!(through, events[4].seq, "head = the oldest 5 events");
+        assert_eq!(from, events[5].seq, "tail starts right after the head");
+        assert!(from > through);
+        assert!(verify_chain(&conn), "compaction writes stay chain-verified");
     }
 }
