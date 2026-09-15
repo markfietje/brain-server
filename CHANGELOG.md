@@ -22,7 +22,7 @@ been run, it is marked **pending** rather than asserted.
 Two operator-held evidence verbs close standing disclosed ceilings, and
 the release carries the prior CodeQL hygiene fix, a rustls RUSTSEC bump
 the release gate caught, and the seventh-pass register remainder closed
-(S7-05 + L7-07 — the register now has zero open rows). No routes, no
+(the register now has zero open rows). No routes, no
 schema, no wire change — the x-api-version stamp is untouched (CLI-only
 surface).
 
@@ -61,7 +61,7 @@ surface).
   remains authenticated), but the bump is SemVer-compatible and inert to
   the egress-pin suite (34/34 webhook+egress family green on the bumped
   lockfile).
-- **S7-05 closed: the env-truth gate learns the code shape** —
+- **The env-truth gate learns the code shape** —
   `scripts/env-truth.sh`'s `implemented()` was a bare substring match, so
   a comment, doc-string, log line, or fixture string naming a `BRAIN_*`
   knob counted as "implemented" (demonstrated red-first: a knob whose
