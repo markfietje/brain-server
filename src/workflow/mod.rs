@@ -44,6 +44,7 @@ pub(crate) mod recall;
 pub(crate) mod relay;
 pub(crate) mod scoreboard;
 pub(crate) mod session;
+pub(crate) mod session_log;
 pub(crate) mod shifts;
 pub mod state;
 pub(crate) mod tiers;

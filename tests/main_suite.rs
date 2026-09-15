@@ -3558,6 +3558,9 @@ Final paragraph after the rule.";
             "channel_threads",
             // the Slack/Teams user map (proposal-maintained identity).
             "channel_user_map",
+            // v1.32.0 "LoopCore": the agent loop's append-only session event
+            // log (the declared loop-state table; replayable, exactly-once).
+            "agent_session_events",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -3798,9 +3801,11 @@ Final paragraph after the rule.";
         // domain-scoped review queue).
         // Erasure for the suggest_feedback.owner column (the erasure join
         // evidence — the session arm).
+        // LoopCore for the agent_session_events table (the agent loop's
+        // append-only session event log — the declared loop-state table).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_28_77),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_0),
             "schema_version must be recorded as the current release after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×

@@ -186,6 +186,10 @@ pub const SCHEMA_VERSION_V1_28_73: &str = "1.28.73";
 /// feedback rows on chunks the purge never touched (the session arm; session
 /// ids are client-owned labels, never principal ids).
 pub const SCHEMA_VERSION_V1_28_77: &str = "1.28.77";
+/// the Loop-line schema: the `agent_session_events` table — the agent
+/// loop's append-only, replayable session event log (declared loop-state
+/// table; migrate-rehearse parity covers it).
+pub const SCHEMA_VERSION_V1_32_0: &str = "1.32.0";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
@@ -199,7 +203,7 @@ pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 
 /// The newest schema version this binary knows how to migrate *to*. MUST stay
 /// in lockstep with the `schema_version` stamp `run_migration` writes (the
-/// `INSERT INTO schema_meta ... '1.28.77'` in `migration.rs`) — the
+/// `INSERT INTO schema_meta ...` in `migration.rs`) — the
 /// `latest_stamp_matches_migration` test below pins the equality so a version
 /// bump in one place without the other fails loudly instead of letting the
 /// rehearsal tool bless a DB it cannot reason about.
@@ -207,7 +211,7 @@ pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 /// Security posture: a source DB stamped NEWER than this is refused loudly
 /// ([`refuse_newer_schema`]) — migrating *down* would silently drop columns
 /// the newer release added, i.e. data loss dressed as a migration.
-pub const LATEST_KNOWN_SCHEMA: &str = "1.28.77";
+pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_0;
 
 /// Numeric dotted-version compare (std-only, no semver dependency).
 /// Non-numeric components are skipped (the `schema_ge` precedent in the
@@ -646,10 +650,11 @@ mod tests {
             msg.contains(LATEST_KNOWN_SCHEMA),
             "must name the known ceiling: {msg}"
         );
-        // The lexicographic trap, end to end: 1.28.77 must NOT read as newer
-        // than a 1.28.9 ceiling (it is newer numerically — this asserts the
-        // gate agrees with numeric truth, not string truth).
-        assert!(is_newer_than_known(Some("1.28.78")));
+        // The lexicographic trap, end to end: one-above-the-ceiling must read
+        // as newer while a lexicographically LARGER-but-older string does not
+        // (numeric truth, not string truth — 1.32.1 > 1.32.0 but "1.28.9" <
+        // "1.32.0" even though "9" > "0" would say otherwise positionally).
+        assert!(is_newer_than_known(Some("1.32.1")));
         assert!(!is_newer_than_known(Some("1.28.9")));
     }
 

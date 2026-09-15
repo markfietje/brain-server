@@ -108,6 +108,7 @@ const PARITY_TABLES: &[&str] = &[
     "case_articles",
     "crm_cases",
     "revoked_principals",
+    "agent_session_events",
     "rules",
     "rule_rates",
     "domain_centroids",

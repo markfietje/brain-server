@@ -2221,6 +2221,8 @@ pub fn run_migration_with_store_dim(
     )?;
 
     // Bumped once per release that changes this function.
+    // v1.32.0 "LoopCore": agent_session_events table (the agent-loop
+    // session event log: append-only, per-run seq, exactly-once by key) → 1.32.0.
     // v1.28.77 "Erasure": suggest_feedback.owner (additive, nullable) → 1.28.77.
     // v1.28.62 "Attestation": revoked_principals table → 1.28.62.
     // v1.28.53 "Triage": proposals.domain + proposals.title + the
@@ -2263,9 +2265,32 @@ pub fn run_migration_with_store_dim(
         db.execute_batch("ALTER TABLE agent_cards ADD COLUMN signing_epoch INTEGER;")?;
     }
 
+    // ── the Loop line: the agent-session event log ──────────────────────
+    // Append-only, one row per session event, per-run monotonic seq,
+    // exactly-once by idempotency key. The audit chain stores hashes, not
+    // payloads, so a REPLAYABLE log cannot be derived from it — this is the
+    // declared loop-state table (migrate-rehearse parity covers it). No FK
+    // to workflow_runs on purpose: same posture as the outbox (foreign runs
+    // are refused by the writer's query, not by schema).
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS agent_session_events(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id INTEGER NOT NULL,
+            seq INTEGER NOT NULL,
+            idempotency_key TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE(run_id, seq),
+            UNIQUE(run_id, idempotency_key)
+         );
+         CREATE INDEX IF NOT EXISTS idx_agent_session_events_run
+             ON agent_session_events(run_id, seq);",
+    )?;
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.28.77')
-         ON CONFLICT(key) DO UPDATE SET value = '1.28.77';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.0')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.0';",
         [],
     )?;
 
