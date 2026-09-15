@@ -789,14 +789,13 @@ mod tests {
     use brain_engine_sdk::hostcall::DispatchError;
     use brain_engine_sdk::trust::{Decision, EngineOverride, PolicyMode};
 
-    /// Env-mutating tests serialize on this lock (the compliance-test
-    /// posture): env reads are process-global.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Poison-tolerant acquisition: a panicking sibling must not cascade
-    /// PoisonErrors through every other env test (the CI failure mode).
+    /// Env-mutating tests serialize on the GLOBAL env lock (lib.rs
+    /// test_support): env reads are process-global, and the agent loop's
+    /// exec-bridge tests mutate the same vars from another module — a
+    /// module-local lock would race them exactly the way the standby
+    /// proptest once flaked on CI.
     fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+        crate::test_support::lock_env()
     }
 
     fn host() -> Arc<SqliteWorkflowHost> {
@@ -873,17 +872,17 @@ mod tests {
         );
     }
 
-    /// The dormancy pin: the exec mediation is HARDENED but UNWIRED —
-    /// `hostcalls::build` has zero production call sites anywhere under
-    /// `src/` (recursive walk — the 2026-09-11 fix: the old top-level-only
-    /// walk would miss a wiring inside `src/handlers/` etc.). When the
-    /// 1.32.x Loop line wires this, DELETE this pin and inherit the hardened
-    /// mediation. A silent partial wiring must fail here first.
+    /// The LIVE-mediation pin (the Loop line's exec bridge deleted the
+    /// dormancy pin BY DESIGN in the same commit it wired this): the
+    /// hardened mediation now has EXACTLY ONE production wiring — the
+    /// agent loop's exec bridge — and no other. A second call site anywhere
+    /// under `src/` fails here first: scattered wiring is how mediations
+    /// rot, and a wiring outside the loop's bridge would be exactly that.
     #[test]
-    fn hostcalls_mediation_stays_unwired_until_loop_line() {
-        fn walk(dir: &std::path::Path, hits: &mut usize, files: &mut usize) {
+    fn hostcalls_build_wiring_stays_exactly_the_loop_bridge() {
+        fn walk(dir: &std::path::Path, hits: &mut Vec<std::path::PathBuf>, files: &mut usize) {
             // Built by concatenation so THIS test's own source (which names
-            // the needle to scan for) never self-matches — the recursion now
+            // the needle to scan for) never self-matches — the recursion
             // reaches this file too, where the literal would live.
             let needle = concat!("hostcalls::bu", "ild(");
             for entry in std::fs::read_dir(dir).unwrap() {
@@ -895,17 +894,25 @@ mod tests {
                 }
                 *files += 1;
                 let body = std::fs::read_to_string(&path).unwrap();
-                *hits += body.matches(needle).count();
+                if body.matches(needle).next().is_some() {
+                    hits.push(path);
+                }
             }
         }
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut hits = 0usize;
+        let mut hits: Vec<std::path::PathBuf> = Vec::new();
         let mut files = 0usize;
         walk(&manifest.join("src"), &mut hits, &mut files);
         assert!(files > 100, "sanity: the walk scanned {files} files");
         assert_eq!(
-            hits, 0,
-            "hostcalls::build must stay UNWIRED until the Loop line (delete this pin when wiring)"
+            hits.len(),
+            1,
+            "exactly ONE production wiring of the mediation — the loop's exec bridge"
+        );
+        assert!(
+            hits[0].starts_with(manifest.join("src/agentloop")),
+            "the wiring lives in the agent loop's exec bridge, not {:?}",
+            hits[0]
         );
     }
 
