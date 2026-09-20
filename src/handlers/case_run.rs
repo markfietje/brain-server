@@ -279,6 +279,10 @@ pub(crate) mod tests {
             text_turn(PLAN_JSON),
             text_turn(ACT_JSON),
             text_turn(VERIFY_PASS_JSON),
+            // The second verification: the gated machine re-asks Verify as a
+            // separate exchange and requires the same planned failing
+            // scenario to pass twice.
+            text_turn(VERIFY_PASS_JSON),
             text_turn(HANDOFF_JSON),
         ]
     }
@@ -515,6 +519,7 @@ pub(crate) mod tests {
             text_turn(HYPOTHESIZE_JSON),
             text_turn(PLAN_JSON),
             text_turn(ACT_JSON),
+            text_turn(VERIFY_PASS_JSON),
             text_turn(VERIFY_PASS_JSON),
             text_turn(HANDOFF_JSON),
         ];

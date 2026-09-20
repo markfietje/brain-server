@@ -1842,26 +1842,122 @@ impl GdlDriver {
                                 .ok_or_else(|| persist_error("gate passed without artifact"))?;
                             apply(&mut case, phase, &artifact);
                             change.verdict = "pass";
-                            change.artifact = Some(artifact);
                             if phase == GdlPhase::Verify
                                 && case.verify.as_ref().is_some_and(|v| !v.pass)
                             {
+                                change.artifact = Some(artifact);
                                 change.terminal = Some(GdlOutcome::VerifyFailed {
                                     at: phase,
                                     bundle: case.escalation_bundle(),
                                 });
-                            } else if phase == GdlPhase::Handoff {
-                                change.terminal = Some(GdlOutcome::Resolved {
-                                    phases: cp.phases + 1,
-                                    verify: case
-                                        .verify
-                                        .clone()
-                                        .ok_or_else(|| persist_error("Verify absent"))?,
-                                    capture: case
-                                        .capture
-                                        .clone()
-                                        .ok_or_else(|| persist_error("Capture absent"))?,
-                                });
+                            } else if phase == GdlPhase::Verify && !self.ablated {
+                                // The independent second verification: a
+                                // separate provider exchange (its own
+                                // `:confirm` request key and exchange id)
+                                // re-asks Verify under the same L6/A6
+                                // contract. Both artifacts must be law-clean
+                                // AND agree (same planned re-run, both pass)
+                                // before the case carries a verify artifact
+                                // toward Handoff. A disagreeing or unparseable
+                                // second pass is the named A6 gate failure and
+                                // rides the bounded retry; an interrupted
+                                // confirmation routes with the named reason —
+                                // neither ever resolves. The checkpoint
+                                // transition stays bound to the FIRST
+                                // exchange (the receipt law): its artifact is
+                                // what the persisted case keeps; the
+                                // confirmation's rows live in the session log.
+                                let confirm_key = format!(
+                                    "gdl:{}:phase:{}:attempt:{attempt}:confirm",
+                                    cp.episode,
+                                    phase.as_str()
+                                );
+                                let confirm = self
+                                    .loop_driver
+                                    .run_turns_owned(
+                                        run_id,
+                                        &confirm_key,
+                                        &instruction,
+                                        &owner,
+                                        cancel,
+                                    )
+                                    .await?;
+                                change.terminal = match confirm.outcome {
+                                    RunOutcome::Canceled => Some(GdlOutcome::Routed {
+                                        at: phase,
+                                        reason: "second verification interrupted: \
+                                                 canceled"
+                                            .into(),
+                                    }),
+                                    RunOutcome::TurnCapReached { .. } => Some(GdlOutcome::Routed {
+                                        at: phase,
+                                        reason: "second verification \
+                                                     interrupted: turn cap"
+                                            .into(),
+                                    }),
+                                    RunOutcome::BudgetExceeded { .. } => Some(GdlOutcome::Routed {
+                                        at: phase,
+                                        reason: "second verification \
+                                                     interrupted: budget"
+                                            .into(),
+                                    }),
+                                    RunOutcome::Completed { .. } => None,
+                                };
+                                if change.terminal.is_none() {
+                                    let (gate2, artifact2) =
+                                        parse_and_gate(phase, &case, &confirm.final_text);
+                                    let agreed = match (gate2, artifact2) {
+                                        (Gate::Pass, Some(second_json)) => {
+                                            let first: VerifyArtifact =
+                                                serde_json::from_str(&artifact)
+                                                    .map_err(persist_error)?;
+                                            let second: VerifyArtifact =
+                                                serde_json::from_str(&second_json)
+                                                    .map_err(persist_error)?;
+                                            second.pass
+                                                && second.re_run.trim() == first.re_run.trim()
+                                        }
+                                        _ => false,
+                                    };
+                                    if agreed {
+                                        change.artifact = Some(artifact);
+                                    } else {
+                                        change.verdict = "fail";
+                                        let errors = vec![err(
+                                            "A6",
+                                            "second verification absent or \
+                                             inconsistent — the same planned \
+                                             failing scenario must pass twice, \
+                                             in separate exchanges, before the \
+                                             case may close",
+                                        )];
+                                        if attempt >= MAX_PHASE_ATTEMPTS {
+                                            change.terminal = Some(GdlOutcome::Routed {
+                                                at: phase,
+                                                reason: format!(
+                                                    "gate exhausted after {attempt} attempts: {}",
+                                                    errors.join("; ")
+                                                ),
+                                            });
+                                        }
+                                        change.errors = errors;
+                                    }
+                                }
+                            } else {
+                                change.artifact = Some(artifact);
+                                if phase == GdlPhase::Handoff {
+                                    change.terminal = Some(GdlOutcome::Resolved {
+                                        phases: cp.phases + 1,
+                                        verify: case
+                                            .verify
+                                            .clone()
+                                            .ok_or_else(|| persist_error("Verify absent"))?,
+                                        capture: case
+                                            .capture
+                                            .clone()
+                                            .ok_or_else(|| persist_error("Capture absent"))?,
+                                    });
+                                }
                             }
                         }
                         Gate::Route(reason) => {
@@ -2038,6 +2134,10 @@ mod tests {
             scripted_text(PLAN_JSON),
             scripted_text(ACT_JSON),
             scripted_text(VERIFY_JSON),
+            // The second verification: the gated machine re-asks Verify as a
+            // separate exchange and requires the same planned failing
+            // scenario to pass twice.
+            scripted_text(VERIFY_JSON),
             scripted_text(HANDOFF_JSON),
         ]
     }
@@ -2113,12 +2213,28 @@ mod tests {
     fn r1_reload_every_phase_never_duplicates_act() {
         let f = fixture(vec![]);
         let runtime = rt();
-        for (i, script) in happy_script().into_iter().enumerate() {
-            let (driver, provider) = reload(f.tmp.path(), vec![script], LoopConfig::default());
+        let mut script = happy_script().into_iter();
+        // One reload per phase settlement. Verify settles over TWO exchanges
+        // (the pass and the second verification) inside one pause window.
+        let mut groups: Vec<Vec<Vec<crate::agentloop::provider::StreamEvent>>> = Vec::new();
+        for _ in 0..5 {
+            groups.push(vec![script.next().expect("phase event")]);
+        }
+        groups.push(vec![
+            script.next().expect("verify artifact"),
+            script.next().expect("verify confirmation"),
+        ]);
+        groups.push(vec![script.next().expect("handoff artifact")]);
+        for (i, group) in groups.into_iter().enumerate() {
+            let (driver, provider) = reload(f.tmp.path(), group, LoopConfig::default());
             let result = runtime
                 .block_on(driver.run_case_until(1, "reload", &CancellationToken::new(), Some(1)))
                 .unwrap();
-            assert_eq!(provider.requests().len(), 1);
+            assert_eq!(
+                provider.requests().len(),
+                if i == 5 { 2 } else { 1 },
+                "one settlement per group; Verify exchanges twice"
+            );
             assert_eq!(result.is_some(), i == 6);
             if let Some(outcome) = result {
                 assert!(matches!(outcome, GdlOutcome::Resolved { phases: 7, .. }));
@@ -2254,12 +2370,13 @@ mod tests {
         //     artifact per phase). Routed arms retry the same artifact for
         //     the full bounded attempt budget.
         let illegal: [(&str, &str, &str, usize); 5] = [
-            // A7 refused through the bounded attempts, then routed.
+            // A7 refused through the bounded attempts, then routed. (Slot 7
+            // is the Handoff artifact; slot 6 is the verify confirmation.)
             (
                 "empty_capture_resolution",
                 r#"{"capture":{"resolution":"   ","bundle_hash":"h0"}}"#,
                 "routed",
-                6,
+                7,
             ),
             // A6 floor refused to closure.
             (
@@ -2366,6 +2483,63 @@ mod tests {
         assert_eq!(
             done_budget, 1,
             "the exchange's done receipt records the BudgetExceeded stop"
+        );
+    }
+
+    /// The second verification's own law: a second pass that DISAGREES (a
+    /// different planned re-run) is the named A6 gate failure; the bounded
+    /// retries re-run the whole phase (fresh pass + fresh confirmation) and
+    /// the case routes at exhaustion — never resolves. Each confirmation is
+    /// a real, distinct exchange (`:confirm` request key) on the session log.
+    #[test]
+    fn resolved_requires_a_second_agreeing_verification_exchange() {
+        let runtime = rt();
+        let disagree = VERIFY_JSON.replace("rebuild rate on VD 5", "a different re-run");
+        let mut script = happy_script();
+        script.truncate(5); // through Act
+        for _ in 0..MAX_PHASE_ATTEMPTS {
+            script.push(scripted_text(VERIFY_JSON)); // the passing first pass
+            script.push(scripted_text(&disagree)); // the disagreeing confirmation
+        }
+        script.push(scripted_text(HANDOFF_JSON)); // never reached
+        let f = fixture(script);
+        let outcome = runtime
+            .block_on(f.driver.run_case(1, "disagree", &CancellationToken::new()))
+            .unwrap();
+        match outcome {
+            GdlOutcome::Routed { at, reason } => {
+                assert_eq!(at, GdlPhase::Verify);
+                assert!(
+                    reason.contains("gate exhausted"),
+                    "the disagreement exhausts the bounded retries: {reason}"
+                );
+            }
+            other => panic!("a disagreeing second verification must never resolve: {other:?}"),
+        }
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let confirm_exchanges: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events
+                 WHERE kind = 'control:exchange' AND idempotency_key LIKE '%:confirm'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            confirm_exchanges, 3,
+            "each retried Verify re-asks a distinct confirmation exchange"
+        );
+        let named: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events
+                 WHERE kind = 'gdl_gate' AND payload_json LIKE '%second verification%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            named, 3,
+            "the A6 second-verification failure is named on every gate row"
         );
     }
 
@@ -3017,7 +3191,11 @@ mod tests {
         assert!(gate_kinds.iter().all(|(_, p)| p.contains("\"pass\"")));
         // The provider saw the plan strip in every instruction after Plan.
         let requests = f.provider.requests();
-        assert_eq!(requests.len(), 7, "one model exchange per phase");
+        assert_eq!(
+            requests.len(),
+            8,
+            "one model exchange per phase, plus the second verification at Verify"
+        );
         assert!(
             requests[3]
                 .messages
@@ -3762,6 +3940,7 @@ mod tests {
             scripted_text(PLAN_JSON),
             scripted_text(ACT_JSON),
             scripted_text(VERIFY_JSON),
+            scripted_text(VERIFY_JSON),
         ]);
         let runtime = rt();
         // Intake..Verify committed, then a clean pause.
@@ -4212,7 +4391,7 @@ mod tests {
         assert!(matches!(replay, GdlOutcome::Resolved { .. }));
         assert_eq!(
             f.provider.requests().len(),
-            7,
+            8,
             "terminal replay does no provider work"
         );
         let count: i64 = conn
@@ -4536,6 +4715,10 @@ mod eval_run1 {
             scripted_text(&hypothesize),
             scripted_text(&plan),
             scripted_text(&act),
+            scripted_text(&verify),
+            // The second verification: the gated machine re-asks Verify in a
+            // separate exchange and requires agreement. The ablated draft
+            // arm leaves this event unconsumed.
             scripted_text(&verify),
             scripted_text(&handoff),
         ]
