@@ -455,6 +455,20 @@ pub async fn get_scoreboard(
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(HandlerError::internal)?;
+    // Continuity: the justified-handoff roll-up reads the recorded
+    // soft-handoff rows (fail-closed — no rows reads 0 per-mille).
+    let pool_jh = super::resolve_domain_pool(&state.registry, None)?;
+    let justified_handoff_rate_units =
+        tokio::task::spawn_blocking(move || -> Result<i32, String> {
+            let conn = pool_jh.get().map_err(|e| format!("{e}"))?;
+            let (justified, total) = crate::workflow::scoreboard::justified_handoff_counts(&conn);
+            Ok(brain_engine_sdk::pure::qa_score::justified_handoff_rate(
+                justified, total,
+            ))
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("{e}")))?
+        .map_err(HandlerError::internal)?;
     // ASI09 approval-fatigue telemetry: the client's rubber-stamp
     // arithmetic computed server-side over the same window/cap — DPO
     // visibility on the board, docs/metrics.md is the normative dictionary.
@@ -484,6 +498,7 @@ pub async fn get_scoreboard(
         "abstention_rate_units": sb.abstention_rate_units,
         "guidance_acceptance_units": sb.guidance_acceptance_units,
         "handoff_completeness_units": sb.handoff_completeness_units,
+        "justified_handoff_rate_units": justified_handoff_rate_units,
         "audit_green": sb.audit_green,
         "escalation_honored_units": sb.escalation_honored_units,
         "runs_scored": runs.len(),

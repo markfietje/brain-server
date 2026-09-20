@@ -165,6 +165,46 @@ pub(crate) fn score_units_now(conn: &Connection) -> i32 {
     }
 }
 
+// ── Continuity: the justified-handoff roll-up ──────────────────────────
+// A soft-handoff row counts as JUSTIFIED when its payload records
+// `fires: true` AND a non-empty `justification` string. Every
+// escalated/routed terminal lands exactly one row (they ARE the handoff
+// evaluations), so the rate is per-mille over the rows themselves.
+
+/// The `(justified, total)` counts over the recorded `control:soft_handoff`
+/// rows. Fail-closed: no table or no rows reads `(0, 0)` — no data is never
+/// dressed up as a perfect score.
+pub(crate) fn justified_handoff_counts(conn: &Connection) -> (i32, i32) {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT payload_json FROM agent_session_events \
+         WHERE kind = 'control:soft_handoff' ORDER BY seq",
+    ) else {
+        return (0, 0);
+    };
+    let rows: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .map(|it| it.filter_map(Result::ok).collect())
+        .unwrap_or_default();
+    let total = rows.len() as i32;
+    let justified = rows
+        .iter()
+        .filter(|p| {
+            serde_json::from_str::<serde_json::Value>(p)
+                .ok()
+                .and_then(|v| {
+                    Some(
+                        v.get("fires").and_then(|f| f.as_bool()).unwrap_or(false)
+                            && v.get("justification")
+                                .and_then(|j| j.as_str())
+                                .is_some_and(|s| !s.trim().is_empty()),
+                    )
+                })
+                .unwrap_or(false)
+        })
+        .count() as i32;
+    (justified, total)
+}
+
 // ── Attestation: the approval-fatigue telemetry (ASI09) ────────────────
 // The client's rubber-stamp detector (client/src/panels/review.rs:192
 // `rubber_stamp()` over calibration_stats) computed SERVER-SIDE so the DPO
@@ -466,6 +506,7 @@ mod scoreboard_tests {
         "abstention_rate_units",
         "guidance_acceptance_units",
         "handoff_completeness_units",
+        "justified_handoff_rate_units",
         "audit_green",
         "escalation_honored_units",
         "runs_scored",
@@ -501,6 +542,59 @@ mod scoreboard_tests {
     /// Dictionary fields defined but deliberately not yet emitted by code
     /// (formula fixed before any emitter ships — the Lexicon posture).
     const PLANNED_DICTIONARY_FIELDS: &[&str] = &["customer_effort_events"];
+
+    /// The justified-handoff per-mille rule, pinned with hand-computable
+    /// vectors through the SDK's pure fn (the κ-test pattern): the
+    /// arithmetic lives once in the SDK; the rows live here.
+    #[test]
+    fn justified_handoff_rate_vectors() {
+        use brain_engine_sdk::pure::qa_score::justified_handoff_rate;
+        // 3 justified of 5 evaluations -> 600 per-mille.
+        assert_eq!(justified_handoff_rate(3, 5), 600);
+        // All justified -> the full thousand.
+        assert_eq!(justified_handoff_rate(4, 4), 1000);
+        // Fired but never justified -> 0.
+        assert_eq!(justified_handoff_rate(0, 5), 0);
+        // No evaluations at all -> 0 (no data is not a perfect score).
+        assert_eq!(justified_handoff_rate(0, 0), 0);
+        // Floor division: 1/3 -> 333, never rounded up.
+        assert_eq!(justified_handoff_rate(1, 3), 333);
+    }
+
+    /// The roll-up reads exactly the recorded soft-handoff rows: a row is
+    /// justified iff its payload carries `fires:true` AND a non-empty
+    /// `justification` string.
+    #[test]
+    fn justified_handoff_counts_read_the_recorded_rows() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::migration::run_migration(&mut conn, 0).unwrap();
+        // Empty store: fail-closed (0, 0).
+        assert_eq!(justified_handoff_counts(&conn), (0, 0));
+        for (fires, justification) in [
+            (true, Some("operator accepted the handoff")),
+            (true, Some("  ")),         // blank never counts
+            (true, None),               // fired without a recorded reason
+            (false, Some("justified")), // not fired -> not justified
+            (false, None),
+        ] {
+            let payload = serde_json::json!({
+                "confidence_pct": 100,
+                "fires": fires,
+                "justification": justification,
+            })
+            .to_string();
+            conn.execute(
+                "INSERT INTO agent_session_events(run_id, seq, idempotency_key, kind, payload_json, created_at)
+                 VALUES (1, (SELECT COALESCE(MAX(seq),0)+1 FROM agent_session_events WHERE run_id=1),
+                         printf('k%d', (SELECT COALESCE(MAX(seq),0)+1 FROM agent_session_events WHERE run_id=1)),
+                         'control:soft_handoff', ?1, 1)",
+                [&payload],
+            )
+            .unwrap();
+        }
+        assert_eq!(justified_handoff_counts(&conn), (1, 5));
+    }
 
     fn metrics_doc() -> String {
         let doc_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/metrics.md");

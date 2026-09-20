@@ -144,6 +144,23 @@
       "status": "emitted"
     },
     {
+      "name": "justified_handoff_rate_units",
+      "unit": "per-mille",
+      "formula": "justified * 1000 / total over recorded control:soft_handoff rows; a row is justified when its payload records fires:true AND a non-empty justification string. No rows scores 0 (fail-closed).",
+      "sources": [
+        {
+          "table": "agent_session_events",
+          "column": "payload_json"
+        }
+      ],
+      "window": "all recorded rows",
+      "inclusion": "control:soft_handoff rows with fires:true and a non-empty justification",
+      "exclusion": "rows without fires:true; rows whose justification is absent or blank",
+      "citation": "I-PASS handover research; R12 soft-handoff latch law (80% integer rule)",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
       "name": "audit_green",
       "unit": "boolean",
       "formula": "every scored run references at least one workflow audit row (fail-closed conjunction)",

@@ -168,6 +168,18 @@ pub enum GapAction {
     ProposeUpdate,
 }
 
+/// The justified-handoff rate in integer PER-MILLE (floor division): the
+/// share of handoff evaluations that fired the soft-handoff predicate AND
+/// carried a recorded justification. No evaluations -> 0 (no data is not
+/// a perfect score — the fail-closed posture). No floats.
+pub fn justified_handoff_rate(justified: i32, total: i32) -> i32 {
+    if total <= 0 {
+        0
+    } else {
+        justified * 1000 / total
+    }
+}
+
 pub fn gap_decision(similarity_units: i32) -> Option<GapAction> {
     if similarity_units < 4000 {
         Some(GapAction::ProposeNew)
@@ -216,6 +228,12 @@ pub struct Scoreboard {
     pub handoff_completeness_units: i32,
     pub audit_green: bool,
     pub escalation_honored_units: i32,
+    /// Integer per-mille of handoff evaluations that fired the
+    /// soft-handoff predicate AND carried a recorded justification.
+    /// Computed host-side from the recorded soft-handoff rows — the SDK
+    /// `scoreboard()` leaves it 0 (it has no row access); hosts set it
+    /// via [`justified_handoff_rate`].
+    pub justified_handoff_rate_units: i32,
 }
 
 pub fn scoreboard(runs: &[RunArtifacts]) -> Scoreboard {
@@ -231,6 +249,7 @@ pub fn scoreboard(runs: &[RunArtifacts]) -> Scoreboard {
             handoff_completeness_units: 0,
             audit_green: true,
             escalation_honored_units: SCALE,
+            justified_handoff_rate_units: 0,
         };
     }
     let n = runs.len() as i32;
@@ -279,6 +298,7 @@ pub fn scoreboard(runs: &[RunArtifacts]) -> Scoreboard {
         handoff_completeness_units: handoff,
         audit_green,
         escalation_honored_units: esc,
+        justified_handoff_rate_units: 0,
     }
 }
 

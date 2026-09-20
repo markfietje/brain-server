@@ -48,6 +48,7 @@ use crate::Pool;
 use crate::agentloop::hooks::LoopHooks;
 use crate::agentloop::provider::LlmProvider;
 use crate::agentloop::run_loop::{LoopConfig, LoopDriver, LoopError, RunOutcome};
+use crate::audit::AuditStatus;
 use crate::workflow::host::SqliteWorkflowHost;
 use crate::workflow::session_log;
 
@@ -87,6 +88,10 @@ pub(crate) const SOFT_HANDOFF_THRESHOLD_PCT: i64 = 80;
 pub(crate) fn soft_handoff(confidence_pct: i64) -> bool {
     confidence_pct >= SOFT_HANDOFF_THRESHOLD_PCT
 }
+
+/// The named violation: a fired soft-handoff without a recorded
+/// justification (the latch law).
+pub(crate) const SOFT_HANDOFF_VIOLATION: &str = "soft-handoff fired without justification";
 
 /// The pinned P-class SLA table: integer seconds from the Triage pass to
 /// the deadline. The literals are pinned by test and preregistered — a
@@ -1921,7 +1926,11 @@ impl GdlDriver {
 
     /// The typed soft-handoff row at the escalation path: the integer
     /// predicate evaluated on the case's evidence-derived confidence, with
-    /// the latch state for this case run.
+    /// the latch state for this case run. The latch is DERIVED from the
+    /// run's prior rows (stateless, replay-consistent): a fires:true
+    /// evaluation on an already-fired run without any recorded
+    /// justification is the named violation — it lands a `denied` audit
+    /// row and a gap proposal through the SDK's gap rule.
     async fn record_soft_handoff_row(
         &self,
         run_id: i64,
@@ -1937,23 +1946,75 @@ impl GdlDriver {
         let payload = serde_json::json!({
             "confidence_pct": confidence_pct,
             "fires": fires,
+            "justification": null,
         })
         .to_string();
         let key = format!("run{run_id}:control:soft_handoff:{owner}");
+        let owner = owner.to_string();
         let pool = self.pool.clone();
         tokio::task::spawn_blocking(move || {
             let mut conn = pool.get().map_err(checkpoint::persist_error)?;
             let mut tx =
                 super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
-            session_log::append(
-                tx.tx(),
-                run_id,
-                "control:soft_handoff",
-                &payload,
-                &key,
-                chrono::Utc::now().timestamp(),
-            )
-            .map_err(checkpoint::persist_error)?;
+            // The prior latch state for this run, read before this row
+            // lands: fired = any earlier fires:true row; justified = any
+            // recorded non-empty justification on those rows.
+            let prior: Vec<String> = {
+                let mut stmt = tx
+                    .tx()
+                    .prepare(
+                        "SELECT payload_json FROM agent_session_events \
+                         WHERE run_id = ?1 AND kind = 'control:soft_handoff' ORDER BY seq",
+                    )
+                    .map_err(checkpoint::persist_error)?;
+                stmt.query_map(rusqlite::params![run_id], |r| r.get(0))
+                    .map(|it| it.filter_map(Result::ok).collect())
+                    .map_err(checkpoint::persist_error)?
+            };
+            let prior_fired = prior.iter().any(|p| {
+                serde_json::from_str::<serde_json::Value>(p)
+                    .ok()
+                    .and_then(|v| v["fires"].as_bool())
+                    .unwrap_or(false)
+            });
+            let prior_justified = prior.iter().any(|p| {
+                serde_json::from_str::<serde_json::Value>(p)
+                    .ok()
+                    .and_then(|v| v["justification"].as_str().map(|s| !s.trim().is_empty()))
+                    .unwrap_or(false)
+            });
+            let now = chrono::Utc::now().timestamp();
+            session_log::append(tx.tx(), run_id, "control:soft_handoff", &payload, &key, now)
+                .map_err(checkpoint::persist_error)?;
+            // The unjustified-revisit law: a fired evaluation on an
+            // already-fired, never-justified run. The audit row is DENIED;
+            // the knowledge gap rides the SDK's gap rule (no coverage ->
+            // propose a new article) as a recorded proposal, never an
+            // auto-publish.
+            if fires && prior_fired && !prior_justified {
+                super::audit_write(
+                    tx.tx(),
+                    run_id,
+                    "soft_handoff",
+                    AuditStatus::Denied,
+                    SOFT_HANDOFF_VIOLATION,
+                );
+                let action = brain_engine_sdk::pure::qa_score::gap_decision(0);
+                let gap = serde_json::json!({
+                    "violation": SOFT_HANDOFF_VIOLATION,
+                    "proposal": action.map(|a| format!("{a:?}")),
+                })
+                .to_string();
+                session_log::append(
+                    tx.tx(),
+                    run_id,
+                    "control:soft_handoff_gap",
+                    &gap,
+                    &format!("run{run_id}:control:soft_handoff_gap:{owner}"),
+                    now,
+                )
+                .map_err(checkpoint::persist_error)?;
+            }
             tx.commit().map_err(checkpoint::persist_error)?;
             Ok::<_, LoopError>(())
         })
@@ -3629,6 +3690,62 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows, 1, "the escalated escape records its soft-handoff row");
+    }
+
+    #[test]
+    fn unjustified_revisit_lands_denied_audit_and_gap_proposal() {
+        let f = fixture(vec![]);
+        let runtime = rt();
+        let mut case = GdlCase::fresh("t");
+        // A passing verify maps to confidence 100 — the predicate fires.
+        case.verify = Some(serde_json::from_str(VERIFY_JSON).unwrap());
+        // First evaluation: the latch fires, no violation (nothing prior).
+        runtime
+            .block_on(f.driver.record_soft_handoff_row(1, "first", &case))
+            .unwrap();
+        // The revisit: fired again, still no recorded justification — the
+        // named violation lands a DENIED audit row and a gap proposal.
+        runtime
+            .block_on(f.driver.record_soft_handoff_row(1, "second", &case))
+            .unwrap();
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let (rows,): (i64,) = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+                 WHERE kind = 'control:soft_handoff'",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert_eq!(rows, 2, "two fired evaluations recorded");
+        let (denials,): (i64,) = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events \
+                 WHERE actor = 'workflow' AND status = 'denied' AND detail_hash = ?1",
+                [crate::audit::hash(SOFT_HANDOFF_VIOLATION)],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert_eq!(
+            denials, 1,
+            "exactly the revisit is denied — the first fire was lawful"
+        );
+        let (gap,): (String,) = conn
+            .query_row(
+                "SELECT payload_json FROM agent_session_events \
+                 WHERE kind = 'control:soft_handoff_gap'",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert!(
+            gap.contains("soft-handoff fired without justification"),
+            "{gap}"
+        );
+        assert!(
+            gap.contains("ProposeNew"),
+            "no coverage proposes a new article: {gap}"
+        );
     }
 
     #[test]
