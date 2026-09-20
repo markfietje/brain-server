@@ -248,15 +248,16 @@ impl ExchangeBudget {
         if self.revoked() {
             return true;
         }
-        let own = match self.state.lock() {
-            Ok(state) => {
+        let own = self
+            .state
+            .lock()
+            .map(|state| {
                 state.incomplete
                     || self.limit.is_some_and(|limit| {
                         state.usage.total().saturating_add(state.reserved) >= limit
                     })
-            }
-            Err(_) => true,
-        };
+            })
+            .unwrap_or(true);
         own || self.parent_actual_exhausted()
     }
 

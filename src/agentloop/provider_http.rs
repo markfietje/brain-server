@@ -193,10 +193,10 @@ impl LlmProvider for HttpProvider {
             let mut stream = response.bytes_stream();
             let mut buf: Vec<u8> = Vec::new();
             let mut ended = false;
-            // The annotation is load-bearing: the numeric literal's type is
+            // The literal suffix is load-bearing: the accumulator's type is
             // only fixed by the saturating_add against a usize below, and
             // inference cannot see through the method receiver.
-            let mut total: usize = 0;
+            let mut total = 0usize;
             while let Some(item) = stream.next().await {
                 let chunk = match item {
                     Ok(c) => c,

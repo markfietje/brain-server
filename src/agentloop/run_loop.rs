@@ -293,10 +293,12 @@ impl Drop for TurnSettlement {
         let Some(token) = self.token.take() else {
             return;
         };
-        self.secondary = Some(match self.harness.try_abort_turn(token) {
-            Ok(()) => "drop_settled",
-            Err(_) => "drop_refused",
-        });
+        let verdict = if self.harness.try_abort_turn(token).is_ok() {
+            "drop_settled"
+        } else {
+            "drop_refused"
+        };
+        self.secondary = Some(verdict);
     }
 }
 
@@ -663,15 +665,15 @@ impl LoopDriver {
         // Fresh admission only: acquire the exchange's accounting authority
         // (and any child reservation) here, before any provider dispatch. A
         // refused authority fails the invocation instead of dispatching.
-        let budget_guard = match budget_factory.map(|factory| factory()) {
-            Some(Ok(guard)) => Some(guard),
-            Some(Err(error)) => return Err(error),
-            None => None,
-        }
-        .unwrap_or_else(|| match &self.config.budget_accounting {
-            Some(supplied) => supplied.fresh_exchange(self.config.token_budget),
-            None => ExchangeGuard::root(self.config.token_budget),
-        });
+        let budget_guard = if let Some(factory) = budget_factory {
+            factory()?
+        } else {
+            self.config
+                .budget_accounting
+                .as_ref()
+                .map(|supplied| supplied.fresh_exchange(self.config.token_budget))
+                .unwrap_or_else(|| ExchangeGuard::root(self.config.token_budget))
+        };
         let budget = budget_guard.budget().clone();
         let (outcome, assistant_key) = self
             .drive_exchange(run_id, &pending_input, &exchange, cancel, &budget)
