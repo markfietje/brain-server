@@ -928,6 +928,15 @@ fn verify_gate(a: &VerifyArtifact, case: &GdlCase) -> Vec<String> {
 
 /// Handoff: the capture artifact is present (A7 — a resolution nobody can
 /// retrieve later is a second failure).
+///
+/// The registered reconciliation (docs/LOOP_AUTOCLOSE_RECONCILIATION.md):
+/// "the machine never auto-closes" means no terminal path reaches
+/// Resolved without BOTH (a) a passing, law-clean verify artifact
+/// (verify_gate: L6 re-run match + A6 floor + negative check) and (b) a
+/// present handoff capture (this gate). The machine settling a case as
+/// resolved IS permitted — it is the evidence-gated closure; knowledge
+/// publication stays proposal-only, and a failed or missing verify is the
+/// terminal VerifyFailed hand-back.
 fn handoff_gate(a: &HandoffArtifact) -> Vec<String> {
     let mut errors = Vec::new();
     if a.capture.resolution.trim().is_empty() {
@@ -1672,6 +1681,11 @@ impl GdlDriver {
 
     /// One automation episode per run. Terminal retry is read-only with respect
     /// to provider/tool work; human edits invalidate its binding, never restart it.
+    /// One case, seven phases, every dependency injected; the terminal is
+    /// durable and replay-exact. The auto-close reconciliation law
+    /// (docs/LOOP_AUTOCLOSE_RECONCILIATION.md) binds every terminal path
+    /// here: Resolved requires a passing, law-clean verify artifact AND a
+    /// present handoff capture — closure is evidence-gated, never silent.
     pub(crate) async fn run_case(
         &self,
         run_id: i64,
@@ -2198,6 +2212,113 @@ mod tests {
                 runtime
                     .block_on(driver.run_case(1, "changed ticket", &CancellationToken::new()))
                     .is_err()
+            );
+        }
+    }
+
+    /// The registered reconciliation of "the machine never auto-closes"
+    /// (docs/LOOP_AUTOCLOSE_RECONCILIATION.md): exhaustively drives every
+    /// terminal path and asserts the only resolved terminal carries BOTH
+    /// (a) a passing, law-clean verify artifact and (b) a present handoff
+    /// capture. The illegal-closure arms enumerate the ways a case tries
+    /// to close without the evidence; each lands in a named non-resolved
+    /// terminal through the bounded machinery. No wildcard arms: a new
+    /// GdlOutcome variant fails this test at compile time until its
+    /// terminal path is reconciled here too.
+    #[test]
+    fn machine_never_auto_closes_resolved_requires_law_clean_verify_and_capture() {
+        let runtime = rt();
+        // (1) The evidence-gated closure: resolved carries both conditions.
+        let f = fixture(happy_script());
+        let outcome = runtime
+            .block_on(f.driver.run_case(1, "close", &CancellationToken::new()))
+            .unwrap();
+        match outcome {
+            GdlOutcome::Resolved {
+                verify, capture, ..
+            } => {
+                assert!(verify.pass, "resolved without a passing verify artifact");
+                assert!(
+                    verify.re_run.contains("rebuild rate"),
+                    "resolved without the planned failing scenario re-run"
+                );
+                assert!(
+                    !capture.resolution.trim().is_empty(),
+                    "resolved without a handoff capture"
+                );
+            }
+            other => panic!("the happy script must close resolved, got {other:?}"),
+        }
+        // (2) Every illegal closure lands in a named non-resolved terminal.
+        //     Slots: 5 = Verify, 6 = Handoff (the happy script is one
+        //     artifact per phase). Routed arms retry the same artifact for
+        //     the full bounded attempt budget.
+        let illegal: [(&str, &str, &str, usize); 5] = [
+            // A7 refused through the bounded attempts, then routed.
+            (
+                "empty_capture_resolution",
+                r#"{"capture":{"resolution":"   ","bundle_hash":"h0"}}"#,
+                "routed",
+                6,
+            ),
+            // A6 floor refused to closure.
+            (
+                "stability_window_under_floor",
+                &VERIFY_JSON.replace("stability_window_min\":15", "stability_window_min\":5"),
+                "routed",
+                5,
+            ),
+            // A6 negative check refused to closure.
+            (
+                "negative_check_false",
+                &VERIFY_JSON.replace("\"negative_check\":true", "\"negative_check\":false"),
+                "routed",
+                5,
+            ),
+            // L6 refused to closure: the re-run is not the planned scenario.
+            (
+                "re_run_not_the_planned_scenario",
+                &VERIFY_JSON.replace(
+                    "rebuild rate on VD 5 under the customer load",
+                    "a different scenario entirely",
+                ),
+                "routed",
+                5,
+            ),
+            // A failed verify is the terminal hand-back, never a closure.
+            (
+                "verify_pass_false",
+                &VERIFY_JSON.replace("\"pass\":true", "\"pass\":false"),
+                "verify_failed",
+                5,
+            ),
+        ];
+        for (name, artifact, expected, index) in illegal {
+            let mut script = happy_script();
+            *script.get_mut(index).expect("phase script slot") = scripted_text(artifact);
+            if expected == "routed" {
+                script.insert(index + 1, scripted_text(artifact));
+                script.insert(index + 2, scripted_text(artifact));
+            }
+            let f = fixture(script);
+            let outcome = runtime
+                .block_on(f.driver.run_case(1, name, &CancellationToken::new()))
+                .unwrap();
+            assert!(
+                !matches!(outcome, GdlOutcome::Resolved { .. }),
+                "{name}: the machine auto-closed without the evidence"
+            );
+            let landed = match &outcome {
+                GdlOutcome::Routed { .. } => "routed",
+                GdlOutcome::Escalated { .. } => "escalated",
+                GdlOutcome::VerifyFailed { .. } => "verify_failed",
+                GdlOutcome::Canceled => "canceled",
+                GdlOutcome::Capped { .. } => "capped",
+                GdlOutcome::Resolved { .. } => "resolved",
+            };
+            assert_eq!(
+                landed, expected,
+                "{name}: terminal {landed} is not the named shape {expected}"
             );
         }
     }
