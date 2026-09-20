@@ -3814,6 +3814,172 @@ mod tests {
     }
 
     #[test]
+    fn escape_is_honored_at_every_phase_boundary_seven_of_seven() {
+        let phases = GdlPhase::ALL;
+        for (p, expected_at) in phases.iter().enumerate() {
+            let f = fixture(happy_script());
+            let escape = EscapeFlag::new();
+            let runtime = rt();
+            if p == 0 {
+                // Armed before the run: the first boundary routes.
+                escape.request();
+            } else {
+                let paused = runtime
+                    .block_on(f.driver.run_case_until(
+                        1,
+                        "sweep",
+                        &CancellationToken::new(),
+                        Some(p as u32),
+                        &EscapeFlag::new(),
+                    ))
+                    .unwrap();
+                assert!(paused.is_none(), "phase {p}: clean pause first");
+                escape.request();
+            }
+            let outcome = runtime
+                .block_on(f.driver.run_case_with_escape(
+                    1,
+                    "sweep",
+                    &CancellationToken::new(),
+                    &escape,
+                ))
+                .unwrap();
+            assert!(
+                matches!(&outcome, GdlOutcome::Escalated { at, .. } if at == expected_at),
+                "phase {p}: the escape must route AT the observed phase; got {outcome:?}"
+            );
+            // Durable monotonicity: the committed terminal replays exactly
+            // after a full reload.
+            let (driver, _provider) = reload(f.tmp.path(), vec![], LoopConfig::default());
+            let replayed = runtime
+                .block_on(driver.run_case_with_escape(
+                    1,
+                    "sweep",
+                    &CancellationToken::new(),
+                    &EscapeFlag::new(),
+                ))
+                .unwrap();
+            assert_eq!(replayed, outcome, "phase {p}: replay must be exact");
+        }
+    }
+
+    #[test]
+    fn offer_boundary_resume_continues_at_the_recorded_phase_with_zero_reexecution() {
+        let f = fixture(happy_script());
+        let runtime = rt();
+        // Settle Intake..Act, then pause.
+        let paused = runtime
+            .block_on(f.driver.run_case_until(
+                1,
+                "handoff",
+                &CancellationToken::new(),
+                Some(5),
+                &EscapeFlag::new(),
+            ))
+            .unwrap();
+        assert!(paused.is_none());
+        // A handoff offer lands and a human ACCEPTS it while paused.
+        let offer_id = {
+            let conn = Connection::open(f.tmp.path()).unwrap();
+            let domain: String = conn
+                .query_row("SELECT domain FROM workflow_runs WHERE id = 1", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let draft = crate::workflow::relay::OfferDraft {
+                domain: &domain,
+                run_id: 1,
+                from_principal: "gdl-loop",
+                to_principal: "operator",
+                overlap_minutes: 0,
+                sla_deadline: 9_999,
+                now: 1,
+            };
+            let (id, created) = crate::workflow::relay::insert_offer(&conn, &draft).unwrap();
+            assert!(created);
+            let accepted =
+                crate::workflow::relay::decide_offer(&conn, 1, id, true, Some("taking over"), 2)
+                    .unwrap();
+            assert!(accepted);
+            id
+        };
+        // Resume: the case continues at Verify (the recorded phase) and
+        // resolves; the step rows prove zero re-execution.
+        let outcome = runtime
+            .block_on(f.driver.run_case(1, "handoff", &CancellationToken::new()))
+            .unwrap();
+        assert!(
+            matches!(outcome, GdlOutcome::Resolved { phases: 7, .. }),
+            "{outcome:?}"
+        );
+        let rows = step_rows(f.tmp.path());
+        assert_eq!(
+            rows.len(),
+            9,
+            "7 phase rows + 2 act sub-rows — the resume re-executed nothing"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|(_, p, _, _)| p.as_str() == "act")
+                .count(),
+            3,
+            "act = 1 phase row + 2 sub-rows, exactly the happy case's rows — \
+             the resume re-executed nothing across the offer boundary"
+        );
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let (state,): (String,) = conn
+            .query_row(
+                "SELECT state FROM handover_offers WHERE id = ?1",
+                [offer_id],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert_eq!(state, crate::workflow::relay::ACCEPTED);
+    }
+
+    #[test]
+    fn justified_revisit_is_lawful_never_a_violation() {
+        let f = fixture(vec![]);
+        let runtime = rt();
+        let mut case = GdlCase::fresh("t");
+        case.verify = Some(serde_json::from_str(VERIFY_JSON).unwrap());
+        // First fire, then a revisit CARRYING a justification: the second
+        // row records it, and no denial may land.
+        runtime
+            .block_on(f.driver.record_soft_handoff_row(1, "first", &case))
+            .unwrap();
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        conn.execute(
+            "UPDATE agent_session_events SET payload_json = json_set(payload_json, '$.justification', 'operator accepted the handoff')
+             WHERE kind = 'control:soft_handoff'",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+        runtime
+            .block_on(f.driver.record_soft_handoff_row(1, "second", &case))
+            .unwrap();
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let (denials,): (i64,) = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE status = 'denied'",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert_eq!(denials, 0, "a justified revisit is not a violation");
+        let (gaps,): (i64,) = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+                 WHERE kind = 'control:soft_handoff_gap'",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert_eq!(gaps, 0);
+    }
+
+    #[test]
     fn sla_clock_arms_at_triage_on_a_typed_row() {
         let runtime = rt();
         let mut script = happy_script();
