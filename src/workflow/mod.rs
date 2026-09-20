@@ -30,6 +30,69 @@ pub(crate) mod complaint;
 pub(crate) mod crew;
 pub(crate) mod driver;
 pub(crate) mod entitlement;
+
+// ── fuzz seams (doc-hidden; not API — the fuzz targets' only entry) ────────
+//
+// The loop's untrusted-input surface is model-generated JSON; the fuzz
+// targets drive the REAL parsers through these three narrow functions so
+// the whole phase-machine type tree stays crate-private. Every seam is
+// total: it returns plain data for any input and must never panic.
+
+/// Fuzz seam for [`crate::workflow::gdl`]'s parse-and-gate arbiter — the
+/// parser every model artifact passes through. The phase is selected by
+/// name; Verify is seeded with its canonical planned scenario so the
+/// L6/A6 law is exercised, not the unreachable precondition.
+#[doc(hidden)]
+pub fn fuzz_parse_and_gate(phase_name: &str, text: &str) -> String {
+    let phase = crate::workflow::gdl::GdlPhase::ALL
+        .into_iter()
+        .find(|p| p.as_str() == phase_name);
+    let Some(phase) = phase else {
+        return serde_json::json!({ "gate": "unknown-phase" }).to_string();
+    };
+    let mut case = crate::workflow::gdl::GdlCase::fresh("fuzz ticket");
+    if phase == crate::workflow::gdl::GdlPhase::Verify {
+        case.verify_step = Some(crate::workflow::gdl::VerifyStepSpec {
+            re_run: "the planned failing scenario".into(),
+            pass_condition: "latency normal".into(),
+        });
+    }
+    let (gate, artifact) = crate::workflow::gdl::parse_and_gate(phase, &case, text);
+    serde_json::json!({ "gate": format!("{gate:?}"), "artifact": artifact }).to_string()
+}
+
+/// Fuzz seam for the kind-prefix corroboration law: any source-string
+/// soup yields a labeled status, never a panic.
+#[doc(hidden)]
+pub fn fuzz_hypothesis_status(sources: Vec<String>) -> String {
+    let hypothesis = crate::workflow::gdl::Hypothesis {
+        statement: "fuzz".into(),
+        prediction: String::new(),
+        sources,
+        confidence: None,
+    };
+    format!("{:?}", crate::workflow::gdl::hypothesis_status(&hypothesis))
+}
+
+/// Fuzz seam for the consumption accounting: arbitrary spends against an
+/// arbitrary ceiling saturate, never overflow, and fail closed.
+#[doc(hidden)]
+pub fn fuzz_budget_predicate(limit: u64, spends: Vec<(u64, u64)>) -> String {
+    use crate::agentloop::provider::Usage;
+    let ceiling = (limit > 0).then_some(limit);
+    let budget = crate::agentloop::subagents::ExchangeBudget::new(ceiling);
+    let mut verdicts = Vec::with_capacity(spends.len());
+    for (input, output) in spends {
+        let guard = budget.fresh_exchange(ceiling);
+        let exchange_budget = guard.budget();
+        exchange_budget.record(Usage {
+            input_tokens: input,
+            output_tokens: output,
+        });
+        verdicts.push(exchange_budget.exhausted());
+    }
+    serde_json::json!({ "exhausted": verdicts }).to_string()
+}
 #[cfg(test)]
 mod eval_kappa;
 pub(crate) mod evidence;
@@ -192,67 +255,4 @@ mod tests {
             "a rolled-back transition must leave no audit row claiming it happened"
         );
     }
-}
-
-// ── fuzz seams (doc-hidden; not API — the fuzz targets' only entry) ────────
-//
-// The loop's untrusted-input surface is model-generated JSON; the fuzz
-// targets drive the REAL parsers through these three narrow functions so
-// the whole phase-machine type tree stays crate-private. Every seam is
-// total: it returns plain data for any input and must never panic.
-
-/// Fuzz seam for [`crate::workflow::gdl`]'s parse-and-gate arbiter — the
-/// parser every model artifact passes through. The phase is selected by
-/// name; Verify is seeded with its canonical planned scenario so the
-/// L6/A6 law is exercised, not the unreachable precondition.
-#[doc(hidden)]
-pub fn fuzz_parse_and_gate(phase_name: &str, text: &str) -> String {
-    let phase = crate::workflow::gdl::GdlPhase::ALL
-        .into_iter()
-        .find(|p| p.as_str() == phase_name);
-    let Some(phase) = phase else {
-        return serde_json::json!({ "gate": "unknown-phase" }).to_string();
-    };
-    let mut case = crate::workflow::gdl::GdlCase::fresh("fuzz ticket");
-    if phase == crate::workflow::gdl::GdlPhase::Verify {
-        case.verify_step = Some(crate::workflow::gdl::VerifyStepSpec {
-            re_run: "the planned failing scenario".into(),
-            pass_condition: "latency normal".into(),
-        });
-    }
-    let (gate, artifact) = crate::workflow::gdl::parse_and_gate(phase, &case, text);
-    serde_json::json!({ "gate": format!("{gate:?}"), "artifact": artifact }).to_string()
-}
-
-/// Fuzz seam for the kind-prefix corroboration law: any source-string
-/// soup yields a labeled status, never a panic.
-#[doc(hidden)]
-pub fn fuzz_hypothesis_status(sources: Vec<String>) -> String {
-    let hypothesis = crate::workflow::gdl::Hypothesis {
-        statement: "fuzz".into(),
-        prediction: String::new(),
-        sources,
-        confidence: None,
-    };
-    format!("{:?}", crate::workflow::gdl::hypothesis_status(&hypothesis))
-}
-
-/// Fuzz seam for the consumption accounting: arbitrary spends against an
-/// arbitrary ceiling saturate, never overflow, and fail closed.
-#[doc(hidden)]
-pub fn fuzz_budget_predicate(limit: u64, spends: Vec<(u64, u64)>) -> String {
-    use crate::agentloop::provider::Usage;
-    let ceiling = (limit > 0).then_some(limit);
-    let budget = crate::agentloop::subagents::ExchangeBudget::new(ceiling);
-    let mut verdicts = Vec::with_capacity(spends.len());
-    for (input, output) in spends {
-        let guard = budget.fresh_exchange(ceiling);
-        let exchange_budget = guard.budget();
-        exchange_budget.record(Usage {
-            input_tokens: input,
-            output_tokens: output,
-        });
-        verdicts.push(exchange_budget.exhausted());
-    }
-    serde_json::json!({ "exhausted": verdicts }).to_string()
 }
