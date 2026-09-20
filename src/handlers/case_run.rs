@@ -268,6 +268,8 @@ pub(crate) mod tests {
     const PLAN_JSON: &str = r#"{"steps":[{"order":1,"kind":"check","skill_gate":"L1","description":"query battery state","command":"racadm get storageservices.battery","expected":"Ready","fail_action":2,"invasiveness":0,"justification":null},{"order":2,"kind":"action","skill_gate":"L2","description":"replace battery ring 3","command":"hw replace battery","expected":"battery Ready","fail_action":null,"invasiveness":2,"justification":null}],"verify_step":{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h"},"dead_end":{"escalate_to":"eng-storage","required_evidence":["TSR","test log"]}}"#;
     const ACT_JSON: &str = r#"{"rows":[{"order":1,"kind":"check","description":"query battery state","playbook_ref":"P-STORAGE-0104","variables":["battery state"],"expected":"Ready","actual":"Failed","verdict":"fail","evidence_ref":"TSR p.12","dtfvc":{"diagnose":"battery fault hypothesis","test":"racadm query","fix":null,"verify":"battery state readback matches Failed","capture":null},"invasiveness":0,"justification":null},{"order":2,"kind":"action","description":"replace battery ring 3","playbook_ref":"P-STORAGE-0104","variables":["battery"],"expected":"battery Ready","actual":"Ready","verdict":"pass","evidence_ref":"TSR p.13","dtfvc":{"diagnose":"battery fault confirmed by row 1","test":"racadm query post-replace","fix":"replaced battery ring 3","verify":"rebuild rate 14%/h","capture":"battery replacement row"},"invasiveness":2,"justification":null}],"complete":true}"#;
     const VERIFY_PASS_JSON: &str = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass":true,"stability_window_min":15,"negative_check":true}"#;
+    const RECHECK_PASS_JSON: &str =
+        r#"{"contradicted":false,"reason":"no falsifier in the captured evidence"}"#;
     const VERIFY_FAIL_JSON: &str = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass":false,"stability_window_min":15,"negative_check":true}"#;
     const HANDOFF_JSON: &str = r#"{"capture":{"resolution":"write-through during rebuild -> dead PERC battery -> replaced ring 3 -> verified 14%/h","bundle_hash":"h0"}}"#;
 
@@ -279,6 +281,9 @@ pub(crate) mod tests {
             text_turn(PLAN_JSON),
             text_turn(ACT_JSON),
             text_turn(VERIFY_PASS_JSON),
+            // The adversarial re-check: ONE tool-less child attempts to
+            // falsify the confirmed hypothesis before the confirmation.
+            text_turn(RECHECK_PASS_JSON),
             // The second verification: the gated machine re-asks Verify as a
             // separate exchange and requires the same planned failing
             // scenario to pass twice.
@@ -520,6 +525,7 @@ pub(crate) mod tests {
             text_turn(PLAN_JSON),
             text_turn(ACT_JSON),
             text_turn(VERIFY_PASS_JSON),
+            text_turn(RECHECK_PASS_JSON),
             text_turn(VERIFY_PASS_JSON),
             text_turn(HANDOFF_JSON),
         ];

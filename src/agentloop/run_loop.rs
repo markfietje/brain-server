@@ -73,6 +73,12 @@ pub(crate) struct LoopConfig {
     /// subagents delegate with Some). Crossing it stops the loop loudly.
     pub token_budget: Option<u64>,
     pub budget_accounting: Option<crate::agentloop::subagents::ExchangeBudget>,
+    /// The adversarial re-check posture (the gated case machine consumes
+    /// it): before a second verification may pass, ONE scoped child with
+    /// NO tools attempts to falsify the confirmed hypothesis from the
+    /// captured evidence. Default on — the scrutiny is the safer default;
+    /// callers may narrow it off explicitly.
+    pub adversarial_recheck: bool,
 }
 
 impl Default for LoopConfig {
@@ -85,6 +91,7 @@ impl Default for LoopConfig {
             compaction: crate::agentloop::compaction::DEFAULT_COMPACTION_POLICY,
             token_budget: None,
             budget_accounting: None,
+            adversarial_recheck: true,
         }
     }
 }
@@ -1473,7 +1480,8 @@ impl LoopDriver {
             "output_cap": self.config.tool_output_cap, "timeout": format!("{:?}", self.config.tool_timeout),
             "budget": self.config.token_budget,
             "budget_contract": "exchange-usage-v1",
-            "compaction": [self.config.compaction.just_before_call, self.config.compaction.tool_result_clearing, self.config.compaction.selective_retention]
+            "adversarial_recheck": self.config.adversarial_recheck,
+            "compaction": [self.config.compaction.just_before_call, self.config.compaction.tool_result_clearing, self.config.compaction.selective_retention, self.config.compaction.max_events_per_episode]
         });
         // The opaque FsSeam and provider implementation cannot be fingerprinted;
         // the caller must rotate its request key when either implementation changes.
@@ -3890,6 +3898,10 @@ mod tests {
         assert_eq!(
             c.compaction.max_events_per_episode, 16,
             "the compaction consumption ceiling is finite and pinned"
+        );
+        assert!(
+            c.adversarial_recheck,
+            "the adversarial re-check defaults ON — scrutiny is the default"
         );
     }
 

@@ -65,6 +65,18 @@ pub(crate) const PLAN_STRIP_MAX_LINES: usize = 24;
 /// stability window is part of verification, not optional polish).
 pub(crate) const VERIFY_STABILITY_WINDOW_MIN: u32 = 15;
 
+/// The adversarial re-check child's own system prompt: a falsifier, not a
+/// supporter. The child sees NO tools; its input is the hypothesis and
+/// the captured evidence rows, its output the agreed JSON verdict.
+const ADVERSARIAL_RECHECK_PROMPT: &str = "\
+You are an adversarial reviewer. Your only job is to try to BREAK the \
+confirmed hypothesis using the evidence given in the task. You have no \
+tools and no authority to change anything. Reply with exactly one JSON \
+object: {\"contradicted\": bool, \"reason\": \"the specific evidence \
+and why it does or does not falsify the hypothesis\"}. If the evidence \
+does not contradict the hypothesis, say so — never invent a \
+contradiction.";
+
 /// The cache-stable GDL method prompt (≤ 20 lines, prompt discipline).
 pub(crate) const GDL_METHOD_PROMPT: &str = "\
 You are a governed troubleshooting agent running the 7-phase method:\n\
@@ -1528,6 +1540,34 @@ pub(crate) struct GdlDriver {
     /// are untouched; the only consumption of the confirmation status is
     /// the plan-strip label. Production constructors never set it.
     corroboration_ablated: bool,
+    /// The adversarial re-check posture (the loop config's default is ON;
+    /// the eval ablation constructors turn it off together with the
+    /// gates): before the second verification may pass, ONE scoped child
+    /// with NO tools attempts to falsify the confirmed hypothesis from
+    /// the captured evidence rows.
+    adversarial_recheck: bool,
+    /// What the single re-check delegation needs: the shared host lineage
+    /// and the already-narrowed parent env + tools. The child's
+    /// allowed-tool set is empty by construction — it reasons over the
+    /// task text only, never executes.
+    recheck: Option<RecheckDeps>,
+}
+
+/// The one-delegation seam for the adversarial re-check.
+struct RecheckDeps {
+    host: Arc<SqliteWorkflowHost>,
+    provider: Arc<dyn LlmProvider>,
+    env: ExecutionEnv,
+    tools: Vec<ToolDef>,
+}
+
+/// The typed outcome of the adversarial re-check. A contradiction is the
+/// named A4 gate failure; an unavailable child degrades honestly —
+/// recorded on the session log, non-blocking, visible in the row.
+enum AdversarialFinding {
+    Contradicted(String),
+    Consistent(String),
+    Unavailable(String),
 }
 
 impl GdlDriver {
@@ -1566,6 +1606,13 @@ impl GdlDriver {
         proficiency: super::proficiency::Proficiency,
     ) -> Self {
         let env = super::proficiency::env_for(&env, proficiency);
+        let adversarial_recheck = config.adversarial_recheck;
+        let recheck = RecheckDeps {
+            host: host.clone(),
+            provider: provider.clone(),
+            env: env.clone(),
+            tools: tools.clone(),
+        };
         let harness = Arc::new(AgentHarness::new(host.clone(), "gdl", GDL_METHOD_PROMPT));
         let mut loop_driver = LoopDriver::new(
             pool.clone(),
@@ -1587,6 +1634,8 @@ impl GdlDriver {
             proficiency,
             ablated: false,
             corroboration_ablated: false,
+            adversarial_recheck,
+            recheck: Some(recheck),
         }
     }
 
@@ -1625,6 +1674,8 @@ impl GdlDriver {
             proficiency: super::proficiency::Proficiency::L3,
             ablated: true,
             corroboration_ablated: false,
+            adversarial_recheck: false,
+            recheck: None,
         }
     }
 
@@ -1681,6 +1732,146 @@ impl GdlDriver {
 
     /// One automation episode per run. Terminal retry is read-only with respect
     /// to provider/tool work; human edits invalidate its binding, never restart it.
+    /// ONE scoped delegation (the bounds law): a tool-less child attempts
+    /// to falsify the confirmed hypothesis from the captured evidence
+    /// rows. The child's outcome maps onto the typed finding; a
+    /// delegation fault is the honest Unavailable, never a contradiction.
+    async fn adversarial_finding(
+        &self,
+        run_id: i64,
+        case: &GdlCase,
+        episode: &str,
+        attempt: u32,
+        owner: &str,
+        cancel: &CancellationToken,
+    ) -> AdversarialFinding {
+        use crate::agentloop::subagents::{SubagentCaps, SubagentOutcome, SubagentSpec};
+        const TRUNCATE: usize = 512;
+        let Some(deps) = self.recheck.as_ref() else {
+            return AdversarialFinding::Unavailable("no delegation seam".into());
+        };
+        let confirmed = case
+            .hypotheses
+            .iter()
+            .map(|h| h.statement.as_str())
+            .collect::<Vec<_>>()
+            .join("; ");
+        let sources = case
+            .hypotheses
+            .iter()
+            .flat_map(|h| h.sources.iter())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
+        let re_run = case
+            .verify_step
+            .as_ref()
+            .map(|v| v.re_run.as_str())
+            .unwrap_or("");
+        let mut task = format!(
+            "Adversarial re-check: attempt to falsify the confirmed \
+             hypothesis using ONLY the captured evidence below. Reply with \
+             ONE JSON object {{\"contradicted\":bool,\"reason\":\"..\"}} \
+             and nothing else.\nHypothesis: {confirmed}\nEvidence \
+             sources: {sources}\nPlanned failing scenario: {re_run}\n\
+             Ticket: {}",
+            case.ticket
+        );
+        task.truncate(2_000);
+        let spec = SubagentSpec {
+            name: "adversarial-recheck".into(),
+            system_prompt: ADVERSARIAL_RECHECK_PROMPT.into(),
+            task,
+            // Disjoint by construction: the child sees NO tools — it
+            // reasons over the task text only; exec is never in reach.
+            allowed_tools: vec![],
+            caps: SubagentCaps {
+                write: false,
+                process: false,
+                commands: vec![],
+            },
+            max_turns: 1,
+            token_budget: 2_000,
+        };
+        let invocation_key = format!("gdl:{episode}:phase:verify:attempt:{attempt}:recheck");
+        match crate::agentloop::subagents::delegate_owned(
+            &self.pool,
+            &deps.host,
+            &deps.env,
+            &deps.tools,
+            deps.provider.clone(),
+            run_id,
+            &spec,
+            &invocation_key,
+            owner,
+            cancel,
+        )
+        .await
+        {
+            Ok(SubagentOutcome::Completed { summary, .. }) => {
+                match serde_json::from_str::<serde_json::Value>(summary.trim()) {
+                    Ok(v) => {
+                        let reason = v
+                            .get("reason")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("")
+                            .chars()
+                            .take(TRUNCATE)
+                            .collect::<String>();
+                        if v.get("contradicted").and_then(serde_json::Value::as_bool) == Some(true)
+                        {
+                            AdversarialFinding::Contradicted(reason)
+                        } else {
+                            AdversarialFinding::Consistent(reason)
+                        }
+                    }
+                    Err(_) => AdversarialFinding::Unavailable(
+                        "recheck finding was not the agreed JSON shape".into(),
+                    ),
+                }
+            }
+            Ok(_) => AdversarialFinding::Unavailable(
+                "recheck child hit its cap without a finding".into(),
+            ),
+            Err(e) => AdversarialFinding::Unavailable(
+                e.to_string().chars().take(TRUNCATE).collect::<String>(),
+            ),
+        }
+    }
+
+    /// The typed finding row on the session log — recorded for the
+    /// operator on EVERY delegation, whatever the outcome.
+    async fn record_adversarial_row(
+        &self,
+        run_id: i64,
+        exchange_id: i64,
+        outcome: &str,
+        detail: &str,
+    ) -> Result<(), LoopError> {
+        let pool = self.pool.clone();
+        let payload = serde_json::json!({ "outcome": outcome, "detail": detail }).to_string();
+        let key = format!("run{run_id}:control:adversarial_recheck:{exchange_id}");
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get().map_err(checkpoint::persist_error)?;
+            let mut tx =
+                super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
+            session_log::append(
+                tx.tx(),
+                run_id,
+                "control:adversarial_recheck",
+                &payload,
+                &key,
+                chrono::Utc::now().timestamp(),
+            )
+            .map_err(checkpoint::persist_error)?;
+            tx.commit().map_err(checkpoint::persist_error)?;
+            Ok::<_, LoopError>(())
+        })
+        .await
+        .map_err(checkpoint::persist_error)??;
+        Ok(())
+    }
+
     /// One case, seven phases, every dependency injected; the terminal is
     /// durable and replay-exact. The auto-close reconciliation law
     /// (docs/LOOP_AUTOCLOSE_RECONCILIATION.md) binds every terminal path
@@ -1851,7 +2042,60 @@ impl GdlDriver {
                                     bundle: case.escalation_bundle(),
                                 });
                             } else if phase == GdlPhase::Verify && !self.ablated {
-                                // The independent second verification: a
+                                // C3 first — the adversarial re-check: ONE
+                                // tool-less child attempts to falsify the
+                                // confirmed hypothesis from the captured
+                                // evidence. A contradiction is the named A4
+                                // gate failure (the bounded retry re-runs the
+                                // whole phase); an unavailable child degrades
+                                // honestly (recorded, non-blocking). Every
+                                // delegation lands a typed row on the session
+                                // log.
+                                if self.adversarial_recheck {
+                                    let finding = self
+                                        .adversarial_finding(
+                                            run_id,
+                                            &case,
+                                            &cp.episode,
+                                            attempt,
+                                            &owner,
+                                            cancel,
+                                        )
+                                        .await;
+                                    let (outcome_label, detail): (&str, &String) = match &finding {
+                                        AdversarialFinding::Contradicted(d) => ("contradicted", d),
+                                        AdversarialFinding::Consistent(d) => ("consistent", d),
+                                        AdversarialFinding::Unavailable(d) => ("unavailable", d),
+                                    };
+                                    self.record_adversarial_row(
+                                        run_id,
+                                        receipt.exchange_id,
+                                        outcome_label,
+                                        detail,
+                                    )
+                                    .await?;
+                                    if let AdversarialFinding::Contradicted(d) = finding {
+                                        change.verdict = "fail";
+                                        let errors = vec![err(
+                                            "A4",
+                                            &format!(
+                                                "adversarial re-check contradicted \
+                                                 the confirmed hypothesis: {d}"
+                                            ),
+                                        )];
+                                        if attempt >= MAX_PHASE_ATTEMPTS {
+                                            change.terminal = Some(GdlOutcome::Routed {
+                                                at: phase,
+                                                reason: format!(
+                                                    "gate exhausted after {attempt} attempts: {}",
+                                                    errors.join("; ")
+                                                ),
+                                            });
+                                        }
+                                        change.errors = errors;
+                                    }
+                                }
+                                // C2 — the independent second verification: a
                                 // separate provider exchange (its own
                                 // `:confirm` request key and exchange id)
                                 // re-asks Verify under the same L6/A6
@@ -1867,80 +2111,86 @@ impl GdlDriver {
                                 // exchange (the receipt law): its artifact is
                                 // what the persisted case keeps; the
                                 // confirmation's rows live in the session log.
-                                let confirm_key = format!(
-                                    "gdl:{}:phase:{}:attempt:{attempt}:confirm",
-                                    cp.episode,
-                                    phase.as_str()
-                                );
-                                let confirm = self
-                                    .loop_driver
-                                    .run_turns_owned(
-                                        run_id,
-                                        &confirm_key,
-                                        &instruction,
-                                        &owner,
-                                        cancel,
-                                    )
-                                    .await?;
-                                change.terminal = match confirm.outcome {
-                                    RunOutcome::Canceled => Some(GdlOutcome::Routed {
-                                        at: phase,
-                                        reason: "second verification interrupted: \
-                                                 canceled"
-                                            .into(),
-                                    }),
-                                    RunOutcome::TurnCapReached { .. } => Some(GdlOutcome::Routed {
-                                        at: phase,
-                                        reason: "second verification \
-                                                     interrupted: turn cap"
-                                            .into(),
-                                    }),
-                                    RunOutcome::BudgetExceeded { .. } => Some(GdlOutcome::Routed {
-                                        at: phase,
-                                        reason: "second verification \
-                                                     interrupted: budget"
-                                            .into(),
-                                    }),
-                                    RunOutcome::Completed { .. } => None,
-                                };
-                                if change.terminal.is_none() {
-                                    let (gate2, artifact2) =
-                                        parse_and_gate(phase, &case, &confirm.final_text);
-                                    let agreed = match (gate2, artifact2) {
-                                        (Gate::Pass, Some(second_json)) => {
-                                            let first: VerifyArtifact =
-                                                serde_json::from_str(&artifact)
-                                                    .map_err(persist_error)?;
-                                            let second: VerifyArtifact =
-                                                serde_json::from_str(&second_json)
-                                                    .map_err(persist_error)?;
-                                            second.pass
-                                                && second.re_run.trim() == first.re_run.trim()
+                                if change.terminal.is_none() && change.verdict == "pass" {
+                                    let confirm_key = format!(
+                                        "gdl:{}:phase:{}:attempt:{attempt}:confirm",
+                                        cp.episode,
+                                        phase.as_str()
+                                    );
+                                    let confirm = self
+                                        .loop_driver
+                                        .run_turns_owned(
+                                            run_id,
+                                            &confirm_key,
+                                            &instruction,
+                                            &owner,
+                                            cancel,
+                                        )
+                                        .await?;
+                                    change.terminal = match confirm.outcome {
+                                        RunOutcome::Canceled => Some(GdlOutcome::Routed {
+                                            at: phase,
+                                            reason: "second verification interrupted: \
+                                                     canceled"
+                                                .into(),
+                                        }),
+                                        RunOutcome::TurnCapReached { .. } => {
+                                            Some(GdlOutcome::Routed {
+                                                at: phase,
+                                                reason: "second verification \
+                                                         interrupted: turn cap"
+                                                    .into(),
+                                            })
                                         }
-                                        _ => false,
+                                        RunOutcome::BudgetExceeded { .. } => {
+                                            Some(GdlOutcome::Routed {
+                                                at: phase,
+                                                reason: "second verification \
+                                                         interrupted: budget"
+                                                    .into(),
+                                            })
+                                        }
+                                        RunOutcome::Completed { .. } => None,
                                     };
-                                    if agreed {
-                                        change.artifact = Some(artifact);
-                                    } else {
-                                        change.verdict = "fail";
-                                        let errors = vec![err(
-                                            "A6",
-                                            "second verification absent or \
+                                    if change.terminal.is_none() {
+                                        let (gate2, artifact2) =
+                                            parse_and_gate(phase, &case, &confirm.final_text);
+                                        let agreed = match (gate2, artifact2) {
+                                            (Gate::Pass, Some(second_json)) => {
+                                                let first: VerifyArtifact =
+                                                    serde_json::from_str(&artifact)
+                                                        .map_err(persist_error)?;
+                                                let second: VerifyArtifact =
+                                                    serde_json::from_str(&second_json)
+                                                        .map_err(persist_error)?;
+                                                second.pass
+                                                    && second.re_run.trim() == first.re_run.trim()
+                                            }
+                                            _ => false,
+                                        };
+                                        if agreed {
+                                            change.artifact = Some(artifact);
+                                        } else {
+                                            change.verdict = "fail";
+                                            let errors = vec![err(
+                                                "A6",
+                                                "second verification absent or \
                                              inconsistent — the same planned \
                                              failing scenario must pass twice, \
                                              in separate exchanges, before the \
                                              case may close",
-                                        )];
-                                        if attempt >= MAX_PHASE_ATTEMPTS {
-                                            change.terminal = Some(GdlOutcome::Routed {
-                                                at: phase,
-                                                reason: format!(
-                                                    "gate exhausted after {attempt} attempts: {}",
-                                                    errors.join("; ")
-                                                ),
-                                            });
+                                            )];
+                                            if attempt >= MAX_PHASE_ATTEMPTS {
+                                                change.terminal = Some(GdlOutcome::Routed {
+                                                    at: phase,
+                                                    reason: format!(
+                                                        "gate exhausted after {attempt} attempts: {}",
+                                                        errors.join("; ")
+                                                    ),
+                                                });
+                                            }
+                                            change.errors = errors;
                                         }
-                                        change.errors = errors;
                                     }
                                 }
                             } else {
@@ -2124,6 +2374,8 @@ mod tests {
     const PLAN_JSON: &str = r#"{"steps":[{"order":1,"kind":"check","skill_gate":"L1","description":"query battery state","command":"racadm get storageservices.battery","expected":"Ready","fail_action":2,"invasiveness":0,"justification":null},{"order":2,"kind":"action","skill_gate":"L2","description":"replace battery ring 3","command":"hw replace battery","expected":"battery Ready","fail_action":null,"invasiveness":2,"justification":null}],"verify_step":{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h"},"dead_end":{"escalate_to":"eng-storage","required_evidence":["TSR","test log"]}}"#;
     const ACT_JSON: &str = r#"{"rows":[{"order":1,"kind":"check","description":"query battery state","playbook_ref":"P-STORAGE-0104","variables":["battery state"],"expected":"Ready","actual":"Failed","verdict":"fail","evidence_ref":"TSR p.12","dtfvc":{"diagnose":"battery fault hypothesis","test":"racadm query","fix":null,"verify":"battery state readback matches Failed","capture":null},"invasiveness":0,"justification":null},{"order":2,"kind":"action","description":"replace battery ring 3","playbook_ref":"P-STORAGE-0104","variables":["battery"],"expected":"battery Ready","actual":"Ready","verdict":"pass","evidence_ref":"TSR p.13","dtfvc":{"diagnose":"battery fault confirmed by row 1","test":"racadm query post-replace","fix":"replaced battery ring 3","verify":"rebuild rate 14%/h","capture":"battery replacement row"},"invasiveness":2,"justification":null}],"complete":true}"#;
     const VERIFY_JSON: &str = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass":true,"stability_window_min":15,"negative_check":true}"#;
+    const RECHECK_JSON: &str =
+        r#"{"contradicted":false,"reason":"no falsifier in the captured evidence"}"#;
     const HANDOFF_JSON: &str = r#"{"capture":{"resolution":"write-through during rebuild -> dead PERC battery -> replaced ring 3 -> verified 14%/h","bundle_hash":"h0"}}"#;
 
     fn happy_script() -> Vec<Vec<crate::agentloop::provider::StreamEvent>> {
@@ -2134,6 +2386,9 @@ mod tests {
             scripted_text(PLAN_JSON),
             scripted_text(ACT_JSON),
             scripted_text(VERIFY_JSON),
+            // The adversarial re-check: ONE tool-less child attempts to
+            // falsify the confirmed hypothesis before the confirmation.
+            scripted_text(RECHECK_JSON),
             // The second verification: the gated machine re-asks Verify as a
             // separate exchange and requires the same planned failing
             // scenario to pass twice.
@@ -2214,14 +2469,16 @@ mod tests {
         let f = fixture(vec![]);
         let runtime = rt();
         let mut script = happy_script().into_iter();
-        // One reload per phase settlement. Verify settles over TWO exchanges
-        // (the pass and the second verification) inside one pause window.
+        // One reload per phase settlement. Verify settles over THREE
+        // exchanges (the pass, the adversarial re-check, the second
+        // verification) inside one pause window.
         let mut groups: Vec<Vec<Vec<crate::agentloop::provider::StreamEvent>>> = Vec::new();
         for _ in 0..5 {
             groups.push(vec![script.next().expect("phase event")]);
         }
         groups.push(vec![
             script.next().expect("verify artifact"),
+            script.next().expect("adversarial re-check verdict"),
             script.next().expect("verify confirmation"),
         ]);
         groups.push(vec![script.next().expect("handoff artifact")]);
@@ -2232,8 +2489,8 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 provider.requests().len(),
-                if i == 5 { 2 } else { 1 },
-                "one settlement per group; Verify exchanges twice"
+                if i == 5 { 3 } else { 1 },
+                "one settlement per group; Verify exchanges three times"
             );
             assert_eq!(result.is_some(), i == 6);
             if let Some(outcome) = result {
@@ -2370,13 +2627,14 @@ mod tests {
         //     artifact per phase). Routed arms retry the same artifact for
         //     the full bounded attempt budget.
         let illegal: [(&str, &str, &str, usize); 5] = [
-            // A7 refused through the bounded attempts, then routed. (Slot 7
-            // is the Handoff artifact; slot 6 is the verify confirmation.)
+            // A7 refused through the bounded attempts, then routed. (Slot 8
+            // is the Handoff artifact; slots 6-7 are the recheck verdict and
+            // the verify confirmation.)
             (
                 "empty_capture_resolution",
                 r#"{"capture":{"resolution":"   ","bundle_hash":"h0"}}"#,
                 "routed",
-                7,
+                8,
             ),
             // A6 floor refused to closure.
             (
@@ -2499,6 +2757,7 @@ mod tests {
         script.truncate(5); // through Act
         for _ in 0..MAX_PHASE_ATTEMPTS {
             script.push(scripted_text(VERIFY_JSON)); // the passing first pass
+            script.push(scripted_text(RECHECK_JSON)); // the recheck finds no falsifier
             script.push(scripted_text(&disagree)); // the disagreeing confirmation
         }
         script.push(scripted_text(HANDOFF_JSON)); // never reached
@@ -2541,6 +2800,119 @@ mod tests {
             named, 3,
             "the A6 second-verification failure is named on every gate row"
         );
+    }
+
+    /// C3: a contradictory re-check verdict is the named A4 gate failure —
+    /// the bounded retries re-run the whole phase and the case routes at
+    /// exhaustion, never resolves. Every delegation lands a typed row.
+    #[test]
+    fn adversarial_contradiction_is_a_named_gate_failure() {
+        let runtime = rt();
+        let contradiction = r#"{"contradicted":true,"reason":"the SEL shows the battery healthy"}"#;
+        let mut script = happy_script();
+        script.truncate(5); // through Act
+        for _ in 0..MAX_PHASE_ATTEMPTS {
+            script.push(scripted_text(VERIFY_JSON)); // the passing first pass
+            script.push(scripted_text(contradiction)); // the child falsifies it
+        }
+        script.push(scripted_text(HANDOFF_JSON)); // never reached
+        let f = fixture(script);
+        let outcome = runtime
+            .block_on(f.driver.run_case(1, "falsified", &CancellationToken::new()))
+            .unwrap();
+        match outcome {
+            GdlOutcome::Routed { at, reason } => {
+                assert_eq!(at, GdlPhase::Verify);
+                assert!(reason.contains("gate exhausted"), "{reason}");
+            }
+            other => panic!("a contradicted hypothesis must never resolve: {other:?}"),
+        }
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events
+                 WHERE kind = 'control:adversarial_recheck'
+                   AND payload_json LIKE '%contradicted%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 3, "one typed row per delegation");
+    }
+
+    /// C3's honest degradation: an off-contract re-check verdict (the
+    /// child answered, but not with the agreed JSON shape) is typed
+    /// UNAVAILABLE — recorded, non-blocking — and the case still resolves
+    /// on its evidence.
+    #[test]
+    fn adversarial_unavailable_degrades_honestly_nonblocking() {
+        let runtime = rt();
+        let mut script = happy_script();
+        // The child answered in prose, not the agreed JSON shape.
+        script[6] = scripted_text("no contradiction found after reviewing the evidence");
+        let f = fixture(script);
+        let outcome = runtime
+            .block_on(
+                f.driver
+                    .run_case(1, "no recheck child", &CancellationToken::new()),
+            )
+            .unwrap();
+        assert!(
+            matches!(outcome, GdlOutcome::Resolved { .. }),
+            "an unavailable re-check never blocks the evidence-gated closure: {outcome:?}"
+        );
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events
+                 WHERE kind = 'control:adversarial_recheck'
+                   AND payload_json LIKE '%unavailable%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "the degradation is visible in the row");
+    }
+
+    /// The re-check posture is caller-narrowable: with the flag off there
+    /// is no delegation, no typed rows, and the confirmation follows the
+    /// pass directly.
+    #[test]
+    fn adversarial_recheck_off_never_delegates() {
+        let runtime = rt();
+        let script = vec![
+            scripted_text(INTAKE_JSON),
+            scripted_text(TRIAGE_JSON),
+            scripted_text(HYPOTHESIZE_JSON),
+            scripted_text(PLAN_JSON),
+            scripted_text(ACT_JSON),
+            scripted_text(VERIFY_JSON),
+            scripted_text(VERIFY_JSON), // the confirmation, no recheck in between
+            scripted_text(HANDOFF_JSON),
+        ];
+        let f = fixture(vec![]);
+        let config = LoopConfig {
+            adversarial_recheck: false,
+            ..LoopConfig::default()
+        };
+        let (driver, _) = reload(f.tmp.path(), script, config);
+        let outcome = runtime
+            .block_on(driver.run_case(1, "no recheck", &CancellationToken::new()))
+            .unwrap();
+        assert!(
+            matches!(outcome, GdlOutcome::Resolved { .. }),
+            "{outcome:?}"
+        );
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events
+                 WHERE kind = 'control:adversarial_recheck'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0, "the flag off means no delegation, no rows");
     }
 
     #[test]
@@ -3193,8 +3565,8 @@ mod tests {
         let requests = f.provider.requests();
         assert_eq!(
             requests.len(),
-            8,
-            "one model exchange per phase, plus the second verification at Verify"
+            9,
+            "one exchange per phase, plus the recheck and the second verification at Verify"
         );
         assert!(
             requests[3]
@@ -3203,7 +3575,7 @@ mod tests {
                 .any(|m| m.text().contains("GDL PLAN STRIP"))
         );
         assert!(
-            requests[6]
+            requests[8]
                 .messages
                 .iter()
                 .any(|m| m.text().contains("[1] done"))
@@ -3940,6 +4312,7 @@ mod tests {
             scripted_text(PLAN_JSON),
             scripted_text(ACT_JSON),
             scripted_text(VERIFY_JSON),
+            scripted_text(RECHECK_JSON),
             scripted_text(VERIFY_JSON),
         ]);
         let runtime = rt();
@@ -4391,7 +4764,7 @@ mod tests {
         assert!(matches!(replay, GdlOutcome::Resolved { .. }));
         assert_eq!(
             f.provider.requests().len(),
-            8,
+            9,
             "terminal replay does no provider work"
         );
         let count: i64 = conn
@@ -4706,6 +5079,7 @@ mod eval_run1 {
         );
         let verify = r#"{"re_run":"PLACEHOLDER","pass":true,"stability_window_min":15,"negative_check":true}"#
             .replace("PLACEHOLDER", &format!("the customer workload on {where_}"));
+        let recheck = r#"{"contradicted":false,"reason":"no falsifier in the captured evidence"}"#;
         let handoff = format!(
             r#"{{"capture":{{"resolution":"{symptom} -> {hypothesis} -> replaced -> verified","bundle_hash":"h-{component}"}}}}"#
         );
@@ -4716,9 +5090,10 @@ mod eval_run1 {
             scripted_text(&plan),
             scripted_text(&act),
             scripted_text(&verify),
-            // The second verification: the gated machine re-asks Verify in a
-            // separate exchange and requires agreement. The ablated draft
-            // arm leaves this event unconsumed.
+            // The adversarial re-check child's verdict, then the second
+            // verification exchange. The ablated draft arm leaves both
+            // unconsumed.
+            scripted_text(recheck),
             scripted_text(&verify),
             scripted_text(&handoff),
         ]
