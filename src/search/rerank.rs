@@ -77,10 +77,8 @@ static RERANKER: LazyLock<Option<Reranker>> = LazyLock::new(|| {
     if std::env::var("BRAIN_RERANK_ENABLED").as_deref() != Ok("1") {
         return None;
     }
-    let top_n = std::env::var("BRAIN_RERANK_TOP_N")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(50);
+    let top_n =
+        crate::search::parse_rerank_top_n(std::env::var("BRAIN_RERANK_TOP_N").ok().as_deref());
     match Reranker::new(top_n) {
         Ok(r) => {
             tracing::info!("reranker loaded: {} (top_n={top_n})", r.model_id());

@@ -43,12 +43,19 @@ pub(crate) struct CompactionPolicy {
     pub tool_result_clearing: bool,
     /// Carry retained kinds (user turns) verbatim into the summary input.
     pub selective_retention: bool,
+    /// The consumption ceiling: the maximum committed compaction events in
+    /// one case episode. A summary call is provider work — an episode that
+    /// would compact past this ceiling stops loudly at the budget-exhausted
+    /// terminal (named on the session log) instead of compacting without
+    /// bound. Always finite: callers narrow, never widen past the default.
+    pub max_events_per_episode: u32,
 }
 
 pub(crate) const DEFAULT_COMPACTION_POLICY: CompactionPolicy = CompactionPolicy {
     just_before_call: true,
     tool_result_clearing: true,
     selective_retention: true,
+    max_events_per_episode: 16,
 };
 
 /// Estimate the token weight of one text.
@@ -477,6 +484,7 @@ mod tests {
                 just_before_call: true,
                 tool_result_clearing: true,
                 selective_retention: false,
+                max_events_per_episode: 16,
             },
         );
         let cleared = input[0].text();
@@ -510,6 +518,7 @@ mod tests {
                 just_before_call: true,
                 tool_result_clearing: true,
                 selective_retention: true,
+                max_events_per_episode: 16,
             },
         );
         let head_users: Vec<&str> = split
@@ -655,6 +664,9 @@ mod tests {
         const { assert!(DEFAULT_COMPACTION_POLICY.just_before_call) };
         const { assert!(DEFAULT_COMPACTION_POLICY.tool_result_clearing) };
         const { assert!(DEFAULT_COMPACTION_POLICY.selective_retention) };
+        const {
+            assert!(DEFAULT_COMPACTION_POLICY.max_events_per_episode == 16);
+        }
         assert_eq!(RETAINED_KINDS, &["user"]);
     }
 }

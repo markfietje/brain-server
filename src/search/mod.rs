@@ -218,6 +218,51 @@ pub struct Evidence {
     pub untrusted: bool,
 }
 
+/// The rerank latency knob's parsed shape: the maximum candidates scored per
+/// rerank call (`BRAIN_RERANK_TOP_N`, profile-gated by `BRAIN_RERANK_ENABLED`).
+/// Absent or unparseable reads the default; a parsed value clamps to the
+/// ceiling — the knob CAPS work, so an operator value cannot unbound the call
+/// (the consumption-limit law: fail toward the RRF order's fixed cost, never
+/// toward an unbounded scoring pass).
+pub const RERANK_TOP_N_DEFAULT: usize = 50;
+pub const RERANK_TOP_N_CEILING: usize = 200;
+
+/// Pure parse for `BRAIN_RERANK_TOP_N`: `None`/garbage/blank →
+/// [`RERANK_TOP_N_DEFAULT`]; a parsed value clamped to
+/// [`RERANK_TOP_N_CEILING`]. Kept out of the feature-gated rerank module so
+/// the pin runs in every offline lane.
+pub fn parse_rerank_top_n(raw: Option<&str>) -> usize {
+    match raw.and_then(|v| v.trim().parse::<usize>().ok()) {
+        Some(n) => n.min(RERANK_TOP_N_CEILING),
+        None => RERANK_TOP_N_DEFAULT,
+    }
+}
+
+#[cfg(test)]
+mod rerank_top_n_tests {
+    use super::{RERANK_TOP_N_CEILING, RERANK_TOP_N_DEFAULT, parse_rerank_top_n};
+
+    #[test]
+    fn rerank_top_n_absent_or_garbage_reads_the_default() {
+        assert_eq!(parse_rerank_top_n(None), RERANK_TOP_N_DEFAULT);
+        assert_eq!(parse_rerank_top_n(Some("")), RERANK_TOP_N_DEFAULT);
+        assert_eq!(parse_rerank_top_n(Some("   ")), RERANK_TOP_N_DEFAULT);
+        assert_eq!(parse_rerank_top_n(Some("fifty")), RERANK_TOP_N_DEFAULT);
+        assert_eq!(parse_rerank_top_n(Some("-5")), RERANK_TOP_N_DEFAULT);
+    }
+
+    #[test]
+    fn rerank_top_n_parses_and_caps_at_the_ceiling() {
+        assert_eq!(parse_rerank_top_n(Some("10")), 10);
+        assert_eq!(parse_rerank_top_n(Some(" 50 ")), 50);
+        assert_eq!(
+            parse_rerank_top_n(Some("999999")),
+            RERANK_TOP_N_CEILING,
+            "a huge operator value clamps — the knob caps work, never unbounds it"
+        );
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SearchResult {
     pub id: i64,

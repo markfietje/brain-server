@@ -737,15 +737,28 @@ impl LoopDriver {
                 ));
             }
             // ── compaction admission (Idle boundary, just-before-call) ────
-            if self.config.compaction.just_before_call
-                && let Compacted::Canceled = self
+            if self.config.compaction.just_before_call {
+                match self
                     .maybe_compact(run_id, exchange, turn, cancel, budget)
                     .await?
-            {
-                return Ok((
-                    self.journal_canceled(run_id, exchange, turn).await?,
-                    final_key,
-                ));
+                {
+                    Compacted::Canceled => {
+                        return Ok((
+                            self.journal_canceled(run_id, exchange, turn).await?,
+                            final_key,
+                        ));
+                    }
+                    Compacted::QuotaExhausted => {
+                        return Ok((
+                            RunOutcome::BudgetExceeded {
+                                turns: turn - 1,
+                                usage: budget.usage(),
+                            },
+                            final_key,
+                        ));
+                    }
+                    Compacted::No | Compacted::Yes => {}
+                }
             }
             if cancel.is_cancelled() {
                 return Ok((
@@ -933,6 +946,45 @@ impl LoopDriver {
         else {
             return Ok(Compacted::No);
         };
+        // The consumption ceiling: a summary call is provider work, so an
+        // episode that already committed its quota of compaction events
+        // refuses the cycle with a named session-log row and stops loudly
+        // (the caller maps this onto the budget-exhausted terminal).
+        let committed = events
+            .iter()
+            .filter(|event| event.row.kind == self.kind("compaction"))
+            .count();
+        let ceiling = self.config.compaction.max_events_per_episode;
+        if committed >= ceiling as usize {
+            let pool = self.pool.clone();
+            let key = format!(
+                "run{run_id}:control:compaction_quota_exhausted:{}",
+                exchange.id
+            );
+            let payload = serde_json::json!({
+                "committed": committed,
+                "max_events_per_episode": ceiling,
+            })
+            .to_string();
+            tokio::task::spawn_blocking(move || {
+                let mut conn = pool.get().map_err(persist)?;
+                let mut tx = WorkflowTx::begin(&mut conn).map_err(persist)?;
+                session_log::append(
+                    tx.tx(),
+                    run_id,
+                    "control:compaction_quota_exhausted",
+                    &payload,
+                    &key,
+                    chrono::Utc::now().timestamp(),
+                )
+                .map_err(persist)?;
+                tx.commit().map_err(persist)?;
+                Ok::<_, LoopError>(())
+            })
+            .await
+            .map_err(persist)??;
+            return Ok(Compacted::QuotaExhausted);
+        }
         // C2 before_compaction: a cycle is genuinely pending (admit returned
         // Some under real pressure) — the policy may skip it. Deny ⇒ audited
         // skip, NO summary provider call; the loop continues and pressure
@@ -1638,6 +1690,9 @@ enum Compacted {
     No,
     Yes,
     Canceled,
+    /// The episode's compaction consumption ceiling is reached — no summary
+    /// call ran; the loop stops loudly at the budget-exhausted terminal.
+    QuotaExhausted,
 }
 
 enum ToolOutput {
@@ -3832,6 +3887,10 @@ mod tests {
             c.token_budget, None,
             "the parent loop is uncapped; children cap"
         );
+        assert_eq!(
+            c.compaction.max_events_per_episode, 16,
+            "the compaction consumption ceiling is finite and pinned"
+        );
     }
 
     fn compaction_history(payload: &str) -> Vec<crate::agentloop::context::ContextEvent> {
@@ -4095,6 +4154,65 @@ mod tests {
                     "retained history must not disappear at the next compaction"
                 );
             }
+        });
+    }
+
+    /// The compaction consumption ceiling: an episode that already committed
+    /// its quota of compaction events stops loudly at the budget-exhausted
+    /// terminal instead of running a further summary provider call. The stop
+    /// is named on the session log (`control:compaction_quota_exhausted`).
+    #[test]
+    fn compaction_quota_stops_loudly_at_the_budget_terminal() {
+        rt().block_on(async {
+            let f = fixture_with(
+                vec![
+                    scripted_text("first brief"),
+                    scripted_text("first answer"),
+                    scripted_text("never-consumed second brief"),
+                    scripted_text("never-consumed second answer"),
+                ],
+                LoopConfig {
+                    compaction: crate::agentloop::compaction::CompactionPolicy {
+                        max_events_per_episode: 1,
+                        ..crate::agentloop::compaction::DEFAULT_COMPACTION_POLICY
+                    },
+                    ..LoopConfig::default()
+                },
+            );
+            seed_compaction_pressure(&f, 25, 4_000, "first-batch");
+            f.driver
+                .run_turns_keyed(1, "first", "first current", &CancellationToken::new())
+                .await
+                .unwrap();
+            seed_compaction_pressure(&f, 25, 4_000, "second-batch");
+            let outcome = f
+                .driver
+                .run_turns_keyed(1, "second", "second current", &CancellationToken::new())
+                .await
+                .unwrap();
+            assert!(
+                matches!(outcome.outcome, RunOutcome::BudgetExceeded { .. }),
+                "a compaction past the quota stops loudly, got {:?}",
+                outcome.outcome
+            );
+            let requests = f.provider.requests();
+            assert_eq!(
+                requests.len(),
+                2,
+                "only the first exchange's two calls ran; the quota-refused summary is absent"
+            );
+            let named = f
+                .pool
+                .get()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_session_events
+                     WHERE run_id = 1 AND kind = 'control:compaction_quota_exhausted'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .unwrap();
+            assert_eq!(named, 1, "the quota stop is named once on the session log");
         });
     }
 

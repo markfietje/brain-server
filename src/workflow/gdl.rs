@@ -2323,6 +2323,52 @@ mod tests {
         }
     }
 
+    /// The consumption-limit law at the case boundary: a zero token ceiling
+    /// stops the case at the FIRST exchange boundary — zero provider work,
+    /// zero turns — and the durable Capped terminal is RECEIPT-BACKED (the
+    /// checkpoint law): the refused exchange opened, ended BudgetExceeded,
+    /// and its done receipt binds the cap. The cap is never asserted
+    /// without an evidencing exchange receipt.
+    #[test]
+    fn budget_capped_cases_are_receipt_backed_never_silent() {
+        let runtime = rt();
+        let f = fixture(vec![]);
+        let config = LoopConfig {
+            token_budget: Some(0),
+            ..LoopConfig::default()
+        };
+        let (driver, provider) = reload(f.tmp.path(), vec![], config);
+        let outcome = runtime
+            .block_on(driver.run_case(1, "admission", &CancellationToken::new()))
+            .unwrap();
+        match outcome {
+            GdlOutcome::Capped { reason, .. } => assert_eq!(reason, "budget"),
+            other => panic!("a zero budget caps the case, got {other:?}"),
+        }
+        assert!(
+            provider.requests().is_empty(),
+            "the refusal precedes all provider work"
+        );
+        let (opened, done_budget): (i64, i64) = Connection::open(f.tmp.path())
+            .unwrap()
+            .query_row(
+                "SELECT
+                   (SELECT COUNT(*) FROM agent_session_events
+                    WHERE run_id = 1 AND kind = 'control:exchange'),
+                   (SELECT COUNT(*) FROM agent_session_events
+                    WHERE run_id = 1 AND kind = 'control:exchange_done'
+                      AND payload_json LIKE '%BudgetExceeded%')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(opened, 1, "the cap is receipt-backed by a real exchange");
+        assert_eq!(
+            done_budget, 1,
+            "the exchange's done receipt records the BudgetExceeded stop"
+        );
+    }
+
     #[test]
     fn r1_terminal_retry_refuses_changed_loop_policy() {
         let f = fixture(happy_script());
