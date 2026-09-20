@@ -35,6 +35,7 @@
 //! routing claims, and no auto-publish of anything the loop captures —
 //! capture lands as proposals on the human review queue or not at all.
 
+use rusqlite::OptionalExtension;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -1994,6 +1995,94 @@ impl GdlDriver {
         Ok(())
     }
 
+    /// The machine-landed handoff offer at the escalation terminal: the
+    /// I-PASS packet pre-filled from the case. The offer is a DRAFT for a
+    /// human — it sits in `offered` until a role-gated operator decides;
+    /// the machine never calls the decision path. The typed row records
+    /// the offer id and the packet's remaining gaps — the coaching
+    /// surface, never an auto-publish.
+    async fn record_escalation_offer(
+        &self,
+        run_id: i64,
+        owner: &str,
+        case: &GdlCase,
+    ) -> Result<(), LoopError> {
+        let to = escalation_target(case);
+        let to = to
+            .chars()
+            .take(crate::workflow::relay::MAX_PRINCIPAL_LEN)
+            .collect::<String>();
+        let owner = owner.to_string();
+        let case = case.clone();
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get().map_err(checkpoint::persist_error)?;
+            let mut tx =
+                super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
+            let now = chrono::Utc::now().timestamp();
+            let domain: String = tx
+                .tx()
+                .query_row(
+                    "SELECT domain FROM workflow_runs WHERE id = ?1",
+                    rusqlite::params![run_id],
+                    |r| r.get(0),
+                )
+                .map_err(checkpoint::persist_error)?;
+            // The armed SLA clock rides the packet; the relay's own P3 TTL
+            // fallback applies when no clock was armed (a pre-R13 case).
+            let armed: Option<i64> = tx
+                .tx()
+                .query_row(
+                    "SELECT payload_json FROM agent_session_events \
+                     WHERE run_id = ?1 AND kind = 'control:sla_armed' \
+                     ORDER BY seq DESC LIMIT 1",
+                    rusqlite::params![run_id],
+                    |r| r.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(checkpoint::persist_error)?
+                .and_then(|p| serde_json::from_str::<serde_json::Value>(&p).ok())
+                .and_then(|v| v["sla_deadline_epoch"].as_i64());
+            let deadline =
+                armed.unwrap_or_else(|| now + brain_engine_sdk::policy::Priority::P3.ttl_secs());
+            let draft = crate::workflow::relay::OfferDraft {
+                domain: &domain,
+                run_id,
+                from_principal: "gdl-loop",
+                to_principal: &to,
+                overlap_minutes: 0,
+                sla_deadline: deadline,
+                now,
+            };
+            let (offer_id, created) = crate::workflow::relay::insert_offer(tx.tx(), &draft)
+                .map_err(checkpoint::persist_error)?;
+            if created {
+                let facts = ipass_facts(&case, Some(deadline), now);
+                let missing = crate::workflow::relay::packet_missing(&facts);
+                let payload = serde_json::json!({
+                    "offer_id": offer_id,
+                    "to": to,
+                    "missing": missing,
+                })
+                .to_string();
+                session_log::append(
+                    tx.tx(),
+                    run_id,
+                    "control:handoff_offer",
+                    &payload,
+                    &format!("run{run_id}:control:handoff_offer:{owner}"),
+                    now,
+                )
+                .map_err(checkpoint::persist_error)?;
+            }
+            tx.commit().map_err(checkpoint::persist_error)?;
+            Ok::<_, LoopError>(())
+        })
+        .await
+        .map_err(checkpoint::persist_error)??;
+        Ok(())
+    }
+
     /// The typed finding row on the session log — recorded for the
     /// operator on EVERY delegation, whatever the outcome.
     async fn record_adversarial_row(
@@ -2429,6 +2518,11 @@ impl GdlDriver {
             ) {
                 self.record_soft_handoff_row(run_id, &owner, &case).await?;
             }
+            // C3: the I-PASS packet pre-fill — an escalated case lands ONE
+            // offer draft, pre-filled from the case, for a human to decide.
+            if matches!(change.terminal, Some(GdlOutcome::Escalated { .. })) {
+                self.record_escalation_offer(run_id, &owner, &case).await?;
+            }
             let triage_passed = phase == GdlPhase::Triage && change.verdict == "pass";
             let pool = self.pool.clone();
             let owned = owner.clone();
@@ -2480,6 +2574,46 @@ impl GdlDriver {
 
 /// Build the pure scorer's [`RunArtifacts`] view of a finished (or routed)
 /// case: a skipped verify is an AGENT failure, never a system ceiling.
+/// The draft's addressee: the case's declared escalation target when the
+/// plan has declared one, else the operator queue (an early escalation
+/// carries no dead-end yet).
+pub(crate) fn escalation_target(case: &GdlCase) -> String {
+    case.dead_end
+        .as_ref()
+        .map(|d| d.escalate_to.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "operator".into())
+}
+
+/// The I-PASS packet pre-fill (pure): the loop's case state mapped onto
+/// the relay's packet facts. The machine fills only the sender-owned
+/// sections — illness (the triage class), patient (the intake IS/NOT
+/// table), action (the plan), situation (evidence + open question); the
+/// synthesis has NO machine-side field at all. The receiver's decision is
+/// the human's: the draft sits in `offered` until `decide_offer`.
+pub(crate) fn ipass_facts(
+    case: &GdlCase,
+    sla_deadline: Option<i64>,
+    now: i64,
+) -> crate::workflow::relay::PacketFacts {
+    crate::workflow::relay::PacketFacts {
+        // The open question is the planned re-run — the thing the case
+        // was trying to answer when it escalated.
+        pending_question: case
+            .verify_step
+            .as_ref()
+            .map(|v| v.re_run.clone())
+            .filter(|s| !s.trim().is_empty()),
+        sla_deadline,
+        now,
+        has_current_step: !case.plan.is_empty(),
+        has_evidence: !case.test_log.is_empty(),
+        // The terminal IS the honored escalation: the case reached a
+        // human with its bundle (the soft-handoff posture).
+        escalation_honored: true,
+    }
+}
+
 pub(crate) fn run_artifacts_of(
     case: &GdlCase,
     audit_ok: bool,
@@ -3297,6 +3431,82 @@ mod tests {
     }
 
     #[test]
+    fn escalated_case_lands_exactly_one_prefilled_offer_draft() {
+        let runtime = rt();
+        let mut script = happy_script();
+        script[1] = scripted_text(
+            r#"{"priority":"P3","stabilized":false,"search_hits":[],"verdict":"defer"}"#,
+        );
+        let f = fixture(script);
+        let outcome = runtime
+            .block_on(f.driver.run_case(1, "defer", &CancellationToken::new()))
+            .unwrap();
+        assert!(
+            matches!(outcome, GdlOutcome::Escalated { .. }),
+            "{outcome:?}"
+        );
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let (offers, states): (i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(GROUP_CONCAT(state), 'none') \
+                 FROM handover_offers WHERE run_id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(offers, 1, "exactly one offer draft per escalated case");
+        assert_eq!(states, "offered", "the offer is a DRAFT: a human decides");
+        let (to_principal, decided_at): (String, Option<i64>) = conn
+            .query_row(
+                "SELECT to_principal, decided_at FROM handover_offers WHERE run_id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            to_principal, "operator",
+            "a Triage defer has no declared dead-end yet — the draft goes \
+             to the operator queue"
+        );
+        assert!(
+            decided_at.is_none(),
+            "the machine never decides — HITL by construction"
+        );
+        // The typed row names the packet gaps (the coaching surface).
+        let (typed,): (String,) = conn
+            .query_row(
+                "SELECT payload_json FROM agent_session_events \
+                 WHERE kind = 'control:handoff_offer' ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        let typed: serde_json::Value = serde_json::from_str(&typed).unwrap();
+        let missing: Vec<String> = typed["missing"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            !missing.is_empty(),
+            "an early escalation names its packet gaps: {missing:?}"
+        );
+        assert!(
+            missing.iter().all(|m| m.contains("situation:")
+                || m.contains("action:")
+                || m.contains("safety:")),
+            "the missing list names the unanswered I-PASS questions: {missing:?}"
+        );
+        assert!(
+            typed["offer_id"].as_i64().is_some(),
+            "the row binds the offer id: {typed}"
+        );
+    }
+
+    #[test]
     fn escape_armed_before_the_run_routes_at_the_first_boundary() {
         let f = fixture(happy_script());
         let escape = EscapeFlag::new();
@@ -3419,6 +3629,60 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows, 1, "the escalated escape records its soft-handoff row");
+    }
+
+    #[test]
+    fn ipass_facts_prefill_maps_case_state_and_never_writes_synthesis() {
+        let now = 1_000;
+        let mut case = GdlCase::fresh("t");
+        // Nothing yet: the packet names the gaps honestly.
+        let facts = ipass_facts(&case, None, now);
+        assert_eq!(facts.pending_question, None);
+        assert_eq!(facts.sla_deadline, None);
+        assert!(!facts.has_current_step);
+        assert!(!facts.has_evidence);
+        assert!(facts.escalation_honored);
+        let missing = crate::workflow::relay::packet_missing(&facts);
+        assert_eq!(missing.len(), 4, "the coaching surface names every gap");
+        // After Plan+Act: the sender sections are filled from the case.
+        case.plan = vec![PlanStep {
+            order: 1,
+            kind: "check".into(),
+            skill_gate: "L1".into(),
+            description: "d".into(),
+            command: "c".into(),
+            expected: "e".into(),
+            fail_action: None,
+            seam: None,
+            invasiveness: 0,
+            justification: None,
+        }];
+        case.test_log = vec![TestLogRow::default()];
+        case.verify_step = Some(VerifyStepSpec {
+            re_run: "rebuild rate under load".into(),
+            pass_condition: ">10%/h".into(),
+        });
+        let facts = ipass_facts(&case, Some(2_000), now);
+        assert_eq!(
+            facts.pending_question.as_deref(),
+            Some("rebuild rate under load"),
+            "the open question is the planned re-run"
+        );
+        assert_eq!(facts.sla_deadline, Some(2_000));
+        assert!(facts.has_current_step);
+        assert!(facts.has_evidence);
+        assert_eq!(
+            crate::workflow::relay::packet_missing(&facts).len(),
+            0,
+            "a planned, evidenced, SLA-armed case offers complete"
+        );
+        // The address: the plan's declared target, else the operator queue.
+        assert_eq!(escalation_target(&case), "operator");
+        case.dead_end = Some(DeadEnd {
+            escalate_to: "eng-storage".into(),
+            required_evidence: vec!["TSR".into()],
+        });
+        assert_eq!(escalation_target(&case), "eng-storage");
     }
 
     #[test]
