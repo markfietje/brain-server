@@ -623,7 +623,15 @@ pub fn bootstrap() -> Result<BootOutcome> {
         profile,
         config::PROFILE_ENTERPRISE | config::PROFILE_DESKTOP | config::PROFILE_QUALITY_LOCAL
     ) {
-        unsafe { std::env::set_var("BRAIN_RERANK_ENABLED", "1") };
+        // SAFETY: env mutation is unsafe in this edition because getenv /
+        // setenv race with concurrent readers. This write happens during
+        // single-threaded boot, before the server spawns any worker thread
+        // and before the reranker's load-once LazyLock forces the read, so
+        // no concurrent env reader exists in this window.
+        #[allow(unsafe_code)]
+        unsafe {
+            std::env::set_var("BRAIN_RERANK_ENABLED", "1")
+        };
         info!(
             "rerank tier armed (profile={profile}); loading mxbai-rerank-large-v1 (fallback bge-reranker-v2-m3)…"
         );

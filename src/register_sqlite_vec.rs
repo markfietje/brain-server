@@ -42,6 +42,12 @@
 use std::ffi::{c_char, c_int};
 
 #[link(name = "sqlite_vec0")]
+// SAFETY: this block only DECLARES the C symbols the `sqlite_vec0`
+// library exports; declaring an extern block performs no unsafety by
+// itself and the signatures mirror the sqlite3 extension ABI exactly
+// (entry point + api-routines pointer), which is what makes the pointer
+// hand-off in `register_sqlite_vec` sound.
+#[allow(unsafe_code)]
 unsafe extern "C" {
     #[link_name = "sqlite3_vec_init"]
     fn sqlite3_vec_init_typed(
@@ -52,7 +58,14 @@ unsafe extern "C" {
 }
 
 pub fn register_sqlite_vec() {
-    // SAFETY: see the safety proof in the doc comment above.
+    // SAFETY: sqlite3_auto_extension stores the entry-point pointer for
+    // every future connection. The pointer is `sqlite3_vec_init_typed`,
+    // whose declaration (above) mirrors the sqlite3 extension ABI; it is
+    // the library's OWN exported symbol resolved at link time, so SQLite
+    // calls it with exactly the arguments it expects. Idempotent at the
+    // SQLite layer (duplicate registration is refused by the engine), and
+    // it runs before any connection in the pool is opened.
+    #[allow(unsafe_code)]
     unsafe {
         rusqlite::ffi::sqlite3_auto_extension(Some(sqlite3_vec_init_typed));
     }

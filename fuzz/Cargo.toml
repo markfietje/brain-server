@@ -52,3 +52,21 @@ name = "fuzz_qa_score"
 path = "fuzz_targets/fuzz_qa_score.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "fuzz_parse_and_gate"
+path = "fuzz_targets/fuzz_parse_and_gate.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_hypothesis_status"
+path = "fuzz_targets/fuzz_hypothesis_status.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_budget_predicate"
+path = "fuzz_targets/fuzz_budget_predicate.rs"
+test = false
+doc = false

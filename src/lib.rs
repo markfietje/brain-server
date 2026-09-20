@@ -1,3 +1,7 @@
+// The memory-safety floor: no new `unsafe` anywhere — the three enumerated
+// escapes below are the complete inventory, each `#[allow(unsafe_code)]`-
+// scoped at its site with a SAFETY proof. A new escape fails this build.
+#![deny(unsafe_code)]
 #![allow(deprecated)]
 //! brain-server library target.
 //!
