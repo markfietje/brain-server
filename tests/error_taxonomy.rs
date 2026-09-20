@@ -5,7 +5,7 @@
 //! something breaks. An unlisted error enum is an unreviewed failure story:
 //! does it render via `Display` (operator-safe, fixed strings) or does it
 //! leak `Debug` internals (paths, SQL, key material) to a client? This test
-//! fails the moment a 26th error enum appears, forcing its author to classify
+//! fails when an unlisted error enum appears, forcing its author to classify
 //! it (name → file → category → renderer) in [`KNOWN_ERRORS`] before merge.
 //!
 //! Renderer rule (the security property):
@@ -53,6 +53,7 @@ const KNOWN_ERRORS: &[(&str, &str, &str, &str)] = &[
         "display",
     ),
     ("ChainKeyError", "audit/mod.rs", "integrity", "display"),
+    ("AuditWriteError", "audit/mod.rs", "integrity", "display"),
     ("MeshError", "workflow/mesh.rs", "workflow", "display"),
     ("ValetError", "workflow/valet.rs", "workflow", "display"),
     ("ChannelError", "workflow/channel.rs", "workflow", "display"),

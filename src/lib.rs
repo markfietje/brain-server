@@ -206,7 +206,8 @@ pub mod spire_inventory;
 pub mod testkeys;
 
 /// The shared r2d2 pool alias every server module uses.
-pub type Pool = r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>;
+pub mod pool;
+pub type Pool = r2d2::Pool<pool::SqliteConnectionManager>;
 
 // crate-root re-exports the server modules address AppState/JWT state by.
 pub use server::bootstrap::AppState;

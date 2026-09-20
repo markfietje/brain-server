@@ -560,7 +560,7 @@ pub async fn run_recall(
                     // the pre-move pooled `get` posture.
                     let enrich_conn = pool.get().ok();
                     crate::service::recall::finish_domain_results(
-                        enrich_conn.as_deref(),
+                        enrich_conn.as_deref().map(|conn| &**conn),
                         &mut rs,
                         &snippet_q,
                         f.as_of.is_some(),
@@ -722,7 +722,8 @@ pub async fn run_recall(
                         prune_targets
                             .iter()
                             .filter_map(|(_, dp)| dp.as_ref())
-                            .filter_map(|p| p.get().ok()),
+                            .filter_map(|p| p.get().ok())
+                            .map(crate::pool::ConnectionLease),
                         crate::service::recall::ReadEvent {
                             kind: crate::audit::AuditKind::Recall,
                             actor: &actor,

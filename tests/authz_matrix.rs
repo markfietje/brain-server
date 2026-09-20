@@ -35,7 +35,7 @@ use brain_server::server::router::auth::JwtMiddlewareState;
 use brain_server::server::router::route_guards::AUTHZ_GATES;
 
 use axum::{body::Body, http::Request, http::StatusCode};
-use r2d2_sqlite::SqliteConnectionManager;
+use brain_server::pool::SqliteConnectionManager;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use std::path::Path;
 use std::sync::Arc;
@@ -327,6 +327,12 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
                 r#"{"domain":"global","channel":"email","purpose":"m","template_id":"t","audience":[]}"#,
             ),
             "/workflow/runs/{id}/status-ref" => ("POST", r#"{"action":"mint"}"#),
+            // the launch body is complete-shaped but the run is absent:
+            // the handler 404s BEFORE any provider contact (PRE_GATE_404).
+            "/workflow/cases/{id}/gdl" => (
+                "POST",
+                r#"{"ticket":"m","base_url":"https://provider.invalid/v1/stream","model":"m","secret_file":"/nonexistent-secret"}"#,
+            ),
             "/workflow/runs/{id}/rewind" => ("POST", r#"{"to_event_id":1,"reason":"m"}"#),
             "/workflow/runs/{id}/complaint/lifecycle" => ("POST", r#"{"to":"acked"}"#),
             "/workflow/runs/{id}/complaint/remedy" => (
@@ -467,6 +473,7 @@ const PRE_GATE_404: &[&str] = &[
     "/workflow/runs/{id}/answer",
     "/workflow/runs/{id}/status-ref",
     "/workflow/runs/{id}/handoff",
+    "/workflow/cases/{id}/gdl",
     "/workflow/runs/{id}/rewind",
     "/workflow/runs/{id}/complaint/lifecycle",
     "/workflow/runs/{id}/complaint/remedy",
@@ -1687,6 +1694,68 @@ async fn revoked_agent_principal_denied_everywhere() {
     assert_ne!(st, StatusCode::UNAUTHORIZED, "the operator is untouched");
 }
 
+/// The case-launch boundary maps authority at the authenticated border:
+/// the AGENT bearer is refused BY KIND (403 — agents do not self-launch
+/// cases) even where a scope check would pass, while the OPERATOR on the
+/// same absent run passes the gate and reaches the probe-blind 404 —
+/// both BEFORE any provider contact (no provider config is even read).
+#[tokio::test]
+async fn agent_cannot_self_launch_gdl_cases_operator_reaches_run_lookup() {
+    let srv = twokey_server();
+    let launch = r#"{"ticket":"m","base_url":"https://provider.invalid/v1/stream","model":"m","secret_file":"/nonexistent-secret"}"#;
+    let (st, _) = send_body(
+        &srv,
+        Some(TWOKEY_AGENT),
+        "/workflow/cases/1/gdl",
+        "POST",
+        launch,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "the agent bearer must be refused by kind, before the run lookup"
+    );
+    // The operator on the SAME absent run: gate passes → probe-blind 404.
+    let (st, _) = send_body(
+        &srv,
+        Some(TWOKEY_OP),
+        "/workflow/cases/1/gdl",
+        "POST",
+        launch,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::NOT_FOUND,
+        "the operator passes the gate and reaches the run lookup (404 on a missing run)"
+    );
+}
+
+/// A Blackout-revoked agent identity dies at the MIDDLEWARE on the launch
+/// route too — `401 identity_revoked`, before any route logic (and so
+/// before any provider contact). The route-level refusal (403) is the
+/// live agent's posture; revocation removes the identity entirely.
+#[tokio::test]
+async fn revoked_agent_gdl_launch_is_401_identity_revoked() {
+    let srv = twokey_server();
+    revoke_via_route(&srv, TWOKEY_OP, "agent@loopback").await;
+    let (st, text) = send_body(
+        &srv,
+        Some(TWOKEY_AGENT),
+        "/workflow/cases/1/gdl",
+        "POST",
+        r#"{"ticket":"m","base_url":"https://provider.invalid/v1/stream","model":"m","secret_file":"/nonexistent-secret"}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "a revoked agent dies at the middleware on the launch route"
+    );
+    assert_eq!(text, revoked_body("identity_revoked"));
+}
+
 /// THE NET, agent class. Every AUTHZ_GATES row × the AgentLoopback
 /// principal: scope-passing rows go through UNLESS the route carries a
 /// role gate the `agent` preset lacks (`workflow`/`approve`/`publish`/
@@ -1713,6 +1782,10 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/workflow/outreach/followup",
     "/workflow/runs/{id}/status-ref",
     "/workflow/runs/{id}/rewind",
+    // the case-launch boundary refuses this class BY KIND at the
+    // handler (agents do not self-launch cases) — before the run
+    // lookup and any provider contact.
+    "/workflow/cases/{id}/gdl",
     "/workflow/outreach/campaign/{id}",
     "/workflow/valet/due",
     "/workflow/valet/brief",

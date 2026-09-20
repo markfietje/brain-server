@@ -12,7 +12,11 @@
 #![allow(dead_code)]
 
 pub(crate) mod compaction;
+pub(crate) mod context;
 pub(crate) mod exec;
+pub(crate) mod hooks;
 pub(crate) mod provider;
+pub(crate) mod provider_http;
 pub(crate) mod run_loop;
+pub(crate) mod services;
 pub(crate) mod subagents;

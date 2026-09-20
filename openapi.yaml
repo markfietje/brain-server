@@ -5154,6 +5154,67 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Workflow run not found }
+  /workflow/cases/{id}/gdl:
+    post:
+      summary: Launch one GDL case episode on a fresh run through the real configured provider (Write on domain; operators only)
+      description: >
+        The operator case-launch boundary. Agents (`agent@loopback` bearers)
+        are refused (403): agents do not self-launch cases. The run must be
+        fresh (kind `troubleshoot`, status `active`, revision 0, state `{}`)
+        -- the checkpoint law admits nothing else. The provider endpoint is
+        SSRF-screened at construction (private/loopback/metadata ranges
+        refused) and the key rides an owner-only secret file; key material is
+        never logged. Outcomes are the existing GDL vocabulary: a pending
+        capture PROPOSAL (human-approved later) or a Handoff/route/escalation
+        -- nothing publishes automatically. Transport-class provider failures
+        are named refusals; there is no loopback fallback.
+      operationId: launchGdlCase
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ticket, base_url, model, secret_file]
+              properties:
+                ticket:
+                  type: string
+                  maxLength: 8192
+                  description: The ticket verbatim (bounded 1..=8192 bytes after trimming).
+                base_url: { type: string, description: HTTP(S) endpoint of the provider; SSRF-screened }
+                model: { type: string }
+                secret_file: { type: string, description: Path to an owner-only (0600/0400) file carrying the bearer key; read at the boundary, never logged }
+                connect_timeout_ms: { type: integer, default: 5000 }
+                first_byte_timeout_ms: { type: integer, default: 30000 }
+                max_response_bytes: { type: integer, default: 4194304 }
+      responses:
+        "200":
+          description: The case episode reached an existing GDL terminal outcome
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  outcome:
+                    type: object
+                    properties:
+                      kind: { type: string, enum: [resolved, routed, escalated, verify_failed, canceled, capped] }
+                      at_phase: { type: string, nullable: true }
+                  capture: { type: string, description: Where the capture landed (pending proposals / audited no-proposal row); nothing is published }
+        "400": { description: ticket_invalid | provider_config_invalid | secret_file_invalid }
+        "401": { description: Not authenticated (a revoked identity dies at the middleware as 401 identity_revoked, before any route logic) }
+        "403": { description: Not authorized (domain Write) -- includes the agent refusal agent@loopback bearers may not self-launch cases }
+        "404": { description: Workflow run not found (refused before any provider contact) }
+        "409": { description: run_not_fresh (the run already carries case state) }
+        "422": { description: run_kind_invalid | provider_refused (the provider refused the request; policy, moderation, auth) }
+        "503": { description: provider unavailable (transport, timeout, 5xx) or the case episode refused -- no loopback fallback }
   /workflow/runs/{id}/complaint/lifecycle:
     post:
       summary: Advance the complaint lifecycle one legal step (Write on domain + workflow role)

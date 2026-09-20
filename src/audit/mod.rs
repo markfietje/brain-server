@@ -55,7 +55,7 @@
 //! ```
 
 use hmac::{Hmac, KeyInit, Mac};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -692,8 +692,8 @@ pub fn record(
 ///   a transaction"). The outer tx already holds the write lock, so the
 ///   read-modify-write is serialized by it.
 ///
-/// Errors are swallowed at every step: audit must never fail the primary
-/// action, and a broken audit row is preferable to a rolled-back write.
+/// Legacy callers receive `None` on failure and decide their own failure
+/// posture. Missing evidence need not produce a detectable chain gap.
 pub fn record_tenant(
     conn: &Connection,
     kind: AuditKind,
@@ -703,140 +703,154 @@ pub fn record_tenant(
     detail: &str,
     tenant: &str,
 ) -> Option<i64> {
-    let target_hash = hash(target);
-    let detail_hash = hash(detail);
-    let kind_str = kind.as_str();
-    let status_str = status.as_str();
-    // Decide the transaction kind from the caller's state. `is_autocommit()`
-    // returns true when no transaction is active on the connection — that's
-    // the case where we need IMMEDIATE to serialize. When false, we're nested
-    // inside a caller's tx and must use SAVEPOINT.
-    let autocommit = conn.is_autocommit();
-    let (begin_stmt, end_stmt, rollback_stmt) = if autocommit {
-        ("BEGIN IMMEDIATE", "COMMIT", "ROLLBACK")
+    record_tenant_checked(conn, kind, actor, target, status, detail, tenant).ok()
+}
+
+/// Fixed stages contain no backend text. `Indeterminate` requires connection
+/// quarantine and reconciliation, not an automatic retry of this audit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuditWriteError {
+    Begin,
+    Epoch,
+    Key,
+    Tip,
+    Insert,
+    Timestamp,
+    Pin,
+    Finalize,
+    Indeterminate,
+}
+
+impl std::fmt::Display for AuditWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Begin => "audit_begin",
+            Self::Epoch => "audit_epoch",
+            Self::Key => "audit_key",
+            Self::Tip => "audit_tip",
+            Self::Insert => "audit_insert",
+            Self::Timestamp => "audit_timestamp",
+            Self::Pin => "audit_pin",
+            Self::Finalize => "audit_finalize",
+            Self::Indeterminate => "audit_indeterminate",
+        })
+    }
+}
+
+impl std::error::Error for AuditWriteError {}
+
+/// Write the row and required head pin through one transaction. A nested
+/// success confirms only this savepoint; the owner must still commit its outer
+/// transaction. Optional compliance-pack evidence is not certified here.
+pub fn record_tenant_checked(
+    conn: &Connection,
+    kind: AuditKind,
+    actor: &str,
+    target: &str,
+    status: AuditStatus,
+    detail: &str,
+    tenant: &str,
+) -> Result<i64, AuditWriteError> {
+    let top = conn.is_autocommit();
+    let begin = if top {
+        "BEGIN IMMEDIATE"
     } else {
-        (
-            "SAVEPOINT audit_link",
-            "RELEASE SAVEPOINT audit_link",
-            "ROLLBACK TO SAVEPOINT audit_link",
-        )
+        "SAVEPOINT audit_link"
     };
-    // A failed
-    // BEGIN/SAVEPOINT must NOT fall through to the autocommit tip-read +
-    // INSERT. Running the read-modify-write unserialized is the exact
-    // chain-fork window that BEGIN IMMEDIATE exists to prevent — two
-    // writers could read the same tip and insert divergent rows with
-    // identical `prev_hash`, a permanent false-alarm chain-branch that
-    // `verify_chain` then reports forever. Dropping the row is FAIL-SAFE: the
-    // primary action still succeeds, and the missing row is itself evidence
-    // (an absent audit entry reads as a gap, never as a forged continuation).
-    // The failure is never silent — `record_commit_failure` bumps the same
-    // `/health counter` and warns at error level.
-    let sp_ok = match conn.execute(begin_stmt, []) {
-        Ok(_) => true,
-        Err(e) => {
-            record_commit_failure(&e);
-            return None;
-        }
-    };
-    // Resolve the chain scheme INSIDE the tx (BEGIN IMMEDIATE
-    // serializes against any concurrent epoch flip). An hmac256-epoch DB
-    // without its key REFUSES the row — an unkeyed link on a keyed chain
-    // would be a silent format downgrade, the exact thing the epoch exists
-    // to prevent. Dropped, not forged (the missing row reads as a gap), and
-    // never silent: the /health counter + error log fire.
-    let scheme = match current_scheme(conn) {
-        Some(s) => s,
-        None => {
-            note_chain_health_failure(
-                "audit chain key unavailable on an hmac256-epoch chain — row refused",
-            );
-            let _ = conn.execute(rollback_stmt, []);
-            if !autocommit {
-                let _ = conn.execute("RELEASE SAVEPOINT audit_link", []);
-            }
-            return None;
-        }
-    };
-    // Read the chain tip (the most recent row). Inside the tx this is stable
-    // against concurrent writers — and the INSERT below commits/rolls back
-    // atomically with it.
-    let tip: Option<ChainRowFull> = tip_row(conn);
-    let prev_hash: Option<String> = tip.map(|t| row_link(&scheme, &t));
-    let inserted = conn
-        .execute(
-            "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash, tenant_id, prev_hash)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                kind_str,
-                actor,
-                target_hash,
-                status_str,
-                detail_hash,
-                tenant,
-                prev_hash,
-            ],
-        )
-        .is_ok();
-    let id = if inserted {
-        conn.last_insert_rowid()
-    } else {
-        -1
-    };
-    // Head pin: pin the new tip in the SAME tx so row + pin commit
-    // atomically (a pin that lags its row would false-alarm verify). Only
-    // `ts` is DB-assigned — everything else is in hand. Best-effort (a failed
-    // pin write must not unwind the audit row) but warned, never silent.
-    if inserted {
-        let ts: Option<String> = conn
-            .query_row(
-                "SELECT ts FROM audit_events WHERE id = ?1",
-                params![id],
+    conn.execute_batch(begin).map_err(|e| {
+        record_commit_failure(&e);
+        AuditWriteError::Begin
+    })?;
+    let result = (|| {
+        // A genuinely absent metadata table is the historical legacy format;
+        // a present but unreadable epoch must never silently select that format.
+        let metadata: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta')",
+            [], |r| r.get(0),
+        ).map_err(|_| AuditWriteError::Epoch)?;
+        let epoch: Option<String> = if metadata {
+            conn.query_row(
+                "SELECT value FROM schema_meta WHERE key=?1",
+                [EPOCH_META_KEY],
                 |r| r.get(0),
             )
-            .ok();
-        if let Some(ts) = ts {
-            let row = ChainRowFull {
-                id,
-                ts,
-                kind: kind_str.to_string(),
-                actor: actor.to_string(),
-                target_hash: target_hash.to_string(),
-                status: status_str.to_string(),
-                detail_hash: detail_hash.to_string(),
-                prev_hash: prev_hash.clone(),
-            };
-            let pin = HeadPin {
-                id,
-                hash: row_link(&scheme, &row),
-                epoch: scheme_epoch(&scheme).to_string(),
-            };
-            if !write_head_pin(conn, &pin) {
-                tracing::warn!(
-                    "audit head pin write failed (row {id}) — truncation detection degraded until the next write"
-                );
-            }
+            .optional()
+            .map_err(|_| AuditWriteError::Epoch)?
+        } else {
+            None
+        };
+        let scheme = match epoch.as_deref() {
+            None | Some(EPOCH_LEGACY) => Scheme::Legacy,
+            Some(EPOCH_HMAC) => Scheme::Hmac(chain_key().ok_or(AuditWriteError::Key)?),
+            Some(_) => return Err(AuditWriteError::Epoch),
+        };
+        let tip = conn.query_row(
+            "SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash FROM audit_events ORDER BY id DESC LIMIT 1",
+            [], map_full_row,
+        ).optional().map_err(|_| AuditWriteError::Tip)?;
+        let prev_hash = tip.map(|row| row_link(&scheme, &row));
+        let target_hash = hash(target);
+        let detail_hash = hash(detail);
+        conn.execute(
+            "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash, tenant_id, prev_hash) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![kind.as_str(), actor, target_hash, status.as_str(), detail_hash, tenant, prev_hash],
+        ).map_err(|_| AuditWriteError::Insert)?;
+        let id = conn.last_insert_rowid();
+        let ts = conn
+            .query_row("SELECT ts FROM audit_events WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
+            .map_err(|_| AuditWriteError::Timestamp)?;
+        let row = ChainRowFull {
+            id,
+            ts,
+            kind: kind.as_str().into(),
+            actor: actor.into(),
+            target_hash,
+            status: status.as_str().into(),
+            detail_hash,
+            prev_hash,
+        };
+        let pin = HeadPin {
+            id,
+            hash: row_link(&scheme, &row),
+            epoch: scheme_epoch(&scheme).into(),
+        };
+        if !write_head_pin(conn, &pin) {
+            return Err(AuditWriteError::Pin);
         }
-    }
-    if sp_ok {
-        // Commit/release on success; roll back on failure so a partial write
-        // doesn't leave a dangling tip. Rolling back a SAVEPOINT does NOT
-        // touch the caller's outer transaction; rolling back a top-level
-        // IMMEDIATE tx only undoes this best-effort audit row.
-        //
-        // a failure to settle the tx is never silent —
-        // a row the caller believes is on the durable chain may be stuck in
-        // the air. Log at error level (visible in the operator log) and bump
-        // the `audit_chain_commit_failures` counter surfaced on `/health`.
-        if let Err(e) = conn.execute(if inserted { end_stmt } else { rollback_stmt }, []) {
+        conn.execute_batch(if top {
+            "COMMIT"
+        } else {
+            "RELEASE SAVEPOINT audit_link"
+        })
+        .map_err(|e| {
             record_commit_failure(&e);
+            AuditWriteError::Finalize
+        })?;
+        if top && !conn.is_autocommit() {
+            return Err(AuditWriteError::Indeterminate);
         }
-        if !inserted && !autocommit {
-            // ROLLBACK TO keeps the savepoint open; release it to clean up.
-            let _ = conn.execute("RELEASE SAVEPOINT audit_link", []);
+        Ok(id)
+    })();
+    if let Err(stage) = result {
+        note_chain_health_failure("checked audit write refused");
+        // If a failed finalization already ended the transaction, its result is
+        // uncertain. Do not certify rollback merely from autocommit alone.
+        if conn.is_autocommit() {
+            return Err(AuditWriteError::Indeterminate);
         }
+        let rollback = if top {
+            "ROLLBACK"
+        } else {
+            "ROLLBACK TO SAVEPOINT audit_link; RELEASE SAVEPOINT audit_link"
+        };
+        if conn.execute_batch(rollback).is_err() || (top && !conn.is_autocommit()) {
+            return Err(AuditWriteError::Indeterminate);
+        }
+        return Err(stage);
     }
-    (id >= 0).then_some(id)
+    result
 }
 
 /// Settle-failure counter: the audit chain's "the row may not be durable"
@@ -885,9 +899,7 @@ fn note_chain_health_failure(msg: &str) {
 
 fn record_commit_failure(e: &rusqlite::Error) {
     note_busy_hit(e);
-    note_chain_health_failure(&format!(
-        "tx settle failed — the audit row may not be durable: {e}"
-    ));
+    note_chain_health_failure("audit transaction failed; evidence not certified");
 }
 
 /// Number of failed audit-tx settles since process start (see
@@ -1833,9 +1845,195 @@ mod tests {
             audit_commit_failures() > before,
             "a failed settle must bump the /health counter"
         );
-        // The caller-facing contract still holds: a failed settle returns a row
-        // id (best-effort), never panics, never corrupts.
+        // A failed settlement must not be acknowledged as a durable row.
         holder.execute_batch("ROLLBACK;").expect("release holder");
+    }
+
+    #[test]
+    fn settlement_commit_failure_never_acknowledges_or_leaks_transaction() {
+        let tmp = tempfile::NamedTempFile::new().expect("temporary audit database");
+        let writer = Connection::open(tmp.path()).expect("audit writer");
+        writer
+            .execute_batch(
+                "PRAGMA journal_mode=DELETE;
+                 PRAGMA busy_timeout=0;
+                 CREATE TABLE audit_events(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ts TEXT DEFAULT CURRENT_TIMESTAMP,
+                    kind TEXT NOT NULL, actor TEXT, target_hash TEXT,
+                    status TEXT, detail_hash TEXT,
+                    tenant_id TEXT NOT NULL DEFAULT 'global', prev_hash TEXT);
+                 CREATE TABLE schema_meta(key TEXT PRIMARY KEY, value TEXT);",
+            )
+            .expect("temporary audit schema");
+        let observer = Connection::open(tmp.path()).expect("independent audit observer");
+        observer
+            .execute_batch("BEGIN")
+            .expect("hold reader transaction");
+        let before: i64 = observer
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .expect("acquire shared lock");
+        assert_eq!(before, 0);
+
+        // The reader permits BEGIN IMMEDIATE and INSERT, but prevents COMMIT
+        // from taking the exclusive lock in rollback-journal mode.
+        let receipt = record_tenant(
+            &writer,
+            AuditKind::Workflow,
+            "settlement-test",
+            "run:1",
+            AuditStatus::Error,
+            "aborted",
+            "acme",
+        );
+        let settled = writer.is_autocommit();
+        let local_rows: i64 = writer
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .expect("writer row count");
+        // Clean up before asserting: even the pre-repair failing test leaves
+        // no pending transaction or lock behind.
+        if !settled {
+            assert_eq!(local_rows, 1, "INSERT reached the real COMMIT failure");
+            writer.execute_batch("ROLLBACK").expect("fixture rollback");
+            eprintln!(
+                "active_after_failed_commit={} autocommit_after_rollback={}",
+                !settled,
+                writer.is_autocommit()
+            );
+        }
+        observer.execute_batch("ROLLBACK").expect("release reader");
+        let visible: i64 = observer
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .expect("independent committed row count");
+        assert_eq!(visible, 0, "failed COMMIT has no durable audit evidence");
+        assert!(read_head_pin(&observer).is_none());
+        assert!(
+            receipt.is_none() && settled,
+            "failed COMMIT must return no ID and restore autocommit"
+        );
+    }
+
+    // Exercise the legacy wrapper too: it must never acknowledge a failure
+    // rejected by the shared checked writer.
+    fn settlement_candidate(conn: &Connection) -> Option<i64> {
+        record_tenant(
+            conn,
+            AuditKind::Workflow,
+            "harness",
+            "run:1",
+            AuditStatus::Denied,
+            "RunEnd:aborted",
+            "acme",
+        )
+    }
+
+    fn settlement_row_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .expect("audit row count")
+    }
+
+    #[test]
+    fn settlement_tip_read_failure_is_not_empty_chain() {
+        let conn = db_with_meta();
+        settlement_candidate(&conn).expect("seed audit row");
+        // A stored BLOB cannot decode as the required timestamp String. The
+        // table remains writable: this fails the tip read, not the INSERT.
+        conn.execute("UPDATE audit_events SET ts = x'80'", [])
+            .expect("synthetic unreadable tip");
+        assert!(
+            conn.query_row(
+                "SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash
+                 FROM audit_events ORDER BY id DESC LIMIT 1",
+                [],
+                map_full_row,
+            )
+            .is_err(),
+            "fixture must fail the actual row decoder"
+        );
+        let receipt = settlement_candidate(&conn);
+        assert!(receipt.is_none(), "unreadable tip cannot become genesis");
+        assert!(conn.is_autocommit());
+        assert_eq!(settlement_row_count(&conn), 1);
+    }
+
+    #[test]
+    fn settlement_epoch_read_failure_cannot_downgrade() {
+        let conn = db_with_meta();
+        conn.execute(
+            "INSERT INTO schema_meta(key, value) VALUES (?1, x'80')",
+            params![EPOCH_META_KEY],
+        )
+        .expect("synthetic unreadable epoch");
+        assert!(
+            conn.query_row(
+                "SELECT value FROM schema_meta WHERE key = ?1",
+                params![EPOCH_META_KEY],
+                |r| r.get::<_, String>(0),
+            )
+            .is_err(),
+            "present epoch must fail decoding rather than appear absent"
+        );
+        let receipt = settlement_candidate(&conn);
+        assert!(receipt.is_none(), "epoch read failure cannot select legacy");
+        assert!(conn.is_autocommit());
+        assert_eq!(settlement_row_count(&conn), 0);
+    }
+
+    #[test]
+    fn settlement_pin_failure_rolls_back_row() {
+        let conn = db_with_meta();
+        settlement_candidate(&conn).expect("seed row and pin");
+        let pin = read_head_pin(&conn).expect("seed pin");
+        conn.execute_batch(
+            "CREATE TRIGGER settlement_reject_pin BEFORE INSERT ON schema_meta
+             WHEN NEW.key = 'audit_chain_head'
+             BEGIN SELECT RAISE(ABORT, 'fixture_pin_refused'); END;",
+        )
+        .expect("pin-only failure trigger");
+        let receipt = settlement_candidate(&conn);
+        assert!(
+            receipt.is_none(),
+            "row without its required pin is not success"
+        );
+        assert!(conn.is_autocommit());
+        assert_eq!(settlement_row_count(&conn), 1);
+        assert_eq!(read_head_pin(&conn), Some(pin));
+        assert!(verify_chain(&conn));
+    }
+
+    #[test]
+    fn settlement_timestamp_read_failure_rolls_back_row() {
+        let conn = db_with_meta();
+        conn.execute_batch(
+            "CREATE TRIGGER settlement_unreadable_timestamp AFTER INSERT ON audit_events
+             BEGIN UPDATE audit_events SET ts = x'80' WHERE id = NEW.id; END;",
+        )
+        .expect("post-insert timestamp failure trigger");
+        let receipt = settlement_candidate(&conn);
+        assert!(
+            receipt.is_none(),
+            "unreadable timestamp cannot skip head pin"
+        );
+        assert!(conn.is_autocommit());
+        assert_eq!(settlement_row_count(&conn), 0);
+        assert!(read_head_pin(&conn).is_none());
+    }
+
+    #[test]
+    fn settlement_insert_failure_preserves_chain_and_connection() {
+        let conn = db_with_meta();
+        settlement_candidate(&conn).expect("seed row and pin");
+        let pin = read_head_pin(&conn).expect("seed pin");
+        conn.execute_batch(
+            "CREATE TRIGGER settlement_reject_row BEFORE INSERT ON audit_events
+             BEGIN SELECT RAISE(ABORT, 'fixture_insert_refused'); END;",
+        )
+        .expect("insert failure trigger");
+        assert!(settlement_candidate(&conn).is_none());
+        assert!(conn.is_autocommit());
+        assert_eq!(settlement_row_count(&conn), 1);
+        assert_eq!(read_head_pin(&conn), Some(pin));
+        assert!(verify_chain(&conn));
     }
 
     #[test]

@@ -14,7 +14,12 @@
 //! ARRAY (the model cannot smuggle metacharacters past the array boundary),
 //! the allowlist stays operator env truth (`BRAIN_ENGINE_EXEC_ALLOWLIST`,
 //! empty = deny ALL exec, fail-closed), and denials surface as typed tool
-//! errors the model can see, never as silent no-ops.
+//! errors the model can see, never as silent no-ops. The runner-supplied
+//! `ExecutionEnv` is consumed BEFORE any mediation work — a loop (parent or
+//! delegated child) whose env denies process, or whose non-empty command
+//! list excludes argv0, is refused at the bridge; an empty command list
+//! stays the parent-loop posture where the operator allowlist is the trust
+//! anchor.
 
 use std::sync::Arc;
 
@@ -25,15 +30,36 @@ use crate::workflow::host::SqliteWorkflowHost;
 /// Build the loop's `exec` tool over the mediated hostcall path. The
 /// dispatch context is assembled ONCE per tool (handler registration is
 /// per-context); every invocation then rides the four-step pipeline
-/// (interceptor → canonicalize → capability check → handler).
+/// (interceptor → canonicalize → capability check → handler) — but only
+/// AFTER the loop's own env gate: capability subtraction delegated to a
+/// child must hold at the seam the child actually reaches, not just at the
+/// operator allowlist.
 pub(crate) fn mediated_exec_tool(host: Arc<SqliteWorkflowHost>, engine: &str) -> ToolDef {
     let ctx = crate::workflow::hostcalls::build(host, engine);
     ToolDef::new(
         "exec",
         "run one allowlisted command (argv array) through the mediated hostcall path",
         r#"{"argv":["string"]}"#,
-        move |_env, input| {
+        move |env, input| {
+            // Fixed text, no payload echo: a process-denying env refuses
+            // before anything about the request is examined.
+            if !env.allow_process {
+                return Err(EnvError::Denied(
+                    "process execution disabled by environment".into(),
+                ));
+            }
             let body = argv_body(input)?;
+            // Non-empty loop-level command list: exact-match on argv[0]. An
+            // empty list is the parent-loop posture — no loop-level command
+            // restriction; the operator allowlist remains the trust anchor.
+            if !env.allowed_commands.is_empty() {
+                let argv0 = argv_head(&body)?;
+                if !env.allowed_commands.iter().any(|c| c == &argv0) {
+                    return Err(EnvError::Denied(format!(
+                        "command not permitted by loop environment allowlist: {argv0}"
+                    )));
+                }
+            }
             ctx.dispatch("exec", "loop-exec", &body)
                 .map_err(|e| EnvError::Denied(e.to_string()))
         },
@@ -56,9 +82,24 @@ fn argv_body(input: &str) -> Result<String, EnvError> {
     }
 }
 
+/// argv[0] of an already-normalized exec body (`{"argv":[...]}`) — the head
+/// the loop env allowlist exact-matches, mirroring the mediation's own
+/// argv0 law. The body was just built or passed by `argv_body`, so a body
+/// without a string head is malformed input, refused loudly.
+fn argv_head(body: &str) -> Result<String, EnvError> {
+    let malformed =
+        || EnvError::Denied(r#"malformed exec arguments: expected {"argv":["..."]}"#.into());
+    let value: serde_json::Value = serde_json::from_str(body).map_err(|_| malformed())?;
+    value["argv"][0]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(malformed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agentloop::hooks::LoopHooks;
     use crate::agentloop::provider::{LoopbackProvider, scripted_text, scripted_text_then_tool};
     use crate::agentloop::run_loop::{LoopConfig, LoopDriver, RunOutcome};
     use crate::audit::verify_chain;
@@ -76,10 +117,25 @@ mod tests {
             .unwrap()
     }
 
+    /// The parent-loop posture the mediation pins ride: process granted, no
+    /// loop-level command restriction — the operator allowlist stays the
+    /// trust anchor (checkpoint posture case 3). `ExecutionEnv::default()`
+    /// is the deny-process posture, which the loop env gate now enforces;
+    /// these pins subject is the OPERATOR law, not the env gate.
+    fn parent_posture() -> ExecutionEnv {
+        ExecutionEnv {
+            fs: Arc::new(DenyAll),
+            read_only: true,
+            allow_process: true,
+            root: "/".into(),
+            allowed_commands: vec![],
+        }
+    }
+
     fn tool() -> ToolDef {
         register_sqlite_vec();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let mgr = r2d2_sqlite::SqliteConnectionManager::file(tmp.path());
+        let mgr = crate::pool::SqliteConnectionManager::file(tmp.path());
         let pool: crate::Pool = r2d2::Pool::builder().max_size(2).build(mgr).unwrap();
         run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
         mediated_exec_tool(Arc::new(SqliteWorkflowHost::new(pool)), "agentloop")
@@ -92,7 +148,7 @@ mod tests {
             std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST");
         }
         let err = tool()
-            .execute(&ExecutionEnv::default(), r#"["/bin/echo","x"]"#)
+            .execute(&parent_posture(), r#"["/bin/echo","x"]"#)
             .unwrap_err();
         assert!(
             matches!(err, EnvError::Denied(ref m) if m.to_lowercase().contains("exec")),
@@ -107,7 +163,7 @@ mod tests {
             std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "/bin/echo");
         }
         let err = tool()
-            .execute(&ExecutionEnv::default(), r#"["/usr/bin/id","-u"]"#)
+            .execute(&parent_posture(), r#"["/usr/bin/id","-u"]"#)
             .unwrap_err();
         assert!(
             matches!(err, EnvError::Denied(ref m) if m.contains("allowlist")),
@@ -125,7 +181,7 @@ mod tests {
             r#"["/bin/echo","; rm -rf /"]"#, // destructive-prefix smuggling in an arg
             r#"["/bin/echo","| bash"]"#,     // the pipe-to-shell family
         ] {
-            let err = tool().execute(&ExecutionEnv::default(), argv).unwrap_err();
+            let err = tool().execute(&parent_posture(), argv).unwrap_err();
             assert!(
                 matches!(err, EnvError::Denied(ref m) if m.contains("dangerous command refused")),
                 "the tripwire fires LIVE on {argv}: {err:?}"
@@ -136,7 +192,7 @@ mod tests {
         // passes it and echo prints it verbatim. The dangerous forms are
         // the ones the screen names (pipe-to-shell, destructive prefixes).
         let inert = tool()
-            .execute(&ExecutionEnv::default(), r#"["/bin/echo","$(curl x)"]"#)
+            .execute(&parent_posture(), r#"["/bin/echo","$(curl x)"]"#)
             .unwrap();
         assert!(
             inert.contains("$(curl x)"),
@@ -151,25 +207,87 @@ mod tests {
             std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "/bin/echo");
         }
         let out = tool()
-            .execute(&ExecutionEnv::default(), r#"["/bin/echo","mediated-ok"]"#)
+            .execute(&parent_posture(), r#"["/bin/echo","mediated-ok"]"#)
             .unwrap();
         assert!(out.contains("mediated-ok"), "output rides back: {out}");
         // Object form passes through; garbage refuses loudly.
-        let obj = tool()
-            .execute(
-                &ExecutionEnv::default(),
-                r#"{"argv":["/bin/echo","object-form"]}"#,
-            )
-            .unwrap();
-        assert!(obj.contains("object-form"));
-        let err = tool()
-            .execute(&ExecutionEnv::default(), "rm -rf /")
-            .unwrap_err();
+        let obj = tool().execute(&parent_posture(), r#"{"argv":["/bin/echo","object-form"]}"#);
+        assert!(obj.unwrap().contains("object-form"));
+        let err = tool().execute(&parent_posture(), "rm -rf /").unwrap_err();
         assert!(matches!(err, EnvError::Denied(ref m) if m.contains("malformed")));
         let err = tool()
-            .execute(&ExecutionEnv::default(), r#"{"cmd":"ls"}"#)
+            .execute(&parent_posture(), r#"{"cmd":"ls"}"#)
             .unwrap_err();
         assert!(matches!(err, EnvError::Denied(ref m) if m.contains("malformed")));
+    }
+
+    #[test]
+    fn exec_bridge_enforces_loop_process_denial() {
+        let _g = crate::test_support::lock_env();
+        // Operator allowlist left EMPTY: the old (env-blind) path cannot
+        // execute anything, so the only way the denial text can differ from
+        // the operator's own argv0 refusal is the loop env gate firing first.
+        unsafe {
+            std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST");
+        }
+        let env = ExecutionEnv {
+            fs: Arc::new(DenyAll),
+            read_only: true,
+            allow_process: false,
+            root: "/".into(),
+            allowed_commands: vec![],
+        };
+        let err = tool().execute(&env, r#"["/bin/echo","x"]"#).unwrap_err();
+        assert!(
+            matches!(err, EnvError::Denied(ref m) if m.contains("process execution disabled by environment")),
+            "a process-denying loop env denies BEFORE mediation sees argv: {err:?}"
+        );
+    }
+
+    #[test]
+    fn exec_bridge_enforces_loop_command_allowlist() {
+        let _g = crate::test_support::lock_env();
+        unsafe {
+            std::env::remove_var("BRAIN_ENGINE_EXEC_ALLOWLIST");
+        }
+        let env = ExecutionEnv {
+            fs: Arc::new(DenyAll),
+            read_only: true,
+            allow_process: true,
+            root: "/".into(),
+            allowed_commands: vec!["/bin/ls".into()],
+        };
+        let err = tool().execute(&env, r#"["/bin/echo","x"]"#).unwrap_err();
+        assert!(
+            matches!(err, EnvError::Denied(ref m) if m.contains("loop environment allowlist")),
+            "argv0 outside the loop env's command list refuses: {err:?}"
+        );
+    }
+
+    /// THE security delta of the env gate, proven LIVE with the real binary (focused-only
+    /// per the sanitized-run inventory; excluded from broad runs). The operator
+    /// allowlisted /bin/echo; the loop env denies process — the loop env
+    /// must win. RED today: the command RUNS.
+    #[test]
+    fn exec_bridge_process_denial_beats_operator_allowlist() {
+        let _g = crate::test_support::lock_env();
+        unsafe {
+            std::env::set_var("BRAIN_ENGINE_EXEC_ALLOWLIST", "/bin/echo");
+        }
+        let env = ExecutionEnv {
+            fs: Arc::new(DenyAll),
+            read_only: true,
+            allow_process: false,
+            root: "/".into(),
+            allowed_commands: vec![],
+        };
+        let err = tool()
+            .execute(&env, r#"["/bin/echo","denied"]"#)
+            .unwrap_err();
+        assert!(
+            matches!(err, EnvError::Denied(ref m) if m.contains("process execution disabled by environment")),
+            "process denial beats a permissive operator allowlist: {err:?}"
+        );
     }
 
     #[test]
@@ -180,7 +298,7 @@ mod tests {
         }
         register_sqlite_vec();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let mgr = r2d2_sqlite::SqliteConnectionManager::file(tmp.path());
+        let mgr = crate::pool::SqliteConnectionManager::file(tmp.path());
         let pool: crate::Pool = r2d2::Pool::builder().max_size(4).build(mgr).unwrap();
         run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
         pool.get()
@@ -227,6 +345,7 @@ mod tests {
             },
             LoopConfig::default(),
             "",
+            LoopHooks::pass_through(),
         );
         let cancel = CancellationToken::new();
         let outcome = rt()

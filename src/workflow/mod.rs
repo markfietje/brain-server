@@ -30,10 +30,14 @@ pub(crate) mod complaint;
 pub(crate) mod crew;
 pub(crate) mod driver;
 pub(crate) mod entitlement;
+#[cfg(test)]
+mod eval_kappa;
 pub(crate) mod evidence;
 pub(crate) mod frontdesk;
 pub(crate) mod frontdoor;
 pub(crate) mod gdl;
+#[cfg(test)]
+mod gdl_eval;
 pub mod host;
 pub(crate) mod hostcalls;
 pub(crate) mod interview;

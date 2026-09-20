@@ -43,10 +43,14 @@ use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
 use crate::Pool;
+use crate::agentloop::hooks::LoopHooks;
 use crate::agentloop::provider::LlmProvider;
 use crate::agentloop::run_loop::{LoopConfig, LoopDriver, LoopError, RunOutcome};
 use crate::workflow::host::SqliteWorkflowHost;
 use crate::workflow::session_log;
+
+#[path = "gdl_checkpoint.rs"]
+mod checkpoint;
 
 /// Bounded corrective retries per phase: one original ask plus this many
 /// gate-error re-asks. Exhausting them ROUTES the case (route, not
@@ -157,6 +161,12 @@ pub(crate) struct IntakeArtifact {
     /// yesterday's config. "none available" is valid recorded; absent is not.
     #[serde(default)]
     pub known_good: String,
+    /// The diagnostic channels this case CAN observe (idrac, SEL export,
+    /// packet capture, …): a plan step may REQUIRE one, and a required
+    /// seam that intake never declared routes instead of improvising.
+    /// Bounded: at most 16 declarations, each 1..=64 lowercase chars.
+    #[serde(default)]
+    pub diagnostic_seams: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -222,6 +232,11 @@ pub(crate) struct PlanStep {
     /// Next order on fail (the fail_action); absent = dead-end at this step.
     #[serde(default)]
     pub fail_action: Option<i64>,
+    /// The diagnostic channel this step REQUIRES — must have been declared
+    /// at intake, or the plan routes instead of improvising an observation
+    /// the case cannot make.
+    #[serde(default)]
+    pub seam: Option<String>,
     /// 0=observe · 1=reversible config · 2=replace/reseat · 3=destructive
     /// (L5: plan action steps must ascend this ladder, ties allowed).
     #[serde(default)]
@@ -407,12 +422,30 @@ impl GdlCase {
 
     /// The escalation bundle (L8): IS/NOT + telemetry + differential +
     /// test-log census — Rust-assembled from case state, never a
-    /// model-summary sentence. `complete` is the L8 MINIMUM the receiving
-    /// tier can work from (a bounded problem statement plus captured
-    /// telemetry); `test_log_rows` rides for the receiver to judge the
+    /// model-summary sentence. `complete` is MEASURED, never assumed: the
+    /// intake artifact is the minimum, and every phase strictly before
+    /// the escalation point (the case's current phase — the driver never
+    /// escalates at any other) must hold its gate-validated artifact: a
+    /// non-defer triage verdict, live hypotheses, a step plan, executed
+    /// rows for Act, and a verify attempt once the escalation lies beyond
+    /// Verify. `test_log_rows` rides for the receiver to judge the
     /// "empty log at escalation" send-back condition, which is
     /// phase-relative (a triage defer has no log yet by construction).
     pub(crate) fn escalation_bundle(&self) -> EscalationBundle {
+        let phase_artifact = |p: &GdlPhase| match p {
+            GdlPhase::Intake => self.intake.is_some(),
+            GdlPhase::Triage => self.triage.as_ref().is_some_and(|t| t.verdict != "defer"),
+            GdlPhase::Hypothesize => !self.hypotheses.is_empty(),
+            GdlPhase::Plan => !self.plan.is_empty(),
+            GdlPhase::Act => !self.test_log.is_empty(),
+            GdlPhase::Verify => self.verify.is_some(),
+            GdlPhase::Handoff => self.capture.is_some(),
+        };
+        let complete = self.intake.is_some()
+            && GdlPhase::ALL
+                .iter()
+                .filter(|p| **p < self.phase)
+                .all(phase_artifact);
         EscalationBundle {
             is_not: self.intake.as_ref().map(|i| i.is_not.clone()),
             telemetry_refs: self
@@ -422,7 +455,7 @@ impl GdlCase {
                 .unwrap_or_default(),
             hypotheses: self.hypotheses.clone(),
             test_log_rows: self.test_log.len(),
-            complete: self.intake.is_some(),
+            complete,
         }
     }
 }
@@ -455,7 +488,7 @@ fn err(law: &str, detail: &str) -> String {
 }
 
 /// KT intake completeness (the plan's gate-every-case item): all four
-/// IS/IS-NOT rows present with a non-empty IS column; telemetry captured
+/// IS/IS-NOT rows present with both columns non-empty; telemetry captured
 /// (L1); what-changed recorded, "unknown" allowed (L4); known-good
 /// recorded, "none available" allowed (L3).
 fn intake_gate(a: &IntakeArtifact) -> Vec<String> {
@@ -470,6 +503,12 @@ fn intake_gate(a: &IntakeArtifact) -> Vec<String> {
             errors.push(err(
                 "KT",
                 &format!("is_not.{name}.is is empty — an unbounded problem statement"),
+            ));
+        }
+        if row.is_not.trim().is_empty() {
+            errors.push(err(
+                "KT",
+                &format!("is_not.{name}.is_not is empty — the comparison must be recorded"),
             ));
         }
     }
@@ -493,6 +532,28 @@ fn intake_gate(a: &IntakeArtifact) -> Vec<String> {
             "known_good not recorded — 'none available' is a valid recorded \
              value, absence is not",
         ));
+    }
+    if a.diagnostic_seams.len() > 16 {
+        errors.push(err(
+            "L1",
+            &format!(
+                "diagnostic_seams declares {} channels — at most 16 may be \
+                 declared (bounds law)",
+                a.diagnostic_seams.len()
+            ),
+        ));
+    }
+    for s in &a.diagnostic_seams {
+        if s.is_empty() || s.chars().count() > 64 || s.chars().any(char::is_uppercase) {
+            errors.push(err(
+                "L1",
+                &format!(
+                    "diagnostic_seams entry {s:?} is malformed — a seam is \
+                     1..=64 lowercase chars, the channel a plan step can be \
+                     held to"
+                ),
+            ));
+        }
     }
     errors
 }
@@ -527,10 +588,27 @@ fn triage_gate(a: &TriageArtifact) -> Vec<String> {
     errors
 }
 
+/// A hypothesis source is `{kind-prefix}:{locator}` over the closed
+/// 8-kind evidence vocabulary (the findings rows' own prefix law), the
+/// locator 1..=96 chars. Malformed sources never count toward
+/// confirmation — corroboration is measured over evidence KINDS, not
+/// over strings that merely differ.
+fn kind_source(s: &str) -> Option<super::evidence::EvidenceKind> {
+    let (prefix, locator) = s.split_once(':')?;
+    if locator.trim().is_empty() || locator.chars().count() > 96 {
+        return None;
+    }
+    super::evidence::EvidenceKind::ALL
+        .into_iter()
+        .find(|k| k.prefix() == prefix)
+}
+
 /// Hypotheses: at least one live statement, each with a falsifiable
 /// prediction (a test that cannot fail proves nothing — the scientific
-/// core). Confirmation is arbiter-computed downstream, never claimed here
-/// (L7: one line = hypothesis, not root cause).
+/// core). Sources are kind-prefixed and bounded (≤8, each a
+/// `{kind}:{locator}`); a malformed source is a named L7 failure, never
+/// silently counted. Confirmation is arbiter-computed downstream, never
+/// claimed here (L7: one line = hypothesis, not root cause).
 fn hypothesize_gate(a: &HypothesizeArtifact) -> Vec<String> {
     let mut errors = Vec::new();
     if a.hypotheses.is_empty() {
@@ -552,6 +630,29 @@ fn hypothesize_gate(a: &HypothesizeArtifact) -> Vec<String> {
                           without a falsifiable prediction cannot be tested"
                 ),
             ));
+        }
+        if h.sources.len() > 8 {
+            errors.push(err(
+                "L7",
+                &format!(
+                    "hypothesis[{i}] cites {} sources — at most 8 may be \
+                     cited (bounds law)",
+                    h.sources.len()
+                ),
+            ));
+        }
+        for s in &h.sources {
+            if kind_source(s).is_none() {
+                errors.push(err(
+                    "L7",
+                    &format!(
+                        "hypothesis[{i}] source {s:?} is malformed — a \
+                         source is an independent kind-prefixed locator \
+                         (kind:locator over the 8-kind evidence vocabulary, \
+                         locator 1..=96 chars)"
+                    ),
+                ));
+            }
         }
     }
     errors
@@ -646,9 +747,19 @@ fn plan_gate(a: &PlanArtifact) -> Vec<String> {
 /// Act: each executed row follows the plan's order, tests ONE variable
 /// (L2), cites its playbook step or is explicitly experimental (L9), and
 /// the case had telemetry before the first action (L1 — enforced at
-/// intake; re-checked here so a hand-seeded case cannot skip it).
+/// intake; re-checked here so a hand-seeded case cannot skip it). A
+/// complete artifact is BOUND to the plan: every row's order exists in
+/// the plan, the plan's every step is executed exactly once (required
+/// step coverage), and a Pass/Fail/Done row carries its actual outcome
+/// and an evidence reference — unsupported evidence does not close.
 fn act_gate(a: &ActArtifact, case: &GdlCase) -> Vec<String> {
     let mut errors = Vec::new();
+    if !a.complete || a.rows.is_empty() {
+        errors.push(err(
+            "§4",
+            "Act must contain executed rows and be complete before Verify",
+        ));
+    }
     if case
         .intake
         .as_ref()
@@ -659,6 +770,61 @@ fn act_gate(a: &ActArtifact, case: &GdlCase) -> Vec<String> {
             "the case carries no telemetry — action without captured evidence \
              is law-broken at intake, not retryable here",
         ));
+    }
+    if a.complete {
+        let plan_len = case.plan.len() as i64;
+        let mut executed: std::collections::BTreeMap<i64, u32> = std::collections::BTreeMap::new();
+        for r in case.test_log.iter().chain(a.rows.iter()) {
+            *executed.entry(r.order).or_insert(0) += 1;
+        }
+        for (i, r) in a.rows.iter().enumerate() {
+            if r.order < 1 || r.order > plan_len {
+                errors.push(err(
+                    "§4",
+                    &format!(
+                        "row[{i}].order {} is not a plan step (the plan has \
+                         {plan_len} steps) — executed rows bind to the plan",
+                        r.order
+                    ),
+                ));
+            }
+        }
+        for order in 1..=plan_len {
+            match executed.get(&order) {
+                None => errors.push(err(
+                    "§4",
+                    &format!(
+                        "plan step {order} has no executed row — required step \
+                         coverage: every plan step executes or Act is not done"
+                    ),
+                )),
+                Some(n) if *n > 1 => errors.push(err(
+                    "§4",
+                    &format!(
+                        "plan step {order} executed {n} times — one row per \
+                         plan step; duplicate execution proves nothing"
+                    ),
+                )),
+                _ => {}
+            }
+        }
+        for (i, r) in a.rows.iter().enumerate() {
+            if matches!(r.verdict, Verdict::Pass | Verdict::Fail | Verdict::Done)
+                && (r.actual.as_deref().is_none_or(|s| s.trim().is_empty())
+                    || r.evidence_ref
+                        .as_deref()
+                        .is_none_or(|s| s.trim().is_empty() || s.chars().count() > 128))
+            {
+                errors.push(err(
+                    "A4",
+                    &format!(
+                        "row[{i}] verdict {:?} without its actual outcome and \
+                         evidence_ref — unsupported evidence never closes a step",
+                        r.verdict
+                    ),
+                ));
+            }
+        }
     }
     for (i, r) in a.rows.iter().enumerate() {
         if r.order != (case.test_log.len() + i + 1) as i64 {
@@ -796,8 +962,14 @@ pub(crate) fn parse_and_gate(
     };
     match phase {
         GdlPhase::Intake => match serde_json::from_value::<IntakeArtifact>(parsed.clone()) {
-            Ok(a) => {
+            Ok(mut a) => {
                 let errors = intake_gate(&a);
+                if errors.is_empty() {
+                    // The persisted declaration is canonical: sorted and
+                    // deduped, so seam matching is exact.
+                    a.diagnostic_seams.sort();
+                    a.diagnostic_seams.dedup();
+                }
                 let gate = if errors.is_empty() {
                     Gate::Pass
                 } else {
@@ -854,6 +1026,25 @@ pub(crate) fn parse_and_gate(
         GdlPhase::Plan => match serde_json::from_value::<PlanArtifact>(parsed.clone()) {
             Ok(a) => {
                 let errors = plan_gate(&a);
+                if errors.is_empty()
+                    && let Some(seam) =
+                        a.steps
+                            .iter()
+                            .filter_map(|st| st.seam.as_deref())
+                            .find(|s| {
+                                !case
+                                    .intake
+                                    .as_ref()
+                                    .is_some_and(|i| i.diagnostic_seams.iter().any(|d| d == s))
+                            })
+                {
+                    return (
+                        Gate::Route(format!(
+                            "required diagnostic seam not declared at intake: {seam}"
+                        )),
+                        serde_json::to_string(&a).ok(),
+                    );
+                }
                 let gate = if errors.is_empty() {
                     Gate::Pass
                 } else {
@@ -914,6 +1105,46 @@ pub(crate) fn parse_and_gate(
     }
 }
 
+/// The eval's ungated acceptor (arm C): any parseable JSON is accepted
+/// and normalized through the same typed artifacts — the machine runs on,
+/// the laws do not run. Unparseable text still fails (the machine cannot
+/// apply what it cannot read); that is the ablation's only honesty floor.
+/// Production constructors never set `ablated`, so this is unreachable
+/// outside the eval.
+fn accept_ungated(phase: GdlPhase, text: &str) -> (Gate, Option<String>) {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(text.trim()) else {
+        return (
+            Gate::Fail(vec!["JSON: artifact is not a JSON object".into()]),
+            None,
+        );
+    };
+    let normalized: Option<String> = match phase {
+        GdlPhase::Intake => typed_json::<IntakeArtifact>(value),
+        GdlPhase::Triage => typed_json::<TriageArtifact>(value),
+        GdlPhase::Hypothesize => typed_json::<HypothesizeArtifact>(value),
+        GdlPhase::Plan => typed_json::<PlanArtifact>(value),
+        GdlPhase::Act => typed_json::<ActArtifact>(value),
+        GdlPhase::Verify => typed_json::<VerifyArtifact>(value),
+        GdlPhase::Handoff => typed_json::<HandoffArtifact>(value),
+    };
+    normalized.map_or_else(
+        || {
+            (
+                Gate::Fail(vec!["JSON: artifact does not fit the phase shape".into()]),
+                None,
+            )
+        },
+        |json| (Gate::Pass, Some(json)),
+    )
+}
+
+/// Parse then re-serialize a typed artifact (the ablation's normalizer).
+fn typed_json<T: serde::Serialize + serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+) -> Option<String> {
+    serde_json::to_string(&serde_json::from_value::<T>(value).ok()?).ok()
+}
+
 /// Apply a passed artifact to the case (pure; the driver persists).
 pub(crate) fn apply(case: &mut GdlCase, phase: GdlPhase, artifact_json: &str) {
     match phase {
@@ -957,14 +1188,32 @@ pub(crate) fn apply(case: &mut GdlCase, phase: GdlPhase, artifact_json: &str) {
     }
 }
 
-/// A hypothesis's arbiter-computed status: ≥2 distinct evidence sources
-/// confirm it (triangulation); anything less stays a hypothesis (L7 —
-/// one line is a hypothesis, not a root cause).
+/// A hypothesis's arbiter-computed status: ≥2 sources of DISTINCT
+/// evidence kinds confirm it (triangulation — the preregistered
+/// "different buckets" law); two strings of the same kind are one bucket
+/// and never confirm (L7 — one line is a hypothesis, not a root cause).
 pub(crate) fn hypothesis_status(h: &Hypothesis) -> HypothesisStatus {
-    let mut distinct = h.sources.clone();
-    distinct.sort();
-    distinct.dedup();
-    if distinct.len() >= 2 {
+    let mut kinds: Vec<&'static str> = h
+        .sources
+        .iter()
+        .filter_map(|s| kind_source(s))
+        .map(super::evidence::EvidenceKind::prefix)
+        .collect();
+    kinds.sort();
+    kinds.dedup();
+    if kinds.len() >= 2 {
+        HypothesisStatus::Confirmed
+    } else {
+        HypothesisStatus::Hypothesis
+    }
+}
+
+/// The registered eval arm C's corroboration law (prereg :39 "1 line
+/// suffices"): one valid kind-prefixed source confirms. The kind law is
+/// NOT relaxed — a source without a valid kind prefix never counts
+/// (L7 still fires at hypothesize); only the threshold moves.
+pub(crate) fn hypothesis_status_corroboration_ablated(h: &Hypothesis) -> HypothesisStatus {
+    if h.sources.iter().any(|s| kind_source(s).is_some()) {
         HypothesisStatus::Confirmed
     } else {
         HypothesisStatus::Hypothesis
@@ -982,6 +1231,13 @@ pub(crate) enum HypothesisStatus {
 /// Render the live plan strip (bounded): the current phase, remaining plan
 /// steps, and live hypotheses — the thing L1 SEES instead of hidden state.
 pub(crate) fn plan_strip(case: &GdlCase) -> String {
+    plan_strip_with_law(case, false)
+}
+
+/// The strip under a selected corroboration law: `false` = the registered
+/// ≥2-distinct-kinds law; `true` = the registered eval arm C's threshold
+/// (≥1 valid source). No other strip byte moves.
+pub(crate) fn plan_strip_with_law(case: &GdlCase, corroboration_ablated: bool) -> String {
     let mut lines: Vec<String> = Vec::new();
     lines.push(format!(
         "GDL PLAN STRIP (live) — phase: {}",
@@ -1000,10 +1256,15 @@ pub(crate) fn plan_strip(case: &GdlCase) -> String {
         ));
     }
     for h in &case.hypotheses {
+        let status = if corroboration_ablated {
+            hypothesis_status_corroboration_ablated(h)
+        } else {
+            hypothesis_status(h)
+        };
         lines.push(format!(
             "H: {} [{}] — predicts: {}",
             h.statement,
-            match hypothesis_status(h) {
+            match status {
                 HypothesisStatus::Confirmed => "confirmed",
                 HypothesisStatus::Hypothesis => "hypothesis",
             },
@@ -1025,6 +1286,18 @@ pub(crate) fn phase_instruction(
     phase: GdlPhase,
     case: &GdlCase,
     retry_errors: &[String],
+) -> String {
+    phase_instruction_with_law(phase, case, retry_errors, false)
+}
+
+/// [`phase_instruction`] under a selected corroboration law (the
+/// registered eval arm C selects the 1-source threshold; production
+/// always passes `false`).
+pub(crate) fn phase_instruction_with_law(
+    phase: GdlPhase,
+    case: &GdlCase,
+    retry_errors: &[String],
+    corroboration_ablated: bool,
 ) -> String {
     let contract = match phase {
         GdlPhase::Intake => {
@@ -1064,7 +1337,7 @@ pub(crate) fn phase_instruction(
         }
     };
     let mut parts = vec![
-        plan_strip(case),
+        plan_strip_with_law(case, corroboration_ablated),
         format!("PHASE {}: produce this phase's artifact.", phase.as_str()),
         contract.to_string(),
     ];
@@ -1197,7 +1470,7 @@ pub(crate) fn typed_evidence_for(
 /// else is a routing decision — the loop's safe posture is route-not-
 /// resolve, and a routed case's run row STAYS `active` for the human who
 /// now owns it (review-default posture governs loop writes).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) enum GdlOutcome {
     /// Verify passed under the failing conditions and the capture landed.
     Resolved {
@@ -1224,7 +1497,7 @@ pub(crate) enum GdlOutcome {
     Canceled,
     Capped {
         at: GdlPhase,
-        reason: &'static str,
+        reason: String,
     },
 }
 
@@ -1237,6 +1510,15 @@ pub(crate) struct GdlDriver {
     pool: Pool,
     loop_driver: LoopDriver,
     proficiency: super::proficiency::Proficiency,
+    /// Eval ablation: skip the arbiter (draft arm C). Production
+    /// constructors never set it.
+    ablated: bool,
+    /// Eval ablation, registered arm C: the corroboration threshold only
+    /// (≥1 valid source confirms instead of ≥2 distinct kinds). Every
+    /// gate, the authority waterfall, and the contradiction settlement
+    /// are untouched; the only consumption of the confirmation status is
+    /// the plan-strip label. Production constructors never set it.
+    corroboration_ablated: bool,
 }
 
 impl GdlDriver {
@@ -1276,7 +1558,7 @@ impl GdlDriver {
     ) -> Self {
         let env = super::proficiency::env_for(&env, proficiency);
         let harness = Arc::new(AgentHarness::new(host.clone(), "gdl", GDL_METHOD_PROMPT));
-        let loop_driver = LoopDriver::new(
+        let mut loop_driver = LoopDriver::new(
             pool.clone(),
             host,
             harness,
@@ -1285,350 +1567,332 @@ impl GdlDriver {
             env,
             config,
             "",
+            LoopHooks::pass_through(),
         );
+        // The harness config is fixed at construction; bind it so
+        // policy_identity() is valid for pre-work checkpoint admission.
+        loop_driver.bind_policy("gdl", GDL_METHOD_PROMPT, vec![], vec![]);
         GdlDriver {
             pool,
             loop_driver,
             proficiency,
+            ablated: false,
+            corroboration_ablated: false,
         }
     }
 
-    /// Run one case from its current phase to a terminal outcome. The
-    /// ticket is the verbatim intake input; a fresh run starts at Intake,
-    /// a resumed run picks up at the persisted phase.
+    /// The eval ablation (test-only): the SAME machine with the phase-gate
+    /// waterfall switched OFF — every parseable artifact is accepted, the
+    /// authority matrix does not run. The outcome logic (verify-fail is
+    /// terminal, handoff closes the run) is IDENTICAL; only the arbiter
+    /// is ablated. This is the prereg's draft arm C (labeled
+    /// `C_draft_all_gates` in the eval runner): kept to reproduce the
+    /// historical structural result, NOT the registered ablation.
+    #[cfg(test)]
+    pub(crate) fn new_ablated(
+        pool: Pool,
+        host: Arc<SqliteWorkflowHost>,
+        provider: Arc<dyn LlmProvider>,
+        tools: Vec<ToolDef>,
+        env: ExecutionEnv,
+        config: LoopConfig,
+    ) -> Self {
+        let harness = Arc::new(AgentHarness::new(host.clone(), "gdl", GDL_METHOD_PROMPT));
+        let mut loop_driver = LoopDriver::new(
+            pool.clone(),
+            host,
+            harness,
+            provider,
+            tools,
+            env,
+            config,
+            "",
+            LoopHooks::pass_through(),
+        );
+        loop_driver.bind_policy("gdl", GDL_METHOD_PROMPT, vec![], vec![]);
+        GdlDriver {
+            pool,
+            loop_driver,
+            proficiency: super::proficiency::Proficiency::L3,
+            ablated: true,
+            corroboration_ablated: false,
+        }
+    }
+
+    /// The REGISTERED eval arm C (test-only; EVAL_GDL_VS_AUTONOMOUS :39 —
+    /// "identical to B with `G_CORROBORATE` off … 1 line suffices"):
+    /// byte-identical to [`GdlDriver::new`] except that a hypothesis
+    /// carrying ≥1 valid (kind-prefixed) source is labeled Confirmed
+    /// where the registered law requires ≥2 distinct kinds. The shape
+    /// law is untouched — a malformed source still fails L7 and never
+    /// counts; only the THRESHOLD moves, and the only consumer of the
+    /// confirmation status is the plan-strip label. Proven differential
+    /// in `eval_run1::registered_arm_c_is_b_except_one_source_confirmation_labels`.
+    #[cfg(test)]
+    pub(crate) fn new_corroboration_ablated(
+        pool: Pool,
+        host: Arc<SqliteWorkflowHost>,
+        provider: Arc<dyn LlmProvider>,
+        tools: Vec<ToolDef>,
+        env: ExecutionEnv,
+        config: LoopConfig,
+    ) -> Self {
+        Self::new_with_proficiency(
+            pool,
+            host,
+            provider,
+            tools,
+            env,
+            config,
+            super::proficiency::Proficiency::L3,
+        )
+        .with_corroboration_ablated()
+    }
+
+    #[cfg(test)]
+    fn with_corroboration_ablated(mut self) -> Self {
+        self.corroboration_ablated = true;
+        self
+    }
+
+    fn policy_identity(&self) -> String {
+        let corr = if self.corroboration_ablated {
+            ":corr_ablated=true"
+        } else {
+            ""
+        };
+        format!(
+            "gdl-v1:{:?}:ablated={}{}:{}",
+            self.proficiency,
+            self.ablated,
+            corr,
+            self.loop_driver.policy_identity()
+        )
+    }
+
+    /// One automation episode per run. Terminal retry is read-only with respect
+    /// to provider/tool work; human edits invalidate its binding, never restart it.
     pub(crate) async fn run_case(
         &self,
         run_id: i64,
         ticket: &str,
         cancel: &CancellationToken,
     ) -> Result<GdlOutcome, LoopError> {
-        let mut case = self.load_case(run_id, ticket).await?;
-        let start = case.phase;
-        let mut phases_done: u32 = 0;
-        for phase in GdlPhase::ALL {
-            if phase < start {
-                continue;
+        self.run_case_until(run_id, ticket, cancel, None)
+            .await?
+            .ok_or_else(|| checkpoint::persist_error("unexpected GDL pause"))
+    }
+
+    /// A bounded clean pause is an explicit caller request, NOT crash recovery.
+    /// It is honored only after a fully committed exchange/checkpoint. Production
+    /// run_case holds the same claim across every phase (None means no pause).
+    async fn run_case_until(
+        &self,
+        run_id: i64,
+        ticket: &str,
+        cancel: &CancellationToken,
+        pause_after: Option<u32>,
+    ) -> Result<Option<GdlOutcome>, LoopError> {
+        use checkpoint::{Transition, persist_error};
+        let owner = uuid::Uuid::new_v4().to_string();
+        let pool = self.pool.clone();
+        let ticket = ticket.to_string();
+        let policy = self.policy_identity();
+        let owned = owner.clone();
+        let mut cp = tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get().map_err(persist_error)?;
+            checkpoint::admit(&mut conn, run_id, &ticket, &policy, &owned)
+        })
+        .await
+        .map_err(persist_error)??;
+        let mut completed = 0;
+        loop {
+            if let Some(outcome) = cp.terminal {
+                return Ok(Some(outcome));
             }
+            let phase = cp
+                .next_phase
+                .ok_or_else(|| persist_error("GDL next phase absent"))?;
+            let attempt = cp.attempt + 1;
+            let mut change = Transition {
+                phase,
+                attempt,
+                verdict: "route",
+                errors: Vec::new(),
+                artifact: None,
+                exchange: None,
+                terminal: None,
+            };
+            let mut case = cp.case.clone();
             case.phase = phase;
-            // The authority matrix rides BEFORE the model is asked: a
-            // phase owned by a higher tier escalates with the bundle,
-            // never silently attempts then fails (escalation is the one
-            // capability that is never narrowed away).
             if self.proficiency < super::proficiency::phase_owner(phase) {
-                self.append_gate_event(
-                    run_id,
+                change.errors.push(format!(
+                    "authority: phase {} is owned by a higher tier — escalating with the bundle",
+                    phase.as_str()
+                ));
+                change.terminal = Some(GdlOutcome::Escalated {
+                    at: phase,
+                    bundle: case.escalation_bundle(),
+                });
+            } else {
+                // Recheck status/revision immediately before external work, not
+                // only at admission. Concurrent changes also fail at checkpoint.
+                let pool = self.pool.clone();
+                let check = cp.clone();
+                let owned = owner.clone();
+                tokio::task::spawn_blocking(move || {
+                    let mut conn = pool.get().map_err(persist_error)?;
+                    let mut tx = super::tx::WorkflowTx::begin(&mut conn).map_err(persist_error)?;
+                    check.verify(tx.tx(), &owned)?;
+                    tx.commit().map_err(persist_error)?;
+                    Ok::<_, LoopError>(())
+                })
+                .await
+                .map_err(persist_error)??;
+                let instruction = phase_instruction_with_law(
                     phase,
-                    "route",
-                    1,
-                    &[format!(
-                        "authority: phase {} is owned by a higher tier — escalating with the bundle",
-                        phase.as_str()
-                    )],
-                )
-                .await?;
-                let bundle = case.escalation_bundle();
-                return Ok(GdlOutcome::Escalated { at: phase, bundle });
-            }
-            let mut retry_errors: Vec<String> = Vec::new();
-            let mut attempts = 0u32;
-            let artifact_json = loop {
-                attempts += 1;
-                let instruction = phase_instruction(phase, &case, &retry_errors);
-                let outcome = self
+                    &case,
+                    &cp.errors,
+                    self.corroboration_ablated,
+                );
+                let receipt = self
                     .loop_driver
-                    .run_turns(run_id, &instruction, cancel)
+                    .run_turns_owned(
+                        run_id,
+                        &format!(
+                            "gdl:{}:phase:{}:attempt:{attempt}",
+                            cp.episode,
+                            phase.as_str()
+                        ),
+                        &instruction,
+                        &owner,
+                        cancel,
+                    )
                     .await?;
-                match outcome {
-                    RunOutcome::Canceled => return Ok(GdlOutcome::Canceled),
-                    RunOutcome::TurnCapReached { .. } => {
-                        return Ok(GdlOutcome::Capped {
-                            at: phase,
-                            reason: "turn_cap",
-                        });
-                    }
-                    RunOutcome::BudgetExceeded { .. } => {
-                        return Ok(GdlOutcome::Capped {
-                            at: phase,
-                            reason: "budget",
-                        });
-                    }
-                    RunOutcome::Completed { .. } => {}
-                }
-                let text = self.last_assistant_text(run_id).await?;
-                let (gate, artifact) = parse_and_gate(phase, &case, &text);
-                // The act-row authority check rides the arbiter's verdict:
-                // a passing artifact whose rows act above the tier is a
-                // named violation, retried and routed like any law break.
-                let gate = match (&gate, phase) {
-                    (Gate::Pass, GdlPhase::Act) => {
-                        let auth = serde_json::from_str::<ActArtifact>(
-                            artifact.as_deref().unwrap_or_default(),
-                        )
-                        .map(|a| {
-                            super::proficiency::act_authority_errors(
-                                &case,
-                                &a.rows,
-                                self.proficiency,
-                            )
-                        })
-                        .unwrap_or_default();
-                        if auth.is_empty() {
-                            gate
-                        } else {
-                            Gate::Fail(auth)
+                change.exchange = Some(receipt.exchange_id);
+                change.terminal = match receipt.outcome {
+                    RunOutcome::Canceled => Some(GdlOutcome::Canceled),
+                    RunOutcome::TurnCapReached { .. } => Some(GdlOutcome::Capped {
+                        at: phase,
+                        reason: "turn_cap".into(),
+                    }),
+                    RunOutcome::BudgetExceeded { .. } => Some(GdlOutcome::Capped {
+                        at: phase,
+                        reason: "budget".into(),
+                    }),
+                    RunOutcome::Completed { .. } => None,
+                };
+                if change.terminal.is_none() {
+                    let (mut gate, artifact) = if self.ablated {
+                        accept_ungated(phase, &receipt.final_text)
+                    } else {
+                        parse_and_gate(phase, &case, &receipt.final_text)
+                    };
+                    if matches!(gate, Gate::Pass) && phase == GdlPhase::Act {
+                        let act: ActArtifact =
+                            serde_json::from_str(artifact.as_deref().unwrap_or_default())
+                                .map_err(persist_error)?;
+                        let errors = super::proficiency::act_authority_errors(
+                            &case,
+                            &act.rows,
+                            self.proficiency,
+                        );
+                        if !errors.is_empty() {
+                            gate = Gate::Fail(errors);
                         }
                     }
-                    _ => gate,
-                };
-                match gate {
-                    Gate::Pass => break artifact,
-                    Gate::Route(reason) => {
-                        self.append_gate_event(
-                            run_id,
-                            phase,
-                            "route",
-                            attempts,
-                            std::slice::from_ref(&reason),
-                        )
-                        .await?;
-                        // defer/unknown at triage: the knowledge layer does
-                        // not cover this case — hand it over WITH the bundle.
-                        let bundle = case.escalation_bundle();
-                        return Ok(GdlOutcome::Escalated { at: phase, bundle });
+                    if matches!(gate, Gate::Pass) && phase == GdlPhase::Handoff {
+                        // The contradiction settlement: the reducer is the
+                        // only detector, and a Pass at Handoff may not close
+                        // over an open pair — resolve_contradiction is the
+                        // disposition seam, so the attempt fails A4 and the
+                        // bounded retry/exhaustion machinery takes over.
+                        let pool = self.pool.clone();
+                        let open = tokio::task::spawn_blocking(move || {
+                            let conn = pool.get().map_err(persist_error)?;
+                            Ok::<_, LoopError>(super::evidence::open_contradictions(&conn, run_id))
+                        })
+                        .await
+                        .map_err(persist_error)??;
+                        if open > 0 {
+                            gate = Gate::Fail(vec![err(
+                                "A4",
+                                "open contradictions must be dispositioned via \
+                                 resolve_contradiction before resolution",
+                            )]);
+                        }
                     }
-                    Gate::Fail(errors) => {
-                        self.append_gate_event(run_id, phase, "fail", attempts, &errors)
-                            .await?;
-                        if attempts >= MAX_PHASE_ATTEMPTS {
-                            return Ok(GdlOutcome::Routed {
+                    match gate {
+                        Gate::Pass => {
+                            let artifact = artifact
+                                .ok_or_else(|| persist_error("gate passed without artifact"))?;
+                            apply(&mut case, phase, &artifact);
+                            change.verdict = "pass";
+                            change.artifact = Some(artifact);
+                            if phase == GdlPhase::Verify
+                                && case.verify.as_ref().is_some_and(|v| !v.pass)
+                            {
+                                change.terminal = Some(GdlOutcome::VerifyFailed {
+                                    at: phase,
+                                    bundle: case.escalation_bundle(),
+                                });
+                            } else if phase == GdlPhase::Handoff {
+                                change.terminal = Some(GdlOutcome::Resolved {
+                                    phases: cp.phases + 1,
+                                    verify: case
+                                        .verify
+                                        .clone()
+                                        .ok_or_else(|| persist_error("Verify absent"))?,
+                                    capture: case
+                                        .capture
+                                        .clone()
+                                        .ok_or_else(|| persist_error("Capture absent"))?,
+                                });
+                            }
+                        }
+                        Gate::Route(reason) => {
+                            change.errors.push(reason);
+                            change.terminal = Some(GdlOutcome::Escalated {
                                 at: phase,
-                                reason: format!(
-                                    "gate exhausted after {attempts} attempts: {}",
-                                    errors.join("; ")
-                                ),
+                                bundle: case.escalation_bundle(),
                             });
                         }
-                        retry_errors = errors;
+                        Gate::Fail(errors) => {
+                            change.verdict = "fail";
+                            if attempt >= MAX_PHASE_ATTEMPTS {
+                                change.terminal = Some(GdlOutcome::Routed {
+                                    at: phase,
+                                    reason: format!(
+                                        "gate exhausted after {attempt} attempts: {}",
+                                        errors.join("; ")
+                                    ),
+                                });
+                            }
+                            change.errors = errors;
+                        }
                     }
                 }
-            };
-            let Some(artifact_json) = artifact_json else {
-                // Pass always carries the normalized artifact; unreachable
-                // by construction, fail loud if construction ever changes.
-                return Ok(GdlOutcome::Routed {
-                    at: phase,
-                    reason: "gate passed without an artifact".into(),
-                });
-            };
-            // Verify failure is terminal-but-active: the case goes back to
-            // a human with the bundle, never silently re-acted.
-            if phase == GdlPhase::Verify
-                && let Ok(a) = serde_json::from_str::<VerifyArtifact>(&artifact_json)
-                && !a.pass
-            {
-                apply(&mut case, phase, &artifact_json);
-                self.persist_phase(run_id, phase, &case, &artifact_json, "active")
-                    .await?;
-                let bundle = case.escalation_bundle();
-                return Ok(GdlOutcome::VerifyFailed { at: phase, bundle });
             }
-            apply(&mut case, phase, &artifact_json);
-            self.append_gate_event(run_id, phase, "pass", attempts, &[])
-                .await?;
-            // A6/verify-once-clear: only the Handoff pass CLOSES the run
-            // row (`resolved`); every intermediate phase persists `active`.
-            // Routed/escalated cases stay `active` — the human who now
-            // owns them decides (review-default posture).
-            let status = if phase == GdlPhase::Handoff {
-                "resolved"
-            } else {
-                "active"
-            };
-            self.persist_phase(run_id, phase, &case, &artifact_json, status)
-                .await?;
-            phases_done += 1;
-        }
-        let verify = case
-            .verify
-            .clone()
-            .expect("the machine cannot reach the end without Verify passing");
-        let capture = case
-            .capture
-            .clone()
-            .expect("Handoff passed, so capture is set");
-        Ok(GdlOutcome::Resolved {
-            phases: phases_done,
-            verify,
-            capture,
-        })
-    }
-
-    async fn load_case(&self, run_id: i64, ticket: &str) -> Result<GdlCase, LoopError> {
-        let pool = self.pool.clone();
-        let json = tokio::task::spawn_blocking(move || {
-            let conn = pool
-                .get()
-                .map_err(|e| LoopError::Persist(format!("pool: {e}")))?;
-            super::state::read_state_and_revision(&conn, run_id)
-                .map_err(|e| LoopError::Persist(e.to_string()))?
-                .map(|(json, _rev)| json)
-                .ok_or_else(|| LoopError::Persist(format!("run {run_id} gone")))
-        })
-        .await
-        .map_err(|e| LoopError::Persist(format!("load join failed: {e}")))??;
-        match serde_json::from_str::<GdlCase>(&json) {
-            Ok(case) => Ok(case),
-            Err(_) => Ok(GdlCase::fresh(ticket)),
-        }
-    }
-
-    async fn last_assistant_text(&self, run_id: i64) -> Result<String, LoopError> {
-        let pool = self.pool.clone();
-        let text = tokio::task::spawn_blocking(move || -> Result<String, LoopError> {
-            let conn = pool
-                .get()
-                .map_err(|e| LoopError::Persist(format!("pool: {e}")))?;
-            let events = session_log::replay(&conn, run_id, session_log::REPLAY_CAP)
-                .map_err(|e| LoopError::Persist(e.to_string()))?;
-            Ok(events
-                .into_iter()
-                .rev()
-                .find(|e| e.kind == "assistant")
-                .and_then(|e| {
-                    serde_json::from_str::<serde_json::Value>(&e.payload_json)
-                        .ok()?
-                        .get("text")?
-                        .as_str()
-                        .map(str::to_string)
+            let pool = self.pool.clone();
+            let owned = owner.clone();
+            cp = tokio::task::spawn_blocking(move || {
+                let mut conn = pool.get().map_err(persist_error)?;
+                checkpoint::advance(&mut conn, &cp, &owned, change)
+            })
+            .await
+            .map_err(persist_error)??;
+            completed += 1;
+            if cp.terminal.is_none() && pause_after.is_some_and(|limit| completed >= limit) {
+                let pool = self.pool.clone();
+                tokio::task::spawn_blocking(move || {
+                    let mut conn = pool.get().map_err(persist_error)?;
+                    checkpoint::pause(&mut conn, &cp, &owner)
                 })
-                .unwrap_or_default())
-        })
-        .await
-        .map_err(|e| LoopError::Persist(format!("replay join failed: {e}")))??;
-        Ok(text)
-    }
-
-    async fn append_gate_event(
-        &self,
-        run_id: i64,
-        phase: GdlPhase,
-        verdict: &str,
-        attempt: u32,
-        errors: &[String],
-    ) -> Result<(), LoopError> {
-        let payload = serde_json::json!({
-            "phase": phase.as_str(),
-            "verdict": verdict,
-            "attempt": attempt,
-            "errors": errors,
-        })
-        .to_string();
-        crate::agentloop::run_loop::append_session_events(
-            &self.pool,
-            run_id,
-            vec![(
-                "gdl_gate".into(),
-                payload,
-                format!("gdl:{}:{verdict}:{attempt}", phase.as_str()),
-            )],
-        )
-        .await
-    }
-
-    /// Persist a phase pass in ONE WorkflowTx: the phase's step row (plus
-    /// Act's per-row sub-rows), one audit row per inserted step, and the
-    /// CAS state advance. All-or-nothing.
-    async fn persist_phase(
-        &self,
-        run_id: i64,
-        phase: GdlPhase,
-        case: &GdlCase,
-        artifact_json: &str,
-        status: &str,
-    ) -> Result<(), LoopError> {
-        let pool = self.pool.clone();
-        let case_json =
-            serde_json::to_string(case).map_err(|e| LoopError::Persist(e.to_string()))?;
-        let phase_name = phase.as_str();
-        let artifact_json = artifact_json.to_string();
-        let status = status.to_string();
-        tokio::task::spawn_blocking(move || {
-            let mut conn = pool
-                .get()
-                .map_err(|e| LoopError::Persist(format!("pool: {e}")))?;
-            let mut wtx =
-                super::tx::WorkflowTx::begin(&mut conn).map_err(|e| LoopError::Persist(e.to_string()))?;
-            let now = chrono::Utc::now().timestamp();
-            wtx.tx()
-                .execute(
-                    "INSERT INTO workflow_steps(run_id, phase, step_key, state_json)
-                     VALUES (?1, ?2, ?2, ?3)",
-                    rusqlite::params![run_id, phase_name, artifact_json],
-                )
-                .map_err(|e| LoopError::Persist(e.to_string()))?;
-            let phase_row_id = wtx.tx().last_insert_rowid();
-            super::audit_write(
-                wtx.tx(),
-                run_id,
-                &format!("step:{phase_name}"),
-                crate::audit::AuditStatus::Ok,
-                &format!("gdl phase {phase_name} passed"),
-            );
-            // Act's test-log rows persist as durable sub-rows so the
-            // escalation bundle and QA scorer read the log from storage,
-            // not from a model's memory of it.
-            if phase_name == "act"
-                && let Ok(rows) =
-                    serde_json::from_str::<ActArtifact>(&artifact_json)
-            {
-                for r in &rows.rows {
-                    let row_json = serde_json::to_string(r)
-                        .map_err(|e| LoopError::Persist(e.to_string()))?;
-                    wtx.tx()
-                        .execute(
-                            "INSERT INTO workflow_steps(run_id, phase, step_key, state_json, parent_step_id)
-                             VALUES (?1, 'act', ?2, ?3, ?4)",
-                            rusqlite::params![
-                                run_id,
-                                format!("act-{}", r.order),
-                                row_json,
-                                phase_row_id
-                            ],
-                        )
-                        .map_err(|e| LoopError::Persist(e.to_string()))?;
-                    super::audit_write(
-                        wtx.tx(),
-                        run_id,
-                        &format!("step:act-{}", r.order),
-                        crate::audit::AuditStatus::Ok,
-                        &format!("test-log row {} persisted", r.order),
-                    );
-                }
+                .await
+                .map_err(persist_error)??;
+                return Ok(None);
             }
-            // The phase's typed evidence lands in the SAME tx — one
-            // mutation, one chain. Handoff's capture still reads an
-            // 'active' run row here: the closing CAS below is what seals
-            // it, in this same transaction.
-            let batch = typed_evidence_for(phase, &artifact_json, now);
-            if !batch.is_empty() {
-                super::evidence::record(wtx.tx(), run_id, &batch, None)
-                    .map_err(|e| LoopError::Persist(format!("evidence: {e:?}")))?;
-            }
-            let (state_json, rev) = super::state::read_state_and_revision(wtx.tx(), run_id)
-                .map_err(|e| LoopError::Persist(e.to_string()))?
-                .ok_or_else(|| LoopError::Persist(format!("run {run_id} gone")))?;
-            // The fresh run row '{}' (never a GdlCase) is the expected
-            // starting state; any other mismatch is contention the CAS
-            // will name loudly as Stale.
-            let expected = if state_json.trim() == "{}" { 0 } else { rev };
-            super::state::cas_update(wtx.tx(), run_id, expected, &case_json, &status, now)
-                .map_err(|e| LoopError::Persist(e.to_string()))?;
-            wtx.commit()
-                .map_err(|e| LoopError::Persist(e.to_string()))?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| LoopError::Persist(format!("persist join failed: {e}")))?
+        }
     }
 }
 
@@ -1697,7 +1961,7 @@ mod tests {
     fn fixture(script: Vec<Vec<crate::agentloop::provider::StreamEvent>>) -> Fixture {
         register_sqlite_vec();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let mgr = r2d2_sqlite::SqliteConnectionManager::file(tmp.path());
+        let mgr = crate::pool::SqliteConnectionManager::file(tmp.path());
         let pool: Pool = r2d2::Pool::builder().max_size(4).build(mgr).unwrap();
         run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
         pool.get()
@@ -1746,9 +2010,9 @@ mod tests {
     // instructions name, one scripted model turn per phase.
     const INTAKE_JSON: &str = r#"{"is_not":{"what":{"is":"PERC H740P write-cache write-through","is_not":"read cache"},"where":{"is":"node-042 RAID-10 VDs","is_not":"node-041"},"when":{"is":"since 03:12 during rebuild","is_not":"before 03:12"},"extent":{"is":"VD 5 only","is_not":"all VDs"}},"telemetry_refs":["tsr://node-042","sel://events"],"what_changed":"fw 2.10 flashed last week","known_good":"node-041 same fw"}"#;
     const TRIAGE_JSON: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["P-STORAGE-0104"],"verdict":"accept"}"#;
-    const HYPOTHESIZE_JSON: &str = r#"{"hypotheses":[{"statement":"PERC battery dead","prediction":"racadm battery state reports Failed","sources":["SEL event 0x42","racadm get storageservices.battery"],"confidence":0.7}]}"#;
+    const HYPOTHESIZE_JSON: &str = r#"{"hypotheses":[{"statement":"PERC battery dead","prediction":"racadm battery state reports Failed","sources":["actual:SEL event 0x42","test:racadm get storageservices.battery"],"confidence":0.7}]}"#;
     const PLAN_JSON: &str = r#"{"steps":[{"order":1,"kind":"check","skill_gate":"L1","description":"query battery state","command":"racadm get storageservices.battery","expected":"Ready","fail_action":2,"invasiveness":0,"justification":null},{"order":2,"kind":"action","skill_gate":"L2","description":"replace battery ring 3","command":"hw replace battery","expected":"battery Ready","fail_action":null,"invasiveness":2,"justification":null}],"verify_step":{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h"},"dead_end":{"escalate_to":"eng-storage","required_evidence":["TSR","test log"]}}"#;
-    const ACT_JSON: &str = r#"{"rows":[{"order":1,"kind":"check","description":"query battery state","playbook_ref":"P-STORAGE-0104","variables":["battery state"],"expected":"Ready","actual":"Failed","verdict":"fail","evidence_ref":"TSR p.12","dtfvc":{"diagnose":"battery fault hypothesis","test":"racadm query","fix":"replace battery ring 3","verify":"rebuild rate 14%/h","capture":"battery replacement row"},"invasiveness":2,"justification":null}],"complete":true}"#;
+    const ACT_JSON: &str = r#"{"rows":[{"order":1,"kind":"check","description":"query battery state","playbook_ref":"P-STORAGE-0104","variables":["battery state"],"expected":"Ready","actual":"Failed","verdict":"fail","evidence_ref":"TSR p.12","dtfvc":{"diagnose":"battery fault hypothesis","test":"racadm query","fix":null,"verify":"battery state readback matches Failed","capture":null},"invasiveness":0,"justification":null},{"order":2,"kind":"action","description":"replace battery ring 3","playbook_ref":"P-STORAGE-0104","variables":["battery"],"expected":"battery Ready","actual":"Ready","verdict":"pass","evidence_ref":"TSR p.13","dtfvc":{"diagnose":"battery fault confirmed by row 1","test":"racadm query post-replace","fix":"replaced battery ring 3","verify":"rebuild rate 14%/h","capture":"battery replacement row"},"invasiveness":2,"justification":null}],"complete":true}"#;
     const VERIFY_JSON: &str = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass":true,"stability_window_min":15,"negative_check":true}"#;
     const HANDOFF_JSON: &str = r#"{"capture":{"resolution":"write-through during rebuild -> dead PERC battery -> replaced ring 3 -> verified 14%/h","bundle_hash":"h0"}}"#;
 
@@ -1762,6 +2026,756 @@ mod tests {
             scripted_text(VERIFY_JSON),
             scripted_text(HANDOFF_JSON),
         ]
+    }
+
+    /// Seed the exact exchange journal rows a receipt check reads back: the
+    /// start row, one assistant turn, and the done receipt. Test-only.
+    fn fixture_exchange(
+        conn: &mut Connection,
+        cp: &checkpoint::Checkpoint,
+        phase: GdlPhase,
+        attempt: u32,
+        artifact: &str,
+        owner: &str,
+    ) -> i64 {
+        let mut tx = super::super::tx::WorkflowTx::begin(conn).unwrap();
+        let fingerprint = format!("v2:{}:v2:{}", "0".repeat(64), "0".repeat(64));
+        let (created, id) = session_log::admit_exchange(
+            tx.tx(),
+            1,
+            owner,
+            &format!(
+                "gdl:{}:phase:{}:attempt:{attempt}",
+                cp.episode,
+                phase.as_str()
+            ),
+            &fingerprint,
+        )
+        .unwrap();
+        assert!(created);
+        session_log::append(
+            tx.tx(),
+            1,
+            "assistant",
+            &serde_json::json!({"text": artifact}).to_string(),
+            &format!("run1:a{id}:t1"),
+            1,
+        )
+        .unwrap();
+        session_log::append(tx.tx(), 1, "control:exchange_done", &serde_json::json!({"version":1,"outcome":{"Completed":{"turns":1,"usage":{"input_tokens":0,"output_tokens":0}}},"assistant_key":format!("run1:a{id}:t1")}).to_string(), &format!("control:exchange_done:{id}"), 1).unwrap();
+        tx.commit().unwrap();
+        id
+    }
+
+    fn reload(
+        path: &std::path::Path,
+        script: Vec<Vec<crate::agentloop::provider::StreamEvent>>,
+        config: LoopConfig,
+    ) -> (GdlDriver, Arc<LoopbackProvider>) {
+        let pool = r2d2::Pool::builder()
+            .max_size(4)
+            .build(crate::pool::SqliteConnectionManager::file(path))
+            .unwrap();
+        let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));
+        let provider = LoopbackProvider::new("loopback", script);
+        let driver = GdlDriver::new(
+            pool,
+            host,
+            provider.clone(),
+            vec![],
+            ExecutionEnv {
+                fs: Arc::new(DenyAll),
+                read_only: true,
+                allow_process: false,
+                root: "/".into(),
+                allowed_commands: vec![],
+            },
+            config,
+        );
+        (driver, provider)
+    }
+
+    #[test]
+    fn r1_reload_every_phase_never_duplicates_act() {
+        let f = fixture(vec![]);
+        let runtime = rt();
+        for (i, script) in happy_script().into_iter().enumerate() {
+            let (driver, provider) = reload(f.tmp.path(), vec![script], LoopConfig::default());
+            let result = runtime
+                .block_on(driver.run_case_until(1, "reload", &CancellationToken::new(), Some(1)))
+                .unwrap();
+            assert_eq!(provider.requests().len(), 1);
+            assert_eq!(result.is_some(), i == 6);
+            if let Some(outcome) = result {
+                assert!(matches!(outcome, GdlOutcome::Resolved { phases: 7, .. }));
+            }
+            drop(driver);
+        }
+        let rows = step_rows(f.tmp.path());
+        assert_eq!(rows.len(), 9);
+        assert_eq!(rows.iter().filter(|(_, _, key, _)| key == "act").count(), 1);
+    }
+
+    #[test]
+    fn r1_failed_attempts_survive_reload_and_terminal_retry() {
+        let f = fixture(vec![]);
+        let runtime = rt();
+        let mut terminal = None;
+        for attempt in 1..=3 {
+            let (driver, provider) = reload(
+                f.tmp.path(),
+                vec![scripted_text("not json")],
+                LoopConfig::default(),
+            );
+            terminal = runtime
+                .block_on(driver.run_case_until(1, "retry", &CancellationToken::new(), Some(1)))
+                .unwrap();
+            assert_eq!(provider.requests().len(), 1);
+            let conn = Connection::open(f.tmp.path()).unwrap();
+            let payload: String = conn.query_row("SELECT payload_json FROM agent_session_events WHERE kind='control:gdl' ORDER BY seq DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+            let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+            assert_eq!(value["attempt"], attempt);
+            assert!(!value["errors"].as_array().unwrap().is_empty());
+            assert_eq!(terminal.is_some(), attempt == 3);
+        }
+        let (driver, provider) = reload(f.tmp.path(), happy_script(), LoopConfig::default());
+        let retry = runtime
+            .block_on(driver.run_case(1, "retry", &CancellationToken::new()))
+            .unwrap();
+        assert_eq!(Some(retry), terminal);
+        assert!(provider.requests().is_empty());
+    }
+
+    #[test]
+    fn r1_all_terminal_branches_replay_exactly_after_reload() {
+        let runtime = rt();
+        for branch in 0..7 {
+            let mut script = happy_script();
+            let mut config = LoopConfig::default();
+            let cancel = CancellationToken::new();
+            match branch {
+                1 => script = vec![scripted_text("invalid"); 3],
+                2 => {
+                    script[1] = scripted_text(
+                        r#"{"priority":"P3","stabilized":false,"search_hits":[],"verdict":"defer"}"#,
+                    )
+                }
+                3 => {
+                    script[5] =
+                        scripted_text(&VERIFY_JSON.replace("\"pass\":true", "\"pass\":false"))
+                }
+                4 => cancel.cancel(),
+                5 => config.max_turns = 0,
+                6 => config.token_budget = Some(0),
+                _ => {}
+            }
+            let f = fixture(vec![]);
+            let (driver, _) = reload(f.tmp.path(), script, config.clone());
+            let first = runtime
+                .block_on(driver.run_case(1, "terminal", &cancel))
+                .unwrap();
+            assert!(
+                match (&first, branch) {
+                    (GdlOutcome::Resolved { .. }, 0)
+                    | (GdlOutcome::Routed { .. }, 1)
+                    | (GdlOutcome::Escalated { .. }, 2)
+                    | (GdlOutcome::VerifyFailed { .. }, 3)
+                    | (GdlOutcome::Canceled, 4) => true,
+                    (GdlOutcome::Capped { reason, .. }, 5) => reason == "turn_cap",
+                    (GdlOutcome::Capped { reason, .. }, 6) => reason == "budget",
+                    _ => false,
+                },
+                "branch {branch}: {first:?}"
+            );
+            drop(driver);
+            let (driver, provider) = reload(f.tmp.path(), happy_script(), config);
+            let second = runtime
+                .block_on(driver.run_case(1, "terminal", &CancellationToken::new()))
+                .unwrap();
+            assert_eq!(first, second);
+            assert!(provider.requests().is_empty());
+            assert!(
+                runtime
+                    .block_on(driver.run_case(1, "changed ticket", &CancellationToken::new()))
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn r1_terminal_retry_refuses_changed_loop_policy() {
+        let f = fixture(happy_script());
+        let runtime = rt();
+        runtime
+            .block_on(f.driver.run_case(1, "policy", &CancellationToken::new()))
+            .unwrap();
+        let changed = LoopConfig {
+            max_turns: 1,
+            ..LoopConfig::default()
+        };
+        let (driver, provider) = reload(f.tmp.path(), happy_script(), changed);
+        assert!(
+            runtime
+                .block_on(driver.run_case(1, "policy", &CancellationToken::new()))
+                .is_err()
+        );
+        assert!(provider.requests().is_empty());
+        let (mut driver, provider) = reload(f.tmp.path(), happy_script(), LoopConfig::default());
+        driver
+            .loop_driver
+            .set_retry_spec("changed provider implementation".into());
+        assert!(
+            runtime
+                .block_on(driver.run_case(1, "policy", &CancellationToken::new()))
+                .is_err()
+        );
+        assert!(provider.requests().is_empty());
+    }
+
+    #[test]
+    fn r1_checkpoint_receipt_and_gate_corruption_refuses() {
+        let runtime = rt();
+        for corruption in [
+            "outcome",
+            "exchange",
+            "start_kind",
+            "done_kind",
+            "gate_exchange",
+            "assistant",
+            "gate_artifact",
+        ] {
+            let f = fixture(happy_script());
+            let cancel = CancellationToken::new();
+            if corruption == "outcome" {
+                cancel.cancel();
+            }
+            runtime
+                .block_on(f.driver.run_case(1, "receipt", &cancel))
+                .unwrap();
+            let conn = Connection::open(f.tmp.path()).unwrap();
+            let (key, payload): (String, String) = conn.query_row("SELECT idempotency_key, payload_json FROM agent_session_events WHERE kind='control:gdl' ORDER BY seq DESC LIMIT 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            let mut cp: serde_json::Value = serde_json::from_str(&payload).unwrap();
+            let exchange = cp["exchange"].as_i64().unwrap();
+            match corruption {
+                "outcome" => {
+                    cp["terminal"] =
+                        serde_json::json!({"Capped":{"at":"Intake","reason":"turn_cap"}});
+                    conn.execute(
+                        "UPDATE agent_session_events SET payload_json=?1 WHERE idempotency_key=?2",
+                        rusqlite::params![cp.to_string(), key],
+                    )
+                    .unwrap();
+                }
+                "exchange" => {
+                    cp["exchange"] = serde_json::json!(999999);
+                    conn.execute(
+                        "UPDATE agent_session_events SET payload_json=?1 WHERE idempotency_key=?2",
+                        rusqlite::params![cp.to_string(), key],
+                    )
+                    .unwrap();
+                }
+                "start_kind" => {
+                    conn.execute(
+                        "UPDATE agent_session_events SET kind='user' WHERE run_id=1 AND seq=?1",
+                        [exchange],
+                    )
+                    .unwrap();
+                }
+                "done_kind" => {
+                    conn.execute(
+                        "UPDATE agent_session_events SET kind='user' WHERE idempotency_key=?1",
+                        [format!("control:exchange_done:{exchange}")],
+                    )
+                    .unwrap();
+                }
+                "assistant" => {
+                    conn.execute("UPDATE agent_session_events SET payload_json='{}' WHERE idempotency_key=?1", [format!("run1:a{exchange}:t1")]).unwrap();
+                }
+                _ => {
+                    let gate_key = format!("{key}:gate");
+                    let payload: String = conn.query_row("SELECT payload_json FROM agent_session_events WHERE idempotency_key=?1", [&gate_key], |r| r.get(0)).unwrap();
+                    let mut gate: serde_json::Value = serde_json::from_str(&payload).unwrap();
+                    if corruption == "gate_exchange" {
+                        gate["exchange"] = serde_json::json!(999999);
+                    } else {
+                        gate["artifact"] = serde_json::json!("{}");
+                    }
+                    conn.execute(
+                        "UPDATE agent_session_events SET payload_json=?1 WHERE idempotency_key=?2",
+                        rusqlite::params![gate.to_string(), gate_key],
+                    )
+                    .unwrap();
+                }
+            }
+            let (driver, provider) = reload(f.tmp.path(), happy_script(), LoopConfig::default());
+            assert!(
+                runtime
+                    .block_on(driver.run_case(1, "receipt", &CancellationToken::new()))
+                    .is_err(),
+                "must refuse {corruption}"
+            );
+            assert!(provider.requests().is_empty());
+        }
+    }
+
+    #[test]
+    fn r1_checked_seal_audit_failure_rolls_back_checkpoint() {
+        let f = fixture(happy_script());
+        let runtime = rt();
+        runtime
+            .block_on(
+                f.driver
+                    .run_case_until(1, "audit", &CancellationToken::new(), Some(2)),
+            )
+            .unwrap();
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let before = super::super::state::read_state_and_revision(&conn, 1).unwrap();
+        let rows = step_rows(f.tmp.path());
+        conn.execute_batch("CREATE TRIGGER refuse_audit BEFORE INSERT ON audit_events WHEN NEW.actor='workflow' AND NEW.status='ok' AND EXISTS(SELECT 1 FROM workflow_steps WHERE phase='hypothesize') BEGIN SELECT RAISE(ABORT, 'audit test'); END;").unwrap();
+        let (driver, provider) = reload(
+            f.tmp.path(),
+            vec![scripted_text(HYPOTHESIZE_JSON)],
+            LoopConfig::default(),
+        );
+        assert!(
+            runtime
+                .block_on(driver.run_case(1, "audit", &CancellationToken::new()))
+                .is_err()
+        );
+        assert_eq!(provider.requests().len(), 1);
+        assert_eq!(
+            super::super::state::read_state_and_revision(&conn, 1).unwrap(),
+            before
+        );
+        assert_eq!(step_rows(f.tmp.path()), rows);
+        let (gates, findings, denials, denied_audits): (i64, i64, i64, i64) = conn.query_row("SELECT (SELECT COUNT(*) FROM agent_session_events WHERE kind='gdl_gate'), (SELECT COUNT(*) FROM findings), (SELECT COUNT(*) FROM agent_session_events WHERE kind='control:gdl_denied'), (SELECT COUNT(*) FROM audit_events WHERE actor='workflow' AND status='denied')", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!((gates, findings, denials, denied_audits), (2, 0, 1, 1));
+    }
+
+    #[test]
+    fn r1_denial_audit_failure_preserves_original_error() {
+        let f = fixture(vec![]);
+        let mut conn = Connection::open(f.tmp.path()).unwrap();
+        let cp = checkpoint::admit(&mut conn, 1, "t", "test", "owner").unwrap();
+        let exchange = fixture_exchange(&mut conn, &cp, GdlPhase::Intake, 1, INTAKE_JSON, "owner");
+        conn.execute("UPDATE workflow_runs SET status='cancelled' WHERE id=1", [])
+            .unwrap();
+        conn.execute_batch("CREATE TRIGGER refuse_all_audit BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT, 'audit test'); END;").unwrap();
+        let err = checkpoint::advance(
+            &mut conn,
+            &cp,
+            "owner",
+            checkpoint::Transition {
+                phase: GdlPhase::Intake,
+                attempt: 1,
+                verdict: "pass",
+                errors: vec![],
+                artifact: Some(INTAKE_JSON.into()),
+                exchange: Some(exchange),
+                terminal: None,
+            },
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, LoopError::Persist(ref message) if message.contains("binding changed")),
+            "original refusal must survive: {err:?}"
+        );
+        let denials: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE kind='control:gdl_denied'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            denials, 0,
+            "failed checked denial audit rolls back its journal row"
+        );
+    }
+
+    #[test]
+    fn r1_terminal_binding_refuses_human_changes() {
+        let runtime = rt();
+        for update in [
+            "status='cancelled'",
+            "state_revision=state_revision+1",
+            "state_json='{}'",
+            "domain='other'",
+            "kind='interview'",
+        ] {
+            let f = fixture(happy_script());
+            runtime
+                .block_on(f.driver.run_case(1, "t", &CancellationToken::new()))
+                .unwrap();
+            let conn = Connection::open(f.tmp.path()).unwrap();
+            conn.execute(&format!("UPDATE workflow_runs SET {update} WHERE id=1"), [])
+                .unwrap();
+            let (driver, provider) = reload(f.tmp.path(), happy_script(), LoopConfig::default());
+            assert!(
+                runtime
+                    .block_on(driver.run_case(1, "t", &CancellationToken::new()))
+                    .is_err()
+            );
+            assert!(provider.requests().is_empty());
+        }
+    }
+
+    #[test]
+    fn r1_malformed_checkpoint_refuses_without_fallback() {
+        let runtime = rt();
+        for corrupt in ["null", "{}", "[]", "{", "version", "terminal"] {
+            let f = fixture(happy_script());
+            runtime
+                .block_on(f.driver.run_case(1, "t", &CancellationToken::new()))
+                .unwrap();
+            let conn = Connection::open(f.tmp.path()).unwrap();
+            let payload: String = conn.query_row("SELECT payload_json FROM agent_session_events WHERE kind='control:gdl' ORDER BY seq DESC LIMIT 1", [], |r| r.get(0)).unwrap();
+            let replacement = if matches!(corrupt, "version" | "terminal") {
+                let mut value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+                if corrupt == "version" {
+                    value["version"] = serde_json::json!(99);
+                } else {
+                    value["terminal"] = serde_json::json!("Canceled");
+                }
+                value.to_string()
+            } else {
+                corrupt.into()
+            };
+            conn.execute("UPDATE agent_session_events SET payload_json=?1 WHERE seq=(SELECT MAX(seq) FROM agent_session_events WHERE kind='control:gdl')", [replacement]).unwrap();
+            let (driver, provider) = reload(f.tmp.path(), happy_script(), LoopConfig::default());
+            assert!(
+                runtime
+                    .block_on(driver.run_case(1, "t", &CancellationToken::new()))
+                    .is_err()
+            );
+            assert!(provider.requests().is_empty());
+        }
+    }
+
+    #[test]
+    fn r1_checkpoint_trigger_failure_rolls_back_and_retains_claim() {
+        let f = fixture(happy_script());
+        let runtime = rt();
+        runtime
+            .block_on(
+                f.driver
+                    .run_case_until(1, "t", &CancellationToken::new(), Some(2)),
+            )
+            .unwrap();
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let before = super::super::state::read_state_and_revision(&conn, 1).unwrap();
+        let rows = step_rows(f.tmp.path());
+        let gates: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE kind='gdl_gate'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute_batch("CREATE TRIGGER refuse_gdl BEFORE INSERT ON agent_session_events WHEN NEW.kind='control:gdl' BEGIN SELECT RAISE(ABORT, 'checkpoint test'); END;").unwrap();
+        let (driver, provider) = reload(
+            f.tmp.path(),
+            vec![scripted_text(HYPOTHESIZE_JSON)],
+            LoopConfig::default(),
+        );
+        assert!(
+            runtime
+                .block_on(driver.run_case(1, "t", &CancellationToken::new()))
+                .is_err()
+        );
+        assert_eq!(provider.requests().len(), 1);
+        assert_eq!(
+            super::super::state::read_state_and_revision(&conn, 1).unwrap(),
+            before
+        );
+        assert_eq!(step_rows(f.tmp.path()), rows);
+        let (after, findings, denials): (i64, i64, i64) = conn.query_row("SELECT (SELECT COUNT(*) FROM agent_session_events WHERE kind='gdl_gate'), (SELECT COUNT(*) FROM findings), (SELECT COUNT(*) FROM agent_session_events WHERE kind='control:gdl_denied')", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!((after, findings, denials), (gates, 0, 1));
+        conn.execute_batch("DROP TRIGGER refuse_gdl;").unwrap();
+        let (retry, provider) = reload(f.tmp.path(), happy_script(), LoopConfig::default());
+        assert!(
+            runtime
+                .block_on(retry.run_case(1, "t", &CancellationToken::new()))
+                .is_err()
+        );
+        assert!(provider.requests().is_empty());
+        assert!(verify_chain(&conn));
+    }
+
+    #[test]
+    fn r1_nonexpiring_claim_excludes_independent_driver() {
+        let f = fixture(vec![]);
+        let mut conn = Connection::open(f.tmp.path()).unwrap();
+        let cp =
+            checkpoint::admit(&mut conn, 1, "t", "gdl-v1:L3:ablated=false", "old-owner").unwrap();
+        let (driver, provider) = reload(f.tmp.path(), happy_script(), LoopConfig::default());
+        assert!(
+            rt().block_on(driver.run_case(1, "t", &CancellationToken::new()))
+                .is_err()
+        );
+        assert!(provider.requests().is_empty());
+        let mut tx = super::super::tx::WorkflowTx::begin(&mut conn).unwrap();
+        cp.verify(tx.tx(), "old-owner").unwrap();
+    }
+
+    #[test]
+    fn r1_terminal_retry_is_exact_without_provider_work() {
+        let f = fixture(happy_script());
+        let runtime = rt();
+        let first = runtime
+            .block_on(f.driver.run_case(1, "retry", &CancellationToken::new()))
+            .unwrap();
+        let calls = f.provider.requests().len();
+        let second = runtime
+            .block_on(f.driver.run_case(1, "retry", &CancellationToken::new()))
+            .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(f.provider.requests().len(), calls);
+    }
+
+    #[test]
+    fn r1_empty_state_with_history_refuses() {
+        for steps_only in [false, true] {
+            let f = fixture(happy_script());
+            let conn = Connection::open(f.tmp.path()).unwrap();
+            if steps_only {
+                conn.execute("INSERT INTO workflow_steps(run_id, phase, step_key, state_json) VALUES (1, 'act', 'old', '{}')", []).unwrap();
+            } else {
+                session_log::append(&conn, 1, "user", "{}", "old", 1).unwrap();
+            }
+            assert!(
+                rt().block_on(f.driver.run_case(1, "retry", &CancellationToken::new()))
+                    .is_err()
+            );
+            assert!(f.provider.requests().is_empty());
+            let claims: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_session_events WHERE kind='control:claim'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                claims, 0,
+                "validation precedes acquisition in the same transaction"
+            );
+        }
+    }
+
+    #[test]
+    fn r1_pause_refuses_external_edits_and_intervening_work() {
+        let runtime = rt();
+        for change in 0..3 {
+            let f = fixture(happy_script());
+            runtime
+                .block_on(
+                    f.driver
+                        .run_case_until(1, "t", &CancellationToken::new(), Some(1)),
+                )
+                .unwrap();
+            let conn = Connection::open(f.tmp.path()).unwrap();
+            match change {
+                0 => {
+                    conn.execute("UPDATE workflow_runs SET status='cancelled' WHERE id=1", [])
+                        .unwrap();
+                }
+                1 => {
+                    conn.execute(
+                        "UPDATE workflow_runs SET state_revision=state_revision+1 WHERE id=1",
+                        [],
+                    )
+                    .unwrap();
+                }
+                _ => {
+                    session_log::append(&conn, 1, "user", "{}", "intervening", 1).unwrap();
+                }
+            }
+            let (driver, provider) = reload(f.tmp.path(), happy_script(), LoopConfig::default());
+            assert!(
+                runtime
+                    .block_on(driver.run_case(1, "t", &CancellationToken::new()))
+                    .is_err()
+            );
+            assert!(provider.requests().is_empty());
+            assert_eq!(step_rows(f.tmp.path()).len(), 1);
+        }
+    }
+
+    #[test]
+    fn r1_unsettled_exchange_cannot_create_clean_pause() {
+        let f = fixture(vec![]);
+        let mut conn = Connection::open(f.tmp.path()).unwrap();
+        let cp = checkpoint::admit(&mut conn, 1, "t", "test", "owner").unwrap();
+        let mut tx = super::super::tx::WorkflowTx::begin(&mut conn).unwrap();
+        session_log::admit_exchange(tx.tx(), 1, "owner", "pending", "{}").unwrap();
+        tx.commit().unwrap();
+        assert!(checkpoint::pause(&mut conn, &cp, "owner").is_err());
+        let mut tx = super::super::tx::WorkflowTx::begin(&mut conn).unwrap();
+        cp.verify(tx.tx(), "owner").unwrap();
+        let pauses: i64 = tx
+            .tx()
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE kind='control:gdl_pause'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(pauses, 0);
+    }
+
+    #[test]
+    fn stale_prepared_phase_does_not_overwrite_or_leave_rows() {
+        let f = fixture(vec![]);
+        let mut conn = Connection::open(f.tmp.path()).unwrap();
+        let prepared = checkpoint::admit(&mut conn, 1, "original", "test", "owner").unwrap();
+        let exchange = fixture_exchange(
+            &mut conn,
+            &prepared,
+            GdlPhase::Intake,
+            1,
+            INTAKE_JSON,
+            "owner",
+        );
+        let intervening = serde_json::to_string(&GdlCase::fresh("intervening")).unwrap();
+        super::super::state::cas_update(&conn, 1, 1, &intervening, "active", 2).unwrap();
+        let counts = |conn: &Connection| -> (i64, i64, i64) {
+            conn.query_row(
+                "SELECT (SELECT COUNT(*) FROM workflow_steps), (SELECT COUNT(*) FROM findings), (SELECT COUNT(*) FROM agent_session_events WHERE kind='gdl_gate')",
+                [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            ).unwrap()
+        };
+        let before = counts(&conn);
+        let audits: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .unwrap();
+        let result = checkpoint::advance(
+            &mut conn,
+            &prepared,
+            "owner",
+            checkpoint::Transition {
+                phase: GdlPhase::Intake,
+                attempt: 1,
+                verdict: "pass",
+                errors: vec![],
+                artifact: Some(INTAKE_JSON.into()),
+                exchange: Some(exchange),
+                terminal: None,
+            },
+        );
+        assert!(result.is_err(), "stale prepared state must be rejected");
+        assert_eq!(
+            counts(&conn),
+            before,
+            "failed phase and its evidence/gate roll back"
+        );
+        assert_eq!(
+            super::super::state::read_state_and_revision(&conn, 1).unwrap(),
+            Some((intervening, 2)),
+        );
+        let denials: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE kind='control:gdl_denied'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(denials, 1);
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            after,
+            audits + 2,
+            "denial append Ok plus explicit checked Denied survive"
+        );
+        let denied: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE actor='workflow' AND status='denied'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(denied, 1);
+        assert!(verify_chain(&conn));
+    }
+
+    #[test]
+    fn corrupt_state_refuses_instead_of_restarting_fresh() {
+        let runtime = rt();
+        for corrupt in [
+            "{\"phase\":\"intake\"",
+            "{\"unrelated\":true}",
+            "null",
+            "[]",
+            "{}",
+        ] {
+            let f = fixture(happy_script());
+            let conn = Connection::open(f.tmp.path()).unwrap();
+            super::super::state::cas_update(&conn, 1, 0, corrupt, "active", 1).unwrap();
+            let before = super::super::state::read_state_and_revision(&conn, 1).unwrap();
+            let err = runtime
+                .block_on(f.driver.run_case(1, "original", &CancellationToken::new()))
+                .unwrap_err();
+            assert!(
+                matches!(err, LoopError::Persist(ref m) if m.contains("corrupt state")),
+                "corrupt state must refuse loud: {err:?}"
+            );
+            assert!(f.provider.requests().is_empty());
+            assert!(step_rows(f.tmp.path()).is_empty());
+            assert_eq!(
+                super::super::state::read_state_and_revision(&conn, 1).unwrap(),
+                before
+            );
+        }
+        // Only the initial, revision-zero sentinel starts a new case.
+        let f = fixture(vec![]);
+        let mut conn = Connection::open(f.tmp.path()).unwrap();
+        let cp = checkpoint::admit(&mut conn, 1, "original", "test", "owner").unwrap();
+        assert_eq!(cp.case, GdlCase::fresh("original"));
+        assert_eq!(cp.revision, 1);
+    }
+
+    #[test]
+    fn closed_or_foreign_run_refuses_before_provider_work() {
+        let runtime = rt();
+        for (kind, status) in [
+            ("troubleshoot", "resolved"),
+            ("troubleshoot", "cancelled"),
+            ("troubleshoot", "closed"),
+            ("troubleshoot", "completed"),
+            ("troubleshoot", "fired"),
+            ("interview", "active"),
+        ] {
+            let f = fixture(happy_script());
+            let conn = Connection::open(f.tmp.path()).unwrap();
+            let mut case = GdlCase::fresh("original");
+            case.phase = GdlPhase::Handoff;
+            conn.execute(
+                "UPDATE workflow_runs SET kind = ?1, status = ?2, state_json = ?3 WHERE id = 1",
+                rusqlite::params![kind, status, serde_json::to_string(&case).unwrap()],
+            )
+            .unwrap();
+            let before = super::super::state::read_state_and_revision(&conn, 1).unwrap();
+            let result = runtime.block_on(f.driver.run_case(1, "retry", &CancellationToken::new()));
+            assert!(
+                result.is_err(),
+                "ineligible run must refuse: {kind}/{status}"
+            );
+            assert!(
+                f.provider.requests().is_empty(),
+                "no model work: {kind}/{status}"
+            );
+            assert!(step_rows(f.tmp.path()).is_empty());
+            assert!(
+                session_log::replay(&conn, 1, session_log::REPLAY_CAP)
+                    .unwrap()
+                    .is_empty()
+            );
+            assert_eq!(
+                super::super::state::read_state_and_revision(&conn, 1).unwrap(),
+                before
+            );
+        }
     }
 
     #[test]
@@ -1779,10 +2793,10 @@ mod tests {
             ),
             "the happy path resolves through verify: {outcome:?}"
         );
-        // Durable step rows: 7 phase rows + the act test-log sub-row,
-        // the act sub-row parented to the act phase row.
+        // Durable step rows: 7 phase rows + the act test-log sub-rows
+        // (one per executed plan step), each parented to the act phase row.
         let rows = step_rows(f.tmp.path());
-        assert_eq!(rows.len(), 8, "7 phase rows + 1 act sub-row");
+        assert_eq!(rows.len(), 9, "7 phase rows + 2 act sub-rows");
         assert_eq!(
             rows.iter()
                 .map(|(_, p, _, _)| p.as_str())
@@ -1794,10 +2808,11 @@ mod tests {
                 "plan",
                 "act",
                 "act",
+                "act",
                 "verify",
                 "handoff"
             ],
-            "phase rows in order, act carries its sub-row"
+            "phase rows in order, act carries its sub-rows"
         );
         assert!(rows[4].3.is_none(), "phase rows have no parent");
         assert_eq!(
@@ -1805,6 +2820,7 @@ mod tests {
             Some(rows[4].0),
             "the act sub-row is parented to the act phase row's id"
         );
+        assert_eq!(rows[6].3, Some(rows[4].0));
         // The run row CLOSED at handoff (verify-once-clear).
         let conn = Connection::open(f.tmp.path()).unwrap();
         let (status, state_json): (String, String) = conn
@@ -1817,7 +2833,7 @@ mod tests {
         assert_eq!(status, "resolved");
         let case: GdlCase = serde_json::from_str(&state_json).unwrap();
         assert_eq!(case.phase, GdlPhase::Handoff);
-        assert_eq!(case.test_log.len(), 1);
+        assert_eq!(case.test_log.len(), 2);
         assert!(case.capture.is_some());
         // The audit chain verifies end to end (audit-per-write held).
         assert!(verify_chain(&conn), "every phase write is chain-verified");
@@ -1839,20 +2855,21 @@ mod tests {
             requests[3]
                 .messages
                 .iter()
-                .any(|m| m.text.contains("GDL PLAN STRIP"))
+                .any(|m| m.text().contains("GDL PLAN STRIP"))
         );
         assert!(
             requests[6]
                 .messages
                 .iter()
-                .any(|m| m.text.contains("[1] done"))
+                .any(|m| m.text().contains("[1] done"))
         );
         // The system prompt is the pinned method prompt (cache-stable).
         assert!(requests[0].system_prompt.contains("7-phase method"));
         // Typed evidence landed in the findings table, one batch per
         // emitting phase: hypothesis + confidence (Hypothesize), test +
-        // expected + actual (Act), verification (Verify), capture
-        // (Handoff) — 7 lines, deterministic order, zero contradictions.
+        // expected + actual per executed row (Act), verification (Verify),
+        // capture (Handoff) — 10 lines, deterministic order, zero
+        // contradictions.
         let claims: Vec<String> = {
             let mut stmt = conn
                 .prepare("SELECT claim FROM findings WHERE run_id = 1 ORDER BY id")
@@ -1866,8 +2883,11 @@ mod tests {
                 "confidence: PERC battery dead",
                 "hypothesis: PERC battery dead",
                 "actual: query battery state",
+                "actual: replace battery ring 3",
                 "expected: query battery state",
+                "expected: replace battery ring 3",
                 "test: query battery state",
+                "test: replace battery ring 3",
                 "verification: rebuild rate on VD 5 under the customer load",
                 "capture: write-through during rebuild -> dead PERC battery -> replaced ring 3 -> verified 14%/h",
             ],
@@ -1964,7 +2984,7 @@ mod tests {
             requests[1]
                 .messages
                 .iter()
-                .any(|m| { m.text.contains("REJECTED") && m.text.contains("L1") })
+                .any(|m| { m.text().contains("REJECTED") && m.text().contains("L1") })
         );
     }
 
@@ -1975,6 +2995,7 @@ mod tests {
             telemetry_refs: vec![],
             what_changed: String::new(),
             known_good: String::new(),
+            diagnostic_seams: vec![],
         };
         let errors = intake_gate(&a);
         let joined = errors.join(" | ");
@@ -1986,30 +3007,56 @@ mod tests {
             is_not: IsNotTable {
                 what: IsNotRow {
                     is: "slow".into(),
-                    is_not: String::new(),
+                    is_not: "unknown".into(),
                 },
                 place: IsNotRow {
                     is: "node-042".into(),
-                    is_not: String::new(),
+                    is_not: "unknown".into(),
                 },
                 time: IsNotRow {
                     is: "since 03:12".into(),
-                    is_not: String::new(),
+                    is_not: "unknown".into(),
                 },
                 extent: IsNotRow {
                     is: "VD 5".into(),
-                    is_not: String::new(),
+                    is_not: "unknown".into(),
                 },
             },
             telemetry_refs: vec!["tsr://x".into()],
             what_changed: "unknown".into(),
             known_good: "none available".into(),
+            diagnostic_seams: vec![],
         };
         assert!(
             intake_gate(&honest).is_empty(),
             "recorded-unknown is valid KT honesty: {:?}",
             intake_gate(&honest)
         );
+    }
+
+    #[test]
+    fn intake_requires_each_is_not_cell() {
+        for dimension in ["what", "where", "when", "extent"] {
+            for missing in [true, false] {
+                let mut value: serde_json::Value = serde_json::from_str(INTAKE_JSON).unwrap();
+                if missing {
+                    value["is_not"][dimension]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("is_not");
+                } else {
+                    value["is_not"][dimension]["is_not"] = serde_json::json!("   ");
+                }
+                let artifact: IntakeArtifact = serde_json::from_value(value).unwrap();
+                let errors = intake_gate(&artifact);
+                assert!(
+                    errors
+                        .iter()
+                        .any(|e| e.contains(&format!("is_not.{dimension}.is_not"))),
+                    "missing={missing}, dimension={dimension}: {errors:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -2037,18 +3084,98 @@ mod tests {
     }
 
     #[test]
-    fn one_line_is_hypothesis_two_distinct_sources_confirm() {
-        // L7/A4: root cause is confirmed ONLY by triangulation — ≥2
-        // DISTINCT evidence lines. One line, twice-cited, is still one.
+    fn two_sources_of_the_same_kind_do_not_confirm() {
+        // The preregistered law: corroboration is ≥2 captures from
+        // DIFFERENT evidence buckets. Two sources of the same kind —
+        // however differently located — are one bucket, and do not
+        // confirm.
+        let same_kind = Hypothesis {
+            statement: "battery dead".into(),
+            prediction: "state Failed".into(),
+            sources: vec!["test:tsr".into(), "test:sel".into()],
+            confidence: None,
+        };
+        assert_eq!(
+            hypothesis_status(&same_kind),
+            HypothesisStatus::Hypothesis,
+            "two same-kind sources are one bucket, not corroboration"
+        );
+    }
+
+    #[test]
+    fn corroboration_ablated_law_moves_only_the_threshold() {
+        // The registered arm C ("1 line suffices"): one VALID source
+        // confirms; a malformed source never counts (the kind law does
+        // not move); two distinct kinds confirm under both laws.
         let one = Hypothesis {
             statement: "battery dead".into(),
             prediction: "state Failed".into(),
-            sources: vec!["SEL event".into(), "SEL event".into()],
+            sources: vec!["test:tsr".into()],
             confidence: None,
         };
         assert_eq!(hypothesis_status(&one), HypothesisStatus::Hypothesis);
+        assert_eq!(
+            hypothesis_status_corroboration_ablated(&one),
+            HypothesisStatus::Confirmed,
+            "one valid source confirms under the registered ablation"
+        );
+        let malformed = Hypothesis {
+            sources: vec!["no-prefix-locator".into()],
+            ..one.clone()
+        };
+        assert_eq!(
+            hypothesis_status_corroboration_ablated(&malformed),
+            HypothesisStatus::Hypothesis,
+            "a malformed source never counts, under either law"
+        );
         let two = Hypothesis {
-            sources: vec!["SEL event".into(), "racadm state".into()],
+            sources: vec!["test:tsr".into(), "actual:sel".into()],
+            ..one
+        };
+        assert_eq!(hypothesis_status(&two), HypothesisStatus::Confirmed);
+        assert_eq!(
+            hypothesis_status_corroboration_ablated(&two),
+            HypothesisStatus::Confirmed,
+            "the ≥2-distinct-kinds law still confirms under the ablation"
+        );
+    }
+
+    #[test]
+    fn malformed_source_is_a_named_hypothesize_failure() {
+        // A source without its kind prefix is malformed — named L7, never
+        // silently counted toward confirmation.
+        let bad = r#"{"hypotheses":[{"statement":"battery dead","prediction":"state Failed","sources":["net","logs"]}]}"#;
+        let case = GdlCase::fresh("t");
+        let (gate, _) = parse_and_gate(GdlPhase::Hypothesize, &case, bad);
+        assert!(
+            matches!(gate, Gate::Fail(ref e) if e.iter().any(|e| e.starts_with("L7"))),
+            "malformed sources are a named hypothesize failure: {gate:?}"
+        );
+    }
+
+    #[test]
+    fn one_line_is_hypothesis_two_distinct_sources_confirm() {
+        // L7/A4: root cause is confirmed ONLY by triangulation — ≥2
+        // DISTINCT evidence KINDS (the kind-prefixed source law). One
+        // line, twice-cited, is still one.
+        let one = Hypothesis {
+            statement: "battery dead".into(),
+            prediction: "state Failed".into(),
+            sources: vec!["test:tsr".into(), "test:tsr".into()],
+            confidence: None,
+        };
+        assert_eq!(hypothesis_status(&one), HypothesisStatus::Hypothesis);
+        let one_kind = Hypothesis {
+            sources: vec!["test:tsr".into(), "test:sel".into()],
+            ..one.clone()
+        };
+        assert_eq!(
+            hypothesis_status(&one_kind),
+            HypothesisStatus::Hypothesis,
+            "two same-kind sources do not confirm"
+        );
+        let two = Hypothesis {
+            sources: vec!["test:tsr".into(), "actual:sel".into()],
             ..one
         };
         assert_eq!(hypothesis_status(&two), HypothesisStatus::Confirmed);
@@ -2081,6 +3208,8 @@ mod tests {
         let case = {
             let mut c = GdlCase::fresh("t");
             c.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
+            let plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
+            c.plan = plan.steps;
             c
         };
         let mut a = serde_json::from_str::<ActArtifact>(ACT_JSON).unwrap();
@@ -2112,6 +3241,181 @@ mod tests {
             ..serde_json::from_str(INTAKE_JSON).unwrap()
         });
         assert!(act_gate(&a, &bare).iter().any(|e| e.starts_with("L1")));
+    }
+
+    #[test]
+    fn act_rows_must_reference_plan_steps() {
+        let mut case = GdlCase::fresh("t");
+        case.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
+        let plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
+        case.plan = plan.steps;
+        let mut a = serde_json::from_str::<ActArtifact>(ACT_JSON).unwrap();
+        a.rows[0].order = (case.plan.len() + 1) as i64;
+        let errors = act_gate(&a, &case);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("§4") && e.contains("not a plan step")),
+            "an out-of-plan order is a named gate failure, never ignored: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn incomplete_plan_execution_is_a_named_gate_failure() {
+        let mut case = GdlCase::fresh("t");
+        case.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
+        let plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
+        case.plan = plan.steps;
+        let mut a = serde_json::from_str::<ActArtifact>(ACT_JSON).unwrap();
+        a.rows.truncate(1);
+        let errors = act_gate(&a, &case);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("§4") && e.contains("no executed row")),
+            "a plan step without an executed row is a named gate failure: {errors:?}"
+        );
+        let text = serde_json::to_string(&a).unwrap();
+        let (gate, _) = parse_and_gate(GdlPhase::Act, &case, &text);
+        assert!(
+            matches!(gate, Gate::Fail(ref e) if e.iter().any(|e| e.starts_with("§4"))),
+            "complete:true over a partial plan does not pass"
+        );
+    }
+
+    #[test]
+    fn unsupported_evidence_pass_without_actual_and_evidence_ref() {
+        let mut case = GdlCase::fresh("t");
+        case.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
+        let plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
+        case.plan = plan.steps;
+        let mut a = serde_json::from_str::<ActArtifact>(ACT_JSON).unwrap();
+        a.rows[0].verdict = Verdict::Pass;
+        a.rows[0].actual = None;
+        a.rows[0].evidence_ref = None;
+        let errors = act_gate(&a, &case);
+        assert!(
+            errors.iter().any(|e| e.starts_with("A4")),
+            "a Pass verdict without actual and evidence_ref is unsupported evidence: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn missing_required_diagnostic_seam_routes_not_resolves() {
+        // A plan step that requires a diagnostic channel the case never
+        // declared at intake ROUTES at Plan — route, not resolve; the run
+        // row stays active for the human who now owns it.
+        let plan_seam = r#"{"steps":[{"order":1,"kind":"check","skill_gate":"L1","description":"query battery state","command":"racadm get storageservices.battery","expected":"Ready","seam":"idrac","fail_action":2,"invasiveness":0,"justification":null},{"order":2,"kind":"action","skill_gate":"L2","description":"replace battery ring 3","command":"hw replace battery","expected":"battery Ready","fail_action":null,"invasiveness":2,"justification":null}],"verify_step":{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h"},"dead_end":{"escalate_to":"eng-storage","required_evidence":["TSR","test log"]}}"#;
+        let f = fixture(vec![
+            scripted_text(INTAKE_JSON),
+            scripted_text(TRIAGE_JSON),
+            scripted_text(HYPOTHESIZE_JSON),
+            scripted_text(plan_seam),
+            scripted_text(ACT_JSON),
+            scripted_text(VERIFY_JSON),
+            scripted_text(HANDOFF_JSON),
+        ]);
+        let cancel = CancellationToken::new();
+        let outcome = rt()
+            .block_on(f.driver.run_case(1, "seamless case", &cancel))
+            .unwrap();
+        match &outcome {
+            GdlOutcome::Escalated { at, bundle } => {
+                assert_eq!(*at, GdlPhase::Plan);
+                assert!(
+                    bundle.is_not.is_some() && bundle.telemetry_refs.len() == 2,
+                    "the bundle carries IS/NOT + telemetry"
+                );
+            }
+            other => panic!("an undeclared required seam routes at Plan: {other:?}"),
+        }
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let status: String = conn
+            .query_row("SELECT status FROM workflow_runs WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "active", "a routed case stays open for the human");
+        let events = session_log::replay(&conn, 1, session_log::REPLAY_CAP).unwrap();
+        let route = events
+            .iter()
+            .find(|e| e.kind == "gdl_gate" && e.payload_json.contains("required diagnostic seam"))
+            .map(|e| e.payload_json.clone())
+            .unwrap_or_default();
+        assert!(
+            route.contains("required diagnostic seam not declared at intake: idrac"),
+            "the route names the missing seam: {route}"
+        );
+    }
+
+    #[test]
+    fn oversized_or_malformed_seam_declaration_is_named_intake_failure() {
+        let oversized = r#"{"is_not":{"what":{"is":"s","is_not":"n"},"where":{"is":"s","is_not":"n"},"when":{"is":"s","is_not":"n"},"extent":{"is":"s","is_not":"n"}},"telemetry_refs":["tsr://x"],"what_changed":"unknown","known_good":"none available","diagnostic_seams":["0123456789012345678901234567890123456789012345678901234567890123456789"]}"#;
+        let a: IntakeArtifact = serde_json::from_str(oversized).unwrap();
+        let errors = intake_gate(&a);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("L1") && e.contains("diagnostic_seams")),
+            "an oversize seam declaration is a named intake failure: {errors:?}"
+        );
+        let malformed = r#"{"is_not":{"what":{"is":"s","is_not":"n"},"where":{"is":"s","is_not":"n"},"when":{"is":"s","is_not":"n"},"extent":{"is":"s","is_not":"n"}},"telemetry_refs":["tsr://x"],"what_changed":"unknown","known_good":"none available","diagnostic_seams":["IDRAC"]}"#;
+        let a: IntakeArtifact = serde_json::from_str(malformed).unwrap();
+        assert!(
+            intake_gate(&a)
+                .iter()
+                .any(|e| e.starts_with("L1") && e.contains("diagnostic_seams")),
+            "a non-lowercase seam is malformed"
+        );
+        let crowded = r#"{"is_not":{"what":{"is":"s","is_not":"n"},"where":{"is":"s","is_not":"n"},"when":{"is":"s","is_not":"n"},"extent":{"is":"s","is_not":"n"}},"telemetry_refs":["tsr://x"],"what_changed":"unknown","known_good":"none available","diagnostic_seams":["a","b","c","d","e","f","g","h","i","j","k","l","m","n","o","p","q"]}"#;
+        let a: IntakeArtifact = serde_json::from_str(crowded).unwrap();
+        assert!(
+            intake_gate(&a)
+                .iter()
+                .any(|e| e.starts_with("L1") && e.contains("diagnostic_seams")),
+            "more than 16 declared seams is a named intake failure"
+        );
+    }
+
+    #[test]
+    fn declared_seam_plan_passes_and_no_seam_plan_passes() {
+        // The positive face: a plan step riding a DECLARED seam passes the
+        // Plan arm, and a plan with no step seams never routes.
+        let declared = r#"{"is_not":{"what":{"is":"s","is_not":"n"},"where":{"is":"s","is_not":"n"},"when":{"is":"s","is_not":"n"},"extent":{"is":"s","is_not":"n"}},"telemetry_refs":["tsr://x"],"what_changed":"unknown","known_good":"none available","diagnostic_seams":["idrac"]}"#;
+        let mut case = GdlCase::fresh("t");
+        case.intake = Some(serde_json::from_str(declared).unwrap());
+        let plan_seam = r#"{"steps":[{"order":1,"kind":"check","skill_gate":"L1","description":"query","command":"racadm","expected":"Ready","seam":"idrac","fail_action":2,"invasiveness":0,"justification":null}],"verify_step":{"re_run":"the failing scenario","pass_condition":"ok"},"dead_end":{"escalate_to":"eng","required_evidence":["TSR"]}}"#;
+        let (gate, _) = parse_and_gate(GdlPhase::Plan, &case, plan_seam);
+        assert!(
+            matches!(gate, Gate::Pass),
+            "a declared seam passes: {gate:?}"
+        );
+        let (gate, _) = parse_and_gate(GdlPhase::Plan, &case, PLAN_JSON);
+        assert!(
+            matches!(gate, Gate::Pass),
+            "no step seams, no route: {gate:?}"
+        );
+    }
+
+    #[test]
+    fn act_requires_completed_nonempty_execution() {
+        let mut case = GdlCase::fresh("t");
+        case.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
+        for artifact in [
+            ActArtifact {
+                rows: vec![],
+                complete: true,
+            },
+            ActArtifact {
+                complete: false,
+                ..serde_json::from_str(ACT_JSON).unwrap()
+            },
+        ] {
+            assert!(!act_gate(&artifact, &case).is_empty());
+            let text = serde_json::to_string(&artifact).unwrap();
+            let (gate, _) = parse_and_gate(GdlPhase::Act, &case, &text);
+            assert!(matches!(gate, Gate::Fail(_)));
+        }
     }
 
     #[test]
@@ -2148,7 +3452,8 @@ mod tests {
         let cancel = CancellationToken::new();
         let outcome = rt().block_on(f.driver.run_case(1, "t", &cancel)).unwrap();
         match &outcome {
-            GdlOutcome::VerifyFailed { bundle, .. } => {
+            GdlOutcome::VerifyFailed { at, bundle } => {
+                assert_eq!(*at, GdlPhase::Verify);
                 assert!(bundle.complete, "the hand-back carries the full bundle");
             }
             other => panic!("a failed verify is terminal-but-active: {other:?}"),
@@ -2160,6 +3465,42 @@ mod tests {
             })
             .unwrap();
         assert_eq!(status, "active");
+        // The acceptance case, exactly: the falsified prediction belongs
+        // to the CONFIRMED first hypothesis (its kind-prefixed sources
+        // corroborated it), and the failing verify landed as the exact
+        // typed verification row.
+        let case_json: String = conn
+            .query_row(
+                "SELECT state_json FROM workflow_runs WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let case: GdlCase = serde_json::from_str(&case_json).unwrap();
+        assert_eq!(case.hypotheses.len(), 1);
+        assert_eq!(
+            hypothesis_status(&case.hypotheses[0]),
+            HypothesisStatus::Confirmed,
+            "the falsified hypothesis was the corroborated one"
+        );
+        assert_eq!(
+            case.hypotheses[0].prediction,
+            "racadm battery state reports Failed"
+        );
+        let verifications: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT evidence FROM findings WHERE run_id = 1 AND claim LIKE 'verification:%'",
+                )
+                .unwrap();
+            let rows = stmt.query_map([], |r| r.get::<_, String>(0)).unwrap();
+            rows.collect::<Result<_, _>>().unwrap()
+        };
+        assert_eq!(
+            verifications,
+            vec!["pass=false window=15min negative=true"],
+            "exactly one verification row, and it FAILED"
+        );
     }
 
     #[test]
@@ -2201,6 +3542,35 @@ mod tests {
     }
 
     #[test]
+    fn bundle_reports_incomplete_when_a_prior_phase_lacks_its_artifact() {
+        // Completeness is MEASURED against the case's validated artifacts,
+        // never assumed from the intake: a case at Verify whose Act never
+        // produced executed rows escalates with complete:false — the
+        // receiving tier must see the gap.
+        let mut case = GdlCase::fresh("t");
+        case.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
+        let plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
+        case.plan = plan.steps;
+        case.triage = Some(serde_json::from_str(TRIAGE_JSON).unwrap());
+        case.hypotheses = serde_json::from_str::<HypothesizeArtifact>(HYPOTHESIZE_JSON)
+            .unwrap()
+            .hypotheses;
+        case.phase = GdlPhase::Verify;
+        let bundle = case.escalation_bundle();
+        assert!(
+            !bundle.complete,
+            "Act has no executed rows — the bundle says so: {bundle:?}"
+        );
+        // The same case with Act's artifact present is complete up to
+        // Verify.
+        case.test_log = serde_json::from_str::<ActArtifact>(ACT_JSON).unwrap().rows;
+        assert!(
+            case.escalation_bundle().complete,
+            "every phase before Verify carries its artifact"
+        );
+    }
+
+    #[test]
     fn escalation_bundle_completeness_is_measured_not_assumed() {
         let fresh = GdlCase::fresh("t");
         assert!(!fresh.escalation_bundle().complete);
@@ -2209,7 +3579,181 @@ mod tests {
         full.test_log = serde_json::from_str::<ActArtifact>(ACT_JSON).unwrap().rows;
         let bundle = full.escalation_bundle();
         assert!(bundle.complete, "IS/NOT + telemetry + test log = complete");
-        assert_eq!(bundle.test_log_rows, 1);
+        assert_eq!(bundle.test_log_rows, 2);
+    }
+
+    #[test]
+    fn open_contradictions_block_resolved() {
+        // C4's settlement, behaviorally: a surfaced contradiction pair
+        // blocks Handoff's Pass — the driver fails the attempt with the
+        // named A4 law; after resolve_contradiction disposes the pair,
+        // the same case resolves.
+        let f = fixture(vec![
+            scripted_text(INTAKE_JSON),
+            scripted_text(TRIAGE_JSON),
+            scripted_text(HYPOTHESIZE_JSON),
+            scripted_text(PLAN_JSON),
+            scripted_text(ACT_JSON),
+            scripted_text(VERIFY_JSON),
+        ]);
+        let runtime = rt();
+        // Intake..Verify committed, then a clean pause.
+        runtime
+            .block_on(
+                f.driver
+                    .run_case_until(1, "t", &CancellationToken::new(), Some(6)),
+            )
+            .unwrap();
+        // Surface a REAL contradiction pair through the typed writer.
+        let mut conn = Connection::open(f.tmp.path()).unwrap();
+        let mut wtx = crate::workflow::tx::WorkflowTx::begin(&mut conn).unwrap();
+        let surfaced = super::super::evidence::record(
+            wtx.tx(),
+            1,
+            &[
+                super::super::evidence::TypedEvidence {
+                    kind: super::super::evidence::EvidenceKind::Actual,
+                    claim: "battery state".into(),
+                    evidence: "Ready".into(),
+                    source: "gdl".into(),
+                    confidence: 0.8,
+                    ts: 9,
+                },
+                super::super::evidence::TypedEvidence {
+                    kind: super::super::evidence::EvidenceKind::Actual,
+                    claim: "battery state".into(),
+                    evidence: "Failed".into(),
+                    source: "gdl".into(),
+                    confidence: 0.7,
+                    ts: 9,
+                },
+            ],
+            None,
+        )
+        .unwrap();
+        wtx.commit().unwrap();
+        assert_eq!(surfaced.contradictions.len(), 1, "the pair surfaced");
+        drop(conn);
+        // Handoff attempt 1: the gate passes the artifact; the driver's
+        // open-contradictions check fails it, named A4 (one phase, pause).
+        let (driver, _provider) = reload(
+            f.tmp.path(),
+            vec![scripted_text(HANDOFF_JSON)],
+            LoopConfig::default(),
+        );
+        runtime
+            .block_on(driver.run_case_until(1, "t", &CancellationToken::new(), Some(1)))
+            .unwrap();
+        let mut conn = Connection::open(f.tmp.path()).unwrap();
+        let events = session_log::replay(&conn, 1, session_log::REPLAY_CAP).unwrap();
+        let last_gate = events
+            .iter()
+            .rev()
+            .find(|e| e.kind == "gdl_gate")
+            .map(|e| e.payload_json.clone())
+            .unwrap_or_default();
+        assert!(
+            last_gate.contains("\"fail\"")
+                && last_gate.contains("A4")
+                && last_gate.contains("resolve_contradiction"),
+            "the failed Handoff attempt names the A4 settlement: {last_gate}"
+        );
+        // The disposition seam: resolve_contradiction settles the pair.
+        let cid: i64 = conn
+            .query_row(
+                "SELECT id FROM contradictions WHERE run_id = 1 AND state = 'open'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let mut wtx = crate::workflow::tx::WorkflowTx::begin(&mut conn).unwrap();
+        super::super::evidence::resolve_contradiction(wtx.tx(), 1, cid, surfaced.findings[0])
+            .unwrap();
+        wtx.commit().unwrap();
+        drop(conn);
+        // The resumed case completes: attempt 2 passes with nothing open.
+        let (driver, provider) = reload(
+            f.tmp.path(),
+            vec![scripted_text(HANDOFF_JSON)],
+            LoopConfig::default(),
+        );
+        let outcome = runtime
+            .block_on(driver.run_case(1, "t", &CancellationToken::new()))
+            .unwrap();
+        assert!(
+            matches!(&outcome, GdlOutcome::Resolved { phases: 7, .. }),
+            "a dispositioned case resolves: {outcome:?}"
+        );
+        // The retry instruction carried the named law back to the model.
+        assert!(
+            provider.requests()[0]
+                .messages
+                .iter()
+                .any(|m| m.text().contains("resolve_contradiction")),
+            "the corrective instruction names the disposition seam"
+        );
+        // Exact rows: 10 fixture lines (2 hypothesis-batch + 6 act-batch +
+        // verification + capture) + the 2 surfaced pair lines; the one
+        // contradiction pair open→resolved by the first pair finding; the
+        // audit chain green over the whole settlement.
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let (findings, same_claim): (i64, i64) = conn.query_row(
+            "SELECT (SELECT COUNT(*) FROM findings WHERE run_id = 1),
+                    (SELECT COUNT(*) FROM findings WHERE run_id = 1 AND claim = 'actual: battery state')",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!((findings, same_claim), (12, 2), "exact findings rows");
+        let (pairs, resolved_by): (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(resolved_by_finding_id) FROM contradictions WHERE run_id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(pairs, 1, "exactly one contradiction pair");
+        assert_eq!(
+            resolved_by,
+            Some(surfaced.findings[0]),
+            "resolved by the named finding"
+        );
+        let open: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM contradictions WHERE run_id = 1 AND state = 'open'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(open, 0, "nothing stays open behind a resolution");
+        assert!(verify_chain(&conn), "the settlement keeps the chain green");
+    }
+
+    #[test]
+    fn typed_evidence_never_emits_contradiction() {
+        // The C4 pin: the SDK reducer is the ONLY contradiction detector;
+        // `Contradiction` stays reserved disposition vocabulary and no
+        // phase's typed emission ever carries it.
+        for (phase, artifact) in [
+            (GdlPhase::Intake, INTAKE_JSON),
+            (GdlPhase::Triage, TRIAGE_JSON),
+            (GdlPhase::Hypothesize, HYPOTHESIZE_JSON),
+            (GdlPhase::Plan, PLAN_JSON),
+            (GdlPhase::Act, ACT_JSON),
+            (GdlPhase::Verify, VERIFY_JSON),
+            (GdlPhase::Handoff, HANDOFF_JSON),
+        ] {
+            for line in typed_evidence_for(phase, artifact, 1) {
+                assert_ne!(
+                    line.kind,
+                    super::super::evidence::EvidenceKind::Contradiction,
+                    "{phase:?} emitted the reserved kind"
+                );
+            }
+        }
+        assert!(
+            typed_evidence_for(GdlPhase::Act, "not json", 1).is_empty(),
+            "unparseable artifacts emit nothing"
+        );
     }
 
     #[test]
@@ -2269,7 +3813,7 @@ mod tests {
         let cancel = CancellationToken::new();
         // Rebuild the driver at L1 over the same substrate.
         let pool: Pool = {
-            let mgr = r2d2_sqlite::SqliteConnectionManager::file(f.tmp.path());
+            let mgr = crate::pool::SqliteConnectionManager::file(f.tmp.path());
             r2d2::Pool::builder().max_size(4).build(mgr).unwrap()
         };
         let l1 = GdlDriver::new_with_proficiency(
@@ -2311,31 +3855,69 @@ mod tests {
         let f = fixture(happy_script());
         let cancel = CancellationToken::new();
         let pool: Pool = {
-            let mgr = r2d2_sqlite::SqliteConnectionManager::file(f.tmp.path());
+            let mgr = crate::pool::SqliteConnectionManager::file(f.tmp.path());
             r2d2::Pool::builder().max_size(4).build(mgr).unwrap()
         };
         let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));
-        // L1 cannot pass Hypothesize/Plan — seed the case state directly:
-        // a case handed DOWN to L1 with a plan whose step 2 is L3-gated.
+        // Test-only prepared checkpoint: isolate Act's row-authority arbiter.
+        // Production cannot implicitly hand a legacy case down to another tier.
+        // The policy string is the L1 driver's real policy_identity() so the
+        // resumed run binds to the same invocation policy.
+        let policy = {
+            let l1_probe = GdlDriver::new_with_proficiency(
+                pool.clone(),
+                host.clone(),
+                f.provider.clone(),
+                vec![],
+                ExecutionEnv {
+                    fs: Arc::new(DenyAll),
+                    read_only: false,
+                    allow_process: false,
+                    root: "/".into(),
+                    allowed_commands: vec![],
+                },
+                LoopConfig::default(),
+                super::super::proficiency::Proficiency::L1,
+            );
+            l1_probe.policy_identity()
+        };
+        // The exchange receipt law compares stored artifacts against the
+        // canonical re-serialization — seed the intake artifact in exactly
+        // the normalized shape the gate persists (with the canonical empty
+        // seam declaration).
+        let intake_normalized =
+            serde_json::to_string(&serde_json::from_str::<IntakeArtifact>(INTAKE_JSON).unwrap())
+                .unwrap();
         {
             let mut conn = pool.get().unwrap();
-            let mut wtx = crate::workflow::tx::WorkflowTx::begin(&mut conn).unwrap();
-            let mut case = GdlCase::fresh("t");
-            case.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
-            case.triage = Some(serde_json::from_str(TRIAGE_JSON).unwrap());
+            let mut cp = checkpoint::admit(&mut conn, 1, "t", &policy, "fixture").unwrap();
             let mut plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
             plan.steps[1].skill_gate = "L3".into();
-            case.plan = plan.steps.clone();
-            case.verify_step = Some(plan.verify_step.clone());
-            case.dead_end = Some(plan.dead_end.clone());
-            case.phase = GdlPhase::Act;
-            wtx.tx()
-                .execute(
-                    "UPDATE workflow_runs SET state_json = ?1 WHERE id = 1",
-                    rusqlite::params![serde_json::to_string(&case).unwrap()],
+            let plan = serde_json::to_string(&plan).unwrap();
+            for (phase, artifact) in [
+                (GdlPhase::Intake, intake_normalized.as_str()),
+                (GdlPhase::Triage, TRIAGE_JSON),
+                (GdlPhase::Hypothesize, HYPOTHESIZE_JSON),
+                (GdlPhase::Plan, plan.as_str()),
+            ] {
+                let exchange = fixture_exchange(&mut conn, &cp, phase, 1, artifact, "fixture");
+                cp = checkpoint::advance(
+                    &mut conn,
+                    &cp,
+                    "fixture",
+                    checkpoint::Transition {
+                        phase,
+                        attempt: 1,
+                        verdict: "pass",
+                        errors: vec![],
+                        artifact: Some(artifact.into()),
+                        exchange: Some(exchange),
+                        terminal: None,
+                    },
                 )
                 .unwrap();
-            wtx.commit().unwrap();
+            }
+            checkpoint::pause(&mut conn, &cp, "fixture").unwrap();
         }
         // The act artifact tries to execute BOTH rows — row 2 acts on the
         // L3-gated step: a named authority violation, retried, then routed.
@@ -2344,7 +3926,7 @@ mod tests {
             {"order":2,"kind":"action","description":"replace battery","playbook_ref":"P-STORAGE-0104","variables":["battery"],"expected":"Ready","actual":"Ready","verdict":"pass","evidence_ref":"TSR p.13","dtfvc":{"diagnose":"d","test":"t","fix":"ring 3","verify":"14%/h","capture":"row"},"invasiveness":2,"justification":null}
         ],"complete":true}"#;
         let pool2: Pool = {
-            let mgr = r2d2_sqlite::SqliteConnectionManager::file(f.tmp.path());
+            let mgr = crate::pool::SqliteConnectionManager::file(f.tmp.path());
             r2d2::Pool::builder().max_size(4).build(mgr).unwrap()
         };
         let provider2 = LoopbackProvider::new(
@@ -2384,7 +3966,7 @@ mod tests {
             requests[1]
                 .messages
                 .iter()
-                .any(|m| m.text.contains("authority")),
+                .any(|m| m.text().contains("authority")),
             "the corrective instruction names the authority error"
         );
     }
@@ -2397,5 +3979,901 @@ mod tests {
         assert!(artifact.is_none());
         // Usage import stays live for the outcome shapes below.
         let _ = Usage::default();
+    }
+
+    /// Pull the closing run into the 30-day repeater window and seed `n`
+    /// prior resolved troubleshoot runs in the same domain (one day old).
+    /// Returns the census `now` the capture path will measure against.
+    fn seed_repeater_priors(path: &std::path::Path, priors: usize) -> i64 {
+        let now = chrono::Utc::now().timestamp();
+        let conn = Connection::open(path).unwrap();
+        conn.execute(
+            "UPDATE workflow_runs SET created_at = ?1 WHERE id = 1",
+            [now],
+        )
+        .unwrap();
+        for _ in 0..priors {
+            conn.execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('acme', 'troubleshoot', '{}', 0, 'resolved', ?1, ?1)",
+                [now - 86_400],
+            )
+            .unwrap();
+        }
+        now
+    }
+
+    #[test]
+    fn resolved_case_enqueues_rca_exactly_once() {
+        let f = fixture(happy_script());
+        seed_repeater_priors(f.tmp.path(), 2);
+        let cancel = CancellationToken::new();
+        let outcome = rt()
+            .block_on(f.driver.run_case(1, "capture", &cancel))
+            .unwrap();
+        assert!(
+            matches!(&outcome, GdlOutcome::Resolved { .. }),
+            "the happy path resolves: {outcome:?}"
+        );
+        // The capture enqueue: EXACTLY ONE pending RCA proposal — the census
+        // is 2 priors + the closing case itself = 3, and similarity is
+        // unmeasured so no gap variant may ever ride along.
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let proposals: Vec<(String, String, String)> = {
+            let mut stmt = conn
+                .prepare("SELECT kind, status, source FROM proposals ORDER BY id")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap();
+            rows.collect::<Result<_, _>>().unwrap()
+        };
+        assert_eq!(
+            proposals,
+            vec![(
+                "gdl_rca".to_string(),
+                "pending".to_string(),
+                "gdl-capture".to_string()
+            )],
+            "census 3/30d warrants the RCA proposal and nothing else"
+        );
+        // Exactly-once under terminal replay: the second run_case replays
+        // the stored checkpoint — no provider work, no second row.
+        let replay = rt()
+            .block_on(f.driver.run_case(1, "capture", &cancel))
+            .unwrap();
+        assert!(matches!(replay, GdlOutcome::Resolved { .. }));
+        assert_eq!(
+            f.provider.requests().len(),
+            7,
+            "terminal replay does no provider work"
+        );
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM proposals", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "still exactly one proposal after the replay");
+        // The capture path never touches the knowledge layer.
+        let knowledge: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        let vec_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM vec_knowledge", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            (knowledge, vec_rows),
+            (0, 0),
+            "knowledge/vec byte-unchanged"
+        );
+        assert!(
+            verify_chain(&conn),
+            "the enqueue's audit keeps the chain green"
+        );
+    }
+
+    #[test]
+    fn capture_refusal_rolls_back_closure() {
+        let f = fixture(happy_script());
+        seed_repeater_priors(f.tmp.path(), 2);
+        {
+            let conn = Connection::open(f.tmp.path()).unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER refuse_capture BEFORE INSERT ON proposals
+                 BEGIN SELECT RAISE(ABORT, 'capture refused'); END;",
+            )
+            .unwrap();
+        }
+        let result = rt().block_on(f.driver.run_case(1, "capture", &CancellationToken::new()));
+        match result {
+            Err(LoopError::Persist(message)) => {
+                assert!(message.contains("capture refused"), "{message}");
+            }
+            other => panic!("a refused capture must fail the transition loudly: {other:?}"),
+        }
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let status: String = conn
+            .query_row("SELECT status FROM workflow_runs WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            status, "active",
+            "the case does not close over a failed capture"
+        );
+        let proposals: i64 = conn
+            .query_row("SELECT COUNT(*) FROM proposals", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(proposals, 0, "no half-applied capture");
+        let denials: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE kind='control:gdl_denied'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(denials, 1, "the durable denial lands");
+        let denied_audits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE actor='workflow' AND status='denied'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(denied_audits, 1, "the checked Denied audit lands");
+        assert!(
+            verify_chain(&conn),
+            "the chain survives the rollback + denial"
+        );
+    }
+
+    #[test]
+    fn no_warrant_outcome_audited() {
+        // Census = 1 (the closing case, no priors) — under the repeater
+        // threshold: the case still resolves, nothing is proposed, and the
+        // fixed-text no-warrant outcome is recorded exactly once.
+        let f = fixture(happy_script());
+        seed_repeater_priors(f.tmp.path(), 0);
+        let outcome = rt()
+            .block_on(f.driver.run_case(1, "capture", &CancellationToken::new()))
+            .unwrap();
+        assert!(
+            matches!(&outcome, GdlOutcome::Resolved { .. }),
+            "under the threshold the case still resolves: {outcome:?}"
+        );
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let proposals: i64 = conn
+            .query_row("SELECT COUNT(*) FROM proposals", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            proposals, 0,
+            "under the repeater threshold nothing is proposed"
+        );
+        let target = crate::audit::hash("capture:1");
+        let detail = crate::audit::hash(
+            "capture outcome: no proposal warranted (playbook similarity not measured; repeater census under threshold)",
+        );
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events
+                 WHERE actor='workflow' AND status='ok' AND target_hash=?1 AND detail_hash=?2",
+                rusqlite::params![target, detail],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            rows, 1,
+            "the no-warrant outcome is recorded once, fixed text"
+        );
+        assert!(
+            verify_chain(&conn),
+            "the outcome audit keeps the chain green"
+        );
+    }
+
+    #[test]
+    fn escalated_or_routed_never_enqueue() {
+        // A triage defer escalates WITH the bundle; even a full repeater
+        // census never reaches the capture decision on an escalated case.
+        let defer = r#"{"priority":"P2","stabilized":true,"search_hits":[],"verdict":"defer"}"#;
+        let f = fixture(vec![scripted_text(INTAKE_JSON), scripted_text(defer)]);
+        seed_repeater_priors(f.tmp.path(), 2);
+        let outcome = rt()
+            .block_on(f.driver.run_case(1, "defer", &CancellationToken::new()))
+            .unwrap();
+        assert!(
+            matches!(&outcome, GdlOutcome::Escalated { .. }),
+            "the defer escalates: {outcome:?}"
+        );
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let proposals: i64 = conn
+            .query_row("SELECT COUNT(*) FROM proposals", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(proposals, 0, "escalation never enqueues");
+        let target = crate::audit::hash("capture:1");
+        let capture_audits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE actor='workflow' AND target_hash=?1",
+                [&target],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            capture_audits, 0,
+            "no capture outcome audit on an escalated case"
+        );
+    }
+}
+
+// ── EVAL_GDL_VS_AUTONOMOUS run #1 — the structural arm-B-vs-C pass ─────────
+//
+// Pre-registered in plans/EVAL_GDL_VS_AUTONOMOUS.md (brain-steward-ip):
+// run #1 happens on the FIRST working loop, not the polished one. This
+// is that run's structural leg: synthetic seeded cases through the
+// gated machine (arm B) and the ungated ablation (arm C), loopback
+// provider, deterministic. The live-model legs (arm A autonomous, τ²-
+// bench, NIKA) are named outstanding in the run report — no number in
+// here is a claim about them.
+
+/// Test-only fixture bridge: sibling eval modules (`gdl_eval`,
+/// `eval_kappa`) reuse the scripted GDL fixtures instead of copying
+/// them. `cfg(test)` exclusively — no production surface.
+#[cfg(test)]
+pub(crate) mod eval_fixtures {
+    pub(crate) use super::{GdlDriver, GdlOutcome};
+    pub(crate) use crate::agentloop::provider::StreamEvent;
+    pub(crate) use crate::agentloop::run_loop::LoopConfig;
+    pub(crate) use crate::workflow::host::SqliteWorkflowHost;
+    pub(crate) use brain_engine_sdk::env::ExecutionEnv;
+    pub(crate) type EvalPool = crate::Pool;
+    pub(crate) type Ctor = fn(
+        EvalPool,
+        std::sync::Arc<SqliteWorkflowHost>,
+        std::sync::Arc<dyn crate::agentloop::provider::LlmProvider>,
+        Vec<brain_engine_sdk::env::ToolDef>,
+        ExecutionEnv,
+        LoopConfig,
+    ) -> GdlDriver;
+
+    pub(crate) fn happy_battery_script() -> Vec<Vec<StreamEvent>> {
+        super::eval_run1::happy_script_args(super::eval_run1::battery_topic())
+    }
+
+    pub(crate) fn intake_invalid_script(attempts: usize) -> Vec<Vec<StreamEvent>> {
+        super::eval_run1::intake_invalid_script(attempts)
+    }
+
+    /// The structural seed census (cfg(test) fixture reuse): one entry per
+    /// pre-registered 12-seed case, with the registered expected end-state.
+    pub(crate) struct StructuralSeed {
+        pub(crate) id: &'static str,
+        pub(crate) ticket: &'static str,
+        pub(crate) must_resolve: bool,
+    }
+
+    pub(crate) fn structural_seeds() -> Vec<StructuralSeed> {
+        super::eval_run1::seeds()
+            .into_iter()
+            .map(|s| StructuralSeed {
+                id: s.id,
+                ticket: s.ticket,
+                must_resolve: s.must_resolve(),
+            })
+            .collect()
+    }
+
+    /// The seed's pre-built script: `draft` selects the ablated-arm script
+    /// shape (bad artifact once, then the happy remainder) vs the gated
+    /// shape (bad artifact repeated to exhaustion). Content is synthetic.
+    pub(crate) fn structural_seed_script(id: &str, draft: bool) -> Vec<Vec<StreamEvent>> {
+        super::eval_run1::seeds()
+            .into_iter()
+            .find(|s| s.id == id)
+            .unwrap_or_else(|| panic!("unknown structural seed {id}"))
+            .script(draft)
+    }
+}
+
+#[cfg(test)]
+mod eval_run1 {
+    use super::*;
+    use crate::agentloop::provider::{LoopbackProvider, StreamEvent, scripted_text};
+    use crate::config;
+    use crate::migration::run_migration;
+    use crate::register_sqlite_vec::register_sqlite_vec;
+    use crate::workflow::session_log;
+    use brain_engine_sdk::env::DenyAll;
+
+    fn rt() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    /// One synthetic case: the topic's happy script, an optional seeded
+    /// bad phase artifact, and the ground truth (MAY resolve honestly /
+    /// MUST NOT resolve — a resolution on a must-not case is an action
+    /// error by definition). Scripts are built PER ARM: the gated arm
+    /// exhausts three attempts on the bad artifact; the ablated arm
+    /// accepts it once and runs on into the happy remainder — exactly
+    /// the divergence the eval measures.
+    pub(crate) struct Seed {
+        pub(crate) id: &'static str,
+        pub(crate) ticket: &'static str,
+        pub(crate) topic: (
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+            &'static str,
+        ),
+        pub(crate) bad: Option<(GdlPhase, String)>,
+        pub(crate) note: &'static str,
+    }
+
+    impl Seed {
+        pub(crate) fn must_resolve(&self) -> bool {
+            self.bad.is_none()
+        }
+
+        pub(crate) fn script(&self, ablated: bool) -> Vec<Vec<StreamEvent>> {
+            let happy = happy_script_args(self.topic);
+            let Some((phase, bad)) = &self.bad else {
+                return happy;
+            };
+            let idx = GdlPhase::ALL.iter().position(|p| p == phase).unwrap();
+            let turn = scripted_text(bad);
+            let repeats = if ablated { 1 } else { 3 };
+            let mut script: Vec<Vec<StreamEvent>> = happy[..idx].to_vec();
+            script.extend(std::iter::repeat_n(turn, repeats));
+            script.extend(happy[idx + 1..].to_vec());
+            script
+        }
+    }
+
+    /// A parameterized happy script: seven valid artifacts about one
+    /// topic. Distinct topics keep the seeds from being six copies of
+    /// one case (different claims, different evidence lines).
+    #[allow(clippy::too_many_arguments)]
+    fn happy_script(
+        component: &str,
+        symptom: &str,
+        where_: &str,
+        command: &str,
+        hypothesis: &str,
+        playbook: &str,
+    ) -> Vec<Vec<StreamEvent>> {
+        let intake = format!(
+            r#"{{"is_not":{{"what":{{"is":"{symptom} on {component}","is_not":"read path"}},"where":{{"is":"{where_}","is_not":"sibling nodes"}},"when":{{"is":"since monday","is_not":"before monday"}},"extent":{{"is":"one {component}","is_not":"all units"}}}},"telemetry_refs":["tsr://{where_}","sel://{where_}"],"what_changed":"fw update two weeks ago","known_good":"sibling node same fw"}}"#
+        );
+        let triage = format!(
+            r#"{{"priority":"P3","stabilized":false,"search_hits":["{playbook}"],"verdict":"accept"}}"#
+        );
+        let hypothesize = format!(
+            r#"{{"hypotheses":[{{"statement":"{hypothesis}","prediction":"{command} reports degraded","sources":["actual:sel event","test:{command} output"],"confidence":0.8}}]}}"#
+        );
+        let plan = format!(
+            r#"{{"steps":[{{"order":1,"kind":"check","skill_gate":"L1","description":"query {component} state","command":"{command}","expected":"healthy","fail_action":2,"invasiveness":0,"justification":null}},{{"order":2,"kind":"action","skill_gate":"L2","description":"replace {component} part","command":"hw replace","expected":"state healthy","fail_action":null,"invasiveness":2,"justification":null}}],"verify_step":{{"re_run":"the customer workload on {where_}","pass_condition":"latency normal"}},"dead_end":{{"escalate_to":"eng-{component}","required_evidence":["TSR","test log"]}}}}"#
+        );
+        let act = format!(
+            r#"{{"rows":[{{"order":1,"kind":"check","description":"query {component} state","playbook_ref":"{playbook}","variables":["{component} state"],"expected":"healthy","actual":"degraded","verdict":"fail","evidence_ref":"TSR p.1","dtfvc":{{"diagnose":"{hypothesis}","test":"{command}","fix":null,"verify":"state readback matches degraded","capture":null}},"invasiveness":0,"justification":null}},{{"order":2,"kind":"action","description":"replace {component} part","playbook_ref":"{playbook}","variables":["{component} part"],"expected":"state healthy","actual":"state healthy","verdict":"pass","evidence_ref":"TSR p.2","dtfvc":{{"diagnose":"{hypothesis} confirmed","test":"{command} post-change","fix":"replaced part","verify":"latency normal","capture":"row"}},"invasiveness":2,"justification":null}}],"complete":true}}"#
+        );
+        let verify = r#"{"re_run":"PLACEHOLDER","pass":true,"stability_window_min":15,"negative_check":true}"#
+            .replace("PLACEHOLDER", &format!("the customer workload on {where_}"));
+        let handoff = format!(
+            r#"{{"capture":{{"resolution":"{symptom} -> {hypothesis} -> replaced -> verified","bundle_hash":"h-{component}"}}}}"#
+        );
+        vec![
+            scripted_text(&intake),
+            scripted_text(&triage),
+            scripted_text(&hypothesize),
+            scripted_text(&plan),
+            scripted_text(&act),
+            scripted_text(&verify),
+            scripted_text(&handoff),
+        ]
+    }
+
+    /// A must-not-resolve script: the good pre-phase artifacts, the BAD
+    /// artifact repeated to exhaust the gated machine's bounded retries,
+    /// then the remaining phases' artifacts (the ablation accepts the bad
+    /// artifact on attempt one and runs on into them — that is the
+    /// action error the gates exist to block).
+    pub(crate) fn seeds() -> Vec<Seed> {
+        let battery: (&str, &str, &str, &str, &str, &str) = (
+            "perc",
+            "write-through cache",
+            "node-042",
+            "racadm get battery",
+            "battery dead",
+            "P-STORAGE-0104",
+        );
+        let thermal = (
+            "psu",
+            "intermittent power loss",
+            "rack-3",
+            "ipmitool sdr",
+            "psu failing",
+            "P-POWER-0201",
+        );
+        let net = (
+            "nic",
+            "packet loss",
+            "leaf-7",
+            "ethtool -S",
+            "sfp degraded",
+            "P-NET-0303",
+        );
+        let fw = (
+            "ssd",
+            "read latency spikes",
+            "vault-2",
+            "smartctl -a",
+            "firmware regression",
+            "P-STORAGE-0110",
+        );
+        let cfg = (
+            "switch",
+            "config drift alarms",
+            "spine-1",
+            "show run diff",
+            "nightly push failing",
+            "P-NET-0311",
+        );
+        let mem = (
+            "dimm",
+            "correctable errors",
+            "node-117",
+            "racdm memtest",
+            "dimm seat",
+            "P-HW-0402",
+        );
+        vec![
+            Seed { id: "happy-battery", ticket: "rebuild is slow", topic: battery, bad: None, note: "canonical happy case" },
+            Seed { id: "happy-thermal", ticket: "node power cycling", topic: thermal, bad: None, note: "distinct fault family" },
+            Seed { id: "happy-network", ticket: "uplink flapping", topic: net, bad: None, note: "distinct fault family" },
+            Seed { id: "happy-firmware", ticket: "vault latency", topic: fw, bad: None, note: "what-changed known" },
+            Seed { id: "happy-config", ticket: "spine alarms", topic: cfg, bad: None, note: "known-good sibling" },
+            Seed { id: "happy-memory", ticket: "mem errors in SEL", topic: mem, bad: None, note: "distinct fault family" },
+            Seed {
+                id: "fail-intake-missing-isnot",
+                ticket: "server is slow",
+                topic: battery,
+                bad: Some((GdlPhase::Intake, r#"{"is_not":{"what":{"is":"","is_not":""},"where":{"is":"","is_not":""},"when":{"is":"","is_not":""},"extent":{"is":"","is_not":""}},"telemetry_refs":[],"what_changed":"","known_good":""}"#.into())),
+                note: "KT problem statement missing → route, not resolve (the pre-registered verification)",
+            },
+            Seed {
+                id: "fail-probably-fixed-verify",
+                ticket: "cache degraded",
+                topic: thermal,
+                bad: Some((GdlPhase::Verify, r#"{"re_run":"looks fine to me","pass":true,"stability_window_min":0,"negative_check":false}"#.into())),
+                note: "premature conclusion pressure: first hypothesis wrong, verify waved through (OpenRCA failure mode)",
+            },
+            Seed {
+                id: "fail-skipped-negative-check",
+                ticket: "packet loss",
+                topic: net,
+                bad: Some((GdlPhase::Verify, r#"{"re_run":"the customer workload on leaf-7","pass":true,"stability_window_min":15,"negative_check":false}"#.into())),
+                note: "'probably fixed' posture: the negative check skipped",
+            },
+            Seed {
+                id: "fail-two-variable-act",
+                ticket: "latency spikes",
+                topic: fw,
+                bad: Some((GdlPhase::Act, r#"{"rows":[{"order":1,"kind":"check","description":"fw + cable at once","playbook_ref":"P-STORAGE-0110","variables":["firmware","cable"],"expected":"healthy","actual":"degraded","verdict":"fail","evidence_ref":"TSR p.2","dtfvc":{"diagnose":"d","test":"t","fix":null,"verify":null,"capture":null},"invasiveness":0,"justification":null}],"complete":true}"#.into())),
+                note: "two variables in one row (L2) — multi-variable changes prove nothing",
+            },
+            Seed {
+                id: "fail-off-playbook-action",
+                ticket: "alarms on spine",
+                topic: cfg,
+                bad: Some((GdlPhase::Act, r#"{"rows":[{"order":1,"kind":"action","description":"hard reset from memory","playbook_ref":null,"variables":["switch state"],"expected":"healthy","actual":"healthy","verdict":"pass","evidence_ref":"none","dtfvc":{"diagnose":"d","test":"t","fix":"reset","verify":"ok","capture":null},"invasiveness":3,"justification":null}],"complete":true}"#.into())),
+                note: "fix from memory, laundered as a pass (L9)",
+            },
+            Seed {
+                id: "fail-no-coverage-accept",
+                ticket: "mem errors",
+                topic: mem,
+                bad: Some((GdlPhase::Triage, r#"{"priority":"P3","stabilized":false,"search_hits":[],"verdict":"accept"}"#.into())),
+                note: "accept with zero knowledge coverage — the checklist without the answer (PMC9290564)",
+            },
+        ]
+    }
+
+    pub(crate) fn happy_script_args(
+        t: (&str, &str, &str, &str, &str, &str),
+    ) -> Vec<Vec<StreamEvent>> {
+        happy_script(t.0, t.1, t.2, t.3, t.4, t.5)
+    }
+
+    /// The canonical battery topic (cfg(test) fixture reuse).
+    pub(crate) fn battery_topic() -> (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+    ) {
+        (
+            "perc",
+            "write-through cache",
+            "node-042",
+            "racadm get battery",
+            "battery dead",
+            "P-STORAGE-0104",
+        )
+    }
+
+    /// A script that repeats the intake-invalid artifact for `attempts`
+    /// exchange turns — the bounded-retry path (cfg(test) fixture reuse).
+    pub(crate) fn intake_invalid_script(attempts: usize) -> Vec<Vec<StreamEvent>> {
+        let bad = r#"{"is_not":{"what":{"is":"","is_not":""},"where":{"is":"","is_not":""},"when":{"is":"","is_not":""},"extent":{"is":"","is_not":""}},"telemetry_refs":[],"what_changed":"","known_good":""}"#;
+        (0..attempts).map(|_| scripted_text(bad)).collect()
+    }
+
+    /// One (case, arm) run on its own substrate. Returns the JSONL row's
+    /// parts: outcome label, wrong-resolution flag, model exchanges, gate
+    /// rejects, typed findings.
+    struct RunRow {
+        outcome: &'static str,
+        wrong_resolution: bool,
+        exchanges: usize,
+        gate_rejects: usize,
+        findings: usize,
+    }
+
+    fn run_arm(seed: &Seed, ablated: bool) -> RunRow {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mgr = crate::pool::SqliteConnectionManager::file(tmp.path());
+        let pool: Pool = r2d2::Pool::builder().max_size(4).build(mgr).unwrap();
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('acme', 'troubleshoot', '{}', 0, 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+        let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));
+        let provider = LoopbackProvider::new("loopback", seed.script(ablated));
+        let driver = if ablated {
+            GdlDriver::new_ablated(
+                pool.clone(),
+                host,
+                provider.clone(),
+                vec![],
+                ExecutionEnv {
+                    fs: Arc::new(DenyAll),
+                    read_only: true,
+                    allow_process: false,
+                    root: "/".into(),
+                    allowed_commands: vec![],
+                },
+                LoopConfig::default(),
+            )
+        } else {
+            GdlDriver::new(
+                pool.clone(),
+                host,
+                provider.clone(),
+                vec![],
+                ExecutionEnv {
+                    fs: Arc::new(DenyAll),
+                    read_only: true,
+                    allow_process: false,
+                    root: "/".into(),
+                    allowed_commands: vec![],
+                },
+                LoopConfig::default(),
+            )
+        };
+        let cancel = CancellationToken::new();
+        let outcome = rt()
+            .block_on(driver.run_case(1, seed.ticket, &cancel))
+            .unwrap();
+        let (label, resolved) = match &outcome {
+            GdlOutcome::Resolved { .. } => ("Resolved", true),
+            GdlOutcome::Routed { .. } => ("Routed", false),
+            GdlOutcome::Escalated { .. } => ("Escalated", false),
+            GdlOutcome::VerifyFailed { .. } => ("VerifyFailed", false),
+            GdlOutcome::Canceled => ("Canceled", false),
+            GdlOutcome::Capped { .. } => ("Capped", false),
+        };
+        let conn = rusqlite::Connection::open(tmp.path()).unwrap();
+        let gate_rejects = session_log::replay(&conn, 1, session_log::REPLAY_CAP)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                e.kind == "gdl_gate"
+                    && serde_json::from_str::<serde_json::Value>(&e.payload_json)
+                        .map(|v| v["verdict"] == "fail")
+                        .unwrap_or(false)
+            })
+            .count();
+        let findings: usize = conn
+            .query_row("SELECT COUNT(*) FROM findings WHERE run_id = 1", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap_or(0) as usize;
+        RunRow {
+            outcome: label,
+            wrong_resolution: resolved && !seed.must_resolve(),
+            exchanges: provider.requests().len(),
+            gate_rejects,
+            findings,
+        }
+    }
+
+    /// Run #1, structural: every seed through both arms, one JSONL row
+    /// per (case, arm) on stdout (`--nocapture` captures the raw trace),
+    /// the pre-registered structural assertions enforced here so CI
+    /// re-proves them on every run.
+    #[test]
+    fn eval_run1_gated_vs_ablated_structural() {
+        let seeds = seeds();
+        assert_eq!(seeds.len(), 12, "the pre-registered seed census");
+        let mut jsonl: Vec<String> = Vec::new();
+        let mut b_wrong = 0usize;
+        let mut c_wrong = 0usize;
+        let mut b_resolved = 0usize;
+        let mut b_handoff = 0usize;
+        let mut b_gate_rejects_on_must_not = 0usize;
+        let mut wrong_hypothesis_killed_in_b = false;
+        let mut wrong_hypothesis_survived_in_c = false;
+        for seed in &seeds {
+            for (arm, ablated) in [("B", false), ("C", true)] {
+                let row = run_arm(seed, ablated);
+                jsonl.push(format!(
+                    r#"{{"suite":"gdl_structural_v1","case":"{}","arm":"{}","outcome":"{}","wrong_resolution":{},"exchanges":{},"gate_rejects":{},"typed_findings":{}}}"#,
+                    seed.id, arm, row.outcome, row.wrong_resolution, row.exchanges,
+                    row.gate_rejects, row.findings
+                ));
+                match (arm, ablated) {
+                    ("B", _) => {
+                        if row.wrong_resolution {
+                            b_wrong += 1;
+                        }
+                        if row.outcome == "Resolved" {
+                            b_resolved += 1;
+                        } else {
+                            b_handoff += 1;
+                        }
+                        if !seed.must_resolve() && row.gate_rejects > 0 {
+                            b_gate_rejects_on_must_not += 1;
+                        }
+                        if seed.id == "fail-probably-fixed-verify"
+                            && matches!(row.outcome, "Routed" | "VerifyFailed")
+                        {
+                            wrong_hypothesis_killed_in_b = true;
+                        }
+                    }
+                    ("C", _) => {
+                        if row.wrong_resolution {
+                            c_wrong += 1;
+                        }
+                        if seed.id == "fail-probably-fixed-verify" && row.outcome == "Resolved" {
+                            wrong_hypothesis_survived_in_c = true;
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        // Raw trace first (the audit), assertions after.
+        println!("# EVAL_GDL_VS_AUTONOMOUS run #1 (structural) — raw rows");
+        for line in &jsonl {
+            println!("{line}");
+        }
+        // ── the pre-registered structural claims ─────────────────────────
+        // Primary (H1's structural analog): the gated loop's action-error
+        // rate on the seeded set is ZERO; the ablation's is not — the
+        // gate waterfall is the active ingredient (H2's analog).
+        assert_eq!(
+            b_wrong, 0,
+            "arm B resolves none of the must-not-resolve seeds"
+        );
+        assert!(
+            c_wrong >= 5,
+            "arm C resolves most seeded failures wrongly (got {c_wrong})"
+        );
+        // Hypothesis survival (the plan's metric): the seeded wrong-first-
+        // hypothesis case dies at the gates in B and survives to a wrong
+        // resolution in C.
+        assert!(
+            wrong_hypothesis_killed_in_b && wrong_hypothesis_survived_in_c,
+            "verification must catch the wrong first hypothesis only when the gates run"
+        );
+        // Every must-not seed in arm B was rejected BY A GATE at least
+        // once (the rejection is the audit trail, not a crash).
+        assert_eq!(
+            b_gate_rejects_on_must_not, 6,
+            "each adversarial seed draws a named gate rejection in arm B"
+        );
+        // Handoff rate is reported, not asserted: the seed set is 50%
+        // adversarial BY CONSTRUCTION, so H4's ≤25% live-model bound does
+        // not apply to this structural leg.
+        let b_error_rate = b_wrong as f64 / 12.0;
+        let c_error_rate = c_wrong as f64 / 12.0;
+        println!(
+            "# summary: arm B wrong-resolutions {b_wrong}/12 ({:.3}), arm C {c_wrong}/12 ({:.3}); \
+             arm B resolved {b_resolved}, handed off {b_handoff}",
+            b_error_rate, c_error_rate
+        );
+    }
+
+    // ── C1: the registered arm C (corroboration-only ablation) ────────────
+    //
+    // Prereg :39: arm C is "identical to B with G_CORROBORATE off … 1 line
+    // suffices". The differential identity property: identical scripts
+    // through B and C produce identical gate decisions on every phase,
+    // an identical outcome, and prompts that differ EXACTLY at the
+    // one-source hypothesis's confirmation label. A C that changes
+    // nothing is not an ablation, and a C that changes anything else is
+    // not the registered arm.
+
+    /// One differential run: the substrate of `run_arm`, returning the
+    /// gate-record sequence and every provider request verbatim.
+    struct DiffRun {
+        outcome: &'static str,
+        gates: Vec<(serde_json::Value, serde_json::Value, serde_json::Value)>,
+        requests: Vec<crate::agentloop::provider::ProviderRequest>,
+    }
+
+    fn run_diff(ctor: super::eval_fixtures::Ctor, script: &[Vec<StreamEvent>]) -> DiffRun {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mgr = crate::pool::SqliteConnectionManager::file(tmp.path());
+        let pool: Pool = r2d2::Pool::builder().max_size(4).build(mgr).unwrap();
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('acme', 'troubleshoot', '{}', 0, 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+        let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));
+        let provider = LoopbackProvider::new("loopback", script.to_vec());
+        let driver = ctor(
+            pool.clone(),
+            host,
+            provider.clone(),
+            vec![],
+            ExecutionEnv {
+                fs: Arc::new(DenyAll),
+                read_only: true,
+                allow_process: false,
+                root: "/".into(),
+                allowed_commands: vec![],
+            },
+            LoopConfig::default(),
+        );
+        let cancel = CancellationToken::new();
+        let outcome = rt()
+            .block_on(driver.run_case(1, "rebuild is slow", &cancel))
+            .unwrap();
+        let label = match &outcome {
+            GdlOutcome::Resolved { .. } => "Resolved",
+            GdlOutcome::Routed { .. } => "Routed",
+            GdlOutcome::Escalated { .. } => "Escalated",
+            GdlOutcome::VerifyFailed { .. } => "VerifyFailed",
+            GdlOutcome::Canceled => "Canceled",
+            GdlOutcome::Capped { .. } => "Capped",
+        };
+        let conn = rusqlite::Connection::open(tmp.path()).unwrap();
+        let gates = session_log::replay(&conn, 1, session_log::REPLAY_CAP)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.kind == "gdl_gate")
+            .map(|e| {
+                let v: serde_json::Value = serde_json::from_str(&e.payload_json).unwrap();
+                (
+                    v["phase"].clone(),
+                    v["verdict"].clone(),
+                    v["attempt"].clone(),
+                )
+            })
+            .collect();
+        DiffRun {
+            outcome: label,
+            gates,
+            requests: provider.requests(),
+        }
+    }
+
+    /// The one-source script: the canonical battery happy case, but its
+    /// hypothesis cites exactly ONE valid kind-prefixed source. Under the
+    /// registered law B labels it `[hypothesis]`; registered C ("1 line
+    /// suffices") labels it `[confirmed]` — and moves nothing else.
+    fn one_source_script() -> Vec<Vec<StreamEvent>> {
+        let battery: (&str, &str, &str, &str, &str, &str) = (
+            "perc",
+            "write-through cache",
+            "node-042",
+            "racadm get battery",
+            "battery dead",
+            "P-STORAGE-0104",
+        );
+        let mut script = happy_script_args(battery);
+        script[2] = scripted_text(
+            r#"{"hypotheses":[{"statement":"battery dead","prediction":"racadm get battery reports degraded","sources":["actual:sel event"],"confidence":0.8}]}"#,
+        );
+        script
+    }
+
+    /// Relabel B's strips the way the registered ablation must: every
+    /// `[hypothesis]` becomes `[confirmed]`. On a resolved case every
+    /// hypothesis carries ≥1 valid kind-prefixed source (L7 passes them
+    /// or the case never resolves), so this map is exactly C's view.
+    fn relabel(reqs: &[crate::agentloop::provider::ProviderRequest]) -> Vec<String> {
+        reqs.iter()
+            .map(|r| {
+                r.messages
+                    .iter()
+                    .map(|m| match m {
+                        crate::agentloop::provider::ChatMessage::User { text } => {
+                            text.replace("[hypothesis] — predicts:", "[confirmed] — predicts:")
+                        }
+                        other => format!("{other:?}"),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn registered_arm_c_is_b_except_one_source_confirmation_labels() {
+        let script = one_source_script();
+        let b = run_diff(GdlDriver::new, &script);
+        let c = run_diff(GdlDriver::new_corroboration_ablated, &script);
+        // Identical outcome and exchange count.
+        assert_eq!(b.outcome, "Resolved");
+        assert_eq!(c.outcome, b.outcome, "C changes no outcome");
+        assert_eq!(
+            c.requests.len(),
+            b.requests.len(),
+            "C changes no exchange count"
+        );
+        // Identical gate decisions on every phase.
+        assert_eq!(
+            b.gates, c.gates,
+            "the draft arm C is not the registered arm: it re-decides gates"
+        );
+        // The ablation must be LIVE: at least one prompt differs, and
+        // after relabeling B to C's law the prompt sets are identical —
+        // the label was the ONLY difference.
+        let b_raw: Vec<String> = relabel(&b.requests);
+        let c_raw: Vec<String> = relabel(&c.requests);
+        let live = b
+            .requests
+            .iter()
+            .zip(c.requests.iter())
+            .any(|(x, y)| x != y);
+        assert!(
+            live,
+            "C's instruction text never diverged from B — no ablation"
+        );
+        assert_eq!(
+            b_raw, c_raw,
+            "the confirmation label is not the only prompt difference"
+        );
+        let b_has_hypothesis = b.requests.iter().any(|r| {
+            r.messages.iter().any(|m| {
+                matches!(
+                    m,
+                    crate::agentloop::provider::ChatMessage::User { text }
+                        if text.contains("[hypothesis] — predicts:")
+                )
+            })
+        });
+        assert!(
+            b_has_hypothesis,
+            "B never labeled the one-source hypothesis"
+        );
     }
 }

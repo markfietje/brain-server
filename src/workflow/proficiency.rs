@@ -202,6 +202,62 @@ pub(crate) fn enqueue_capture_proposals(
     Ok(enqueued)
 }
 
+/// The unmeasured-similarity sentinel: the scorer's [`gap_decision`] is
+/// `None` at 8_000, so this value claims NO gap fact. A gap-new or
+/// gap-update proposal requires a similarity that was actually measured,
+/// which no GDL surface produces today — until such a source lands, the
+/// gap variants stay helper-level-tested (the 3_000/6_000 fixtures) and
+/// never driver-reachable.
+const SIMILARITY_NOT_MEASURED: i32 = 8_000;
+
+/// The domain-wide repeater census: resolved troubleshoot runs in the
+/// domain over the last 30 days, window edges inclusive, the closing case
+/// included (the caller runs it after the run row flips to `resolved` —
+/// the kcs complaint census's exact shape: same BETWEEN window,
+/// include-self, scalar COUNT, bounded by construction). Domain-level
+/// grains over-trigger toward human review, never under-trigger.
+fn repeater_census(conn: &rusqlite::Connection, domain: &str, now: i64) -> rusqlite::Result<usize> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM workflow_runs
+          WHERE domain = ?1 AND kind = 'troubleshoot' AND status = 'resolved'
+            AND created_at BETWEEN ?2 - 30*86400 AND ?2",
+        rusqlite::params![domain, now],
+        |r| r.get::<_, i64>(0).map(|n| n as usize),
+    )
+}
+
+/// The Handoff capture decision, wired into the closing transaction:
+/// census the domain's repeaters, enqueue whatever the pure scorer
+/// warrants onto the pending queue, and record the outcome when nothing
+/// was warranted (the enqueue audits its own rows when something was).
+/// This is the capture path's only production write — one writer, one
+/// queue; `kcs::capture_on_case_close` is the complementary one.
+pub(crate) fn capture_proposals_on_resolve(
+    wtx: &mut WorkflowTx<'_>,
+    run_id: i64,
+    case: &GdlCase,
+    now: i64,
+) -> rusqlite::Result<usize> {
+    let domain: String = wtx.tx().query_row(
+        "SELECT domain FROM workflow_runs WHERE id = ?1",
+        rusqlite::params![run_id],
+        |r| r.get(0),
+    )?;
+    let census = repeater_census(wtx.tx(), &domain, now)?;
+    let enqueued =
+        enqueue_capture_proposals(wtx, run_id, case, SIMILARITY_NOT_MEASURED, census, now)?;
+    if enqueued == 0 {
+        super::audit_write(
+            wtx.tx(),
+            run_id,
+            &format!("capture:{run_id}"),
+            crate::audit::AuditStatus::Ok,
+            "capture outcome: no proposal warranted (playbook similarity not measured; repeater census under threshold)",
+        );
+    }
+    Ok(enqueued)
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::gdl::{CaptureArtifact, PlanStep};
@@ -312,6 +368,7 @@ mod tests {
                 command: String::new(),
                 expected: "Ready".into(),
                 fail_action: None,
+                seam: None,
                 invasiveness: 0,
                 justification: None,
             },
@@ -323,6 +380,7 @@ mod tests {
                 command: String::new(),
                 expected: "Ready".into(),
                 fail_action: None,
+                seam: None,
                 invasiveness: 2,
                 justification: None,
             },
@@ -407,5 +465,65 @@ mod tests {
             crate::audit::verify_chain(&conn),
             "the enqueue's audit row keeps the chain green"
         );
+    }
+
+    #[test]
+    fn similarity_not_measured_yields_no_gap() {
+        // The sentinel's two faces at the scorer boundary: an UNMEASURED
+        // similarity claims no gap fact, while a warranted repeater
+        // cluster still proposes exactly the RCA.
+        let mut case = GdlCase::fresh("t");
+        case.capture = Some(CaptureArtifact {
+            resolution: "symptom -> cause -> fix -> verify".into(),
+            bundle_hash: "h1".into(),
+        });
+        assert!(
+            capture_proposals(&case, 8_000, 0).is_empty(),
+            "unmeasured similarity + no repeater: nothing"
+        );
+        assert_eq!(
+            capture_proposals(&case, 8_000, 3),
+            vec![FlywheelProposal::Rca],
+            "unmeasured similarity + census 3: the RCA and no gap variant"
+        );
+    }
+
+    #[test]
+    fn repeater_census_counts_self_window_domain_kind_and_status() {
+        register_sqlite_vec();
+        let mut conn = Connection::open_in_memory().unwrap();
+        run_migration(&mut conn, 1).unwrap();
+        let now = 1_800_000_000_i64;
+        let run = |domain: &str, kind: &str, status: &str, created_at: i64| {
+            conn.execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES (?1, ?2, '{}', 0, ?3, ?4, ?4)",
+                rusqlite::params![domain, kind, status, created_at],
+            )
+            .unwrap();
+        };
+        // The closing case counts itself (resolved by census time).
+        run("acme", "troubleshoot", "resolved", now);
+        assert_eq!(repeater_census(&conn, "acme", now).unwrap(), 1);
+        // Two in-window priors: 2 priors + self = 3 — the RCA threshold.
+        run("acme", "troubleshoot", "resolved", now - 86_400);
+        assert_eq!(repeater_census(&conn, "acme", now).unwrap(), 2);
+        run("acme", "troubleshoot", "resolved", now - 7 * 86_400);
+        assert_eq!(repeater_census(&conn, "acme", now).unwrap(), 3);
+        // Window boundary: a prior at exactly the 30-day edge counts...
+        run("acme", "troubleshoot", "resolved", now - 30 * 86_400);
+        assert_eq!(repeater_census(&conn, "acme", now).unwrap(), 4);
+        // ...and one second beyond it does not.
+        run("acme", "troubleshoot", "resolved", now - 30 * 86_400 - 1);
+        assert_eq!(repeater_census(&conn, "acme", now).unwrap(), 4);
+        // A different domain's runs are another domain's business.
+        run("other", "troubleshoot", "resolved", now - 86_400);
+        assert_eq!(repeater_census(&conn, "acme", now).unwrap(), 4);
+        // Complaint runs feed the kcs census, not this one.
+        run("acme", "complaint", "resolved", now - 86_400);
+        assert_eq!(repeater_census(&conn, "acme", now).unwrap(), 4);
+        // A run not yet resolved is not a repeater data point.
+        run("acme", "troubleshoot", "active", now - 86_400);
+        assert_eq!(repeater_census(&conn, "acme", now).unwrap(), 4);
     }
 }

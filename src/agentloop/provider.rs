@@ -26,34 +26,80 @@ use tokio::sync::mpsc;
 /// unbounded deltas ahead of a slow consumer — backpressure starts here.
 pub(crate) const STREAM_CHANNEL_CAP: usize = 64;
 
-/// Chat role. Two-value, provider-neutral; system text rides the request
-/// struct, tool schemas ride the request struct — neither is a "message".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Role {
-    User,
-    Assistant,
+/// Original evidence and provider reference are separate: reused evidence IDs
+/// in later exchanges must not alias earlier calls. Arguments stay byte-truthful.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct ContextToolCall {
+    pub original_id: String,
+    pub id: String,
+    pub name: String,
+    pub arguments_json: String,
 }
 
-impl Role {
-    pub(crate) fn as_str(self) -> &'static str {
+/// The persisted boolean cannot distinguish refusal from execution failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ToolResultStatus {
+    Success,
+    Failure,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum DelegationOutcome {
+    Completed,
+    BudgetExceeded,
+    Capped,
+    Canceled,
+}
+
+/// Closed conversation vocabulary; system instructions and tool schemas are
+/// host-owned request fields, never replayed conversational roles.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub(crate) enum ChatMessage {
+    User {
+        text: String,
+    },
+    Assistant {
+        text: String,
+        tool_calls: Vec<ContextToolCall>,
+    },
+    ToolResult {
+        call_id: String,
+        original_id: String,
+        name: String,
+        status: ToolResultStatus,
+        output: String,
+        truncated: bool,
+    },
+    Delegation {
+        exchange_id: i64,
+        name: String,
+        outcome: DelegationOutcome,
+        summary: String,
+    },
+    Summary {
+        text: String,
+    },
+}
+
+impl ChatMessage {
+    /// Display/search convenience only; adapters must match the variant to
+    /// preserve roles, call correlation, failure status and truncation evidence.
+    pub(crate) fn text(&self) -> &str {
         match self {
-            Role::User => "user",
-            Role::Assistant => "assistant",
+            Self::User { text } | Self::Assistant { text, .. } | Self::Summary { text } => text,
+            Self::ToolResult { output, .. } => output,
+            Self::Delegation { summary, .. } => summary,
         }
     }
-}
-
-/// One conversational message (input history or a prior assistant turn).
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ChatMessage {
-    pub role: Role,
-    pub text: String,
 }
 
 /// A tool as presented to the model: name + description + JSON schema.
 /// Presentation/lookup/execution alignment is the SDK registry's law; this
 /// is only the wire shape the prompt assembler emits.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(crate) struct ToolSpec {
     pub name: String,
     pub description: String,
@@ -63,7 +109,7 @@ pub(crate) struct ToolSpec {
 /// A streamed completion request. Value-typed end to end: the system prompt
 /// is a cache-stable prefix by construction (deterministic assembly lives in
 /// the loop), tools ride at the end, and nothing in here is provider-native.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub(crate) struct ProviderRequest {
     pub system_prompt: String,
     pub messages: Vec<ChatMessage>,
@@ -79,12 +125,13 @@ pub(crate) struct Usage {
 
 impl Usage {
     pub(crate) fn total(self) -> u64 {
-        self.input_tokens + self.output_tokens
+        self.input_tokens.saturating_add(self.output_tokens)
     }
 }
 
 /// A completed tool invocation request inside a stream.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ToolCall {
     pub id: String,
     pub name: String,
@@ -411,10 +458,7 @@ mod tests {
                 let mut rx = provider
                     .stream(ProviderRequest {
                         system_prompt: format!("sys-{text}"),
-                        messages: vec![ChatMessage {
-                            role: Role::User,
-                            text: text.into(),
-                        }],
+                        messages: vec![ChatMessage::User { text: text.into() }],
                         tools: vec![ToolSpec {
                             name: "read".into(),
                             description: "read a file".into(),
@@ -432,7 +476,7 @@ mod tests {
             assert_eq!(requests.len(), 2);
             assert_eq!(requests[1].system_prompt, "sys-b");
             assert_eq!(requests[0].tools[0].name, "read");
-            assert_eq!(requests[1].messages[0].text, "b");
+            assert_eq!(requests[1].messages[0].text(), "b");
         });
     }
 

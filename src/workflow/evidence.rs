@@ -18,10 +18,14 @@
 //! justification"): once a run's row is CLOSED (`resolved`/`completed`/
 //! `closed` — resolution implies verification passed), recording further
 //! evidence against it is REFUSED with an audit `denied` row unless the
-//! caller carries a recorded justification. The refusal is the point: a
-//! verified case's diagnostic record does not mutate silently after the
-//! fact; when it legitimately must (a reopened RCA), the justification is
-//! a durable, auditable process fact.
+//! caller carries a recorded justification — and on the external lane
+//! (`record_external`) the same fence fires once a verify phase row
+//! exists, even while the run row is still active. The loop's own
+//! per-phase emissions ride `record` and are exempt from that second
+//! fence: they ARE the phase's law landing, not a revisit. The refusal
+//! is the point: a verified case's diagnostic record does not mutate
+//! silently after the fact; when it legitimately must (a reopened RCA),
+//! the justification is a durable, auditable process fact.
 //!
 //! What this deliberately does NOT do: no schema change (the kind rides
 //! the claim prefix — `findings` has no kind column and adding one is a
@@ -148,23 +152,70 @@ pub(crate) struct RecordOutcome {
 pub(crate) enum EvidenceError {
     Db(String),
     /// The run is closed (verified/resolved) and no justification rode
-    /// the write. The audit `denied` row already landed in-tx.
+    /// the write, or — on the external lane — a verify phase row exists
+    /// and none did. The audit `denied` row already landed in-tx.
     RevisitDenied,
 }
 
-/// Record one typed batch against `run_id` INSIDE the caller's
-/// [`super::tx::WorkflowTx`]: reduce → insert findings → insert open
-/// contradiction rows for surfaced pairs → one audit row for the batch.
-/// The revisit law applies when the run row is closed.
+/// Which lane called the writer. The loop's own phase emissions ride
+/// [`CallerPath::CheckpointAdvance`] — they are phase law inside the
+/// caller's transaction (the verify phase row lands BEFORE the emission
+/// it justifies), never revisits. Every other caller is
+/// [`CallerPath::External`] and owes the post-verify revisit law.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallerPath {
+    CheckpointAdvance,
+    External,
+}
+
+/// The checkpoint lane: the loop's own per-phase emissions. The revisit
+/// law's closed-run fence applies; the post-verify external fence does
+/// not (the loop's advance IS the verify row being written).
 pub(crate) fn record(
     conn: &Connection,
     run_id: i64,
     batch: &[TypedEvidence],
     justification: Option<&str>,
 ) -> Result<RecordOutcome, EvidenceError> {
+    record_with_path(
+        conn,
+        run_id,
+        batch,
+        justification,
+        CallerPath::CheckpointAdvance,
+    )
+}
+
+/// The external lane: any write that is not the loop's own advance.
+/// Requires a justification when the run is closed (the existing law)
+/// OR when a verify phase row already exists — a passed-verify case's
+/// diagnostic record does not mutate silently before closure either.
+pub(crate) fn record_external(
+    conn: &Connection,
+    run_id: i64,
+    batch: &[TypedEvidence],
+    justification: Option<&str>,
+) -> Result<RecordOutcome, EvidenceError> {
+    record_with_path(conn, run_id, batch, justification, CallerPath::External)
+}
+
+/// Record one typed batch against `run_id` INSIDE the caller's
+/// [`super::tx::WorkflowTx`]: reduce → insert findings → insert open
+/// contradiction rows for surfaced pairs → one audit row for the batch.
+/// The revisit law applies per the caller path.
+fn record_with_path(
+    conn: &Connection,
+    run_id: i64,
+    batch: &[TypedEvidence],
+    justification: Option<&str>,
+    path: CallerPath,
+) -> Result<RecordOutcome, EvidenceError> {
     // The revisit gate reads the run row's status inside the caller's tx:
     // resolution implies verify passed, and a closed case's record is a
-    // revisit. Unjustified → durable denied audit + refusal.
+    // revisit. On the external lane, an existing verify phase row is the
+    // same fence before closure. Unjustified → durable denied audit +
+    // refusal. A degraded status read counts as not-closed (the closed
+    // path's existing posture).
     let status: Option<String> = conn
         .query_row(
             "SELECT status FROM workflow_runs WHERE id = ?1",
@@ -174,16 +225,34 @@ pub(crate) fn record(
         .map_err(|e| EvidenceError::Db(e.to_string()))
         .ok()
         .flatten();
-    if let Some(status) = status
-        && matches!(status.as_str(), "resolved" | "completed" | "closed")
-    {
+    let closed = status
+        .as_deref()
+        .is_some_and(|s| matches!(s, "resolved" | "completed" | "closed"));
+    let after_verify_row = match path {
+        CallerPath::CheckpointAdvance => false,
+        CallerPath::External => conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM workflow_steps WHERE run_id = ?1 AND phase = 'verify')",
+                params![run_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n != 0)
+            .unwrap_or(false),
+    };
+    if closed || after_verify_row {
         let Some(reason) = justification.filter(|j| !j.trim().is_empty()) else {
+            let detail = if closed {
+                "revisit_after_verify: evidence on a closed run requires a recorded justification"
+            } else {
+                "revisit_after_verify: external evidence after a verify phase row \
+                 requires a recorded justification"
+            };
             audit_write(
                 conn,
                 run_id,
                 &format!("evidence:{run_id}"),
                 AuditStatus::Denied,
-                "revisit_after_verify: evidence on a closed run requires a recorded justification",
+                detail,
             );
             return Err(EvidenceError::RevisitDenied);
         };
@@ -458,6 +527,105 @@ mod tests {
         let mut wtx = WorkflowTx::begin(&mut conn).unwrap();
         assert!(resolve_contradiction(wtx.tx(), 1, cid, out.findings[0]).is_err());
         wtx.commit().unwrap();
+    }
+
+    #[test]
+    fn external_evidence_write_after_verify_requires_justification() {
+        // The revisit law's second fence: once a verify phase row exists,
+        // EXTERNAL evidence writes owe a justification even while the run
+        // row is still active — while the checkpoint lane (the loop's own
+        // advance) rides the same run state exempt.
+        let mut conn = db();
+        // Before any verify row, the external lane records freely.
+        let mut wtx = WorkflowTx::begin(&mut conn).unwrap();
+        record_external(
+            wtx.tx(),
+            1,
+            &[line(EvidenceKind::Test, "pre-verify probe", "racadm", 0.5)],
+            None,
+        )
+        .unwrap();
+        wtx.commit().unwrap();
+        conn.execute(
+            "INSERT INTO workflow_steps(run_id, phase, step_key, state_json)
+             VALUES (1, 'verify', 'verify', '{}')",
+            [],
+        )
+        .unwrap();
+        // External + unjustified after the verify row: denied, audited,
+        // nothing persisted.
+        let mut wtx = WorkflowTx::begin(&mut conn).unwrap();
+        let err = record_external(
+            wtx.tx(),
+            1,
+            &[line(EvidenceKind::Capture, "late external", "h1", 0.5)],
+            None,
+        )
+        .unwrap_err();
+        wtx.commit().unwrap();
+        assert_eq!(err, EvidenceError::RevisitDenied);
+        let denial_detail = crate::audit::hash(
+            "revisit_after_verify: external evidence after a verify phase row \
+             requires a recorded justification",
+        );
+        let denials: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE status = 'denied' AND detail_hash = ?1",
+                params![denial_detail],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert!(denials >= 1, "the post-verify revisit denial is audited");
+        // The checkpoint lane on the SAME run state: the loop's own
+        // advance is exempt (its verify row was just written by itself).
+        let mut wtx = WorkflowTx::begin(&mut conn).unwrap();
+        record(
+            wtx.tx(),
+            1,
+            &[line(
+                EvidenceKind::Verification,
+                "rebuild under load",
+                "pass=true window=15",
+                0.9,
+            )],
+            None,
+        )
+        .unwrap();
+        wtx.commit().unwrap();
+        // A justified external write reopens the door and audits itself.
+        let mut wtx = WorkflowTx::begin(&mut conn).unwrap();
+        record_external(
+            wtx.tx(),
+            1,
+            &[line(EvidenceKind::Capture, "reopened rca", "h2", 0.5)],
+            Some("repeater RCA reopened by eng"),
+        )
+        .unwrap();
+        wtx.commit().unwrap();
+        let mut claims = findings(&conn);
+        claims.sort();
+        assert_eq!(
+            claims,
+            vec![
+                ("capture: reopened rca".into(), "h2".into()),
+                ("test: pre-verify probe".into(), "racadm".into()),
+                (
+                    "verification: rebuild under load".into(),
+                    "pass=true window=15".into()
+                ),
+            ],
+            "the denied write never landed; lane semantics exact"
+        );
+        let just_detail =
+            crate::audit::hash("revisit_after_verify justified: repeater RCA reopened by eng");
+        let just: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE status = 'ok' AND detail_hash = ?1",
+                params![just_detail],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert!(just >= 1, "the justification is audited (hashed)");
     }
 
     #[test]

@@ -730,7 +730,7 @@ mod tests {
         crate::register_sqlite_vec::register_sqlite_vec();
         let dir = tempfile::TempDir::new().expect("temp dir");
         let db_path = dir.path().join("brain.db");
-        let mgr = r2d2_sqlite::SqliteConnectionManager::file(&db_path);
+        let mgr = crate::pool::SqliteConnectionManager::file(&db_path);
         let pool: crate::Pool = r2d2::Pool::builder().build(mgr).expect("pool");
         run_migration(&mut pool.get().expect("conn"), 0).expect("migration");
         let state = std::sync::Arc::new(crate::AppState {

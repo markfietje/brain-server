@@ -152,6 +152,16 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
         // PUBLIC routes (no auth_middleware) except `/auth/revoke` (admin)
         // and `/auth/logout` (the
         .route("/workflow/runs/{id}", get(handlers::workflow::get_run))
+        // the operator case-launch boundary: ONE authenticated
+        // route where an operator launches a GDL case episode on a
+        // fresh run through the real configured provider. Agent
+        // principals are refused at the handler (agents do not
+        // self-launch cases); the same-change openapi/authz/coverage
+        // rows carry the wire change.
+        .route(
+            "/workflow/cases/{id}/gdl",
+            post(handlers::case_run::run_gdl_case),
+        )
         .route(
             "/workflow/runs/{id}/state",
             get(handlers::workflow::get_run_state),

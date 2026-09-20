@@ -1265,7 +1265,7 @@ mod tests {
     /// between pools erases-but-under-reports (erasure-safe direction).
     #[test]
     fn cross_domain_dsar_purges_all_pools_and_ledgers_once() {
-        use r2d2_sqlite::SqliteConnectionManager;
+        use crate::pool::SqliteConnectionManager;
 
         crate::register_sqlite_vec::register_sqlite_vec();
         let mk_pool = || {
@@ -1389,7 +1389,7 @@ mod tests {
     /// entities survive.
     #[test]
     fn dsar_purge_erases_proposals_and_orphaned_entities() {
-        use r2d2_sqlite::SqliteConnectionManager;
+        use crate::pool::SqliteConnectionManager;
         crate::register_sqlite_vec::register_sqlite_vec();
         let mgr = SqliteConnectionManager::memory();
         let pool: crate::Pool = r2d2::Pool::builder().max_size(1).build(mgr).expect("pool");

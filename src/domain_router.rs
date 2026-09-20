@@ -363,7 +363,7 @@ mod tests {
             .unwrap();
         }
         let pool: crate::Pool = r2d2::Pool::builder()
-            .build(r2d2_sqlite::SqliteConnectionManager::file(&path))
+            .build(crate::pool::SqliteConnectionManager::file(&path))
             .expect("pool build");
         let out = crate::domain_router::recompute_all_centroids(&pool).unwrap();
         let rows: std::collections::BTreeMap<String, usize> = out.into_iter().collect();

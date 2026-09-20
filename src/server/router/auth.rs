@@ -558,7 +558,7 @@ pub(crate) mod tests {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let pool = r2d2::Pool::builder()
             .max_size(1)
-            .build(r2d2_sqlite::SqliteConnectionManager::memory())
+            .build(crate::pool::SqliteConnectionManager::memory())
             .expect("memory pool");
         (
             OpaqueAuthState {

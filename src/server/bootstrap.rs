@@ -7,8 +7,8 @@
 //! lives by it now). `main_inner` calls [`bootstrap`], matches the
 //! offline-mode outcomes, then composes `router::app` and serves.
 
+use crate::pool::SqliteConnectionManager;
 use anyhow::{Context, Result};
-use r2d2_sqlite::SqliteConnectionManager;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;

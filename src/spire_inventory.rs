@@ -123,7 +123,13 @@ const ROUTER_SITES_FLOOR: usize = 199;
 /// re-measures to the walk truth so the next drop is loud.
 /// 1,515 → 1,528 same release: the 8-type evidence suite (8) and the
 /// proficiency suite (4) + the two driver-level authority pins.
-const CRATE_TEST_FLOOR: usize = 1_528;
+/// 1,528 → 1,530: Intake IS-NOT and Act completeness regressions.
+/// The uncommitted structural-eval test is not part of this baseline.
+/// 1,530 → 1,531: stale prepared GDL phase rollback regression.
+/// 1,531 → 1,533: corrupt-state and closed/foreign-run admission regressions.
+/// 1,533 → 1,568: durable identity/ownership and GDL checkpoint pins.
+/// Walk measures 1,569; the preserved structural-eval draft remains excluded.
+const CRATE_TEST_FLOOR: usize = 1_568;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows (security.txt + the

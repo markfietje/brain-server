@@ -767,7 +767,7 @@ mod tests {
     fn app_state_with(dir: &tempfile::TempDir, multi_db: bool, max_size: u32) -> Arc<AppState> {
         crate::register_sqlite_vec::register_sqlite_vec();
         let path = dir.path().join("brain.db");
-        let mgr = r2d2_sqlite::SqliteConnectionManager::file(&path);
+        let mgr = crate::pool::SqliteConnectionManager::file(&path);
         let pool: crate::Pool = r2d2::Pool::builder()
             .max_size(max_size)
             .build(mgr)
@@ -839,7 +839,7 @@ mod tests {
             .unwrap_or(0)
     }
 
-    fn hold(domain_pool: &r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>, ids: &[i64]) {
+    fn hold(domain_pool: &r2d2::Pool<crate::pool::SqliteConnectionManager>, ids: &[i64]) {
         let mut conn = domain_pool.get().unwrap();
         let tx = conn.transaction().unwrap();
         crate::legal_hold::insert_holds(&tx, ids, "litigation 2026-118", Some("dpo"), 60).unwrap();

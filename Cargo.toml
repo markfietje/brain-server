@@ -211,7 +211,9 @@ base64 = "0.23"
 # "no outbound HTTP dep on the server" constraint (#1) is the deliberate,
 # documented trade. `rustls-tls` (no system OpenSSL dep, consistent with
 # `rusqlite`'s bundled philosophy) + `blocking` (sync client for the webhook).
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "blocking"] }
+# `stream`: `Response::bytes_stream` for the outbound SSE provider adapter —
+# one feature on the EXISTING pinned dep, not a new dependency.
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "blocking", "stream"] }
 
 # UMP 1.0 integrity + identity (v1.17.3 "UMP Rollout", spec §2.8/§6.1/§6.2):
 # blake3 is the spec-MANDATED content hash; bs58 is did:key base58btc

@@ -23,7 +23,7 @@ use axum::{body::Body, extract::Query};
 #[cfg(test)]
 use axum::{extract::State, response::Json};
 #[cfg(test)]
-use r2d2_sqlite::SqliteConnectionManager;
+use brain_server::pool::SqliteConnectionManager;
 #[cfg(test)]
 use rusqlite::{Connection, params};
 #[cfg(test)]
@@ -6989,6 +6989,10 @@ Final paragraph after the rule.";
                             "workflow_lineage" => include_str!(concat!(
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/workflow_lineage.rs"
+                            )),
+                            "case_run" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/case_run.rs"
                             )),
                             "kcs" => {
                                 include_str!(concat!(

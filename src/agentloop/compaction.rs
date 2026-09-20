@@ -17,7 +17,8 @@
 //! clearing, selective retention) are policy switches with pinned
 //! all-on defaults; each shapes the SUMMARY INPUT only, never the log.
 
-use crate::agentloop::provider::{ChatMessage, Role};
+use crate::agentloop::context::{self, ContextError, ContextEvent};
+use crate::agentloop::provider::ChatMessage;
 use crate::workflow::session_log::SessionEventRow;
 
 /// Deterministic token estimate (chars ÷ 4, rounded up). The kernel never
@@ -93,6 +94,9 @@ pub(crate) fn plan(events: &[SessionEventRow]) -> Option<CompactionSplit> {
         tail_tokens += w;
         split_at = i;
     }
+    if split_at == 0 {
+        return None;
+    }
     Some(CompactionSplit {
         head: events[..split_at].to_vec(),
         tail: events[split_at..].to_vec(),
@@ -119,10 +123,7 @@ pub(crate) fn summary_input(split: &CompactionSplit, policy: CompactionPolicy) -
             } else {
                 e.payload_json.clone()
             };
-            ChatMessage {
-                role: Role::User,
-                text,
-            }
+            ChatMessage::User { text }
         })
         .collect()
 }
@@ -138,20 +139,263 @@ pub(crate) fn compaction_event_json(summary: &str, split: &CompactionSplit) -> S
     .to_string()
 }
 
-/// Reshape a replayed window around its LATEST compaction event: the
-/// summary to lead with, and the verbatim tail after it. A window with no
-/// compaction event is returned whole (the whole log is the tail).
-pub(crate) fn context_window(events: &[SessionEventRow]) -> (Option<String>, &[SessionEventRow]) {
-    let Some(idx) = events.iter().rposition(|e| e.kind == "compaction") else {
-        return (None, events);
+pub(crate) const SUMMARY_CAP: usize = 16 * 1024;
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyBoundary {
+    summary: String,
+    compacted_through_seq: i64,
+    tail_from_seq: i64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Boundary {
+    version: u8,
+    summary: String,
+    compacted_through_seq: i64,
+    tail_from_seq: i64,
+    supersedes_seq: Option<i64>,
+    tail_seqs: Vec<i64>,
+}
+
+pub(crate) struct EffectiveContext {
+    pub summary: Option<String>,
+    pub boundary_seq: Option<i64>,
+    pub tail: Vec<ContextEvent>,
+}
+
+pub(crate) fn shape_summary(text: &str) -> Result<String, ContextError> {
+    if text.len() > SUMMARY_CAP {
+        return Err(ContextError::SummaryLimit);
+    }
+    let shaped = context::shape_prose(text)?;
+    if shaped.len() > SUMMARY_CAP {
+        return Err(ContextError::SummaryLimit);
+    }
+    if shaped.trim().is_empty() {
+        return Err(ContextError::CompactionBoundary);
+    }
+    Ok(shaped)
+}
+
+/// The manifest proves scoped continuity without treating excluded control or
+/// foreign-child rows as missing conversation. Legacy gaps are ambiguous.
+pub(crate) fn reconstruct(events: &[ContextEvent]) -> Result<EffectiveContext, ContextError> {
+    let bad = ContextError::CompactionBoundary;
+    if events.len() > context::EVENT_CAP {
+        return Err(ContextError::EventLimit);
+    }
+    if events.iter().any(|e| e.row.seq <= 0)
+        || events.windows(2).any(|w| w[0].row.seq >= w[1].row.seq)
+    {
+        return Err(bad);
+    }
+    let Some(index) = events.iter().rposition(|e| e.row.kind == "compaction") else {
+        return Ok(EffectiveContext {
+            summary: None,
+            boundary_seq: None,
+            tail: events.to_vec(),
+        });
     };
-    // A malformed compaction row is a data bug — a missing summary fails
-    // toward an absent lead message (tail still applies), never toward
-    // dropping or duplicating context.
-    let summary = serde_json::from_str::<serde_json::Value>(&events[idx].payload_json)
-        .ok()
-        .and_then(|v| v.get("summary")?.as_str().map(str::to_string));
-    (summary, &events[idx + 1..])
+    let row = &events[index].row;
+    if row.payload_json.len() > context::PAYLOAD_CAP {
+        return Err(bad);
+    }
+    let value: serde_json::Value = serde_json::from_str(&row.payload_json).map_err(|_| bad)?;
+    let (summary, through, from, manifest, supersedes) = if value.get("version").is_some() {
+        let b: Boundary = serde_json::from_str(&row.payload_json).map_err(|_| bad)?;
+        if b.version != 2 || b.tail_seqs.is_empty() || b.tail_seqs.len() > context::EVENT_CAP {
+            return Err(bad);
+        }
+        (
+            b.summary,
+            b.compacted_through_seq,
+            b.tail_from_seq,
+            Some(b.tail_seqs),
+            b.supersedes_seq,
+        )
+    } else {
+        let b: LegacyBoundary = serde_json::from_str(&row.payload_json).map_err(|_| bad)?;
+        (
+            b.summary,
+            b.compacted_through_seq,
+            b.tail_from_seq,
+            None,
+            None,
+        )
+    };
+    if through <= 0
+        || through >= from
+        || from >= row.seq
+        || supersedes.is_some_and(|s| s <= 0 || s >= row.seq)
+    {
+        return Err(bad);
+    }
+    let start = events.iter().position(|e| e.row.seq == from).ok_or(bad)?;
+    if start >= index {
+        return Err(bad);
+    }
+    let retained = &events[start..index];
+    let actual: Vec<_> = retained
+        .iter()
+        .filter(|e| e.row.kind != "compaction")
+        .map(|e| e.row.seq)
+        .collect();
+    if let Some(expected) = &manifest {
+        if expected.first() != Some(&from) || *expected != actual {
+            return Err(bad);
+        }
+        let visible_prior = events[..index]
+            .iter()
+            .rev()
+            .find(|e| e.row.kind == "compaction");
+        if visible_prior.is_some_and(|e| Some(e.row.seq) != supersedes)
+            || retained
+                .iter()
+                .any(|e| e.row.kind == "compaction" && Some(e.row.seq) != supersedes)
+        {
+            return Err(bad);
+        }
+        if let Some(prior) = visible_prior {
+            let previous: serde_json::Value =
+                serde_json::from_str(&prior.row.payload_json).map_err(|_| bad)?;
+            let (old_through, old_from) = if previous.get("version").is_some() {
+                let b: Boundary = serde_json::from_str(&prior.row.payload_json).map_err(|_| bad)?;
+                if b.version != 2 {
+                    return Err(bad);
+                }
+                (b.compacted_through_seq, b.tail_from_seq)
+            } else {
+                let b: LegacyBoundary =
+                    serde_json::from_str(&prior.row.payload_json).map_err(|_| bad)?;
+                (b.compacted_through_seq, b.tail_from_seq)
+            };
+            if old_through <= 0
+                || old_from <= old_through
+                || old_from >= prior.row.seq
+                || through < old_from
+                || from <= old_from
+            {
+                return Err(bad);
+            }
+        }
+    } else if retained.iter().any(|e| e.row.kind == "compaction")
+        || retained
+            .windows(2)
+            .any(|w| w[0].row.seq.checked_add(1) != Some(w[1].row.seq))
+        || retained.last().and_then(|e| e.row.seq.checked_add(1)) != Some(row.seq)
+    {
+        return Err(bad);
+    }
+    // The covered head must end exactly at `through`: any visible conversational
+    // row between the covered prefix and the retained tail is a silent-loss gap.
+    let covered: Vec<_> = events[..start]
+        .iter()
+        .filter(|e| e.row.kind != "compaction")
+        .map(|e| e.row.seq)
+        .collect();
+    if covered.last() != Some(&through) {
+        return Err(bad);
+    }
+    let tail = events[start..]
+        .iter()
+        .filter(|e| e.row.kind != "compaction")
+        .cloned()
+        .collect();
+    Ok(EffectiveContext {
+        summary: Some(shape_summary(&summary)?),
+        boundary_seq: Some(row.seq),
+        tail,
+    })
+}
+
+pub(crate) struct Admission {
+    pub head: Vec<ContextEvent>,
+    pub tail: Vec<ContextEvent>,
+    pub summary: Option<String>,
+    pub supersedes_seq: Option<i64>,
+}
+
+pub(crate) fn message_tokens(messages: &[ChatMessage]) -> Result<usize, ContextError> {
+    serde_json::to_string(messages)
+        .map(|text| estimate_tokens(&text))
+        .map_err(|_| ContextError::RequestEncoding)
+}
+
+/// Select only complete projected groups. Current-exchange rows never enter
+/// the head, even if one exchange alone exhausts the verbatim budget.
+pub(crate) fn admit(
+    effective: EffectiveContext,
+    current: i64,
+) -> Result<Option<Admission>, ContextError> {
+    let messages = context::with_summary(effective.summary.as_deref(), &effective.tail)?;
+    if !brain_engine_sdk::prompt::should_compact(message_tokens(&messages)?) {
+        return Ok(None);
+    }
+    let budget = brain_engine_sdk::prompt::KEEP_VERBATIM_TOKENS;
+    let live = effective
+        .tail
+        .iter()
+        .position(|e| e.exchange_id == Some(current))
+        .unwrap_or(effective.tail.len());
+
+    if message_tokens(&context::project(&effective.tail[live..])?)? > budget {
+        return Err(ContextError::CompactionTailBudget);
+    }
+    // Bounded by the selected-event cap. Project candidate slices to preserve
+    // exact tool-group correlation rather than estimating a raw JSON boundary.
+    for split in 0..=live {
+        let Ok(tail_messages) = context::project(&effective.tail[split..]) else {
+            continue;
+        };
+        if message_tokens(&tail_messages)? > budget {
+            continue;
+        }
+        let Ok(head_messages) = context::project(&effective.tail[..split]) else {
+            continue;
+        };
+        if head_messages.is_empty() {
+            return Ok(None);
+        }
+        if tail_messages.is_empty() {
+            return Err(ContextError::CompactionTailBudget);
+        }
+        return Ok(Some(Admission {
+            head: effective.tail[..split].to_vec(),
+            tail: effective.tail[split..].to_vec(),
+            summary: effective.summary,
+            supersedes_seq: effective.boundary_seq,
+        }));
+    }
+    Err(ContextError::CompactionTailBudget)
+}
+
+pub(crate) fn admission_json(summary: &str, split: &Admission) -> Result<String, ContextError> {
+    let boundary = Boundary {
+        version: 2,
+        summary: shape_summary(summary)?,
+        compacted_through_seq: split
+            .head
+            .last()
+            .ok_or(ContextError::CompactionBoundary)?
+            .row
+            .seq,
+        tail_from_seq: split
+            .tail
+            .first()
+            .ok_or(ContextError::CompactionBoundary)?
+            .row
+            .seq,
+        supersedes_seq: split.supersedes_seq,
+        tail_seqs: split.tail.iter().map(|e| e.row.seq).collect(),
+    };
+    let encoded = serde_json::to_string(&boundary).map_err(|_| ContextError::RequestEncoding)?;
+    if encoded.len() > context::PAYLOAD_CAP {
+        return Err(ContextError::SummaryLimit);
+    }
+    Ok(encoded)
 }
 
 /// The cache-stable system prompt for the summary call. Deterministic
@@ -235,7 +479,7 @@ mod tests {
                 selective_retention: false,
             },
         );
-        let cleared = &input[0].text;
+        let cleared = input[0].text();
         assert!(cleared.contains(CLEARED_TOOL_RESULT));
         assert!(!cleared.contains(&big(200)[..100]), "the body is gone");
         // The tail's tool results (if any) keep their bodies — only the
@@ -276,7 +520,7 @@ mod tests {
             .collect();
         for payload in head_users {
             assert!(
-                input.iter().any(|m| m.text == payload),
+                input.iter().any(|m| m.text() == payload),
                 "user turn rides verbatim into the summary input"
             );
         }
@@ -284,23 +528,126 @@ mod tests {
 
     #[test]
     fn context_window_reshapes_around_the_latest_compaction() {
-        let events = vec![
-            event(1, "user", r#"{"q":"old"}"#),
+        let events: Vec<_> = vec![
+            event(1, "user", "old"),
+            event(2, "user", "retained"),
             event(
-                2,
+                3,
                 "compaction",
                 r#"{"summary":"the brief","compacted_through_seq":1,"tail_from_seq":2}"#,
             ),
-            event(3, "user", r#"{"q":"after"}"#),
-        ];
-        let (summary, tail) = context_window(&events);
-        assert_eq!(summary.as_deref(), Some("the brief"));
-        assert_eq!(tail.len(), 1);
-        assert_eq!(tail[0].payload_json, r#"{"q":"after"}"#);
-        // No compaction yet: the whole window is the tail.
-        let (none, whole) = context_window(&events[..1]);
-        assert_eq!(none, None);
-        assert_eq!(whole.len(), 1);
+            event(4, "user", "after"),
+        ]
+        .into_iter()
+        .map(|row| ContextEvent {
+            row,
+            exchange_id: None,
+            turn: None,
+        })
+        .collect();
+        let effective = reconstruct(&events).unwrap();
+        assert_eq!(effective.summary.as_deref(), Some("the brief"));
+        assert_eq!(effective.tail, vec![events[1].clone(), events[3].clone()]);
+        let whole = reconstruct(&events[..1]).unwrap();
+        assert!(whole.summary.is_none());
+        assert_eq!(whole.tail, events[..1]);
+    }
+
+    fn context_rows(rows: Vec<SessionEventRow>) -> Vec<ContextEvent> {
+        rows.into_iter()
+            .map(|row| ContextEvent {
+                row,
+                exchange_id: None,
+                turn: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn effective_pressure_ignores_covered_history_and_empty_head() {
+        let mut rows: Vec<_> = (1..=25)
+            .map(|seq| event(seq, "user", &big(4_000)))
+            .collect();
+        rows.push(event(26, "user", "current"));
+        rows.push(event(27, "compaction", r#"{"version":2,"summary":"brief","compacted_through_seq":25,"tail_from_seq":26,"supersedes_seq":null,"tail_seqs":[26]}"#));
+        assert!(window_tokens(&rows) > 20_000);
+        let effective = reconstruct(&context_rows(rows)).unwrap();
+        assert!(admit(effective, 99).unwrap().is_none());
+        let mut rows = context_rows(vec![event(1, "user", &big(68_000))]);
+        rows[0].row.payload_json = big(64_000);
+        rows[0].exchange_id = Some(10);
+        let effective = reconstruct(&rows).unwrap();
+        assert!(admit(effective, 10).unwrap().is_none());
+    }
+
+    #[test]
+    fn current_exchange_over_tail_budget_refuses() {
+        let mut rows = context_rows(vec![
+            event(1, "user", &big(50_000)),
+            event(2, "user", &big(50_000)),
+        ]);
+        for e in &mut rows {
+            e.exchange_id = Some(10);
+        }
+        assert!(matches!(
+            admit(reconstruct(&rows).unwrap(), 10),
+            Err(ContextError::CompactionTailBudget)
+        ));
+    }
+
+    #[test]
+    fn boundary_manifest_detects_missing_rows_but_accepts_scoped_gaps() {
+        let rows = context_rows(vec![
+            event(1, "user", "covered"),
+            event(3, "user", "tail"),
+            event(6, "user", "current"),
+            event(
+                7,
+                "compaction",
+                r#"{"version":2,"summary":"brief","compacted_through_seq":1,"tail_from_seq":3,"supersedes_seq":null,"tail_seqs":[3,6]}"#,
+            ),
+        ]);
+        assert_eq!(reconstruct(&rows).unwrap().tail, rows[1..3]);
+        let mut missing = rows.clone();
+        missing.remove(2);
+        assert!(matches!(
+            reconstruct(&missing),
+            Err(ContextError::CompactionBoundary)
+        ));
+        let mut legacy = rows.clone();
+        legacy[3].row.payload_json =
+            r#"{"summary":"brief","compacted_through_seq":1,"tail_from_seq":3}"#.into();
+        assert!(matches!(
+            reconstruct(&legacy),
+            Err(ContextError::CompactionBoundary)
+        ));
+        assert!(matches!(
+            reconstruct(&rows[2..]),
+            Err(ContextError::CompactionBoundary)
+        ));
+    }
+
+    #[test]
+    fn supersession_cannot_move_coverage_backwards() {
+        let rows = context_rows(vec![
+            event(1, "user", "covered"),
+            event(2, "user", "covered too"),
+            event(3, "user", "tail"),
+            event(
+                4,
+                "compaction",
+                r#"{"version":2,"summary":"first","compacted_through_seq":2,"tail_from_seq":3,"supersedes_seq":null,"tail_seqs":[3]}"#,
+            ),
+            event(
+                5,
+                "compaction",
+                r#"{"version":2,"summary":"second","compacted_through_seq":1,"tail_from_seq":2,"supersedes_seq":4,"tail_seqs":[2,3]}"#,
+            ),
+        ]);
+        assert!(matches!(
+            reconstruct(&rows),
+            Err(ContextError::CompactionBoundary)
+        ));
     }
 
     #[test]

@@ -289,12 +289,12 @@ mod tests {
     use crate::register_sqlite_vec::register_sqlite_vec;
 
     fn db() -> (
-        r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>,
+        r2d2::Pool<crate::pool::SqliteConnectionManager>,
         tempfile::NamedTempFile,
     ) {
         register_sqlite_vec();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let mgr = r2d2_sqlite::SqliteConnectionManager::file(tmp.path());
+        let mgr = crate::pool::SqliteConnectionManager::file(tmp.path());
         let pool = r2d2::Pool::builder().max_size(2).build(mgr).unwrap();
         run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
         (pool, tmp)

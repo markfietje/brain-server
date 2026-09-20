@@ -190,7 +190,7 @@ mod tests {
     fn test_pool() -> (tempfile::TempDir, crate::Pool) {
         crate::register_sqlite_vec::register_sqlite_vec();
         let dir = tempfile::TempDir::new().expect("temp dir");
-        let mgr = r2d2_sqlite::SqliteConnectionManager::file(dir.path().join("brain.db"));
+        let mgr = crate::pool::SqliteConnectionManager::file(dir.path().join("brain.db"));
         let pool: crate::Pool = r2d2::Pool::builder().build(mgr).expect("pool");
         crate::migration::run_migration(&mut pool.get().expect("conn"), 0).expect("migration");
         (dir, pool)
@@ -310,7 +310,7 @@ mod tests {
     /// here a pool with no tables at all (every read errors).
     #[tokio::test]
     async fn registry_error_kills_stream_fail_closed() {
-        let mgr = r2d2_sqlite::SqliteConnectionManager::memory();
+        let mgr = crate::pool::SqliteConnectionManager::memory();
         let pool: crate::Pool = r2d2::Pool::builder().max_size(1).build(mgr).expect("pool");
         assert!(
             super::reauth_decision(&pool, Some("dave")).await == ReauthDecision::Kill,

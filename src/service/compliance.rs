@@ -314,7 +314,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, hash);
-        let _g = crate::audit::decision::decision_test_lock();
+        // `_key` already holds the crate-wide decision lock for this whole
+        // record→verify span; re-acquiring it here would self-deadlock.
         assert!(crate::audit::decision::verify_decisions(&conn).unwrap());
     }
 
@@ -342,7 +343,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
-        let _g = crate::audit::decision::decision_test_lock();
+        // `_key` already holds the decision lock (see oversight test above).
         assert!(!crate::audit::decision::verify_decisions(&conn).unwrap());
     }
 
@@ -368,10 +369,11 @@ mod tests {
         tx.commit().unwrap();
         // The audit row rode the SAME tx: the register entry and its
         // evidence exist together.
+        // audit_events stores the target HASHED (target_hash), never raw.
         let audited: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM audit_events WHERE target = ?1",
-                rusqlite::params![format!("ropa:{rid}")],
+                "SELECT COUNT(*) FROM audit_events WHERE target_hash = ?1",
+                rusqlite::params![crate::audit::hash(&format!("ropa:{rid}"))],
                 |r| r.get(0),
             )
             .unwrap();

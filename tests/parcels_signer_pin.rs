@@ -11,7 +11,7 @@
 //! authz matrix — because both behaviors are wire-visible error codes.
 
 use axum::{body::Body, http::Request, http::StatusCode};
-use r2d2_sqlite::SqliteConnectionManager;
+use brain_server::pool::SqliteConnectionManager;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
 use std::path::Path;
 use std::sync::Arc;

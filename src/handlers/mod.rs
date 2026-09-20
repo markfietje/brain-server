@@ -19,6 +19,7 @@
 
 pub mod auth;
 pub mod breaches;
+pub mod case_run;
 pub mod channel;
 pub mod channel_webhook;
 pub mod clients;
@@ -961,7 +962,7 @@ mod tests {
     #[test]
     fn resolve_domain_pool_falls_back_to_global() {
         use crate::domain_registry::DomainRegistry;
-        use r2d2_sqlite::SqliteConnectionManager;
+        use crate::pool::SqliteConnectionManager;
         let mgr = SqliteConnectionManager::memory();
         let pool: crate::Pool = r2d2::Pool::builder().build(mgr).expect("pool");
         let reg = DomainRegistry::new(pool.clone(), std::path::Path::new("/tmp/db.db"), false);

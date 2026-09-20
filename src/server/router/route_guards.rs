@@ -247,6 +247,9 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/workflow/outreach/consent",
     "/workflow/runs/{id}/outreach/followup",
     "/workflow/runs/{id}/status-ref",
+    // The operator case-launch boundary: agents are refused at the
+    // handler (agents do not self-launch cases).
+    "/workflow/cases/{id}/gdl",
     "/parcels",
     "/parcels/export",
     "/parcels/import",
@@ -418,6 +421,9 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     // Keystone: status-ref actions are approve-role writes on the
     // run's domain.
     ("/workflow/runs/{id}/status-ref", "Write"),
+    // The case-launch boundary is a workflow Write on the run's
+    // domain; the operator/agent split is enforced at the handler.
+    ("/workflow/cases/{id}/gdl", "Write"),
     ("/workflow/runs/{id}/handoff", "Read"),
     // The derived context window — a Read on the run's
     // domain (pure derivation over the lineage the events read serves).

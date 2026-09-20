@@ -69,7 +69,7 @@ mod tests {
     fn session_reads_are_sanitized_never_raw() {
         register_sqlite_vec();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let mgr = r2d2_sqlite::SqliteConnectionManager::file(tmp.path());
+        let mgr = crate::pool::SqliteConnectionManager::file(tmp.path());
         let pool = r2d2::Pool::builder().max_size(1).build(mgr).unwrap();
         let mut conn = pool.get().unwrap();
         run_migration(&mut conn, config::DB_MMAP_SIZE_MIB).unwrap();

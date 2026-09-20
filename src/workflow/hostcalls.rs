@@ -801,7 +801,7 @@ mod tests {
     fn host() -> Arc<SqliteWorkflowHost> {
         register_sqlite_vec();
         let tmp = tempfile::NamedTempFile::new().unwrap();
-        let mgr = r2d2_sqlite::SqliteConnectionManager::file(tmp.path());
+        let mgr = crate::pool::SqliteConnectionManager::file(tmp.path());
         let pool = r2d2::Pool::builder().max_size(2).build(mgr).unwrap();
         run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
         pool.get()
@@ -875,12 +875,21 @@ mod tests {
     /// The LIVE-mediation pin (the Loop line's exec bridge deleted the
     /// dormancy pin BY DESIGN in the same commit it wired this): the
     /// hardened mediation now has EXACTLY ONE production wiring — the
-    /// agent loop's exec bridge — and no other. A second call site anywhere
-    /// under `src/` fails here first: scattered wiring is how mediations
-    /// rot, and a wiring outside the loop's bridge would be exactly that.
+    /// agent loop's exec bridge — and no other. The contract now counts
+    /// from files to OCCURRENCES: a second build call inside the same
+    /// file is the same scattered-wiring rot the file count already
+    /// refuses, and a file-count pin alone would pass it silently. Any
+    /// additional call site under `src/` fails here first. (The needle and
+    /// the failure messages below are built by concatenation so THIS
+    /// test's own source — which the walk also scans — never self-matches.)
     #[test]
     fn hostcalls_build_wiring_stays_exactly_the_loop_bridge() {
-        fn walk(dir: &std::path::Path, hits: &mut Vec<std::path::PathBuf>, files: &mut usize) {
+        fn walk(
+            dir: &std::path::Path,
+            hits: &mut Vec<std::path::PathBuf>,
+            occurrences: &mut usize,
+            files: &mut usize,
+        ) {
             // Built by concatenation so THIS test's own source (which names
             // the needle to scan for) never self-matches — the recursion
             // reaches this file too, where the literal would live.
@@ -889,25 +898,40 @@ mod tests {
                 let entry = entry.unwrap();
                 let path = entry.path();
                 if entry.file_type().unwrap().is_dir() {
-                    walk(&path, hits, files);
+                    walk(&path, hits, occurrences, files);
                     continue;
                 }
                 *files += 1;
                 let body = std::fs::read_to_string(&path).unwrap();
-                if body.matches(needle).next().is_some() {
+                let count = body.matches(needle).count();
+                if count > 0 {
                     hits.push(path);
+                    *occurrences += count;
                 }
             }
         }
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut hits: Vec<std::path::PathBuf> = Vec::new();
+        let mut occurrences = 0usize;
         let mut files = 0usize;
-        walk(&manifest.join("src"), &mut hits, &mut files);
+        walk(
+            &manifest.join("src"),
+            &mut hits,
+            &mut occurrences,
+            &mut files,
+        );
         assert!(files > 100, "sanity: the walk scanned {files} files");
         assert_eq!(
             hits.len(),
             1,
             "exactly ONE production wiring of the mediation — the loop's exec bridge"
+        );
+        assert_eq!(
+            occurrences,
+            1,
+            "the wiring contract counts OCCURRENCES, not files — a second {} \
+             inside the same file is the same rot",
+            concat!("hostcalls::bu", "ild(")
         );
         assert!(
             hits[0].starts_with(manifest.join("src/agentloop")),

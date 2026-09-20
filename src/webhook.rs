@@ -709,7 +709,7 @@ pub fn spawn_drain_worker(pool: Pool) {
 mod tests {
     use super::*;
     use crate::Pool;
-    use r2d2_sqlite::SqliteConnectionManager;
+    use crate::pool::SqliteConnectionManager;
 
     fn db() -> Arc<Pool> {
         let mgr = SqliteConnectionManager::memory();

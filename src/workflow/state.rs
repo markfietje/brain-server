@@ -99,6 +99,9 @@ pub(crate) fn cas_update(
 /// updated_at). Wire shaping stays handler-side.
 pub(crate) type RunRowTuple = (i64, String, String, String, String, i64, i64);
 
+/// The case-launch pre-check row (see [`launch_row`]).
+pub(crate) type LaunchRowTuple = (String, String, String, String, i64);
+
 /// The stored step row: (id, run_id, phase, step_key, state_json, revision,
 /// parent_step_id).
 pub(crate) type StepRowTuple = (i64, i64, String, String, String, i64, Option<i64>);
@@ -119,6 +122,22 @@ pub(crate) fn run_row(conn: &Connection, run_id: i64) -> rusqlite::Result<Option
                 r.get(6)?,
             ))
         },
+    )
+    .optional()
+}
+
+/// The case-launch pre-check row: (domain, kind, status, state_json,
+/// state_revision) in one read. The launch law (fresh troubleshoot run
+/// only) is DECIDED by the handler; the data lives here with every other
+/// run read.
+pub(crate) fn launch_row(
+    conn: &Connection,
+    run_id: i64,
+) -> rusqlite::Result<Option<LaunchRowTuple>> {
+    conn.query_row(
+        "SELECT domain,kind,status,state_json,state_revision FROM workflow_runs WHERE id=?1",
+        params![run_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
     )
     .optional()
 }
@@ -299,5 +318,72 @@ mod tests {
             cas_update(&conn, 1, 0, "{}", "active", 5).unwrap_err(),
             CasError::Gone
         );
+    }
+}
+
+/// Test-support reads/writes for the case-launch route's tests. The
+/// SQL-in-handlers law forbids SQL strings under `src/handlers/` — even
+/// in test fixtures — so the fixtures and assertions live in the domain
+/// core that owns the tables. Test-only: compiled nowhere else.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::params;
+    use rusqlite::Connection;
+
+    /// One active, fresh troubleshoot run (the launch law's only input).
+    pub(crate) fn insert_fresh_troubleshoot_run(
+        conn: &Connection,
+        domain: &str,
+        now: i64,
+    ) -> rusqlite::Result<i64> {
+        conn.execute(
+            "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+             VALUES (?1, 'troubleshoot', '{}', 0, 'active', ?2, ?2)",
+            params![domain, now],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// One already-resolved troubleshoot run (the repeater-census input).
+    pub(crate) fn insert_resolved_troubleshoot_run(
+        conn: &Connection,
+        domain: &str,
+        created_at: i64,
+    ) -> rusqlite::Result<i64> {
+        conn.execute(
+            "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+             VALUES (?1, 'troubleshoot', '{}', 1, 'resolved', ?2, ?2)",
+            params![domain, created_at],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// The pending capture proposals the enqueue writes (source-tagged).
+    pub(crate) fn pending_capture_proposals(
+        conn: &Connection,
+    ) -> rusqlite::Result<Vec<(String, String)>> {
+        let mut stmt = conn.prepare(
+            "SELECT kind, status FROM proposals WHERE source = 'gdl-capture' ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows.collect()
+    }
+
+    /// The knowledge/vec row counts (the no-auto-publication pin).
+    pub(crate) fn knowledge_and_vec_counts(conn: &Connection) -> rusqlite::Result<(i64, i64)> {
+        let knowledge: i64 = conn.query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))?;
+        let vec_rows: i64 =
+            conn.query_row("SELECT COUNT(*) FROM vec_knowledge", [], |r| r.get(0))?;
+        Ok((knowledge, vec_rows))
+    }
+
+    /// The fail-closed unknown-tool refusal receipts for a run.
+    pub(crate) fn unknown_tool_receipts(conn: &Connection, run_id: i64) -> rusqlite::Result<i64> {
+        conn.query_row(
+            "SELECT COUNT(*) FROM agent_session_events
+             WHERE run_id = ?1 AND kind = 'tool_result' AND payload_json LIKE '%unknown tool%'",
+            params![run_id],
+            |r| r.get(0),
+        )
     }
 }

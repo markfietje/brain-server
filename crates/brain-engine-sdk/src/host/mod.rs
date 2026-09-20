@@ -30,6 +30,8 @@ pub enum HostError {
     NotFound,
     /// Infrastructure failure surfaced verbatim from the backend.
     Internal(String),
+    /// Checked operation refused with confirmation that no mutation committed.
+    SettlementRefused,
 }
 
 impl fmt::Display for HostError {
@@ -41,6 +43,7 @@ impl fmt::Display for HostError {
             HostError::Busy => write!(f, "host busy"),
             HostError::NotFound => write!(f, "not found"),
             HostError::Internal(m) => write!(f, "internal: {m}"),
+            HostError::SettlementRefused => write!(f, "settlement refused"),
         }
     }
 }
@@ -153,9 +156,41 @@ pub trait WorkflowHost: Send + Sync {
     /// half of the CAS contract after a `Stale` conflict.
     fn load_state(&self, run_id: i64) -> Result<Option<(String, i64)>, HostError>;
 
-    /// Record an audit event. Best-effort by contract: a dropped row reads as
-    /// a gap in the chain, never as a forged continuation.
+    /// Record an audit event, best-effort. Missing evidence need not create a
+    /// detectable chain gap; this void method cannot certify settlement.
     fn audit(&self, kind: AuditKind, actor: &str, target: &str, status: AuditStatus, detail: &str);
+
+    /// Checked delivery: acknowledge ONLY a confirmed, independently
+    /// committed outbox write (with its audit evidence). `Ok(false)` is a
+    /// confirmed idempotent replay. Refuses (does not join) an open
+    /// [`HostTx`] unit. Default: fixed unsupported refusal — hosts that
+    /// cannot certify settlement must fail loudly, never acknowledge.
+    fn enqueue_settlement(
+        &self,
+        run_id: i64,
+        topic: &str,
+        payload_json: &str,
+        idempotency_key: &str,
+    ) -> Result<bool, HostError> {
+        let _ = (run_id, topic, payload_json, idempotency_key);
+        Err(HostError::SettlementRefused)
+    }
+
+    /// Checked lifecycle audit: the row AND its required chain-head pin are
+    /// committed and independently visible before `Ok(())`. Refuses an open
+    /// [`HostTx`] unit with [`HostError::Busy`]. Default: fixed unsupported
+    /// refusal — never a silent success over the void [`WorkflowHost::audit`].
+    fn audit_settlement(
+        &self,
+        kind: AuditKind,
+        actor: &str,
+        target: &str,
+        status: AuditStatus,
+        detail: &str,
+    ) -> Result<(), HostError> {
+        let _ = (kind, actor, target, status, detail);
+        Err(HostError::SettlementRefused)
+    }
 }
 
 #[cfg(test)]
