@@ -1,10 +1,6 @@
-// The memory-safety floor: PRODUCTION code carries no `unsafe` beyond the
-// three individually-documented escapes below (each `#[allow(unsafe_code)]`-
-// scoped at its site with a SAFETY proof). The test profile additionally
-// contains the env-isolation mutation pattern (`set_var`/`remove_var` in
-// `#[cfg(test)]` modules — 158 sites across 22 files, current-thread
-// runtimes, no production effect), which this attribute deliberately does
-// not lint: a new PRODUCTION escape still fails this build.
+// Memory-safety floor: production `unsafe` is denied — the three escapes
+// below carry per-site SAFETY proofs. The test profile's env-isolation
+// mutation pattern (cfg(test) only) is deliberately not linted.
 #![cfg_attr(not(test), deny(unsafe_code))]
 #![allow(deprecated)]
 //! brain-server library target.

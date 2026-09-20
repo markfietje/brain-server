@@ -232,10 +232,8 @@ pub const RERANK_TOP_N_CEILING: usize = 200;
 /// [`RERANK_TOP_N_CEILING`]. Kept out of the feature-gated rerank module so
 /// the pin runs in every offline lane.
 pub fn parse_rerank_top_n(raw: Option<&str>) -> usize {
-    match raw.and_then(|v| v.trim().parse::<usize>().ok()) {
-        Some(n) => n.min(RERANK_TOP_N_CEILING),
-        None => RERANK_TOP_N_DEFAULT,
-    }
+    raw.and_then(|v| v.trim().parse::<usize>().ok())
+        .map_or(RERANK_TOP_N_DEFAULT, |n| n.min(RERANK_TOP_N_CEILING))
 }
 
 #[cfg(test)]
