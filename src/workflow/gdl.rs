@@ -77,6 +77,49 @@ and why it does or does not falsify the hypothesis\"}. If the evidence \
 does not contradict the hypothesis, say so — never invent a \
 contradiction.";
 
+/// The soft-handoff predicate (integer law): a case at or above the 80
+/// percent confidence line is in the soft-handoff band. Integer-only —
+/// no float comparison, no conversion through a float.
+pub(crate) const SOFT_HANDOFF_THRESHOLD_PCT: i64 = 80;
+
+pub(crate) fn soft_handoff(confidence_pct: i64) -> bool {
+    confidence_pct >= SOFT_HANDOFF_THRESHOLD_PCT
+}
+
+/// The once-per-case latch: the first fire records itself; a handoff
+/// after a fire without a recorded justification is the named violation.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SoftHandoffLatch {
+    fired: bool,
+    #[serde(default)]
+    justification: Option<String>,
+}
+
+impl SoftHandoffLatch {
+    /// Evaluate a handoff against the latch. `Ok(true)` = the handoff
+    /// fires (and is recorded); `Err(violation)` = a handoff after a
+    /// fired latch with no justification — the named violation.
+    pub(crate) fn evaluate(
+        &mut self,
+        confidence_pct: i64,
+        justification: Option<&str>,
+    ) -> Result<bool, String> {
+        if !soft_handoff(confidence_pct) {
+            return Ok(false);
+        }
+        if self.fired {
+            match justification {
+                Some(j) if !j.trim().is_empty() => Ok(true),
+                _ => Err("soft-handoff fired without justification".into()),
+            }
+        } else {
+            self.fired = true;
+            self.justification = justification.map(str::to_string);
+            Ok(true)
+        }
+    }
+}
+
 /// The cache-stable GDL method prompt (≤ 20 lines, prompt discipline).
 pub(crate) const GDL_METHOD_PROMPT: &str = "\
 You are a governed troubleshooting agent running the 7-phase method:\n\
@@ -1839,6 +1882,49 @@ impl GdlDriver {
         }
     }
 
+    /// The typed soft-handoff row at the escalation path: the integer
+    /// predicate evaluated on the case's evidence-derived confidence, with
+    /// the latch state for this case run.
+    async fn record_soft_handoff_row(
+        &self,
+        run_id: i64,
+        owner: &str,
+        case: &GdlCase,
+    ) -> Result<(), LoopError> {
+        let confidence_pct = if case.verify.as_ref().is_some_and(|v| v.pass) {
+            100
+        } else {
+            0
+        };
+        let fires = soft_handoff(confidence_pct);
+        let payload = serde_json::json!({
+            "confidence_pct": confidence_pct,
+            "fires": fires,
+        })
+        .to_string();
+        let key = format!("run{run_id}:control:soft_handoff:{owner}");
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get().map_err(checkpoint::persist_error)?;
+            let mut tx =
+                super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
+            session_log::append(
+                tx.tx(),
+                run_id,
+                "control:soft_handoff",
+                &payload,
+                &key,
+                chrono::Utc::now().timestamp(),
+            )
+            .map_err(checkpoint::persist_error)?;
+            tx.commit().map_err(checkpoint::persist_error)?;
+            Ok::<_, LoopError>(())
+        })
+        .await
+        .map_err(checkpoint::persist_error)??;
+        Ok(())
+    }
+
     /// The typed finding row on the session log — recorded for the
     /// operator on EVERY delegation, whatever the outcome.
     async fn record_adversarial_row(
@@ -2232,6 +2318,16 @@ impl GdlDriver {
                         }
                     }
                 }
+            }
+            // The soft-handoff law at the escalation path: every
+            // escalated/routed terminal evaluates the integer predicate and
+            // lands a typed row — the operator sees whether the 80%
+            // soft-handoff posture fired for this case.
+            if matches!(
+                change.terminal,
+                Some(GdlOutcome::Escalated { .. } | GdlOutcome::Routed { .. })
+            ) {
+                self.record_soft_handoff_row(run_id, &owner, &case).await?;
             }
             let pool = self.pool.clone();
             let owned = owner.clone();
@@ -2913,6 +3009,155 @@ mod tests {
             )
             .unwrap();
         assert_eq!(rows, 0, "the flag off means no delegation, no rows");
+    }
+
+    // ── the failure drills (the Keel set) ──────────────────────────────
+
+    /// The soft-handoff law, pure: fires at the integer threshold, exactly
+    /// once per case, and a handoff after the fire without a recorded
+    /// justification is the named violation.
+    #[test]
+    fn soft_handoff_fires_once_and_demands_justification() {
+        let mut latch = SoftHandoffLatch::default();
+        assert!(!soft_handoff(79), "79 is under the integer threshold");
+        assert!(soft_handoff(80), "80 is the threshold, integer-only");
+        assert!(matches!(latch.evaluate(100, None), Ok(true)), "first fire");
+        assert!(latch.fired);
+        // A justified handoff after the fire is legal.
+        assert!(
+            matches!(
+                latch.evaluate(100, Some("customer asked to defer; bundle attached")),
+                Ok(true)
+            ),
+            "a justified handoff after the fire is legal"
+        );
+        // An unjustified handoff after the fire is the named violation.
+        assert_eq!(
+            latch.evaluate(100, None),
+            Err("soft-handoff fired without justification".into()),
+        );
+        assert_eq!(
+            latch.evaluate(100, Some("   ")),
+            Err("soft-handoff fired without justification".into()),
+            "a blank justification is no justification"
+        );
+    }
+
+    /// C7a — sustained write volume: a pinned burst of case episodes keeps
+    /// the audit chain green and every terminal durable.
+    #[test]
+    fn drill_sustained_writes_keep_the_chain_green() {
+        let f = fixture(vec![]);
+        let runtime = rt();
+        {
+            let conn = Connection::open(f.tmp.path()).unwrap();
+            for run_id in 2..=4 {
+                conn.execute(
+                    "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                     VALUES ('acme', 'troubleshoot', '{}', 0, 'active', 1, 1)",
+                    [],
+                )
+                .unwrap();
+                let _ = run_id;
+            }
+        }
+        for run_id in 1..=4 {
+            let (driver, provider) = reload(f.tmp.path(), happy_script(), LoopConfig::default());
+            let outcome = runtime
+                .block_on(driver.run_case(
+                    run_id,
+                    &format!("burst {run_id}"),
+                    &CancellationToken::new(),
+                ))
+                .unwrap();
+            assert!(
+                matches!(outcome, GdlOutcome::Resolved { .. }),
+                "burst case {run_id} resolved: {outcome:?}"
+            );
+            assert!(!provider.requests().is_empty());
+        }
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        assert!(
+            crate::audit::verify_chain(&conn),
+            "the audit chain verifies green across the burst"
+        );
+        let resolved: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM workflow_runs WHERE status = 'resolved'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved, 4, "every burst episode settled durably");
+    }
+
+    /// C7b — DSAR across workflow data: the workflow's publication law IS
+    /// the erasure posture. A resolved run's capture lands as a PENDING
+    /// proposal (never knowledge), so the knowledge-side legal-hold
+    /// machinery governs everything erasable and nothing erasable escapes
+    /// it. The workflow session log is append-only by law — the r1
+    /// checkpoint family refuses tampering — so there is no run-row
+    /// erasure path to refuse: named limit, recorded.
+    #[test]
+    fn drill_run_capture_stays_proposal_only_under_dsar_posture() {
+        let f = fixture(happy_script());
+        seed_repeater_priors(f.tmp.path(), 2);
+        let runtime = rt();
+        let outcome = runtime
+            .block_on(f.driver.run_case(1, "dsar", &CancellationToken::new()))
+            .unwrap();
+        assert!(matches!(outcome, GdlOutcome::Resolved { .. }));
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let knowledge: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            knowledge, 0,
+            "a resolved run publishes nothing erasable — capture is proposal-only"
+        );
+        let pending: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM proposals WHERE status = 'pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(pending >= 1, "the capture sits as a pending proposal");
+        assert!(
+            crate::audit::verify_chain(&conn),
+            "the capture trail stays on the green chain"
+        );
+    }
+
+    /// The escalation path records the soft-handoff evaluation: an
+    /// escalated case (no passing verify — confidence 0) lands the typed
+    /// row with the predicate's verdict for the operator.
+    #[test]
+    fn escalation_records_the_soft_handoff_evaluation() {
+        let runtime = rt();
+        let mut script = happy_script();
+        script[1] = scripted_text(
+            r#"{"priority":"P3","stabilized":false,"search_hits":[],"verdict":"defer"}"#,
+        );
+        let f = fixture(script);
+        let outcome = runtime
+            .block_on(f.driver.run_case(1, "defer", &CancellationToken::new()))
+            .unwrap();
+        assert!(
+            matches!(outcome, GdlOutcome::Escalated { .. }),
+            "{outcome:?}"
+        );
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let (rows, fires): (i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(CASE WHEN payload_json LIKE '%\"fires\":true%' THEN 'true' ELSE 'false' END), 'none')
+                 FROM agent_session_events WHERE kind = 'control:soft_handoff'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "one typed soft-handoff row per escalated case");
+        assert_eq!(fires, "false", "no passing verify — the predicate is false");
     }
 
     #[test]

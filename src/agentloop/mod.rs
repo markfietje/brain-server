@@ -12,6 +12,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod compaction;
+mod compaction_probes;
 pub(crate) mod context;
 pub(crate) mod exec;
 pub(crate) mod hooks;

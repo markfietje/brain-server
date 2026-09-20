@@ -27,6 +27,7 @@
 
 use std::any::Any;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use brain_engine_sdk::env::{ExecutionEnv, ToolDef, ToolRegistry};
@@ -211,6 +212,10 @@ pub(crate) struct LoopDriver {
     /// append, committed-notified after COMMIT, latch released by the test.
     #[cfg(test)]
     compaction_pause: Option<CompactionPause>,
+    /// The conservative-compaction latch: a degraded probe report flips it
+    /// and NO further auto-compaction runs this episode. Interior-mutable —
+    /// maybe_compact takes `&self`.
+    compaction_conservative: Arc<AtomicBool>,
 }
 
 /// Test-only compaction boundary seam (see `LoopDriver::compaction_pause`).
@@ -347,6 +352,7 @@ impl LoopDriver {
             receipt_pause: None,
             #[cfg(test)]
             compaction_pause: None,
+            compaction_conservative: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -946,6 +952,11 @@ impl LoopDriver {
         if budget.exhausted() {
             return Ok(Compacted::No);
         }
+        // The conservative posture: a degraded probe report latched this
+        // episode — NO further auto-compaction runs.
+        if self.compaction_conservative.load(Ordering::Acquire) {
+            return Ok(Compacted::No);
+        }
         let events = self.replay(run_id, exchange.id).await?;
         let effective = crate::agentloop::compaction::reconstruct(&events).map_err(persist)?;
         let Some(split) =
@@ -1044,8 +1055,87 @@ impl LoopDriver {
         if cancel.is_cancelled() {
             return Ok(Compacted::Canceled);
         }
-        self.append_compaction(run_id, exchange, turn, payload, cancel)
-            .await
+        let compacted = self
+            .append_compaction(run_id, exchange, turn, payload.clone(), cancel)
+            .await?;
+        // Compaction-as-experiment: the committed summary is probed against
+        // the window it replaced. Zero provider calls — lexical retrieval
+        // over text already in memory. The report is a typed row; a
+        // degradation latches the conservative posture for this episode.
+        let head_payloads: Vec<&str> = split
+            .head
+            .iter()
+            .map(|e| e.row.payload_json.as_str())
+            .collect();
+        let mut pre_corpus = String::new();
+        for e in &events {
+            pre_corpus.push_str(&e.row.payload_json);
+            pre_corpus.push('\n');
+        }
+        let mut post_corpus = summary;
+        post_corpus.push('\n');
+        for e in &split.tail {
+            post_corpus.push_str(&e.row.payload_json);
+            post_corpus.push('\n');
+        }
+        let report =
+            crate::agentloop::compaction_probes::report(&pre_corpus, &post_corpus, &head_payloads);
+        let degraded = report.degraded;
+        if degraded {
+            self.compaction_conservative.store(true, Ordering::Release);
+        }
+        let probe_payload = serde_json::json!({
+            "probes": report.probes,
+            "pre_hits": report.pre_hits,
+            "post_hits": report.post_hits,
+            "lost_permille": report.lost_permille,
+            "degraded": degraded,
+        })
+        .to_string();
+        let degraded_row = degraded.then(|| {
+            serde_json::json!({
+                "detail": "compaction degraded the window's retrievability;                            further auto-compaction is off this episode",
+            })
+            .to_string()
+        });
+        let probe_key = format!(
+            "run{run_id}:control:compaction_probe:{}:{turn}",
+            exchange.id
+        );
+        let degraded_key = format!(
+            "run{run_id}:control:compaction_degraded:{}:{turn}",
+            exchange.id
+        );
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get().map_err(persist)?;
+            let mut tx = WorkflowTx::begin(&mut conn).map_err(persist)?;
+            session_log::append(
+                tx.tx(),
+                run_id,
+                "control:compaction_probe",
+                &probe_payload,
+                &probe_key,
+                chrono::Utc::now().timestamp(),
+            )
+            .map_err(persist)?;
+            if let Some(row) = degraded_row {
+                session_log::append(
+                    tx.tx(),
+                    run_id,
+                    "control:compaction_degraded",
+                    &row,
+                    &degraded_key,
+                    chrono::Utc::now().timestamp(),
+                )
+                .map_err(persist)?;
+            }
+            tx.commit().map_err(persist)?;
+            Ok::<_, LoopError>(())
+        })
+        .await
+        .map_err(persist)??;
+        Ok(compacted)
     }
 
     async fn append_compaction(
@@ -4173,6 +4263,80 @@ mod tests {
     /// its quota of compaction events stops loudly at the budget-exhausted
     /// terminal instead of running a further summary provider call. The stop
     /// is named on the session log (`control:compaction_quota_exhausted`).
+    /// C5 — compaction as a measured experiment: a summary that loses the
+    /// window's retrievability (the probe report degrades past the pinned
+    /// threshold) latches the conservative posture — NO further
+    /// auto-compaction this episode — and names the degradation on the
+    /// session log.
+    #[test]
+    fn compaction_degradation_latches_the_conservative_posture() {
+        rt().block_on(async {
+            let f = fixture(vec![
+                scripted_text("lossy brief"),
+                scripted_text("answer"),
+                scripted_text("never-consumed second brief"),
+                scripted_text("never-consumed second answer"),
+            ]);
+            // Distinct content token per seeded event: the head's probes
+            // cannot be covered by the tail or by a lossy summary.
+            {
+                let mut conn = f.pool.get().unwrap();
+                let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+                for i in 0..25 {
+                    session_log::append(
+                        tx.tx(),
+                        1,
+                        "user",
+                        &format!("uniquetoken{i:02} {}", "x".repeat(4_000)),
+                        &format!("distinct:{i}"),
+                        1,
+                    )
+                    .unwrap();
+                }
+                tx.commit().unwrap();
+            }
+            f.driver
+                .run_turns_keyed(1, "first", "first current", &CancellationToken::new())
+                .await
+                .unwrap();
+            let conn = f.pool.get().unwrap();
+            let degraded: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_session_events
+                     WHERE kind = 'control:compaction_degraded'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            drop(conn);
+            assert_eq!(degraded, 1, "the lossy summary is named degraded");
+            // The second pressure batch meets the latched posture: no
+            // summary provider call, the loop completes on the verbatim tail.
+            seed_compaction_pressure(&f, 25, 4_000, "second-batch");
+            let outcome = f
+                .driver
+                .run_turns_keyed(1, "second", "second current", &CancellationToken::new())
+                .await
+                .unwrap();
+            assert!(matches!(outcome.outcome, RunOutcome::Completed { .. }));
+            assert_eq!(
+                f.provider.requests().len(),
+                3,
+                "the latched posture runs no second summary"
+            );
+            let conn = f.pool.get().unwrap();
+            let probes: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_session_events
+                     WHERE kind = 'control:compaction_probe'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(probes, 1, "exactly one measured compaction");
+        });
+    }
+
     #[test]
     fn compaction_quota_stops_loudly_at_the_budget_terminal() {
         rt().block_on(async {
