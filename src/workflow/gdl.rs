@@ -86,6 +86,19 @@ pub(crate) fn soft_handoff(confidence_pct: i64) -> bool {
     confidence_pct >= SOFT_HANDOFF_THRESHOLD_PCT
 }
 
+/// The pinned P-class SLA table: integer seconds from the Triage pass to
+/// the deadline. The literals are pinned by test and preregistered — a
+/// change is a dated addendum to the registered decision, never a tweak.
+pub(crate) fn sla_seconds(priority: &str) -> Option<i64> {
+    match priority {
+        "P1" => Some(3_600),
+        "P2" => Some(14_400),
+        "P3" => Some(86_400),
+        "P4" => Some(604_800),
+        _ => None,
+    }
+}
+
 /// The once-per-case latch: the first fire records itself; a handoff
 /// after a fire without a recorded justification is the named violation.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1925,6 +1938,46 @@ impl GdlDriver {
         Ok(())
     }
 
+    /// The typed SLA-arming row at the Triage pass: the pinned P-class
+    /// window added to the pass's integer epoch — the clock, the row, and
+    /// the envelope value all come from ONE clock read.
+    async fn record_sla_armed_row(
+        &self,
+        run_id: i64,
+        owner: &str,
+        attempt: u32,
+        priority: &str,
+        now: i64,
+        deadline: i64,
+    ) -> Result<(), LoopError> {
+        let payload = serde_json::json!({
+            "priority": priority,
+            "sla_deadline_epoch": deadline,
+        })
+        .to_string();
+        let key = format!("run{run_id}:control:sla_armed:{owner}:{attempt}");
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get().map_err(checkpoint::persist_error)?;
+            let mut tx =
+                super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
+            session_log::append(
+                tx.tx(),
+                run_id,
+                "control:sla_armed",
+                &payload,
+                &key,
+                now,
+            )
+            .map_err(checkpoint::persist_error)?;
+            tx.commit().map_err(checkpoint::persist_error)?;
+            Ok::<_, LoopError>(())
+        })
+        .await
+        .map_err(checkpoint::persist_error)??;
+        Ok(())
+    }
+
     /// The typed finding row on the session log — recorded for the
     /// operator on EVERY delegation, whatever the outcome.
     async fn record_adversarial_row(
@@ -2329,6 +2382,7 @@ impl GdlDriver {
             ) {
                 self.record_soft_handoff_row(run_id, &owner, &case).await?;
             }
+            let triage_passed = phase == GdlPhase::Triage && change.verdict == "pass";
             let pool = self.pool.clone();
             let owned = owner.clone();
             cp = tokio::task::spawn_blocking(move || {
@@ -2337,6 +2391,29 @@ impl GdlDriver {
             })
             .await
             .map_err(persist_error)??;
+            // The typed SLA-arming row: recorded only after the arming pass
+            // has committed. The row IS the durable clock — append-only,
+            // replay-exact — because the checkpoint state-derivation law
+            // requires the committed case to re-derive exactly from the
+            // prior case plus the artifact, which excludes any live-clock
+            // envelope field. ONE clock read arms both the stamp and the
+            // deadline, so the row's window is exact.
+            if triage_passed {
+                if let Some(t) = case.triage.as_ref() {
+                    if let Some(window) = sla_seconds(&t.priority) {
+                        let now = chrono::Utc::now().timestamp();
+                        self.record_sla_armed_row(
+                            run_id,
+                            &owner,
+                            attempt,
+                            &t.priority,
+                            now,
+                            now + window,
+                        )
+                        .await?;
+                    }
+                }
+            }
             completed += 1;
             if cp.terminal.is_none() && pause_after.is_some_and(|limit| completed >= limit) {
                 let pool = self.pool.clone();
@@ -3158,6 +3235,57 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 1, "one typed soft-handoff row per escalated case");
         assert_eq!(fires, "false", "no passing verify — the predicate is false");
+    }
+
+    #[test]
+    fn sla_clock_table_pins_the_p_class_literals() {
+        assert_eq!(sla_seconds("P1"), Some(3_600), "P1 → 1 hour");
+        assert_eq!(sla_seconds("P2"), Some(14_400), "P2 → 4 hours");
+        assert_eq!(sla_seconds("P3"), Some(86_400), "P3 → 24 hours");
+        assert_eq!(sla_seconds("P4"), Some(604_800), "P4 → 168 hours");
+        assert_eq!(sla_seconds("P5"), None, "the gate admits only P1..P4");
+        assert_eq!(sla_seconds(""), None);
+        assert_eq!(sla_seconds("p1"), None, "exact literals only");
+    }
+
+    #[test]
+    fn sla_clock_arms_at_triage_on_a_typed_row() {
+        let runtime = rt();
+        let mut script = happy_script();
+        script[1] = scripted_text(
+            r#"{"priority":"P1","stabilized":true,"search_hits":["P-STORAGE-0104"],"verdict":"accept"}"#,
+        );
+        let f = fixture(script);
+        let outcome = runtime
+            .block_on(f.driver.run_case(1, "P1 clock", &CancellationToken::new()))
+            .unwrap();
+        assert!(
+            matches!(outcome, GdlOutcome::Resolved { .. }),
+            "a P1 triage pass resolves; {outcome:?}"
+        );
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let (rows, payload): (i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), COALESCE(MAX(payload_json), 'none') \
+                 FROM agent_session_events WHERE kind = 'control:sla_armed'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "the Triage pass arms the clock: one typed row");
+        assert!(payload.contains("\"priority\":\"P1\""), "{payload}");
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        let deadline = payload["sla_deadline_epoch"].as_i64().unwrap();
+        let (armed_at,): (i64,) = conn
+            .query_row(
+                "SELECT created_at FROM agent_session_events WHERE kind = 'control:sla_armed'",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        let window = deadline - armed_at;
+        assert_eq!(window, 3_600, "P1 window is exactly the pinned hour — \
+            the row's stamp and deadline come from ONE clock read");
     }
 
     #[test]
