@@ -36,6 +36,7 @@
 //! capture lands as proposals on the human review queue or not at all.
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 
 use brain_engine_sdk::env::{ExecutionEnv, ToolDef};
 use brain_engine_sdk::harness::AgentHarness;
@@ -1583,6 +1584,28 @@ pub(crate) enum GdlOutcome {
 /// The GDL driver: one case, seven phases, every dependency injected.
 /// Composes the loop-line's [`LoopDriver`] per phase (the 5-step loop IS the phase
 /// engine — the GDL machine only decides what a phase accepts).
+/// The unconditional human-escape control flag: a pure boolean the
+/// operator side can raise at any moment. The driver observes it ONLY at
+/// phase boundaries — the first exchange settle after the flag is raised
+/// — where the case terminally escalates with the full bundle. No route,
+/// no HTTP, no env knob: the flag is a library seam on the driver call.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct EscapeFlag(Arc<AtomicBool>);
+
+impl EscapeFlag {
+    pub(crate) fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
+
+    pub(crate) fn request(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    pub(crate) fn is_requested(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
 pub(crate) struct GdlDriver {
     pool: Pool,
     loop_driver: LoopDriver,
@@ -1961,15 +1984,8 @@ impl GdlDriver {
             let mut conn = pool.get().map_err(checkpoint::persist_error)?;
             let mut tx =
                 super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
-            session_log::append(
-                tx.tx(),
-                run_id,
-                "control:sla_armed",
-                &payload,
-                &key,
-                now,
-            )
-            .map_err(checkpoint::persist_error)?;
+            session_log::append(tx.tx(), run_id, "control:sla_armed", &payload, &key, now)
+                .map_err(checkpoint::persist_error)?;
             tx.commit().map_err(checkpoint::persist_error)?;
             Ok::<_, LoopError>(())
         })
@@ -2022,7 +2038,21 @@ impl GdlDriver {
         ticket: &str,
         cancel: &CancellationToken,
     ) -> Result<GdlOutcome, LoopError> {
-        self.run_case_until(run_id, ticket, cancel, None)
+        self.run_case_with_escape(run_id, ticket, cancel, &EscapeFlag::new())
+            .await
+    }
+
+    /// The full-run form with the human-escape seam: the caller keeps the
+    /// [`EscapeFlag`] handle and may raise it at any moment; the case
+    /// terminally escalates with the full bundle at the next boundary.
+    pub(crate) async fn run_case_with_escape(
+        &self,
+        run_id: i64,
+        ticket: &str,
+        cancel: &CancellationToken,
+        escape: &EscapeFlag,
+    ) -> Result<GdlOutcome, LoopError> {
+        self.run_case_until(run_id, ticket, cancel, None, escape)
             .await?
             .ok_or_else(|| checkpoint::persist_error("unexpected GDL pause"))
     }
@@ -2036,6 +2066,7 @@ impl GdlDriver {
         ticket: &str,
         cancel: &CancellationToken,
         pause_after: Option<u32>,
+        escape: &EscapeFlag,
     ) -> Result<Option<GdlOutcome>, LoopError> {
         use checkpoint::{Transition, persist_error};
         let owner = uuid::Uuid::new_v4().to_string();
@@ -2126,6 +2157,22 @@ impl GdlDriver {
                     }),
                     RunOutcome::Completed { .. } => None,
                 };
+                // C2: the unconditional human escape, observed at the
+                // post-exchange boundary — the FIRST settle after the flag
+                // was raised. Regardless of gate state (the gate never
+                // runs), the case terminally escalates with the full
+                // bundle; the committed terminal is replay-exact and
+                // nothing un-routes it. The escalation shape is the
+                // checkpoint law's receipt-backed boundary terminal; the
+                // reason rides the gate record verbatim.
+                if change.terminal.is_none() && escape.is_requested() {
+                    change.verdict = "route";
+                    change.errors = vec!["operator escape".into()];
+                    change.terminal = Some(GdlOutcome::Escalated {
+                        at: phase,
+                        bundle: case.escalation_bundle(),
+                    });
+                }
                 if change.terminal.is_none() {
                     let (mut gate, artifact) = if self.ablated {
                         accept_ungated(phase, &receipt.final_text)
@@ -2658,7 +2705,13 @@ mod tests {
         for (i, group) in groups.into_iter().enumerate() {
             let (driver, provider) = reload(f.tmp.path(), group, LoopConfig::default());
             let result = runtime
-                .block_on(driver.run_case_until(1, "reload", &CancellationToken::new(), Some(1)))
+                .block_on(driver.run_case_until(
+                    1,
+                    "reload",
+                    &CancellationToken::new(),
+                    Some(1),
+                    &EscapeFlag::new(),
+                ))
                 .unwrap();
             assert_eq!(
                 provider.requests().len(),
@@ -2688,7 +2741,13 @@ mod tests {
                 LoopConfig::default(),
             );
             terminal = runtime
-                .block_on(driver.run_case_until(1, "retry", &CancellationToken::new(), Some(1)))
+                .block_on(driver.run_case_until(
+                    1,
+                    "retry",
+                    &CancellationToken::new(),
+                    Some(1),
+                    &EscapeFlag::new(),
+                ))
                 .unwrap();
             assert_eq!(provider.requests().len(), 1);
             let conn = Connection::open(f.tmp.path()).unwrap();
@@ -3238,6 +3297,131 @@ mod tests {
     }
 
     #[test]
+    fn escape_armed_before_the_run_routes_at_the_first_boundary() {
+        let f = fixture(happy_script());
+        let escape = EscapeFlag::new();
+        escape.request();
+        let outcome = rt()
+            .block_on(f.driver.run_case_with_escape(
+                1,
+                "escape",
+                &CancellationToken::new(),
+                &escape,
+            ))
+            .unwrap();
+        // The Intake exchange settles, then the FIRST boundary routes: the
+        // gate never runs, so the intake artifact was never applied and
+        // the bundle is honestly incomplete.
+        assert!(
+            matches!(
+                &outcome,
+                GdlOutcome::Escalated {
+                    at: GdlPhase::Intake,
+                    bundle,
+                    ..
+                } if !bundle.complete
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            f.provider.requests().len(),
+            1,
+            "one exchange to the first settle, then the escape routes"
+        );
+        // The reason rides the gate record verbatim.
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let (gate,): (String,) = conn
+            .query_row(
+                "SELECT payload_json FROM agent_session_events \
+                 WHERE kind = 'gdl_gate' ORDER BY seq DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert!(gate.contains("operator escape"), "{gate}");
+        // Durable monotonicity: the committed terminal replays exactly.
+        let (driver, _provider) = reload(f.tmp.path(), vec![], LoopConfig::default());
+        let replayed = rt()
+            .block_on(driver.run_case_with_escape(
+                1,
+                "escape",
+                &CancellationToken::new(),
+                &EscapeFlag::new(),
+            ))
+            .unwrap();
+        assert_eq!(replayed, outcome, "the escape terminal is replay-exact");
+    }
+
+    #[test]
+    fn escape_mid_act_routes_at_the_next_boundary_with_no_further_exchanges() {
+        let f = fixture(vec![]);
+        let runtime = rt();
+        let mut script = happy_script().into_iter();
+        // Intake..Act settle on the first driver; the escape is raised
+        // while the case is paused; the resumed driver carries Verify's
+        // turn only.
+        let first: Vec<Vec<crate::agentloop::provider::StreamEvent>> =
+            (0..5).map(|_| script.next().unwrap()).collect();
+        let (driver, _provider) = reload(f.tmp.path(), first, LoopConfig::default());
+        let paused = runtime
+            .block_on(driver.run_case_until(
+                1,
+                "mid-act",
+                &CancellationToken::new(),
+                Some(5),
+                &EscapeFlag::new(),
+            ))
+            .unwrap();
+        assert!(paused.is_none(), "clean pause after Act");
+        drop(driver);
+        let escape = EscapeFlag::new();
+        escape.request();
+        let (driver2, provider2) = reload(
+            f.tmp.path(),
+            vec![script.next().unwrap()],
+            LoopConfig::default(),
+        );
+        let outcome = runtime
+            .block_on(driver2.run_case_with_escape(
+                1,
+                "mid-act",
+                &CancellationToken::new(),
+                &escape,
+            ))
+            .unwrap();
+        // The Verify exchange settles; the escape preempts the gate — the
+        // adversarial re-check and the second verification never run.
+        assert!(
+            matches!(
+                &outcome,
+                GdlOutcome::Escalated {
+                    at: GdlPhase::Verify,
+                    bundle,
+                    ..
+                } if bundle.hypotheses.len() == 1 && bundle.test_log_rows == 2
+            ),
+            "{outcome:?}"
+        );
+        assert_eq!(
+            provider2.requests().len(),
+            1,
+            "the escape consumes no exchanges beyond the settling phase"
+        );
+        // The escape rides the existing escalation law: the soft-handoff
+        // evaluation is recorded at the terminal.
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let (rows,): (i64,) = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+                 WHERE kind = 'control:soft_handoff'",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "the escalated escape records its soft-handoff row");
+    }
+
+    #[test]
     fn sla_clock_table_pins_the_p_class_literals() {
         assert_eq!(sla_seconds("P1"), Some(3_600), "P1 → 1 hour");
         assert_eq!(sla_seconds("P2"), Some(14_400), "P2 → 4 hours");
@@ -3284,8 +3468,11 @@ mod tests {
             )
             .unwrap();
         let window = deadline - armed_at;
-        assert_eq!(window, 3_600, "P1 window is exactly the pinned hour — \
-            the row's stamp and deadline come from ONE clock read");
+        assert_eq!(
+            window, 3_600,
+            "P1 window is exactly the pinned hour — \
+            the row's stamp and deadline come from ONE clock read"
+        );
     }
 
     #[test]
@@ -3409,10 +3596,13 @@ mod tests {
         let f = fixture(happy_script());
         let runtime = rt();
         runtime
-            .block_on(
-                f.driver
-                    .run_case_until(1, "audit", &CancellationToken::new(), Some(2)),
-            )
+            .block_on(f.driver.run_case_until(
+                1,
+                "audit",
+                &CancellationToken::new(),
+                Some(2),
+                &EscapeFlag::new(),
+            ))
             .unwrap();
         let conn = Connection::open(f.tmp.path()).unwrap();
         let before = super::super::state::read_state_and_revision(&conn, 1).unwrap();
@@ -3543,10 +3733,13 @@ mod tests {
         let f = fixture(happy_script());
         let runtime = rt();
         runtime
-            .block_on(
-                f.driver
-                    .run_case_until(1, "t", &CancellationToken::new(), Some(2)),
-            )
+            .block_on(f.driver.run_case_until(
+                1,
+                "t",
+                &CancellationToken::new(),
+                Some(2),
+                &EscapeFlag::new(),
+            ))
             .unwrap();
         let conn = Connection::open(f.tmp.path()).unwrap();
         let before = super::super::state::read_state_and_revision(&conn, 1).unwrap();
@@ -3654,10 +3847,13 @@ mod tests {
         for change in 0..3 {
             let f = fixture(happy_script());
             runtime
-                .block_on(
-                    f.driver
-                        .run_case_until(1, "t", &CancellationToken::new(), Some(1)),
-                )
+                .block_on(f.driver.run_case_until(
+                    1,
+                    "t",
+                    &CancellationToken::new(),
+                    Some(1),
+                    &EscapeFlag::new(),
+                ))
                 .unwrap();
             let conn = Connection::open(f.tmp.path()).unwrap();
             match change {
@@ -4691,10 +4887,13 @@ mod tests {
         let runtime = rt();
         // Intake..Verify committed, then a clean pause.
         runtime
-            .block_on(
-                f.driver
-                    .run_case_until(1, "t", &CancellationToken::new(), Some(6)),
-            )
+            .block_on(f.driver.run_case_until(
+                1,
+                "t",
+                &CancellationToken::new(),
+                Some(6),
+                &EscapeFlag::new(),
+            ))
             .unwrap();
         // Surface a REAL contradiction pair through the typed writer.
         let mut conn = Connection::open(f.tmp.path()).unwrap();
@@ -4734,7 +4933,13 @@ mod tests {
             LoopConfig::default(),
         );
         runtime
-            .block_on(driver.run_case_until(1, "t", &CancellationToken::new(), Some(1)))
+            .block_on(driver.run_case_until(
+                1,
+                "t",
+                &CancellationToken::new(),
+                Some(1),
+                &EscapeFlag::new(),
+            ))
             .unwrap();
         let mut conn = Connection::open(f.tmp.path()).unwrap();
         let events = session_log::replay(&conn, 1, session_log::REPLAY_CAP).unwrap();
