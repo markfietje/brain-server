@@ -191,13 +191,11 @@ pub(crate) fn justified_handoff_counts(conn: &Connection) -> (i32, i32) {
         .filter(|p| {
             serde_json::from_str::<serde_json::Value>(p)
                 .ok()
-                .and_then(|v| {
-                    Some(
-                        v.get("fires").and_then(|f| f.as_bool()).unwrap_or(false)
-                            && v.get("justification")
-                                .and_then(|j| j.as_str())
-                                .is_some_and(|s| !s.trim().is_empty()),
-                    )
+                .map(|v| {
+                    v.get("fires").and_then(|f| f.as_bool()).unwrap_or(false)
+                        && v.get("justification")
+                            .and_then(|j| j.as_str())
+                            .is_some_and(|s| !s.trim().is_empty())
                 })
                 .unwrap_or(false)
         })

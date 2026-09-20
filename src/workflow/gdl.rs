@@ -2600,21 +2600,13 @@ impl GdlDriver {
             // prior case plus the artifact, which excludes any live-clock
             // envelope field. ONE clock read arms both the stamp and the
             // deadline, so the row's window is exact.
-            if triage_passed {
-                if let Some(t) = case.triage.as_ref() {
-                    if let Some(window) = sla_seconds(&t.priority) {
-                        let now = chrono::Utc::now().timestamp();
-                        self.record_sla_armed_row(
-                            run_id,
-                            &owner,
-                            attempt,
-                            &t.priority,
-                            now,
-                            now + window,
-                        )
-                        .await?;
-                    }
-                }
+            if triage_passed
+                && let Some(t) = case.triage.as_ref()
+                && let Some(window) = sla_seconds(&t.priority)
+            {
+                let now = chrono::Utc::now().timestamp();
+                self.record_sla_armed_row(run_id, &owner, attempt, &t.priority, now, now + window)
+                    .await?;
             }
             completed += 1;
             if cp.terminal.is_none() && pause_after.is_some_and(|limit| completed >= limit) {

@@ -1002,7 +1002,11 @@ seeds (6 must-resolve, 6 must-not-resolve)\n\n",
         let escalations: usize = rows.iter().map(|r| r.escalations).sum();
         let escalations_honored: usize = rows.iter().map(|r| r.escalations_honored).sum();
         let repeats = rows.iter().filter(|r| r.repeat_contact).count();
-        let per_mille = |num: usize, den: usize| if den == 0 { 0 } else { num * 1000 / den };
+        let per_mille = |num: usize, den: usize| {
+            num.checked_mul(1000)
+                .and_then(|v| v.checked_div(den))
+                .unwrap_or(0)
+        };
         let justified_rate = brain_engine_sdk::pure::qa_score::justified_handoff_rate(
             justified as i32,
             fired as i32,
