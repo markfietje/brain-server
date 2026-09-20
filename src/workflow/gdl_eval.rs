@@ -175,6 +175,22 @@ pub(crate) struct EvalRow {
     pub(crate) wall_clock_ms: u128,
     pub(crate) backend_ops: BackendOps,
     pub(crate) prompt_hashes: Vec<String>,
+    // ── Continuity fields (recorded rows only; serde defaults keep older
+    // traces readable — absence reports as no data, never as a score).
+    /// Soft-handoff evaluations that FIRED on this run's rows.
+    #[serde(default)]
+    pub(crate) soft_handoff_fired: usize,
+    /// Fired evaluations carrying a non-empty recorded justification.
+    #[serde(default)]
+    pub(crate) soft_handoff_justified: usize,
+    /// Committed escalations/routings (each one IS an honored handoff).
+    #[serde(default)]
+    pub(crate) escalations: usize,
+    #[serde(default)]
+    pub(crate) escalations_honored: usize,
+    /// The run's recorded repeat-contact census (the SDK derivation).
+    #[serde(default)]
+    pub(crate) repeat_contact: bool,
 }
 
 #[cfg(test)]
@@ -305,6 +321,60 @@ pub(crate) mod runner {
         let prompt_hashes = provider.requests().iter().map(prompt_hash).collect();
         let handoff = ops.handoff_artifact_present;
         let resolved = ops.status_to.as_deref() == Some("resolved");
+        // Continuity fields, read from the run's RECORDED rows only.
+        let (soft_handoff_fired, soft_handoff_justified) = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT payload_json FROM agent_session_events \
+                     WHERE run_id = 1 AND kind = 'control:soft_handoff' ORDER BY seq",
+                )
+                .unwrap();
+            let rows: Vec<String> = stmt
+                .query_map([], |r| r.get(0))
+                .unwrap()
+                .filter_map(Result::ok)
+                .collect();
+            let fired_justified = |p: &String| {
+                serde_json::from_str::<serde_json::Value>(p)
+                    .ok()
+                    .map(|v| {
+                        (
+                            v["fires"].as_bool().unwrap_or(false),
+                            v["fires"].as_bool().unwrap_or(false)
+                                && v["justification"]
+                                    .as_str()
+                                    .is_some_and(|s| !s.trim().is_empty()),
+                        )
+                    })
+                    .unwrap_or((false, false))
+            };
+            let fired = rows.iter().filter(|p| fired_justified(p).0).count();
+            let justified = rows.iter().filter(|p| fired_justified(p).1).count();
+            (fired, justified)
+        };
+        // A committed escalation/routing IS the honored handoff — counted
+        // from the persisted gate records (Escalated/Routed terminals
+        // only — a Resolved/Capped terminal is not a handoff), never from
+        // outcome labels.
+        let escalations = gate_records
+            .iter()
+            .filter(|v| {
+                v["terminal"]["Escalated"].is_object() || v["terminal"]["Routed"].is_object()
+            })
+            .count();
+        let escalations_honored = escalations;
+        let repeat_contact = {
+            let state_json: String = conn
+                .query_row(
+                    "SELECT state_json FROM workflow_runs WHERE id = 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let case: crate::workflow::gdl::GdlCase = serde_json::from_str(&state_json)
+                .unwrap_or_else(|_| crate::workflow::gdl::GdlCase::fresh(""));
+            crate::workflow::gdl::run_artifacts_of(&case, true, 0).repeat_contact
+        };
         EvalRow {
             suite: SUITE.to_string(),
             task_id: task_id.to_string(),
@@ -324,6 +394,11 @@ pub(crate) mod runner {
             wall_clock_ms,
             backend_ops: ops,
             prompt_hashes,
+            soft_handoff_fired,
+            soft_handoff_justified,
+            escalations,
+            escalations_honored,
+            repeat_contact,
         }
     }
 
@@ -919,6 +994,47 @@ seeds (6 must-resolve, 6 must-not-resolve)\n\n",
                 },
             ));
         }
+        // ── Continuity section (recorded rows only) ──────────────────────
+        let rows_n = rows.len();
+        let handoffs = rows.iter().filter(|r| r.handoff).count();
+        let fired: usize = rows.iter().map(|r| r.soft_handoff_fired).sum();
+        let justified: usize = rows.iter().map(|r| r.soft_handoff_justified).sum();
+        let escalations: usize = rows.iter().map(|r| r.escalations).sum();
+        let escalations_honored: usize = rows.iter().map(|r| r.escalations_honored).sum();
+        let repeats = rows.iter().filter(|r| r.repeat_contact).count();
+        let per_mille = |num: usize, den: usize| if den == 0 { 0 } else { num * 1000 / den };
+        let justified_rate = brain_engine_sdk::pure::qa_score::justified_handoff_rate(
+            justified as i32,
+            fired as i32,
+        );
+        let handoff_per_mille = per_mille(handoffs, rows_n);
+        let repeat_per_mille = per_mille(repeats, rows_n);
+        out.push_str("\n## Continuity (recorded rows only)\n\n");
+        out.push_str(&format!(
+            "- **handoff completeness**: {handoffs} of {rows_n} rows carry a \
+handoff artifact ({handoff_per_mille}\u{2030}).\n"
+        ));
+        out.push_str(&format!(
+            "- **justified handoff rate**: {justified} justified of {fired} fired \
+soft-handoff evaluations → {justified_rate}‰ (integer per-mille, floor; \
+no evaluations scores 0 — absence is never a perfect score).\n"
+        ));
+        out.push_str(&format!(
+            "- **escalation honored**: {escalations_honored} of {escalations} \
+committed escalations/routings (a committed escalation IS the honored \
+handoff — measured on the gate records).\n"
+        ));
+        out.push_str(&format!(
+            "- **repeat contact**: {repeats} of {rows_n} rows carry the recorded \
+repeat-contact census mark ({repeat_per_mille}\u{2030}).\n"
+        ));
+        out.push_str(
+            "- **Honest ceiling**: the weekly cadence and the monthly \
+human-signed recalibration are OPERATOR POLICY outside code — this section \
+reports recorded fields, nothing retrains, nothing schedules itself. The \
+1.28.4 UI-rail dials render from these fields and are out of scope here. \
+No model-performance, benchmark, or live-routing claim is made or implied.\n",
+        );
         out.push_str("\n## Honest results and limits\n\n");
         out.push_str(
             "- **The registered arm C is outcome-identical to B on this scripted \
@@ -1027,6 +1143,11 @@ never rewritten).\n",
             wall_clock_ms: 7,
             backend_ops: BackendOps::default(),
             prompt_hashes: vec!["h".into()],
+            soft_handoff_fired: if resolved { 1 } else { 0 },
+            soft_handoff_justified: 0,
+            escalations: if resolved { 0 } else { 1 },
+            escalations_honored: if resolved { 0 } else { 1 },
+            repeat_contact: false,
         };
         let rows = vec![
             mk_row("B", 0, true),
@@ -1036,5 +1157,31 @@ never rewritten).\n",
         let jsonl_a = serde_json::to_string(&rows).unwrap();
         let jsonl_b = serde_json::to_string(&rows).unwrap();
         assert_eq!(jsonl_a, jsonl_b);
+        // The generator over the same synthetic rows is byte-identical AND
+        // carries the continuity section (recorded rows only). The trace
+        // format is JSONL: one row object per line.
+        let jsonl_text: String = rows
+            .iter()
+            .map(|r| serde_json::to_string(r).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), &jsonl_text).unwrap();
+        let report_a = generate_report(tmp.path()).unwrap();
+        let report_b = generate_report(tmp.path()).unwrap();
+        assert_eq!(report_a, report_b, "the report generator is deterministic");
+        assert!(report_a.contains("## Continuity (recorded rows only)"));
+        assert!(report_a.contains("justified handoff rate"));
+        assert!(report_a.contains("nothing retrains, nothing schedules itself"));
+        // Old traces without the continuity fields deserialize honestly:
+        // serde defaults keep them readable and score NO data as no data.
+        let mut legacy_value = serde_json::to_value(&rows[0]).unwrap();
+        if let Some(obj) = legacy_value.as_object_mut() {
+            obj.remove("soft_handoff_fired");
+            obj.remove("soft_handoff_justified");
+        }
+        let legacy: EvalRow = serde_json::from_value(legacy_value).unwrap();
+        assert_eq!(legacy.soft_handoff_fired, 0);
+        assert_eq!(legacy.soft_handoff_justified, 0);
     }
 }
