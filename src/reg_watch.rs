@@ -102,6 +102,29 @@ const AI_ACT_APPLICATION: (i64, u32, u32) = deadline(2026, 8, 2);
 /// Source: https://csrc.nist.gov/pubs/ir/8547/final · https://www.whitehouse.gov/wp-content/uploads/2026/01/M-26-15.pdf
 const PQC_INVENTORY_SEAM: (i64, u32, u32) = deadline(2030, 12, 31);
 
+/// Singapore Model AI Governance Framework for Agentic AI: published
+/// 2026-01-22 by IMDA with the AI Verify Foundation; the pinned date is the
+/// 2026-05-20 update of the primary document. VOLUNTARY — this stamp is
+/// buyer evidence (the law_version stamp + the DPO quarterly diff are the
+/// traceability posture), never a duty claim. The primary document maps
+/// governance onto FOUR dimensions (assess and bound the risks upfront;
+/// make humans meaningfully accountable; implement technical controls;
+/// end-user enablement); the "five dimensions" grouping in secondary
+/// sources is a grouping variance, not a different framework.
+/// Source: https://www.imda.gov.sg (the primary PDF's own text names
+/// "Four dimensions of the MGF for Agentic AI").
+const MGF_AGENTIC_AI_PUBLISHED: (i64, u32, u32) = deadline(2026, 1, 22);
+/// The MGF for Agentic AI's update stamp — the load-bearing half of the
+/// pair above (a framework date re-mapped in code without the compliance
+/// doc, or vice versa, fails the derived pin).
+const MGF_AGENTIC_AI_UPDATED: (i64, u32, u32) = deadline(2026, 5, 20);
+/// CoE Framework Convention on Artificial Intelligence (CETS 225): IN FORCE
+/// 2025-11-01. Party-facing duties only — this repo is not a party, so no
+/// component duty moves; the stamp records the calendar a party-deployment
+/// plans against.
+/// Source: https://www.coe.int/en/web/conventions/full-list?module=treaty-detail&treatynum=225
+const CETS_225_IN_FORCE: (i64, u32, u32) = deadline(2025, 11, 1);
+
 /// CRA Art 14 reporting is LIVE from 2026-09-11 — the runbook must exist and
 /// carry the three reporting clocks + the channel names BEFORE the date, so
 /// this pin is green on arrival of the artifact and cannot silently rot.
@@ -499,6 +522,76 @@ fn revocation_drill_recorded() {
             runbook.contains(measured),
             "drill record must carry the measured verdict `{measured}` — a record \
              without observed behavior is not a rehearsal"
+        );
+    }
+}
+
+fn stamped_mgf_dates() -> (String, String) {
+    let (y, m, d) = MGF_AGENTIC_AI_PUBLISHED;
+    let published = format!("{y:04}-{m:02}-{d:02}");
+    let (y, m, d) = MGF_AGENTIC_AI_UPDATED;
+    (published, format!("{y:04}-{m:02}-{d:02}"))
+}
+
+fn stamped_cets_in_force_date() -> String {
+    let (y, m, d) = CETS_225_IN_FORCE;
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// The MGF-for-Agentic-AI stamp is load-bearing: the dates live in the
+/// constants AND in docs/compliance.md — either side moving alone fails
+/// here. Voluntary framework: the pin records the calendar, it never claims
+/// a duty.
+#[test]
+fn mgf_agentic_ai_stamp_is_load_bearing() {
+    assert_eq!(
+        MGF_AGENTIC_AI_PUBLISHED,
+        deadline(2026, 1, 22),
+        "the MGF for Agentic AI was published 2026-01-22 — re-mapping it \
+         requires a source URL in the same change"
+    );
+    assert_eq!(
+        MGF_AGENTIC_AI_UPDATED,
+        deadline(2026, 5, 20),
+        "the MGF for Agentic AI's primary document was updated 2026-05-20 — \
+         re-mapping it requires a source URL in the same change"
+    );
+    let (published, updated) = stamped_mgf_dates();
+    assert_eq!(published, "2026-01-22");
+    assert_eq!(updated, "2026-05-20");
+    assert!(
+        MGF_AGENTIC_AI_PUBLISHED < MGF_AGENTIC_AI_UPDATED,
+        "publication precedes the update — inverting them is a transcription \
+         error"
+    );
+    let compliance = doc("docs/compliance.md");
+    for anchor in ["2026-01-22", "2026-05-20", "VOLUNTARY", "Four dimensions"] {
+        assert!(
+            compliance.contains(anchor),
+            "docs/compliance.md lost the MGF anchor `{anchor}` — the voluntary \
+             framework's stamp is the dates + the honest dimension mapping"
+        );
+    }
+}
+
+/// The CETS 225 stamp is load-bearing: in force 2025-11-01, party-facing
+/// duties only — the pin records the calendar, it never claims the repo is a
+/// party or that any duty moved.
+#[test]
+fn cets_225_stamp_is_load_bearing() {
+    assert_eq!(
+        CETS_225_IN_FORCE,
+        deadline(2025, 11, 1),
+        "CETS 225 entered into force 2025-11-01 — re-mapping it requires a \
+         source URL in the same change"
+    );
+    assert_eq!(stamped_cets_in_force_date(), "2025-11-01");
+    let compliance = doc("docs/compliance.md");
+    for anchor in ["CETS 225", "2025-11-01", "Party-facing duties only"] {
+        assert!(
+            compliance.contains(anchor),
+            "docs/compliance.md lost the CETS 225 anchor `{anchor}` — the \
+             in-force stamp rides with its party-facing-only posture"
         );
     }
 }
