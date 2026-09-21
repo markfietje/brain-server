@@ -609,6 +609,10 @@ mod conformance {
     //! for this pack exists only after a real human labeling round against
     //! these retained outputs (the dataset-readiness gate — see the
     //! evidence runbook).
+    //!
+    //! CI honesty: runners without the private sibling checkout run this as
+    //! the NAMED skip in the test head — the pack never ships with the repo,
+    //! the lane belongs to the operator, and the skip says so in the log.
 
     use super::tests::{Fixture, fixture, launch_body};
     use crate::agentloop::provider_http::HttpProviderConfig;
@@ -655,6 +659,22 @@ mod conformance {
     async fn gdl_conformance_pack_run() {
         let dir = pack_dir();
         let pack_path = dir.join("gdl_gold_pack_v1.jsonl");
+        // Two-door rule: an EXPLICIT GDL_R10_PACK_DIR is a fail-closed
+        // operator request (a missing pack there still panics below); the
+        // DEFAULT sibling location exists only on operator machines with
+        // the private brain-steward-ip checkout, so its plain absence —
+        // the CI shape, where the pack never ships — is a named skip,
+        // never a silent pass and never a red lane.
+        let explicit_pack_dir =
+            std::env::var("GDL_R10_PACK_DIR").is_ok_and(|d| !d.trim().is_empty());
+        if !explicit_pack_dir && !pack_path.is_file() {
+            println!(
+                "SKIP gdl_conformance_pack_run: no gold pack at {} and no \
+                 GDL_R10_PACK_DIR (private sibling absent — CI lane)",
+                pack_path.display()
+            );
+            return;
+        }
         let register_path = dir.join("gdl_ambiguity_register_v1.jsonl");
         let pack_raw = std::fs::read_to_string(&pack_path).unwrap_or_else(|e| {
             panic!(

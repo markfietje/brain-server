@@ -438,15 +438,38 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
-    # audit-check creates a check run; the default GITHUB_TOKEN can't without
-    # this ("Resource not accessible by integration" — infra failure, not code).
-    permissions:
-      checks: write
+    # The cargo-audit BINARY, not rustsec/audit-check — two token walls the
+    # action cannot climb on this repo: (1) its check-run creation needs
+    # checks:write, but a checks-only job permissions block implicitly sets
+    # every other scope to none, so on this PRIVATE repo even checkout died
+    # ("Repository not found" — the 2026-09-20 red runs; the public mirror
+    # masked it via anonymous-fetch fallback); (2) Dependabot pull requests
+    # run pull_request workflows with a READ-ONLY GITHUB_TOKEN no matter
+    # what the permissions block grants, so check-run creation 403s
+    # regardless. The binary needs no token and fails the step on any
+    # vulnerability. Scans EVERY tracked workspace lockfile — the
+    # RUSTSEC-2026-0285 rustls finding (0.23.43 → 0.23.45, fixed same-day)
+    # lived in the tools/* trees, not the root. Same binary-cache pattern
+    # as the mdbook/lipstyk jobs.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998 # v2.0.0
+      - name: cache cargo-audit binary
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-0.22.2
+      - name: Install cargo-audit (skipped on cache hit)
+        run: command -v cargo-audit >/dev/null 2>&1 || cargo install cargo-audit --version 0.22.2 --locked
+      - name: Audit every tracked workspace lockfile
+        run: |
+          set -e
+          found=0
+          for lock in $(find . -name Cargo.lock -not -path '*/target/*'); do
+            echo "::group::cargo audit --file $lock"
+            cargo audit --file "$lock" || found=1
+            echo "::endgroup::"
+          done
+          test "$found" -eq 0
 
   lipstyk:
     # v1.27.27 "Seal" M5 — the de-slop watchdog: no NEW code may add a

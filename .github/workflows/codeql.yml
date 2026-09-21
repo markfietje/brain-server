@@ -55,6 +55,19 @@ jobs:
       contents: read
       actions: read
     steps:
+      # The traced four-workspace build + the extracted CodeQL database
+      # exceed the stock runner's disk (observed 2026-09-20: the analyze
+      # step died ENOSPC — the runner couldn't even flush its own diag
+      # log). Reclaim the preinstalled toolchains this workflow never uses
+      # (~25 GB: android SDK, dotnet, ghc, swift, hosted toolchains, docker
+      # images) before init re-downloads the CodeQL bundle it needs.
+      - name: Free disk space for the traced build
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup \
+            /usr/local/lib/android /usr/share/swift /opt/hostedtoolcache
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          sudo apt-get clean
+          df -h /
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4
