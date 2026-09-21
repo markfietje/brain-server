@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub mod db;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Rule {
     pub id: i64,

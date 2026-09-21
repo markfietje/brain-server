@@ -10,4 +10,5 @@ publish = false
 [dependencies]
 # The stable engine ABI: pure cores, policy vocabulary, WorkflowHost seam.
 brain-engine-sdk = { path = "../brain-engine-sdk" }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
