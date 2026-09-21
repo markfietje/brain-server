@@ -119,11 +119,15 @@ const MGF_AGENTIC_AI_PUBLISHED: (i64, u32, u32) = deadline(2026, 1, 22);
 /// doc, or vice versa, fails the derived pin).
 const MGF_AGENTIC_AI_UPDATED: (i64, u32, u32) = deadline(2026, 5, 20);
 /// CoE Framework Convention on Artificial Intelligence (CETS 225): IN FORCE
-/// 2025-11-01. Party-facing duties only — this repo is not a party, so no
+/// 2025-09-01 (the treaty's Article 30 mechanism: the first day of the
+/// month after three months from the fifth qualifying ratification).
+/// Party-facing duties only — this repo is not a party, so no
 /// component duty moves; the stamp records the calendar a party-deployment
 /// plans against.
-/// Source: https://www.coe.int/en/web/conventions/full-list?module=treaty-detail&treatynum=225
-const CETS_225_IN_FORCE: (i64, u32, u32) = deadline(2025, 11, 1);
+/// Sources: https://rm.coe.int/1680afae3c (the treaty text, the Article 30
+/// mechanism); https://www.coe.int/en/web/artificial-intelligence/the-framework-convention-on-artificial-intelligence
+/// (the Council of Europe's own entry-into-force statement).
+const CETS_225_IN_FORCE: (i64, u32, u32) = deadline(2025, 9, 1);
 
 /// CRA Art 14 reporting is LIVE from 2026-09-11 — the runbook must exist and
 /// carry the three reporting clocks + the channel names BEFORE the date, so
@@ -574,20 +578,20 @@ fn mgf_agentic_ai_stamp_is_load_bearing() {
     }
 }
 
-/// The CETS 225 stamp is load-bearing: in force 2025-11-01, party-facing
+/// The CETS 225 stamp is load-bearing: in force 2025-09-01, party-facing
 /// duties only — the pin records the calendar, it never claims the repo is a
 /// party or that any duty moved.
 #[test]
 fn cets_225_stamp_is_load_bearing() {
     assert_eq!(
         CETS_225_IN_FORCE,
-        deadline(2025, 11, 1),
-        "CETS 225 entered into force 2025-11-01 — re-mapping it requires a \
+        deadline(2025, 9, 1),
+        "CETS 225 entered into force 2025-09-01 — re-mapping it requires a \
          source URL in the same change"
     );
-    assert_eq!(stamped_cets_in_force_date(), "2025-11-01");
+    assert_eq!(stamped_cets_in_force_date(), "2025-09-01");
     let compliance = doc("docs/compliance.md");
-    for anchor in ["CETS 225", "2025-11-01", "Party-facing duties only"] {
+    for anchor in ["CETS 225", "2025-09-01", "Party-facing duties only"] {
         assert!(
             compliance.contains(anchor),
             "docs/compliance.md lost the CETS 225 anchor `{anchor}` — the \
