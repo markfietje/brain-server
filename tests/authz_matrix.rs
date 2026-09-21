@@ -347,6 +347,13 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
             "/workflow/runs/{id}/handover/offer" => ("POST", r#"{"to_principal":"did:key:z6Mk"}"#),
             "/workflow/runs/{id}/handover/{offer_id}/accept" => ("POST", "{}"),
             "/workflow/runs/{id}/handover/{offer_id}/decline" => ("POST", r#"{"reason":"m"}"#),
+            "/workflow/runs/{id}/handoff/decision" => {
+                ("POST", r#"{"transition":"delivered","decision_ref":"m"}"#)
+            }
+            "/workflow/runs/{id}/back-referral/return" => (
+                "POST",
+                r#"{"contract_key":"m","report":{},"decision_ref":"m"}"#,
+            ),
             // the gate row pins the GET side (table comment); the POST side
             // is pinned by the handler source scan — the matrix drives GET.
             "/workflow/runs/{id}/notes" => ("GET", ""),
@@ -484,6 +491,8 @@ const PRE_GATE_404: &[&str] = &[
     "/workflow/runs/{id}/handover/offer",
     "/workflow/runs/{id}/handover/{offer_id}/accept",
     "/workflow/runs/{id}/handover/{offer_id}/decline",
+    "/workflow/runs/{id}/handoff/decision",
+    "/workflow/runs/{id}/back-referral/return",
     "/workflow/runs/{id}/notes",
     "/workflow/runs/{id}/notes/{invite_id}/accept",
     "/workflow/runs/{id}/delegations",
@@ -1757,6 +1766,115 @@ async fn revoked_agent_gdl_launch_is_401_identity_revoked() {
     assert_eq!(text, revoked_body("identity_revoked"));
 }
 
+/// The operator decision surface is role-gated end to end: the OPERATOR
+/// opens a fixture run in the agent's writable domain and lands its
+/// decision; the AGENT bearer (scopes fine, `workflow` role absent) is
+/// refused 403 by the ROLE gate on the SAME run; on an ABSENT run the
+/// agent reads the same probe-blind 404 the operator gets (no
+/// disclosure); and a REVOKED agent identity dies at the middleware with
+/// `401 identity_revoked` — the decision-ref law never even gets a body
+/// to screen.
+#[tokio::test]
+async fn decision_routes_role_gated_agent_and_revoked_denied() {
+    let srv = twokey_server();
+    let (st, body) = send_body(
+        &srv,
+        Some(TWOKEY_OP),
+        "/workflow/runs",
+        "POST",
+        r#"{"domain":"global","kind":"interview","state_json":"{}"}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "the operator opens the fixture run");
+    let run_id = serde_json::from_str::<serde_json::Value>(&body)
+        .expect("open reply")
+        ["run_id"]
+        .as_i64()
+        .expect("run id") as i64;
+    let decision_path = format!("/workflow/runs/{run_id}/handoff/decision");
+    let decision_body = r#"{"transition":"delivered","decision_ref":"m"}"#;
+
+    // The agent's scope admits the domain, the ROLE gate refuses.
+    let (st, _) = send_body(
+        &srv,
+        Some(TWOKEY_AGENT),
+        &decision_path,
+        "POST",
+        decision_body,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "the agent bearer is refused by the workflow role gate"
+    );
+
+    // The operator's decision lands through the composed app.
+    let (st, body) = send_body(
+        &srv,
+        Some(TWOKEY_OP),
+        &decision_path,
+        "POST",
+        decision_body,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "the operator's decision lands");
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&body).expect("receipt")["audited"],
+        serde_json::json!(true)
+    );
+
+    // Probe-blind: on an absent run the agent reads the operator's 404.
+    let (st, _) = send_body(
+        &srv,
+        Some(TWOKEY_AGENT),
+        "/workflow/runs/999999/handoff/decision",
+        "POST",
+        decision_body,
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "absent runs probe-blind 404");
+
+    // Revocation removes the identity entirely.
+    revoke_via_route(&srv, TWOKEY_OP, "agent@loopback").await;
+    let (st, text) = send_body(
+        &srv,
+        Some(TWOKEY_AGENT),
+        &decision_path,
+        "POST",
+        decision_body,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "a revoked agent dies at the middleware on the decision route"
+    );
+    assert_eq!(text, revoked_body("identity_revoked"));
+}
+
+/// Probe-blind 404: the OPERATOR (every gate passes) on a nonexistent run
+/// id reaches the run lookup and answers the same 404 an absent row always
+/// speaks — the decision routes disclose nothing about runs the caller
+/// cannot see.
+#[tokio::test]
+async fn probe_blind_404_on_foreign_run() {
+    let srv = twokey_server();
+    for (path, body) in [
+        (
+            "/workflow/runs/999999/handoff/decision",
+            r#"{"transition":"delivered","decision_ref":"m"}"#,
+        ),
+        (
+            "/workflow/runs/999999/back-referral/return",
+            r#"{"contract_key":"m","report":{},"decision_ref":"m"}"#,
+        ),
+    ] {
+        let (st, _) = send_body(&srv, Some(TWOKEY_OP), path, "POST", body).await;
+        assert_eq!(st, StatusCode::NOT_FOUND, "{path} answers probe-blind 404");
+    }
+}
+
 /// THE NET, agent class. Every AUTHZ_GATES row × the AgentLoopback
 /// principal: scope-passing rows go through UNLESS the route carries a
 /// role gate the `agent` preset lacks (`workflow`/`approve`/`publish`/
@@ -1792,6 +1910,11 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/workflow/valet/brief",
     "/workflow/valet/consent",
     "/workflow/runs/{id}/handover/offer",
+    // The operator decision surfaces: both handlers demand the `workflow`
+    // role (the HITL law's gate shape) on top of the Write scope, so the
+    // agent class is refused 403 exactly like the offer route.
+    "/workflow/runs/{id}/handoff/decision",
+    "/workflow/runs/{id}/back-referral/return",
     // NOT workflow-gated (verified: the relay `workflow` sites both live in
     // post_handover_offer; accept/decline + mesh's post_delegation_result
     // carry only the scope gate — they pass for this class on Write)

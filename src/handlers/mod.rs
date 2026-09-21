@@ -56,6 +56,7 @@ pub mod verify;
 pub mod webhooks;
 pub mod well_known;
 pub mod workflow;
+pub mod workflow_decisions;
 pub mod workflow_lineage;
 pub mod workload;
 

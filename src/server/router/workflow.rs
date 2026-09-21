@@ -200,6 +200,14 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             post(handlers::relay::post_handover_decline),
         )
         .route(
+            "/workflow/runs/{id}/handoff/decision",
+            post(handlers::workflow_decisions::post_handoff_decision),
+        )
+        .route(
+            "/workflow/runs/{id}/back-referral/return",
+            post(handlers::workflow_decisions::post_back_referral_return),
+        )
+        .route(
             "/workflow/runs/{id}/notes",
             post(handlers::channel::post_notes),
         )

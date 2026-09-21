@@ -220,6 +220,8 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/workflow/runs/{id}/handover/offer",
     "/workflow/runs/{id}/handover/{offer_id}/accept",
     "/workflow/runs/{id}/handover/{offer_id}/decline",
+    "/workflow/runs/{id}/handoff/decision",
+    "/workflow/runs/{id}/back-referral/return",
     "/ops/handovers",
     "/workflow/runs/{id}/notes",
     "/workflow/runs/{id}/notes/{invite_id}/accept",
@@ -479,6 +481,12 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/runs/{id}/handover/offer", "Write"),
     ("/workflow/runs/{id}/handover/{offer_id}/accept", "Write"),
     ("/workflow/runs/{id}/handover/{offer_id}/decline", "Write"),
+    // The operator decision surfaces: delivering/cancelling a handoff and
+    // releasing a back-referral are operator Writes on the run's domain
+    // (both handlers additionally demand the `workflow` role — the HITL
+    // law's gate shape).
+    ("/workflow/runs/{id}/handoff/decision", "Write"),
+    ("/workflow/runs/{id}/back-referral/return", "Write"),
     ("/ops/handovers", "Read"),
     // Channel: posting a note (and its mention-resolved invites) is a
     // Write; the channel view is a Read over the same run. GET and

@@ -5946,6 +5946,94 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Offer or run not found }
+  /workflow/runs/{id}/handoff/decision:
+    post:
+      summary: The operator's handoff decision — deliver or cancel (Write on domain + workflow role)
+      description: >
+        The operator decision surface for the handoff lifecycle: the
+        machine-generated handoff moves to `delivered` or `cancelled` ONLY on
+        an operator decision carrying a decision reference (the audit-recovery
+        handle — screened, bounded, no free-text pass-through). The lifecycle
+        row and its audit row land in ONE transaction; a decision-required
+        transition without the reference refuses `400 decision_ref_required`
+        (the machine never closes a handoff on its own authority).
+      operationId: handoffDecision
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [transition, decision_ref]
+              properties:
+                transition: { type: string, enum: ["delivered", "cancelled"] }
+                decision_ref: { type: string, maxLength: 256 }
+      responses:
+        "200":
+          description: The decision receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  transition: { type: string, enum: ["delivered", "cancelled"] }
+                  decision_ref: { type: string }
+                  audited: { type: boolean }
+        "400": { description: decision_ref_required | decision_ref_invalid | unknown_transition }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run not found }
+  /workflow/runs/{id}/back-referral/return:
+    post:
+      summary: Release a back-referral return contract with the operator's report (Write on domain + workflow role)
+      description: >
+        The receiver's release: the operator's report plus a decision
+        reference flips the contract to `returned`. A report missing a
+        required field refuses `400 report_incomplete` with the missing list
+        (the B3 law at the surface); the contract's `late` flag is computed
+        at the server clock when the receipt lands past the deadline. The
+        release row and its audit land in ONE transaction.
+      operationId: backReferralReturn
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [contract_key, report, decision_ref]
+              properties:
+                contract_key: { type: string, maxLength: 256 }
+                report:
+                  type: object
+                  description: The contract's required report fields (B3-checked server-side)
+                decision_ref: { type: string, maxLength: 256 }
+      responses:
+        "200":
+          description: The release receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  contract_key: { type: string }
+                  status: { type: string, enum: ["returned"] }
+                  late: { type: boolean }
+        "400": { description: decision_ref_required | decision_ref_invalid | contract_key_required | report_invalid | report_incomplete (details.missing lists the B3 field errors) }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Workflow run or back-referral contract not found }
   /ops/handovers:
     get:
       summary: The handover-due board ranked by SLA remaining (Read on domain)
