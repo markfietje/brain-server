@@ -104,4 +104,27 @@ mod pins {
             );
         }
     }
+
+    /// The interview repair mode is a MODE of the one interview state
+    /// machine, not a fork: the repair module's own documentation must
+    /// carry the upstream repair-policy cross-reference (pi
+    /// `RepairPolicyMode` at `extensions.rs:2048`; gajae's
+    /// `deep-interview-repair-cli.md`). If this fires, the cross-reference
+    /// was dropped — restore it in the same change, never silently.
+    #[test]
+    fn repair_is_mode_not_fork() {
+        let repair = doc("crates/brain-interview-core/src/repair.rs");
+        for anchor in [
+            "RepairPolicyMode",
+            "extensions.rs:2048",
+            "deep-interview-repair-cli.md",
+            "not a fork",
+        ] {
+            assert!(
+                repair.contains(anchor),
+                "the interview repair module lost the `{anchor}` cross-reference — \
+                 repair is a mode, not a fork, and the module doc must say so"
+            );
+        }
+    }
 }

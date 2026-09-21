@@ -41,6 +41,7 @@ use std::sync::atomic::AtomicBool;
 
 use brain_engine_sdk::env::{ExecutionEnv, ToolDef};
 use brain_engine_sdk::harness::AgentHarness;
+use brain_engine_sdk::harness::tree::{SessionTree, TreeEntry, TreeEntryKind};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
@@ -2144,6 +2145,195 @@ impl GdlDriver {
         Ok(())
     }
 
+    /// The handoff pipeline at the escalation terminal: the case's session
+    /// tree (the revisit rides `branch()` — the path entries are recorded
+    /// exactly as a no-revisit case records them; only the abandoned
+    /// attempt and the branch summary are added), the named lifecycle
+    /// transitions, and the persist asymmetry — the OLD session keeps a
+    /// summary POINTER (never a packet body), the NEW session opens on the
+    /// reinjected packet context. ONE WorkflowTx: every row and its audit
+    /// commit together or not at all.
+    async fn record_handoff_handover(
+        &self,
+        run_id: i64,
+        owner: &str,
+        case: &GdlCase,
+        phases_completed: u32,
+        attempt: u32,
+    ) -> Result<(), LoopError> {
+        let owner = owner.to_string();
+        let case = case.clone();
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get().map_err(checkpoint::persist_error)?;
+            let mut tx =
+                super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
+            let now = chrono::Utc::now().timestamp();
+
+            // The case path as tree entries: one per completed phase,
+            // chained oldest→newest. Idempotent keys make a re-record a
+            // no-op receipt — the path rows are byte-stable whether or
+            // not the case revisited (the branch law, at row level).
+            let phases = (phases_completed as usize).min(GdlPhase::ALL.len());
+            let mut parent_id: Option<String> = None;
+            for (i, phase) in GdlPhase::ALL.iter().take(phases).enumerate() {
+                let entry = TreeEntry {
+                    id: format!("p{}", i + 1),
+                    parent_id: parent_id.clone(),
+                    kind: TreeEntryKind::Custom,
+                    body: format!("phase {} complete", phase.as_str()),
+                    from_id: None,
+                    label: None,
+                    seq: 0,
+                };
+                session_log::append(
+                    tx.tx(),
+                    run_id,
+                    TREE_ROW_KIND,
+                    &entry.to_json().to_string(),
+                    &format!("run{run_id}:handoff_tree:{owner}:{}", entry.id),
+                    now,
+                )
+                .map_err(checkpoint::persist_error)?;
+                parent_id = Some(entry.id);
+            }
+            // The pre-verify leaf: the last recorded path entry (or none —
+            // a case escalating at Intake branches from the very root,
+            // which persists `from: "root"`).
+            let pre_verify_leaf = parent_id;
+
+            // The revisit branch: the abandoned attempt is a child of the
+            // pre-verify leaf, summarized — never lost, never rewritten.
+            if attempt > 1
+                && let Some(leaf) = &pre_verify_leaf
+            {
+                let abandoned = TreeEntry {
+                    id: "abandoned".to_string(),
+                    parent_id: Some(leaf.clone()),
+                    kind: TreeEntryKind::Custom,
+                    body: format!("abandoned verify attempt {attempt}"),
+                    from_id: None,
+                    label: None,
+                    seq: 0,
+                };
+                session_log::append(
+                    tx.tx(),
+                    run_id,
+                    TREE_ROW_KIND,
+                    &abandoned.to_json().to_string(),
+                    &format!("run{run_id}:handoff_tree:{owner}:abandoned"),
+                    now,
+                )
+                .map_err(checkpoint::persist_error)?;
+            }
+
+            // The handoff summary: a child of the pre-verify leaf (the new
+            // navigation position), folding the abandoned branch into the
+            // context the packet walks.
+            let summary = TreeEntry {
+                id: "handoff_summary".to_string(),
+                parent_id: pre_verify_leaf.clone(),
+                kind: TreeEntryKind::BranchSummary,
+                body: format!("case handed off after {phases_completed} recorded phase(s)"),
+                from_id: pre_verify_leaf.clone(),
+                label: None,
+                seq: 0,
+            };
+            session_log::append(
+                tx.tx(),
+                run_id,
+                TREE_ROW_KIND,
+                &summary.to_json().to_string(),
+                &format!("run{run_id}:handoff_tree:{owner}:handoff_summary"),
+                now,
+            )
+            .map_err(checkpoint::persist_error)?;
+
+            // The lifecycle: requested → generated. `generated` carries
+            // the HITL seam — the machine stops here; delivery and
+            // cancellation are operator outcomes (named refusals without
+            // a decision reference).
+            write_handoff_transition(
+                tx.tx(),
+                run_id,
+                &owner,
+                HandoffTransition::Requested,
+                None,
+                &serde_json::json!({ "phases_completed": phases_completed }),
+                now,
+            )?;
+            write_handoff_transition(
+                tx.tx(),
+                run_id,
+                &owner,
+                HandoffTransition::Generated,
+                None,
+                &serde_json::json!({ "human_edit_required": true }),
+                now,
+            )?;
+
+            // The persist asymmetry: the old session's row is a POINTER —
+            // a digest reference, no packet body. The new session's row
+            // carries the reinjected packet context (typed case fields +
+            // the walked branch path — never raw session bytes) and links
+            // back to the pointer.
+            let branch_context = packet_branch_context(tx.tx(), run_id)?;
+            let reinjection = build_handoff_reinjection(&case, &branch_context, now);
+            let packet_sha = crate::audit::hash(&reinjection.to_string());
+            let pointer_key = format!("run{run_id}:handoff_pointer:{owner}");
+            let pointer_payload = serde_json::json!({
+                "session": "old",
+                "summary_entry": summary.id,
+                "packet_sha": packet_sha,
+            })
+            .to_string();
+            session_log::append(
+                tx.tx(),
+                run_id,
+                HANDOFF_POINTER_KIND,
+                &pointer_payload,
+                &pointer_key,
+                now,
+            )
+            .map_err(checkpoint::persist_error)?;
+            super::audit_write(
+                tx.tx(),
+                run_id,
+                "handoff_pointer",
+                AuditStatus::Ok,
+                "handoff summary pointer recorded",
+            );
+            let reinjection_payload = serde_json::json!({
+                "session": "new",
+                "parent_key": pointer_key,
+                "packet": reinjection,
+            })
+            .to_string();
+            session_log::append(
+                tx.tx(),
+                run_id,
+                HANDOFF_REINJECTION_KIND,
+                &reinjection_payload,
+                &format!("run{run_id}:handoff_reinjection:{owner}"),
+                now,
+            )
+            .map_err(checkpoint::persist_error)?;
+            super::audit_write(
+                tx.tx(),
+                run_id,
+                "handoff_reinjection",
+                AuditStatus::Ok,
+                "handoff reinjection recorded",
+            );
+
+            tx.commit().map_err(checkpoint::persist_error)?;
+            Ok::<_, LoopError>(())
+        })
+        .await
+        .map_err(checkpoint::persist_error)??;
+        Ok(())
+    }
+
     /// The typed finding row on the session log — recorded for the
     /// operator on EVERY delegation, whatever the outcome.
     async fn record_adversarial_row(
@@ -2583,6 +2773,8 @@ impl GdlDriver {
             // offer draft, pre-filled from the case, for a human to decide.
             if matches!(change.terminal, Some(GdlOutcome::Escalated { .. })) {
                 self.record_escalation_offer(run_id, &owner, &case).await?;
+                self.record_handoff_handover(run_id, &owner, &case, cp.phases, attempt)
+                    .await?;
             }
             let triage_passed = phase == GdlPhase::Triage && change.verdict == "pass";
             let pool = self.pool.clone();
@@ -2636,6 +2828,149 @@ pub(crate) fn escalation_target(case: &GdlCase) -> String {
         .map(|d| d.escalate_to.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "operator".into())
+}
+
+// ---- the session tree + the handoff pipeline ----
+
+/// Tree entries ride the append-only session log under their own kind;
+/// the payload is the SDK tree entry's canonical JSON. Additive: no
+/// existing kind changes shape, and every reader filters by kind, so the
+/// rows are inert to pre-existing consumers.
+const TREE_ROW_KIND: &str = "session_tree";
+
+const HANDOFF_LIFECYCLE_KIND: &str = "handoff_lifecycle";
+const HANDOFF_POINTER_KIND: &str = "handoff_summary_pointer";
+const HANDOFF_REINJECTION_KIND: &str = "handoff_reinjection";
+
+/// The handoff lifecycle (the /handoff state machine ported): named
+/// transitions, fail-closed. `Delivered` and `Cancelled` are HUMAN
+/// outcomes — they demand the operator's decision reference; the machine
+/// never writes them on its own authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandoffTransition {
+    Requested,
+    Generated,
+    Delivered,
+    Cancelled,
+    Failed,
+}
+
+impl HandoffTransition {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Requested => "requested",
+            Self::Generated => "generated",
+            Self::Delivered => "delivered",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// The HITL law: delivery and cancellation are the operator's call.
+    pub(crate) const fn requires_decision(self) -> bool {
+        matches!(self, Self::Delivered | Self::Cancelled)
+    }
+}
+
+/// One lifecycle row + its audit, inside the caller's transaction. A
+/// decision-required transition without a decision reference is a named
+/// refusal — the machine cannot close a handoff on its own.
+pub(crate) fn write_handoff_transition(
+    tx: &mut rusqlite::Transaction<'_>,
+    run_id: i64,
+    owner: &str,
+    transition: HandoffTransition,
+    decision_ref: Option<&str>,
+    detail: &serde_json::Value,
+    now: i64,
+) -> Result<(), LoopError> {
+    if transition.requires_decision() && decision_ref.is_none() {
+        return Err(checkpoint::persist_error(format!(
+            "handoff transition `{}` requires an operator decision reference — \
+             the machine never closes a handoff on its own authority",
+            transition.as_str()
+        )));
+    }
+    let payload = serde_json::json!({
+        "transition": transition.as_str(),
+        "human_edited": decision_ref.is_some(),
+        "decision_ref": decision_ref,
+        "detail": detail,
+    })
+    .to_string();
+    let key = format!(
+        "run{run_id}:handoff_lifecycle:{owner}:{}",
+        transition.as_str()
+    );
+    session_log::append(tx, run_id, HANDOFF_LIFECYCLE_KIND, &payload, &key, now)
+        .map_err(checkpoint::persist_error)?;
+    super::audit_write(
+        tx,
+        run_id,
+        "handoff_lifecycle",
+        AuditStatus::Ok,
+        &format!("handoff {}", transition.as_str()),
+    );
+    Ok(())
+}
+
+/// Replay the run's tree rows into the SDK projection. Rows under other
+/// kinds are ignored (the projection consumes only its own kind); a
+/// malformed tree row refuses by name — never a default entry, never a
+/// panic.
+pub(crate) fn load_session_tree(
+    conn: &rusqlite::Connection,
+    run_id: i64,
+) -> Result<SessionTree, LoopError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT payload_json FROM agent_session_events \
+             WHERE run_id = ?1 AND kind = ?2 ORDER BY seq",
+        )
+        .map_err(checkpoint::persist_error)?;
+    let payloads: Vec<String> = stmt
+        .query_map(rusqlite::params![run_id, TREE_ROW_KIND], |r| r.get(0))
+        .map(|it| it.filter_map(Result::ok).collect())
+        .map_err(checkpoint::persist_error)?;
+    let values: Vec<serde_json::Value> = payloads
+        .iter()
+        .map(|p| serde_json::from_str(p).map_err(checkpoint::persist_error))
+        .collect::<Result<_, _>>()?;
+    SessionTree::replay(&values).map_err(checkpoint::persist_error)
+}
+
+/// The handoff packet's branch context: the walked root→leaf path of the
+/// run's session tree — the walked path ONLY (the minimization law: never
+/// the full history, never off-path entries).
+pub(crate) fn packet_branch_context(
+    conn: &rusqlite::Connection,
+    run_id: i64,
+) -> Result<Vec<String>, LoopError> {
+    let tree = load_session_tree(conn, run_id)?;
+    let leaf = match tree.leaf_id() {
+        Some(leaf) => leaf.to_string(),
+        None => return Ok(Vec::new()),
+    };
+    let path = tree.get_branch(&leaf).map_err(checkpoint::persist_error)?;
+    Ok(path.iter().map(|e| e.body.clone()).collect())
+}
+
+/// The reinjection packet context: I-PASS fields pre-filled from the
+/// case's typed artifacts plus the walked branch context. Pure and total:
+/// typed inputs, a caller-owned clock, no provider call — the generation
+/// request is a typed boundary, never a live call.
+pub(crate) fn build_handoff_reinjection(
+    case: &GdlCase,
+    branch_context: &[String],
+    now: i64,
+) -> serde_json::Value {
+    let facts = ipass_facts(case, None, now);
+    serde_json::json!({
+        "schema": "handoff.reinjection.v1",
+        "open_question": facts.pending_question,
+        "branch_context": branch_context,
+        "recorded_at": now,
+    })
 }
 
 /// The I-PASS packet pre-fill (pure): the loop's case state mapped onto
@@ -6035,6 +6370,286 @@ mod tests {
         assert_eq!(
             capture_audits, 0,
             "no capture outcome audit on an escalated case"
+        );
+    }
+    // ---- the session tree + the handoff pipeline ----
+
+    fn tree_rows(path: &std::path::Path, run_id: i64) -> Vec<(String, String)> {
+        let conn = Connection::open(path).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT kind, payload_json FROM agent_session_events \
+                 WHERE run_id = ?1 AND kind IN \
+                 ('session_tree', 'handoff_summary_pointer', 'handoff_reinjection', \
+                 'handoff_lifecycle') ORDER BY seq",
+            )
+            .unwrap();
+        stmt.query_map([run_id], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+    }
+
+    /// The revisit rides `branch()`: the recorded path rows are
+    /// byte-identical whether or not the case revisited — only the
+    /// abandoned-attempt entry and the branch summary are added. The
+    /// walked branch from the handoff leaf reaches the root in order, and
+    /// the abandoned entry is a summarized sibling, never a path member.
+    #[test]
+    fn revisit_branches_the_session_tree_at_the_pre_verify_leaf() {
+        let runtime = rt();
+        let case = GdlCase::fresh("t");
+        let plain = fixture(vec![]);
+        let revisited = fixture(vec![]);
+        runtime
+            .block_on(
+                plain
+                    .driver
+                    .record_handoff_handover(1, "first", &case, 5, 1),
+            )
+            .unwrap();
+        runtime
+            .block_on(
+                revisited
+                    .driver
+                    .record_handoff_handover(1, "first", &case, 5, 3),
+            )
+            .unwrap();
+
+        // The branch law at row level: the five path entries are
+        // byte-identical across the two runs.
+        let plain_tree: Vec<(String, String)> = tree_rows(plain.tmp.path(), 1)
+            .into_iter()
+            .filter(|(k, _)| k == "session_tree")
+            .filter(|(_, p)| !p.contains("handoff_summary") && !p.contains("abandoned"))
+            .collect();
+        let revisited_tree: Vec<(String, String)> = tree_rows(revisited.tmp.path(), 1)
+            .into_iter()
+            .filter(|(k, _)| k == "session_tree")
+            .filter(|(_, p)| !p.contains("handoff_summary") && !p.contains("abandoned"))
+            .collect();
+        assert_eq!(plain_tree.len(), 5, "five phase entries recorded");
+        assert_eq!(
+            plain_tree, revisited_tree,
+            "the revisit changed recorded history"
+        );
+
+        // The projection: root→leaf walk, the abandoned entry off-path,
+        // children oldest→newest.
+        let conn = Connection::open(revisited.tmp.path()).unwrap();
+        let tree = load_session_tree(&conn, 1).unwrap();
+        let walk = tree.get_branch("handoff_summary").unwrap();
+        let ids: Vec<&str> = walk.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["p1", "p2", "p3", "p4", "p5", "handoff_summary"]);
+        let child_ids: Vec<&str> = tree
+            .get_children("p5")
+            .iter()
+            .map(|e| e.id.as_str())
+            .collect();
+        assert_eq!(child_ids, ["abandoned", "handoff_summary"]);
+        let summary = tree.entries().last().unwrap();
+        assert_eq!(summary.kind, TreeEntryKind::BranchSummary);
+        assert_eq!(
+            summary.to_json()["from"],
+            serde_json::json!("p5"),
+            "the summary names the pre-verify leaf it branched from"
+        );
+    }
+
+    /// The handoff packet's context is the walked branch path ONLY — the
+    /// abandoned attempt is summarized, never replayed; nothing outside
+    /// the tree leaks into the context.
+    #[test]
+    fn handoff_packet_context_rides_the_walked_branch_path_only() {
+        let runtime = rt();
+        let case = GdlCase::fresh("t");
+        let f = fixture(vec![]);
+        runtime
+            .block_on(f.driver.record_handoff_handover(1, "first", &case, 5, 3))
+            .unwrap();
+        // noise on other kinds: the full event log is never the context
+        runtime
+            .block_on(f.driver.record_soft_handoff_row(1, "first", &case))
+            .unwrap();
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let context = packet_branch_context(&conn, 1).unwrap();
+        assert_eq!(
+            context,
+            vec![
+                "phase intake complete".to_string(),
+                "phase triage complete".to_string(),
+                "phase hypothesize complete".to_string(),
+                "phase plan complete".to_string(),
+                "phase act complete".to_string(),
+                "case handed off after 5 recorded phase(s)".to_string(),
+            ],
+            "the context is exactly the walked path"
+        );
+        assert!(
+            !context.iter().any(|b| b.contains("abandoned")),
+            "the abandoned branch must ride the summary, not the context"
+        );
+    }
+
+    /// The persist asymmetry: the OLD session keeps a pointer (digest
+    /// reference, no packet body); the NEW session opens on the
+    /// reinjected packet context linked to that pointer.
+    #[test]
+    fn handoff_reinjection_starts_new_session() {
+        let runtime = rt();
+        let case = GdlCase::fresh("t");
+        let f = fixture(vec![]);
+        runtime
+            .block_on(f.driver.record_handoff_handover(1, "first", &case, 5, 1))
+            .unwrap();
+        let rows = tree_rows(f.tmp.path(), 1);
+        let pointers: Vec<&(String, String)> = rows
+            .iter()
+            .filter(|(k, _)| k == "handoff_summary_pointer")
+            .collect();
+        let reinjections: Vec<&(String, String)> = rows
+            .iter()
+            .filter(|(k, _)| k == "handoff_reinjection")
+            .collect();
+        assert_eq!(pointers.len(), 1, "exactly one old-session pointer");
+        assert_eq!(reinjections.len(), 1, "exactly one new-session opening");
+        let pointer_payload = &pointers[0].1;
+        assert!(pointer_payload.contains("\"session\":\"old\""));
+        assert!(pointer_payload.contains("packet_sha"));
+        assert!(
+            !pointer_payload.contains("branch_context"),
+            "the old session never carries a packet body"
+        );
+        let reinjection: serde_json::Value = serde_json::from_str(&reinjections[0].1).unwrap();
+        assert_eq!(reinjection["session"], serde_json::json!("new"));
+        assert_eq!(
+            reinjection["parent_key"],
+            serde_json::json!("run1:handoff_pointer:first"),
+            "the new session opens FROM the pointer, not from the old log"
+        );
+        assert_eq!(
+            reinjection["packet"]["branch_context"]
+                .as_array()
+                .unwrap()
+                .len(),
+            6
+        );
+    }
+
+    /// The HITL law: delivered/cancelled are operator outcomes — the
+    /// machine's write refuses by name without a decision reference;
+    /// requested/generated/failed never demand one.
+    #[test]
+    fn handoff_generated_requires_human_edit_to_move() {
+        let f = fixture(vec![]);
+        let mut conn = Connection::open(f.tmp.path()).unwrap();
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn).unwrap();
+        assert!(
+            write_handoff_transition(
+                tx.tx(),
+                1,
+                "first",
+                HandoffTransition::Requested,
+                None,
+                &serde_json::json!({}),
+                1
+            )
+            .is_ok()
+        );
+        assert!(
+            write_handoff_transition(
+                tx.tx(),
+                1,
+                "first",
+                HandoffTransition::Generated,
+                None,
+                &serde_json::json!({}),
+                1
+            )
+            .is_ok()
+        );
+        for transition in [HandoffTransition::Delivered, HandoffTransition::Cancelled] {
+            let err = write_handoff_transition(
+                tx.tx(),
+                1,
+                "first",
+                transition,
+                None,
+                &serde_json::json!({}),
+                1,
+            )
+            .expect_err("a human outcome without a decision must refuse");
+            assert!(
+                err.to_string().contains("operator decision reference"),
+                "{err}"
+            );
+        }
+        assert!(
+            write_handoff_transition(
+                tx.tx(),
+                1,
+                "first",
+                HandoffTransition::Failed,
+                None,
+                &serde_json::json!({}),
+                1
+            )
+            .is_ok()
+        );
+        // with the operator's reference the human outcomes land
+        assert!(
+            write_handoff_transition(
+                tx.tx(),
+                1,
+                "first",
+                HandoffTransition::Delivered,
+                Some("decision-7"),
+                &serde_json::json!({}),
+                1
+            )
+            .is_ok()
+        );
+        tx.commit().unwrap();
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let (n,): (i64,) = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE kind = 'handoff_lifecycle'",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert_eq!(n, 4, "requested, generated, failed, delivered");
+        let (audits,): (i64,) = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'workflow' \
+                 AND target_hash = ?1 AND status = 'ok'",
+                rusqlite::params![crate::audit::hash("handoff_lifecycle")],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert_eq!(audits, 4, "audit-per-write: every transition audited");
+    }
+
+    /// The generation request is a typed boundary: pure in its inputs,
+    /// caller-owned clock, byte-deterministic — never a live call.
+    #[test]
+    fn handoff_generation_request_is_a_typed_boundary() {
+        let mut case = GdlCase::fresh("t");
+        case.verify_step = Some(VerifyStepSpec {
+            re_run: "rebuild rate under load".into(),
+            pass_condition: ">10%/h".into(),
+        });
+        let context = vec!["phase intake complete".to_string()];
+        let a = build_handoff_reinjection(&case, &context, 1_000);
+        let b = build_handoff_reinjection(&case, &context, 1_000);
+        assert_eq!(a, b, "same inputs, same bytes");
+        let c = build_handoff_reinjection(&case, &context, 2_000);
+        assert_ne!(a, c, "the clock is caller-owned and visible");
+        assert_eq!(a["schema"], serde_json::json!("handoff.reinjection.v1"));
+        assert_eq!(
+            a["open_question"],
+            serde_json::json!("rebuild rate under load"),
+            "I-PASS fields pre-fill from the case's typed artifacts"
         );
     }
 }

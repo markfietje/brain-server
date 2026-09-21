@@ -14,6 +14,9 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+pub mod compaction;
+pub mod tree;
+
 /// Harness phase; the gate for structural operations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
