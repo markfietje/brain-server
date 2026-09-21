@@ -465,6 +465,7 @@ const PRE_GATE_400: &[&str] = &["/workflow/plugins/mount"];
 const PRE_GATE_404: &[&str] = &[
     "/workflow/runs/{id}",
     "/workflow/runs/{id}/steps",
+    "/workflow/runs/{id}/report",
     "/workflow/runs/{id}/steering",
     "/workflow/runs/{id}/suggestions",
     "/workflow/runs/{id}/state",

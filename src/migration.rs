@@ -1680,6 +1680,28 @@ pub fn run_migration_with_store_dim(
              ON workflow_steps(run_id, phase, step_key);",
     )?;
 
+    // ── the intake law-version stamp (additive). ─────────────────────────
+    // The server derives it at open time from the open body's OPTIONAL
+    // jurisdiction through the SDK's single-owner table; empty = absent or
+    // unknown jurisdiction (fail-open on labeling only). It must NEVER live
+    // in state_json: the engines CAS against those exact bytes.
+    {
+        let present: bool = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('workflow_runs') WHERE name='law_version'",
+                [],
+                |r| r.get::<_, i32>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(
+                "ALTER TABLE workflow_runs ADD COLUMN law_version TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+    }
+
     // ── v1.28.18 "Lineage": outbox ancestry. ────────────────────────────
     // `parent_id` links each event to the event it followed (NULL = root).
     // Additive-NULL: existing rows become roots and legacy runs read as flat

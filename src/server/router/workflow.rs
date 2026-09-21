@@ -262,6 +262,10 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             get(handlers::workflow::list_steps),
         )
         .route(
+            "/workflow/runs/{id}/report",
+            get(handlers::workflow::get_run_report),
+        )
+        .route(
             "/workflow/runs/{id}/steering",
             post(handlers::workflow::post_steering),
         )

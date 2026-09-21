@@ -4832,6 +4832,62 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized for the run's domain }
         "404": { description: Workflow run not found }
+  /workflow/runs/{id}/report:
+    get:
+      summary: The run's recorded-rows report at a pinned law version (Read on the run's domain)
+      operationId: workflowRunReport
+      description: >
+        A pure rendering of the run's RECORDED rows only — its gate records
+        (workflow_steps) and workflow audit rows — labeled with the pinned
+        law_version (absent pin = the run's own intake stamp). The
+        law_version_mismatch advisory compares the pin against the curated
+        legal DB's current law version for the pin's jurisdiction: advisory
+        ONLY — never a refusal, never a block; the advisory is absent when
+        BRAIN_LEGAL_DB_PATH is unset or unreadable (or no pin was named).
+        Reads are not audited (an audited read would break the
+        byte-reproducibility of the report itself). Same rows + same pin →
+        byte-identical report.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: law_version
+          in: query
+          required: false
+          schema: { type: string }
+          description: Pin the view to this law version.
+      responses:
+        "200":
+          description: The deterministic report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  domain: { type: string }
+                  kind: { type: string }
+                  status: { type: string }
+                  created_at: { type: integer }
+                  updated_at: { type: integer }
+                  state_revision: { type: integer }
+                  law_version: { type: string }
+                  law_version_pinned: { type: string, nullable: true }
+                  law_version_mismatch: { type: boolean, nullable: true }
+                  legal_db_head:
+                    type: string
+                    nullable: true
+                    description: The curated DB's current law version for the pin's jurisdiction (advisory data).
+                  gate_records:
+                    type: array
+                    items: { type: object }
+                  audit:
+                    type: array
+                    items: { type: object }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized for the run's domain }
+        "404": { description: Workflow run not found }
   /workflow/runs/{id}/steps:
     get:
       summary: List the steps of a workflow run (Read on the run's domain)
@@ -4873,6 +4929,9 @@ paths:
               properties:
                 domain: { type: string }
                 kind: { type: string }
+                jurisdiction:
+                  type: string
+                  description: OPTIONAL intake hint; the server stamps the run's law_version through the SDK's single-owner table — absent/unknown stamps empty. The raw value is never stored.
                 state_json:
                   type: string
                   description: Opaque engine state; valid JSON, <= 256 KiB. For `valet/%` kinds this MUST be a readable valet envelope whose `what` passes the injection screen (v1.28.63 Wardline).
@@ -4886,6 +4945,9 @@ paths:
                 properties:
                   run_id: { type: integer }
                   revision: { type: integer }
+                  law_version:
+                    type: string
+                    description: The server-derived stamp (may be empty).
         "400": { description: domain_invalid | kind_invalid | state_invalid | state_too_large | screen_rejected (valet/% kind, label tripped the injection screen) | valet_state_invalid (valet/% kind, state is not a readable valet envelope) }
         "401": { description: Not authenticated }
         "403": { description: Not authorized (domain Write or workflow role gate) }

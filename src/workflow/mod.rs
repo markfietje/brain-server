@@ -112,6 +112,7 @@ pub(crate) mod parcels;
 pub(crate) mod proficiency;
 pub(crate) mod recall;
 pub(crate) mod relay;
+pub mod report;
 pub(crate) mod sandbox;
 pub(crate) mod scoreboard;
 pub(crate) mod session;

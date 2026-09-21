@@ -863,6 +863,11 @@ pub struct OpenRunRequest {
     pub domain: String,
     pub kind: String,
     pub state_json: String,
+    /// OPTIONAL: the intake stamps the run's law version from this through
+    /// the SDK's single-owner table; absent/unknown stamps empty (fail-open
+    /// on labeling only — nothing enforces on it downstream). The raw value
+    /// is never stored.
+    pub jurisdiction: Option<String>,
 }
 
 /// `POST /workflow/runs` — open a governed run. Substrate projection: the
@@ -915,7 +920,18 @@ pub async fn post_run(
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     crate::handlers::authorize_role(&principal, &pool, "workflow")?;
     let actor = super::recall::principal_label(&principal);
-    let (domain, kind, state_json) = (body.domain, body.kind, body.state_json);
+    // The law-version stamp is SERVER-derived from the SDK's single-owner
+    // table: absent/empty/unknown jurisdiction all stamp empty. The client
+    // cannot assert an arbitrary label, and the raw input never reaches
+    // storage.
+    let law_version = body
+        .jurisdiction
+        .as_deref()
+        .and_then(brain_engine_sdk::policy::law_version_for)
+        .unwrap_or("")
+        .to_string();
+    let (domain, kind, state_json, law_version_in_tx) =
+        (body.domain, body.kind, body.state_json, law_version.clone());
     let (run_id, _): (i64, i64) = tokio::task::spawn_blocking(move || -> Result<_, String> {
         let mut conn = pool.get().map_err(|e| format!("{e}"))?;
         let mut tx =
@@ -923,12 +939,14 @@ pub async fn post_run(
         let now = chrono::Utc::now().timestamp();
         let run_id = crate::workflow::state::open_run(tx.tx(), &domain, &kind, &state_json, now)
             .map_err(|e| format!("{e}"))?;
+        crate::workflow::state::stamp_law_version(tx.tx(), run_id, &law_version_in_tx)
+            .map_err(|e| format!("{e}"))?;
         crate::workflow::audit_write(
             tx.tx(),
             run_id,
             &format!("run:{run_id}"),
             crate::audit::AuditStatus::Ok,
-            "open",
+            &format!("open law_version={law_version_in_tx}"),
         );
         crate::workflow::crew::touch_cranking(
             tx.tx(),
@@ -942,7 +960,56 @@ pub async fn post_run(
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?
     .map_err(HandlerError::internal)?;
-    Ok(Json(serde_json::json!({"run_id": run_id, "revision": 0})))
+    Ok(Json(
+        serde_json::json!({"run_id": run_id, "revision": 0, "law_version": law_version}),
+    ))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReportQuery {
+    pub law_version: Option<String>,
+}
+
+/// `GET /workflow/runs/{id}/report?law_version=<v>` — a pure rendering of
+/// the run's RECORDED rows (its gate records + audit rows) at the pinned law
+/// version. The `law_version_mismatch` advisory compares the pin against the
+/// curated legal DB's head — advisory only, NEVER a refusal or a block; when
+/// the legal DB is unconfigured or unreadable the advisory is absent. No
+/// pinned version → the run's own intake stamp labels the view.
+pub async fn get_run_report(
+    State(state): State<Arc<AppState>>,
+    principal: crate::handlers::auth::OptPrincipal,
+    Path(id): Path<i64>,
+    Query(q): Query<ReportQuery>,
+) -> Result<Json<crate::workflow::report::RunReport>, HandlerError> {
+    let principal = principal.0;
+    let domain = run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let pool = state.pool.clone();
+    let pinned = q.law_version.clone();
+    let legal_head = tokio::task::spawn_blocking(move || -> Option<String> {
+        let pinned = pinned.as_ref()?;
+        let path = std::env::var("BRAIN_LEGAL_DB_PATH").ok()?;
+        if path.trim().is_empty() {
+            return None;
+        }
+        let conn = legal_rules_db::db::open_readonly(std::path::Path::new(&path)).ok()?;
+        legal_rules_db::db::current_version_for(&conn, pinned)
+            .ok()
+            .flatten()
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?;
+    let report = tokio::task::spawn_blocking(move || -> Result<Option<_>, String> {
+        let conn = pool.get().map_err(|e| format!("{e}"))?;
+        crate::workflow::report::build_run_report(&conn, id, q.law_version.as_deref(), legal_head)
+            .map_err(|e| format!("{e}"))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?
+    .ok_or_else(|| HandlerError::not_found("workflow run not found"))?;
+    Ok(Json(report))
 }
 
 /// Resolve a run's domain or 404 (probe-blind on missing runs).
@@ -2036,4 +2103,188 @@ pub async fn post_complaint_ack_sweep(
     Ok(Json(
         serde_json::json!({"alerted": alerted.len(), "run_ids": alerted}),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The intake stamp law: a known jurisdiction stamps the run's additive
+    /// column server-side through the SDK's single-owner table, the open
+    /// audit row carries the stamp, and `state_json` is byte-identical to
+    /// the caller's body (the CAS law). Absent and unknown jurisdictions
+    /// stamp empty; the raw input is never stored.
+    #[tokio::test]
+    async fn intake_carries_law_version() {
+        let f = crate::handlers::case_run::tests::fixture();
+        const STATE: &str = r#"{"a":1}"#;
+
+        let open = |jurisdiction: Option<String>| {
+            let state = f.state.clone();
+            async move {
+                post_run(
+                    axum::extract::State(state),
+                    crate::handlers::auth::OptPrincipal(None),
+                    axum::Json(OpenRunRequest {
+                        domain: "personal".to_string(),
+                        kind: "interview".to_string(),
+                        state_json: STATE.to_string(),
+                        jurisdiction,
+                    }),
+                )
+                .await
+                .expect("open")
+            }
+        };
+
+        // A known jurisdiction stamps the SDK's label for it.
+        let stamped = open(Some("PH".to_string())).await;
+        let run_id = stamped.0["run_id"].as_i64().unwrap();
+        assert_eq!(
+            stamped.0["law_version"].as_str().unwrap(),
+            "npc-advisory-2024-04",
+            "the response echoes the server-derived stamp"
+        );
+        let conn = f.state.pool.get().unwrap();
+        let (column, stored_state) =
+            crate::workflow::state::test_support::law_version_and_state(&conn, run_id).unwrap();
+        assert_eq!(column, "npc-advisory-2024-04");
+        assert_eq!(
+            stored_state, STATE,
+            "state_json must stay byte-identical (the CAS law)"
+        );
+        let detail_hash =
+            crate::workflow::state::test_support::workflow_audit_detail_hash(&conn, run_id)
+                .unwrap();
+        assert_eq!(
+            detail_hash,
+            crate::audit::hash("open law_version=npc-advisory-2024-04"),
+            "the open audit row carries the stamp"
+        );
+
+        // Unknown jurisdiction stamps empty — fail-open on labeling only.
+        let unknown = open(Some("zz".to_string())).await;
+        let unknown_id = unknown.0["run_id"].as_i64().unwrap();
+        assert_eq!(unknown.0["law_version"].as_str().unwrap(), "");
+        let (column, stored_state) =
+            crate::workflow::state::test_support::law_version_and_state(&conn, unknown_id).unwrap();
+        assert_eq!(column, "");
+        assert_eq!(stored_state, STATE);
+
+        // Absent jurisdiction behaves exactly like unknown.
+        let absent = open(None).await;
+        let absent_id = absent.0["run_id"].as_i64().unwrap();
+        assert_eq!(absent.0["law_version"].as_str().unwrap(), "");
+        let (column, stored_state) =
+            crate::workflow::state::test_support::law_version_and_state(&conn, absent_id).unwrap();
+        assert_eq!(column, "");
+        assert_eq!(stored_state, STATE);
+    }
+
+    /// The report route: byte-identical twice at a pin; the run's own stamp
+    /// labels the unpinned view; the advisory degrades to absent when the
+    /// legal DB is unconfigured (never a refusal). Sync test driving the
+    /// async handlers through one runtime so the env lock is never held
+    /// across an await point.
+    #[test]
+    fn old_report_reproducible_at_pinned_version() {
+        static LEGAL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = LEGAL_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        rt.block_on(report_route_body());
+        // SAFETY: single-threaded under LEGAL_ENV_LOCK.
+        unsafe { std::env::remove_var("BRAIN_LEGAL_DB_PATH") };
+    }
+
+    async fn report_route_body() {
+        let f = crate::handlers::case_run::tests::fixture();
+        // SAFETY: single-threaded under LEGAL_ENV_LOCK (the sync caller).
+        unsafe { std::env::remove_var("BRAIN_LEGAL_DB_PATH") };
+        let opened = post_run(
+            axum::extract::State(f.state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            axum::Json(OpenRunRequest {
+                domain: "personal".to_string(),
+                kind: "interview".to_string(),
+                state_json: r#"{"a":1}"#.to_string(),
+                jurisdiction: Some("PH".to_string()),
+            }),
+        )
+        .await
+        .expect("open");
+        let run_id = opened.0["run_id"].as_i64().unwrap();
+
+        let render = |law_version: Option<String>| {
+            let state = f.state.clone();
+            async move {
+                let response = get_run_report(
+                    axum::extract::State(state),
+                    crate::handlers::auth::OptPrincipal(None),
+                    axum::extract::Path(run_id),
+                    Query(ReportQuery { law_version }),
+                )
+                .await
+                .expect("report");
+                serde_json::to_string(&response.0).expect("serialize")
+            }
+        };
+
+        // Unpinned: the run's own stamp labels the view; legal DB
+        // unconfigured → advisory absent; byte-identical twice.
+        let a = render(None).await;
+        let b = render(None).await;
+        assert_eq!(a, b, "byte-identical report, twice");
+        assert!(a.contains(r#""law_version":"npc-advisory-2024-04""#), "{a}");
+        assert!(a.contains(r#""law_version_mismatch":null"#), "{a}");
+        assert!(
+            a.contains(r#""detail_hash""#),
+            "the recorded audit row is the report's evidence: {a}"
+        );
+
+        // Pinned with the legal DB configured: the advisory compares against
+        // the head and flips when the head moves — never a refusal.
+        let dir = std::env::temp_dir().join(format!("brain-report-head-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("legal.db");
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            legal_rules_db::db::seed(&conn, "dpo-test", 1_700_000_000).unwrap();
+        }
+        // SAFETY: single-threaded under LEGAL_ENV_LOCK.
+        unsafe { std::env::set_var("BRAIN_LEGAL_DB_PATH", &db_path) };
+        let pinned = render(Some("npc-advisory-2024-04".to_string())).await;
+        assert!(
+            pinned.contains(r#""law_version_mismatch":false"#),
+            "the seeded snapshot's newest PH version IS the pin: {pinned}"
+        );
+        {
+            let conn = rusqlite::Connection::open(&db_path).unwrap();
+            legal_rules_db::db::insert_law_version(
+                &conn,
+                &legal_rules_db::db::LawVersionRow {
+                    jurisdiction: "ph".to_string(),
+                    version: "npc-advisory-2026-01".to_string(),
+                    effective_at: 1_800_000_000,
+                    source_ref: "import".to_string(),
+                    reviewed_by: "dpo-test".to_string(),
+                    reviewed_at: Some(1_800_000_000),
+                },
+            )
+            .unwrap();
+            legal_rules_db::db::pin_head(&conn).unwrap();
+        }
+        let pinned1 = render(Some("npc-advisory-2024-04".to_string())).await;
+        let pinned2 = render(Some("npc-advisory-2024-04".to_string())).await;
+        assert_eq!(pinned1, pinned2, "byte-identical at the pin, twice");
+        assert!(
+            pinned1.contains(r#""law_version_mismatch":true"#),
+            "the head moved to the newer PH advisory: the advisory flips, the report never blocks: {pinned1}"
+        );
+        assert!(pinned1.contains(r#""legal_db_head":"npc-advisory-2026-01""#));
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_dir(&dir);
+    }
 }

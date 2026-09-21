@@ -215,6 +215,21 @@ pub(crate) fn steps_of_run(conn: &Connection, run_id: i64) -> rusqlite::Result<V
     rows.collect()
 }
 
+/// Stamp the run's law version inside the CALLER'S transaction — the
+/// server-derived intake stamp (empty = absent/unknown jurisdiction). Must
+/// never touch `state_json`: the engines CAS against those exact bytes.
+pub(crate) fn stamp_law_version(
+    conn: &Connection,
+    run_id: i64,
+    law_version: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE workflow_runs SET law_version = ?1 WHERE id = ?2",
+        params![law_version, run_id],
+    )?;
+    Ok(())
+}
+
 /// Open a run: the row write + id resolution inside the CALLER'S
 /// transaction ([`super::tx::WorkflowTx`]). The caller owes the `open`
 /// audit row and the presence touch, in the same tx.
@@ -329,6 +344,31 @@ mod tests {
 pub(crate) mod test_support {
     use super::params;
     use rusqlite::Connection;
+
+    /// The run's stamped law_version + its stored state_json bytes (the
+    /// intake-stamp pin reads both; the CAS law asserts byte-equality).
+    pub(crate) fn law_version_and_state(
+        conn: &Connection,
+        run_id: i64,
+    ) -> rusqlite::Result<(String, String)> {
+        conn.query_row(
+            "SELECT law_version, state_json FROM workflow_runs WHERE id = ?1",
+            [run_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+    }
+
+    /// The detail hash of the run's open workflow audit row.
+    pub(crate) fn workflow_audit_detail_hash(
+        conn: &Connection,
+        run_id: i64,
+    ) -> rusqlite::Result<String> {
+        conn.query_row(
+            "SELECT detail_hash FROM audit_events WHERE kind = 'workflow' AND target_hash = ?1",
+            [crate::audit::hash(&format!("run:{run_id}"))],
+            |r| r.get(0),
+        )
+    }
 
     /// One active, fresh troubleshoot run (the launch law's only input).
     pub(crate) fn insert_fresh_troubleshoot_run(

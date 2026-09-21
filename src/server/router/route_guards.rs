@@ -197,6 +197,8 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/workflow/runs/{id}/answer",
     "/workflow/runs/{id}/steering",
     "/workflow/runs/{id}/steps",
+    // the recorded-rows report at a pinned law version (Read).
+    "/workflow/runs/{id}/report",
     "/workflow/runs/{id}/suggestions",
     // The personal assistant's cranks + views.
     "/workflow/valet/due",
@@ -394,6 +396,9 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/runs/{id}/steps", "Read"),
     ("/workflow/runs/{id}/steering", "Write"),
     ("/workflow/runs/{id}/suggestions", "Read"),
+    // the recorded-rows report: a Read on the run's domain (the report is
+    // advisory-only on the legal DB — never a refusal, never a block).
+    ("/workflow/runs/{id}/report", "Read"),
     // workflow-role Writes on global; the brief is a Read.
     ("/workflow/valet/due", "Write"),
     ("/workflow/valet/brief", "Read"),

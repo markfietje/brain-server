@@ -7048,6 +7048,10 @@ Final paragraph after the rule.";
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/roles.rs"
                             )),
+                            "legal" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/legal.rs"
+                            )),
                             "ump_ops" => include_str!(concat!(
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/ump_ops.rs"
@@ -8498,6 +8502,7 @@ Final paragraph after the rule.";
                 domain: "global".to_string(),
                 kind: "troubleshoot".to_string(),
                 state_json: state_json.to_string(),
+                jurisdiction: None,
             }),
         )
         .await
@@ -8841,6 +8846,7 @@ Final paragraph after the rule.";
                 domain: "global".to_string(),
                 kind: "troubleshoot".to_string(),
                 state_json: "{}".to_string(),
+                jurisdiction: None,
             }),
         )
         .await
@@ -15136,6 +15142,7 @@ Final paragraph after the rule.";
                 domain: "personal".to_string(),
                 kind: "valet/reminder".to_string(),
                 state_json: bad_state,
+                jurisdiction: None,
             }),
         )
         .await
@@ -15162,6 +15169,7 @@ Final paragraph after the rule.";
                 domain: "personal".to_string(),
                 kind: "valet/reminder".to_string(),
                 state_json: clean_state,
+                jurisdiction: None,
             }),
         )
         .await
