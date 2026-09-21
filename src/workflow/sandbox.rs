@@ -490,8 +490,13 @@ mod landlock {
         #[test]
         fn landlock_write_outside_workdir_fails() {
             let workdir = scratch("out");
+            // The probe must target NEITHER granted write scope: the workdir
+            // above AND the realized temp dir both hold write rules, and on
+            // FHS Linux /tmp IS the temp dir — a /tmp probe would be inside a
+            // grant. /var/tmp is distinct from /tmp and world-writable, so a
+            // denial here can only come from the ruleset itself.
             let outside =
-                std::env::temp_dir().join(format!("ll-escape-{}.txt", std::process::id()));
+                PathBuf::from("/var/tmp").join(format!("ll-escape-{}.txt", std::process::id()));
             let outcome = OsBackendProvider {
                 backend: Backend::Landlock,
             }
