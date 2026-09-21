@@ -83,7 +83,10 @@ pub fn route_domain_label(
 /// lane consumes (coarse choice over the first chunk, fine choice within
 /// the winner) — `workflow::decide::sequence::validate_schema` enforces
 /// the ceiling, this helper is the only sanctioned way to satisfy it.
-/// Pure + total: the input order is preserved exactly.
+/// Pure + total: the input order is preserved exactly. Truthful allow:
+/// the caller is the decide lane's advisor wiring, which lands with the
+/// lane (Phase 1+); until then the tests hold the contract.
+#[allow(dead_code)]
 pub(crate) fn split_for_decide(options: &[String]) -> Vec<Vec<String>> {
     const CEILING: usize = 20;
     options

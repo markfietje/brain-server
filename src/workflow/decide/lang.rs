@@ -102,15 +102,12 @@ pub(crate) fn detect_script(text: &str) -> String {
             latin += 1;
             continue;
         }
-        match script_of(cp) {
-            Some(name) => {
-                let entry = counts.iter_mut().find(|(n, _)| *n == name);
-                match entry {
-                    Some((_, n)) => *n += 1,
-                    None => counts.push((name, 1)),
-                }
+        if let Some(name) = script_of(cp) {
+            let entry = counts.iter_mut().find(|(n, _)| *n == name);
+            match entry {
+                Some((_, n)) => *n += 1,
+                None => counts.push((name, 1)),
             }
-            None => {}
         }
     }
     let mut best: Option<(&'static str, usize)> = None;
@@ -292,7 +289,7 @@ pub(crate) fn guess_latin_language(text: &str) -> Option<String> {
             (*name, hits)
         })
         .collect();
-    scores.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    scores.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     let (best_name, best) = scores.first().copied()?;
     let en = scores.iter().find(|(n, _)| *n == "en").map(|(_, s)| *s)?;
     let diacritics = text

@@ -14,7 +14,13 @@ pub(crate) mod presets;
 pub(crate) mod router;
 pub(crate) mod sequence;
 
+// The re-exports are the module's declared pure-core API (the port spec's
+// §4.4 surface): they ship before their callers — the frontdoor advisor and
+// the decide engine arrive with the lane (Phase 1+) and consume exactly
+// these names. The truthful-allow matches the workflow/mod.rs posture.
+#[allow(unused_imports)]
 pub(crate) use router::{RouteDecision, route};
+#[allow(unused_imports)]
 pub(crate) use sequence::{QType, TypedQuestion};
 
 #[cfg(test)]

@@ -340,11 +340,7 @@ pub(crate) fn build_sequence(
         .take(usize::max(8, opt_budget))
         .collect();
     let frame_len = 1 + head.len() + 1 + opt_encodings.iter().map(Vec::len).sum::<usize>() + 1 + 1;
-    let room = if max_len > frame_len {
-        max_len - frame_len
-    } else {
-        0
-    };
+    let room = max_len.saturating_sub(frame_len);
 
     let serialized = serialize_state(state);
     let mut state_ids = tokenizer.encode_nospecial(&serialized);

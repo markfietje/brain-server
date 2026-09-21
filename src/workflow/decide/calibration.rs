@@ -27,7 +27,7 @@ pub(crate) fn confidence_from_probs(p: &[f32], k: usize) -> f32 {
 /// temperature per option-count band per question type.
 pub(crate) fn temp_bucket(qtype: QType, k: usize) -> String {
     let band = match k {
-        0 | 1 | 2 => "2",
+        0..=2 => "2",
         3..=5 => "3-5",
         6..=10 => "6-10",
         _ => "11+",

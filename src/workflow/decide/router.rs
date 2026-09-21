@@ -100,7 +100,11 @@ pub(crate) struct RouteDecision {
 /// The closed precedence chain — explicit model > explicit task > workflow
 /// match (only when auto-detection is on) > explicit lang > the state's
 /// script/language analysis > the default. Nothing here can widen the
-/// vocabulary: every arm resolves to one of the three checkpoints.
+/// vocabulary: every arm resolves to one of the three checkpoints. The
+/// eight-parameter shape is the port contract's own signature (the
+/// source's `route(state, questions, model?, task?, lang?, …)` keyword
+/// set) — collapsed into a struct it would stop reading as the port.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn route(
     question_ids: &BTreeSet<String>,
     model: Option<&str>,
@@ -135,16 +139,14 @@ pub(crate) fn route(
             });
         }
     }
-    if auto_task_detection {
-        if let Some(workflow) = match_typed_decisions_workflow(question_ids) {
-            return Ok(RouteDecision {
-                model: "typed-decisions".into(),
-                repo: repo_string("typed-decisions"),
-                reason: format!("question ids match the {workflow} workflow"),
-                detection: None,
-                workflow: Some(workflow),
-            });
-        }
+    if auto_task_detection && let Some(workflow) = match_typed_decisions_workflow(question_ids) {
+        return Ok(RouteDecision {
+            model: "typed-decisions".into(),
+            repo: repo_string("typed-decisions"),
+            reason: format!("question ids match the {workflow} workflow"),
+            detection: None,
+            workflow: Some(workflow),
+        });
     }
     if let Some(explicit_lang) = lang {
         let first = explicit_lang.split('-').next().unwrap_or("").to_lowercase();
@@ -186,16 +188,16 @@ pub(crate) fn route(
             workflow: None,
         });
     }
-    if let Some(language) = &detection.language {
-        if language != "en" {
-            return Ok(RouteDecision {
-                model: "multilingual".into(),
-                repo: repo_string("multilingual"),
-                reason: format!("Latin script but language looks like {language}"),
-                detection: Some(detection.clone()),
-                workflow: None,
-            });
-        }
+    if let Some(language) = &detection.language
+        && language != "en"
+    {
+        return Ok(RouteDecision {
+            model: "multilingual".into(),
+            repo: repo_string("multilingual"),
+            reason: format!("Latin script but language looks like {language}"),
+            detection: Some(detection.clone()),
+            workflow: None,
+        });
     }
     Ok(RouteDecision {
         model: "english".into(),

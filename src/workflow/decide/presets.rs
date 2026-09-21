@@ -4,9 +4,7 @@
 //! four fine-tuned typed-decisions workflows (their id sets match only
 //! exact synthetic schemas — the test pins that).
 
-use super::router::match_typed_decisions_workflow;
-use super::sequence::{TypedQuestion, parse_question, validate_schema};
-use std::collections::BTreeSet;
+use super::sequence::TypedQuestion;
 
 /// The intake triage schema: which class does the ticket belong to.
 pub(crate) fn triage_questions() -> Vec<(String, TypedQuestion)> {
@@ -149,7 +147,9 @@ pub(crate) fn router_questions() -> Vec<(String, TypedQuestion)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workflow::decide::sequence::Criteria;
+    use crate::workflow::decide::router::match_typed_decisions_workflow;
+    use crate::workflow::decide::sequence::{Criteria, parse_question, validate_schema};
+    use std::collections::BTreeSet;
 
     fn as_json(questions: &[(String, TypedQuestion)]) -> Vec<serde_json::Value> {
         questions
