@@ -184,9 +184,10 @@ Kernel gates at close: **1744/1768/1772/1751** (R17 floors 1720/1744/1748/1727 p
 exactly the 24 new spawn-free kernel tests, up-only). The 1.32.8 System-One lane remains
 **opener-gated — not prebuilt**: its gates (the labeled corpus + the separately
 preregistered eval) stay the operator's standing inputs, as do the κ labeling round,
-τ²-bench, and the live configured case for any ship decision. One operator action item
-rides the close: the foreign-operator WIP file `src/handlers/case_run.rs` carries
-pre-1.32.7 fixture copies whose route tests need the new mandatory triage fields
-re-synced (the round left the file untouched by rule; the plain case_run lane is the
-only red readout and is owned by that re-sync). This stamp is a version-label record,
-not an evaluation result, release, or compliance claim.
+τ²-bench, and the live configured case for any ship decision. Close-out note
+(2026-09-22, the operator-directed fix-up): the pre-1.32.7 fixture copies in
+`src/handlers/case_run.rs` and the private gold pack were re-synced to the new mandatory
+triage fields (pack re-pinned `5c0f679e…` per the R10/R12 re-pin convention) — the plain
+case_run lane reads 6 passed / 0 failed / 1 ignored again, so no red readout remains
+from this line. This stamp is a version-label record, not an evaluation result, release,
+or compliance claim.
