@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use crate::workflow::host::SqliteWorkflowHost;
 
 /// Hard cap on captured exec stdout/stderr and HTTP bodies (each stream).
-const EFFECT_OUTPUT_CAP: usize = 64 * 1024;
+pub(crate) const EFFECT_OUTPUT_CAP: usize = 64 * 1024;
 /// Exec wall-clock bound (the SDK `Budget` default effective timeout; the
 /// per-op budget seam lands with the GUI crank).
 const EXEC_TIMEOUT_SECS: u64 = 30;
@@ -409,10 +409,10 @@ fn run_mediated_exec(
 }
 
 #[derive(Debug)]
-struct ExecOutput {
-    exit_code: i64,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+pub(crate) struct ExecOutput {
+    pub(crate) exit_code: i64,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
 }
 
 /// Validate + run one allowlisted command. Pure-ish seam so tests hit the
@@ -424,7 +424,10 @@ fn exec_effect(body: &str) -> Result<ExecOutput, String> {
 /// [`exec_effect`] with an injectable budget — the seam the deadline pin
 /// drives (the honest re-pin; the old string-contains pin could never
 /// fail: its target literal occurred only inside the assertion itself).
-fn exec_effect_for(body: &str, budget: std::time::Duration) -> Result<ExecOutput, String> {
+pub(crate) fn exec_effect_for(
+    body: &str,
+    budget: std::time::Duration,
+) -> Result<ExecOutput, String> {
     let v: serde_json::Value =
         serde_json::from_str(body).map_err(|_| "invalid exec payload".to_string())?;
     let mut argv: Vec<String> = v
@@ -453,6 +456,37 @@ fn exec_effect_for(body: &str, budget: std::time::Duration) -> Result<ExecOutput
     let cwd = workdir();
     if !cwd.is_dir() {
         return Err("workdir does not exist".into());
+    }
+
+    // The OS boundary wraps INSIDE the one process path: when the knob (or
+    // the enterprise default) selects a backend, the same screened argv
+    // runs under it; with none selected, the spawn below stays
+    // byte-for-byte today's inherited posture.
+    if let Some(backend) = crate::workflow::sandbox::selected_backend_for_exec()? {
+        use brain_engine_sdk::sandbox::{KillReason, SandboxStatus};
+        let mut full_argv = Vec::with_capacity(argv.len() + 1);
+        full_argv.push(argv0.clone());
+        full_argv.extend(argv.iter().cloned());
+        let outcome = crate::workflow::sandbox::exec_sandboxed(
+            brain_engine_sdk::sandbox::SandboxSpec {
+                argv: full_argv,
+                workdir: cwd.clone(),
+                budget,
+            },
+            backend,
+        );
+        return match outcome.status {
+            SandboxStatus::Exited { code } => Ok(ExecOutput {
+                exit_code: code as i64,
+                stdout: outcome.stdout,
+                stderr: outcome.stderr,
+            }),
+            SandboxStatus::Killed {
+                reason: KillReason::Deadline,
+            } => Err("exec exceeded time budget".into()),
+            SandboxStatus::Killed { reason } => Err(format!("exec terminated: {reason:?}")),
+            SandboxStatus::Refused { reason } => Err(reason),
+        };
     }
 
     let mut cmd = std::process::Command::new(&argv0);

@@ -313,7 +313,8 @@ unsafe_op_in_unsafe_fn = "deny"
 [lints.clippy]
 missing_safety_doc = "deny"
 
-
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"
 
 [profile.release.package."*"]
 opt-level = 2
