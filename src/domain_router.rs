@@ -77,6 +77,18 @@ pub fn route_domain_label(
     }
 }
 
+/// The authorised splitter for over-ceiling choice schemas: chunks of at
+/// most 20 options, in order, coarse chunk first. `<= 20` options ride a
+/// single schema; a larger set MUST build the two-step tree the decide
+/// lane consumes (coarse choice over the first chunk, fine choice within
+/// the winner) — `workflow::decide::sequence::validate_schema` enforces
+/// the ceiling, this helper is the only sanctioned way to satisfy it.
+/// Pure + total: the input order is preserved exactly.
+pub(crate) fn split_for_decide(options: &[String]) -> Vec<Vec<String>> {
+    const CEILING: usize = 20;
+    options.chunks(CEILING.max(1)).map(<[String]>::to_vec).collect()
+}
+
 /// Read every stored `(domain, centroid)` from the global DB's centroid table.
 pub fn read_centroids(global_pool: &Pool) -> Result<Vec<(String, Vec<f32>)>> {
     let conn = global_pool
@@ -233,6 +245,55 @@ mod tests {
     #[test]
     fn mean_of_empty_is_empty() {
         assert!(mean_vector(&[]).is_empty());
+    }
+
+    /// split_for_decide_chunks_of_20 — the 77-label banking fixture: four
+    /// chunks (20/20/20/17), every chunk within the ceiling, order
+    /// preserved, and the union exactly the input.
+    #[test]
+    fn split_for_decide_chunks_of_20() {
+        // The 77-label banking fixture (the port spec's own example).
+        let families = [
+            ("account", 14),
+            ("card", 12),
+            ("loan", 11),
+            ("fee", 9),
+            ("fraud", 8),
+            ("statement", 8),
+            ("payment", 8),
+            ("branch", 7),
+        ];
+        assert_eq!(families.iter().map(|(_, n)| n).sum::<usize>(), 77);
+        let labels: Vec<String> = families
+            .iter()
+            .flat_map(|(f, n)| (0..*n).map(move |i| format!("{f}_{i}")))
+            .collect();
+        let chunks = split_for_decide(&labels);
+        assert_eq!(chunks.len(), 4, "77 labels split into 4 chunks");
+        assert!(chunks.iter().all(|c| c.len() <= 20), "every chunk within the ceiling");
+        assert_eq!(
+            chunks.concat(),
+            labels,
+            "the split is order-preserving and lossless"
+        );
+        assert_eq!(chunks.iter().map(Vec::len).collect::<Vec<_>>(), vec![20, 20, 20, 17]);
+    }
+
+    #[test]
+    fn split_for_decide_single_schema_at_or_under_the_ceiling() {
+        let small: Vec<String> = (0..20).map(|i| format!("opt{i}")).collect();
+        let chunks = split_for_decide(&small);
+        assert_eq!(chunks.len(), 1, "20 options ride one schema");
+        assert_eq!(chunks[0], small);
+        let tiny = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(split_for_decide(&tiny), vec![tiny.clone()]);
+    }
+
+    #[test]
+    fn split_for_decide_total_on_empty() {
+        let empty: Vec<String> = Vec::new();
+        let chunks = split_for_decide(&empty);
+        assert!(chunks.is_empty(), "no options, no chunks");
     }
 
     #[test]
