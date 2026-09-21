@@ -475,7 +475,20 @@ pub async fn get_scoreboard(
     let pool_dc = super::resolve_domain_pool(&state.registry, None)?;
     let (closed_without_closure, open_return_contracts) =
         tokio::task::spawn_blocking(move || -> Result<(i64, usize), String> {
-            let conn = pool_dc.get().map_err(|e| format!("{e}"))?;
+            let mut conn = pool_dc.get().map_err(|e| format!("{e}"))?;
+            // The overdue sweep fires before the count: a contract open past
+            // its deadline never reads as merely open — the escalation and the
+            // HITL task are the contract's own semantics ("open past deadline
+            // ⇒ escalated + HITL"). The sweep is monotonic and idempotent
+            // (escalation rows are keyed receipts) and audited, so this
+            // write-before-read on a GET can only over-escalate, never
+            // silently close an obligation. Corrupt rows refuse fail-closed:
+            // the board 500s rather than serve a stale count.
+            crate::workflow::gdl::escalate_overdue_return_contracts(
+                &mut conn,
+                chrono::Utc::now().timestamp(),
+            )
+            .map_err(|e| format!("{e}"))?;
             Ok((
                 crate::workflow::scoreboard::closed_without_closure(&conn),
                 crate::workflow::scoreboard::open_return_contracts(&conn).len(),
@@ -2126,6 +2139,131 @@ pub async fn post_complaint_ack_sweep(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The overdue discipline fires on the production read: an open return
+    /// contract past its deadline, read through the scoreboard surface, comes
+    /// back escalated with the HITL task present and the count reflecting it —
+    /// the board never shows a dead contract as merely open, and the machine
+    /// never auto-resolves it (the count drops because the contract is
+    /// escalated, not because it disappeared).
+    #[tokio::test]
+    async fn overdue_contract_escalates_on_scoreboard_read() {
+        let f = crate::handlers::case_run::tests::fixture();
+        let opened = post_run(
+            axum::extract::State(f.state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+            axum::Json(OpenRunRequest {
+                domain: "personal".to_string(),
+                kind: "interview".to_string(),
+                state_json: r#"{"a":1}"#.to_string(),
+                jurisdiction: None,
+            }),
+        )
+        .await
+        .expect("open");
+        let run_id = opened.0["run_id"].as_i64().unwrap();
+
+        // A contract armed two days in the past: its default 24h return
+        // window is long exhausted by the real clock the scoreboard sweep
+        // runs under.
+        let contract: crate::workflow::gdl::BackReferralContract =
+            serde_json::from_value(serde_json::json!({
+                "referrer": "l1:steward-dpc",
+                "receiver": "eng-storage",
+                "clinical_question": "confirm the battery",
+                "required_report": ["finding", "treatment_plan", "follow_up"],
+                "status": "open",
+            }))
+            .unwrap();
+        let past = chrono::Utc::now().timestamp() - 2 * 86_400;
+        {
+            let mut conn = f.state.pool.get().unwrap();
+            let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn).unwrap();
+            crate::workflow::gdl::write_back_referral_row(
+                tx.tx(),
+                run_id,
+                "owner",
+                &contract,
+                "P3",
+                past,
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        // Sanity: before the read the contract counts as open.
+        {
+            let conn = f.state.pool.get().unwrap();
+            assert_eq!(
+                crate::workflow::scoreboard::open_return_contracts(&conn).len(),
+                1
+            );
+        }
+
+        let view = get_scoreboard(
+            axum::extract::State(f.state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+        )
+        .await
+        .expect("scoreboard");
+        assert_eq!(
+            view.0["open_return_contracts"],
+            serde_json::json!(0),
+            "an overdue contract never reads as merely open"
+        );
+
+        // The sweep landed the escalation row, the HITL task, and the audited
+        // justification on the run's chain — idempotently (a second read
+        // escalates nothing new).
+        let conn = f.state.pool.get().unwrap();
+        let escalated: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+                 WHERE run_id = ?1 AND kind = 'back_referral' \
+                 AND payload_json LIKE '%\"status\":\"escalated\"%'",
+                [run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(escalated, 1, "the escalation row landed");
+        let hitl: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+                 WHERE run_id = ?1 AND kind = 'control:back_referral_hitl'",
+                [run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hitl, 1, "the HITL task landed");
+        let audited: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE target_hash = ?1",
+                [crate::audit::hash("back_referral")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(audited >= 1, "the justification rode the audit chain");
+
+        let second = get_scoreboard(
+            axum::extract::State(f.state.clone()),
+            crate::handlers::auth::OptPrincipal(None),
+        )
+        .await
+        .expect("scoreboard again");
+        assert_eq!(second.0["open_return_contracts"], serde_json::json!(0));
+        let escalated_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+                 WHERE run_id = ?1 AND kind = 'back_referral' \
+                 AND payload_json LIKE '%\"status\":\"escalated\"%'",
+                [run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            escalated_after, escalated,
+            "the sweep is idempotent — a re-read is a no-op receipt"
+        );
+    }
 
     /// The intake stamp law: a known jurisdiction stamps the run's additive
     /// column server-side through the SDK's single-owner table, the open
