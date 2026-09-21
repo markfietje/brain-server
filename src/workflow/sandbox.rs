@@ -357,7 +357,10 @@ pub(crate) fn enforcement_decision(enforced: Enforcement) -> Result<(), String> 
 mod landlock {
     use super::*;
 
-    use landlock::{
+    // The leading `::` pins the extern crate: the module's own name is in
+    // scope through the glob above, and an unqualified `landlock::...` here
+    // would be ambiguous with it.
+    use ::landlock::{
         ABI, Access, AccessFs, AccessNet, BitFlags, PathBeneath, PathFd, Ruleset, RulesetAttr,
         RulesetCreated, RulesetCreatedAttr, RulesetStatus,
     };
