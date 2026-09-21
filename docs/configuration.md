@@ -160,6 +160,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `BRAIN_DPO_CONTACT` / `BRAIN_SECURITY_CONTACT` | — | DPO + security contact strings surfaced on `/health/db` and `/.well-known/security.txt`. |
 | `BRAIN_ENGINE_EXEC_ALLOWLIST` / `BRAIN_ENGINE_HTTP_ALLOWLIST` / `BRAIN_ENGINE_WORKDIR` | — | The hostcall door's allowlists + workdir (the engine's tool-effect boundary). |
 | `BRAIN_ENGINE_SANDBOX_BACKEND` | `inherited` (the platform OS backend under the `enterprise` model profile) | The exec path's OS boundary: `inherited` (screened, same-user), `sandbox-exec` (macOS Seatbelt, deny-default profile), or `landlock` (Linux LSM). Unknown values refuse exec fail-closed; the profile text is compiled-in and never operator-supplied. |
+| `BRAIN_LEGAL_DB_PATH` | — (unset) | The curated legal-rules DB file the `/legal/rules` diff reads. UNSET by default: the legal route refuses NAMED (`legal_db_unconfigured`) and everything else is unaffected. When set, the file is opened READ-ONLY per request (no restart needed after a DPO import) and never written by the server. See `docs/legal-db-import.md` for the DPO import procedure. |
 | `MCP_TRANSPORT` / `MCP_HTTP_PORT` / `MCP_HTTP_ADDR` / `MCP_HTTP_TOKEN` | stdio | The MCP binary's transport: stdio (default) or Streamable HTTP + SSE. See docs/mcp.md. |
 | `PACKING_WEIGHTS` | built-in | Evidence-packing weight overrides (advanced). |
 | `BRAIN_STEWARD_BIN` | — | Override the workflow-crank harness binary. MUST be an ABSOLUTE path (relative refuses; PATH is never consulted) or the binary lives beside the kernel. |

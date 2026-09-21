@@ -36,6 +36,7 @@ pub mod govern;
 pub mod holds;
 pub mod ingest;
 pub mod kcs;
+pub mod legal;
 pub mod mesh;
 pub mod observe;
 pub mod parcels;

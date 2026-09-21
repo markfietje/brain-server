@@ -119,6 +119,8 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/clients/{name}/proposals",
     "/clients/{name}/proposals/{id}/coach",
     "/retention/report",
+    // the curated legal-rules DB (Admin + DPO role; read-only diff).
+    "/legal/rules",
     "/sources/reconcile",
     "/sources/{id}",
     "/connectors",
@@ -325,6 +327,9 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/clients/{name}/proposals", "Admin"),
     ("/clients/{name}/proposals/{id}/coach", "Admin"),
     ("/retention/report", "Admin"),
+    // the curated legal-rules DB: Admin gate; the handler then demands the
+    // DPO role (the scoreboard posture — DPO evidence, not a public read).
+    ("/legal/rules", "Admin"),
     ("/sources/reconcile", "Write"),
     ("/sources/{id}", "Write"),
     ("/connectors", "Read"),

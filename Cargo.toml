@@ -89,6 +89,9 @@ otel = [
 # the storage-agnostic WorkflowHost seam). The server is the first host adapter;
 # engines compile against this crate, never against brain-server.
 brain-engine-sdk = { path = "crates/brain-engine-sdk", features = ["harness-kernel"] }
+# The curated legal vocabulary (the read-only law-version DB the /legal
+# surface reads); workspace-internal, gains nothing new to the lock.
+legal-rules-db = { path = "crates/legal-rules-db" }
 # Core Embedding
 model2vec-rs = "0.2"
 # v1.28 "Caliber": the neural-tier runtime (BGE-M3 dense+sparse+colbert +

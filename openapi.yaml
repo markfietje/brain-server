@@ -2793,6 +2793,40 @@ paths:
                 type: object
                 example: {"window_days": 30, "generated_at": "2026-08-15T12:00:00Z", "rows": [{"domain": "global", "kind": "chunk", "ttl_days": 30, "count": 430, "expiring_30d": 12}], "projection": "effective expiry = explicit expires_at, else created_at + ttl_days"}
                 description: 'the Art 5(1)(e) storage-limitation + HIPAA/SOX retention-schedule evidence; reports coverage, does not auto-enforce'
+  /legal/rules:
+    get:
+      summary: Curated law-version diff over the legal-rules DB (read-only)
+      operationId: legalRules
+      description: >
+        The deterministic diff of the curated jurisdiction rules newer than
+        the `since` law_version's snapshot point, ordered by (jurisdiction,
+        subject, effective_at, revision). Absent `since` = the full ordered
+        snapshot. Reads the curated legal DB (BRAIN_LEGAL_DB_PATH) READ-ONLY
+        per request; unset/unreadable refuses NAMED (legal_db_unconfigured /
+        legal_db_unavailable); an unknown `since` refuses 404
+        law_version_unknown. The DB is populated by the DPO's quarterly
+        import — no auto-pull, no enforcement on this surface. Admin gate +
+        DPO role; same byte-for-byte response for the same DB state.
+      parameters:
+        - name: since
+          in: query
+          required: false
+          schema: { type: string }
+          description: A law_version label; rules newer than its snapshot point are returned.
+      responses:
+        "200":
+          description: The ordered diff
+          content:
+            application/json:
+              schema:
+                type: object
+                example: {"since": "gdpr-consolidated-2021", "since_effective_at": 0, "head": {"rules": 9, "versions": 8, "postures": 6, "max_rules_id": 9}, "rules": [{"id": 9, "jurisdiction": "eu", "subject": "dsar", "rule_key": "eu_dsar_curated", "body": "GDPR (Art 12/15/17), amended", "source_ref": "GDPR (Art 12/15/17)", "law_version": "gdpr-consolidated-2021", "deadline_days": 30, "rights": ["access"], "effective_at": 1800000000, "reviewed_at": 1800000000, "expires_at": null, "revision": 2, "superseded_by": null}]}
+        "404":
+          description: 'law_version_unknown — the pinned version is not in the curated DB'
+        "501":
+          description: 'legal_db_unconfigured — BRAIN_LEGAL_DB_PATH is unset'
+        "503":
+          description: 'legal_db_unavailable — the curated DB is missing or unreadable'
   /ump/capabilities:
     get:
       summary: UMP 1.0 negotiation handshake (v1.17.3 M2)

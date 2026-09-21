@@ -24,6 +24,9 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
         .route("/retention/report", get(handlers::govern::retention_report))
         .route("/art30", get(handlers::govern::art30))
         .route("/snapshot/status", get(handlers::govern::snapshot_status))
+        // the curated legal-rules DB (read-only; Admin + DPO role in the
+        // handler): the deterministic law-version diff a buyer's DPO reads.
+        .route("/legal/rules", get(handlers::legal::get_rules))
         // read-event trace + DSAR workflow. `/recall/{id}/
         // trace` replays a recorded recall decision path; `/dsar` is the GDPR
         // Art 15/17 workflow (locate → export → purge → certificate);
