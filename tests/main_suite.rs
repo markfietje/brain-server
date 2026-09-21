@@ -6994,6 +6994,10 @@ Final paragraph after the rule.";
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/case_run.rs"
                             )),
+                            "workflow_decisions" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/workflow_decisions.rs"
+                            )),
                             "kcs" => {
                                 include_str!(concat!(
                                     env!("CARGO_MANIFEST_DIR"),
