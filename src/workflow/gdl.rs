@@ -3762,6 +3762,24 @@ fn latest_back_referral_row(
     .map_err(checkpoint::persist_error)
 }
 
+/// The receipt's `late` flag as the surface reads it: the flag the release
+/// row just appended carries, computed by the server clock at release time.
+/// `None` when no row exists for the contract (the caller 404s); the SQL
+/// lives here because the core owns the back-referral row shape.
+pub(crate) fn latest_back_referral_late_flag(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: i64,
+    contract_key: &str,
+) -> Result<Option<bool>, LoopError> {
+    latest_back_referral_row(tx, run_id, contract_key).map(|latest| {
+        latest.as_deref().and_then(|payload| {
+            serde_json::from_str::<serde_json::Value>(payload)
+                .ok()
+                .and_then(|v| v["late"].as_bool())
+        })
+    })
+}
+
 /// The overdue discipline (monotonic, fail-closed, deterministic): every
 /// contract still `open` past its deadline flips `escalated`, lands a
 /// HITL-queue task, and records the justification on the audit chain.
