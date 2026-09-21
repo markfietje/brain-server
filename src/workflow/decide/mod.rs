@@ -14,7 +14,7 @@ pub(crate) mod presets;
 pub(crate) mod router;
 pub(crate) mod sequence;
 
-pub(crate) use router::{route, RouteDecision};
+pub(crate) use router::{RouteDecision, route};
 pub(crate) use sequence::{QType, TypedQuestion};
 
 #[cfg(test)]

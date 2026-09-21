@@ -212,7 +212,10 @@ pub(crate) fn render_options(q: &TypedQuestion) -> Vec<String> {
             .enumerate()
             .map(|(i, c)| format!("level {i}: {c}"))
             .collect(),
-        Criteria::NoulPair { false_opt, true_opt } => vec![
+        Criteria::NoulPair {
+            false_opt,
+            true_opt,
+        } => vec![
             false_opt
                 .clone()
                 .unwrap_or_else(|| "no, the statement does not hold".into()),
@@ -337,7 +340,11 @@ pub(crate) fn build_sequence(
         .take(usize::max(8, opt_budget))
         .collect();
     let frame_len = 1 + head.len() + 1 + opt_encodings.iter().map(Vec::len).sum::<usize>() + 1 + 1;
-    let room = if max_len > frame_len { max_len - frame_len } else { 0 };
+    let room = if max_len > frame_len {
+        max_len - frame_len
+    } else {
+        0
+    };
 
     let serialized = serialize_state(state);
     let mut state_ids = tokenizer.encode_nospecial(&serialized);
@@ -443,8 +450,16 @@ mod tests {
     #[test]
     fn sequence_frame_has_the_exact_shape() {
         let tok = FakeTok;
-        let built = build_sequence(&tok, &short_state(), &triage_question(), 512, 192, None, false)
-            .unwrap();
+        let built = build_sequence(
+            &tok,
+            &short_state(),
+            &triage_question(),
+            512,
+            192,
+            None,
+            false,
+        )
+        .unwrap();
         assert_eq!(built.ids[0], 101, "cls opens");
         assert_eq!(*built.ids.last().unwrap(), 102, "sep closes");
         assert_eq!(built.markers.len(), 3, "one marker per option");
@@ -469,22 +484,32 @@ mod tests {
         let tok = FakeTok;
         for (name, q, state) in &cases {
             for max_len in [512usize, 1024] {
-                let built =
-                    build_sequence(&tok, state, q, max_len, 192, None, false).unwrap();
-                let summary = format!("{name}/{max_len}: ids={} markers={:?}",
-                    built.ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","),
-                    built.markers);
+                let built = build_sequence(&tok, state, q, max_len, 192, None, false).unwrap();
+                let summary = format!(
+                    "{name}/{max_len}: ids={} markers={:?}",
+                    built
+                        .ids
+                        .iter()
+                        .map(|i| i.to_string())
+                        .collect::<Vec<_>>()
+                        .join(","),
+                    built.markers
+                );
                 // The golden property set (hand-derived): cls opens, sep
                 // closes, marker count == option count, ids never exceed
                 // max_len, and the ids below the state window are the
                 // head's exact encoding of the type/instructions text.
                 assert_eq!(built.ids[0], 101, "{summary}");
                 assert!(built.ids.len() <= max_len, "{summary}");
-                assert_eq!(built.markers.len(), match *name {
-                    "triage" => 3,
-                    "email" => 3,
-                    _ => 2,
-                }, "{summary}");
+                assert_eq!(
+                    built.markers.len(),
+                    match *name {
+                        "triage" => 3,
+                        "email" => 3,
+                        _ => 2,
+                    },
+                    "{summary}"
+                );
                 let expected_head: Vec<i64> = {
                     let ins = q.instructions.replace(tok.mask_str(), " ");
                     let text = format!("{} question: {}", q.qtype.as_str(), ins);
@@ -525,10 +550,10 @@ mod tests {
         let tok = FakeTok;
         // A very long instruction: the head must truncate to the budget
         // (never below 8), and the markers must all survive.
-        let q = TypedQuestion::choice(&"verylonginstructionword ".repeat(60), &[
-            ("yes", None),
-            ("no", None),
-        ]);
+        let q = TypedQuestion::choice(
+            &"verylonginstructionword ".repeat(60),
+            &[("yes", None), ("no", None)],
+        );
         let built = build_sequence(&tok, &short_state(), &q, 512, 192, None, false).unwrap();
         assert_eq!(built.markers.len(), 2);
         // head starts at ids[1]; the state window rides at the tail.
@@ -559,8 +584,16 @@ mod tests {
             .nth(1)
             .map(|(i, _)| i)
             .unwrap();
-        assert_eq!(right.ids[second_sep + 1], 23, "right truncation keeps the head of the state");
-        assert_eq!(left.ids[left.ids.len() - 2], 4, "left truncation keeps the tail of the state");
+        assert_eq!(
+            right.ids[second_sep + 1],
+            23,
+            "right truncation keeps the head of the state"
+        );
+        assert_eq!(
+            left.ids[left.ids.len() - 2],
+            4,
+            "left truncation keeps the tail of the state"
+        );
     }
 
     #[test]
@@ -568,8 +601,8 @@ mod tests {
         let tok = FakeTok;
         let q = triage_question();
         let natural = build_sequence(&tok, &short_state(), &q, 512, 192, None, false).unwrap();
-        let flipped = build_sequence(&tok, &short_state(), &q, 512, 192, Some(&[2, 1, 0]), false)
-            .unwrap();
+        let flipped =
+            build_sequence(&tok, &short_state(), &q, 512, 192, Some(&[2, 1, 0]), false).unwrap();
         assert_ne!(natural.ids, flipped.ids);
         assert_eq!(natural.markers.len(), flipped.markers.len());
     }
@@ -578,16 +611,17 @@ mod tests {
     fn build_sequence_option_order_must_be_a_permutation() {
         let tok = FakeTok;
         let q = triage_question();
-        assert!(build_sequence(&tok, &short_state(), &q, 512, 192, Some(&[0, 0, 1]), false).is_err());
+        assert!(
+            build_sequence(&tok, &short_state(), &q, 512, 192, Some(&[0, 0, 1]), false).is_err()
+        );
         assert!(build_sequence(&tok, &short_state(), &q, 512, 192, Some(&[0, 1]), false).is_err());
     }
 
     #[test]
     fn decide_refuses_over_20() {
         // validate_schema level: 21 options refuse with the split demand.
-        let options: Vec<(String, Option<String>)> = (0..21)
-            .map(|i| (format!("opt{i}"), None))
-            .collect();
+        let options: Vec<(String, Option<String>)> =
+            (0..21).map(|i| (format!("opt{i}"), None)).collect();
         let q = TypedQuestion {
             qtype: QType::Choice,
             instructions: "too many".into(),
@@ -601,9 +635,8 @@ mod tests {
 
     #[test]
     fn decide_accepts_exactly_20() {
-        let options: Vec<(String, Option<String>)> = (0..20)
-            .map(|i| (format!("opt{i}"), None))
-            .collect();
+        let options: Vec<(String, Option<String>)> =
+            (0..20).map(|i| (format!("opt{i}"), None)).collect();
         let q = TypedQuestion {
             qtype: QType::Choice,
             instructions: "at the ceiling".into(),
@@ -672,19 +705,13 @@ mod tests {
     #[test]
     fn render_options_score_indexes_the_ladder() {
         let q = TypedQuestion::score("rank", &["low", "high"]);
-        assert_eq!(
-            render_options(&q),
-            vec!["level 0: low", "level 1: high"]
-        );
+        assert_eq!(render_options(&q), vec!["level 0: low", "level 1: high"]);
     }
 
     #[test]
     fn render_criterion_strings_pass_through_and_json_compacts() {
         assert_eq!(render_criterion(&serde_json::json!("plain")), "plain");
-        assert_eq!(
-            render_criterion(&serde_json::json!([1, "two"])),
-            "[1, two]"
-        );
+        assert_eq!(render_criterion(&serde_json::json!([1, "two"])), "[1, two]");
         assert_eq!(
             render_criterion(&serde_json::json!({"k": "v"})),
             "{\"k\": v}"
@@ -693,10 +720,10 @@ mod tests {
 
     #[test]
     fn serialize_state_passthrough_and_compact() {
-        assert_eq!(serialize_state(&serde_json::json!("plain text")), "plain text");
         assert_eq!(
-            serialize_state(&serde_json::json!({"a": 1})),
-            "{\"a\":1}"
+            serialize_state(&serde_json::json!("plain text")),
+            "plain text"
         );
+        assert_eq!(serialize_state(&serde_json::json!({"a": 1})), "{\"a\":1}");
     }
 }

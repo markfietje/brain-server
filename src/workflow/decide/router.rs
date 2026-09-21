@@ -41,11 +41,23 @@ pub(crate) fn match_typed_decisions_workflow(ids: &BTreeSet<String>) -> Option<S
         ),
         (
             "invoice_processing",
-            &["discrepancy_severity", "disposition", "duplicate", "matches_order", "urgency"],
+            &[
+                "discrepancy_severity",
+                "disposition",
+                "duplicate",
+                "matches_order",
+                "urgency",
+            ],
         ),
         (
             "security_incidents",
-            &["credential_compromise", "disposition", "severity", "true_positive", "urgency"],
+            &[
+                "credential_compromise",
+                "disposition",
+                "severity",
+                "true_positive",
+                "urgency",
+            ],
         ),
     ];
     for (name, fields) in WORKFLOWS {
@@ -156,9 +168,7 @@ pub(crate) fn route(
         return Ok(RouteDecision {
             model: default_name.clone(),
             repo: repo_string(&default_name),
-            reason: format!(
-                "no letters detected in the state; using default ({default_name})"
-            ),
+            reason: format!("no letters detected in the state; using default ({default_name})"),
             detection: Some(detection.clone()),
             workflow: None,
         });
@@ -326,7 +336,10 @@ mod tests {
     #[test]
     fn alias_case_and_whitespace_normalise() {
         assert_eq!(normalise_name("  EN ").unwrap(), "english");
-        assert_eq!(normalise_name("Typed-Decisions").unwrap(), "typed-decisions");
+        assert_eq!(
+            normalise_name("Typed-Decisions").unwrap(),
+            "typed-decisions"
+        );
     }
     #[test]
     fn alias_empty_refuses() {
@@ -352,7 +365,11 @@ mod tests {
     fn workflow_agent_trace_exact_match() {
         assert_eq!(
             match_typed_decisions_workflow(&ids(&[
-                "action", "needs_review", "outcome", "risk", "urgency"
+                "action",
+                "needs_review",
+                "outcome",
+                "risk",
+                "urgency"
             ])),
             Some("agent_trace_observability".into())
         );
@@ -361,7 +378,11 @@ mod tests {
     fn workflow_customer_service_exact_match() {
         assert_eq!(
             match_typed_decisions_workflow(&ids(&[
-                "action", "category", "churn_risk", "needs_human", "urgency"
+                "action",
+                "category",
+                "churn_risk",
+                "needs_human",
+                "urgency"
             ])),
             Some("customer_service".into())
         );
@@ -370,7 +391,11 @@ mod tests {
     fn workflow_invoice_processing_exact_match() {
         assert_eq!(
             match_typed_decisions_workflow(&ids(&[
-                "discrepancy_severity", "disposition", "duplicate", "matches_order", "urgency"
+                "discrepancy_severity",
+                "disposition",
+                "duplicate",
+                "matches_order",
+                "urgency"
             ])),
             Some("invoice_processing".into())
         );
@@ -379,20 +404,32 @@ mod tests {
     fn workflow_security_incidents_exact_match() {
         assert_eq!(
             match_typed_decisions_workflow(&ids(&[
-                "credential_compromise", "disposition", "severity", "true_positive", "urgency"
+                "credential_compromise",
+                "disposition",
+                "severity",
+                "true_positive",
+                "urgency"
             ])),
             Some("security_incidents".into())
         );
     }
     #[test]
     fn workflow_partial_set_matches_nothing() {
-        assert_eq!(match_typed_decisions_workflow(&ids(&["action", "urgency"])), None);
+        assert_eq!(
+            match_typed_decisions_workflow(&ids(&["action", "urgency"])),
+            None
+        );
     }
     #[test]
     fn workflow_superset_matches_nothing() {
         assert_eq!(
             match_typed_decisions_workflow(&ids(&[
-                "action", "category", "churn_risk", "needs_human", "urgency", "extra"
+                "action",
+                "category",
+                "churn_risk",
+                "needs_human",
+                "urgency",
+                "extra"
             ])),
             None
         );
@@ -404,7 +441,9 @@ mod tests {
 
     // ── route (14) ──────────────────────────────────────────────────────
     fn english_text() -> Detection {
-        detection_of(json!("the customer replaced the battery and it works fine now"))
+        detection_of(json!(
+            "the customer replaced the battery and it works fine now"
+        ))
     }
     fn route_default(
         qids: &BTreeSet<String>,
@@ -418,39 +457,69 @@ mod tests {
     }
     #[test]
     fn route_explicit_model_wins_over_everything() {
-        let d = route_default(&BTreeSet::new(), Some("ml"), Some("typed_decisions"), Some("fr"), true, &english_text());
+        let d = route_default(
+            &BTreeSet::new(),
+            Some("ml"),
+            Some("typed_decisions"),
+            Some("fr"),
+            true,
+            &english_text(),
+        );
         assert_eq!(d.model, "multilingual");
         assert!(d.reason.contains("explicit model"));
     }
     #[test]
     fn route_explicit_model_normalises_and_binds_repo() {
-        let d = route_default(&BTreeSet::new(), Some("typed"), None, None, false, &english_text());
+        let d = route_default(
+            &BTreeSet::new(),
+            Some("typed"),
+            None,
+            None,
+            false,
+            &english_text(),
+        );
         assert_eq!(d.model, "typed-decisions");
         assert_eq!(d.repo, "convaiinnovations/laya/typed-decisions");
     }
     #[test]
     fn route_explicit_model_unknown_refuses() {
-        assert!(route(
-            &BTreeSet::new(),
-            Some("klingon"),
-            None,
-            None,
-            false,
-            "english",
-            false,
-            &english_text()
-        )
-        .is_err());
+        assert!(
+            route(
+                &BTreeSet::new(),
+                Some("klingon"),
+                None,
+                None,
+                false,
+                "english",
+                false,
+                &english_text()
+            )
+            .is_err()
+        );
     }
     #[test]
     fn route_explicit_task_typed_decisions() {
-        let d = route_default(&BTreeSet::new(), None, Some("Typed-Decisions"), Some("fr"), false, &english_text());
+        let d = route_default(
+            &BTreeSet::new(),
+            None,
+            Some("Typed-Decisions"),
+            Some("fr"),
+            false,
+            &english_text(),
+        );
         assert_eq!(d.model, "typed-decisions");
         assert!(d.reason.contains("explicit task"));
     }
     #[test]
     fn route_explicit_other_task_is_ignored() {
-        let d = route_default(&BTreeSet::new(), None, Some("summarize"), None, false, &english_text());
+        let d = route_default(
+            &BTreeSet::new(),
+            None,
+            Some("summarize"),
+            None,
+            false,
+            &english_text(),
+        );
         assert_eq!(d.model, "english");
         assert_eq!(d.reason, "English Latin text");
     }
@@ -460,38 +529,85 @@ mod tests {
         let d = route_default(&qids, None, None, None, true, &english_text());
         assert_eq!(d.model, "typed-decisions");
         assert_eq!(d.workflow.as_deref(), Some("customer_service"));
-        let off = route(&qids, None, None, None, false, "english", false, &english_text()).unwrap();
+        let off = route(
+            &qids,
+            None,
+            None,
+            None,
+            false,
+            "english",
+            false,
+            &english_text(),
+        )
+        .unwrap();
         assert_eq!(off.model, "english", "auto-detection off never matches");
     }
     #[test]
     fn route_explicit_lang_english_forms() {
         for lang in ["en", "eng", "english", "en-GB"] {
-            let d = route_default(&BTreeSet::new(), None, None, Some(lang), false, &english_text());
+            let d = route_default(
+                &BTreeSet::new(),
+                None,
+                None,
+                Some(lang),
+                false,
+                &english_text(),
+            );
             assert_eq!(d.model, "english", "{lang}");
             assert!(d.reason.contains("explicit lang"));
         }
     }
     #[test]
     fn route_explicit_lang_non_english_routes_multilingual() {
-        let d = route_default(&BTreeSet::new(), None, None, Some("fr"), false, &english_text());
+        let d = route_default(
+            &BTreeSet::new(),
+            None,
+            None,
+            Some("fr"),
+            false,
+            &english_text(),
+        );
         assert_eq!(d.model, "multilingual");
     }
     #[test]
     fn route_unknown_script_defaults() {
-        let d = route_default(&BTreeSet::new(), None, None, None, false, &detection_of(json!("123 456")));
+        let d = route_default(
+            &BTreeSet::new(),
+            None,
+            None,
+            None,
+            false,
+            &detection_of(json!("123 456")),
+        );
         assert_eq!(d.model, "english");
         assert!(d.reason.contains("no letters detected"));
     }
     #[test]
     fn route_non_latin_routes_multilingual_with_reason() {
-        let d = route_default(&BTreeSet::new(), None, None, None, false, &detection_of(json!("клиент заменил батарею ноутбука")));
+        let d = route_default(
+            &BTreeSet::new(),
+            None,
+            None,
+            None,
+            false,
+            &detection_of(json!("клиент заменил батарею ноутбука")),
+        );
         assert_eq!(d.model, "multilingual");
         assert!(d.reason.contains("non-Latin script"));
         assert!(d.reason.contains("cyrillic"));
     }
     #[test]
     fn route_latin_non_english_routes_multilingual() {
-        let d = route_default(&BTreeSet::new(), None, None, None, false, &detection_of(json!("le client a remplacé la batterie du portable et il marche bien")));
+        let d = route_default(
+            &BTreeSet::new(),
+            None,
+            None,
+            None,
+            false,
+            &detection_of(json!(
+                "le client a remplacé la batterie du portable et il marche bien"
+            )),
+        );
         assert_eq!(d.model, "multilingual");
         assert!(d.reason.contains("language looks like fr"));
     }
@@ -503,7 +619,17 @@ mod tests {
     }
     #[test]
     fn route_custom_default_holds_for_unknown_scripts() {
-        let d = route(&BTreeSet::new(), None, None, None, false, "multilingual", false, &detection_of(json!("123"))).unwrap();
+        let d = route(
+            &BTreeSet::new(),
+            None,
+            None,
+            None,
+            false,
+            "multilingual",
+            false,
+            &detection_of(json!("123")),
+        )
+        .unwrap();
         assert_eq!(d.model, "multilingual");
     }
     #[test]
@@ -517,22 +643,53 @@ mod tests {
             &detection_of(json!("клиент заменил батарею")),
         );
         assert_eq!(d.model, "multilingual", "lang and analysis agree here");
-        let explicit = route_default(&BTreeSet::new(), Some("en"), None, Some("fr"), false, &detection_of(json!("клиент заменил батарею")));
-        assert_eq!(explicit.model, "english", "explicit model beats the lang arm");
+        let explicit = route_default(
+            &BTreeSet::new(),
+            Some("en"),
+            None,
+            Some("fr"),
+            false,
+            &detection_of(json!("клиент заменил батарею")),
+        );
+        assert_eq!(
+            explicit.model, "english",
+            "explicit model beats the lang arm"
+        );
     }
 
     // ── decision shape (5) ──────────────────────────────────────────────
     #[test]
     fn decision_repo_matches_the_bundle_layout() {
-        let d = route_default(&BTreeSet::new(), Some("multilingual"), None, None, false, &english_text());
+        let d = route_default(
+            &BTreeSet::new(),
+            Some("multilingual"),
+            None,
+            None,
+            false,
+            &english_text(),
+        );
         assert_eq!(d.repo, "convaiinnovations/laya/multilingual");
-        let root = route_default(&BTreeSet::new(), Some("english"), None, None, false, &english_text());
+        let root = route_default(
+            &BTreeSet::new(),
+            Some("english"),
+            None,
+            None,
+            false,
+            &english_text(),
+        );
         assert_eq!(root.repo, "convaiinnovations/laya");
     }
     #[test]
     fn decision_reason_is_always_present_and_binds_the_model() {
         for model in ["english", "multilingual", "typed-decisions"] {
-            let d = route_default(&BTreeSet::new(), Some(model), None, None, false, &english_text());
+            let d = route_default(
+                &BTreeSet::new(),
+                Some(model),
+                None,
+                None,
+                false,
+                &english_text(),
+            );
             assert!(!d.reason.is_empty());
             assert!(d.reason.contains(model), "`{}` mentions {model}", d.reason);
         }
@@ -541,13 +698,30 @@ mod tests {
     fn decision_detection_rides_only_the_analysis_arms() {
         let analysis = route_default(&BTreeSet::new(), None, None, None, false, &english_text());
         assert!(analysis.detection.is_some(), "the analysis arm carries it");
-        let explicit = route_default(&BTreeSet::new(), Some("en"), None, None, false, &english_text());
-        assert!(explicit.detection.is_none(), "explicit arms need no detection");
+        let explicit = route_default(
+            &BTreeSet::new(),
+            Some("en"),
+            None,
+            None,
+            false,
+            &english_text(),
+        );
+        assert!(
+            explicit.detection.is_none(),
+            "explicit arms need no detection"
+        );
     }
     #[test]
     fn decision_model_is_always_a_checkpoint_name() {
         for name in CHECKPOINTS {
-            let d = route_default(&BTreeSet::new(), Some(name), None, None, false, &english_text());
+            let d = route_default(
+                &BTreeSet::new(),
+                Some(name),
+                None,
+                None,
+                false,
+                &english_text(),
+            );
             assert!(CHECKPOINTS.contains(&d.model.as_str()));
         }
     }
@@ -567,11 +741,17 @@ mod tests {
     }
     #[test]
     fn bundle_multilingual_is_a_subfolder() {
-        assert_eq!(repo_for("multilingual", false), "convaiinnovations/laya/multilingual");
+        assert_eq!(
+            repo_for("multilingual", false),
+            "convaiinnovations/laya/multilingual"
+        );
     }
     #[test]
     fn bundle_typed_is_a_subfolder() {
-        assert_eq!(repo_for("typed-decisions", false), "convaiinnovations/laya/typed-decisions");
+        assert_eq!(
+            repo_for("typed-decisions", false),
+            "convaiinnovations/laya/typed-decisions"
+        );
     }
     #[test]
     fn bundle_standalone_english_stays_the_root() {
@@ -579,18 +759,41 @@ mod tests {
     }
     #[test]
     fn bundle_standalone_mirrors_differ() {
-        assert_eq!(repo_for("multilingual", true), "convaiinnovations/laya-multilingual");
-        assert_eq!(repo_for("typed-decisions", true), "convaiinnovations/laya-typed-decisions");
+        assert_eq!(
+            repo_for("multilingual", true),
+            "convaiinnovations/laya-multilingual"
+        );
+        assert_eq!(
+            repo_for("typed-decisions", true),
+            "convaiinnovations/laya-typed-decisions"
+        );
     }
     #[test]
     fn bundle_vs_standalone_route_flags_flip_the_repo() {
         let qids = BTreeSet::new();
-        let d = route(&qids, Some("multilingual"), None, None, false, "english", true, &english_text()).unwrap();
+        let d = route(
+            &qids,
+            Some("multilingual"),
+            None,
+            None,
+            false,
+            "english",
+            true,
+            &english_text(),
+        )
+        .unwrap();
         assert_eq!(d.repo, "convaiinnovations/laya-multilingual");
     }
     #[test]
     fn bundle_override_models_map_through_normalise() {
-        let d = route_default(&BTreeSet::new(), Some("laya-multilingual"), None, None, false, &english_text());
+        let d = route_default(
+            &BTreeSet::new(),
+            Some("laya-multilingual"),
+            None,
+            None,
+            false,
+            &english_text(),
+        );
         assert_eq!(d.repo, "convaiinnovations/laya/multilingual");
     }
     #[test]
@@ -687,7 +890,10 @@ mod tests {
         lru.preload(&names(&["typed-decisions", "english", "multilingual"]));
         lru.touch("typed-decisions");
         assert_eq!(lru.loaded().len(), 3, "nothing evicts within the cap");
-        assert_eq!(lru.order.first().map(String::as_str), Some("typed-decisions"));
+        assert_eq!(
+            lru.order.first().map(String::as_str),
+            Some("typed-decisions")
+        );
     }
     #[test]
     fn preload_is_idempotent() {

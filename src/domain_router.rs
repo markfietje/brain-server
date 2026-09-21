@@ -86,7 +86,10 @@ pub fn route_domain_label(
 /// Pure + total: the input order is preserved exactly.
 pub(crate) fn split_for_decide(options: &[String]) -> Vec<Vec<String>> {
     const CEILING: usize = 20;
-    options.chunks(CEILING.max(1)).map(<[String]>::to_vec).collect()
+    options
+        .chunks(CEILING.max(1))
+        .map(<[String]>::to_vec)
+        .collect()
 }
 
 /// Read every stored `(domain, centroid)` from the global DB's centroid table.
@@ -270,13 +273,19 @@ mod tests {
             .collect();
         let chunks = split_for_decide(&labels);
         assert_eq!(chunks.len(), 4, "77 labels split into 4 chunks");
-        assert!(chunks.iter().all(|c| c.len() <= 20), "every chunk within the ceiling");
+        assert!(
+            chunks.iter().all(|c| c.len() <= 20),
+            "every chunk within the ceiling"
+        );
         assert_eq!(
             chunks.concat(),
             labels,
             "the split is order-preserving and lossless"
         );
-        assert_eq!(chunks.iter().map(Vec::len).collect::<Vec<_>>(), vec![20, 20, 20, 17]);
+        assert_eq!(
+            chunks.iter().map(Vec::len).collect::<Vec<_>>(),
+            vec![20, 20, 20, 17]
+        );
     }
 
     #[test]

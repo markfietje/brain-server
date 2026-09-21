@@ -1786,9 +1786,7 @@ async fn decision_routes_role_gated_agent_and_revoked_denied() {
     )
     .await;
     assert_eq!(st, StatusCode::OK, "the operator opens the fixture run");
-    let run_id = serde_json::from_str::<serde_json::Value>(&body)
-        .expect("open reply")
-        ["run_id"]
+    let run_id = serde_json::from_str::<serde_json::Value>(&body).expect("open reply")["run_id"]
         .as_i64()
         .expect("run id") as i64;
     let decision_path = format!("/workflow/runs/{run_id}/handoff/decision");
@@ -1810,14 +1808,7 @@ async fn decision_routes_role_gated_agent_and_revoked_denied() {
     );
 
     // The operator's decision lands through the composed app.
-    let (st, body) = send_body(
-        &srv,
-        Some(TWOKEY_OP),
-        &decision_path,
-        "POST",
-        decision_body,
-    )
-    .await;
+    let (st, body) = send_body(&srv, Some(TWOKEY_OP), &decision_path, "POST", decision_body).await;
     assert_eq!(st, StatusCode::OK, "the operator's decision lands");
     assert_eq!(
         serde_json::from_str::<serde_json::Value>(&body).expect("receipt")["audited"],

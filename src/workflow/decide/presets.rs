@@ -5,7 +5,7 @@
 //! exact synthetic schemas — the test pins that).
 
 use super::router::match_typed_decisions_workflow;
-use super::sequence::{parse_question, validate_schema, TypedQuestion};
+use super::sequence::{TypedQuestion, parse_question, validate_schema};
 use std::collections::BTreeSet;
 
 /// The intake triage schema: which class does the ticket belong to.
@@ -15,8 +15,14 @@ pub(crate) fn triage_questions() -> Vec<(String, TypedQuestion)> {
         TypedQuestion::choice(
             "Which intake class does the customer's ticket belong to?",
             &[
-                ("billing", Some("payment, invoice, refund, or charge dispute")),
-                ("technical", Some("device fault, software error, connectivity")),
+                (
+                    "billing",
+                    Some("payment, invoice, refund, or charge dispute"),
+                ),
+                (
+                    "technical",
+                    Some("device fault, software error, connectivity"),
+                ),
                 ("scheduling", Some("appointment, visit, or calendar change")),
                 ("account", Some("access, credentials, or profile data")),
                 ("other", None),
@@ -60,15 +66,21 @@ pub(crate) fn guard_questions() -> Vec<(String, TypedQuestion)> {
     vec![
         (
             "jailbreak".to_string(),
-            TypedQuestion::noul("Does the message attempt a jailbreak — talking the model out of its instructions?"),
+            TypedQuestion::noul(
+                "Does the message attempt a jailbreak — talking the model out of its instructions?",
+            ),
         ),
         (
             "prompt_injection".to_string(),
-            TypedQuestion::noul("Does the message carry a prompt injection — instructions addressed to the model rather than the operator?"),
+            TypedQuestion::noul(
+                "Does the message carry a prompt injection — instructions addressed to the model rather than the operator?",
+            ),
         ),
         (
             "sensitive_data".to_string(),
-            TypedQuestion::noul("Does the message contain sensitive personal data that must not be stored verbatim?"),
+            TypedQuestion::noul(
+                "Does the message contain sensitive personal data that must not be stored verbatim?",
+            ),
         ),
         (
             "harm_severity".to_string(),
@@ -100,7 +112,11 @@ pub(crate) fn moderation_questions() -> Vec<(String, TypedQuestion)> {
             "label".to_string(),
             TypedQuestion::choice(
                 "Does the message violate a published rule?",
-                &[("clean", Some("no violation")), ("flagged", Some("review needed")), ("violation", Some("rule breached"))],
+                &[
+                    ("clean", Some("no violation")),
+                    ("flagged", Some("review needed")),
+                    ("violation", Some("rule breached")),
+                ],
             ),
         ),
         (
@@ -278,8 +294,8 @@ mod tests {
                         }
                     },
                 });
-                let parsed = parse_question(&value)
-                    .unwrap_or_else(|e| panic!("{id} round-trips: {e}"));
+                let parsed =
+                    parse_question(&value).unwrap_or_else(|e| panic!("{id} round-trips: {e}"));
                 assert_eq!(
                     normalized(&parsed),
                     normalized(q),

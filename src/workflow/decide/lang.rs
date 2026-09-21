@@ -445,7 +445,9 @@ mod tests {
     // ── is_english (7) ──────────────────────────────────────────────────
     #[test]
     fn is_english_ordinary_text() {
-        assert!(is_english(&json!("the customer replaced the battery and it works")));
+        assert!(is_english(&json!(
+            "the customer replaced the battery and it works"
+        )));
     }
     #[test]
     fn is_english_empty_state() {
@@ -457,7 +459,9 @@ mod tests {
     }
     #[test]
     fn is_english_french_is_not() {
-        assert!(!is_english(&json!("le client a remplacé la batterie du portable")));
+        assert!(!is_english(&json!(
+            "le client a remplacé la batterie du portable"
+        )));
     }
     #[test]
     fn is_english_cyrillic_is_not() {
@@ -508,9 +512,10 @@ mod tests {
     }
     #[test]
     fn latin_lang_long_english_stays_en() {
-        let long = "the technician confirmed that the replacement battery holds its charge and the \
+        let long =
+            "the technician confirmed that the replacement battery holds its charge and the \
                      device is running the latest firmware update from this morning"
-            .to_string();
+                .to_string();
         assert_eq!(guess_latin_language(&long), Some("en".into()));
     }
 
@@ -558,7 +563,10 @@ mod tests {
         // hand-rolled splitter accepts alphanumeric runs — digits included —
         // so the pinned equivalence contract is: identical word BOUNDARIES
         // for letter-only vocabularies, and no empty tokens ever.
-        assert_eq!(words("don't stop-me now 42x_y"), vec!["don", "t", "stop", "me", "now", "42x", "y"]);
+        assert_eq!(
+            words("don't stop-me now 42x_y"),
+            vec!["don", "t", "stop", "me", "now", "42x", "y"]
+        );
         assert!(words("").is_empty());
         assert!(words("...---...").is_empty());
     }

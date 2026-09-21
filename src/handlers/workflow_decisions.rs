@@ -136,7 +136,9 @@ pub async fn post_handoff_decision(
     let echo = crate::gate::sanitize_read(&decision_ref, false, &principal);
 
     let outcome = tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
-        let mut conn = pool.get().map_err(|e| HandlerError::internal(format!("{e}")))?;
+        let mut conn = pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("{e}")))?;
         let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn)
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         let detail = serde_json::json!({ "route": "workflow_decisions" });
@@ -206,7 +208,9 @@ pub async fn post_back_referral_return(
     let echo_key = echo_of(&contract_key, &principal);
 
     let outcome = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {
-        let mut conn = pool.get().map_err(|e| HandlerError::internal(format!("{e}")))?;
+        let mut conn = pool
+            .get()
+            .map_err(|e| HandlerError::internal(format!("{e}")))?;
         let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn)
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         let now = chrono::Utc::now().timestamp();
@@ -230,10 +234,7 @@ pub async fn post_back_referral_return(
                  WHERE run_id = ?1 AND kind = 'back_referral' \
                  AND payload_json LIKE ?2 \
                  ORDER BY seq DESC LIMIT 1",
-                rusqlite::params![
-                    id,
-                    format!("%\"{contract_key}\"%"),
-                ],
+                rusqlite::params![id, format!("%\"{contract_key}\"%"),],
                 |r| r.get(0),
             )
             .optional()
@@ -298,8 +299,8 @@ mod tests {
         );
         let err = validate_contract_key("").expect_err("empty refuses");
         assert_eq!(err.inner.code, "contract_key_required");
-        let err = validate_contract_key(&"k".repeat(MAX_DECISION_REF_LEN + 1))
-            .expect_err("over bound");
+        let err =
+            validate_contract_key(&"k".repeat(MAX_DECISION_REF_LEN + 1)).expect_err("over bound");
         assert_eq!(err.inner.code, "contract_key_required");
         let err = validate_contract_key("k\u{202E}").expect_err("invisible refuses");
         assert_eq!(err.inner.code, "contract_key_required");
@@ -651,12 +652,7 @@ mod tests {
     async fn report_must_be_an_object() {
         let f = crate::handlers::case_run::tests::fixture();
         let run_id = open_run(&f).await;
-        let key = arm_contract(
-            &f,
-            run_id,
-            vec!["finding"],
-            chrono::Utc::now().timestamp(),
-        );
+        let key = arm_contract(&f, run_id, vec!["finding"], chrono::Utc::now().timestamp());
         for bad in [
             None,
             Some(serde_json::json!("battery confirmed")),
@@ -678,4 +674,3 @@ mod tests {
         }
     }
 }
-

@@ -128,7 +128,10 @@ mod tests {
     fn confidence_uniform_is_zero() {
         let p = [0.25f32, 0.25, 0.25, 0.25];
         let conf = confidence_from_probs(&p, 4);
-        assert!(conf < 0.001, "uniform over 4 is maximally unconfident: {conf}");
+        assert!(
+            conf < 0.001,
+            "uniform over 4 is maximally unconfident: {conf}"
+        );
     }
     #[test]
     fn confidence_one_hot_is_one() {
