@@ -756,21 +756,21 @@ CoreML GPU promises (measure CPU first), any change to `t1..t4.env` defaults.
 ## 10. File-by-file checklist (reviewer ticks)
 
 - [ ] `Cargo.toml`: `laya-local` feature only (§4.1), no other dep change, comments dated.
-- [ ] `src/workflow/mod.rs`: `pub mod decide;` + allow comment.
-- [ ] `src/workflow/decide/{mod,lang,router,sequence,calibration,presets}.rs` + tests (§2).
+- [x] `src/workflow/mod.rs`: `pub mod decide;` + allow comment. *(ticked 2026-09-22, Phase 0: landed as `pub(crate) mod decide;` — the file-level dead-code allow covers the posture; the visibility flip to `pub` is Phase 3 with callers)*
+- [x] `src/workflow/decide/{mod,lang,router,sequence,calibration,presets}.rs` + tests (§2). *(ticked 2026-09-22, Phase 0)*
 - [ ] `src/workflow/decide/{inference,audit_ext}.rs` behind `#[cfg(feature="laya-local")]` (§4.5).
 - [ ] `tools/export_laya_onnx.py` + `SHA256SUMS` procedure (§3.2).
 - [ ] `src/config.rs`: 7 resolvers + `validate_decide_env` + boot call-site (§4.2).
 - [ ] `src/workflow/tiers.rs`: 5 keys + `m1-local.env` + `TIER_PROFILE_PATHS` (§4.3).
 - [ ] `deploy/tiers/m1-local.env` new; `t1..t4.env` untouched.
 - [ ] `docs/deployment.md`: m1-local + key rows (else drift test fails).
-- [ ] `src/domain_router.rs`: `split_for_decide` + test.
+- [x] `src/domain_router.rs`: `split_for_decide` + test. *(ticked 2026-09-22, Phase 0; 77-label fixture splits 20/20/20/17)*
 - [ ] `src/workflow/frontdoor.rs`: 20-line advisor + 5 tests (§5.2).
 - [ ] `src/workflow/calibration.rs`: decide keys passthrough (no logic fork).
 - [ ] `docs/BENCHMARKS.md`: M1 row + decide tables (§7).
-- [ ] `cargo test` (default) green; `cargo test --features laya-local` green (M1);
+- [x] `cargo test` (default) green; `cargo test --features laya-local` green (M1); *(first clause ticked 2026-09-22, Phase 0; the laya-local clause is Phase 1)*
         `cargo test --features laya-local decide_` parity `#[ignore]` run by operator with artifacts.
-- [ ] `cargo audit` green; `cargo tree -i ort` single version.
+- [x] `cargo audit` green; `cargo tree -i ort` single version. *(first clause ticked 2026-09-22, Phase 0: audit clean, zero new dependency edges; the ort tree check is Phase 1)*
 
 ## 11. Commands (M1)
 
