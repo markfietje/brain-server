@@ -15721,455 +15721,452 @@ Final paragraph after the rule.";
             "/add + /ingest/markdown each carry an audit row"
         );
     }
-// ── R19 closeout: the overdue sweep + the operator decision surface ────
-//
-// These tests live in the integration tree because the repo's
-// no-SQL-in-handlers law (`service::pins::no_sql_in_handlers_enforced`)
-// counts every statement in `src/handlers/*` — assertions included. The
-// laws they pin are unchanged; only their lawful home moved.
+    // ── R19 closeout: the overdue sweep + the operator decision surface ────
+    //
+    // These tests live in the integration tree because the repo's
+    // no-SQL-in-handlers law (`service::pins::no_sql_in_handlers_enforced`)
+    // counts every statement in `src/handlers/*` — assertions included. The
+    // laws they pin are unchanged; only their lawful home moved.
 
-use brain_server::handlers::workflow_decisions::{
-    BackReferralReturnBody, HandoffDecisionBody,
-};
+    use brain_server::handlers::workflow_decisions::{BackReferralReturnBody, HandoffDecisionBody};
 
-/// A minimal governed run row: `personal` domain, active.
-fn seed_run(state: &Arc<AppState>) -> i64 {
-    let conn = state.pool.get().unwrap();
-    conn.execute(
+    /// A minimal governed run row: `personal` domain, active.
+    fn seed_run(state: &Arc<AppState>) -> i64 {
+        let conn = state.pool.get().unwrap();
+        conn.execute(
         "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
          VALUES ('personal', 'intake', '{}', 0, 'active', 1, 1)",
         [],
     )
     .unwrap();
-    conn.last_insert_rowid()
-}
+        conn.last_insert_rowid()
+    }
 
-/// Arm a back-referral return contract at an arbitrary clock, mirroring the
-/// core writer's row shape (`run{id}:back_referral:{owner}` + deadline).
-fn seed_contract(
-    state: &Arc<AppState>,
-    run_id: i64,
-    required: &[&str],
-    armed_at: i64,
-) -> String {
-    let key = format!("run{run_id}:back_referral:owner");
-    let contract = serde_json::json!({
-        "referrer": "l1:steward-dpc",
-        "receiver": "eng-storage",
-        "clinical_question": "confirm the battery",
-        "required_report": required,
-        "status": "open",
-    });
-    let payload = serde_json::json!({
-        "contract_key": key,
-        "status": "open",
-        "deadline_epoch": armed_at + 86_400,
-        "contract": contract,
-    });
-    let conn = state.pool.get().unwrap();
-    conn.execute(
+    /// Arm a back-referral return contract at an arbitrary clock, mirroring the
+    /// core writer's row shape (`run{id}:back_referral:{owner}` + deadline).
+    fn seed_contract(
+        state: &Arc<AppState>,
+        run_id: i64,
+        required: &[&str],
+        armed_at: i64,
+    ) -> String {
+        let key = format!("run{run_id}:back_referral:owner");
+        let contract = serde_json::json!({
+            "referrer": "l1:steward-dpc",
+            "receiver": "eng-storage",
+            "clinical_question": "confirm the battery",
+            "required_report": required,
+            "status": "open",
+        });
+        let payload = serde_json::json!({
+            "contract_key": key,
+            "status": "open",
+            "deadline_epoch": armed_at + 86_400,
+            "contract": contract,
+        });
+        let conn = state.pool.get().unwrap();
+        conn.execute(
         "INSERT INTO agent_session_events(run_id, seq, idempotency_key, kind, payload_json, created_at)
          VALUES (?1, 1, 'seed-back-referral', 'back_referral', ?2, ?3)",
         rusqlite::params![run_id, payload.to_string(), armed_at],
     )
     .unwrap();
-    key
-}
+        key
+    }
 
-/// The overdue discipline fires on the production read: an open return
-/// contract past its deadline, read through the scoreboard surface, comes
-/// back escalated with the HITL task present and the count reflecting it —
-/// the board never shows a dead contract as merely open, and the machine
-/// never auto-resolves it (the count drops because the contract is
-/// escalated, not because it disappeared).
-#[tokio::test]
-async fn overdue_contract_escalates_on_scoreboard_read() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let state = drawbridge_state(&tmp);
-    let run_id = seed_run(&state);
-    // A contract armed two days in the past: its default 24h return window
-    // is long exhausted by the real clock the scoreboard sweep runs under.
-    seed_contract(&state, run_id, &["finding", "treatment_plan", "follow_up"], chrono::Utc::now().timestamp() - 2 * 86_400);
-    // Sanity before the read: the contract counts as open.
-    {
-        let conn = state.pool.get().unwrap();
-        let open_before: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM agent_session_events \
+    /// The overdue discipline fires on the production read: an open return
+    /// contract past its deadline, read through the scoreboard surface, comes
+    /// back escalated with the HITL task present and the count reflecting it —
+    /// the board never shows a dead contract as merely open, and the machine
+    /// never auto-resolves it (the count drops because the contract is
+    /// escalated, not because it disappeared).
+    #[tokio::test]
+    async fn overdue_contract_escalates_on_scoreboard_read() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let run_id = seed_run(&state);
+        // A contract armed two days in the past: its default 24h return window
+        // is long exhausted by the real clock the scoreboard sweep runs under.
+        seed_contract(
+            &state,
+            run_id,
+            &["finding", "treatment_plan", "follow_up"],
+            chrono::Utc::now().timestamp() - 2 * 86_400,
+        );
+        // Sanity before the read: the contract counts as open.
+        {
+            let conn = state.pool.get().unwrap();
+            let open_before: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_session_events \
                  WHERE kind = 'back_referral' \
                  AND payload_json LIKE '%\"status\":\"open\"%'",
-                [],
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(open_before, 1, "the armed contract is open before the read");
+        }
+
+        let view = brain_server::handlers::workflow::get_scoreboard(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(None),
+        )
+        .await
+        .expect("scoreboard");
+        assert_eq!(
+            view.0["open_return_contracts"],
+            serde_json::json!(0),
+            "an overdue contract never reads as merely open"
+        );
+
+        let conn = state.pool.get().unwrap();
+        let escalated: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+             WHERE run_id = ?1 AND kind = 'back_referral' \
+             AND payload_json LIKE '%\"status\":\"escalated\"%'",
+                [run_id],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(open_before, 1, "the armed contract is open before the read");
+        assert_eq!(escalated, 1, "the escalation row landed");
+        let hitl: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+             WHERE run_id = ?1 AND kind = 'control:back_referral_hitl'",
+                [run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hitl, 1, "the HITL task landed");
+        let audited: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE target_hash = ?1",
+                [brain_server::audit::hash("back_referral")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(audited >= 1, "the justification rode the audit chain");
+
+        // Idempotent: a second read escalates nothing new.
+        let second = brain_server::handlers::workflow::get_scoreboard(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(None),
+        )
+        .await
+        .expect("scoreboard again");
+        assert_eq!(second.0["open_return_contracts"], serde_json::json!(0));
+        let escalated_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+             WHERE run_id = ?1 AND kind = 'back_referral' \
+             AND payload_json LIKE '%\"status\":\"escalated\"%'",
+                [run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(escalated_after, escalated, "the sweep is idempotent");
     }
 
-    let view = brain_server::handlers::workflow::get_scoreboard(
-        State(state.clone()),
-        brain_server::handlers::auth::OptPrincipal(None),
-    )
-    .await
-    .expect("scoreboard");
-    assert_eq!(
-        view.0["open_return_contracts"],
-        serde_json::json!(0),
-        "an overdue contract never reads as merely open"
-    );
-
-    let conn = state.pool.get().unwrap();
-    let escalated: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM agent_session_events \
-             WHERE run_id = ?1 AND kind = 'back_referral' \
-             AND payload_json LIKE '%\"status\":\"escalated\"%'",
-            [run_id],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(escalated, 1, "the escalation row landed");
-    let hitl: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM agent_session_events \
-             WHERE run_id = ?1 AND kind = 'control:back_referral_hitl'",
-            [run_id],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(hitl, 1, "the HITL task landed");
-    let audited: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM audit_events WHERE target_hash = ?1",
-            [brain_server::audit::hash("back_referral")],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert!(audited >= 1, "the justification rode the audit chain");
-
-    // Idempotent: a second read escalates nothing new.
-    let second = brain_server::handlers::workflow::get_scoreboard(
-        State(state.clone()),
-        brain_server::handlers::auth::OptPrincipal(None),
-    )
-    .await
-    .expect("scoreboard again");
-    assert_eq!(second.0["open_return_contracts"], serde_json::json!(0));
-    let escalated_after: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM agent_session_events \
-             WHERE run_id = ?1 AND kind = 'back_referral' \
-             AND payload_json LIKE '%\"status\":\"escalated\"%'",
-            [run_id],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(escalated_after, escalated, "the sweep is idempotent");
-}
-
-/// unknown_transition_refused_400 — the CLOSED vocabulary holds at the
-/// surface; only delivered | cancelled pass the route.
-#[tokio::test]
-async fn unknown_transition_refused_400() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let state = drawbridge_state(&tmp);
-    let run_id = seed_run(&state);
-    let err = brain_server::handlers::workflow_decisions::post_handoff_decision(
-        State(state.clone()),
-        brain_server::handlers::auth::OptPrincipal(None),
-        Path(run_id),
-        Json(HandoffDecisionBody {
-            transition: "postponed".into(),
-            decision_ref: Some("op-1".into()),
-        }),
-    )
-    .await
-    .expect_err("unknown transition refuses");
-    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
-    assert_eq!(err.inner.code, "unknown_transition");
-    let conn = state.pool.get().unwrap();
-    let rows: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM agent_session_events \
-             WHERE run_id = ?1 AND kind = 'handoff_lifecycle'",
-            [run_id],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(rows, 0, "a refused transition writes nothing");
-}
-
-/// handoff_decision_requires_decision_ref — the B4/HITL law at the
-/// surface: absent, empty, and malformed references all refuse 400 before
-/// any write.
-#[tokio::test]
-async fn handoff_decision_requires_decision_ref() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let state = drawbridge_state(&tmp);
-    let run_id = seed_run(&state);
-    for bad in [None, Some("   ".into()), Some("op\u{200B}-1".into())] {
+    /// unknown_transition_refused_400 — the CLOSED vocabulary holds at the
+    /// surface; only delivered | cancelled pass the route.
+    #[tokio::test]
+    async fn unknown_transition_refused_400() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let run_id = seed_run(&state);
         let err = brain_server::handlers::workflow_decisions::post_handoff_decision(
             State(state.clone()),
             brain_server::handlers::auth::OptPrincipal(None),
             Path(run_id),
             Json(HandoffDecisionBody {
-                transition: "delivered".into(),
-                decision_ref: bad,
+                transition: "postponed".into(),
+                decision_ref: Some("op-1".into()),
             }),
         )
         .await
-        .expect_err("a decision-required transition refuses without a ref");
+        .expect_err("unknown transition refuses");
         assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
-        assert!(
-            err.inner.code == "decision_ref_required"
-                || err.inner.code == "decision_ref_invalid"
-        );
+        assert_eq!(err.inner.code, "unknown_transition");
+        let conn = state.pool.get().unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+             WHERE run_id = ?1 AND kind = 'handoff_lifecycle'",
+                [run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0, "a refused transition writes nothing");
     }
-    let conn = state.pool.get().unwrap();
-    let rows: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM agent_session_events \
-             WHERE run_id = ?1 AND kind = 'handoff_lifecycle'",
-            [run_id],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(rows, 0, "nothing landed without the reference");
-}
 
-/// handoff_delivered_and_cancelled_land_lifecycle_and_audit — both
-/// operator arms move in ONE WorkflowTx each, the lifecycle rows carry the
-/// decision reference, and the audit rows ride the chain.
-#[tokio::test]
-async fn handoff_delivered_and_cancelled_land_lifecycle_and_audit() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let state = drawbridge_state(&tmp);
-    let run_id = seed_run(&state);
-    let delivered = brain_server::handlers::workflow_decisions::post_handoff_decision(
-        State(state.clone()),
-        brain_server::handlers::auth::OptPrincipal(None),
-        Path(run_id),
-        Json(HandoffDecisionBody {
-            transition: "delivered".into(),
-            decision_ref: Some("op-2026-09-22#7".into()),
-        }),
-    )
-    .await
-    .expect("delivered");
-    assert_eq!(delivered.0["transition"], serde_json::json!("delivered"));
-    assert_eq!(
-        delivered.0["decision_ref"],
-        serde_json::json!("op-2026-09-22#7")
-    );
-    let cancelled = brain_server::handlers::workflow_decisions::post_handoff_decision(
-        State(state.clone()),
-        brain_server::handlers::auth::OptPrincipal(None),
-        Path(run_id),
-        Json(HandoffDecisionBody {
-            transition: "cancelled".into(),
-            decision_ref: Some("op-2026-09-22#8".into()),
-        }),
-    )
-    .await
-    .expect("cancelled");
-    assert_eq!(cancelled.0["transition"], serde_json::json!("cancelled"));
-
-    let conn = state.pool.get().unwrap();
-    let lifecycles: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM agent_session_events \
+    /// handoff_decision_requires_decision_ref — the B4/HITL law at the
+    /// surface: absent, empty, and malformed references all refuse 400 before
+    /// any write.
+    #[tokio::test]
+    async fn handoff_decision_requires_decision_ref() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let run_id = seed_run(&state);
+        for bad in [None, Some("   ".into()), Some("op\u{200B}-1".into())] {
+            let err = brain_server::handlers::workflow_decisions::post_handoff_decision(
+                State(state.clone()),
+                brain_server::handlers::auth::OptPrincipal(None),
+                Path(run_id),
+                Json(HandoffDecisionBody {
+                    transition: "delivered".into(),
+                    decision_ref: bad,
+                }),
+            )
+            .await
+            .expect_err("a decision-required transition refuses without a ref");
+            assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+            assert!(
+                err.inner.code == "decision_ref_required"
+                    || err.inner.code == "decision_ref_invalid"
+            );
+        }
+        let conn = state.pool.get().unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
              WHERE run_id = ?1 AND kind = 'handoff_lifecycle'",
-            [run_id],
-            |r| r.get(0),
+                [run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0, "nothing landed without the reference");
+    }
+
+    /// handoff_delivered_and_cancelled_land_lifecycle_and_audit — both
+    /// operator arms move in ONE WorkflowTx each, the lifecycle rows carry the
+    /// decision reference, and the audit rows ride the chain.
+    #[tokio::test]
+    async fn handoff_delivered_and_cancelled_land_lifecycle_and_audit() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let run_id = seed_run(&state);
+        let delivered = brain_server::handlers::workflow_decisions::post_handoff_decision(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            Json(HandoffDecisionBody {
+                transition: "delivered".into(),
+                decision_ref: Some("op-2026-09-22#7".into()),
+            }),
         )
-        .unwrap();
-    assert_eq!(lifecycles, 2, "both transitions landed as lifecycle rows");
-    let audited: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM audit_events WHERE target_hash = ?1",
-            [brain_server::audit::hash("handoff_lifecycle")],
-            |r| r.get(0),
+        .await
+        .expect("delivered");
+        assert_eq!(delivered.0["transition"], serde_json::json!("delivered"));
+        assert_eq!(
+            delivered.0["decision_ref"],
+            serde_json::json!("op-2026-09-22#7")
+        );
+        let cancelled = brain_server::handlers::workflow_decisions::post_handoff_decision(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            Json(HandoffDecisionBody {
+                transition: "cancelled".into(),
+                decision_ref: Some("op-2026-09-22#8".into()),
+            }),
         )
-        .unwrap();
-    assert!(audited >= 2, "both transitions carry their audit rows");
-    let mut stmt = conn
-        .prepare(
-            "SELECT payload_json FROM agent_session_events \
+        .await
+        .expect("cancelled");
+        assert_eq!(cancelled.0["transition"], serde_json::json!("cancelled"));
+
+        let conn = state.pool.get().unwrap();
+        let lifecycles: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+             WHERE run_id = ?1 AND kind = 'handoff_lifecycle'",
+                [run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(lifecycles, 2, "both transitions landed as lifecycle rows");
+        let audited: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE target_hash = ?1",
+                [brain_server::audit::hash("handoff_lifecycle")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(audited >= 2, "both transitions carry their audit rows");
+        let mut stmt = conn
+            .prepare(
+                "SELECT payload_json FROM agent_session_events \
              WHERE run_id = ?1 AND kind = 'handoff_lifecycle' ORDER BY seq",
-        )
-        .unwrap();
-    let payloads: Vec<String> = stmt
-        .query_map([run_id], |r| r.get::<_, String>(0))
-        .map(|it| it.filter_map(Result::ok).collect())
-        .unwrap();
-    assert!(payloads[0].contains("\"decision_ref\":\"op-2026-09-22#7\""));
-    assert!(payloads[0].contains("\"human_edited\":true"));
-    assert!(payloads[1].contains("\"decision_ref\":\"op-2026-09-22#8\""));
-}
+            )
+            .unwrap();
+        let payloads: Vec<String> = stmt
+            .query_map([run_id], |r| r.get::<_, String>(0))
+            .map(|it| it.filter_map(Result::ok).collect())
+            .unwrap();
+        assert!(payloads[0].contains("\"decision_ref\":\"op-2026-09-22#7\""));
+        assert!(payloads[0].contains("\"human_edited\":true"));
+        assert!(payloads[1].contains("\"decision_ref\":\"op-2026-09-22#8\""));
+    }
 
-/// back_referral_return_requires_decision_ref_and_full_report — the B4 and
-/// B3 laws hold at the surface, an absent contract answers 404
-/// probe-blind, and a complete report releases the contract `returned`.
-#[tokio::test]
-async fn back_referral_return_requires_decision_ref_and_full_report() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let state = drawbridge_state(&tmp);
-    let run_id = seed_run(&state);
-    let key = seed_contract(
-        &state,
-        run_id,
-        &["finding", "treatment_plan", "follow_up"],
-        chrono::Utc::now().timestamp(),
-    );
+    /// back_referral_return_requires_decision_ref_and_full_report — the B4 and
+    /// B3 laws hold at the surface, an absent contract answers 404
+    /// probe-blind, and a complete report releases the contract `returned`.
+    #[tokio::test]
+    async fn back_referral_return_requires_decision_ref_and_full_report() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let run_id = seed_run(&state);
+        let key = seed_contract(
+            &state,
+            run_id,
+            &["finding", "treatment_plan", "follow_up"],
+            chrono::Utc::now().timestamp(),
+        );
 
-    // B4 at the surface: no reference, no release.
-    let err = brain_server::handlers::workflow_decisions::post_back_referral_return(
-        State(state.clone()),
-        brain_server::handlers::auth::OptPrincipal(None),
-        Path(run_id),
-        Json(BackReferralReturnBody {
-            contract_key: Some(key.clone()),
-            report: Some(serde_json::json!({
-                "finding": "battery confirmed",
-                "treatment_plan": "replaced",
-                "follow_up": "72h re-check"
-            })),
-            decision_ref: None,
-        }),
-    )
-    .await
-    .expect_err("B4 refuses");
-    assert_eq!(err.inner.code, "decision_ref_required");
-
-    // B3 at the surface: an incomplete report names the missing fields.
-    let err = brain_server::handlers::workflow_decisions::post_back_referral_return(
-        State(state.clone()),
-        brain_server::handlers::auth::OptPrincipal(None),
-        Path(run_id),
-        Json(BackReferralReturnBody {
-            contract_key: Some(key.clone()),
-            report: Some(serde_json::json!({
-                "finding": "battery confirmed"
-            })),
-            decision_ref: Some("op-2026-09-22#9".into()),
-        }),
-    )
-    .await
-    .expect_err("B3 refuses");
-    assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
-    assert_eq!(err.inner.code, "report_incomplete");
-    let missing = err.inner.details.expect("the missing list rides");
-    assert_eq!(missing["missing"].as_array().unwrap().len(), 2);
-
-    // Probe-blind: an absent contract answers 404.
-    let err = brain_server::handlers::workflow_decisions::post_back_referral_return(
-        State(state.clone()),
-        brain_server::handlers::auth::OptPrincipal(None),
-        Path(run_id),
-        Json(BackReferralReturnBody {
-            contract_key: Some("run1:back_referral:nobody".into()),
-            report: Some(serde_json::json!({"finding": "x"})),
-            decision_ref: Some("op-1".into()),
-        }),
-    )
-    .await
-    .expect_err("absent contract refuses");
-    assert_eq!(err.status, axum::http::StatusCode::NOT_FOUND);
-
-    // The complete release: the contract flips returned, audited.
-    let ok = brain_server::handlers::workflow_decisions::post_back_referral_return(
-        State(state.clone()),
-        brain_server::handlers::auth::OptPrincipal(None),
-        Path(run_id),
-        Json(BackReferralReturnBody {
-            contract_key: Some(key.clone()),
-            report: Some(serde_json::json!({
-                "finding": "battery confirmed as root cause",
-                "treatment_plan": "replaced under warranty",
-                "follow_up": "72h re-check scheduled"
-            })),
-            decision_ref: Some("op-2026-09-22#9".into()),
-        }),
-    )
-    .await
-    .expect("released");
-    assert_eq!(ok.0["status"], serde_json::json!("returned"));
-    assert_eq!(ok.0["late"], serde_json::json!(false));
-    let conn = state.pool.get().unwrap();
-    let returned: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM agent_session_events \
-             WHERE run_id = ?1 AND kind = 'back_referral' \
-             AND payload_json LIKE '%\"status\":\"returned\"%'",
-            [run_id],
-            |r| r.get(0),
-        )
-        .unwrap();
-    assert_eq!(returned, 1, "the release row landed");
-}
-
-/// late_return_flags_late_on_the_surface — the server clock decides: a
-/// contract armed past its window releases with `late: true`.
-#[tokio::test]
-async fn late_return_flags_late_on_the_surface() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let state = drawbridge_state(&tmp);
-    let run_id = seed_run(&state);
-    let key = seed_contract(
-        &state,
-        run_id,
-        &["finding"],
-        chrono::Utc::now().timestamp() - 2 * 86_400,
-    );
-    let ok = brain_server::handlers::workflow_decisions::post_back_referral_return(
-        State(state.clone()),
-        brain_server::handlers::auth::OptPrincipal(None),
-        Path(run_id),
-        Json(BackReferralReturnBody {
-            contract_key: Some(key),
-            report: Some(serde_json::json!({"finding": "eventual receipt"})),
-            decision_ref: Some("op-late-1".into()),
-        }),
-    )
-    .await
-    .expect("released late");
-    assert_eq!(ok.0["late"], serde_json::json!(true));
-}
-
-/// report_must_be_an_object — the report field's shape law at the surface
-/// (absent, non-object, and empty-object cases).
-#[tokio::test]
-async fn report_must_be_an_object() {
-    let tmp = tempfile::NamedTempFile::new().unwrap();
-    let state = drawbridge_state(&tmp);
-    let run_id = seed_run(&state);
-    let key = seed_contract(
-        &state,
-        run_id,
-        &["finding"],
-        chrono::Utc::now().timestamp(),
-    );
-    for bad in [
-        None,
-        Some(serde_json::json!("battery confirmed")),
-        Some(serde_json::json!(["battery confirmed"])),
-    ] {
+        // B4 at the surface: no reference, no release.
         let err = brain_server::handlers::workflow_decisions::post_back_referral_return(
             State(state.clone()),
             brain_server::handlers::auth::OptPrincipal(None),
             Path(run_id),
             Json(BackReferralReturnBody {
                 contract_key: Some(key.clone()),
-                report: bad,
-                decision_ref: Some("op-shape-1".into()),
+                report: Some(serde_json::json!({
+                    "finding": "battery confirmed",
+                    "treatment_plan": "replaced",
+                    "follow_up": "72h re-check"
+                })),
+                decision_ref: None,
             }),
         )
         .await
-        .expect_err("a non-object report refuses");
-        assert_eq!(err.inner.code, "report_invalid");
+        .expect_err("B4 refuses");
+        assert_eq!(err.inner.code, "decision_ref_required");
+
+        // B3 at the surface: an incomplete report names the missing fields.
+        let err = brain_server::handlers::workflow_decisions::post_back_referral_return(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            Json(BackReferralReturnBody {
+                contract_key: Some(key.clone()),
+                report: Some(serde_json::json!({
+                    "finding": "battery confirmed"
+                })),
+                decision_ref: Some("op-2026-09-22#9".into()),
+            }),
+        )
+        .await
+        .expect_err("B3 refuses");
+        assert_eq!(err.status, axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(err.inner.code, "report_incomplete");
+        let missing = err.inner.details.expect("the missing list rides");
+        assert_eq!(missing["missing"].as_array().unwrap().len(), 2);
+
+        // Probe-blind: an absent contract answers 404.
+        let err = brain_server::handlers::workflow_decisions::post_back_referral_return(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            Json(BackReferralReturnBody {
+                contract_key: Some("run1:back_referral:nobody".into()),
+                report: Some(serde_json::json!({"finding": "x"})),
+                decision_ref: Some("op-1".into()),
+            }),
+        )
+        .await
+        .expect_err("absent contract refuses");
+        assert_eq!(err.status, axum::http::StatusCode::NOT_FOUND);
+
+        // The complete release: the contract flips returned, audited.
+        let ok = brain_server::handlers::workflow_decisions::post_back_referral_return(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            Json(BackReferralReturnBody {
+                contract_key: Some(key.clone()),
+                report: Some(serde_json::json!({
+                    "finding": "battery confirmed as root cause",
+                    "treatment_plan": "replaced under warranty",
+                    "follow_up": "72h re-check scheduled"
+                })),
+                decision_ref: Some("op-2026-09-22#9".into()),
+            }),
+        )
+        .await
+        .expect("released");
+        assert_eq!(ok.0["status"], serde_json::json!("returned"));
+        assert_eq!(ok.0["late"], serde_json::json!(false));
+        let conn = state.pool.get().unwrap();
+        let returned: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+             WHERE run_id = ?1 AND kind = 'back_referral' \
+             AND payload_json LIKE '%\"status\":\"returned\"%'",
+                [run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(returned, 1, "the release row landed");
+    }
+
+    /// late_return_flags_late_on_the_surface — the server clock decides: a
+    /// contract armed past its window releases with `late: true`.
+    #[tokio::test]
+    async fn late_return_flags_late_on_the_surface() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let run_id = seed_run(&state);
+        let key = seed_contract(
+            &state,
+            run_id,
+            &["finding"],
+            chrono::Utc::now().timestamp() - 2 * 86_400,
+        );
+        let ok = brain_server::handlers::workflow_decisions::post_back_referral_return(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            Json(BackReferralReturnBody {
+                contract_key: Some(key),
+                report: Some(serde_json::json!({"finding": "eventual receipt"})),
+                decision_ref: Some("op-late-1".into()),
+            }),
+        )
+        .await
+        .expect("released late");
+        assert_eq!(ok.0["late"], serde_json::json!(true));
+    }
+
+    /// report_must_be_an_object — the report field's shape law at the surface
+    /// (absent, non-object, and empty-object cases).
+    #[tokio::test]
+    async fn report_must_be_an_object() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let run_id = seed_run(&state);
+        let key = seed_contract(&state, run_id, &["finding"], chrono::Utc::now().timestamp());
+        for bad in [
+            None,
+            Some(serde_json::json!("battery confirmed")),
+            Some(serde_json::json!(["battery confirmed"])),
+        ] {
+            let err = brain_server::handlers::workflow_decisions::post_back_referral_return(
+                State(state.clone()),
+                brain_server::handlers::auth::OptPrincipal(None),
+                Path(run_id),
+                Json(BackReferralReturnBody {
+                    contract_key: Some(key.clone()),
+                    report: bad,
+                    decision_ref: Some("op-shape-1".into()),
+                }),
+            )
+            .await
+            .expect_err("a non-object report refuses");
+            assert_eq!(err.inner.code, "report_invalid");
+        }
     }
 }
-}
-
 
 // ── SCRIM (read-seam shaping, write-on-read gating, SSE denial status,
 //    KB operator-arg escaping) ────────────────────────────────────────────

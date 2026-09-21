@@ -226,13 +226,9 @@ pub async fn post_back_referral_return(
         // The receipt's `late` flag rides the row the release just appended;
         // the server clock decided it, the reply only reports it. The read
         // lives in the core (the no-SQL-in-handlers law).
-        let late = crate::workflow::gdl::latest_back_referral_late_flag(
-            tx.tx(),
-            id,
-            &contract_key,
-        )
-        .map_err(|e| HandlerError::internal(e.to_string()))?
-        .unwrap_or(false);
+        let late = crate::workflow::gdl::latest_back_referral_late_flag(tx.tx(), id, &contract_key)
+            .map_err(|e| HandlerError::internal(e.to_string()))?
+            .unwrap_or(false);
         tx.commit()
             .map_err(|e| HandlerError::internal(e.to_string()))?;
         Ok(late)

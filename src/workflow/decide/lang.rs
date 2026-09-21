@@ -103,23 +103,23 @@ pub(crate) fn detect_script(text: &str) -> String {
             continue;
         }
         if let Some(name) = script_of(cp) {
-            let entry = counts.iter_mut().find(|(n, _)| *n == name);
-            match entry {
-                Some((_, n)) => *n += 1,
-                None => counts.push((name, 1)),
+            if let Some(entry) = counts.iter_mut().find(|(n, _)| *n == name) {
+                entry.1 += 1;
+            } else {
+                counts.push((name, 1));
             }
         }
     }
     let mut best: Option<(&'static str, usize)> = None;
     for (name, n) in counts {
-        match best {
-            None => best = Some((name, n)),
-            Some((best_name, best_n)) => {
-                // Ties stay alphabetical (the deterministic-house rule).
-                if n > best_n || (n == best_n && name < best_name) {
-                    best = Some((name, n));
-                }
-            }
+        // Ties stay alphabetical (the deterministic-house rule).
+        let beats = if let Some((best_name, best_n)) = best {
+            n > best_n || (n == best_n && name < best_name)
+        } else {
+            true
+        };
+        if beats {
+            best = Some((name, n));
         }
     }
     match best {
@@ -148,10 +148,10 @@ pub(crate) fn script_profile(text: &str) -> Vec<(String, f32)> {
             script_of(cp).unwrap_or("latin")
         };
         total += 1;
-        let entry = counts.iter_mut().find(|(n, _)| n == name);
-        match entry {
-            Some((_, n)) => *n += 1,
-            None => counts.push((name.to_string(), 1)),
+        if let Some(entry) = counts.iter_mut().find(|(n, _)| n == name) {
+            entry.1 += 1;
+        } else {
+            counts.push((name.to_string(), 1));
         }
     }
     if total == 0 {

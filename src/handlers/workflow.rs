@@ -2140,7 +2140,6 @@ pub async fn post_complaint_ack_sweep(
 mod tests {
     use super::*;
 
-
     /// The intake stamp law: a known jurisdiction stamps the run's additive
     /// column server-side through the SDK's single-owner table, the open
     /// audit row carries the stamp, and `state_json` is byte-identical to
