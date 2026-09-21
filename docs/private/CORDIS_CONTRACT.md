@@ -161,3 +161,32 @@ document loses the `@mode` names (emit, waterfall, serial, parallel), any frozen
 `ctx.workflowEngine`), or the §10 ceiling markers ("single-process", "No CBOR anywhere in
 1.32.x", "experimental", "2.0 Cortex", "deferred by choice"). The doc and the matrix move
 together or the gate is red.
+
+## 12. The 1.32.7 stamp — Diagnostic Closure (2026-09-21)
+
+The loop line's 1.32.7 label stamps here, in the in-tree doc that names the line's
+versioned state. 1.32.7 shipped in two preregistered parts, both recorded against
+hash-pinned preregs with executed-command evidence:
+
+- **Part 1 — TreeHandoff (R17):** the gajae session tree as `harness::tree`, the pi
+  admission vocabulary as `harness::compaction`, the GDL handoff pipeline (lifecycle
+  named + audited, HITL at generated, persist asymmetry), and the CETS 225 stamp
+  correction.
+- **Part 2 — Diagnostic Closure (R18):** the triage duty (ESI/MTS acuity + the red-flag
+  forcing function with the monotonic escalate-first lock and the per-domain must-miss
+  catalog), the closure artifact (NAM 2015 step 6 as gate law: A8/A9, mandatory before
+  any resolution), and the back-referral return contract (B1, atomic rows, the
+  escalation exception law, the overdue HITL discipline) — the three re-slotted gaps
+  landing as typed artifacts through the EXISTING gate machinery, additive
+  `#[serde(default)]` only, zero new dependency edges, zero `unsafe`.
+
+Kernel gates at close: **1744/1768/1772/1751** (R17 floors 1720/1744/1748/1727 plus
+exactly the 24 new spawn-free kernel tests, up-only). The 1.32.8 System-One lane remains
+**opener-gated — not prebuilt**: its gates (the labeled corpus + the separately
+preregistered eval) stay the operator's standing inputs, as do the κ labeling round,
+τ²-bench, and the live configured case for any ship decision. One operator action item
+rides the close: the foreign-operator WIP file `src/handlers/case_run.rs` carries
+pre-1.32.7 fixture copies whose route tests need the new mandatory triage fields
+re-synced (the round left the file untouched by rule; the plain case_run lane is the
+only red readout and is owned by that re-sync). This stamp is a version-label record,
+not an evaluation result, release, or compliance claim.
