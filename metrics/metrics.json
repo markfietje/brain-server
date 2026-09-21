@@ -670,6 +670,48 @@
       "citation": "ASI09 approval-fatigue posture (Attestation v1.28.62)",
       "tier_availability": "all tiers",
       "status": "emitted"
+    },
+    {
+      "name": "closed_without_closure",
+      "unit": "count",
+      "formula": "resolved runs (last 1000 by id) whose state_json carries no closure record; an unparsable resolved state counts as without (fail-closed). Post-1.32.7 the A8 gate makes new closure-less resolutions structurally impossible; the count watches legacy rows and drift.",
+      "sources": [
+        {
+          "table": "workflow_runs",
+          "column": "status"
+        },
+        {
+          "table": "workflow_runs",
+          "column": "state_json"
+        }
+      ],
+      "window": "last 1000 runs by id",
+      "inclusion": "runs with status 'resolved' whose case has no closure record (or an unreadable state)",
+      "exclusion": "resolved runs carrying a law-clean closure artifact; non-resolved runs",
+      "citation": "NAM 2015 Improving Diagnosis step 6; the closed_looks_good defect-class ban (1.32.7 Diagnostic Closure)",
+      "tier_availability": "all tiers",
+      "status": "emitted"
+    },
+    {
+      "name": "open_return_contracts",
+      "unit": "count",
+      "formula": "latest state per contract key over the back_referral session-log rows with status 'open', ordered by deadline_epoch (soonest first). Past-deadline opens flip escalated (+ a HITL-queue task with an audited justification) and never auto-resolve; only an operator decision carrying the complete required report releases a contract.",
+      "sources": [
+        {
+          "table": "agent_session_events",
+          "column": "kind"
+        },
+        {
+          "table": "agent_session_events",
+          "column": "payload_json"
+        }
+      ],
+      "window": "all recorded rows",
+      "inclusion": "contracts whose latest state is 'open'",
+      "exclusion": "contracts released ('returned' by operator decision) or flipped 'escalated' past deadline",
+      "citation": "Dutch gatekeeping continuity standard (Closing the Referral Loop: Receipt of Specialist Report); 1.32.7 Back-Referral law red_flag_handoff_never_blocks_on_back_referral",
+      "tier_availability": "all tiers",
+      "status": "emitted"
     }
   ]
 }

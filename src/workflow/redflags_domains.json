@@ -1,0 +1,44 @@
+{
+  "domains": {
+    "default": {
+      "entries": [
+        {
+          "name": "irreversible data loss",
+          "keywords": ["data loss", "deleted everything", "no backup", "overwrote"]
+        },
+        {
+          "name": "active security breach",
+          "keywords": ["being breached", "unauthorized access", "ransomware", "exfiltration"]
+        }
+      ]
+    },
+    "health": {
+      "entries": [
+        {
+          "name": "sepsis",
+          "keywords": ["fever and confusion", "fever with confusion", "hypotension", "rigors", "rapid heart rate"]
+        },
+        {
+          "name": "chest pain",
+          "keywords": ["chest pain", "chest pressure", "crushing chest"]
+        },
+        {
+          "name": "anaphylaxis",
+          "keywords": ["throat swelling", "hives and wheeze", "anaphylaxis", "tongue swelling"]
+        },
+        {
+          "name": "abuse or self-harm in minors",
+          "keywords": ["self-harm", "suicidal", "unexplained bruises", "disclosure of abuse"]
+        },
+        {
+          "name": "stroke",
+          "keywords": ["face droop", "arm weakness", "slurred speech", "sudden one-sided weakness"]
+        },
+        {
+          "name": "decompensation",
+          "keywords": ["rapidly worsening", "unresponsive", "gasping", "turning blue"]
+        }
+      ]
+    }
+  }
+}

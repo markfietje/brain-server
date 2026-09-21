@@ -15,23 +15,32 @@ can be quoted against the other.
 "The machine never auto-closes" is defined as:
 
 > **No terminal path may reach `Resolved` without (a) a passing, law-clean Verify artifact
-> (L6 re-run match + A6 stability floor + A6 negative check) and (b) a present handoff
-> capture (A7).** Knowledge publication remains proposal-only. A failed or missing Verify is
+> (L6 re-run match + A6 stability floor + A6 negative check), (b) a present handoff
+> capture (A7), and — since 1.32.7 Diagnostic Closure — (c) a law-clean ClosureArtifact
+> (NAM 2015 step 6: the decision communicated to the customer, warning signs, follow-up;
+> absence is the exact A8 refusal, reflexive re-closure without a communication record
+> is A9).** Knowledge publication remains proposal-only. A failed or missing Verify is
 > the terminal `VerifyFailed` hand-back to a human, never a silent retry.
 
 Under this definition, the machine settling a case as `Resolved` IS permitted — it is the
 **evidence-gated closure**: every ingredient of the closure is a law-gated artifact the
 machine was forced to earn (the verify artifact must re-run the plan's exact failing
 scenario under the A6 stability floor with a clean negative check; the capture must exist
-and be retrievable). What never happens is closure without verify-passed evidence, closure
-over open contradictions, or silent knowledge publication — captures land as proposals on
-the human review queue or not at all.
+and be retrievable; the closure record proves the customer was actually closed with —
+communicated_to, shared decision, warning signs, and follow-up, telehealth-gated). What
+never happens is closure without verify-passed evidence, closure over open contradictions,
+closure without a communication record, or silent knowledge publication — captures land as
+proposals on the human review queue or not at all.
 
 ## Where the law is enforced
 
 - `verify_gate` (L6/A6) — the re-run IS the planned failing scenario, the stability window
   is at least the floor, the negative check ran. Only `pass: true` can sit under a closure.
 - `handoff_gate` (A7) — the capture artifact is present and non-empty.
+- The closure duty (A8/A9, 1.32.7) — the Handoff pass post-gate seam: no `Resolved`
+  without a law-clean `ClosureArtifact`; the open-red-flag lock (T10) refuses closure
+  entirely until a verify-class rule-out closes the flag; a non-urgent referral-type
+  handoff refuses (B1) without its return contract.
 - The driver's terminal construction — `Resolved` is built only at the Handoff phase, only
   on a gate pass, and only with both artifacts present; the open-contradiction refusal
   (A4) blocks Handoff closure entirely until every pair is dispositioned.

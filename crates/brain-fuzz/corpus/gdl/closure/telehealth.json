@@ -1,0 +1,1 @@
+{"decision":"virtual consult complete","communicated_to":["customer:home"],"shared_decision":true,"warning_signs":["chest pain returns"],"escalation_path":"call L2","follow_up":"48h check-in","modality":{"telehealth":true,"modality_adequacy":"adequate"},"closure_means":"phone"}

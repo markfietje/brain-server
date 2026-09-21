@@ -469,6 +469,21 @@ pub async fn get_scoreboard(
         .await
         .map_err(|e| HandlerError::internal(format!("{e}")))?
         .map_err(HandlerError::internal)?;
+    // Diagnostic Closure: the closure duty and the referral return
+    // contract made countable (deterministic, query-only; docs/metrics.md
+    // is the normative dictionary).
+    let pool_dc = super::resolve_domain_pool(&state.registry, None)?;
+    let (closed_without_closure, open_return_contracts) =
+        tokio::task::spawn_blocking(move || -> Result<(i64, usize), String> {
+            let conn = pool_dc.get().map_err(|e| format!("{e}"))?;
+            Ok((
+                crate::workflow::scoreboard::closed_without_closure(&conn),
+                crate::workflow::scoreboard::open_return_contracts(&conn).len(),
+            ))
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("{e}")))?
+        .map_err(HandlerError::internal)?;
     // ASI09 approval-fatigue telemetry: the client's rubber-stamp
     // arithmetic computed server-side over the same window/cap — DPO
     // visibility on the board, docs/metrics.md is the normative dictionary.
@@ -499,6 +514,9 @@ pub async fn get_scoreboard(
         "guidance_acceptance_units": sb.guidance_acceptance_units,
         "handoff_completeness_units": sb.handoff_completeness_units,
         "justified_handoff_rate_units": justified_handoff_rate_units,
+        // 1.32.7 Diagnostic Closure: the two supply counts (additive).
+        "closed_without_closure": closed_without_closure,
+        "open_return_contracts": open_return_contracts,
         "audit_green": sb.audit_green,
         "escalation_honored_units": sb.escalation_honored_units,
         "runs_scored": runs.len(),

@@ -1,0 +1,1 @@
+{"decision":"battery replaced; rebuild verified","communicated_to":["customer:acme"],"shared_decision":true,"warning_signs":["rebuild rate drops"],"escalation_path":"reopen ticket","follow_up":"re-verify 48h","modality":{"telehealth":false},"closure_means":"portal_note"}

@@ -32,6 +32,13 @@ pub(super) struct Checkpoint {
 }
 
 impl Checkpoint {
+    /// The run's domain, for the post-gate additive law checks that need
+    /// it (the T7 must-miss catalog) — the domain is checkpoint state
+    /// (bound to the run row), deliberately not case state.
+    pub(super) fn case_domain(&self) -> &str {
+        &self.domain
+    }
+
     fn key(&self) -> String {
         format!("control:gdl:{}", self.revision)
     }

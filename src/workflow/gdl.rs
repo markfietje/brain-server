@@ -107,6 +107,32 @@ pub(crate) fn sla_seconds(priority: &str) -> Option<i64> {
     }
 }
 
+/// The MTS acuity-band wait windows, in seconds, as a MONITOR: RED 0 /
+/// ORANGE 600 / YELLOW 3 600 / GREEN 7 200 / BLUE 14 400. The P-class
+/// [`sla_seconds`] stays P1–P4 authoritative — nothing gates on the
+/// acuity window; the advertised target is the tighter of the two.
+pub(crate) fn acuity_sla(acuity: &str) -> Option<i64> {
+    match acuity {
+        "RED" => Some(0),
+        "ORANGE" => Some(600),
+        "YELLOW" => Some(3_600),
+        "GREEN" => Some(7_200),
+        "BLUE" => Some(14_400),
+        _ => None,
+    }
+}
+
+/// The advertised SLA target for a case: the tighter (smaller) of the
+/// P-class window and the acuity-band window — never the looser one.
+pub(crate) fn advertised_sla(priority: &str, acuity: Option<&str>) -> Option<i64> {
+    match (sla_seconds(priority), acuity.and_then(acuity_sla)) {
+        (Some(p), Some(a)) => Some(p.min(a)),
+        (Some(p), None) => Some(p),
+        (None, Some(a)) => Some(a),
+        (None, None) => None,
+    }
+}
+
 /// The once-per-case latch: the first fire records itself; a handoff
 /// after a fire without a recorded justification is the named violation.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,6 +285,122 @@ pub(crate) struct TriageArtifact {
     /// accept | defer | unknown — defer/unknown escalates with the bundle.
     #[serde(default)]
     pub verdict: String,
+    /// MTS-style acuity band. At least one of band/ESI is required (T4);
+    /// `acuity_sla` monitors it, the P-class SLA stays authoritative.
+    #[serde(default)]
+    pub acuity_band: Option<String>,
+    /// ESI-style level, 1..=5.
+    #[serde(default)]
+    pub esi_level: Option<u8>,
+    /// Anticipated resources (ESI) — informational for SLA banding, never
+    /// binds anything.
+    #[serde(default)]
+    pub resource_estimate: Option<u8>,
+    /// The disposition: self_care | virtual_primary | in_person_primary |
+    /// refer | facility | ed. `ed` is the only band that may short-circuit
+    /// to Handoff, and only with an open red-flag (T5).
+    #[serde(default)]
+    pub care_setting: Option<String>,
+    /// ATA modality adequacy — REQUIRED when the encounter is telehealth
+    /// (T6): a virtual encounter converts when palpation/vitals/testing
+    /// is needed.
+    #[serde(default)]
+    pub modality_adequacy: Option<String>,
+    /// The search-first candidates that survived (KCS step 1 enforces ≥1
+    /// hit on accept; this pins WHICH).
+    #[serde(default)]
+    pub confirmed_matches: Option<Vec<String>>,
+    /// The red-flag forcing function — required at Triage exit in EVERY
+    /// case (no bypass, no default): the worst case this case must not
+    /// miss, and whether it is ruled out.
+    #[serde(default)]
+    pub red_flag: RedFlagArtifact,
+}
+
+/// The red-flag forcing function (the diagnostic time-out). `ruled_out`
+/// is `true`, `false`, or the string `"partial"`; anything else is
+/// malformed and fails the gate by name, treated as OPEN (fail-closed).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct RedFlagArtifact {
+    /// The worst case this case must not miss.
+    #[serde(default)]
+    pub worst_case: String,
+    /// true | false | "partial" — see [`RedFlagArtifact`].
+    #[serde(default)]
+    pub ruled_out: serde_json::Value,
+    /// The named bases for a rule-out. A CLOSE needs at least one
+    /// verify-class basis (a kind-prefixed evidence citation).
+    #[serde(default)]
+    pub rule_out_basis: Vec<String>,
+    /// What missing this worst case would cost the requester.
+    #[serde(default)]
+    pub first_would_miss_impact: String,
+}
+
+/// The three-valued rule-out posture. Malformed input parses as absent
+/// (`None`) and is treated OPEN by every consumer — a red-flag can only
+/// over-escalate, never be silently suppressed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuledOutState {
+    Yes,
+    Partial,
+    No,
+}
+
+pub(crate) fn ruled_out_state(v: &serde_json::Value) -> Option<RuledOutState> {
+    if v == &serde_json::Value::Bool(true) {
+        Some(RuledOutState::Yes)
+    } else if v == &serde_json::Value::Bool(false) {
+        Some(RuledOutState::No)
+    } else if v.as_str() == Some("partial") {
+        Some(RuledOutState::Partial)
+    } else {
+        None
+    }
+}
+
+/// An open red-flag locks the loop escalate-first (the monotonic law).
+pub(crate) fn red_flag_is_open(rf: &RedFlagArtifact) -> bool {
+    !matches!(ruled_out_state(&rf.ruled_out), Some(RuledOutState::Yes))
+}
+
+/// A NEW record closes a flag only with a `true` rule-out AND at least
+/// one verify-class basis — a kind-prefixed evidence citation the same
+/// `kind_source` vocabulary holds hypothesis sources to. Free-text bases
+/// keep the flag open; the flag is never silently downgraded.
+pub(crate) fn red_flag_closes(rf: &RedFlagArtifact) -> bool {
+    ruled_out_state(&rf.ruled_out) == Some(RuledOutState::Yes)
+        && rf.rule_out_basis.iter().any(|b| kind_source(b).is_some())
+}
+
+/// The red-flag gate (the triage duty's forcing function), mirroring the
+/// intake gate's shape: every refusal names its law, and the record is
+/// required — there is no bypass and no default-open posture.
+fn red_flag_gate(a: &RedFlagArtifact) -> Vec<String> {
+    let mut errors = Vec::new();
+    if ruled_out_state(&a.ruled_out).is_none() {
+        errors.push(err(
+            "T12",
+            "red-flag ruled_out is not one of true | false | \"partial\" — \
+             fail-closed open",
+        ));
+    }
+    if ruled_out_state(&a.ruled_out) == Some(RuledOutState::Yes)
+        && a.rule_out_basis.iter().all(|b| b.trim().is_empty())
+    {
+        errors.push(err(
+            "T13",
+            "red-flag ruled out without a named rule-out basis — verify-class \
+             evidence required",
+        ));
+    }
+    if a.first_would_miss_impact.trim().is_empty() {
+        errors.push(err(
+            "T14",
+            "red-flag record carries no first-would-miss impact",
+        ));
+    }
+    errors
 }
 
 /// One hypothesis: a statement with a falsifiable prediction. Confirmation
@@ -448,6 +590,213 @@ pub(crate) struct CaptureArtifact {
 pub(crate) struct HandoffArtifact {
     #[serde(default)]
     pub capture: CaptureArtifact,
+    /// The closure-of-communication record (NAM 2015 step 6) — required
+    /// before the case may resolve (A8).
+    #[serde(default)]
+    pub closure: Option<ClosureArtifact>,
+    /// The return contract on a referral-type handoff (B1 when absent on
+    /// a non-urgent referral).
+    #[serde(default)]
+    pub back_referral: Option<BackReferralContract>,
+    /// A NEW red-flag record: the only way an open flag closes (a
+    /// verify-class rule-out at close time; never an in-place downgrade).
+    #[serde(default)]
+    pub red_flag: Option<RedFlagArtifact>,
+}
+
+/// The closure-of-communication record: a case that was not closed with
+/// its customer does not close. The machine may PROPOSE one (advisory,
+/// the escalation offer); the gate demands it before any resolution.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ClosureArtifact {
+    /// What was decided, in words the requester can hold.
+    #[serde(default)]
+    pub decision: String,
+    /// The principals the decision was communicated to (≥1 — absence is
+    /// the reflexive-closure failure, A9).
+    #[serde(default)]
+    pub communicated_to: Vec<String>,
+    /// The shared-decision flag; `false` demands the recorded reason why
+    /// no shared decision applies.
+    #[serde(default)]
+    pub shared_decision: bool,
+    #[serde(default)]
+    pub shared_decision_note: Option<String>,
+    /// The disclosed warning signs (≥1) — what should make the requester
+    /// come back.
+    #[serde(default)]
+    pub warning_signs: Vec<String>,
+    /// What to do when a warning sign fires.
+    #[serde(default)]
+    pub escalation_path: String,
+    /// The recorded follow-up (required on a telehealth closure).
+    #[serde(default)]
+    pub follow_up: String,
+    #[serde(default)]
+    pub modality: ClosureModality,
+    /// portal_note | verbal | phone | email | dash_ack (gate-checked).
+    #[serde(default)]
+    pub closure_means: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct ClosureModality {
+    #[serde(default)]
+    pub telehealth: bool,
+    /// Required when the closure is telehealth — aligns with Triage T6.
+    #[serde(default)]
+    pub modality_adequacy: Option<String>,
+}
+
+pub(crate) const A8_NO_CLOSURE: &str = "A8: no closure artifact — a case that was not \
+closed with its customer does not close";
+pub(crate) const A9_REFLEXIVE_CLOSURE: &str = "A9: reflexive closure without \
+communication record";
+
+/// The closure gate (NAM 2015 step 6 as a named-law gate). Telehealth is
+/// read from the artifact AND the case's triage disposition — whichever
+/// says telehealth, the closure owes the telehealth fields (fail-closed:
+/// the duty can only widen, never shrink).
+fn closure_gate(a: &ClosureArtifact, case: &GdlCase) -> Vec<String> {
+    let mut errors = Vec::new();
+    let case_telehealth = case
+        .triage
+        .as_ref()
+        .and_then(|t| t.care_setting.as_deref())
+        .is_some_and(|c| c == "virtual_primary");
+    let telehealth = a.modality.telehealth || case_telehealth;
+    if a.communicated_to.is_empty() {
+        errors.push(A9_REFLEXIVE_CLOSURE.to_string());
+    }
+    if a.warning_signs.is_empty() {
+        errors.push(err(
+            "A11",
+            "closure without warning signs — the customer has no come-back \
+             criteria",
+        ));
+    }
+    if !a.shared_decision
+        && a.shared_decision_note
+            .as_deref()
+            .is_none_or(|s| s.trim().is_empty())
+    {
+        errors.push(err(
+            "A12",
+            "shared_decision false without the recorded note",
+        ));
+    }
+    if !matches!(
+        a.closure_means.as_str(),
+        "portal_note" | "verbal" | "phone" | "email" | "dash_ack"
+    ) {
+        errors.push(err(
+            "A13",
+            &format!(
+                "closure_means '{}' is not one of portal_note | verbal | phone | \
+                 email | dash_ack",
+                a.closure_means
+            ),
+        ));
+    }
+    if telehealth && a.modality.modality_adequacy.is_none() {
+        errors.push(err(
+            "A14",
+            "telehealth closure without modality-adequacy disposition",
+        ));
+    }
+    if telehealth && a.follow_up.trim().is_empty() {
+        errors.push(err(
+            "A15",
+            "telehealth closure without follow-up — warning signs AND \
+             follow-up ride the virtual first line",
+        ));
+    }
+    errors
+}
+
+/// The return contract on a referral-type handoff (the gatekeeping
+/// continuity standard): a referral is a loan, not a transfer — the
+/// report comes back. Written by the referring stage as a typed artifact;
+/// the receiver releases it by populating the report and flipping the
+/// status to returned (an operator outcome — the machine never returns a
+/// contract on its own authority).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct BackReferralContract {
+    /// Who sent it (the GP analog).
+    #[serde(default)]
+    pub referrer: String,
+    /// Who receives it (the specialist analog).
+    #[serde(default)]
+    pub receiver: String,
+    /// The question the receiver must answer.
+    #[serde(default)]
+    pub clinical_question: String,
+    /// The report fields the receiver owes.
+    #[serde(default)]
+    pub required_report: Vec<String>,
+    /// Seconds; the default is 24h or the tighter P-class SLA.
+    #[serde(default)]
+    pub return_deadline_sla: Option<i64>,
+    /// open | returned | escalated.
+    #[serde(default)]
+    pub status: String,
+    /// The receiver's report — present and complete only on a release.
+    #[serde(default)]
+    pub report: Option<serde_json::Value>,
+}
+
+pub(crate) const B1_NO_CONTRACT: &str = "B1: referral handoff without a return contract";
+
+/// The default return window: 24h, or the tighter P-class SLA when the
+/// case carries one (the time-to-answer beats the return window).
+pub(crate) fn default_return_window(priority: &str) -> i64 {
+    sla_seconds(priority).map_or(86_400, |p| p.min(86_400))
+}
+
+impl BackReferralContract {
+    /// The attachment posture (B1 covers absence; this covers an
+    /// empty-bodied contract): both ends, the question, and the report
+    /// fields owed must be named.
+    pub(crate) fn attachment_errors(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        if self.referrer.trim().is_empty()
+            || self.receiver.trim().is_empty()
+            || self.clinical_question.trim().is_empty()
+            || self.required_report.iter().all(|r| r.trim().is_empty())
+        {
+            errors.push(err(
+                "B2",
+                "return contract missing referrer, receiver, clinical question, \
+                 or required report",
+            ));
+        }
+        errors
+    }
+
+    /// The receiver's release law: `status: returned` is honest only when
+    /// the report carries every required field, non-empty.
+    pub(crate) fn release_errors(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        if self.status == "returned" {
+            let report = self.report.as_ref().unwrap_or(&serde_json::Value::Null);
+            for field in &self.required_report {
+                let value = report
+                    .get(field)
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("");
+                if value.trim().is_empty() {
+                    errors.push(err(
+                        "B3",
+                        &format!(
+                            "return contract released without the required report \
+                             field `{field}`"
+                        ),
+                    ));
+                }
+            }
+        }
+        errors
+    }
 }
 
 // ── the case state (workflow_runs.state_json for kind='troubleshoot') ──────
@@ -477,6 +826,14 @@ pub(crate) struct GdlCase {
     pub verify: Option<VerifyArtifact>,
     #[serde(default)]
     pub capture: Option<CaptureArtifact>,
+    /// The closure record the Handoff artifact carried (additive; the
+    /// scoreboard's `closed_without_closure` reads it).
+    #[serde(default)]
+    pub closure: Option<ClosureArtifact>,
+    /// The return contract the Handoff artifact carried (additive; the
+    /// referral pipeline writes its row from it).
+    #[serde(default)]
+    pub back_referral: Option<BackReferralContract>,
 }
 
 impl GdlCase {
@@ -493,6 +850,8 @@ impl GdlCase {
             test_log: Vec::new(),
             verify: None,
             capture: None,
+            closure: None,
+            back_referral: None,
         }
     }
 
@@ -636,7 +995,10 @@ fn intake_gate(a: &IntakeArtifact) -> Vec<String> {
 
 /// Triage: P1–P4 classified, search-first honored (A2/KCS step 1 — accept
 /// requires ≥1 knowledge candidate; the differential IS the checklist, and
-/// a checklist without the answer escalates rather than guesses).
+/// a checklist without the answer escalates rather than guesses). The
+/// triage duty (ESI/MTS/ATA): an acuity classification, a disposition,
+/// the telehealth modality decision, and the red-flag forcing function —
+/// required at Triage exit in EVERY case, no bypass, no default.
 fn triage_gate(a: &TriageArtifact) -> Vec<String> {
     let mut errors = Vec::new();
     if !matches!(a.priority.as_str(), "P1" | "P2" | "P3" | "P4") {
@@ -661,7 +1023,189 @@ fn triage_gate(a: &TriageArtifact) -> Vec<String> {
             &format!("verdict '{}' not in accept|defer|unknown", a.verdict),
         ));
     }
+    // T4 — classify acuity before anything: a band, an ESI level, or both.
+    if a.acuity_band.is_none() && a.esi_level.is_none() {
+        errors.push(err(
+            "T4",
+            "no acuity band (RED..BLUE) nor ESI level — classify before anything",
+        ));
+    }
+    if let Some(b) = &a.acuity_band
+        && !matches!(b.as_str(), "RED" | "ORANGE" | "YELLOW" | "GREEN" | "BLUE")
+    {
+        errors.push(err(
+            "T15",
+            &format!(
+                "acuity_band '{b}' is not one of RED | ORANGE | YELLOW | GREEN | \
+                 BLUE"
+            ),
+        ));
+    }
+    if let Some(l) = a.esi_level
+        && !(1..=5).contains(&l)
+    {
+        errors.push(err("T16", &format!("esi_level {l} is not in 1..=5")));
+    }
+    if let Some(c) = &a.care_setting
+        && !matches!(
+            c.as_str(),
+            "self_care" | "virtual_primary" | "in_person_primary" | "refer" | "facility" | "ed"
+        )
+    {
+        errors.push(err(
+            "T18",
+            &format!(
+                "care_setting '{c}' is not one of self_care | virtual_primary | \
+                 in_person_primary | refer | facility | ed"
+            ),
+        ));
+    }
+    // T5 — an `ed` disposition without an open red-flag is the requester
+    // escalating themselves past triage; it refuses.
+    if a.care_setting.as_deref() == Some("ed") && !red_flag_is_open(&a.red_flag) {
+        errors.push(err(
+            "T5",
+            "ed disposition without an open red-flag is a self-escalation that \
+             evades triage",
+        ));
+    }
+    // T6 — a telehealth encounter must carry the modality-adequacy
+    // decision (ATA: convert when palpation/vitals/testing is needed).
+    if a.care_setting.as_deref() == Some("virtual_primary") && a.modality_adequacy.is_none() {
+        errors.push(err(
+            "T6",
+            "telehealth encounter without modality-adequacy disposition",
+        ));
+    }
+    if let Some(m) = &a.modality_adequacy
+        && !matches!(
+            m.as_str(),
+            "adequate" | "inadequate_in_person_required" | "unknown"
+        )
+    {
+        errors.push(err(
+            "T17",
+            &format!(
+                "modality_adequacy '{m}' is not one of adequate | \
+                 inadequate_in_person_required | unknown"
+            ),
+        ));
+    }
+    // The monotonic lock, disposition arm: an open red-flag admits only
+    // escalation-bearing dispositions (refer | facility | ed) — never
+    // toward self-care or routine closure.
+    if red_flag_is_open(&a.red_flag)
+        && !matches!(
+            a.care_setting.as_deref(),
+            Some("refer") | Some("facility") | Some("ed")
+        )
+    {
+        errors.push(err(
+            "T10",
+            "an open red-flag locks the loop escalate-first — this disposition \
+             is not reachable until a verify-class rule-out closes the flag",
+        ));
+    }
+    // T8 — the record itself: no bypass, no default. An absent record and
+    // a record naming no worst case both refuse here.
+    if a.red_flag.worst_case.trim().is_empty() {
+        errors.push(err(
+            "T8",
+            "no red-flag record — the worst-case question must be answered \
+             before Triage exits",
+        ));
+    }
+    errors.extend(red_flag_gate(&a.red_flag));
     errors
+}
+
+// ── the must-miss catalog (T7) ─────────────────────────────────────────────
+
+/// The per-domain must-miss catalog, shipped as data and embedded at
+/// compile time. Parse failure is fail-closed: triage refuses with a
+/// named error, never default-open.
+const REDFLAG_CATALOG_JSON: &str = include_str!("redflags_domains.json");
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct RedflagCatalog {
+    domains: std::collections::BTreeMap<String, RedflagDomainCatalog>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct RedflagDomainCatalog {
+    entries: Vec<RedflagCatalogEntry>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct RedflagCatalogEntry {
+    name: String,
+    keywords: Vec<String>,
+}
+
+fn parse_redflag_catalog(json: &str) -> Result<RedflagCatalog, String> {
+    serde_json::from_str(json).map_err(|e| e.to_string())
+}
+
+/// T7 — the domain's worst-case catalog: a case whose ticket matches a
+/// catalog entry's keyword must either name that worst case in its
+/// red-flag record or carry a named rule-out basis. A match with neither
+/// is the named failure. Unknown domains fall back to the generic
+/// default; an unparsable catalog refuses fail-closed (T9). The `json`
+/// parameter is the catalog source (the shipped bytes in production; the
+/// test seam proves the fail-closed branch).
+fn redflag_catalog_errors_in(
+    catalog_json: &str,
+    domain: &str,
+    ticket: &str,
+    rf: &RedFlagArtifact,
+) -> Vec<String> {
+    let catalog = match parse_redflag_catalog(catalog_json) {
+        Ok(c) => c,
+        Err(e) => {
+            return vec![err(
+                "T9",
+                &format!(
+                    "domain worst-case catalog failed to parse — triage refuses \
+                     fail-closed ({e})"
+                ),
+            )];
+        }
+    };
+    let mut errors = Vec::new();
+    let Some(table) = catalog
+        .domains
+        .get(domain)
+        .or_else(|| catalog.domains.get("default"))
+    else {
+        return errors;
+    };
+    let ticket_lower = ticket.to_lowercase();
+    let worst_lower = rf.worst_case.to_lowercase();
+    let has_basis = rf.rule_out_basis.iter().any(|b| !b.trim().is_empty());
+    for entry in &table.entries {
+        let matched = entry
+            .keywords
+            .iter()
+            .any(|k| !k.trim().is_empty() && ticket_lower.contains(&k.to_lowercase()));
+        if !matched {
+            continue;
+        }
+        let named = !worst_lower.is_empty() && worst_lower.contains(&entry.name.to_lowercase());
+        if !named && !has_basis {
+            errors.push(err(
+                "T7",
+                "domain worst-case catalog match without named rule-out",
+            ));
+        }
+    }
+    errors
+}
+
+fn redflag_catalog_errors(domain: &str, ticket: &str, rf: &RedFlagArtifact) -> Vec<String> {
+    redflag_catalog_errors_in(REDFLAG_CATALOG_JSON, domain, ticket, rf)
 }
 
 /// A hypothesis source is `{kind-prefix}:{locator}` over the closed
@@ -1268,6 +1812,8 @@ pub(crate) fn apply(case: &mut GdlCase, phase: GdlPhase, artifact_json: &str) {
         GdlPhase::Handoff => {
             if let Ok(a) = serde_json::from_str::<HandoffArtifact>(artifact_json) {
                 case.capture = Some(a.capture);
+                case.closure = a.closure;
+                case.back_referral = a.back_referral;
             }
         }
     }
@@ -1392,7 +1938,11 @@ pub(crate) fn phase_instruction_with_law(
         }
         GdlPhase::Triage => {
             "Emit ONE JSON object: \
-{\"priority\":\"P1..P4\",\"stabilized\":bool,\"search_hits\":[\"playbook ids\"],\"verdict\":\"accept|defer|unknown\"}"
+{\"priority\":\"P1..P4\",\"stabilized\":bool,\"search_hits\":[\"playbook ids\"],\"verdict\":\"accept|defer|unknown\",\
+\"acuity_band\":\"RED|ORANGE|YELLOW|GREEN|BLUE\",\"esi_level\":1,\"care_setting\":\"self_care|virtual_primary|in_person_primary|refer|facility|ed\",\
+\"modality_adequacy\":\"adequate|inadequate_in_person_required|unknown\",\"red_flag\":{\"worst_case\":\"..\",\"ruled_out\":false|true|\"partial\",\"rule_out_basis\":[\"..\"],\"first_would_miss_impact\":\"..\"}} — \
+acuity band OR ESI level is required; modality_adequacy is required when the \
+encounter is telehealth; the red-flag record is always required"
         }
         GdlPhase::Hypothesize => {
             "Emit ONE JSON object: \
@@ -1418,7 +1968,10 @@ pub(crate) fn phase_instruction_with_law(
         }
         GdlPhase::Handoff => {
             "Emit ONE JSON object: \
-{\"capture\":{\"resolution\":\"symptom -> confirmed root cause -> fix -> verify\",\"bundle_hash\":\"..\"}}"
+{\"capture\":{\"resolution\":\"symptom -> confirmed root cause -> fix -> verify\",\"bundle_hash\":\"..\"},\
+\"closure\":{\"decision\":\"..\",\"communicated_to\":[\"principal\"],\"shared_decision\":true,\"warning_signs\":[\"..\"],\"escalation_path\":\"..\",\"follow_up\":\"..\",\"modality\":{\"telehealth\":false},\"closure_means\":\"portal_note|verbal|phone|email|dash_ack\"}} — \
+no case resolves without a law-clean closure artifact; a referral-type handoff \
+(refer/facility) also carries its return contract {\"back_referral\":{\"referrer\":\"..\",\"receiver\":\"..\",\"clinical_question\":\"..\",\"required_report\":[\"finding\",\"treatment_plan\",\"follow_up\"]}}"
         }
     };
     let mut parts = vec![
@@ -2026,19 +2579,27 @@ impl GdlDriver {
 
     /// The typed SLA-arming row at the Triage pass: the pinned P-class
     /// window added to the pass's integer epoch — the clock, the row, and
-    /// the envelope value all come from ONE clock read.
+    /// the envelope value all come from ONE clock read. The acuity-band
+    /// monitor rides additively (the MTS window and the advertised
+    /// tighter-of target); the P-class SLA stays authoritative.
+    #[allow(clippy::too_many_arguments)]
     async fn record_sla_armed_row(
         &self,
         run_id: i64,
         owner: &str,
         attempt: u32,
         priority: &str,
+        acuity_band: Option<&str>,
         now: i64,
         deadline: i64,
     ) -> Result<(), LoopError> {
+        let acuity_window = acuity_band.and_then(acuity_sla);
         let payload = serde_json::json!({
             "priority": priority,
             "sla_deadline_epoch": deadline,
+            "acuity_band": acuity_band,
+            "acuity_sla_seconds": acuity_window,
+            "advertised_sla_seconds": advertised_sla(priority, acuity_band),
         })
         .to_string();
         let key = format!("run{run_id}:control:sla_armed:{owner}:{attempt}");
@@ -2326,6 +2887,58 @@ impl GdlDriver {
                 "handoff reinjection recorded",
             );
 
+            // C3 — the return contract: the referral handoff carries its
+            // return obligation IN THIS transaction (handoff rows +
+            // contract row + audit row commit together; a rollback removes
+            // both — no orphan obligations). The contract is the referring
+            // stage's typed artifact; the machine never invents its
+            // content. The closure, when the case carries one, rides the
+            // reinjection packet as the machine's ADVISORY proposal — the
+            // human owns the closure decision (loop exit 2).
+            if let Some(contract) = &case.back_referral {
+                let priority = case
+                    .triage
+                    .as_ref()
+                    .map(|t| t.priority.as_str())
+                    .unwrap_or("");
+                write_back_referral_row(tx.tx(), run_id, &owner, contract, priority, now)?;
+            }
+
+            tx.commit().map_err(checkpoint::persist_error)?;
+            Ok::<_, LoopError>(())
+        })
+        .await
+        .map_err(checkpoint::persist_error)??;
+        Ok(())
+    }
+
+    /// The resolved-referral path: a referral-type case that RESOLVED
+    /// still owes its return contract — the row IS the obligation (it
+    /// surfaces on the open-contracts count until the receiver's report
+    /// comes back). One WorkflowTx: contract row + audit row; committed
+    /// only after the resolution itself committed.
+    async fn record_resolved_back_referral_row(
+        &self,
+        run_id: i64,
+        owner: &str,
+        case: &GdlCase,
+    ) -> Result<(), LoopError> {
+        let Some(contract) = case.back_referral.clone() else {
+            return Ok(());
+        };
+        let priority = case
+            .triage
+            .as_ref()
+            .map(|t| t.priority.clone())
+            .unwrap_or_default();
+        let owner = owner.to_string();
+        let pool = self.pool.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut conn = pool.get().map_err(checkpoint::persist_error)?;
+            let mut tx =
+                super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
+            let now = chrono::Utc::now().timestamp();
+            write_back_referral_row(tx.tx(), run_id, &owner, &contract, &priority, now)?;
             tx.commit().map_err(checkpoint::persist_error)?;
             Ok::<_, LoopError>(())
         })
@@ -2532,6 +3145,23 @@ impl GdlDriver {
                             gate = Gate::Fail(errors);
                         }
                     }
+                    if matches!(gate, Gate::Pass) && phase == GdlPhase::Triage {
+                        // T7 — the domain's must-miss catalog: a ticket
+                        // matching a catalog entry must name that worst
+                        // case or carry a named rule-out. A post-gate
+                        // additive law check (the Act-authority pattern):
+                        // the case domain lives on the checkpoint, not in
+                        // the case, so the pure gate cannot see it.
+                        if let Ok(t) = serde_json::from_str::<TriageArtifact>(
+                            &artifact.clone().unwrap_or_default(),
+                        ) {
+                            let catalog_errors =
+                                redflag_catalog_errors(cp.case_domain(), &case.ticket, &t.red_flag);
+                            if !catalog_errors.is_empty() {
+                                gate = Gate::Fail(catalog_errors);
+                            }
+                        }
+                    }
                     if matches!(gate, Gate::Pass) && phase == GdlPhase::Handoff {
                         // The contradiction settlement: the reducer is the
                         // only detector, and a Pass at Handoff may not close
@@ -2551,6 +3181,68 @@ impl GdlDriver {
                                 "open contradictions must be dispositioned via \
                                  resolve_contradiction before resolution",
                             )]);
+                        }
+                    }
+                    if matches!(gate, Gate::Pass) && phase == GdlPhase::Handoff {
+                        // The resolution duties — the single close seam.
+                        // Each refusal rides the bounded retry; exhaustion
+                        // routes, so a case that cannot close honestly
+                        // lands with a human and never resolves silently.
+                        if let Ok(h) = serde_json::from_str::<HandoffArtifact>(
+                            artifact.as_deref().unwrap_or_default(),
+                        ) {
+                            // (1) The monotonic lock: an open red-flag
+                            // never reaches close. Only a NEW record with
+                            // a verify-class rule-out closes the flag.
+                            let flag_open = case
+                                .triage
+                                .as_ref()
+                                .map(|t| red_flag_is_open(&t.red_flag))
+                                .unwrap_or(false);
+                            let closed_by_new_record =
+                                h.red_flag.as_ref().is_some_and(red_flag_closes);
+                            if flag_open && !closed_by_new_record {
+                                gate = Gate::Fail(vec![err(
+                                    "T10",
+                                    "an open red-flag locks the loop \
+                                     escalate-first — this disposition is not \
+                                     reachable until a verify-class rule-out \
+                                     closes the flag",
+                                )]);
+                            }
+                            // (2) The closure duty (A8/A9): a case that
+                            // was not closed with its customer does not
+                            // close.
+                            if matches!(gate, Gate::Pass) {
+                                match &h.closure {
+                                    None => {
+                                        gate = Gate::Fail(vec![A8_NO_CLOSURE.to_string()]);
+                                    }
+                                    Some(c) => {
+                                        let errors = closure_gate(c, &case);
+                                        if !errors.is_empty() {
+                                            gate = Gate::Fail(errors);
+                                        }
+                                    }
+                                }
+                            }
+                            // (3) The return contract (B1): a non-urgent
+                            // referral-type handoff carries its return
+                            // obligation; an urgent path NEVER waits on
+                            // it (red_flag_handoff_never_blocks_on_back_referral).
+                            if matches!(gate, Gate::Pass) {
+                                let care =
+                                    case.triage.as_ref().and_then(|t| t.care_setting.as_deref());
+                                let referral = matches!(care, Some("refer") | Some("facility"));
+                                let urgent = case.triage.as_ref().is_some_and(|t| {
+                                    red_flag_is_open(&t.red_flag)
+                                        || t.care_setting.as_deref() == Some("ed")
+                                        || matches!(t.priority.as_str(), "P1" | "P2")
+                                });
+                                if referral && !urgent && h.back_referral.is_none() {
+                                    gate = Gate::Fail(vec![B1_NO_CONTRACT.to_string()]);
+                                }
+                            }
                         }
                     }
                     match gate {
@@ -2785,6 +3477,17 @@ impl GdlDriver {
             })
             .await
             .map_err(persist_error)??;
+            // C3 — a referral-type case that RESOLVED still owes its
+            // return contract; the row is the obligation. Written only
+            // after the resolution committed, so a rolled-back case can
+            // never leave an orphan contract behind.
+            if matches!(cp.terminal, Some(GdlOutcome::Resolved { .. })) {
+                let care = case.triage.as_ref().and_then(|t| t.care_setting.clone());
+                if matches!(care.as_deref(), Some("refer") | Some("facility")) {
+                    self.record_resolved_back_referral_row(run_id, &owner, &case)
+                        .await?;
+                }
+            }
             // The typed SLA-arming row: recorded only after the arming pass
             // has committed. The row IS the durable clock — append-only,
             // replay-exact — because the checkpoint state-derivation law
@@ -2797,8 +3500,17 @@ impl GdlDriver {
                 && let Some(window) = sla_seconds(&t.priority)
             {
                 let now = chrono::Utc::now().timestamp();
-                self.record_sla_armed_row(run_id, &owner, attempt, &t.priority, now, now + window)
-                    .await?;
+                let acuity = t.acuity_band.clone();
+                self.record_sla_armed_row(
+                    run_id,
+                    &owner,
+                    attempt,
+                    &t.priority,
+                    acuity.as_deref(),
+                    now,
+                    now + window,
+                )
+                .await?;
             }
             completed += 1;
             if cp.terminal.is_none() && pause_after.is_some_and(|limit| completed >= limit) {
@@ -2914,6 +3626,252 @@ pub(crate) fn write_handoff_transition(
     Ok(())
 }
 
+/// The referral return contract rides its own additive session-log kind;
+/// every state row repeats the contract's first-row key so the sweep and
+/// the dashboards can group the states deterministically.
+const BACK_REFERRAL_ROW_KIND: &str = "back_referral";
+const BACK_REFERRAL_HITL_KIND: &str = "control:back_referral_hitl";
+
+/// Write the return-contract row + its audit INSIDE the caller's
+/// transaction — the handoff row and the contract row commit together or
+/// not at all (rollback removes both: no orphan obligations). The
+/// deadline is armed from the caller-owned clock: the contract's own
+/// window, else 24h or the tighter P-class SLA.
+pub(crate) fn write_back_referral_row(
+    tx: &mut rusqlite::Transaction<'_>,
+    run_id: i64,
+    owner: &str,
+    contract: &BackReferralContract,
+    priority: &str,
+    now: i64,
+) -> Result<(), LoopError> {
+    let window = contract
+        .return_deadline_sla
+        .unwrap_or_else(|| default_return_window(priority));
+    let key = format!("run{run_id}:back_referral:{owner}");
+    let payload = serde_json::json!({
+        "contract_key": key,
+        "status": if contract.status.is_empty() { "open" } else { contract.status.as_str() },
+        "deadline_epoch": now + window,
+        "contract": contract,
+    })
+    .to_string();
+    session_log::append(tx, run_id, BACK_REFERRAL_ROW_KIND, &payload, &key, now)
+        .map_err(checkpoint::persist_error)?;
+    super::audit_write(
+        tx,
+        run_id,
+        "back_referral",
+        AuditStatus::Ok,
+        "return contract attached — the referral handoff carries its return \
+         obligation",
+    );
+    Ok(())
+}
+
+/// The receiver's release: an OPERATOR outcome. The machine refuses
+/// without a decision reference (B4 — the same HITL law the handoff
+/// lifecycle holds), refuses a report that does not carry every required
+/// field (B3), and attaches the `late` flag when the receipt lands past
+/// the deadline. Must be called inside the caller's transaction.
+pub(crate) fn write_back_referral_return(
+    tx: &mut rusqlite::Transaction<'_>,
+    run_id: i64,
+    contract_key: &str,
+    report: serde_json::Value,
+    decision_ref: Option<&str>,
+    now: i64,
+) -> Result<(), LoopError> {
+    let Some(decision_ref) = decision_ref.filter(|d| !d.trim().is_empty()) else {
+        return Err(checkpoint::persist_error(
+            "B4: a return contract decision requires an operator decision \
+             reference — the machine never returns or escalates a contract on \
+             its own authority",
+        ));
+    };
+    let latest = latest_back_referral_row(tx, run_id, contract_key)?
+        .ok_or_else(|| checkpoint::persist_error("back-referral contract absent"))?;
+    let (deadline, mut contract): (i64, BackReferralContract) = {
+        let value: serde_json::Value =
+            serde_json::from_str(&latest).map_err(checkpoint::persist_error)?;
+        let contract: BackReferralContract =
+            serde_json::from_value(value["contract"].clone()).map_err(checkpoint::persist_error)?;
+        (
+            value["deadline_epoch"].as_i64().unwrap_or_default(),
+            contract,
+        )
+    };
+    contract.report = Some(report);
+    contract.status = "returned".into();
+    let release_errors = contract.release_errors();
+    if !release_errors.is_empty() {
+        return Err(checkpoint::persist_error(release_errors.join("; ")));
+    }
+    let late = now > deadline;
+    let payload = serde_json::json!({
+        "contract_key": contract_key,
+        "status": "returned",
+        "deadline_epoch": deadline,
+        "late": late,
+        "decision_ref": decision_ref,
+        "contract": contract,
+    })
+    .to_string();
+    session_log::append(
+        tx,
+        run_id,
+        BACK_REFERRAL_ROW_KIND,
+        &payload,
+        &format!("{contract_key}:returned"),
+        now,
+    )
+    .map_err(checkpoint::persist_error)?;
+    super::audit_write(
+        tx,
+        run_id,
+        "back_referral",
+        AuditStatus::Ok,
+        &format!(
+            "return contract released by operator decision {decision_ref}{}",
+            if late { " — LATE receipt" } else { "" }
+        ),
+    );
+    Ok(())
+}
+
+/// The latest payload for a contract (rows ordered by seq; the contract's
+/// rows all repeat its `contract_key`).
+fn latest_back_referral_row(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: i64,
+    contract_key: &str,
+) -> Result<Option<String>, LoopError> {
+    use rusqlite::OptionalExtension;
+    tx.query_row(
+        "SELECT payload_json FROM agent_session_events \
+         WHERE run_id = ?1 AND kind = ?2 AND payload_json LIKE ?3 \
+         ORDER BY seq DESC LIMIT 1",
+        rusqlite::params![
+            run_id,
+            BACK_REFERRAL_ROW_KIND,
+            format!("%\"{contract_key}\"%")
+        ],
+        |r| r.get::<_, String>(0),
+    )
+    .optional()
+    .map_err(checkpoint::persist_error)
+}
+
+/// The overdue discipline (monotonic, fail-closed, deterministic): every
+/// contract still `open` past its deadline flips `escalated`, lands a
+/// HITL-queue task, and records the justification on the audit chain.
+/// The machine never auto-resolves a dead contract — only the operator
+/// return path (B4) moves a contract to `returned`. Idempotent: the
+/// escalation row's key is derived from the contract key, so a re-sweep
+/// is a no-op receipt. Returns the number of contracts escalated.
+pub(crate) fn escalate_overdue_return_contracts(
+    conn: &mut rusqlite::Connection,
+    now: i64,
+) -> Result<usize, LoopError> {
+    let mut tx = super::tx::WorkflowTx::begin(conn).map_err(checkpoint::persist_error)?;
+    let rows: Vec<(i64, i64, String)> = {
+        let mut stmt = tx
+            .tx()
+            .prepare(
+                "SELECT run_id, seq, payload_json FROM agent_session_events \
+                 WHERE kind = ?1 ORDER BY seq",
+            )
+            .map_err(checkpoint::persist_error)?;
+        stmt.query_map([BACK_REFERRAL_ROW_KIND], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .map(|it| it.filter_map(Result::ok).collect())
+        .map_err(checkpoint::persist_error)?
+    };
+    // Latest state per (run, contract), in first-seen order.
+    let mut order: Vec<(i64, String)> = Vec::new();
+    let mut latest: std::collections::HashMap<(i64, String), serde_json::Value> =
+        std::collections::HashMap::new();
+    for (run_id, _, payload) in rows {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&payload) else {
+            return Err(checkpoint::persist_error(
+                "corrupt back-referral row — the sweep refuses fail-closed",
+            ));
+        };
+        let Some(key) = value["contract_key"].as_str().map(str::to_string) else {
+            return Err(checkpoint::persist_error(
+                "back-referral row without a contract key — the sweep refuses \
+                 fail-closed",
+            ));
+        };
+        let group = (run_id, key);
+        if !latest.contains_key(&group) {
+            order.push(group.clone());
+        }
+        latest.insert(group, value);
+    }
+    let mut escalated = 0usize;
+    for group in &order {
+        let Some(value) = latest.get(group) else {
+            continue;
+        };
+        if value["status"].as_str().unwrap_or("") != "open"
+            || value["deadline_epoch"].as_i64().unwrap_or(i64::MAX) >= now
+        {
+            continue;
+        }
+        let (run_id, key) = group;
+        let justification = "return deadline exhausted — escalated to the HITL \
+                            queue; the machine never auto-resolves a dead \
+                            return contract";
+        let payload = serde_json::json!({
+            "contract_key": key,
+            "status": "escalated",
+            "deadline_epoch": value["deadline_epoch"],
+            "justification": justification,
+            // The contract rides forward so the operator's release path
+            // (which reads the latest row) still holds the required
+            // report fields.
+            "contract": value["contract"],
+        })
+        .to_string();
+        session_log::append(
+            tx.tx(),
+            *run_id,
+            BACK_REFERRAL_ROW_KIND,
+            &payload,
+            &format!("{key}:escalated"),
+            now,
+        )
+        .map_err(checkpoint::persist_error)?;
+        session_log::append(
+            tx.tx(),
+            *run_id,
+            BACK_REFERRAL_HITL_KIND,
+            &serde_json::json!({
+                "contract_key": key,
+                "task": "decide the dead return contract (re-send, cancel with \
+                        justification, or escalate)",
+                "justification": justification,
+            })
+            .to_string(),
+            &format!("{key}:hitl_task"),
+            now,
+        )
+        .map_err(checkpoint::persist_error)?;
+        super::audit_write(
+            tx.tx(),
+            *run_id,
+            "back_referral",
+            AuditStatus::Ok,
+            justification,
+        );
+        escalated += 1;
+    }
+    tx.commit().map_err(checkpoint::persist_error)?;
+    Ok(escalated)
+}
+
 /// Replay the run's tree rows into the SDK projection. Rows under other
 /// kinds are ignored (the projection consumes only its own kind); a
 /// malformed tree row refuses by name — never a default entry, never a
@@ -2970,6 +3928,9 @@ pub(crate) fn build_handoff_reinjection(
         "open_question": facts.pending_question,
         "branch_context": branch_context,
         "recorded_at": now,
+        // The machine's ADVISORY closure proposal — the human owns the
+        // closure decision; nothing here closes anything.
+        "closure_proposed": case.closure,
     })
 }
 
@@ -3111,14 +4072,14 @@ mod tests {
     // The happy-path per-phase artifacts — the JSON contracts the phase
     // instructions name, one scripted model turn per phase.
     const INTAKE_JSON: &str = r#"{"is_not":{"what":{"is":"PERC H740P write-cache write-through","is_not":"read cache"},"where":{"is":"node-042 RAID-10 VDs","is_not":"node-041"},"when":{"is":"since 03:12 during rebuild","is_not":"before 03:12"},"extent":{"is":"VD 5 only","is_not":"all VDs"}},"telemetry_refs":["tsr://node-042","sel://events"],"what_changed":"fw 2.10 flashed last week","known_good":"node-041 same fw"}"#;
-    const TRIAGE_JSON: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["P-STORAGE-0104"],"verdict":"accept"}"#;
+    const TRIAGE_JSON: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["P-STORAGE-0104"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"in_person_primary","red_flag":{"worst_case":"battery-induced data corruption during rebuild","ruled_out":true,"rule_out_basis":["test:racadm battery state reports Failed"],"first_would_miss_impact":"write-cache loss corrupts VD 5 mid-rebuild"}}"#;
     const HYPOTHESIZE_JSON: &str = r#"{"hypotheses":[{"statement":"PERC battery dead","prediction":"racadm battery state reports Failed","sources":["actual:SEL event 0x42","test:racadm get storageservices.battery"],"confidence":0.7}]}"#;
     const PLAN_JSON: &str = r#"{"steps":[{"order":1,"kind":"check","skill_gate":"L1","description":"query battery state","command":"racadm get storageservices.battery","expected":"Ready","fail_action":2,"invasiveness":0,"justification":null},{"order":2,"kind":"action","skill_gate":"L2","description":"replace battery ring 3","command":"hw replace battery","expected":"battery Ready","fail_action":null,"invasiveness":2,"justification":null}],"verify_step":{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h"},"dead_end":{"escalate_to":"eng-storage","required_evidence":["TSR","test log"]}}"#;
     const ACT_JSON: &str = r#"{"rows":[{"order":1,"kind":"check","description":"query battery state","playbook_ref":"P-STORAGE-0104","variables":["battery state"],"expected":"Ready","actual":"Failed","verdict":"fail","evidence_ref":"TSR p.12","dtfvc":{"diagnose":"battery fault hypothesis","test":"racadm query","fix":null,"verify":"battery state readback matches Failed","capture":null},"invasiveness":0,"justification":null},{"order":2,"kind":"action","description":"replace battery ring 3","playbook_ref":"P-STORAGE-0104","variables":["battery"],"expected":"battery Ready","actual":"Ready","verdict":"pass","evidence_ref":"TSR p.13","dtfvc":{"diagnose":"battery fault confirmed by row 1","test":"racadm query post-replace","fix":"replaced battery ring 3","verify":"rebuild rate 14%/h","capture":"battery replacement row"},"invasiveness":2,"justification":null}],"complete":true}"#;
     const VERIFY_JSON: &str = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass":true,"stability_window_min":15,"negative_check":true}"#;
     const RECHECK_JSON: &str =
         r#"{"contradicted":false,"reason":"no falsifier in the captured evidence"}"#;
-    const HANDOFF_JSON: &str = r#"{"capture":{"resolution":"write-through during rebuild -> dead PERC battery -> replaced ring 3 -> verified 14%/h","bundle_hash":"h0"}}"#;
+    const HANDOFF_JSON: &str = r#"{"capture":{"resolution":"write-through during rebuild -> dead PERC battery -> replaced ring 3 -> verified 14%/h","bundle_hash":"h0"},"closure":{"decision":"dead PERC battery replaced; rebuild re-verified","communicated_to":["customer:acme"],"shared_decision":true,"warning_signs":["rebuild rate drops again","battery warning reappears in SEL"],"escalation_path":"reopen the ticket or call L2","follow_up":"re-verify rebuild rate within 48h","modality":{"telehealth":false},"closure_means":"portal_note"}}"#;
 
     fn happy_script() -> Vec<Vec<crate::agentloop::provider::StreamEvent>> {
         vec![
@@ -4311,7 +5272,7 @@ mod tests {
         let runtime = rt();
         let mut script = happy_script();
         script[1] = scripted_text(
-            r#"{"priority":"P1","stabilized":true,"search_hits":["P-STORAGE-0104"],"verdict":"accept"}"#,
+            r#"{"priority":"P1","stabilized":true,"search_hits":["P-STORAGE-0104"],"verdict":"accept","acuity_band":"ORANGE","esi_level":2,"care_setting":"in_person_primary","red_flag":{"worst_case":"battery-induced data corruption during rebuild","ruled_out":true,"rule_out_basis":["test:racadm battery state reports Failed"],"first_would_miss_impact":"write-cache loss corrupts VD 5"}}"#,
         );
         let f = fixture(script);
         let outcome = runtime
@@ -6059,6 +7020,12 @@ mod tests {
         let intake_normalized =
             serde_json::to_string(&serde_json::from_str::<IntakeArtifact>(INTAKE_JSON).unwrap())
                 .unwrap();
+        // Same normalization for Triage: the canonical re-serialization
+        // (with the additive fields' nulls) is what the receipt law
+        // compares against.
+        let triage_normalized =
+            serde_json::to_string(&serde_json::from_str::<TriageArtifact>(TRIAGE_JSON).unwrap())
+                .unwrap();
         {
             let mut conn = pool.get().unwrap();
             let mut cp = checkpoint::admit(&mut conn, 1, "t", &policy, "fixture").unwrap();
@@ -6067,7 +7034,7 @@ mod tests {
             let plan = serde_json::to_string(&plan).unwrap();
             for (phase, artifact) in [
                 (GdlPhase::Intake, intake_normalized.as_str()),
-                (GdlPhase::Triage, TRIAGE_JSON),
+                (GdlPhase::Triage, triage_normalized.as_str()),
                 (GdlPhase::Hypothesize, HYPOTHESIZE_JSON),
                 (GdlPhase::Plan, plan.as_str()),
             ] {
@@ -6372,7 +7339,954 @@ mod tests {
             "no capture outcome audit on an escalated case"
         );
     }
-    // ---- the session tree + the handoff pipeline ----
+    // ---- the R18 Diagnostic Closure battery (Triage duty / Closure / Contract) ----
+
+    const TRIAGE_REFER_CLOSED_JSON: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["P-STORAGE-0104"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"refer","red_flag":{"worst_case":"battery-induced data corruption during rebuild","ruled_out":true,"rule_out_basis":["test:racadm battery state reports Failed"],"first_would_miss_impact":"write-cache loss corrupts VD 5"}}"#;
+    const HANDOFF_REFER_CONTRACT_JSON: &str = r#"{"capture":{"resolution":"write-through during rebuild -> dead PERC battery -> replaced ring 3 -> verified 14%/h","bundle_hash":"h0"},"closure":{"decision":"referred to eng-storage with the full bundle","communicated_to":["customer:acme"],"shared_decision":true,"warning_signs":["rebuild rate drops again"],"escalation_path":"reopen the ticket","follow_up":"report-back expected within the return window","modality":{"telehealth":false},"closure_means":"portal_note"},"back_referral":{"referrer":"l1:steward-dpc","receiver":"eng-storage","clinical_question":"confirm the battery is the root cause of the write-through","required_report":["finding","treatment_plan","follow_up"],"status":"open"}}"#;
+
+    fn triage_from(json: serde_json::Value) -> TriageArtifact {
+        serde_json::from_value(json).unwrap()
+    }
+
+    fn rf_from(json: serde_json::Value) -> RedFlagArtifact {
+        serde_json::from_value(json).unwrap()
+    }
+
+    fn closed_flag() -> serde_json::Value {
+        serde_json::json!({
+            "worst_case": "battery-induced data corruption",
+            "ruled_out": true,
+            "rule_out_basis": ["test:racadm battery state reports Failed"],
+            "first_would_miss_impact": "write-cache loss mid-rebuild",
+        })
+    }
+
+    fn open_flag() -> serde_json::Value {
+        serde_json::json!({
+            "worst_case": "battery-induced data corruption",
+            "ruled_out": false,
+            "rule_out_basis": [],
+            "first_would_miss_impact": "write-cache loss mid-rebuild",
+        })
+    }
+
+    #[test]
+    fn triage_gate_admits_acuity_and_esi_combinations() {
+        // Band only, level only, both: admitted. Neither: T4. Malformed
+        // values: named refusals (closed vocabularies, fail-closed).
+        for acuity in [Some(("GREEN", 4u8)), Some(("RED", 1)), None] {
+            let mut t = serde_json::json!({
+                "priority": "P3", "stabilized": false,
+                "search_hits": ["P"], "verdict": "accept",
+                "care_setting": "in_person_primary", "red_flag": closed_flag(),
+            });
+            if let Some((band, level)) = acuity {
+                t["acuity_band"] = serde_json::json!(band);
+                t["esi_level"] = serde_json::json!(level);
+            }
+            let errors = triage_gate(&triage_from(t));
+            assert_eq!(
+                errors.iter().any(|e| e.starts_with("T4")),
+                acuity.is_none(),
+                "T4 exactly when neither band nor level is present: {errors:?}"
+            );
+        }
+        let bad_band = triage_gate(&triage_from(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+            "verdict": "accept", "acuity_band": "PURPLE",
+            "care_setting": "in_person_primary", "red_flag": closed_flag(),
+        })));
+        assert!(
+            bad_band.iter().any(|e| e.starts_with("T15:")),
+            "{bad_band:?}"
+        );
+        let bad_level = triage_gate(&triage_from(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+            "verdict": "accept", "esi_level": 6,
+            "care_setting": "in_person_primary", "red_flag": closed_flag(),
+        })));
+        assert!(
+            bad_level.iter().any(|e| e.starts_with("T16:")),
+            "{bad_level:?}"
+        );
+        let bad_care = triage_gate(&triage_from(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+            "verdict": "accept", "esi_level": 3, "care_setting": "home",
+            "red_flag": closed_flag(),
+        })));
+        assert!(
+            bad_care.iter().any(|e| e.starts_with("T18:")),
+            "{bad_care:?}"
+        );
+    }
+
+    #[test]
+    fn ed_disposition_requires_open_red_flag_fails_closed() {
+        // ed WITH an open flag is the one escalation-bearing path the
+        // law admits; ed WITHOUT one is the named self-escalation.
+        let with_open = triage_gate(&triage_from(serde_json::json!({
+            "priority": "P1", "stabilized": false, "search_hits": [],
+            "verdict": "accept", "esi_level": 1, "care_setting": "ed",
+            "red_flag": open_flag(),
+        })));
+        assert!(
+            !with_open.iter().any(|e| e.starts_with("T5")),
+            "ed under an open flag is lawful: {with_open:?}"
+        );
+        let without = triage_gate(&triage_from(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+            "verdict": "accept", "esi_level": 4, "care_setting": "ed",
+            "red_flag": closed_flag(),
+        })));
+        assert!(
+            without.iter().any(|e| e.starts_with("T5:")),
+            "ed without an open flag refuses by name: {without:?}"
+        );
+    }
+
+    #[test]
+    fn telehealth_without_modality_adequacy_is_a_named_gate_error() {
+        let missing = triage_gate(&triage_from(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+            "verdict": "accept", "esi_level": 4,
+            "care_setting": "virtual_primary", "red_flag": closed_flag(),
+        })));
+        assert!(
+            missing.iter().any(|e| e.starts_with("T6:")),
+            "telehealth without the adequacy decision is a gate error, not a \
+             warning: {missing:?}"
+        );
+        let carried = triage_gate(&triage_from(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+            "verdict": "accept", "esi_level": 4,
+            "care_setting": "virtual_primary",
+            "modality_adequacy": "inadequate_in_person_required",
+            "red_flag": closed_flag(),
+        })));
+        assert!(!carried.iter().any(|e| e.starts_with("T6")), "{carried:?}");
+        let bad_value = triage_gate(&triage_from(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+            "verdict": "accept", "esi_level": 4,
+            "care_setting": "virtual_primary",
+            "modality_adequacy": "probably fine",
+            "red_flag": closed_flag(),
+        })));
+        assert!(
+            bad_value.iter().any(|e| e.starts_with("T17:")),
+            "{bad_value:?}"
+        );
+    }
+
+    #[test]
+    fn open_red_flag_never_allows_self_care_disposition() {
+        // The monotonic lock, disposition arm: an open flag admits only
+        // escalation-bearing dispositions (refer | facility | ed).
+        for (care, lawful) in [
+            (Some("self_care"), false),
+            (Some("virtual_primary"), false),
+            (Some("in_person_primary"), false),
+            (None, false),
+            (Some("refer"), true),
+            (Some("facility"), true),
+            (Some("ed"), true),
+        ] {
+            let mut t = serde_json::json!({
+                "priority": "P1", "stabilized": false, "search_hits": [],
+                "verdict": "accept", "esi_level": 1, "red_flag": open_flag(),
+            });
+            if let Some(c) = care {
+                t["care_setting"] = serde_json::json!(c);
+            }
+            let errors = triage_gate(&triage_from(t));
+            assert_eq!(
+                errors.iter().any(|e| e.starts_with("T10")),
+                !lawful,
+                "lock posture for {care:?}: {errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn red_flag_partial_rule_out_keeps_flag_open() {
+        // "partial" is OPEN: the ed short-circuit (T5) and the lock (T10)
+        // both treat it as unresolved, and a true-without-basis refuses.
+        let partial = triage_gate(&triage_from(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+            "verdict": "accept", "esi_level": 4, "care_setting": "self_care",
+            "red_flag": {
+                "worst_case": "sepsis", "ruled_out": "partial",
+                "rule_out_basis": ["pending lactate"],
+                "first_would_miss_impact": "transfer delay",
+            },
+        })));
+        assert!(partial.iter().any(|e| e.starts_with("T10")), "{partial:?}");
+        let ed_partial = triage_gate(&triage_from(serde_json::json!({
+            "priority": "P1", "stabilized": false, "search_hits": [],
+            "verdict": "accept", "esi_level": 1, "care_setting": "ed",
+            "red_flag": {
+                "worst_case": "sepsis", "ruled_out": "partial",
+                "rule_out_basis": ["pending lactate"],
+                "first_would_miss_impact": "transfer delay",
+            },
+        })));
+        assert!(
+            !ed_partial.iter().any(|e| e.starts_with("T5")),
+            "partial IS open: the ed short-circuit stays lawful — {ed_partial:?}"
+        );
+        let unproven = triage_gate(&triage_from(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+            "verdict": "accept", "esi_level": 4,
+            "care_setting": "in_person_primary",
+            "red_flag": {
+                "worst_case": "sepsis", "ruled_out": true,
+                "rule_out_basis": [], "first_would_miss_impact": "transfer delay",
+            },
+        })));
+        assert!(
+            unproven.iter().any(|e| e.starts_with("T13")),
+            "{unproven:?}"
+        );
+        let malformed = triage_gate(&triage_from(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+            "verdict": "accept", "esi_level": 4,
+            "care_setting": "in_person_primary",
+            "red_flag": {
+                "worst_case": "sepsis", "ruled_out": "maybe",
+                "rule_out_basis": ["pending lactate"],
+                "first_would_miss_impact": "transfer delay",
+            },
+        })));
+        assert!(
+            malformed.iter().any(|e| e.starts_with("T12")),
+            "{malformed:?}"
+        );
+    }
+
+    #[test]
+    fn catalog_match_without_rule_out_is_named_failure() {
+        // The shipped health catalog: a ticket matching a must-miss
+        // keyword must name the worst case OR carry a rule-out basis.
+        let ticket = "customer reports fever and confusion since this morning";
+        let silent = redflag_catalog_errors(
+            "health",
+            ticket,
+            &rf_from(serde_json::json!({
+                "worst_case": "a battery fault", "ruled_out": false,
+                "rule_out_basis": [], "first_would_miss_impact": "x",
+            })),
+        );
+        assert_eq!(
+            silent,
+            vec![err(
+                "T7",
+                "domain worst-case catalog match without named rule-out"
+            )],
+            "{silent:?}"
+        );
+        let named = redflag_catalog_errors(
+            "health",
+            ticket,
+            &rf_from(serde_json::json!({
+                "worst_case": "sepsis until proven otherwise", "ruled_out": false,
+                "rule_out_basis": [], "first_would_miss_impact": "x",
+            })),
+        );
+        assert!(named.is_empty(), "{named:?}");
+        let ruled_out = redflag_catalog_errors(
+            "health",
+            ticket,
+            &rf_from(serde_json::json!({
+                "worst_case": "a battery fault", "ruled_out": false,
+                "rule_out_basis": ["pending lactate at the facility"],
+                "first_would_miss_impact": "x",
+            })),
+        );
+        assert!(ruled_out.is_empty(), "{ruled_out:?}");
+        // Unknown domains fall back to the generic default catalog.
+        let generic = redflag_catalog_errors(
+            "acme",
+            "the update deleted everything on the volume",
+            &rf_from(serde_json::json!({
+                "worst_case": "nothing", "ruled_out": false,
+                "rule_out_basis": [], "first_would_miss_impact": "x",
+            })),
+        );
+        assert!(!generic.is_empty(), "the default catalog matches too");
+    }
+
+    #[test]
+    fn catalog_parse_failure_fails_closed() {
+        // The parse fn is total: malformed bytes refuse with the error;
+        // the gate path surfaces the named T9 refusal, never default-open.
+        assert!(parse_redflag_catalog("{ not json").is_err());
+        assert!(
+            parse_redflag_catalog(r#"{"domains":{"x":{"bogus":1}}}"#).is_err(),
+            "deny_unknown_fields: an unknown key refuses"
+        );
+        let shipped =
+            parse_redflag_catalog(REDFLAG_CATALOG_JSON).expect("the shipped catalog must parse");
+        let health = &shipped.domains["health"].entries;
+        for name in [
+            "sepsis",
+            "chest pain",
+            "anaphylaxis",
+            "abuse or self-harm in minors",
+            "stroke",
+            "decompensation",
+        ] {
+            assert!(
+                health.iter().any(|e| e.name == name),
+                "the clinical must-miss `{name}` must ship"
+            );
+        }
+        assert!(
+            shipped.domains.contains_key("default"),
+            "the generic default ships"
+        );
+        // The fail-closed branch is the named T9 refusal, never
+        // default-open: corrupt catalog bytes refuse triage.
+        let corrupt = redflag_catalog_errors_in(
+            "{ not json",
+            "health",
+            "customer reports fever and confusion",
+            &rf_from(serde_json::json!({
+                "worst_case": "sepsis", "ruled_out": true,
+                "rule_out_basis": ["test:x"], "first_would_miss_impact": "x",
+            })),
+        );
+        assert_eq!(corrupt.len(), 1, "{corrupt:?}");
+        assert!(corrupt[0].starts_with("T9:"), "{corrupt:?}");
+        let unknown_key = redflag_catalog_errors_in(
+            r#"{"domains":{"health":{"entries":[],"bogus":1}}}"#,
+            "health",
+            "customer reports fever and confusion",
+            &rf_from(serde_json::json!({
+                "worst_case": "sepsis", "ruled_out": true,
+                "rule_out_basis": ["test:x"], "first_would_miss_impact": "x",
+            })),
+        );
+        assert!(unknown_key[0].starts_with("T9:"), "{unknown_key:?}");
+    }
+
+    /// The committed fuzz corpus (`crates/brain-fuzz/corpus/gdl/`) replays
+    /// through the SAME total functions the corpus discipline holds: the
+    /// three artifact JSONs parse (refusing, never panicking, on garbage
+    /// bytes) and the three gates return named errors over whatever
+    /// parses. A crash found by a fuzzer becomes a regression by dropping
+    /// its bytes in the corpus directory.
+    #[test]
+    fn fuzz_corpus_replays_the_diagnostic_artifacts_and_gates() {
+        let mut dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        dir.push("crates/brain-fuzz/corpus/gdl");
+        for (sub, f) in [("redflag", 0u8), ("closure", 1u8), ("backreferral", 2u8)] {
+            let mut path = dir.clone();
+            path.push(sub);
+            let entries =
+                std::fs::read_dir(&path).unwrap_or_else(|e| panic!("corpus dir {sub}: {e}"));
+            let mut count = 0;
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if !p.is_file() {
+                    continue;
+                }
+                let bytes = std::fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+                let text = String::from_utf8_lossy(&bytes);
+                match f {
+                    0 => {
+                        if let Ok(rf) = serde_json::from_str::<RedFlagArtifact>(&text) {
+                            let _ = red_flag_gate(&rf);
+                            let _ = red_flag_is_open(&rf);
+                            let _ = red_flag_closes(&rf);
+                        }
+                    }
+                    1 => {
+                        if let Ok(c) = serde_json::from_str::<ClosureArtifact>(&text) {
+                            let _ = closure_gate(&c, &GdlCase::fresh("corpus"));
+                        }
+                    }
+                    _ => {
+                        if let Ok(b) = serde_json::from_str::<BackReferralContract>(&text) {
+                            let _ = b.attachment_errors();
+                            let _ = b.release_errors();
+                        }
+                    }
+                }
+                count += 1;
+            }
+            assert!(count > 0, "corpus {sub} must not be empty");
+        }
+    }
+
+    #[test]
+    fn acuity_sla_table_and_advertised_target_is_never_looser() {
+        assert_eq!(acuity_sla("RED"), Some(0));
+        assert_eq!(acuity_sla("ORANGE"), Some(600));
+        assert_eq!(acuity_sla("YELLOW"), Some(3_600));
+        assert_eq!(acuity_sla("GREEN"), Some(7_200));
+        assert_eq!(acuity_sla("BLUE"), Some(14_400));
+        assert_eq!(acuity_sla("PURPLE"), None);
+        // The advertised target is the tighter of the P-class SLA and the
+        // acuity window — never the looser one.
+        assert_eq!(advertised_sla("P1", Some("BLUE")), Some(3_600));
+        assert_eq!(advertised_sla("P3", Some("RED")), Some(0));
+        assert_eq!(advertised_sla("P1", None), Some(3_600));
+        assert_eq!(advertised_sla("P4", Some("GREEN")), Some(7_200));
+        assert_eq!(advertised_sla("PP", None), None);
+    }
+
+    fn valid_closure_json() -> serde_json::Value {
+        serde_json::json!({
+            "decision": "battery replaced; rebuild verified",
+            "communicated_to": ["customer:acme"],
+            "shared_decision": true,
+            "warning_signs": ["rebuild rate drops"],
+            "escalation_path": "reopen the ticket",
+            "follow_up": "re-verify within 48h",
+            "modality": {"telehealth": false},
+            "closure_means": "portal_note",
+        })
+    }
+
+    fn closure_from(json: serde_json::Value) -> ClosureArtifact {
+        serde_json::from_value(json).unwrap()
+    }
+
+    fn case_with_triage(care: Option<&str>) -> GdlCase {
+        let mut case = GdlCase::fresh("t");
+        case.triage = Some(triage_from(serde_json::json!({
+            "priority": "P3", "stabilized": false, "search_hits": ["P"],
+            "verdict": "accept", "esi_level": 4,
+            "care_setting": care, "red_flag": closed_flag(),
+        })));
+        case
+    }
+
+    #[test]
+    fn closure_requires_warning_signs_and_recipient() {
+        let case = case_with_triage(Some("in_person_primary"));
+        let no_recipient = closure_gate(
+            &closure_from({
+                let mut c = valid_closure_json();
+                c["communicated_to"] = serde_json::json!([]);
+                c
+            }),
+            &case,
+        );
+        assert!(
+            no_recipient.iter().any(|e| e == A9_REFLEXIVE_CLOSURE),
+            "{no_recipient:?}"
+        );
+        let no_signs = closure_gate(
+            &closure_from({
+                let mut c = valid_closure_json();
+                c["warning_signs"] = serde_json::json!([]);
+                c
+            }),
+            &case,
+        );
+        assert!(
+            no_signs.iter().any(|e| e.starts_with("A11:")),
+            "{no_signs:?}"
+        );
+        let bad_means = closure_gate(
+            &closure_from({
+                let mut c = valid_closure_json();
+                c["closure_means"] = serde_json::json!("carrier pigeon");
+                c
+            }),
+            &case,
+        );
+        assert!(
+            bad_means.iter().any(|e| e.starts_with("A13:")),
+            "{bad_means:?}"
+        );
+        let clean = closure_gate(&closure_from(valid_closure_json()), &case);
+        assert!(clean.is_empty(), "{clean:?}");
+    }
+
+    #[test]
+    fn telehealth_closure_requires_warning_signs_and_follow_up() {
+        let case = case_with_triage(Some("virtual_primary"));
+        // Both missing: BOTH refusals fire — warning signs AND follow-up
+        // ride the virtual first line together.
+        let mut bare = valid_closure_json();
+        bare["warning_signs"] = serde_json::json!([]);
+        bare["follow_up"] = serde_json::json!("");
+        bare["modality"] = serde_json::json!({"telehealth": true});
+        let errors = closure_gate(&closure_from(bare), &case);
+        assert!(errors.iter().any(|e| e.starts_with("A11:")), "{errors:?}");
+        assert!(errors.iter().any(|e| e.starts_with("A14:")), "{errors:?}");
+        assert!(errors.iter().any(|e| e.starts_with("A15:")), "{errors:?}");
+        // The case's own telehealth disposition demands the fields even
+        // when the closure's modality flag forgets (fail-closed wider).
+        let mut forgets = valid_closure_json();
+        forgets["follow_up"] = serde_json::json!("");
+        let errors = closure_gate(&closure_from(forgets), &case);
+        assert!(errors.iter().any(|e| e.starts_with("A15:")), "{errors:?}");
+        let mut complete = valid_closure_json();
+        complete["modality"] =
+            serde_json::json!({"telehealth": true, "modality_adequacy": "adequate"});
+        let errors = closure_gate(&closure_from(complete), &case);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn shared_decision_false_requires_note() {
+        let case = case_with_triage(Some("in_person_primary"));
+        let mut no_note = valid_closure_json();
+        no_note["shared_decision"] = serde_json::json!(false);
+        let errors = closure_gate(&closure_from(no_note), &case);
+        assert!(errors.iter().any(|e| e.starts_with("A12:")), "{errors:?}");
+        let mut with_note = valid_closure_json();
+        with_note["shared_decision"] = serde_json::json!(false);
+        with_note["shared_decision_note"] =
+            serde_json::json!("the requester declined the decision call");
+        let errors = closure_gate(&closure_from(with_note), &case);
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn legacy_triage_and_closureless_handoff_artifacts_still_parse() {
+        // The append-only proof: pre-R18 JSON parses unchanged; the new
+        // fields default. (Gate STRICTNESS is the forcing function; serde
+        // compatibility is the no-strand law.)
+        let t: TriageArtifact = serde_json::from_str(
+            r#"{"priority":"P3","stabilized":false,"search_hits":["x"],"verdict":"accept"}"#,
+        )
+        .unwrap();
+        assert!(t.acuity_band.is_none() && t.esi_level.is_none());
+        assert!(t.care_setting.is_none() && t.modality_adequacy.is_none());
+        assert_eq!(t.red_flag.worst_case, "");
+        let h: HandoffArtifact =
+            serde_json::from_str(r#"{"capture":{"resolution":"r","bundle_hash":"h"}}"#).unwrap();
+        assert!(h.closure.is_none() && h.back_referral.is_none() && h.red_flag.is_none());
+        let case: GdlCase =
+            serde_json::from_str(r#"{"phase":"Intake","ticket":"legacy"}"#).unwrap();
+        assert!(case.closure.is_none() && case.back_referral.is_none());
+    }
+
+    #[test]
+    fn return_contract_release_requires_report_fields() {
+        let contract = BackReferralContract {
+            referrer: "l1:steward-dpc".into(),
+            receiver: "l3:eng-storage".into(),
+            clinical_question: "confirm the battery".into(),
+            required_report: vec![
+                "finding".into(),
+                "treatment_plan".into(),
+                "follow_up".into(),
+            ],
+            return_deadline_sla: Some(3_600),
+            status: "returned".into(),
+            report: Some(serde_json::json!({
+                "finding": "battery Failed",
+                "treatment_plan": "replace ring 3",
+            })),
+        };
+        let errors = contract.release_errors();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].starts_with("B3:"), "{errors:?}");
+        assert!(errors[0].contains("follow_up"), "{errors:?}");
+        let mut complete = contract.clone();
+        complete.report = Some(serde_json::json!({
+            "finding": "battery Failed",
+            "treatment_plan": "replace ring 3",
+            "follow_up": "re-verify 48h",
+        }));
+        assert!(complete.release_errors().is_empty());
+        // An OPEN contract owes nothing yet; an empty-bodied attachment
+        // refuses (B2).
+        let mut open = complete.clone();
+        open.status = "open".into();
+        assert!(open.release_errors().is_empty());
+        let mut anonymous = open.clone();
+        anonymous.referrer = "  ".into();
+        let errors = anonymous.attachment_errors();
+        assert!(errors.iter().any(|e| e.starts_with("B2:")), "{errors:?}");
+        assert_eq!(
+            default_return_window("P1"),
+            3_600,
+            "the tighter P-class SLA beats the 24h default"
+        );
+        assert_eq!(default_return_window("P3"), 86_400);
+        assert_eq!(default_return_window(""), 86_400);
+    }
+
+    #[test]
+    fn resolved_without_closure_is_named_gate_failure() {
+        // A capture-only handoff artifact can never resolve: the bounded
+        // retry re-asks, exhaustion ROUTES with the exact A8 string — the
+        // machine never closes a case that was not closed with its
+        // customer.
+        let runtime = rt();
+        let mut script = happy_script();
+        let bare = r#"{"capture":{"resolution":"write-through -> battery -> replaced -> verified","bundle_hash":"h0"}}"#;
+        script.truncate(8);
+        script.extend(std::iter::repeat_n(scripted_text(bare), 3));
+        let f = fixture(script);
+        let outcome = runtime
+            .block_on(
+                f.driver
+                    .run_case(1, "no closure", &CancellationToken::new()),
+            )
+            .unwrap();
+        match outcome {
+            GdlOutcome::Routed { reason, .. } => {
+                assert!(
+                    reason.contains(
+                        "A8: no closure artifact — a case that was \
+                                     not closed with its customer does not close"
+                    ),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected the A8 route, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn referral_handoff_requires_back_referral_contract() {
+        // B1: a non-urgent referral-type handoff without the contract
+        // refuses by name and never silently completes.
+        let runtime = rt();
+        let bare_handoff = r#"{"capture":{"resolution":"referred to eng-storage with the bundle","bundle_hash":"h0"},"closure":{"decision":"referred with the full bundle","communicated_to":["customer:acme"],"shared_decision":true,"warning_signs":["rebuild rate drops"],"escalation_path":"reopen the ticket","follow_up":"report-back owed","modality":{"telehealth":false},"closure_means":"portal_note"}}"#;
+        let mut script = happy_script();
+        script[1] = scripted_text(TRIAGE_REFER_CLOSED_JSON);
+        script.truncate(8);
+        script.extend(std::iter::repeat_n(scripted_text(bare_handoff), 3));
+        let f = fixture(script);
+        let outcome = runtime
+            .block_on(f.driver.run_case(1, "refer", &CancellationToken::new()))
+            .unwrap();
+        match outcome {
+            GdlOutcome::Routed { reason, .. } => {
+                assert!(
+                    reason.contains("B1: referral handoff without a return contract"),
+                    "{reason}"
+                );
+            }
+            other => panic!("expected the B1 route, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn red_flag_handoff_never_blocks_on_back_referral() {
+        // The escalation exception: an urgent referral-type handoff NEVER
+        // waits on the contract. Same shape as the B1 refusal but P1:
+        // no B1 anywhere — the handoff completes without the contract.
+        let runtime = rt();
+        let urgent_refer = TRIAGE_REFER_CLOSED_JSON.replace("\"P3\"", "\"P1\"");
+        let bare_handoff = r#"{"capture":{"resolution":"referred to eng-storage with the bundle","bundle_hash":"h0"},"closure":{"decision":"referred with the full bundle","communicated_to":["customer:acme"],"shared_decision":true,"warning_signs":["rebuild rate drops"],"escalation_path":"reopen the ticket","follow_up":"report-back owed","modality":{"telehealth":false},"closure_means":"portal_note"}}"#;
+        let mut script = happy_script();
+        script[1] = scripted_text(&urgent_refer);
+        script[8] = scripted_text(bare_handoff);
+        let f = fixture(script);
+        let outcome = runtime
+            .block_on(
+                f.driver
+                    .run_case(1, "urgent refer", &CancellationToken::new()),
+            )
+            .unwrap();
+        assert!(
+            matches!(outcome, GdlOutcome::Resolved { .. }),
+            "the urgent referral completes without a contract: {outcome:?}"
+        );
+        // And an OPEN-flag referral (the lock) routes with T10 — the
+        // contract absence never appears as the blocking reason.
+        let open_refer = TRIAGE_REFER_CLOSED_JSON
+            .replace("\"ruled_out\":true", "\"ruled_out\":false")
+            .replace("\"P3\"", "\"P1\"");
+        let mut script = happy_script();
+        script[1] = scripted_text(&open_refer);
+        script.truncate(8);
+        script.extend(std::iter::repeat_n(scripted_text(bare_handoff), 3));
+        let f = fixture(script);
+        let outcome = runtime
+            .block_on(
+                f.driver
+                    .run_case(1, "open flag refer", &CancellationToken::new()),
+            )
+            .unwrap();
+        match outcome {
+            GdlOutcome::Routed { reason, .. } => {
+                assert!(reason.contains("T10"), "{reason}");
+                assert!(!reason.contains("B1"), "{reason}");
+            }
+            other => panic!("expected the lock route, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn handoff_with_referral_attaches_back_referral_contract() {
+        // A referral-type case that completes WITH the contract resolves
+        // and the contract row lands (the obligation exists until the
+        // report comes back).
+        let runtime = rt();
+        let mut script = happy_script();
+        script[1] = scripted_text(TRIAGE_REFER_CLOSED_JSON);
+        script[8] = scripted_text(HANDOFF_REFER_CONTRACT_JSON);
+        let f = fixture(script);
+        let outcome = runtime
+            .block_on(
+                f.driver
+                    .run_case(1, "refer with contract", &CancellationToken::new()),
+            )
+            .unwrap();
+        assert!(
+            matches!(outcome, GdlOutcome::Resolved { .. }),
+            "{outcome:?}"
+        );
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE kind = 'back_referral'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "the contract row is the obligation: {rows}");
+        let payload: String = conn
+            .query_row(
+                "SELECT payload_json FROM agent_session_events WHERE kind = 'back_referral'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(payload.contains("\"status\":\"open\""), "{payload}");
+        assert!(
+            payload.contains("\"receiver\":\"eng-storage\""),
+            "{payload}"
+        );
+    }
+
+    #[test]
+    fn contract_rows_are_atomic_with_handoff() {
+        // The handoff row and the contract row commit together or not at
+        // all: a dropped transaction removes both — no orphan obligations.
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mgr = crate::pool::SqliteConnectionManager::file(tmp.path());
+        let pool: Pool = r2d2::Pool::builder().max_size(4).build(mgr).unwrap();
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('acme', 'troubleshoot', '{}', 0, 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+        let contract: BackReferralContract = serde_json::from_value(serde_json::json!({
+            "referrer": "l1:steward-dpc", "receiver": "eng-storage",
+            "clinical_question": "confirm the battery",
+            "required_report": ["finding", "treatment_plan", "follow_up"],
+            "status": "open",
+        }))
+        .unwrap();
+        {
+            let mut conn = pool.get().unwrap();
+            let mut tx = super::super::tx::WorkflowTx::begin(&mut conn).unwrap();
+            write_handoff_transition(
+                tx.tx(),
+                1,
+                "owner",
+                HandoffTransition::Requested,
+                None,
+                &serde_json::json!({}),
+                1,
+            )
+            .unwrap();
+            write_back_referral_row(tx.tx(), 1, "owner", &contract, "P3", 1).unwrap();
+            // Dropped WITHOUT commit: rollback removes both.
+        }
+        let conn = pool.get().unwrap();
+        for kind in ["handoff_lifecycle", "back_referral"] {
+            let rows: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_session_events WHERE kind = ?1",
+                    [kind],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(rows, 0, "rollback removes {kind} too");
+        }
+        drop(conn);
+        // The commit path: both kinds visible together.
+        {
+            let mut conn = pool.get().unwrap();
+            let mut tx = super::super::tx::WorkflowTx::begin(&mut conn).unwrap();
+            write_handoff_transition(
+                tx.tx(),
+                1,
+                "owner",
+                HandoffTransition::Requested,
+                None,
+                &serde_json::json!({}),
+                1,
+            )
+            .unwrap();
+            write_back_referral_row(tx.tx(), 1, "owner", &contract, "P3", 1).unwrap();
+            tx.commit().unwrap();
+        }
+        let conn = pool.get().unwrap();
+        for kind in ["handoff_lifecycle", "back_referral"] {
+            let rows: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_session_events WHERE kind = ?1",
+                    [kind],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(rows, 1, "{kind} commits with the handoff");
+        }
+    }
+
+    #[test]
+    fn late_return_escalates_to_hitl_and_never_auto_closes() {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mgr = crate::pool::SqliteConnectionManager::file(tmp.path());
+        let pool: Pool = r2d2::Pool::builder().max_size(4).build(mgr).unwrap();
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('acme', 'troubleshoot', '{}', 0, 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+        let contract: BackReferralContract = serde_json::from_value(serde_json::json!({
+            "referrer": "l1:steward-dpc", "receiver": "eng-storage",
+            "clinical_question": "confirm the battery",
+            "required_report": ["finding", "treatment_plan", "follow_up"],
+            "status": "open",
+        }))
+        .unwrap();
+        let now = 1_000_000i64;
+        {
+            let mut conn = pool.get().unwrap();
+            let mut tx = super::super::tx::WorkflowTx::begin(&mut conn).unwrap();
+            write_back_referral_row(tx.tx(), 1, "owner", &contract, "P3", now).unwrap();
+            tx.commit().unwrap();
+        }
+        // Nothing overdue yet — the deadline instant itself is still on
+        // time (overdue is strictly past).
+        let mut conn = pool.get().unwrap();
+        assert_eq!(
+            escalate_overdue_return_contracts(&mut conn, now + 86_400).unwrap(),
+            0
+        );
+        // Past the deadline the open contract flips escalated, lands the
+        // HITL task, and records the justification on the audit chain.
+        assert_eq!(
+            escalate_overdue_return_contracts(&mut conn, now + 86_401).unwrap(),
+            1
+        );
+        // Monotonic and idempotent: a re-sweep is a no-op receipt.
+        assert_eq!(
+            escalate_overdue_return_contracts(&mut conn, now + 200_000).unwrap(),
+            0
+        );
+        let statuses: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT payload_json FROM agent_session_events \
+                     WHERE kind = 'back_referral' ORDER BY seq",
+                )
+                .unwrap();
+            stmt.query_map([], |r| r.get::<_, String>(0))
+                .map(|it| {
+                    it.filter_map(Result::ok)
+                        .map(|p| {
+                            serde_json::from_str::<serde_json::Value>(&p).unwrap()["status"]
+                                .as_str()
+                                .unwrap_or("")
+                                .to_string()
+                        })
+                        .collect()
+                })
+                .unwrap()
+        };
+        assert_eq!(statuses, vec!["open", "escalated"], "{statuses:?}");
+        let hitl: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+                 WHERE kind = 'control:back_referral_hitl'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hitl, 1, "the HITL queue task lands");
+        // The justification is recorded ON the audit chain: the sweep's
+        // audit row carries the hashed detail (target `back_referral`).
+        let justification_detail = "return deadline exhausted — escalated to the \
+                                   HITL queue; the machine never auto-resolves a \
+                                   dead return contract";
+        let audited: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE actor = 'workflow' \
+                 AND status = 'ok' AND target_hash = ?1 AND detail_hash = ?2",
+                rusqlite::params![
+                    crate::audit::hash("back_referral"),
+                    crate::audit::hash(justification_detail)
+                ],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(audited, 1, "the justification rides the audit chain");
+        // The machine NEVER auto-resolves: no returned row exists, and the
+        // return path refuses without an operator decision reference (B4)
+        // and without the required report fields (B3).
+        {
+            let mut tx = super::super::tx::WorkflowTx::begin(&mut conn).unwrap();
+            let refused = write_back_referral_return(
+                tx.tx(),
+                1,
+                "run1:back_referral:owner",
+                serde_json::json!({}),
+                None,
+                now + 100_000,
+            );
+            assert!(refused.is_err(), "no decision reference, no return");
+            let incomplete = write_back_referral_return(
+                tx.tx(),
+                1,
+                "run1:back_referral:owner",
+                serde_json::json!({"finding": "battery Failed"}),
+                Some("op-decision-1"),
+                now + 100_000,
+            );
+            assert!(incomplete.is_err(), "incomplete report, no release");
+            // The operator's LATE release lands with the late flag.
+            write_back_referral_return(
+                tx.tx(),
+                1,
+                "run1:back_referral:owner",
+                serde_json::json!({
+                    "finding": "battery Failed",
+                    "treatment_plan": "replace ring 3",
+                    "follow_up": "re-verify 48h",
+                }),
+                Some("op-decision-1"),
+                now + 100_000,
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let returned: String = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT payload_json FROM agent_session_events \
+                     WHERE kind = 'back_referral' ORDER BY seq DESC LIMIT 1",
+                )
+                .unwrap();
+            stmt.query_row([], |r| r.get(0)).unwrap()
+        };
+        let value: serde_json::Value = serde_json::from_str(&returned).unwrap();
+        assert_eq!(value["status"], "returned", "{value}");
+        assert_eq!(value["late"], true, "{value}");
+    }
 
     fn tree_rows(path: &std::path::Path, run_id: i64) -> Vec<(String, String)> {
         let conn = Connection::open(path).unwrap();
@@ -6798,7 +8712,7 @@ mod eval_run1 {
             r#"{{"is_not":{{"what":{{"is":"{symptom} on {component}","is_not":"read path"}},"where":{{"is":"{where_}","is_not":"sibling nodes"}},"when":{{"is":"since monday","is_not":"before monday"}},"extent":{{"is":"one {component}","is_not":"all units"}}}},"telemetry_refs":["tsr://{where_}","sel://{where_}"],"what_changed":"fw update two weeks ago","known_good":"sibling node same fw"}}"#
         );
         let triage = format!(
-            r#"{{"priority":"P3","stabilized":false,"search_hits":["{playbook}"],"verdict":"accept"}}"#
+            r#"{{"priority":"P3","stabilized":false,"search_hits":["{playbook}"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"in_person_primary","red_flag":{{"worst_case":"{component} fault spreads to siblings","ruled_out":true,"rule_out_basis":["test:{command} output isolates the fault"],"first_would_miss_impact":"repeat incidents across the fleet"}}}}"#
         );
         let hypothesize = format!(
             r#"{{"hypotheses":[{{"statement":"{hypothesis}","prediction":"{command} reports degraded","sources":["actual:sel event","test:{command} output"],"confidence":0.8}}]}}"#
@@ -6813,7 +8727,7 @@ mod eval_run1 {
             .replace("PLACEHOLDER", &format!("the customer workload on {where_}"));
         let recheck = r#"{"contradicted":false,"reason":"no falsifier in the captured evidence"}"#;
         let handoff = format!(
-            r#"{{"capture":{{"resolution":"{symptom} -> {hypothesis} -> replaced -> verified","bundle_hash":"h-{component}"}}}}"#
+            r#"{{"capture":{{"resolution":"{symptom} -> {hypothesis} -> replaced -> verified","bundle_hash":"h-{component}"}},"closure":{{"decision":"{hypothesis} — part replaced and verified","communicated_to":["customer:acme"],"shared_decision":true,"warning_signs":["symptom recurrence within 48h"],"escalation_path":"reopen with L2","follow_up":"re-verify within 48h","modality":{{"telehealth":false}},"closure_means":"portal_note"}}}}"#
         );
         vec![
             scripted_text(&intake),
@@ -7332,5 +9246,247 @@ mod eval_run1 {
             b_has_hypothesis,
             "B never labeled the one-source hypothesis"
         );
+    }
+
+    // ---- the R18 Diagnostic Closure eval legs (C4, preregistered in
+    // plans/R18_PREREG_EVAL_DIAGNOSTIC_CLOSURE_2026-09-21.md): the three
+    // deterministic ON/OFF comparisons. ON = the gated machine; OFF = the
+    // ablated driver. The Track-A model legs stay preregistered-but-
+    // unexecuted (the operator's compute gate) and are NEVER claimed run.
+
+    /// E1's bad triage: a complete-looking artifact that suppresses the
+    /// worst case — an open red-flag under a self-care disposition. The
+    /// gate refuses (T10); the ablation arm is STILL caught, by the
+    /// loop's transition-predicate lock (the backstop finding).
+    const DIAG_SELF_CARE_UNDER_OPEN_FLAG: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["P-STORAGE-0104"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"self_care","red_flag":{"worst_case":"battery fault spreads to the cluster","ruled_out":false,"rule_out_basis":[],"first_would_miss_impact":"repeat incidents across the fleet"}}"#;
+
+    /// E1a's bad triage: the same shape minus the acuity classification
+    /// (T4) — a GATE-only duty, so it is the one where the classic
+    /// ON/OFF contrast is observable through this instrument.
+    const DIAG_NO_ACUITY: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["P-STORAGE-0104"],"verdict":"accept","care_setting":"in_person_primary","red_flag":{"worst_case":"battery fault","ruled_out":true,"rule_out_basis":["test:racadm battery state reports Failed"],"first_would_miss_impact":"write-cache loss"}}"#;
+
+    /// E3's referral disposition: a non-urgent `refer` whose flag is
+    /// verify-class closed; its handoff carries NO return contract (B1).
+    const DIAG_REFER_TRIAGE: &str = r#"{"priority":"P3","stabilized":false,"search_hits":["P-STORAGE-0104"],"verdict":"accept","acuity_band":"GREEN","esi_level":4,"care_setting":"refer","red_flag":{"worst_case":"battery-induced data corruption","ruled_out":true,"rule_out_basis":["test:racadm battery state reports Failed"],"first_would_miss_impact":"write-cache loss"}}"#;
+
+    /// E2's bad handoff: the closure-less capture — the auto-close drift
+    /// the closure duty exists to block (A8).
+    const DIAG_CLOSURE_LESS_HANDOFF: &str = r#"{"capture":{"resolution":"write-through -> battery -> replaced -> verified","bundle_hash":"h0"}}"#;
+
+    /// A raw two-arm runner for handoff-phase seeds (the Seed.script
+    /// machinery indexes by PHASE, which diverges from the script's
+    /// exchange list after Verify — the recheck + confirmation exchanges).
+    /// Returns (outcome label, resolved, gate-fail records).
+    fn run_diag_arm(script: Vec<Vec<StreamEvent>>, ablated: bool) -> (String, bool, usize) {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mgr = crate::pool::SqliteConnectionManager::file(tmp.path());
+        let pool: Pool = r2d2::Pool::builder().max_size(4).build(mgr).unwrap();
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('acme', 'troubleshoot', '{}', 0, 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+        let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));
+        let provider = LoopbackProvider::new("loopback", script);
+        let driver = if ablated {
+            GdlDriver::new_ablated(
+                pool,
+                host,
+                provider.clone(),
+                vec![],
+                ExecutionEnv {
+                    fs: Arc::new(DenyAll),
+                    read_only: true,
+                    allow_process: false,
+                    root: "/".into(),
+                    allowed_commands: vec![],
+                },
+                LoopConfig::default(),
+            )
+        } else {
+            GdlDriver::new(
+                pool,
+                host,
+                provider.clone(),
+                vec![],
+                ExecutionEnv {
+                    fs: Arc::new(DenyAll),
+                    read_only: true,
+                    allow_process: false,
+                    root: "/".into(),
+                    allowed_commands: vec![],
+                },
+                LoopConfig::default(),
+            )
+        };
+        let cancel = CancellationToken::new();
+        let outcome = rt()
+            .block_on(driver.run_case(1, "diag eval", &cancel))
+            .unwrap();
+        let (label, resolved) = match &outcome {
+            GdlOutcome::Resolved { .. } => ("Resolved", true),
+            GdlOutcome::Routed { .. } => ("Routed", false),
+            GdlOutcome::Escalated { .. } => ("Escalated", false),
+            GdlOutcome::VerifyFailed { .. } => ("VerifyFailed", false),
+            GdlOutcome::Canceled => ("Canceled", false),
+            GdlOutcome::Capped { .. } => ("Capped", false),
+        };
+        let conn = rusqlite::Connection::open(tmp.path()).unwrap();
+        let gate_rejects = session_log::replay(&conn, 1, session_log::REPLAY_CAP)
+            .unwrap()
+            .into_iter()
+            .filter(|e| {
+                e.kind == "gdl_gate"
+                    && serde_json::from_str::<serde_json::Value>(&e.payload_json)
+                        .map(|v| v["verdict"] == "fail")
+                        .unwrap_or(false)
+            })
+            .count();
+        (label.to_string(), resolved, gate_rejects)
+    }
+
+    /// The diag scripts' shared pre-handoff prefix: intake..verify, the
+    /// recheck, the confirmation (the same exchange list the happy path
+    /// uses through the second verification).
+    fn diag_prefix() -> Vec<Vec<StreamEvent>> {
+        happy_script_args(battery_topic())
+            .into_iter()
+            .take(8)
+            .collect()
+    }
+
+    #[test]
+    fn eval_diag_forcing_function_gated_vs_ablated() {
+        // E1a (prereg addendum A3): the acuity duty is GATE-only, so the
+        // classic ON/OFF contrast is observable: ON routes the
+        // unclassified artifact; OFF accepts it and resolves — the wrong
+        // resolution the duty exists to prevent.
+        let mut happy = happy_script_args(battery_topic());
+        let on_script: Vec<Vec<StreamEvent>> = {
+            let mut s: Vec<Vec<StreamEvent>> = happy.clone().into_iter().take(1).collect();
+            s.extend(std::iter::repeat_n(scripted_text(DIAG_NO_ACUITY), 3));
+            s.extend(happy.drain(2..));
+            s
+        };
+        let (on_label, on_resolved, on_rejects) = run_diag_arm(on_script, false);
+        let mut happy = happy_script_args(battery_topic());
+        let off_script: Vec<Vec<StreamEvent>> = {
+            let mut s: Vec<Vec<StreamEvent>> = happy.clone().into_iter().take(1).collect();
+            s.push(scripted_text(DIAG_NO_ACUITY));
+            s.extend(happy.drain(2..));
+            s
+        };
+        let (off_label, off_resolved, _off_rejects) = run_diag_arm(off_script, true);
+        assert_eq!(on_label, "Routed", "ON refuses the unclassified triage");
+        assert!(!on_resolved);
+        assert!(on_rejects >= 3, "the T4 refusal is a named gate fail");
+        assert_eq!(off_label, "Resolved", "OFF accepts and runs on");
+        assert!(off_resolved, "the OFF resolution is the wrong resolution");
+        // (The ablated arm's residual gate-fail records are the known
+        // draft-arm quirk — its script leaves the recheck/confirmation
+        // exchanges unconsumed and they shape-fail at Handoff.)
+
+        // E1b (prereg addendum A3): the red-flag suppression is caught in
+        // BOTH arms — the gate refuses it ON, and OFF the loop's
+        // transition-predicate lock backstops it at the resolution seam.
+        // The machine never resolves the suppressed case either way.
+        let mut happy = happy_script_args(battery_topic());
+        let on_script: Vec<Vec<StreamEvent>> = {
+            let mut s: Vec<Vec<StreamEvent>> = happy.clone().into_iter().take(1).collect();
+            s.extend(std::iter::repeat_n(
+                scripted_text(DIAG_SELF_CARE_UNDER_OPEN_FLAG),
+                3,
+            ));
+            s.extend(happy.drain(2..));
+            s
+        };
+        let (on_label, on_resolved, _) = run_diag_arm(on_script, false);
+        let mut happy = happy_script_args(battery_topic());
+        let off_script: Vec<Vec<StreamEvent>> = {
+            let mut s: Vec<Vec<StreamEvent>> = happy.clone().into_iter().take(1).collect();
+            s.push(scripted_text(DIAG_SELF_CARE_UNDER_OPEN_FLAG));
+            s.extend(happy.drain(2..));
+            s
+        };
+        let (off_label, off_resolved, _) = run_diag_arm(off_script, true);
+        assert_eq!(on_label, "Routed");
+        assert!(!on_resolved);
+        assert_eq!(off_label, "Routed", "the loop lock backstops the ablation");
+        assert!(!off_resolved, "a suppressed worst case never resolves");
+    }
+
+    #[test]
+    fn eval_diag_closure_mandatory_gated_vs_ablated() {
+        // E2 (prereg addendum A3): the survival arm resolves in both; the
+        // closure-less handoff resolves in NEITHER — the A8 seam is a
+        // loop-level duty, so ablation cannot bypass it (the auto-close
+        // drift is structurally impossible, the stronger posture).
+        let happy_seed = Seed {
+            id: "diag-honest-closure",
+            ticket: "battery cache alarms",
+            topic: battery_topic(),
+            bad: None,
+            note: "the survival arm: a complete artifact set resolves in both arms",
+        };
+        let on_happy = run_arm(&happy_seed, false);
+        let off_happy = run_arm(&happy_seed, true);
+        assert_eq!(on_happy.outcome, "Resolved", "survival is not harmed");
+        assert_eq!(off_happy.outcome, "Resolved");
+
+        let bare = |n: usize| {
+            let mut s = diag_prefix();
+            s.extend(std::iter::repeat_n(
+                scripted_text(DIAG_CLOSURE_LESS_HANDOFF),
+                n,
+            ));
+            s
+        };
+        let (on_label, on_resolved, on_rejects) = run_diag_arm(bare(3), false);
+        let (off_label, off_resolved, _) = run_diag_arm(bare(1), true);
+        assert_eq!(on_label, "Routed", "ON routes the closure-less handoff");
+        assert!(!on_resolved);
+        assert!(on_rejects >= 3, "the A8 refusal rides the gate records");
+        assert_eq!(off_label, "Routed", "the A8 seam backstops the ablation");
+        assert!(!off_resolved, "no closure, no resolution — even ungated");
+    }
+
+    #[test]
+    fn eval_diag_return_contract_gated_vs_ablated() {
+        // E3 (prereg addendum A3): the referral triage is gate-clean; the
+        // handoff carries closure but no contract. The B1 seam refuses in
+        // BOTH arms — a non-urgent referral can never complete without
+        // its return obligation, ungated or not.
+        let bare = |n: usize| {
+            let mut s: Vec<Vec<StreamEvent>> = vec![scripted_text(
+                r#"{"is_not":{"what":{"is":"PERC H740P write-cache write-through","is_not":"read cache"},"where":{"is":"node-042 RAID-10 VDs","is_not":"node-041"},"when":{"is":"since 03:12 during rebuild","is_not":"before 03:12"},"extent":{"is":"VD 5 only","is_not":"all VDs"}},"telemetry_refs":["tsr://node-042","sel://events"],"what_changed":"fw 2.10 flashed last week","known_good":"node-041 same fw"}"#,
+            )];
+            s.push(scripted_text(DIAG_REFER_TRIAGE));
+            s.extend(
+                happy_script_args(battery_topic())
+                    .into_iter()
+                    .skip(2)
+                    .take(6),
+            );
+            s.extend(std::iter::repeat_n(
+                scripted_text(DIAG_CLOSURE_LESS_HANDOFF),
+                n,
+            ));
+            s
+        };
+        let (on_label, on_resolved, on_rejects) = run_diag_arm(bare(3), false);
+        let (off_label, off_resolved, _) = run_diag_arm(bare(1), true);
+        assert_eq!(
+            on_label, "Routed",
+            "ON refuses the obligation-less referral"
+        );
+        assert!(!on_resolved);
+        assert!(on_rejects >= 3, "the B1 refusal rides the gate records");
+        assert_eq!(off_label, "Routed", "the B1 seam backstops the ablation");
+        assert!(!off_resolved, "no contract, no completion — even ungated");
     }
 }

@@ -203,6 +203,91 @@ pub(crate) fn justified_handoff_counts(conn: &Connection) -> (i32, i32) {
     (justified, total)
 }
 
+// ── Diagnostic Closure: the two supply counts ──────────────────────────
+// The closure duty (NAM 2015 step 6) and the referral return contract
+// (the gatekeeping standard) made countable: `closed_without_closure`
+// watches the closed_looks_good defect class (a case closed with its
+// code but not with its customer), `open_return_contracts` watches the
+// return obligations still owed. Both are deterministic, query-only, and
+// fail-closed in the house posture: an unreadable store never reads as a
+// perfect score.
+
+/// Resolved runs (the bounded last-1000 page) whose persisted case
+/// carries NO closure record. Post-1.32.7 the A8 gate makes a new
+/// closure-less resolution structurally impossible; the count watches
+/// legacy rows and drift. A run whose state is unreadable or unparsable
+/// counts as WITHOUT closure — absence is never dressed up as compliance.
+pub(crate) fn closed_without_closure(conn: &Connection) -> i64 {
+    let mut stmt = match conn
+        .prepare("SELECT status, state_json FROM workflow_runs ORDER BY id DESC LIMIT 1000")
+    {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    let rows: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map(|it| it.filter_map(Result::ok).collect())
+        .unwrap_or_default();
+    rows.iter()
+        .filter(|(status, state_json)| {
+            status == "resolved"
+                && serde_json::from_str::<serde_json::Value>(state_json)
+                    .ok()
+                    .and_then(|v| v.get("closure").map(serde_json::Value::is_null))
+                    .unwrap_or(true)
+        })
+        .count() as i64
+}
+
+/// The referral return obligations still open: latest state per contract
+/// key over the `back_referral` rows, status `open`, ordered by deadline
+/// (soonest first). Returns the ordered `(contract_key, deadline_epoch)`
+/// pairs — the count is the slice length, the order is the follow-up
+/// queue. A corrupt row is skipped (the house lenient-payload posture;
+/// the overdue sweep refuses loudly on the same bytes).
+pub(crate) fn open_return_contracts(conn: &Connection) -> Vec<(String, i64)> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT seq, payload_json FROM agent_session_events \
+         WHERE kind = 'back_referral' ORDER BY seq",
+    ) else {
+        return Vec::new();
+    };
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map(|it| it.filter_map(Result::ok).collect())
+        .unwrap_or_default();
+    let mut order: Vec<String> = Vec::new();
+    let mut latest: std::collections::HashMap<String, (i64, String, i64)> =
+        std::collections::HashMap::new();
+    for (seq, payload) in rows {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&payload) else {
+            continue;
+        };
+        let Some(key) = v["contract_key"].as_str().map(str::to_string) else {
+            continue;
+        };
+        if latest.get(&key).is_some_and(|(s, _, _)| *s > seq) {
+            continue;
+        }
+        let status = v["status"].as_str().unwrap_or("").to_string();
+        let deadline = v["deadline_epoch"].as_i64().unwrap_or(i64::MAX);
+        if !latest.contains_key(&key) {
+            order.push(key.clone());
+        }
+        latest.insert(key, (seq, status, deadline));
+    }
+    let mut open: Vec<(String, i64)> = order
+        .into_iter()
+        .filter(|k| latest.get(k).is_some_and(|(_, status, _)| status == "open"))
+        .map(|k| {
+            let (_, _, deadline) = latest[&k];
+            (k, deadline)
+        })
+        .collect();
+    open.sort_by_key(|(_, deadline)| *deadline);
+    open
+}
+
 // ── Attestation: the approval-fatigue telemetry (ASI09) ────────────────
 // The client's rubber-stamp detector (client/src/panels/review.rs:192
 // `rubber_stamp()` over calibration_stats) computed SERVER-SIDE so the DPO
@@ -535,6 +620,10 @@ mod scoreboard_tests {
         "review_independence_risk",
         "approval_uniformity_ratio",
         "review_decisions_window",
+        // 1.32.7 Diagnostic Closure: the closure duty and the referral
+        // return contract made countable (deterministic, query-only).
+        "closed_without_closure",
+        "open_return_contracts",
     ];
 
     /// Dictionary fields defined but deliberately not yet emitted by code
@@ -592,6 +681,68 @@ mod scoreboard_tests {
             .unwrap();
         }
         assert_eq!(justified_handoff_counts(&conn), (1, 5));
+    }
+
+    /// The Diagnostic Closure counts read the recorded rows: a resolved
+    /// case without a closure record is the closed_looks_good defect
+    /// class, made countable; an open return contract is a referral's
+    /// unreturned loan, ordered by deadline.
+    #[test]
+    fn diagnostic_closure_counts_read_the_recorded_rows() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::migration::run_migration(&mut conn, 0).unwrap();
+        // Empty store: fail-closed (0, empty).
+        assert_eq!(closed_without_closure(&conn), 0);
+        assert!(open_return_contracts(&conn).is_empty());
+        let insert_run = |conn: &rusqlite::Connection, id: i64, status: &str, state: &str| {
+            conn.execute(
+                "INSERT INTO workflow_runs(id, domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES (?1, 'acme', 'troubleshoot', ?2, 0, ?3, 1, 1)",
+                rusqlite::params![id, state, status],
+            )
+            .unwrap();
+        };
+        let contract_row = |conn: &rusqlite::Connection, key: &str, status: &str, deadline: i64| {
+            let payload = serde_json::json!({
+                "contract_key": key, "status": status, "deadline_epoch": deadline,
+            })
+            .to_string();
+            conn.execute(
+                "INSERT INTO agent_session_events(run_id, seq, idempotency_key, kind, payload_json, created_at)
+                 VALUES (1, (SELECT COALESCE(MAX(seq),0)+1 FROM agent_session_events WHERE run_id=1),
+                         printf('k%d', (SELECT COALESCE(MAX(seq),0)+1 FROM agent_session_events WHERE run_id=1)),
+                         'back_referral', ?1, 1)",
+                [&payload],
+            )
+            .unwrap();
+        };
+        // Resolved WITH closure, resolved WITHOUT (the defect class), an
+        // active run, an unparsable resolved state (counts as without —
+        // absence is never dressed up as compliance).
+        insert_run(
+            &conn,
+            1,
+            "resolved",
+            r#"{"closure":{"decision":"d","communicated_to":["c"],"shared_decision":true,"warning_signs":["w"],"escalation_path":"e","follow_up":"f","modality":{"telehealth":false},"closure_means":"portal_note"}}"#,
+        );
+        insert_run(&conn, 2, "resolved", r#"{"ticket":"legacy"}"#);
+        insert_run(&conn, 3, "active", "{}");
+        insert_run(&conn, 4, "resolved", "not json {");
+        assert_eq!(closed_without_closure(&conn), 2);
+        // Three contracts, one flipped returned by a later row, one
+        // escalated: the two remaining opens order by deadline.
+        contract_row(&conn, "c-b", "open", 2_000);
+        contract_row(&conn, "c-a", "open", 1_000);
+        contract_row(&conn, "c-c", "open", 3_000);
+        contract_row(&conn, "c-c", "escalated", 3_000);
+        contract_row(&conn, "c-b", "returned", 2_000);
+        let open = open_return_contracts(&conn);
+        assert_eq!(
+            open,
+            vec![("c-a".to_string(), 1_000)],
+            "only c-a is still open"
+        );
     }
 
     fn metrics_doc() -> String {
