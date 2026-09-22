@@ -22,10 +22,31 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      # The codeql-action steps are a PAIR by contract: the analyze
+      # post-action loads the database the init step wrote and refuses a
+      # version mismatch (`Loaded a configuration file for version
+      # '4.38.0', but running version '4.38.1'`). Separate init/analyze
+      # PRs are structurally red — each alone can never pass. One grouped
+      # PR bumps both together; demonstrated red on #42/#43, fixed on
+      # main by the same commit.
+      codeql-action-pair:
+        patterns:
+          - "github/codeql-action/*"
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
+    ignore:
+      - dependency-name: fastembed
+        versions: [">=7"]
+        # 7.x is BREAKING where it hurts this deployment: the model cache
+        # relocates (existing weights re-download unless HF_HOME is set —
+        # a local-first regression), the sparse-model API changes shape,
+        # and the neural-embed / rerank-tier paths it compiles into are
+        # feature-gated OUT of the default CI matrix. Take the major
+        # deliberately, with the tier smokes pointed at the gated
+        # features; remove this ignore when that lands.
   - package-ecosystem: cargo
     directory: /crates
     schedule:
