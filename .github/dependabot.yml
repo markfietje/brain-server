@@ -48,6 +48,17 @@ updates:
           - "opentelemetry_sdk"
           - "opentelemetry-otlp"
     ignore:
+      - dependency-name: opentelemetry
+        versions: [">=0.33"]
+        # no tracing bridge exists yet: tracing-opentelemetry 0.33 (the
+        # latest) pairs with opentelemetry 0.32, so the otel feature
+        # cannot compile against 0.33 (two opentelemetry versions in one
+        # graph — tracer trait mismatch, demonstrated on the grouped PR).
+        # Remove when tracing-opentelemetry ships the 0.33 pairing.
+      - dependency-name: opentelemetry_sdk
+        versions: [">=0.33"]
+      - dependency-name: opentelemetry-otlp
+        versions: [">=0.33"]
       - dependency-name: fastembed
         versions: [">=7"]
         # 7.x is BREAKING where it hurts this deployment: the model cache
