@@ -93,7 +93,7 @@ brain-engine-sdk = { path = "crates/brain-engine-sdk", features = ["harness-kern
 # surface reads); workspace-internal, gains nothing new to the lock.
 legal-rules-db = { path = "crates/legal-rules-db" }
 # Core Embedding
-model2vec-rs = "0.2"
+model2vec-rs = "0.3"
 # v1.28 "Caliber": the neural-tier runtime (BGE-M3 dense+sparse+colbert +
 # bge-reranker-v2-m3). Optional — only pulled by `neural-embed`/`rerank-tier`.
 # Pinned to 5.x; it exact-pins `ort = =2.0.0-rc.13`, so brain-server's `ort`
