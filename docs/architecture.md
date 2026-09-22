@@ -110,6 +110,29 @@ flowchart TD
     K1 -.->|deflection measured on the scoreboard| C11
 ```
 
+#### The record layers on top (1.28.92)
+
+The loop's own rows ARE the request record; two preregistered record layers
+ride them additively — no new table, no migration:
+
+- **The disagreement corpus (Reflect/learn).** When a case resolves, the
+  closing transaction captures an after-action reflection record — derived
+  ONLY from audited gate rows, never agent free text — plus hard-negative
+  disagreement tuples. Proven retrospective-only: the same case driven twice
+  is byte-identical with capture on versus off. The DPO exports the labeled
+  corpus (`GET /workflow/reflection/corpus`, dual gate, de-identified,
+  audited, frozen train/holdout split).
+- **The account record layer (the deliberately-not-a-CRM).** Accounts are
+  workflow rows of kind `account` — identifiers only (screened name, owner
+  label, status, server clock), never request bodies. Requests attach via
+  audited link rows; a thin pipeline timeline (closed stage vocabulary,
+  `decision_ref`-required transitions — the machine never advances a stage)
+  rides the same session log; the per-account history is a pure decision
+  join. Six routes, the same layering law as everywhere else; the listing
+  carries the DPO dual gate. Schema-driven wizard packs (typed
+  choice/score/noul only, ambiguous → abstain) assemble ONE typed case for
+  the existing webhook seam — never a chatbot, never free text.
+
 ### Inside one crank cycle
 
 ```mermaid

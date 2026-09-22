@@ -17,6 +17,181 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [1.28.92] — 2026-09-22 — "Ledger": the loop closes diagnostically, and the record layers land
+
+The governed loop's 1.32.x line is stamped through **1.32.7 "Diagnostic
+Closure"**, and two preregistered record layers ship on top of it: the
+after-action disagreement corpus (Reflect/learn) and the StewardOS account
+record layer — the deliberately-not-a-CRM. The System-One decide modules land
+as a pure, ungated Phase 0 port with zero behavior change. The exec path gains
+a real OS boundary. Fifty-four commits, six prereg-first rounds (R16–R21),
+every round with a hash-pinned prereg written before its first edit and an
+evidence file written after — and the classifier consume is deliberately
+ABSENT: the 1.32.8 System-One lane stamps only when that lane ships, and the
+lane stays opener-gated on the operator labeling round. Zero new runtime
+dependency edges across the whole batch; `Cargo.lock` byte-untouched in every
+round that promised it.
+
+### Release notes
+
+**Security fixes**
+
+- **The exec path gets an OS boundary.** The loop's command execution now
+  runs behind a typed sandbox seam with policy-outranks-backend selection:
+  deny-default `sandbox-exec` profiles on macOS, a target-gated Landlock
+  enforcement path on Linux, fail-closed everywhere — an unavailable backend
+  refuses the command rather than faking it, and the handle laws pin
+  cancellation and reaping mid-run. Every execution the loop mediates
+  inherits this boundary; nothing opts out.
+- **Agents cannot mint loop obligations or account rows.** The handoff
+  decision, back-referral return, pipeline stage change, and account archive
+  all enforce the machine-refusal law at the surface AND in the core: a
+  decision reference is REQUIRED (`400 decision_ref_required` /
+  `decision_ref_invalid`), screened and bounded, and the role gates refuse
+  the agent class before any row is written. The account link/pipeline rows
+  are agent-denied end to end; the classifier never advances a stage.
+- **The exfiltration surfaces carry the DPO dual gate.** The two bulk-read
+  surfaces added this release — the disagreement-corpus export and the
+  account listing — both require the Admin scope AND the DPO role, land a
+  global audit row per call (principal, filter, row count), and answer
+  bounded pages only. Corpus exports de-identify at the seam through a
+  synthetic scope-less reader (unconditional PII masking — no caller's
+  clearance can bypass it), and rows carry their frozen train/holdout
+  partition so a bleed is checkable.
+- **Probe-blind 404s everywhere new.** Every run- and account-scoped route
+  added since 1.28.91 answers an absent id with the same 404 an unauthorized
+  caller gets — an absent account and a non-account id are the SAME answer,
+  so the surface never reveals whether an id exists as some other kind of
+  row.
+- **CI now scans every tracked lockfile with the real advisory database.**
+  The rustsec/audit-check action is replaced by the `cargo-audit` binary
+  (scanning root, client, and tools lockfiles on every push); the CodeQL
+  traced-build ENOSPC failure is fixed; the tools lockfiles carry the
+  RUSTSEC-2026-0285 rustls 0.23.45 bump. The conformance pack gains the
+  two-door rule: an explicit `GDL_R10_PACK_DIR` is a fail-closed operator
+  request, while the pack's plain absence on CI is a NAMED skip — never a
+  silent pass.
+- **The memory-safety floor is enforced on production builds**, and the
+  loop's untrusted-input parsers (model-generated JSON artifacts) are
+  reachable through total fuzz seams — every seam returns plain data or a
+  named refusal, never a panic, for any input.
+
+**Improvements**
+
+- **The loop closes diagnostically — 1.32.7 "Diagnostic Closure".** The
+  full closure chain: the SLA clock arms at triage on a typed row (pinned
+  P-class table); the unconditional human escape is honored at every phase
+  boundary with exact replay; escalations land exactly one pre-filled I-PASS
+  offer draft (HITL-gated); `justified_handoff_rate` rolls up from recorded
+  soft-handoff rows with unjustified revisits denied-and-audited; the
+  continuity report section renders deterministic, recorded-rows-only. The
+  triage duty applies ESI/MTS acuity with the red-flag forcing function
+  (monotonic escalate-first lock, fail-closed must-miss catalog); NO case
+  resolves without a law-clean closure artifact at the single resolution
+  seam; the back-referral contract arms atomically with the handoff and its
+  overdue HITL sweep never auto-resolves an obligation.
+- **The operator decision surfaces.** Two new authenticated routes —
+  `POST /workflow/runs/{id}/handoff/decision` and
+  `POST /workflow/runs/{id}/back-referral/return` — put the human decision
+  in the wire: a decision-required transition never moves without the
+  operator's reference, the report's B3 refusals surface named with the
+  missing list, and the board's overdue sweep fires on the production read
+  so a past-deadline contract never reads as merely open.
+- **The disagreement corpus (Reflect/learn).** After-action reflection
+  records capture inside the closing transaction — atomic with closure,
+  strictly after the outcome is sealed, and PROVEN retrospective-only: the
+  same case driven twice is byte-identical with capture on versus off
+  (modulo per-run ids). Hard-negative disagreement rows derive ONLY from
+  audited gate rows, never agent free text. The DPO exports the labeled
+  corpus, bounded and audited, with a frozen train/holdout split stable
+  across exports.
+- **The account record layer — the deliberately-not-a-CRM.** Accounts are
+  workflow rows of kind `account` (no new table, no migration): a screened,
+  bounded record (name, owner label, status, server clock — identifiers
+  only, never request bodies); request→account links and a decision_ref-
+  gated pipeline timeline (closed ratified vocabulary: lead → qualified →
+  proposal → closed_won | closed_lost) as additive audited session-log
+  rows; six routes total with the per-account history served as a pure
+  decision join. Schema-driven wizard packs (support-ticket, tele-health,
+  capture pre-screen) ship as kernel-validatable DATA on the decide
+  builders — branch-on-answer in the pack schema, answers typed
+  choice/score/noul only, anything ambiguous ABSTAINS, and the assembled
+  case lands through the existing webhook seam. The renderer stays GUI-owned.
+- **The System-One decide modules land as pure Phase 0** — script/language
+  detection, the routing precedence chain, the typed question sequences with
+  the hard 20-option ceiling, entropy/ECE calibration in integer units, and
+  the triage/email/guard preset schemas: 134 spawn-free tests, zero
+  behavior change, no model, no Python, no runtime fetch. The inference
+  wiring stays gated on the 1.32.8 lane.
+- **The curated legal-rules DB and the law-version stamp.** A read-only,
+  Admin+DPO-gated `GET /legal/rules?since=` diffs the curated law
+  vocabulary reproducibly; every intake stamps its law_version; the run
+  report renders the recorded rows advisory-only — it informs a human, it
+  never blocks.
+- The compaction pipeline is a measured experiment with failure drills
+  (probes, degradation latches, replay caps), and the fuzz corpus replay
+  tests walk committed seeds for every parser added since the last release.
+
+**Bug fixes**
+
+- The CETS 225 (CoE Framework Convention on AI) entry-into-force stamp is
+  corrected to 2025-09-01 — the CoE's own treaty text carries the Article 30
+  mechanism; the in-tree 2025-11-01 date was wrong. Fixed together: code,
+  compliance doc, derived pin.
+- The linux_ci outside-write probe targeted a GRANTED scope — the probe now
+  exercises the denial path it claimed to test.
+- The no-SQL-in-handlers law is restored over the decision surface: the
+  return handler's inline read moved to a core reader owned by the module
+  that owns the row shape, and the SQL-bearing tests moved to the
+  integration tree — the sanitized gate caught it, the law was right, and
+  nothing was weakened.
+- The conformance fixture re-sync puts the plain case-run lane back at
+  6 passed / 0 failed / 1 ignored (the gold pack re-synced and re-pinned).
+
+### Engineering record
+
+- **The round discipline.** R12–R21, each round preregistered before its
+  first edit and evidenced after: the plans and evidence live in the
+  operator spine (`EXECUTION_PLAN_R1[2-9,20,21]*`, `R19_CLOSEOUT_AND_SYSTEM1_
+  PHASE0_EVIDENCE`, `R20_REFLECT_CORPUS_EVIDENCE`,
+  `R21_EVIDENCE_stewardos_accounts`, and the pinned preregs — e.g. the R21
+  prereg `8ab2906e…` pinned before any kernel byte, with one dated pre-data
+  addendum). R20 and R21 each landed as exactly ONE kernel commit.
+- **Validation at the release tag.** The four sanitized gate scripts
+  (regenerated each round from the persisted 219-name skip list, asserted
+  byte-identical) stand at **1948 / 1972 / 1976 / 1955** — every round's
+  growth exactly its preregistered spawn-free count (1.32.7: +24; R19:
+  +149; R20: +20; R21: +35). spire inventory: router routes 216, crate
+  tests 2,007, coverage rows 180, authz rows 164 — each delta exactly the
+  round's declared surface. SDK 184/188, brain-fuzz 4 (kernel-free),
+  legal-rules-db 11, workspace battery 22 sections / 230 tests. `fmt`,
+  both clippy variants (`-D warnings`), the no-SQL-in-handlers pin, the
+  every-route authz source scan, the openapi coverage pin, the reverse
+  guard, the comment-hygiene law, dup_guard, env-truth (zero new knobs),
+  FIFO control, and `cargo-audit` — all green at the tag. The SBOM is
+  regenerated for this version (`sbom/brain-server-1.28.92.cdx.json`).
+- **The gates caught real bugs and were never weakened:** dup_guard
+  refused two same-name helpers across rounds (both renamed on the new
+  round's own lines); the sanitized gate caught the handler SQL (F3 above)
+  and the comment-hygiene law caught a plan-id label; a lipstyk pass fixed
+  every changed-line finding. Each catch is recorded in the round evidence
+  with the fix.
+- **Honest ceilings, named.** The classifier consume is NOT built — the
+  1.32.8 System-One lane stamps only when it ships, gated on the operator
+  κ-labeling round; the decide modules are pure, ungated, and wired to
+  nothing. The wizard renderer and interaction telemetry are GUI-owned
+  (SvelteTauri shell plan) and absent here. The corpus capture is
+  retrospective-only by construction. Landlock is target-gated to Linux;
+  macOS enforcement rides sandbox-exec. The run report is advisory and
+  never blocks a case. Retrieval-quality and compliance claims elsewhere in
+  this file keep their own scopes; nothing in this section is a benchmark,
+  model-performance, or compliance claim.
+- **Dependency posture:** zero new runtime dependency edges across the
+  entire batch (every round's `Cargo.lock` byte-untouched by declaration
+  and verified; the decide modules are std + serde + serde_json only).
+  The tools-lockfile rustls bump is the one advisory-driven change, and it
+  rides the release-time workspaces only.
+
 ## [1.28.91] — 2026-09-15 — "Notary": the off-host witness and the physical shred
 
 Two operator-held evidence verbs close standing disclosed ceilings, and
