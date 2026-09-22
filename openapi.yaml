@@ -4025,6 +4025,73 @@ paths:
           description: Not authenticated
         "403":
           description: Not admin-scoped
+  /workflow/reflection/corpus:
+    get:
+      summary: De-identified disagreement-corpus export (DPO/admin; audited)
+      description: >
+        The labeled-corpus export for the Reflect/learn round: the
+        after-action reflection records the close seam captures, each with
+        its hard-negative disagreement rows. Every row carries its frozen
+        train/holdout partition (a pure function of the run id over a
+        pinned constant) so a bleed is checkable. Identifiers render as
+        content digests and text excerpts pass the read-seam sanitizer with
+        unconditional PII masking — the raw case input never exports. The
+        page is bounded (limit inside 1..=500) and EVERY export lands a
+        global audit row naming the principal, the filter set, and the row
+        count.
+      operationId: workflowReflectionCorpus
+      parameters:
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: integer
+          description: Only rows recorded at or after this epoch second.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+        - name: partition
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [all, train, holdout]
+          description: The frozen-split side to export (all = unfiltered).
+      responses:
+        "200":
+          description: The bounded, de-identified corpus page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        run_id:
+                          type: integer
+                        seq:
+                          type: integer
+                        partition:
+                          type: string
+                          enum: [train, holdout]
+                        record:
+                          type: object
+                        disagreements:
+                          type: array
+                          items:
+                            type: object
+        "400":
+          description: limit or partition outside the pinned vocabulary
+        "403":
+          description: Admin scope or DPO role missing
   /workflow/scoreboard:
     get:
       summary: Workflow outcome/efficiency scoreboard (DPO/admin evidence surface)

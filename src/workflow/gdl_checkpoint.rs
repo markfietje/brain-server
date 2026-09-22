@@ -669,6 +669,19 @@ fn advance_tx(
             chrono::Utc::now().timestamp(),
         )
         .map_err(persist_error)?;
+        // The after-action reflection capture: retrospective-only, derives
+        // from the sealed case's audited rows, and lands its additive rows
+        // in THIS transaction so the capture is atomic with the closure it
+        // reflects. It can only add rows; the outcome above is already
+        // sealed.
+        crate::workflow::reflection::capture_on_resolve(
+            &mut tx,
+            old.run,
+            &next.case,
+            owner,
+            chrono::Utc::now().timestamp(),
+        )
+        .map_err(persist_error)?;
     }
     next.store(tx.tx())?;
     next.verify_link(tx.tx())?;

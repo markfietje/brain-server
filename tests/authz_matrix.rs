@@ -1931,6 +1931,7 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/breaches",
     "/breaches/{id}",
     "/workflow/scoreboard",
+    "/workflow/reflection/corpus",
     "/workflow/calibration/sign",
 ];
 

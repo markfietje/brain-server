@@ -7226,6 +7226,367 @@ mod tests {
         );
     }
 
+    // ── the after-action reflection capture (retrospective-only) ────────
+
+    /// Mask every random identifier the loop mints per run (UUIDs and
+    /// long hex digests) so two independent runs of the same scripted
+    /// case compare byte-to-byte modulo those ids.
+    fn normalize_ids(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let bytes: Vec<char> = text.chars().collect();
+        let mut i = 0;
+        let is_id = |c: char| c.is_ascii_hexdigit() || c == '-';
+        while i < bytes.len() {
+            if bytes[i].is_ascii_hexdigit() {
+                let start = i;
+                let mut digits = 0;
+                while i < bytes.len() && is_id(bytes[i]) {
+                    if bytes[i].is_ascii_digit() {
+                        digits += 1;
+                    }
+                    i += 1;
+                }
+                let len = i - start;
+                // A bare 10-digit epoch (wall-clock arming deadlines) is
+                // masked like the ids: two runs differ by the clock.
+                if len == 10 && digits == 10 {
+                    out.push_str("§EPOCH");
+                    continue;
+                }
+                if len >= 32 {
+                    out.push_str("§ID");
+                    continue;
+                }
+                out.extend(&bytes[start..i]);
+            } else {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// THE LAW: the capture can only ADD rows after the outcome is sealed,
+    /// never mutate one. Zero-knob realization: the production hook is
+    /// unconditional, so the OFF leg is the run's own bytes with the
+    /// additive rows dropped — the same case driven twice must be
+    /// identical everywhere (modulo the per-run random ids) except exactly
+    /// the declared additive kinds, and the sealed case state must be
+    /// byte-identical across the runs.
+    #[test]
+    fn reflection_never_affects_case_resolution() {
+        let run = |path: &std::path::Path| {
+            let f = fixture(happy_script());
+            let cancel = CancellationToken::new();
+            let outcome = rt()
+                .block_on(f.driver.run_case(1, "capture", &cancel))
+                .unwrap();
+            std::fs::copy(f.tmp.path(), path).unwrap();
+            outcome
+        };
+        let a = tempfile::NamedTempFile::new().unwrap();
+        let b = tempfile::NamedTempFile::new().unwrap();
+        let outcome_a = run(a.path());
+        let outcome_b = run(b.path());
+        assert_eq!(
+            format!("{outcome_a:?}"),
+            format!("{outcome_b:?}"),
+            "the same case resolves identically"
+        );
+        // The sealed terminal state is byte-identical — the capture ran
+        // after `state::cas_update` sealed it and cannot have touched it.
+        let state = |path: &std::path::Path| {
+            let conn = Connection::open(path).unwrap();
+            let state: String = conn
+                .query_row(
+                    "SELECT state_json FROM workflow_runs WHERE id = 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            state
+        };
+        assert_eq!(
+            state(a.path()),
+            state(b.path()),
+            "the sealed case state is byte-identical"
+        );
+        for path in [a.path(), b.path()] {
+            let conn = Connection::open(path).unwrap();
+            conn.execute(
+                "DELETE FROM agent_session_events
+                 WHERE kind IN ('reflection', 'reflection_disagreement')",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "DELETE FROM audit_events WHERE target_hash = ?1",
+                [crate::audit::hash("reflection")],
+            )
+            .unwrap();
+        }
+        let rows = |path: &std::path::Path| {
+            let conn = Connection::open(path).unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT seq, kind, idempotency_key, payload_json
+                     FROM agent_session_events ORDER BY seq",
+                )
+                .unwrap();
+            let events: Vec<(i64, String, String, String)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            let events: Vec<(i64, String, String, String)> = events
+                .into_iter()
+                .map(|(s, k, key, p)| (s, k, normalize_ids(&key), normalize_ids(&p)))
+                .collect();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT kind, actor, target_hash, status
+                     FROM audit_events ORDER BY id",
+                )
+                .unwrap();
+            let audit: Vec<(String, String, String, String)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            (events, audit)
+        };
+        let (rows_a, rows_b) = (rows(a.path()), rows(b.path()));
+        assert_eq!(
+            rows_a.0.len(),
+            rows_b.0.len(),
+            "events: row count diverges ({} vs {})",
+            rows_a.0.len(),
+            rows_b.0.len()
+        );
+        for (i, (l, r)) in rows_a.0.iter().zip(rows_b.0.iter()).enumerate() {
+            assert_eq!(l, r, "events: row {i} diverges\nleft:  {l:?}\nright: {r:?}");
+        }
+        assert_eq!(
+            rows_a.1.len(),
+            rows_b.1.len(),
+            "audit: row count diverges ({} vs {})",
+            rows_a.1.len(),
+            rows_b.1.len()
+        );
+        for (i, (l, r)) in rows_a.1.iter().zip(rows_b.1.iter()).enumerate() {
+            assert_eq!(l, r, "audit: row {i} diverges\nleft:  {l:?}\nright: {r:?}");
+        }
+    }
+
+    /// The capture is placed at the close seam: it fires only on a
+    /// Resolved terminal, strictly after the sealing writes; the only rows
+    /// that may follow it are the terminal claim-release rows.
+    #[test]
+    fn reflection_only_after_final_closure() {
+        let f = fixture(happy_script());
+        let outcome = rt()
+            .block_on(f.driver.run_case(1, "capture", &CancellationToken::new()))
+            .unwrap();
+        assert!(matches!(outcome, GdlOutcome::Resolved { .. }));
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let resolved_seq: i64 = conn
+            .query_row(
+                "SELECT MAX(seq) FROM agent_session_events
+                 WHERE kind = 'gdl_gate' AND payload_json LIKE '%Resolved%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let reflection_seq: i64 = conn
+            .query_row(
+                "SELECT MAX(seq) FROM agent_session_events WHERE kind = 'reflection'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            reflection_seq > resolved_seq,
+            "the capture lands after the sealing gate row"
+        );
+        let stragglers: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT DISTINCT kind FROM agent_session_events
+                     WHERE seq > ?1",
+                )
+                .unwrap();
+            stmt.query_map([reflection_seq], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        assert!(
+            stragglers.iter().all(|k| matches!(
+                k.as_str(),
+                "control:claim" | "control:gdl" | "control:release"
+            )),
+            "only the terminal claim release may follow the capture: {stragglers:?}"
+        );
+        let audit_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE target_hash = ?1",
+                [crate::audit::hash("reflection")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(audit_rows, 1, "exactly one reflection audit row");
+        assert!(verify_chain(&conn), "the chain stays green");
+    }
+
+    /// A clean resolve carries no hard negatives: one reflection row, zero
+    /// disagreement rows.
+    #[test]
+    fn clean_resolve_writes_no_disagreement_row() {
+        let f = fixture(happy_script());
+        let outcome = rt()
+            .block_on(f.driver.run_case(1, "capture", &CancellationToken::new()))
+            .unwrap();
+        assert!(matches!(outcome, GdlOutcome::Resolved { .. }));
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let disagreements: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events
+                 WHERE kind = 'reflection_disagreement'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(disagreements, 0, "a clean resolve mints no hard negative");
+        let records: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE kind = 'reflection'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(records, 1);
+        let payload: String = conn
+            .query_row(
+                "SELECT payload_json FROM agent_session_events WHERE kind = 'reflection'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            payload.contains("\"detached\":true"),
+            "the stored record is detached by construction"
+        );
+        assert!(verify_chain(&conn), "the chain stays green");
+    }
+
+    /// The hard-negative derivation over a real resolved case: the C3
+    /// attempt-1 contradiction and the C2 attempt-2 second-verification
+    /// disagreement each land exactly one typed disagreement row; a human
+    /// override row derives its tuple. The raw case text never leaves the
+    /// digest.
+    #[test]
+    fn disagreement_row_written_for_c2_c3_human_override() {
+        let disagree = VERIFY_JSON.replace("rebuild rate on VD 5", "a different re-run");
+        let contradicted =
+            r#"{"contradicted":true,"reason":"the captured evidence contradicts the hypothesis"}"#;
+        let mut script = happy_script();
+        script.truncate(5); // through Act
+        // Attempt 1: pass, CONTRADICTED recheck → the A4 gate failure.
+        script.push(scripted_text(VERIFY_JSON));
+        script.push(scripted_text(contradicted));
+        // Attempt 2: pass, clean recheck, DISAGREEING confirm → A6 fail.
+        script.push(scripted_text(VERIFY_JSON));
+        script.push(scripted_text(RECHECK_JSON));
+        script.push(scripted_text(&disagree));
+        // Attempt 3: pass, clean recheck, AGREEING confirm → resolve. The
+        // trailing copies absorb the exact turn-consumption point: the
+        // Handoff gate only closes on a law-clean HANDOFF artifact, and
+        // the bounded retry absorbs the filler.
+        script.push(scripted_text(VERIFY_JSON));
+        script.push(scripted_text(RECHECK_JSON));
+        script.push(scripted_text(VERIFY_JSON));
+        script.push(scripted_text(HANDOFF_JSON));
+        script.push(scripted_text(HANDOFF_JSON));
+        script.push(scripted_text(HANDOFF_JSON));
+        let f = fixture(script);
+        let outcome = rt()
+            .block_on(f.driver.run_case(1, "disagree", &CancellationToken::new()))
+            .unwrap();
+        assert!(
+            matches!(outcome, GdlOutcome::Resolved { .. }),
+            "the disrupted-but-recovered case still resolves: {outcome:?}"
+        );
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT payload_json FROM agent_session_events
+                 WHERE kind = 'reflection_disagreement' ORDER BY seq",
+            )
+            .unwrap();
+        let rows: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2, "one C3 tuple + one C2 tuple");
+        let parsed: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|p| serde_json::from_str::<serde_json::Value>(p).unwrap())
+            .collect();
+        assert!(
+            parsed.iter().any(|v| v["phase"] == "verify"
+                && v["governed_truth"]
+                    .as_str()
+                    .unwrap()
+                    .contains("adversarial")),
+            "the C3 tuple carries the kernel A4 law string: {parsed:?}"
+        );
+        assert!(
+            parsed.iter().any(|v| v["phase"] == "verify"
+                && v["governed_truth"]
+                    .as_str()
+                    .unwrap()
+                    .contains("second verification absent or")),
+            "the C2 tuple carries the kernel A6 law string: {parsed:?}"
+        );
+        for v in &parsed {
+            assert_eq!(
+                v["input_digest"].as_str().unwrap(),
+                crate::audit::hash("disagree"),
+                "the input is a content digest, never the raw ticket"
+            );
+        }
+        // The human-override leg: the operator decision surface's row
+        // shape, derived through the same pure path the capture uses.
+        conn.execute(
+            "INSERT INTO agent_session_events(run_id, seq, idempotency_key, kind, payload_json, created_at)
+             VALUES (1, 1000, 'seed-override', 'handoff_lifecycle', ?1, 1)",
+            [serde_json::json!({
+                "transition": "delivered",
+                "human_edited": true,
+                "decision_ref": "OP-77",
+                "detail": {}
+            })
+            .to_string()],
+        )
+        .unwrap();
+        let case: GdlCase = {
+            let raw: String = conn
+                .query_row(
+                    "SELECT state_json FROM workflow_runs WHERE id = 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            serde_json::from_str(&raw).unwrap()
+        };
+        let events = crate::workflow::reflection::collect_events(&conn, 1).unwrap();
+        let record = crate::workflow::reflection::derive_reflection(&case, &events, 1);
+        assert_eq!(record.flags.human_overrides.len(), 1);
+        assert_eq!(record.flags.human_overrides[0].governed_truth, "OP-77");
+        assert!(verify_chain(&conn), "the chain stays green");
+    }
+
     #[test]
     fn capture_refusal_rolls_back_closure() {
         let f = fixture(happy_script());

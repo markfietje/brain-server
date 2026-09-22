@@ -6998,6 +6998,10 @@ Final paragraph after the rule.";
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/workflow_decisions.rs"
                             )),
+                            "reflection" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/reflection.rs"
+                            )),
                             "kcs" => {
                                 include_str!(concat!(
                                     env!("CARGO_MANIFEST_DIR"),
@@ -15867,6 +15871,334 @@ Final paragraph after the rule.";
             )
             .unwrap();
         assert_eq!(escalated_after, escalated, "the sweep is idempotent");
+    }
+
+    // ── R20: the disagreement-corpus export surface ────────────────────
+    //
+    // Integration home: these laws seed session-log rows directly and read
+    // the corpus route through the handler fn — integration SQL is lawful
+    // here, never under `src/handlers` (the no-SQL law counts assertions).
+    // The DPO dual gate's role leg is pinned row-per-class by
+    // tests/authz_matrix.rs (`ROLE_GATED_FOR_AGENT`); the scope leg is
+    // pinned here against a scope-less principal.
+
+    use brain_server::handlers::reflection::{CorpusQuery, get_reflection_corpus};
+
+    /// Seed one resolved troubleshoot run + one valid recorded reflection
+    /// row (plus an optional hostile disagreement row) — the export's
+    /// row shape, not the close path (the close path's laws live in
+    /// `src/workflow/gdl.rs`'s tests where the driver is reachable).
+    fn seed_reflection_row(state: &Arc<AppState>, run_id: i64, seq: i64, model_proposal: &str) {
+        let conn = state.pool.get().unwrap();
+        conn.execute(
+            "INSERT OR IGNORE INTO workflow_runs(id, domain, kind, state_json, state_revision, status, created_at, updated_at)
+             VALUES (?1, 'personal', 'troubleshoot', '{}', 0, 'resolved', 1, 1)",
+            [run_id],
+        )
+        .unwrap();
+        let record = serde_json::json!({
+            "phasetrail": ["intake", "triage"],
+            "flags": {
+                "ood_flag": false,
+                "abstain_events": [],
+                "c2_rejections": [{
+                    "input_digest": brain_server::audit::hash("the raw ticket text"),
+                    "phase": "verify",
+                    "model_proposal": model_proposal,
+                    "governed_truth": "A6: second verification absent or inconsistent — the same planned failing scenario must pass twice, in separate exchanges, before the case may close"
+                }],
+                "c3_falsifications": [],
+                "human_overrides": [],
+                "discordance": []
+            },
+            "would_do_differently": null,
+            "detected_at": 1,
+            "detached": true
+        });
+        conn.execute(
+            "INSERT INTO agent_session_events(run_id, seq, idempotency_key, kind, payload_json, created_at)
+             VALUES (?1, ?2, ?3, 'reflection', ?4, 100)",
+            rusqlite::params![run_id, seq, format!("seed-reflection:{run_id}:{seq}"), record.to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO agent_session_events(run_id, seq, idempotency_key, kind, payload_json, created_at)
+             VALUES (?1, ?2, ?3, 'reflection_disagreement', ?4, 100)",
+            rusqlite::params![
+                run_id,
+                seq + 1,
+                format!("seed-disagreement:{run_id}:{seq}"),
+                serde_json::json!({
+                    "input_digest": brain_server::audit::hash("the raw ticket text"),
+                    "phase": "verify",
+                    "model_proposal": model_proposal,
+                    "governed_truth": "A6: second verification absent or inconsistent"
+                })
+                .to_string()
+            ],
+        )
+        .unwrap();
+    }
+
+    async fn export(
+        state: &Arc<AppState>,
+        q: CorpusQuery,
+    ) -> Result<axum::Json<serde_json::Value>, brain_server::handlers::HandlerError> {
+        get_reflection_corpus(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(None),
+            Query(q),
+        )
+        .await
+    }
+
+    /// The export is audited: exactly one global audit row per export call
+    /// naming the filter set and the emitted row count — and the scope
+    /// gate bites: a scope-less principal is refused before any read.
+    #[tokio::test]
+    async fn corpus_export_is_dpo_gated_and_audited() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        seed_reflection_row(&state, 1, 1, "proposal");
+        let out = export(
+            &state,
+            CorpusQuery {
+                since: None,
+                limit: Some(10),
+                partition: Some("train".into()),
+            },
+        )
+        .await
+        .expect("the loopback incumbent passes the gate");
+        let count = out.0["rows"].as_array().unwrap().len();
+        assert_eq!(count, 1);
+        let audits: i64 = {
+            let conn = state.pool.get().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE target_hash = ?1",
+                [brain_server::audit::hash("reflection_corpus_export")],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(audits, 1, "exactly one export audit row");
+        // The gate bites: a principal with no scopes is refused (403)
+        // before any read happens.
+        let nobody = brain_server::auth::policy::Principal {
+            sub: "no-scopes".into(),
+            tenant: "personal".into(),
+            scopes: vec![],
+            jti: "jti".into(),
+            roles: vec![],
+            manages: vec![],
+            kind: brain_server::auth::policy::PrincipalKind::Jwt,
+        };
+        let refused = get_reflection_corpus(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(Some(nobody)),
+            Query(CorpusQuery {
+                since: None,
+                limit: Some(10),
+                partition: None,
+            }),
+        )
+        .await;
+        let err = refused.expect_err("a scope-less principal is refused");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+    }
+
+    /// The raw case text never leaves the digest, and any excerpt that
+    /// could carry case-adjacent content renders only through the read
+    /// seam sanitizer.
+    #[tokio::test]
+    async fn corpus_export_deidentifies_subjects() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let hostile = "contact ops@example.com <script>alert(1)</script> and see [the runbook](x)";
+        seed_reflection_row(&state, 1, 1, hostile);
+        let out = export(
+            &state,
+            CorpusQuery {
+                since: None,
+                limit: Some(10),
+                partition: None,
+            },
+        )
+        .await
+        .expect("export");
+        let rendered = out.0.to_string();
+        assert!(
+            !rendered.contains("example.com"),
+            "PII-shaped content is masked at the seam: {rendered}"
+        );
+        assert!(
+            !rendered.contains("<script>"),
+            "hostile elements are stripped at the seam: {rendered}"
+        );
+        assert!(
+            !rendered.contains("the raw ticket text"),
+            "the raw case text never appears — only its digest"
+        );
+        assert!(
+            rendered.contains(&brain_server::audit::hash("the raw ticket text")[..16]),
+            "the digest form is what exports"
+        );
+    }
+
+    /// The page is bounded: limit lands inside 1..=500 and is honored.
+    #[tokio::test]
+    async fn corpus_export_is_bounded() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        for run in 1..=3 {
+            seed_reflection_row(&state, run, 1, "proposal");
+        }
+        let out = export(
+            &state,
+            CorpusQuery {
+                since: None,
+                limit: Some(2),
+                partition: None,
+            },
+        )
+        .await
+        .expect("bounded page");
+        assert_eq!(
+            out.0["rows"].as_array().unwrap().len(),
+            2,
+            "limit is honored"
+        );
+        let refused = export(
+            &state,
+            CorpusQuery {
+                since: None,
+                limit: Some(501),
+                partition: None,
+            },
+        )
+        .await
+        .expect_err("limit beyond the bound is a named 400");
+        assert_eq!(refused.status, axum::http::StatusCode::BAD_REQUEST);
+        let refused = export(
+            &state,
+            CorpusQuery {
+                since: None,
+                limit: Some(0),
+                partition: None,
+            },
+        )
+        .await
+        .expect_err("limit 0 is a named 400");
+        assert_eq!(refused.status, axum::http::StatusCode::BAD_REQUEST);
+        let unknown = export(
+            &state,
+            CorpusQuery {
+                since: None,
+                limit: None,
+                partition: Some("everything".into()),
+            },
+        )
+        .await
+        .expect_err("an unknown partition is a named 400");
+        assert_eq!(unknown.status, axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    /// The frozen split: every row carries its partition, the vocabulary
+    /// is closed, and a partition-filtered export never leaks the other
+    /// side.
+    #[tokio::test]
+    async fn corpus_export_has_frozen_holdout_split() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        for run in 1..=6 {
+            seed_reflection_row(&state, run, 1, "proposal");
+        }
+        let out = export(
+            &state,
+            CorpusQuery {
+                since: None,
+                limit: Some(500),
+                partition: None,
+            },
+        )
+        .await
+        .expect("export");
+        let rows = out.0["rows"].as_array().unwrap().clone();
+        assert_eq!(rows.len(), 6);
+        let mut saw_train = false;
+        let mut saw_holdout = false;
+        for r in &rows {
+            match r["partition"].as_str().unwrap() {
+                "train" => saw_train = true,
+                "holdout" => saw_holdout = true,
+                other => panic!("partition vocabulary is closed: {other}"),
+            }
+        }
+        assert!(saw_train && saw_holdout, "over 6 runs both sides appear");
+        // No bleed: a partition-filtered export never returns a row whose
+        // self-declared partition differs.
+        for want in ["train", "holdout"] {
+            let out = export(
+                &state,
+                CorpusQuery {
+                    since: None,
+                    limit: Some(500),
+                    partition: Some(want.into()),
+                },
+            )
+            .await
+            .expect("filtered export");
+            for r in out.0["rows"].as_array().unwrap() {
+                assert_eq!(r["partition"].as_str().unwrap(), want, "no bleed");
+            }
+        }
+    }
+
+    /// The split is stable across exports: the same run carries the same
+    /// partition on every read (the frozen-holdout contract).
+    #[tokio::test]
+    async fn corpus_split_stable_across_exports() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        for run in 1..=6 {
+            seed_reflection_row(&state, run, 1, "proposal");
+        }
+        let first = export(
+            &state,
+            CorpusQuery {
+                since: None,
+                limit: Some(500),
+                partition: None,
+            },
+        )
+        .await
+        .expect("first export");
+        let second = export(
+            &state,
+            CorpusQuery {
+                since: None,
+                limit: Some(500),
+                partition: None,
+            },
+        )
+        .await
+        .expect("second export");
+        let partition_of = |v: &serde_json::Value, run_id: i64| {
+            v["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["run_id"].as_i64() == Some(run_id))
+                .map(|r| r["partition"].as_str().unwrap().to_string())
+                .unwrap()
+        };
+        for run in 1..=6 {
+            assert_eq!(
+                partition_of(&first.0, run),
+                partition_of(&second.0, run),
+                "run {run} keeps its frozen partition"
+            );
+        }
     }
 
     /// unknown_transition_refused_400 — the CLOSED vocabulary holds at the

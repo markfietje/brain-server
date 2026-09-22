@@ -239,6 +239,7 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     // handler gates were verified correct at the same audit that found the
     // gap).
     "/workflow/scoreboard",
+    "/workflow/reflection/corpus",
     "/workflow/calibration/sign",
     "/workflow/plugins/mount",
     "/workflow/runs/{id}/delegations",
@@ -390,6 +391,9 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/events", "Read"),
     // the workflow scoreboard is a DPO/admin evidence surface.
     ("/workflow/scoreboard", "Admin"),
+    // the corpus export: Admin-gated here; the handler additionally
+    // demands the DPO role (the scoreboard posture)
+    ("/workflow/reflection/corpus", "Admin"),
     // the monthly human-signed calibration gate: Admin + DPO role.
     ("/workflow/calibration/sign", "Admin"),
     // the governed-workflow run surfaces: reads on the run's domain,

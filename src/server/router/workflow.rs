@@ -332,6 +332,10 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             get(handlers::workflow::get_scoreboard),
         )
         .route(
+            "/workflow/reflection/corpus",
+            get(handlers::reflection::get_reflection_corpus),
+        )
+        .route(
             "/workflow/calibration/sign",
             post(handlers::workflow::post_calibration_sign),
         )

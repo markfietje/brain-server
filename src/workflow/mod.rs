@@ -94,6 +94,17 @@ pub fn fuzz_budget_predicate(limit: u64, spends: Vec<(u64, u64)>) -> String {
     }
     serde_json::json!({ "exhausted": verdicts }).to_string()
 }
+
+/// Fuzz seam for the reflection record parser — the total parser every
+/// stored reflection payload round-trips through. Any input yields plain
+/// data (the record, or the named error) and never panics.
+#[doc(hidden)]
+pub fn fuzz_reflection_record_parser(question: &str) -> String {
+    let value: serde_json::Value =
+        serde_json::from_str(question).unwrap_or(serde_json::Value::Null);
+    crate::workflow::reflection::parse_reflection_record(&value)
+        .map_or_else(|e| e, |r| serde_json::to_string(&r).unwrap_or_default())
+}
 #[cfg(test)]
 mod eval_kappa;
 pub(crate) mod evidence;
@@ -112,6 +123,7 @@ pub(crate) mod outreach;
 pub(crate) mod parcels;
 pub(crate) mod proficiency;
 pub(crate) mod recall;
+pub(crate) mod reflection;
 pub(crate) mod relay;
 pub mod report;
 pub(crate) mod sandbox;
