@@ -360,6 +360,13 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
             "/accounts/{id}/pipeline" => ("POST", r#"{"stage":"qualified","decision_ref":"m"}"#),
             "/accounts/{id}/requests" => ("GET", ""),
             "/accounts/{id}/requests/{run_id}/link" => ("POST", ""),
+            // The κ bench: complete-shaped label body so the Json
+            // extractor clears and the gates decide; the digest matches
+            // no seeded tuple, so the pass classes answer the handler's
+            // probe-blind 404 (not an authz error).
+            "/workflow/kappa/queue" => ("GET", ""),
+            "/workflow/kappa/labels" => ("POST", r#"{"digest":"aa","label":"agree","run_id":1}"#),
+            "/workflow/kappa/report" => ("GET", ""),
             "/workflow/runs/{id}/back-referral/return" => (
                 "POST",
                 r#"{"contract_key":"m","report":{},"decision_ref":"m"}"#,
@@ -564,6 +571,9 @@ const EMPTY_SAFE_200: &[&str] = &[
     "/workflow/runs",
     // the DPO-gated listing on an empty corpus is a literal 200
     "/accounts",
+    // the κ bench reads on an empty corpus are literal 200s
+    "/workflow/kappa/queue",
+    "/workflow/kappa/report",
 ];
 
 async fn send(
@@ -1928,6 +1938,12 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/accounts/{id}/pipeline",
     "/accounts/{id}/requests",
     "/accounts/{id}/requests/{run_id}/link",
+    // The κ bench: queue + capture demand the `calibrate` capability (the
+    // agent preset carries read/write/reject only); the report carries
+    // the DPO dual gate (the agent HAS roles, so the dual gate binds).
+    "/workflow/kappa/queue",
+    "/workflow/kappa/labels",
+    "/workflow/kappa/report",
     // The operator decision surfaces: both handlers demand the `workflow`
     // role (the HITL law's gate shape) on top of the Write scope, so the
     // agent class is refused 403 exactly like the offer route.

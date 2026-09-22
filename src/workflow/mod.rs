@@ -162,6 +162,35 @@ pub fn fuzz_wizard_pack(question: &str) -> String {
         |p| serde_json::json!({ "pack": p.pack, "questions": p.questions.len() }).to_string(),
     )
 }
+
+/// Fuzz seam for the κ assignment: any `{run_id, digest}` soup yields a
+/// distinct in-roster slot set, never a panic.
+#[doc(hidden)]
+pub fn fuzz_kappa_assignment(question: &str) -> String {
+    let value: serde_json::Value =
+        serde_json::from_str(question).unwrap_or(serde_json::Value::Null);
+    let run_id = value
+        .get("run_id")
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0);
+    let digest = value
+        .get("digest")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let slots = crate::workflow::kappa::assignment_slots(run_id, digest);
+    serde_json::json!({ "slots": slots }).to_string()
+}
+
+/// Fuzz seam for the κ label parser — the total parser every stored label
+/// payload round-trips through. Any input yields plain data (the payload,
+/// or the named `kappa: …` refusal) and never panics.
+#[doc(hidden)]
+pub fn fuzz_kappa_label(question: &str) -> String {
+    let value: serde_json::Value =
+        serde_json::from_str(question).unwrap_or(serde_json::Value::Null);
+    crate::workflow::kappa::parse_kappa_label(&value)
+        .map_or_else(|e| e, |p| serde_json::to_string(&p).unwrap_or_default())
+}
 #[cfg(test)]
 mod eval_kappa;
 pub(crate) mod evidence;
@@ -173,6 +202,7 @@ mod gdl_eval;
 pub mod host;
 pub(crate) mod hostcalls;
 pub(crate) mod interview;
+pub(crate) mod kappa;
 pub mod kcs;
 pub(crate) mod mesh;
 pub mod outbox;

@@ -266,6 +266,10 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/accounts/{id}/pipeline",
     "/accounts/{id}/requests",
     "/accounts/{id}/requests/{run_id}/link",
+    // The κ labeling bench (the operator labeling round's instrument).
+    "/workflow/kappa/queue",
+    "/workflow/kappa/labels",
+    "/workflow/kappa/report",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -557,4 +561,11 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/accounts/{id}/pipeline", "Write"),
     ("/accounts/{id}/requests", "Write"),
     ("/accounts/{id}/requests/{run_id}/link", "Write"),
+    // The κ labeling bench: queue + label capture are `calibrate`-gated
+    // Writes on the global domain (the role gate is pinned by the handler
+    // source below); the report is the DPO dual gate — Admin here, the
+    // DPO role + `calibrate` capability demanded by the handler.
+    ("/workflow/kappa/queue", "Write"),
+    ("/workflow/kappa/labels", "Write"),
+    ("/workflow/kappa/report", "Admin"),
 ];

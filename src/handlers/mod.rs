@@ -36,6 +36,7 @@ pub mod gate;
 pub mod govern;
 pub mod holds;
 pub mod ingest;
+pub mod kappa;
 pub mod kcs;
 pub mod legal;
 pub mod mesh;

@@ -6998,6 +6998,10 @@ Final paragraph after the rule.";
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/accounts.rs"
                             )),
+                            "kappa" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/kappa.rs"
+                            )),
                             "workflow_decisions" => include_str!(concat!(
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/workflow_decisions.rs"
@@ -16812,6 +16816,308 @@ Final paragraph after the rule.";
         // The chain verifies with every account write on it.
         let conn = state.pool.get().unwrap();
         assert!(brain_server::audit::verify_chain(&conn));
+    }
+
+    // ── the κ labeling bench: the blind capture surfaces ────────────────
+    //
+    // Handler-shape laws over the real composed state (the no-SQL law
+    // counts statements under src/handlers/*, so these live in the
+    // integration tree).
+
+    use brain_server::handlers::kappa::{
+        KappaLabelBody, KappaQueueQuery, KappaReportQuery, slot_for_principal,
+    };
+
+    /// Seed one mined tuple under `run_id` (a reflection_disagreement row,
+    /// the shape the close seam writes) + its workflow_runs row.
+    fn seed_kappa_tuple(state: &Arc<AppState>, run_id: i64, seed: &str) -> String {
+        let conn = state.pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO workflow_runs(id, domain, kind, state_json, state_revision, status, created_at, updated_at)
+             VALUES (?1, 'acme', 'troubleshoot', '{}', 0, 'active', 1, 1)
+             ON CONFLICT(id) DO NOTHING",
+            [run_id],
+        )
+        .unwrap();
+        let digest = brain_server::audit::hash(seed);
+        let payload = serde_json::json!({
+            "input_digest": digest,
+            "model_proposal": format!("proposal {seed}"),
+            "governed_truth": "L9 no search hit",
+            "phase": "C2",
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO agent_session_events(run_id, seq, idempotency_key, kind, payload_json, created_at)
+             VALUES (?1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_session_events WHERE run_id = ?1), ?2, ?3, ?4, 1)",
+            rusqlite::params![
+                run_id,
+                format!("run{run_id}:seed:{seed}"),
+                "reflection_disagreement",
+                payload
+            ],
+        )
+        .unwrap();
+        digest
+    }
+
+    fn kappa_rater(sub: &str) -> Option<brain_server::auth::Principal> {
+        Some(brain_server::auth::Principal {
+            sub: sub.to_string(),
+            tenant: "team-alpha".to_string(),
+            scopes: vec![brain_server::auth::Scope::parse("write:team-alpha/*").unwrap()],
+            jti: format!("j-{sub}"),
+            roles: vec!["qa-specialist".to_string()],
+            manages: vec![],
+            kind: brain_server::auth::PrincipalKind::Jwt,
+        })
+    }
+
+    /// A subject whose derived slot is the one asked for (the derivation
+    /// is a hash, not a registry — a bounded sweep finds each slot's
+    /// rater deterministically).
+    fn sub_for_slot(prefix: &str, slot: u8) -> String {
+        (0..256)
+            .map(|i| format!("{prefix}-{i}"))
+            .find(|s| slot_for_principal(s) == slot)
+            .expect("a bounded sweep finds a rater for every slot")
+    }
+
+    /// kappa_queue_blind_to_other_raters — the queue carries ONLY the
+    /// caller's own assignment + own labels: rater B never sees rater
+    /// A's judgment, and no rater surface ever carries the governed
+    /// truth.
+    #[tokio::test]
+    async fn kappa_queue_blind_to_other_raters() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let digest = seed_kappa_tuple(&state, 1, "blind-case");
+        let sub0 = sub_for_slot("user:kappa-s0", 0);
+        let sub1 = sub_for_slot("user:kappa-s1", 1);
+        let a = kappa_rater(&sub0).unwrap();
+        let b = kappa_rater(&sub1).unwrap();
+        // Rater A (slot 0) labels agree.
+        let receipt = brain_server::handlers::kappa::post_kappa_label(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(Some(a.clone())),
+            Json(KappaLabelBody {
+                digest: digest.clone(),
+                label: "agree".into(),
+                run_id: 1,
+            }),
+        )
+        .await
+        .expect("rater A labels the assigned tuple");
+        assert_eq!(receipt.0["created"], serde_json::json!(true));
+        // A's queue: the own label shows.
+        let q = brain_server::handlers::kappa::get_kappa_queue(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(Some(a)),
+            Query(KappaQueueQuery { limit: None }),
+        )
+        .await
+        .expect("rater A's queue");
+        assert_eq!(q.0["slot"], serde_json::json!(0));
+        assert_eq!(q.0["rows"][0]["my_label"], serde_json::json!("agree"));
+        assert!(
+            !q.0.to_string().contains("governed"),
+            "the governed truth never rides a rater surface"
+        );
+        // Rater B (slot 1): the same tuple, NO trace of A's judgment.
+        let q = brain_server::handlers::kappa::get_kappa_queue(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(Some(b.clone())),
+            Query(KappaQueueQuery { limit: None }),
+        )
+        .await
+        .expect("rater B's queue");
+        assert_eq!(q.0["slot"], serde_json::json!(1));
+        assert_eq!(q.0["rows"][0]["my_label"], serde_json::json!(null));
+        assert!(
+            !q.0.to_string().contains("agree"),
+            "another rater's label is unreachable: {}",
+            q.0
+        );
+        assert!(
+            !q.0.to_string().contains("governed"),
+            "the governed truth never rides a rater surface"
+        );
+        // B labels disagree; A's queue STILL shows only A's own label.
+        let receipt = brain_server::handlers::kappa::post_kappa_label(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(Some(b)),
+            Json(KappaLabelBody {
+                digest,
+                label: "disagree".into(),
+                run_id: 1,
+            }),
+        )
+        .await
+        .expect("rater B labels the assigned tuple");
+        assert_eq!(receipt.0["created"], serde_json::json!(true));
+        let q = brain_server::handlers::kappa::get_kappa_queue(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(Some(kappa_rater(&sub0).unwrap())),
+            Query(KappaQueueQuery { limit: None }),
+        )
+        .await
+        .expect("rater A's queue after B's label");
+        assert_eq!(q.0["rows"][0]["my_label"], serde_json::json!("agree"));
+        assert!(!q.0.to_string().contains("disagree"));
+    }
+
+    /// kappa_submit_requires_calibrate_and_audits — the scope alone is
+    /// not enough (a role holder whose `can` lacks `calibrate` is 403),
+    /// the qa-specialist passes, and EVERY created label lands exactly
+    /// one audited row (the denials write none).
+    #[tokio::test]
+    async fn kappa_submit_requires_calibrate_and_audits() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let digest = seed_kappa_tuple(&state, 1, "audit-case");
+        let mut agent = kappa_rater(&sub_for_slot("user:kappa-ag", 0)).unwrap();
+        agent.roles = vec!["agent".to_string()];
+        let err = brain_server::handlers::kappa::post_kappa_label(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(Some(agent)),
+            Json(KappaLabelBody {
+                digest: digest.clone(),
+                label: "agree".into(),
+                run_id: 1,
+            }),
+        )
+        .await
+        .expect_err("the agent role carries no calibrate");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        let rater = kappa_rater(&sub_for_slot("user:kappa-audit", 0)).unwrap();
+        let receipt = brain_server::handlers::kappa::post_kappa_label(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(Some(rater)),
+            Json(KappaLabelBody {
+                digest,
+                label: "uncertain".into(),
+                run_id: 1,
+            }),
+        )
+        .await
+        .expect("the qa-specialist carries calibrate");
+        assert_eq!(receipt.0["audited"], serde_json::json!(true));
+        // Exactly ONE label audit; the refused call wrote none.
+        let conn = state.pool.get().unwrap();
+        let audits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'workflow' AND target_hash = ?1",
+                [brain_server::audit::hash("kappa_label")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(audits, 1);
+    }
+
+    /// kappa_report_dpo_dual_gated — the report is THE exfiltration
+    /// surface: Admin scope + a `calibrate` capability is still not
+    /// enough without the DPO role, the dpo passes, the cells render as
+    /// data (a degenerate pair names itself, meets_bar stays false), and
+    /// the call is audited.
+    #[tokio::test]
+    async fn kappa_report_dpo_dual_gated() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let digest = seed_kappa_tuple(&state, 1, "report-case");
+        // Both slots label identically → a single jointly labeled tuple →
+        // the pair is degenerate by the κ law and must SAY so.
+        for slot in [0u8, 1u8] {
+            let rater = kappa_rater(&sub_for_slot("user:kappa-rep", slot)).unwrap();
+            let receipt = brain_server::handlers::kappa::post_kappa_label(
+                State(state.clone()),
+                brain_server::handlers::auth::OptPrincipal(Some(rater)),
+                Json(KappaLabelBody {
+                    digest: digest.clone(),
+                    label: "agree".into(),
+                    run_id: 1,
+                }),
+            )
+            .await
+            .expect("the rater labels the assigned tuple");
+            assert_eq!(receipt.0["created"], serde_json::json!(true));
+        }
+        let mk = |roles: &'static [&'static str]| {
+            let mut p = kappa_rater(&sub_for_slot("user:kappa-view", 0)).unwrap();
+            // the report demands the ADMIN scope on top of the role gate
+            p.scopes = vec![brain_server::auth::Scope::parse("admin:team-alpha/*").unwrap()];
+            p.roles = roles.iter().map(|s| s.to_string()).collect();
+            p
+        };
+        // qa-specialist: carries calibrate, lacks the DPO role → 403.
+        let err = brain_server::handlers::kappa::get_kappa_report(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(Some(mk(&["qa-specialist"]))),
+            Query(KappaReportQuery { limit: None }),
+        )
+        .await
+        .expect_err("calibrate alone cannot read the report");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        // dpo: the dual gate + calibrate pass.
+        let view = brain_server::handlers::kappa::get_kappa_report(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(Some(mk(&["dpo"]))),
+            Query(KappaReportQuery { limit: None }),
+        )
+        .await
+        .expect("the DPO dual gate + calibrate pass");
+        assert_eq!(view.0["bar_units"], serde_json::json!(7000));
+        assert_eq!(view.0["rows"][0]["kappa_units"], serde_json::json!(-1));
+        assert_eq!(view.0["rows"][0]["meets_bar"], serde_json::json!(false));
+        assert!(view.0["rows"][0]["kappa_note"].is_string());
+        // The dpo call is audited; the refused call wrote none.
+        let conn = state.pool.get().unwrap();
+        let audits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'workflow' AND target_hash = ?1",
+                [brain_server::audit::hash("kappa_report")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(audits, 1);
+        assert!(brain_server::audit::verify_chain(&conn));
+    }
+
+    /// probe_blind_404_on_unassigned_tuple — an absent tuple and an
+    /// absent assignment answer the SAME probe-blind 404: the submit
+    /// never reveals whether a digest exists.
+    #[tokio::test]
+    async fn probe_blind_404_on_unassigned_tuple() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let _real = seed_kappa_tuple(&state, 1, "probe-real");
+        let rater = kappa_rater(&sub_for_slot("user:kappa-probe", 0)).unwrap();
+        let submit = |digest: String, run_id: i64| {
+            let state = state.clone();
+            let rater = rater.clone();
+            async move {
+                brain_server::handlers::kappa::post_kappa_label(
+                    State(state),
+                    brain_server::handlers::auth::OptPrincipal(Some(rater)),
+                    Json(KappaLabelBody {
+                        digest,
+                        label: "agree".into(),
+                        run_id,
+                    }),
+                )
+                .await
+            }
+        };
+        let absent_run = submit(brain_server::audit::hash("probe-real"), 999_999)
+            .await
+            .expect_err("an absent run is 404");
+        let absent_digest = submit(brain_server::audit::hash("probe-ghost"), 1)
+            .await
+            .expect_err("an absent digest is 404");
+        for err in [absent_run, absent_digest] {
+            assert_eq!(err.status, axum::http::StatusCode::NOT_FOUND);
+            assert_eq!(err.inner.code, "not_found");
+            assert_eq!(err.inner.message, "no such assignment");
+        }
     }
 }
 

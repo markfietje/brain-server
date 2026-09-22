@@ -7232,6 +7232,146 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Account or request run not found (probe-blind) }
+  /workflow/kappa/queue:
+    get:
+      summary: The caller's own κ labeling assignment (calibrate role; both partitions)
+      description: >
+        The labeling bench's rater queue: the mined disagreement tuples
+        assigned to the CALLER'S slot (the slot derives from the
+        authenticated principal, never the client), oldest first, bounded.
+        Rows carry the machine's proposal (masked through the read seam
+        with unconditional PII masking), the phase, and the frozen
+        train/holdout partition — the bench labels both partitions, each
+        row carrying its frozen side. The governed truth is NOT in the
+        rows, and no other rater's labels are reachable at any gate:
+        blindness is the core's output type. The response echoes the
+        caller's slot.
+      operationId: workflowKappaQueue
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: The caller's own bounded queue
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  slot: { type: integer, minimum: 0 }
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        run_id: { type: integer }
+                        seq: { type: integer }
+                        digest: { type: string }
+                        phase: { type: string }
+                        partition: { type: string, enum: [train, holdout] }
+                        model_proposal: { type: string }
+                        my_label: { type: string, nullable: true }
+                        my_label_seq: { type: integer, nullable: true }
+                  count: { type: integer }
+        "400": { description: kappa_limit_out_of_bounds }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (the calibrate capability is required) }
+  /workflow/kappa/labels:
+    post:
+      summary: Capture one blind label (calibrate role; the slot derives from the principal)
+      description: >
+        One judgment on one tuple: body `{digest, label, run_id}` — the
+        label comes from the closed ratified vocabulary
+        (agree | disagree | uncertain), the slot derives from the
+        authenticated principal. The write is exactly-once and append-only
+        under the TUPLE's run id: a re-submitted latest judgment is the
+        no-op receipt, a changed judgment appends a supersession row, and
+        ONE audit row lands per created label (ids + counts, never label
+        text). An absent tuple and a tuple not assigned to the caller are
+        the SAME probe-blind 404.
+      operationId: workflowKappaLabel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [digest, label, run_id]
+              properties:
+                digest: { type: string }
+                label: { type: string, enum: [agree, disagree, uncertain] }
+                run_id: { type: integer }
+      responses:
+        "200":
+          description: The label receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  slot: { type: integer }
+                  created: { type: boolean }
+                  seq: { type: integer }
+                  supersession: { type: integer }
+                  audited: { type: boolean }
+        "400": { description: label_required / label_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (the calibrate capability is required) }
+        "404": { description: No such assignment (probe-blind) }
+  /workflow/kappa/report:
+    get:
+      summary: The per-rater-pair κ report (DPO/admin dual gate + calibrate; audited)
+      description: >
+        Cohen's κ over the labeled set, one cell per (domain × frozen
+        partition × slot pair), integer ten-thousandths, latest-wins over
+        superseded rows. A degenerate pair names itself (NO_KAPPA plus the
+        κ function's own refusal) and never pretends to agree.
+        `meets_bar` (κ ≥ 0.70) is REPORTED DATA for the operator's read —
+        the κ value never auto-gates anything. EVERY call lands an audit
+        row naming the principal and the counts.
+      operationId: workflowKappaReport
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: The bounded κ cells
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bar_units: { type: integer }
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        domain: { type: string }
+                        partition: { type: string, enum: [train, holdout] }
+                        slot_a: { type: integer }
+                        slot_b: { type: integer }
+                        n_joint: { type: integer }
+                        kappa_units: { type: integer }
+                        kappa_note: { type: string, nullable: true }
+                        meets_bar: { type: boolean }
+                  count: { type: integer }
+        "400": { description: kappa_limit_out_of_bounds }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (the DPO dual gate + calibrate) }
 components:
   securitySchemes:
     bearerAuth:

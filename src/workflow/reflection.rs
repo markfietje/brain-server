@@ -676,7 +676,7 @@ pub(crate) struct CorpusEntry {
     pub disagreements: Vec<DisagreementPayload>,
 }
 
-fn sanitize_seam(s: &str) -> String {
+pub(crate) fn sanitize_seam(s: &str) -> String {
     // The corpus is a training export: PII masking is UNCONDITIONAL here
     // (the minimization posture) — the render runs as a synthetic
     // scope-less reader, so no caller's PII clearance can bypass it.
@@ -791,52 +791,12 @@ pub(crate) fn reflection_corpus(
     Ok(out)
 }
 
-// ── the κ instrument (test-scoped, the eval_kappa precedent) ────────────────
-
-#[cfg(test)]
-pub(crate) mod kappa {
-    /// The κ sentinel: no signed agreement yet (the SDK calibration
-    /// convention).
-    pub(crate) const NO_KAPPA: i32 = -1;
-
-    /// Cohen's κ over label vectors, integer ten-thousandths. Degenerate
-    /// inputs are named errors, never NaN (the eval_kappa precedent):
-    /// empty or length-mismatched raters, or a degenerate expected
-    /// agreement of 1 (both raters constant with the same marginal), are
-    /// refusals.
-    pub(crate) fn cohen_kappa_units(rater_a: &[String], rater_b: &[String]) -> Result<i32, String> {
-        if rater_a.is_empty() || rater_b.is_empty() {
-            return Err("kappa: no ratings supplied".into());
-        }
-        if rater_a.len() != rater_b.len() {
-            return Err(format!(
-                "kappa: rating length mismatch ({} vs {})",
-                rater_a.len(),
-                rater_b.len()
-            ));
-        }
-        let n = rater_a.len() as f64;
-        let observed = rater_a.iter().zip(rater_b).filter(|(a, b)| a == b).count() as f64 / n;
-        let mut labels: Vec<&String> = rater_a.iter().chain(rater_b.iter()).collect();
-        labels.sort();
-        labels.dedup();
-        let mut expected = 0.0;
-        for label in labels {
-            let pa = rater_a.iter().filter(|a| *a == label).count() as f64 / n;
-            let pb = rater_b.iter().filter(|b| *b == label).count() as f64 / n;
-            expected += pa * pb;
-        }
-        if expected >= 1.0 {
-            return Err("kappa: degenerate — expected agreement 1; κ is undefined".into());
-        }
-        let kappa = (observed - expected) / (1.0 - expected);
-        Ok((kappa * 10_000.0).round() as i32)
-    }
-}
+// ── the κ instrument lives in workflow::kappa: the promotion put the
+//    pure fn in the domain core next to the assignment + label store it
+//    serves, and the goldens moved with it ──────────────────────────────────
 
 #[cfg(test)]
 mod tests {
-    use super::kappa::{NO_KAPPA, cohen_kappa_units};
     use super::*;
     use crate::migration::run_migration;
     use crate::register_sqlite_vec::register_sqlite_vec;
@@ -1126,44 +1086,5 @@ mod tests {
             count += 1;
         }
         assert!(count >= 8, "the reflection corpus must stay populated");
-    }
-
-    #[test]
-    fn kappa_hand_computed_vectors() {
-        let v: fn(&[&str]) -> Vec<String> = |xs| xs.iter().map(|s| s.to_string()).collect();
-        // Perfect agreement: κ = 1 → 10000.
-        let a = v(&["x", "y", "x"]);
-        let b = v(&["x", "y", "x"]);
-        assert_eq!(cohen_kappa_units(&a, &b).unwrap(), 10_000);
-        // The classic hand case: 5/6 observed, pe = 0.5 → κ = 2/3.
-        let a = v(&["y", "y", "n", "y", "n", "y"]);
-        let b = v(&["y", "y", "y", "y", "n", "n"]);
-        // observed = 4/6, pa(py)=4/6, pb(py)=4/6, pn: 2/6, 2/6 → pe = 16/36+4/36 = 20/36
-        // κ = (2/3 − 5/9) / (1 − 5/9) = (1/9)/(4/9) = 1/4 → 2500.
-        assert_eq!(cohen_kappa_units(&a, &b).unwrap(), 2_500);
-        // Chance agreement → 0: observed equals expected.
-        let a = v(&["x", "y", "x", "y"]);
-        let b = v(&["x", "y", "y", "x"]);
-        assert_eq!(cohen_kappa_units(&a, &b).unwrap(), 0);
-        // Degenerate: same constant marginal → named error, never NaN.
-        let a = v(&["x", "x", "x"]);
-        let b = v(&["x", "x", "x"]);
-        assert!(cohen_kappa_units(&a, &b).is_err());
-        // Degenerate: opposite constants (observed 0, expected 0) → κ = 0.
-        let a = v(&["x", "x"]);
-        let b = v(&["y", "y"]);
-        assert_eq!(cohen_kappa_units(&a, &b).unwrap(), 0);
-        // Perfect disagreement with balanced marginals (observed 0,
-        // expected 1/2) → κ = −1 → −10000 units.
-        let a = v(&["x", "x", "y", "y"]);
-        let b = v(&["y", "y", "x", "x"]);
-        assert_eq!(cohen_kappa_units(&a, &b).unwrap(), -10_000);
-        // NO_KAPPA is the -1 sentinel … which collides with the perfect
-        // disagreement value in units; the sentinel is a field default,
-        // never a computed κ, so the vocabulary stays honest.
-        assert_eq!(NO_KAPPA, -1);
-        // Named refusals.
-        assert!(cohen_kappa_units(&[], &[]).is_err());
-        assert!(cohen_kappa_units(&["x".into()], &["x".into(), "y".into()]).is_err());
     }
 }

@@ -355,6 +355,22 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             get(handlers::accounts::get_account_requests),
         )
         .route("/accounts", get(handlers::accounts::get_accounts))
+        // The κ labeling bench: the rater's own queue, the blind label
+        // capture, and the DPO-gated report. The queue GET registers
+        // FIRST; the DPO-gated report GET registers LAST so the authz
+        // source-scan maps the family to the strictest reader.
+        .route(
+            "/workflow/kappa/queue",
+            get(handlers::kappa::get_kappa_queue),
+        )
+        .route(
+            "/workflow/kappa/labels",
+            post(handlers::kappa::post_kappa_label),
+        )
+        .route(
+            "/workflow/kappa/report",
+            get(handlers::kappa::get_kappa_report),
+        )
         .route(
             "/workflow/calibration/sign",
             post(handlers::workflow::post_calibration_sign),
