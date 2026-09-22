@@ -102,7 +102,7 @@ at the data-access layer. Short-lived tokens + refresh.
 | JWT short-lived (≤15 min exp) + refresh | `auth/refresh` + token verifier | ✅ v1.2 |
 | Tenant isolation via file-per-domain | `DomainRegistry` | ✅ v1.0 |
 | AuthZ failures logged with `(principal, action, target)` | `audit_events` | ✅ v1.2 M6 |
-| Cross-tenant returns 403, never 404 (don't leak existence) | AuthZ layer | ✅ v1.2 |
+| Cross-tenant existence hidden: capability/scope denials return 403; resource-visibility paths (foreign-domain by-id reads, unknown-domain lookups) return probe-blind 404s | AuthZ layer | ✅ (probe-blind hardening) |
 
 **Citation:** OWASP A01:2025 — "Access control is only effective when
 implemented in trusted server-side code... deny by default... enforce record

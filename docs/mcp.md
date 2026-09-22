@@ -45,8 +45,8 @@ What you need to run it:
    `tool_out_of_scope` and `tools/list` annotates them
    `"x-brain-scope": "read-denied"` so recall-only hosts can render or hide
    them. Parsed fail-closed: an unknown value refuses to start (the startup
-   line logs the resolved scope). Installer guidance flips recall-only hosts
-   to `read`.
+   line logs the resolved scope). No installer or deploy artifact sets it —
+   `read` is a per-host operator choice (set it in the host's environment).
 
 You can smoke-test it from a shell (a modern, stateless request is the example
 further down): pipe one JSON-RPC line into `./target/release/mcp` and read the

@@ -4,7 +4,7 @@ info:
   description: >
     HTTP API for the brain-server local agent memory / semantic search server
     (Axum + rusqlite + sqlite-vec + model2vec). This spec is hand-written from
-    the source in src/main.rs and src/handlers/*. Endpoints whose contract could
+    the source in src/server/router/** and src/handlers/*. Endpoints whose contract could
     not be fully verified from source are marked with `x-status: unverified`.
     Every response carries `X-Api-Version: <semver>`; legacy routes carry a
     `Deprecation` header per the deprecation policy in API_CONTRACT.md.
@@ -1935,14 +1935,14 @@ paths:
           description: Expire an existing chunk via resolve_supersession in the same tx.
         - in: query
           name: digest
+          required: true
           schema: { type: string }
           description: >
-            v1.27.12 "ReviewArmour": the `content_digest` the reviewer was
-            shown (returned by GET /proposals). When present, the server
-            recomputes it from the current row and returns 409 if the content
-            drifted since display — the approval binds to the bytes that were
-            actually rendered. Absent = legacy quick-approve/offline-replay
-            (no binding).
+            v1.27.12 "ReviewArmour": REQUIRED — the `content_digest` the
+            reviewer was shown (returned by GET /proposals); absent is
+            `400 digest_required`. The server recomputes it from the current
+            row and returns 409 if the content drifted since display — the
+            approval binds to the bytes that were actually rendered.
       responses:
         "200":
           description: >-
@@ -2842,7 +2842,7 @@ paths:
             application/json:
               schema:
                 type: object
-                example: {"server": {"name": "brain-server", "version": "1.27.16"}, "ump": "1.0", "conformance": "L2", "kinds": ["semantic", "episodic", "procedural", "working", "identity"], "bindings": ["http", "mcp", "file"], "retrieval_signals": ["similarity", "recency", "salience", "scope_match", "provenance_depth"], "max_recall": 20, "writable": true, "audit": true}
+                example: {"server": {"name": "brain-server", "version": "1.27.16"}, "ump": "1.0", "conformance": "L2", "kinds": ["semantic", "episodic", "procedural", "working", "identity"], "bindings": ["http", "mcp", "file"], "retrieval_signals": ["similarity", "recency", "salience", "scope_match", "provenance_depth"], "max_recall": 50, "writable": true, "audit": true}
                 description: 'conformance = L3 when an operator signing key is configured, L2 otherwise'
   /ump/remember:
     post:
@@ -3039,7 +3039,7 @@ paths:
             application/json:
               schema:
                 type: object
-                example: {"server": {"name": "brain-server", "version": "1.27.16"}, "ump": "1.0", "conformance": "L2", "kinds": ["semantic", "episodic", "procedural", "working", "identity"], "bindings": ["http", "mcp", "file"], "retrieval_signals": ["similarity", "recency", "salience", "scope_match", "provenance_depth"], "max_recall": 20, "writable": true, "audit": true}
+                example: {"server": {"name": "brain-server", "version": "1.27.16"}, "ump": "1.0", "conformance": "L2", "kinds": ["semantic", "episodic", "procedural", "working", "identity"], "bindings": ["http", "mcp", "file"], "retrieval_signals": ["similarity", "recency", "salience", "scope_match", "provenance_depth"], "max_recall": 50, "writable": true, "audit": true}
                 description: 'identical payload to /ump/capabilities, mounted on the public well-known surface'
   /events:
     get:
@@ -3110,8 +3110,8 @@ paths:
       parameters:
         - in: query
           name: format
-          description: "`ump` re-renders the payload as UMP records (one per chunk, name-based graph)"
-          schema: { type: string, enum: [ump] }
+          description: "`ump` re-renders the payload as UMP records (one per chunk, name-based graph); `ump-md` renders the UMP markdown file binding"
+          schema: { type: string, enum: [ump, ump-md] }
         - in: query
           name: redact_owner
           description: "v1.20.17: owner label to keep; rows owned by another owner export with `content` redacted to `[redacted]`."
@@ -3387,8 +3387,8 @@ paths:
       parameters:
         - in: query
           name: format
-          description: "`ump` accepts a UMP envelope body (one record per call)"
-          schema: { type: string, enum: [ump] }
+          description: "`ump` accepts a UMP envelope body (one record per call); `ump-md` accepts the UMP markdown file binding"
+          schema: { type: string, enum: [ump, ump-md] }
       requestBody:
         required: true
         content:
@@ -7383,10 +7383,12 @@ components:
         `BRAIN_JWT_KEY_DIR` key, or the static bearer token from
         `BRAIN_TOKEN_FILE`/`BRAIN_TOKEN`. Authz is scope-based
         (`<action>:<team>/<domain>`; see the `Scope` schema); the per-route role
-        matrix (public / read / write / admin) lives in src/main.rs
+        matrix (public / read / write / admin) lives in
+        src/server/router/route_guards.rs
         (the authz-guard table) and API_CONTRACT.md. Most routes require auth;
         the exempt public set is /health, /ready, /version, /openapi.yaml,
-        /.well-known/*, /ump/capabilities and the /auth refresh/logout surface.
+        /.well-known/*, /ump/capabilities and /auth/refresh (logout is NOT
+        public — it must verify the bearer before revoking it).
         A revoked identity (the principal kill-switch) is denied 401
         `identity_revoked` on every route BEFORE authorization (see the
         IdentityRevoked response).
@@ -7748,7 +7750,7 @@ components:
         at: { type: string, nullable: true, description: "v1.4.0 Calibrate M1: bi-temporal valid-time filter (RFC3339 or YYYY-MM-DD). Only chunks whose valid-interval contains this instant are returned. Distinct from as_of (transaction-time recall)." }
         max_context_tokens: { type: integer, nullable: true, description: "v1.4.0 Calibrate M2: submodular evidence packing token budget. When set, results are re-ranked by budgeted monotone submodular maximization (relevance+coverage+representativeness+diversity) and truncated to fit." }
         gold_answer: { type: string, nullable: true, description: "v1.4.0 Calibrate M2: optional gold-answer substring for the answer_in_context diagnostic (did the gold survive packing?)." }
-        graph: { type: boolean, description: "v1.11.0 Associate: enable the graph-PPR retriever as a third RRF leg behind vector+FTS. Opt-in; default false keeps the two-retriever path unchanged. Deterministic, zero-token, no embeddings." }
+        graph: { type: boolean, description: "v1.11.0 Associate: the graph-PPR retriever as a third RRF leg behind vector+FTS. Default ON since v1.12 (per-request opt-OUT; the BRAIN_RECALL_GRAPH_ENABLED kill switch disables it process-wide). Deterministic, zero-token, no embeddings." }
     Evidence:
       type: object
       description: >-

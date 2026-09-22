@@ -18,7 +18,7 @@ on the HTTP API or the client console.
 | `brain check-consistency` | Report duplicates, conflicts, stale sources, near-duplicates |
 | `brain snapshot-status` | Show the point-in-time snapshot state |
 | `brain setup [domain] [--profile NAME] [--yes]` | Interactive first-run: pick a profile preset, preview its knobs, bind it to a domain (`--yes` scripts it) |
-| `brain bench` | Benchmark harness (feature-gated `bench`) |
+| `brain bench` | Benchmark harness (always compiled into `brain`; the `bench` Cargo feature gates the separate `bench` BINARY) |
 
 ## Retrieval
 
@@ -26,7 +26,7 @@ on the HTTP API or the client console.
 |---|---|
 | `brain query "q"` [`--phrase …`] [`--exclude …`] [`--code …`] [`--source …`] [`--since DATE`] [`--k N`] [`--intent …`] [`--profile …`] [`--graph`] [`--explain`] | Structured recall |
 | `brain get <id>` | Fetch a chunk |
-| `brain explain "q"` | Provenance + telemetry |
+| `brain explain "q"` [`--source S` …] [`--since ISO`] | Provenance + telemetry |
 | `brain suggest "<context>"` `[--exclude id[,id...]]` `[--k N]` `[--session S]` `[--domain D]` | Opt-in anticipation pull |
 | `brain suggest-feedback <id> accept\|dismiss` `[--reason "..."]` `[--session S]` | Record a suggestion outcome |
 | `brain suggest-metrics` `[--session S]` `[--since DATE]` | False-positive rate over the feedback ledger |
@@ -51,11 +51,11 @@ on the HTTP API or the client console.
 
 | Command | Purpose |
 |---|---|
-| `brain client add <name> --domain D --jurisdiction J [--profile P] [--yes]` | Register an operating client (one isolation domain per client) |
+| `brain client add <name> --jurisdiction J [--domain D] [--profile P] [--yes]` | Register an operating client (one isolation domain per client). `--jurisdiction` is required; `--domain` defaults to the client name |
 | `brain client dpa get <name>` | Show a client's DPA terms |
 | `brain client dpa set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S` | Set a client's DPA terms |
-| `brain client dsar <name> <subject> [--action purge\|export\|both] [--dry-run] [--yes]` | Run a per-client jurisdiction-aware DSAR |
-| `brain client hold add <name> <id> [<id> ...] --reason R` \| `list <name>` | Legal-hold / release a client's domain; list holds |
+| `brain client dsar <name> <subject> --action purge\|export\|both [--dry-run] [--yes]` | Run a per-client jurisdiction-aware DSAR. `--action` is REQUIRED (400-free refusal without it — the old silent purge default is gone); purge/both prompt with the subject digest unless `--yes` |
+| `brain client hold add <name> <id> [<id> ...] --reason R` \| `list <name>` | Add a per-client legal hold; list holds. (Release lives on the HTTP API — `POST /legal-hold/{id}/release` — there is no CLI release verb) |
 | `brain client qa list <name>` \| `coach <name> <id> --note N [--flag]` | Supervisor QA queue + coaching note (v1.27.8, Admin) |
 | `brain client end <name> [--purge\|--return] [--dataset D] [--yes]` | Terminate a client: purge-or-return + archive + certificate |
 
@@ -68,7 +68,7 @@ on the HTTP API or the client console.
 | `brain procedure <title>` [`--step "title: content"` …] [`--domain D`] | Ingest a root + ordered steps in one transaction |
 | `brain classify "<text>"` | Deterministic keyword categorization |
 | `brain evaluate <decision_id>` `--var name=value` … | Evaluate a stored decision rule |
-| `brain eval` [`--floor r5=0.85 r10=0.9`] | Run the frozen recall-eval harness (feature-gated `bench`) |
+| `brain eval` [`--floor r5=0.85 r10=0.9`] | Run the frozen recall-eval harness (always compiled into `brain`) |
 
 ## Connectors
 
@@ -91,7 +91,7 @@ on the HTTP API or the client console.
 
 | Command | Purpose |
 |---|---|
-| `brain token rotate` | Atomically rotate the bearer token (v1.27.12): a fresh 32-byte hex token is written to a 0600 temp file (`create_new`, never umask-dependent), fsync'd, and renamed over the configured token file. Refuses to overwrite a group/world-readable target. Restart the server to pick it up. |
+| `brain token rotate` | Atomically rotate the bearer token (v1.27.12): a fresh 32-byte hex token is written to a 0600 temp file (`create_new`, never umask-dependent), fsync'd, and renamed over the configured token file. Refuses to overwrite a group/world-readable target. No restart needed — the running server and file-reading consumers hot-reload it within ~5s (the rotation watcher). |
 
 ## Governed workflow runs (v1.28)
 
@@ -130,7 +130,7 @@ on the HTTP API or the client console.
 | Command | Purpose |
 |---|---|
 | `brain backup <out-path>` [`--passphrase-file PATH`] [`--format v1\|v2\|v3`] | Encrypted AES-256-GCM backup (checksummed, excludes secrets; v3 is the current format — header bytes are GCM AAD). DB path is taken from `BRAIN_DB_PATH`/default, not a positional. A passphrase is required. |
-| `brain restore <in-path>` [`--passphrase-file PATH`] [`--force`] [`--yes`] [`--allow-chainless`] | Restore from an encrypted backup. A chain-less image (no `audit_events` table) REFUSES without `--allow-chainless`; the flag restores with a loud disclosure. Legacy-epoch (unkeyed) chains are marked `forgeable: true` until `--re-audit` re-anchors. |
+| `brain restore <in-path>` [`--passphrase-file PATH`] [`--force`] [`--yes`] [`--allow-chainless`] | Restore from an encrypted backup. Always prompts unless `--yes` (`--force` skips only the liveness probe, never the human gate). A chain-less image (no `audit_events` table) REFUSES without `--allow-chainless`; the flag restores with a loud disclosure. Legacy-epoch (unkeyed) chains are marked `forgeable: true` until the operator re-anchors the chain (`brain-server --re-audit` — the SERVER binary's offline mode, not a `brain` flag). |
 
 ## Warm standby (v1.28.61)
 
@@ -142,7 +142,7 @@ step. There is NO hot failover and NO RPO=0 claim anywhere.
 |---|---|
 | `brain standby start --to <dir>` `[--interval-secs 30]` `[--passphrase-file PATH]` | Long-running shipper: per cycle a PASSIVE wal_checkpoint, then the encrypted base via the backup v3 writer, the WAL chunk (same v3 encryption — no plaintext at rest), and the signed manifest (written last). An interrupted cycle self-heals on the next one. |
 | `brain standby status [--to <dir>]` | Integrity self-check of the follower: verifies the manifest's Ed25519 signature and recomputes artifact hashes — any tamper or torn cycle FAILS (exit 1). Prints cycle, age, cycles behind, and `rpo_max = interval + checkpoint lag`. |
-| `brain standby promote-check --from <dir>` `[--passphrase-file PATH]` | THE DRILL: restores the follower into a temp dir (the shipped restore path), replays the WAL chunk, runs `PRAGMA integrity_check`, and prints measured RTO plus computed RPO. Exit code gates. |
+| `brain standby promote-check --from <dir>` `[--passphrase-file PATH]` `[--expected-signer DID]` | THE DRILL: restores the follower into a temp dir (the shipped restore path), replays the WAL chunk, runs `PRAGMA integrity_check`, and prints measured RTO plus computed RPO. Exit code gates. |
 
 ## Evidence & physical erasure (v1.28.91)
 
@@ -150,7 +150,7 @@ step. There is NO hot failover and NO RPO=0 claim anywhere.
 |---|---|
 | `brain anchor` [`--db PATH`] | Prints the deterministic state fingerprint (audit chain head + knowledge content census + row counts) — record the line OFF-HOST (paper, password manager, second machine). Read-only, audited by nothing on purpose: the anchor's own audit row would move the chain head it just fingerprinted; the off-host copy IS the evidence. Run per domain DB. |
 | `brain anchor --verify "<recorded line>"` [`--db PATH`] | Recomputes and diffs against a recorded line. ANY state change since the record trips it — legitimate writes too (the audit chain explains those); what it uniquely catches is a moved knowledge census on a chain that still verifies: business-row tamper behind the chain, the class no in-tree verifier detected (seventh pass, R7-08). |
-| `brain shred` [`--db PATH`] [`--yes`] | The operator-invoked physical residue drop after a logical purge: `secure_delete=ON` (readback asserted) → `wal_checkpoint(TRUNCATE)` → `VACUUM` (rebuild from live pages only) → `wal_checkpoint(TRUNCATE)` → `integrity_check`, evidenced by one hash-chained `forget` audit row. Freelist reads back 0. Does NOT touch filesystem copies, `<db>.bak` snapshots, standby follower chunks, or SSD wear-leveling — printed on every run. Run per domain DB, ideally in a quiet moment (VACUUM holds the writer). |
+| `brain shred --db PATH --yes` | The operator-invoked physical residue drop after a logical purge. `--yes` is REQUIRED (there is no interactive prompt — the refusal without it is deliberate). Steps: `secure_delete=ON` (readback asserted) → `wal_checkpoint(TRUNCATE)` → `VACUUM` (rebuild from live pages only) → `wal_checkpoint(TRUNCATE)` → `integrity_check`, evidenced by one hash-chained `forget` audit row. Freelist reads back 0. Does NOT touch filesystem copies, `<db>.bak` snapshots, standby follower chunks, or SSD wear-leveling — printed on every run. Run per domain DB, ideally in a quiet moment (VACUUM holds the writer). |
 
 ## Examples
 

@@ -4,7 +4,7 @@ Every scoreboard field the API serves (`GET /workflow/scoreboard`) is defined
 here exactly once: formula, source (data lineage), window semantics,
 inclusion/exclusion rules, unit, tier availability, and the industry citation
 it follows. This file is pinned by the meta-test
-`scoreboard_fields_have_dictionary_entries` — a scoreboard field cannot ship
+`every_scoreboard_field_has_a_dictionary_entry` — a scoreboard field cannot ship
 without its dictionary entry. All rates are **integer ten-thousandths**
 (10000 = 100%); per-thousand densities are hundredths; times are seconds;
 money is cents.

@@ -1,12 +1,12 @@
 # Configuration
 
-Brain Server is configured entirely through **environment variables**, all resolved in `src/config.rs`. There is no config file to edit. This page is the complete reference, grouped by concern.
+Brain Server is configured entirely through **environment variables** — there is no config file to edit. Most resolve in `src/config.rs`; a few live in the module that owns them (`BIND_*` in `src/server/bootstrap.rs`, the `PRF_*`/`QUALITY_*` retrieval knobs in `src/config.rs` + `src/search/`, `CAPACITY_*` in `src/capacity.rs`, `MCP_*` in `src/bin/mcp.rs`). This page is the complete reference, grouped by concern.
 
 ## Core server
 
 | Variable | Default | Description |
 |---|---|---|
-| `BIND_HOST` | `127.0.0.1` | Bind address. `0.0.0.0` refused unless `BIND_PUBLIC=1`. |
+| `BIND_HOST` | `127.0.0.1` | Bind address. `0.0.0.0` without `BIND_PUBLIC` set logs a loud warning and still binds (the opt-in is env *presence* — any value, including `0`, counts); an unparseable host without `BIND_PUBLIC` refuses boot; and any non-loopback bind with no auth token configured refuses boot (`enforce_loopback_bind_guard`). |
 | `BIND_PORT` | `8765` | Listen port |
 | `BRAIN_DB_PATH` | `~/.openclaw/workspace/brain.db` | SQLite database path |
 | `BRAIN_DATA_ROOT` | — | v1.0 relocation knob — root for all on-disk paths |
@@ -15,7 +15,7 @@ Brain Server is configured entirely through **environment variables**, all resol
 | `BRAIN_CLIENT_DIST` | `client/dist` | Directory served at `/app` (the web GUI) |
 | `BRAIN_CHAIN_CHECK_SECS` | `60` | How often the background audit-chain integrity check runs |
 | `BRAIN_MULTI_DB` | — | Enables per-domain SQLite files (multi-DB mode) |
-| `BRAIN_CONTROLLER_NAME` | — | Operator/controller identity label |
+| `BRAIN_CONTROLLER_NAME` | `brain-server operator` | Operator/controller identity label for the Art 30 register (`GET /art30`); empty/unset falls back to the default. Non-secret — must not hold PII. |
 | `MODEL_PROFILE` | `edge-default` | Retrieval profile selector → embedding model + rerank arming. See [Retrieval profiles & embedding models](#retrieval-profiles--embedding-models). |
 | `DOMAIN_MIN_COUNT` | `1` | Minimum chunk count for a domain's routing centroid (below it, the centroid is deleted so routing skips the near-empty bucket) |
 | `BRAIN_MODEL_MANIFEST` | — | Path to a SHA-256 model manifest; when set, boot **fails closed** unless every pinned artifact matches |
@@ -47,6 +47,9 @@ Brain Server is configured entirely through **environment variables**, all resol
 | `PRF_DEPTH` | `10` | PRF expansion depth |
 | `PRF_TERMS` | `5` | Number of expansion terms |
 | `PRF_MAX_RANK` | `5` | Max rank for expansion candidates |
+| `QUALITY_OVERLAP_WEIGHT` / `QUALITY_GAP_WEIGHT` / `QUALITY_RR_WEIGHT` / `QUALITY_LEX_WEIGHT` | `0.4` / `0.3` / `0.2` / `0.1` | The retrieval quality estimator's fusion weights (overlap / gap / reciprocal-rank / lexical agreement). Invalid values fall back to the default per key. |
+| `QUALITY_AGREEMENT_MIN` | `2` | Minimum agreeing-retriever count before the estimator expresses any confidence. |
+| `QUALITY_GAP_THRESHOLD` / `QUALITY_CONFIDENCE_THRESHOLD` / `QUALITY_RERANK_THRESHOLD` | `0.023` / `0.6` / `0.85` | Quality-estimator decision thresholds (abstention / low-confidence / recommend-reranker bands). Invalid values fall back to the default per key. |
 | `BRAIN_RECALL_ROUTING_ENABLED` | `true` | Automatic retrieval routing (v1.13.1). `false` restores legacy shim behavior. |
 | `BRAIN_GRAPH_RESCUE_ENABLED` | `true` | Complexity-gated graph rescue pass on abstention (v1.12) |
 
@@ -84,7 +87,7 @@ request path). Model resolution, in order: the golden **`mixedbread-ai/mxbai-rer
 
 | Variable | Default | Description |
 |---|---|---|
-| `BRAIN_RERANK_MODEL_DIR` | `models/mxbai-rerank-large-v1/` | Local dir holding the mxbai-rerank-large-v1 files (`onnx/model_quantized.onnx` + the 4 tokenizer files) for the BYO-ONNX seam. |
+| `BRAIN_RERANK_MODEL_DIR` | `models/mxbai-rerank-large-v1/` (never loads) | Local dir holding the mxbai-rerank-large-v1 files (`onnx/model_quantized.onnx` + the 4 tokenizer files) for the BYO-ONNX seam. Supply-chain guard: a CWD-relative path is REFUSED with a warning — the compiled default is inert by design; only an ABSOLUTE path (via this env) loads the mxbai model, otherwise the tier falls back to the in-enum `bge-reranker-v2-m3`. |
 | `BRAIN_RERANK_TOP_N` | `50` | Max candidates scored per rerank call; beyond this the provenance `rerank_truncated` flag reports the drop honestly. |
 
 ## Write-back gating (v1.14)
@@ -118,7 +121,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 
 | Variable | Default | Description |
 |---|---|---|
-| `BRAIN_AUDIT_CHAIN_KEY_FILE` | — | Explicit path to the audit-chain HMAC key. Resolution order: this env → `audit-chain.key` beside the DB → a generated 0600 key. A resolution failure is a loud warning, not a boot refusal; writes to `hmac256`-epoch DBs fail closed per-write until a key resolves |
+| `BRAIN_AUDIT_CHAIN_KEY_FILE` | — | Explicit path to the audit-chain HMAC key. Resolution order: inline `BRAIN_AUDIT_CHAIN_KEY` (hex) → this file → `audit-chain.key` beside the DB → a generated 0600 key. A resolution failure is a loud warning, not a boot refusal; writes to `hmac256`-epoch DBs fail closed per-write until a key resolves |
 | `BRAIN_AUDIT_SIGNING_KEY_FILE` | — | Explicit path to the Art 50/decision-provenance Ed25519 signing key (0600; installer-provisioned). Absent = marks are present but visibly unsigned |
 | `BRAIN_AUDIT_READ_EVENTS` | `on` (JWT) / `off` (loopback) | When `on`, `/recall`, `/search`, `/get/{id}`, `/multi-get` emit hash-chained audit rows (no content, no raw query). |
 | `BRAIN_AUDIT_READ_SAMPLE_RATE` | `1.0` | Read-event sampling (0.0..=1.0); `1.0` = every read event. |
@@ -142,7 +145,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 
 | Variable | Default | Description |
 |---|---|---|
-| `CAPACITY_MAX_DOCS` / `CAPACITY_MAX_DB_MIB` / `CAPACITY_MAX_RSS_MIB` | capacity profile | Tighten the `/health` capacity envelope. Writes over the envelope return HTTP 507; reads are never blocked. |
+| `CAPACITY_MAX_DOCS` / `CAPACITY_MAX_DB_MIB` / `CAPACITY_MAX_RSS_MIB` / `CAPACITY_MAX_P95_MS` | capacity profile | Tighten the `/health/db` capacity envelope (desktop RSS default 1 024 MiB, docs 50 000, DB 2 048 MiB; jetson 512 / 10 000 / 512; `_P95_MS` the bench-only search-latency ceiling). Writes over the envelope return HTTP 507; reads are never blocked. |
 
 ## Webhooks, standby, keys & misc (the unglamorous but real knobs)
 
@@ -152,12 +155,12 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `BRAIN_REQUIRE_WEBHOOK_SIGNING` | required | Outbound webhook signing posture (v1.28.86): unset/`1` = REQUIRED — a sink URL without its secret refuses the boot; explicit `0` admits unsigned ALERT sends with loud warn + `/ready` `webhook_signing:off` + `signed:false` on every payload. The DSAR/Art-19 path ignores the opt-out (refused unconditionally). Any other value refuses the boot. |
 | `BRAIN_SIGNAL_WEBHOOK_SECRET_FILE` / `BRAIN_KB_FEEDBACK_SECRET_FILE` | — | Per-surface HMAC secrets (Signal gateway; KB feedback relay). |
 | `BRAIN_STANDBY_DIR` | `~/.local/share/brain-server/standby` | Warm-standby follower directory (`brain standby start/status/promote-check`). |
-| `BRAIN_CAPACITY_TARGET` | `desktop` (`jetson` when unset on unknown hosts — unknown values fail closed to jetson) | The capacity envelope tier (`desktop`\|`jetson`); also gates the loom CPU-parallelism tier. |
+| `BRAIN_CAPACITY_TARGET` | `jetson` (conservative) | The capacity envelope tier. ONLY the literal `desktop` selects the desktop envelope; unset, empty, and unknown values all resolve to `jetson` (fail-closed to the smaller envelope). Also gates the loom CPU-parallelism tier. |
 | `BRAIN_RSS_RESTART` | — | RSS watchdog restart threshold (breach → graceful self-restart request). |
 | `BRAIN_CONNECTOR_CONFIG_DIR` | platform config dir | Connector config dir; included in backups. |
 | `BRAIN_AUDIT_CHAIN_KEY` / `_FILE` | — | Key for the hmac256 audit-chain epoch (absent = SHA-256 links; keyed chains refuse to write without the key). |
 | `BRAIN_AUDIT_SIGNING_KEY` / `_FILE` | — | Art.12 decision-record signing key. |
-| `BRAIN_BACKUP_PASSPHRASE` / `BRAIN_BACKUP_PASSPHRASE_FILE` | — | The backup/restore passphrase ladder (the `--passphrase-file` flag reads the same seam). |
+| `BRAIN_BACKUP_PASSPHRASE_FILE` | — | Backup/restore passphrase for `brain backup`/`restore` (the `--passphrase-file` flag reads the same seam; a passphrase is REQUIRED — no unencrypted backup exists). Note: the inline `BRAIN_BACKUP_PASSPHRASE` env is read only by the `brain-migrate-rehearse` helper binary, not by `brain backup`/`restore`. |
 | `BRAIN_TOKEN` / `BRAIN_TOKEN_FILE` | `~/.config/brain-server/auth-token` | The `brain` CLI's bearer resolution ladder (server side: `AUTH_TOKEN_FILE` → `AUTH_TOKEN`). |
 | `BRAIN_DPO_CONTACT` / `BRAIN_SECURITY_CONTACT` | — | DPO + security contact strings surfaced on `/health/db` and `/.well-known/security.txt`. |
 | `BRAIN_ENGINE_EXEC_ALLOWLIST` / `BRAIN_ENGINE_HTTP_ALLOWLIST` / `BRAIN_ENGINE_WORKDIR` | — | The hostcall door's allowlists + workdir (the engine's tool-effect boundary). |
@@ -167,7 +170,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `PACKING_WEIGHTS` | built-in | Evidence-packing weight overrides (advanced). |
 | `BRAIN_STEWARD_BIN` | — | Override the workflow-crank harness binary. MUST be an ABSOLUTE path (relative refuses; PATH is never consulted) or the binary lives beside the kernel. |
 
-> **The single source of truth** for every tunable is `src/config.rs` in the repository.
+> **The source of truth** for every tunable is `src/config.rs` and the owning modules named above (`src/server/bootstrap.rs`, `src/capacity.rs`, `src/search/`, `src/bin/mcp.rs`) in the repository.
 
 ## Next steps
 

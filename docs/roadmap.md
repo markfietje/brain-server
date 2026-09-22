@@ -10,7 +10,7 @@ the full per-version record is
 
 ## Current status
 
-**v1.28.x — the current server line (1.28.80 "Lockdown").** Brain Server ships a Dioxus GUI (web + desktop + iOS +
+**v1.28.x — the current server line (1.28.92 "Ledger").** Brain Server ships a Dioxus GUI (web + desktop + iOS +
 Android from one Rust codebase) on top of a mature server. The v1.28 line
 built the governed loop, then turned it into an enterprise platform:
 1.28.15–1.28.35 ran the governed loop and closed the ISO 10002/10003
@@ -29,8 +29,10 @@ seam vocabulary, egress and process boundaries, the operator/agent token
 split, screen and read-seam hygiene, key lifecycle, origin taint labels,
 dormant-exec hardening, finished erasure, unconditional quarantine,
 third-pass close-out, and the Lockdown transport/approval/visibility
-controls. The server core (retrieval, graph, governance) is stable and heavily tested
-(1,330 tests across the workspace).
+controls; 1.28.81–1.28.92 kept closing (fix releases, the seventh-pass
+closures, Notary's off-host anchor + physical shred, Ledger's loop record
+layers + exec OS boundary). The server core (retrieval, graph, governance) is stable and heavily tested
+(2,188 tests across the workspace at HEAD — `scripts/badges.sh`).
 
 ---
 

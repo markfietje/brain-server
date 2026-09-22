@@ -1,12 +1,12 @@
 # Features
 
-Brain Server packs a lot of capability into a single Rust binary. This page is the complete feature tour — grouped by what the feature does for you. It is a **living inventory of what is shipped** (verified against the codebase up to v1.28.80); if a capability is described here, it exists in the current source.
+Brain Server packs a lot of capability into a single Rust binary. This page is the complete feature tour — grouped by what the feature does for you. It is a **living inventory of what is shipped** (verified against the codebase up to v1.28.92); if a capability is described here, it exists in the current source.
 
 ## Retrieval
 
 - **Hybrid retrieval** — vector KNN (`vec0`) + lexical FTS5 (BM25) fused via Reciprocal Rank Fusion, with deterministic PRF query expansion and full per-result provenance.
 - **Structured query** — `QueryDoc` with `LexSpec` (phrases, exclusions, code paths), multi-source OR scope, temporal `since`/`as_of` predicates.
-- **Optional graph leg** — Personalized PageRank over the knowledge graph as a third, opt-in `?graph=true` RRF leg (HippoRAG-2 style).
+- **Graph leg** — Personalized PageRank over the knowledge graph as a third RRF leg (HippoRAG-2 style). Default ON since v1.12 (`graph=false` opts out per request; the `BRAIN_RECALL_GRAPH_ENABLED` kill switch disables it process-wide).
 - **Noise-aware graph retrieval** (v1.12) — hub dampening + edge-type weights tame taxonomy-noise mega-hubs; the graph leg auto-engages as a rescue pass when the estimator says the query is ambiguous.
 - **Calibrated abstention** (v1.5) — when retrieval quality is too low, `/recall` returns `{decision: "low_confidence", hits: []}` instead of top-1 garbage. No magic score cutoff — a calibrated multi-signal recommendation drives it.
 - **Span verification** (v1.5) — `POST /verify` checks whether a claim is supported by a chunk's actual text (deterministic lexical match, no LLM).
@@ -110,7 +110,7 @@ Brain Server packs a lot of capability into a single Rust binary. This page is t
 - **Domain isolation** — in `BRAIN_MULTI_DB` mode each knowledge domain is its own SQLite file + pool (`brain-<domain>.db`, `POST /domains`); in the default shim every domain resolves to the shared global pool (labels, not boundaries — see `docs/architecture.md` Multi-domain). `GET /domains`, `DELETE /domains/{name}` (echo-confirm), `POST /domains/{name}/vacuum`, `GET /domains/{name}/export` (consistent `VACUUM INTO` snapshot), `POST /domains/{name}/import` (restore into a NEW domain), `POST /domains/recompute` (one-shot centroid sweep), `POST /domains/move` (relabel chunks).
 - **Capacity envelopes** — a config exceeding a documented capacity refuses new ingests with HTTP 507; read routes are never blocked.
 - **Alert feed** — decision-critical events (pending/expiry/injection/chain-verify) stream to the `/ops` panel via SSE (`GET /events`) and optionally to a signed webhook (`BRAIN_ALERT_WEBHOOK_URL`).
-- **Observability** — `GET /health` (+ capacity + hardening incl. the monotonic `audit_commit_failures` counter), `/health/db`, `/ready`, `/version`, `/stats`, and Prometheus text `/metrics` (auth-gated).
+- **Observability** — `GET /health` (minimal `{status, version}` liveness probe), `/health/db` (the detail surface: capacity, hardening incl. the monotonic `audit_commit_failures` counter, durability, classifier posture — the full body needs an Admin credential), `/ready`, `/version`, `/stats`, and Prometheus text `/metrics` (auth-gated).
 
 ## Security
 

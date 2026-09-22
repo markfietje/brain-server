@@ -21,13 +21,13 @@ verified from source:
 
 | Series | Kind | Meaning |
 |---|---|---|
-| `brain_rss_mib` | gauge | **This process's** RSS in MiB (not host-wide). Matches the capacity envelope `/health` reports. |
+| `brain_rss_mib` | gauge | **This process's** RSS in MiB (not host-wide). Matches the capacity envelope `/health/db` reports. |
 | `brain_pool_connections{state="idle"}` / `{state="busy"}` | gauge | SQLite connection-pool idle/busy counts. |
 | `brain_pool_in_use{domain}` | gauge | Connections currently checked out, per domain DB. |
 | `brain_pool_idle{domain}` | gauge | Connections parked in the pool, per domain DB. |
 | `brain_pool_timeouts_total` | counter | Acquire attempts that hit the pool timeout (visible contention). |
 | `brain_busy_errors_total` | counter | SQLite `SQLITE_BUSY` errors returned to callers. |
-| `brain_wal_pages_pending{domain}` | gauge | WAL frames not yet checkpointed, per domain DB — the write-pressure gauge. |
+| `brain_wal_pages_pending{domain}` | gauge | WAL frames not yet checkpointed, per domain DB — the write-pressure gauge. Snapshot semantics: the PRAGMA runs on the `/health/db` cold path; a scrape reports the last snapshot, and a domain with no `/health/db` read has no series. |
 | `brain_lock_wait_micros_p50` | gauge | p50 of contended mutex/RwLock acquire waits (Headroom telemetry; try_lock fast paths read zero clock). |
 | `brain_lock_wait_micros_p95` | gauge | p95 of the same histogram (fixed-bucket edges, no histograms crate). |
 | `brain_db_busy_total` | counter | Busy-handler sleeps on the write path. |
@@ -40,7 +40,7 @@ dictionary (`docs/metrics.md`, the "Server telemetry series" section).
 The audit-chain gauge uses a short-TTL cache so a scrape doesn't trigger a full
 O(n) chain scan; `/audit/verify` (below) always gives the authoritative answer.
 
-### `/health/db` — the operator's detail read (Read-gated)
+### `/health/db` — the operator's detail read (Read-gated; full body Admin-only)
 
 Beyond reachability, `/health/db` echoes the operating posture: the capacity
 block, the hardening/concurrency block (`pool_timeouts_total`,
@@ -48,7 +48,9 @@ block, the hardening/concurrency block (`pool_timeouts_total`,
 **durability echo** (`synchronous`, `wal_autocheckpoint_pages`,
 `capacity_target` — what the write-posture envelope resolved to), and the
 **loom boot decision** (whether the opt-in CPU-parallelism tier engaged, and
-why or why not). Use it alongside `/metrics`: gauges are the trend,
+why or why not). **Gate split (v1.28.70):** a Read credential gets the
+reduced `{status, version, db_ok}` probe; the full posture body above needs an
+**Admin** principal. Use it alongside `/metrics`: gauges are the trend,
 `/health/db` is the configuration truth.
 
 ## Audit chain

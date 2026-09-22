@@ -5,7 +5,7 @@ personal AI assistant gateway. The integration is a TypeScript plugin
 (`@markfietje/brain-server-openclaw`) that lives in `plugin/` and calls the Rust server over
 **loopback HTTP**. It plugs into OpenClaw's **memory slot** (`kind: "memory"`).
 
-**Plugin version:** the in-tree package is at **0.6.4**. It is published as
+**Plugin version:** the in-tree package is at **0.6.10**. It is published as
 `@markfietje/brain-server-openclaw` (npm) (the openclaw monorepo ships it under
 `extensions/brain-server`, in sync with the `plugin/` tree). Per-version behavior lives in
 `plugin/CHANGELOG.md`; the server-side releases each version rides on are itemized in
@@ -15,8 +15,8 @@ default-pinning, 0.4.7 drift reconciliation + hardening, 0.5.0 the Team Bridge, 
 strip-set parity sync, 0.6.0 the origin labels, 0.6.1 the manifest schema
 declaration for `untrustedOrigins`, 0.6.2 the fail-closed token ladder plus
 origin pinning, 0.6.3 the multiline-token refusal plus redirect re-pin plus
-chat-gated mirrors, 0.6.4 the deny-default bridge gate — see the Security
-model below).
+chat-gated mirrors, 0.6.4 the deny-default bridge gate, 0.6.5–0.6.10 later
+hardening rounds — see the Security model below and `plugin/CHANGELOG.md`).
 
 The remembered, searchable, erased facts all live in the Rust brain-server. The plugin is a **thin
 TypeScript shim**: it implements the OpenClaw SDK contract (hooks, tools, config, gating) and
@@ -197,7 +197,8 @@ against the handlers) and correct AuthZ:
 | memory_get / corpus get | `GET /get/{id}` | Read | ✅ |
 | memory_verify | `POST /verify` | Read | ✅ |
 | graph_entity / graph_traverse | `GET /graph/entity/{name}`, `/graph/traverse` | Read | ✅ |
-| proposal list/decide | `GET /proposals`, `POST /proposals/{id}/{approve,reject}` | Read/Write | ✅ (gated by `proposalTools`) |
+| proposal list / reject | `GET /proposals`, `POST /proposals/{id}/reject` | Read/Write | ✅ (gated by `proposalTools`) |
+| proposal approve | `POST /proposals/{id}/approve?digest=…` | Write | ⚠️ **broken in the current plugin**: the server REQUIRES the `content_digest` (v1.27.12 — `400 digest_required` without it, see the digest note above), but the plugin's `approveProposal` client still sends only `?supersedes=` and has no digest parameter — `memory_proposal_decide` approve cannot succeed against a current server until the plugin sends the digest (reject works; list works) |
 | procedure_get / decision_evaluate | `GET /procedure/{id}/steps`, `POST /decision/{id}/evaluate` | Read | ✅ |
 | procedure_store | `POST /procedure` | **Write** | ✅ |
 | team bridge card / run / events / CAS close | `POST /ops/agents/cards`, `POST /workflow/runs`, `POST /workflow/runs/{id}/events`, `PUT /workflow/runs/{id}/state` | Admin (cards) / Write + `workflow` role | ✅ (gated by `teamBridge`) |
@@ -503,7 +504,7 @@ schema is `plugin/openclaw.plugin.json` (`configSchema`). Defaults in parenthese
 | --- | ------- | ------- |
 | `enabled` | `true` | Global switch for recall/capture. |
 | `baseUrl` | `http://127.0.0.1:8765` | Loopback URL of the Rust server. |
-| `authToken` | — | Bearer token sent as `Authorization: Bearer`. **v0.4.5+** resolves it via an env-token ladder and **never writes** a secret to disk: `BRAIN_TOKEN_FILE` (path to a 0600 secret file) → `BRAIN_TOKEN` (env) → this `authToken` config field. The field is a token **string**, not a `tokenFile` path. If none resolve, the plugin connects unauthenticated (the server's loopback-only default). |
+| `authToken` | — | Bearer token sent as `Authorization: Bearer`. **v0.4.5+** resolves it via an env-token ladder and **never writes** a secret to disk: `BRAIN_TOKEN_FILE` (path to a 0600 secret file) → `BRAIN_TOKEN` (env) → this `authToken` config field. The field is a token **string**, not a `tokenFile` path. The file must hold the SINGLE token (one line — a multi-line file refuses: "holds more than one token"); point it at the agent token (`~/.config/brain-server/auth-agent-token`), NOT the installer's two-line `auth-token` file. If none resolve, the plugin connects unauthenticated (the server's loopback-only default). |
 | `agents` | `[]` | Per-agent opt-in allowlist (ids, or `"*"`). Empty ⇒ disabled. |
 | `allowedChatTypes` | `["direct","explicit"]` | Chat kinds permitted. |
 | `allowedChatIds` / `deniedChatIds` | — | Per-chat overrides; deny wins. |

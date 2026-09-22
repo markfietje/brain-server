@@ -10,8 +10,9 @@ not resurrect it.
 - `POST /ops/agents/revoke` (Admin on global) takes `principal` (max 256
   chars) and `reason` (max 500). Returns the principal, the revocation,
   and how many runs were drained.
-- `GET /ops/agents/revocations` (Read on global) pages the registry,
-  newest first, capped at 500 rows.
+- `GET /ops/agents/revocations` (Read on global) returns the registry,
+  newest first, in one fixed query capped at 500 rows (no paging
+  parameters — a larger registry needs the audit chain).
 
 ## What actually happens
 

@@ -44,7 +44,9 @@ API surface.
 
 > The full machine-readable route set lives in `openapi.yaml` (served at
 > `GET /openapi.yaml`); keep the two in sync — the `test_openapi_covers_routes`
-> unit test enforces it.
+> unit test enforces one direction (every registered route path must appear in
+> openapi.yaml); methods, schemas, and parameter details are kept in sync by
+> review, not by the test.
 
 ---
 
@@ -318,25 +320,21 @@ annotation engine was retired in v0.9.0).
 ## 4. Supporting endpoints
 
 ### `GET /health` → `200`
-> Illustrative example — the `version` is `env!("CARGO_PKG_VERSION")` at runtime and
-> `capacity` is present only when the connection pool is not momentarily exhausted.
+> Minimal liveness probe — `{status, version}` only; `version` is
+> `env!("CARGO_PKG_VERSION")`. Every deployment-fingerprinting field (model,
+> pool, backup, webhook, otel, integrity, capacity, hardening) lives behind
+> the Read gate on `/health/db` (v1.27.23 M2 surface reduction — the rich
+> shape below is the pre-reduction illustration).
 ```json
 {
   "status": "ok",
-  "version": "1.27.22",
-  "model": "minishlab/potion-retrieval-32M",
-  "system": { "memory_used_mb": 220, "memory_total_mb": 4096, "memory_percent": 5.4 },
-  "pool":   { "connections": 2, "idle_connections": 1, "busy_connections": 1 },
-  "backup": { "ok": true },
-  "webhook": { "replay_secs": 600, "timestamp_required": 0, "scheme": "legacy" },
-  "otel":   { "enabled": false, "endpoint": "http://127.0.0.1:4317" },
-  "integrity": { "chain_ok": true, "last_checked_at": "...", "chain_head": "..." },
-  "capacity": { "status": "ok", "docs": 430, "db_mib": 12, "rss_mib": 84 }
+  "version": "1.28.92"
 }
 ```
 The primary consumer probes this to confirm the server is up (it only
 reads `status`). On failure the server returns `{ "status": "error", "version": "...", "error": "..." }`.
-`version` is `env!("CARGO_PKG_VERSION")`.
+Detail (capacity, pool, durability, classifier posture, …) is the
+`GET /health/db` surface.
 
 ### `DELETE /memory/{id}` → `200` / `404`
 ```json
@@ -514,7 +512,7 @@ pub struct RecallRequest {
     #[serde(default)] pub at: Option<String>,
     #[serde(default)] pub max_context_tokens: Option<usize>,
     #[serde(default)] pub gold_answer: Option<String>,
-    #[serde(default)] pub graph: bool,
+    #[serde(default = "default_graph")] pub graph: bool, // default ON (BRAIN_RECALL_GRAPH_ENABLED kill switch)
     #[serde(default)] pub include_decayed: bool,
     #[serde(default)] pub memory_kind: Option<String>,
     #[serde(default)] pub min_relevance: Option<String>,
@@ -602,10 +600,10 @@ it; reads always return `200` (an over-capacity brain must still answer).
 
 | Target | `BRAIN_CAPACITY_TARGET` | Max docs | Max DB | Max RSS |
 |---|---|---|---|---|
-| Jetson Nano 4 GB (default) | `jetson` | 10 000 | 512 MiB | 320 MB |
-| Desktop / 16 GB host | `desktop` | 50 000 | 2 GiB | 320 MB |
+| Jetson Nano 4 GB (default) | `jetson` | 10 000 | 512 MiB | 512 MiB |
+| Desktop / 16 GB host | `desktop` | 50 000 | 2 GiB | 1024 MiB |
 
-- **`/health`** reports the live state under `capacity`: `{ target, docs,
+- **`/health/db`** reports the live state under `capacity`: `{ target, docs,
   max_docs, db_mib, max_db_mib, rss_mib, max_rss_mib, status }` where `status`
   is `ok` | `warning` (within 10% of a ceiling) | `exceeded`.
 - **Writes** (`POST /add`, `/ingest`, `/ingest/memory`, `/ingest/markdown`)

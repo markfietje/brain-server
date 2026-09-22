@@ -1109,7 +1109,7 @@ p95` (bucket-quantile edges, no histograms crate); poison postures
  cargo build --release --features bench --bin brain-server --bin brain --bin mcp --bin bench
 
 # Tests + quality gates (always run with --features bench — the bench binary is feature-gated)
-cargo test --features bench                                  # current count: scripts/badges.sh (1,583 passed / 7 ignored at v1.28.87)
+cargo test --features bench                                  # current count: scripts/badges.sh (2,188 passed at HEAD d46c21c, 2026-09-22)
 cargo clippy --all-targets --features bench -- -D warnings   # zero warnings enforced
 cargo fmt --check
 

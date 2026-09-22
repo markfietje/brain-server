@@ -44,7 +44,7 @@ brain key prune       # drop expired keys from JWKS
 ```
 
 - **Algorithms**: RS256/RS384/RS512, ES256/ES384, EdDSA only (the `ALLOWED_ALGS`
-  whitelist, `src/auth/jwt.rs`; jsonwebtoken v10 exposes no ES512). HS\*, PS\*,
+  whitelist, `src/auth/jwt.rs`; jsonwebtoken v11 exposes no ES512). HS\*, PS\*,
   and `none` are rejected unconditionally (algorithm-confusion defense).
 - **Claims**: `iss`, `aud`, `exp`, `nbf`, `sub`, `jti` all validated.
 - **Revocation**: `(jti, iss)` denylist; refresh-chain reuse detection burns the
