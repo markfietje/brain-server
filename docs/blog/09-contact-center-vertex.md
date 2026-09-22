@@ -36,8 +36,10 @@ chat-type gating so private memory never surfaces in a shared queue.
 
 Brain Server is loopback-first and offline-capable: memory lives on the
 operator's own host, there is **no telemetry and no data egress by default**,
-and per-domain isolation with centroid auto-routing keeps one account's memory
-from leaking into another's answers. The per-query cost is zero because there's
+and per-domain scoping with centroid auto-routing keeps one account's memory
+from leaking into another's answers (labels, not boundaries — cross-domain
+mixing is labeled `included_global`, and true storage isolation is the
+separate `BRAIN_MULTI_DB` mode). The per-query cost is zero because there's
 no embedding API, embeddings are a local static model.
 
 ## 3. Nothing enters memory without a human signing it

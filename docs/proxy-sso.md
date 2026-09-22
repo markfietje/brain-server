@@ -11,7 +11,7 @@ Brain Server authenticates in two ways today (verified in code, Round 26):
 
 1. **Opaque bearer mode** (default): `AUTH_TOKEN` / `AUTH_TOKEN_FILE`, constant-
    time compare, hot rotation.
-2. **JWT mode** (opt-in): RS256/ES256/EdDSA verification against a **local**
+2. **JWT mode** (opt-in): RS256/RS384/RS512/ES256/ES384/EdDSA verification against a **local**
    JWKS (PEM files in `BRAIN_JWT_KEY_DIR`), `(jti, iss)` revocation, refresh
    reuse detection.
 

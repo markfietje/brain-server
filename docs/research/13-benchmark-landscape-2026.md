@@ -21,9 +21,13 @@ score-controversy finding. The 2026 survey wave (arXiv 2512.13564, 2603.07670,
 self-report on these benchmarks yet, and that is the honest position until
 the harness ships. What exists today:
 
-- an **eval ship-gate**: a frozen judged corpus (37 queries / 10 docs) with
-  CI-pinned floors (r@5/r@10/MRR ≥ 0.85), retrieval regressions fail the
-  build, which is stronger than a published number nobody can re-run;
+- an **eval ship-gate**: a scale floor pinned in code — the frozen set must
+  hold ≥100 judged queries (`tests/eval.rs`
+  `test_eval_frozen_set_meets_scale_floor`; the 37-query starter was the
+  wiring fixture, the 10-doc `DOCS` set the manual harness — neither is the
+  evidence), with recorded floors (25-doc corpus, 106 queries, r@5 0.976 /
+  mrr 0.956 — `docs/BENCHMARKS.md`). Retrieval regressions fail the build,
+  which is stronger than a published number nobody can re-run;
 - a **deterministic pipeline** (no LLM in the retrieval path, pinned
   embedding model, no API drift), which makes every future benchmark run
   *reproducible by construction*, the property the contested scores lack;

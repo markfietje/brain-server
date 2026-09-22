@@ -57,7 +57,7 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 
 ## J
 
-- **JWT / JWS** — JSON Web Token / JSON Web Signature. The opt-in enterprise authentication mode. Only RS256/ES256/EdDSA allowed (never HS256 or `none`).
+- **JWT / JWS** — JSON Web Token / JSON Web Signature. The opt-in enterprise authentication mode. Only RS256/RS384/RS512/ES256/ES384/EdDSA allowed (never HS256 or `none`).
 
 ## K
 

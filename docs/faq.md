@@ -14,7 +14,7 @@ Yes — **zero per-query cost**. Recall uses a *static, local embedding model* a
 On your device. There is no cloud and no telemetry to third parties. Outbound HTTP is opt-in and off unless configured (an Art 19 DSAR webhook and an optional system-alert webhook).
 
 **What does it run on?**
-Anything Rust compiles to. It's designed for 4 GB ARM edge devices (Jetson Nano, Raspberry Pi 5, a mini PC) drawing **under 5 watts**, but it runs on any macOS/Linux host.
+Anything Rust compiles to. It's designed for 4 GB ARM edge devices (Jetson Nano, Raspberry Pi 5, a mini PC), but it runs on any macOS/Linux host. (No power-draw figure is claimed — none measured.)
 
 ## Usage
 

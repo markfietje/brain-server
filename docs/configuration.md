@@ -125,6 +125,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `BRAIN_AUDIT_RETENTION_DAYS` | unset = forever | Audit retention window; when set, expired rows are pruned and the chain re-anchored. Deployers subject to AI Act Art 26(6) guidance: set ≥180. |
 | `BRAIN_DSAR_WEBHOOK_URL` / `BRAIN_DSAR_WEBHOOK_SECRET` | — | Opt-in Art 19 onward-notification: on a completed DSAR purge, POSTs `{subject, certified_at, certificate_id}` HMAC-SHA256-signed. Fail-soft. |
 | `BRAIN_EGRESS_ALLOW_PRIVATE` | — | The ONE egress opt-out (Deadbolt): `1` admits a private/loopback/metadata webhook sink at boot with a LOUD warn (the sink stays DNS-pinned). Unset = private sinks refuse the boot; any other value refuses the boot (fail-closed parse). |
+| `BRAIN_SSE_REAUTH_SECS` | `30` | SSE heartbeat re-auth cadence (v1.28.86): re-consults the identity kill-switch every N seconds on long-lived streams (revoked → `{"revoked":true}` frame then close). `0` = admission-only (the pre-.86 ceiling, explicit opt-in, loud boot warn); 1–3600 allowed; anything else refuses the boot. |
 | `BRAIN_OTEL_ENABLED` / `BRAIN_OTEL_ENDPOINT` | enabled on `--features otel` builds / `http://127.0.0.1:4318/v1/traces` | OpenTelemetry OTLP export. Kill-switch only: `0\|false\|no\|off` disables the compiled-in exporter (a default build compiles no exporter at all) |
 | `CORS_METHODS` | `GET,POST,PUT,DELETE,OPTIONS` | Allowed CORS methods |
 | `CORS_HEADERS` | `content-type,authorization` | Allowed CORS request headers |
@@ -148,6 +149,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | Variable | Default | Description |
 |---|---|---|
 | `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED` | off | Enforce the Standard-Webhooks timestamp tolerance on webhook receivers (replay-window hardening). |
+| `BRAIN_REQUIRE_WEBHOOK_SIGNING` | required | Outbound webhook signing posture (v1.28.86): unset/`1` = REQUIRED — a sink URL without its secret refuses the boot; explicit `0` admits unsigned ALERT sends with loud warn + `/ready` `webhook_signing:off` + `signed:false` on every payload. The DSAR/Art-19 path ignores the opt-out (refused unconditionally). Any other value refuses the boot. |
 | `BRAIN_SIGNAL_WEBHOOK_SECRET_FILE` / `BRAIN_KB_FEEDBACK_SECRET_FILE` | — | Per-surface HMAC secrets (Signal gateway; KB feedback relay). |
 | `BRAIN_STANDBY_DIR` | `~/.local/share/brain-server/standby` | Warm-standby follower directory (`brain standby start/status/promote-check`). |
 | `BRAIN_CAPACITY_TARGET` | `desktop` (`jetson` when unset on unknown hosts — unknown values fail closed to jetson) | The capacity envelope tier (`desktop`\|`jetson`); also gates the loom CPU-parallelism tier. |

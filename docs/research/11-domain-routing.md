@@ -1,7 +1,7 @@
 # Centroid Domain Auto-Routing (carving the store)
 
 **File:** `src/domain_router.rs` (`mean_vector`, `route`, `route_domain_label`)
-· `src/config.rs` (`DOMAIN_CONFIDENCE_THRESHOLD`, `BRAIN_DOMAIN_MIN_COUNT`)
+· `src/config.rs` (`DOMAIN_CONFIDENCE_THRESHOLD`, `DOMAIN_MIN_COUNT`)
 
 ## The problem
 
@@ -47,7 +47,7 @@ no data egress.
    with no centroids behaves exactly as before (everything lands in `global`).
 4. **Centroid lifecycle** (`recompute_centroid` / `recompute_all_centroids`):
    an idempotent post-migration sweep rebuilds every domain's centroid from the
-   corrected M1 source; a domain below `BRAIN_DOMAIN_MIN_COUNT` (default 1, a
+   corrected M1 source; a domain below `DOMAIN_MIN_COUNT` (default 1, a
    no-op) drops its centroid so `route()` stops sending traffic to an empty
    bucket. Superseded chunks (`valid_to IS NULL`) are excluded so a centroid
    isn't pulled toward outdated content.
@@ -61,7 +61,10 @@ no data egress.
 - Strict routing **hard-isolates**: a confident route searches that domain
   exclusively and cannot see a better answer in another domain. Both directions
   of the isolation tradeoff are deliberate, the threshold + federation
-  fallback is the escape valve.
+  fallback is the escape valve. Since v1.28.80 the fallback can additionally
+  mix the shared global corpus into a domain answer, and every such response
+  carries `included_global: true` so the mixing is visible
+  (`src/handlers/recall.rs`) — visible mixing, not silent blending.
 - `DOMAIN_MIN_COUNT = 1` means a single-vector domain keeps a centroid that is
   *exactly* that vector (nothing suppressed) unless the operator raises the
   floor.

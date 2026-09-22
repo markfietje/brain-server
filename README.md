@@ -2,7 +2,7 @@
 
 **Governed, local-first memory for AI agents in regulated environments.**
 
-Governance is usually side work: nobody owns quality, access, or cleanup. This server owns it. Nothing becomes permanent knowledge until a human approves the exact bytes. One Rust binary, no cloud, no embedding API, no data leaving the box by default. Built for teams that treat memory poisoning (OWASP ASI06) as a production risk.
+Governance is usually side work: nobody owns quality, access, or cleanup. This server owns it. Nothing becomes permanent knowledge until a human approves the exact bytes. Single-process server, no cloud, no embedding API, no data leaving the box by default. Built for teams that treat memory poisoning (OWASP ASI06) as a production risk.
 
 <p align="center">
 

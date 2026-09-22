@@ -30,9 +30,13 @@ structural costs that don't fit every use case:
 2. **Data egress** — the agent's memory lives in someone else's datacenter.
 3. **Network latency** — recall waits on a round-trip to the cloud.
 
-Brain Server inverts all three: **zero per-query cost, zero data egress, zero
-network latency on recall.** It is designed to run on a 4 GB ARM device (Jetson
-Nano, Raspberry Pi 5, a small mini PC) drawing under 5 watts.
+Brain Server inverts all three: **zero per-query cost, zero data egress on the
+retrieval path, zero
+network latency on recall.** (Operator-configured egress exists and is pinned
+at the boundary: webhook/DSAR sinks, OIDC/JWKS fetch, the loop engine's
+provider calls — all behind the SSRF-hardened egress policy; see
+`docs/architecture.md`.) It is designed to run on a 4 GB ARM device (Jetson
+Nano, Raspberry Pi 5, a small mini PC).
 
 ---
 

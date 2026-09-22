@@ -1,9 +1,16 @@
 # Architecture
 
-Brain Server is a single Rust binary that couples a **retrieval engine**, an
-**embedding model**, a **knowledge graph**, and a **governance layer** behind a
-versioned HTTP API. Everything runs in one process; the only external dependency is
-an on-disk SQLite database.
+Brain Server's **server runtime is a single process** coupling a **retrieval
+engine**, an **embedding model**, a **knowledge graph**, and a **governance
+layer** behind a versioned HTTP API. Persistence and compute are local-first:
+the only store is an on-disk SQLite database (WAL + `vec0` + FTS5) and
+embeddings are computed in-process by the static `model2vec` model. The repo
+ships seven binaries from one workspace (`brain`, `mcp`, `bench`,
+`brain-migrate-rehearse`, `brain-connector-stub/-gh/-crm` — see `Cargo.toml`
+`[[bin]]`); the diagram below is the `brain-server` runtime. Outbound network
+egress exists and is pinned at the boundary: validated webhook/alert sends,
+the agent-loop provider HTTP client, OIDC/JWKS fetch, and the CRM connectors
+(all behind the SSRF-hardened egress policy — see Governance layer).
 
 ## How memory moves — three nested loops
 
@@ -25,12 +32,15 @@ flowchart LR
     end
     A4 -- "capture" --> B1
     B4 --> C1
-    C3 -.->|"gaps become new cases"| A1
+    C3 -.->|"gaps flag operator review; new cases arrive via connectors"| A1
 ```
 
 Loop 1 never skips its human gate; Loop 2 exists only because Loop 1 left
-evidence worth keeping; Loop 3 is why the knowledge base pays rent. The
-rest of this page zooms into Loop 1.
+evidence worth keeping; Loop 3 is why the knowledge base pays rent. Hot topics
+and feedback flag gaps for operator review — new cases arrive via the CRM /
+channel / webhook connectors (plus in-loop `reask` / back-referral returns),
+never by automatic hot-topic→case creation. The rest of this page zooms into
+Loop 1, whose deterministic core is the GDL case machine (see below).
 
 ## The governed agentic loop
 
@@ -117,21 +127,31 @@ ride them additively — no new table, no migration:
 
 - **The disagreement corpus (Reflect/learn).** When a case resolves, the
   closing transaction captures an after-action reflection record — derived
-  ONLY from audited gate rows, never agent free text — plus hard-negative
-  disagreement tuples. Proven retrospective-only: the same case driven twice
-  is byte-identical with capture on versus off. The DPO exports the labeled
-  corpus (`GET /workflow/reflection/corpus`, dual gate, de-identified,
-  audited, frozen train/holdout split).
+  ONLY from audited gate rows (`gdl_gate` / `control:adversarial_recheck` /
+  `handoff_lifecycle`), never agent free text (rows carry `input_digest`,
+  never raw case text) — plus hard-negative disagreement tuples.
+  Proven retrospective-only: the same case driven twice is byte-identical
+  with capture on versus off (sealed state identical; only additive
+  `reflection` / `reflection_disagreement` session-log rows differ). The DPO
+  exports the labeled corpus (`GET /workflow/reflection/corpus`, Admin scope
+  + DPO role dual gate, bounded page `1..=500`, every export audited,
+  de-identified at the seam through a synthetic scope-less reader, rows carry
+  their frozen train/holdout partition — `REFLECTION_HOLDOUT_PCT=20`,
+  sha256-derived).
 - **The account record layer (the deliberately-not-a-CRM).** Accounts are
   workflow rows of kind `account` — identifiers only (screened name, owner
-  label, status, server clock), never request bodies. Requests attach via
-  audited link rows; a thin pipeline timeline (closed stage vocabulary,
-  `decision_ref`-required transitions — the machine never advances a stage)
-  rides the same session log; the per-account history is a pure decision
-  join. Six routes, the same layering law as everywhere else; the listing
-  carries the DPO dual gate. Schema-driven wizard packs (typed
-  choice/score/noul only, ambiguous → abstain) assemble ONE typed case for
-  the existing webhook seam — never a chatbot, never free text.
+  label, `active|archived` status, server clock), never request bodies; audit
+  detail carries ids/lengths, never the name. Requests attach via audited
+  link rows; a thin pipeline timeline (closed stage vocabulary
+  `lead|qualified|proposal|closed_won|closed_lost`, `decision_ref`-required
+  transitions — the machine never advances a stage) rides the same session
+  log; the per-account history is a pure decision join over
+  `handoff_lifecycle`. Six account routes plus the corpus export = seven new
+  record-layer routes, the same layering law as everywhere else; the account
+  listing carries the DPO dual gate. Schema-driven wizard packs (typed
+  choice/score/noul only, 20-option ceiling, ambiguous → abstain) assemble
+  ONE typed case for the existing webhook seam — never a chatbot, never free
+  text.
 
 ### Inside one crank cycle
 
@@ -174,6 +194,94 @@ deflects to self-service entirely — and the scoreboard proves which happened.
 
 ---
 
+## The GDL case machine — Loop 1's deterministic core
+
+The crank above is driven by the **GDL case machine** (`src/workflow/gdl.rs`,
+9,871 lines; `gdl_checkpoint.rs`, 771; `gdl_eval.rs`, 1,191 — 11,833 total):
+the 7-phase governed troubleshooting loop
+`Intake → Triage → Hypothesize → Plan → Act → Verify → Handoff`
+(`GdlPhase::ALL` — forward-only, the machine never skips; a case that cannot
+satisfy a phase routes or escalates instead).
+
+The phase machine is deterministic Rust: the model proposes a phase artifact
+as JSON, a pure arbiter (`parse_and_gate`) decides, and a rejected artifact is
+retried bounded-then-routed — one original ask plus `MAX_PHASE_ATTEMPTS = 3`
+gate-error re-asks; exhausting them ROUTES the case (route, not resolve).
+Persistence per phase-pass is ONE `WorkflowTx`: the phase's `workflow_steps`
+row (Act adds one sub-row per executed test-log row), the CAS run-state
+advance (with its own audit row), and one audit row per inserted step —
+all-or-nothing, hash-chained. The session narrative (instructions, artifacts,
+gate verdicts) rides the append-only `agent_session_events`; the plan strip
+(`PLAN_STRIP_MAX_LINES = 24`) renders at the CONTEXT END of every phase
+instruction. The verify phase carries a 15-minute stability-window floor
+(`VERIFY_STABILITY_WINDOW_MIN = 15`).
+
+The 9 binding laws, enforced where mechanically checkable (every gate failure
+CITES ITS LAW via `err(law, detail)`, so a rejection is an auditable process
+fact):
+
+- **L1** evidence before action · **L2** one variable at a time · **L3**
+  known-good comparison · **L4** what-changed first · **L5** least-invasive
+  ladder · **L6** verify under failing conditions · **L7** no premature closure
+  · **L8** escalation = evidence handoff · **L9** no fix from memory.
+
+Case-level invariants: the SLA clock arms at triage on a typed row (pinned
+P-class table — P1 3,600 / P2 14,400 / P3 86,400 / P4 604,800 seconds,
+literals pinned by test and preregistered); the unconditional human escape is
+honored at every phase boundary with exact replay; `justified_handoff_rate`
+rolls up from recorded soft-handoff rows (`SOFT_HANDOFF_THRESHOLD_PCT = 80`,
+unjustified revisits denied-and-audited). Deliberately out of scope: subagent
+fan-out, follow-the-sun handoff policy, provider code (the loopback fixture
+carries the tests), live routing claims, and auto-publish of anything captured
+— capture lands as proposals on the human review queue or not at all.
+
+### Healthcare hardening (1.32.7 "Diagnostic Closure", R18)
+
+The Triage → Handoff span carries a clinically-shaped hardening layer —
+triage acuity, a red-flag forcing function, a must-miss catalog, a NAM-gated
+closure artifact, a back-referral contract, and I-PASS handoff discipline.
+All of it is enforced gate code (`src/workflow/gdl.rs` T/A/B/C families);
+the clinical vocabularies are `-style` analogies and keyword data, not coded
+terminologies (no SNOMED / ICD / LOINC):
+
+```mermaid
+flowchart TD
+    subgraph TRIAGE["TRIAGE EXIT — every case, no bypass"]
+        T4["T4 classify acuity<br/>band OR ESI-1..5 required<br/>T15 band closed set · T16 ESI 1..=5"]
+        T4 --> ACU["acuity window = MONITOR<br/>RED 0 · ORANGE 600 · YELLOW 3600<br/>GREEN 7200 · BLUE 14400<br/>P-class stays authoritative<br/>advertised = tighter of the two"]
+        ACU --> T5["T5 ed disposition ONLY<br/>with an OPEN red-flag"]
+        ACU --> T6["T6/T17 virtual_primary carries<br/>modality-adequacy"]
+        ACU --> T18["T18 care_setting closed-6<br/>self_care · virtual_primary<br/>in_person_primary · refer<br/>facility · ed"]
+    end
+    subgraph REDFLAG["RED-FLAG FORCING FUNCTION"]
+        RF["RedFlag artifact<br/>worst_case · ruled_out<br/>rule_out_basis<br/>first_would_miss_impact"]
+        RF --> LOCK["monotonic escalate-first lock<br/>T8/T12/T13/T14"]
+        LOCK --> CAT["must-miss catalog<br/>redflags_domains.json<br/>default: irreversible data loss<br/>active security breach<br/>health: sepsis · chest pain<br/>anaphylaxis · abuse/self-harm<br/>in minors · stroke<br/>decompensation"]
+    end
+    subgraph CLOSE["CLOSURE — NAM 2015 step 6 as gate law"]
+        A8["A8 no case resolves<br/>without a law-clean<br/>closure artifact"]
+        A8 --> A9["A9 reflexive closure refused<br/>+ A11/A12/A13/A14/A15"]
+        A9 --> SEAM["single resolution seam<br/>refuses without it"]
+    end
+    subgraph HANDOFF["HANDOFF + BACK-REFERRAL"]
+        B1["B1 referral handoff<br/>without a return contract refused"]
+        B1 --> B23["B2/B3 contract + report gates"]
+        B23 --> EXC["escalation exception:<br/>red-flag handoff NEVER<br/>blocks on back-referral"]
+        EXC --> SWEEP["overdue sweep: HITL task,<br/>never auto-resolves"]
+        SWEEP --> IPASS["I-PASS pre-fill<br/>sender-owned sections ONLY<br/>no machine synthesis<br/>C3: ONE pre-filled offer draft<br/>HITL-gated"]
+    end
+    TRIAGE --> REDFLAG --> CLOSE --> HANDOFF
+```
+
+Scope notes, stated exactly as the code holds them: acuity is monitor-only
+beside the authoritative P-class SLA (`advertised_sla` takes the tighter of
+the two, never the looser); `resource_estimate` never binds; ESI/MTS/ATA are
+`-style` labels; medicine is keyword data in one `health` catalog domain with
+a `default` fallback. Non-clinical neighbors that must not be cited as
+healthcare: TreeHandoff (R17 session-tree infrastructure), the LAYA System-1
+decide port (R19 pure modules, ungated, zero behavior change), and the 1.32.8
+classifier consume (deliberately absent — opener-gated on the operator
+labeling round).
 
 ---
 
@@ -291,7 +399,8 @@ expansion terms, and (optionally) a rerank score.
 When retrieval quality is too low to support a claim, `/recall` returns
 `{decision: "low_confidence", hits: []}` instead of top-1 garbage. This is driven
 by a calibrated multi-signal recommendation (rank overlap, gap, lexical density) —
-never a magic score cutoff.
+never a raw fused-score cutoff (the numeric thresholds in `src/search/quality.rs`
+gate the multi-signal recommendation, not the fused score itself).
 
 ---
 
@@ -304,8 +413,12 @@ never a magic score cutoff.
 4. Text is tokenized into FTS5.
 5. `[[relation::entity]]` links (and explicit entities/relations) build the
    **knowledge graph**.
-6. **Temporal stamps** (`observed_at` / `valid_from` / `valid_to` / `authority`)
-   and **source provenance** (`source` + immutable `revision`) are recorded.
+6. **Temporal stamps on the structured path** (`observed_at` / `valid_from` /
+    `valid_to`, `src/service/ingest.rs`) and **source provenance** (`source` +
+    immutable `revision`, `src/sources.rs`) are recorded. Markdown/vault chunk
+    writes carry title, heading path, line range, source path, and owner — no
+    `observed_at` / `valid_from` / `valid_to` / `authority` columns
+    (`src/server/router/memory.rs` `write_markdown_ingest`).
 
 Ingest is governed by a **write-back gate** (v1.14): a candidate can be scored
 (novelty via KNN, conflict via consolidation, salience via heuristics) and held in
@@ -318,30 +431,50 @@ human approval.
 
 Entities and relationships live in `entities` / `relationships` tables with a
 four-timestamp bi-temporal model (`valid_at` / `invalid_at` + `created_at` /
-`superseded_at`, v1.27.22). `/graph/traverse` walks the graph (bounded to depth
-4, ≤256 visited) and, with `?explain=true`, returns **faithful hop chains**
-(`A --works_at--> B --ceo_of--> C`) rather than a flat id string. Traversal
-visits only *current* edges — a rewritten edge whose `superseded_at` is set is
-skipped (a backdated correction no longer yields two live edges for one triple).
+`superseded_at`; `valid_at`/`invalid_at` from v1.4.0, `superseded_at` +
+partial unique index v1.27.22 — `src/migration.rs`). `/graph/traverse` walks
+the graph (bounded to depth 4, ≤256 visited — `src/trace.rs` `MAX_HOPS` /
+`MAX_VISITED`) and, with `?explain=true`, returns **hop chains**
+(`A --works_at--> B --ceo_of--> C`) rather than a flat id string. The
+explanation is best-effort by construction (`src/graph_read.rs`
+`build_explanation_paths`): the seed name and the leaf name ride the row,
+intermediate nodes surface as ids only — a consumer that needs an
+intermediate's name calls `/get/{id}`. Traversal visits only *current* edges
+— a rewritten edge whose `superseded_at` is set is skipped (a backdated
+correction no longer yields two live edges for one triple), and this
+current-belief predicate applies even with `?at`: traverse answers
+as-of queries over *current beliefs whose valid window contains `at`*, so a
+superseded edge is never returned by traverse regardless of `?at`.
 
-Graph edges are superseded two ways, both retire-never-delete:
+Retire-never-delete holds in two different stores — do not conflate them:
 
-- **Operator-approved `supersedes` links** (via `/consolidate`) atomically
-  expire the prior fact (its `invalid_at` closes): historical recall
-  (`?at=<past>`) still returns it, current recall does not.
-- **Automatic on changed re-ingest** (v1.27.22): re-ingesting a relation with a
-  different window sets the old edge's `superseded_at` (transaction-time end)
-  and inserts the corrected version as the new current belief. The full version
-  lineage is readable via `GET /graph/relationships/{id}/history`.
+- **Knowledge chunks via `/consolidate`** (`src/consolidate.rs`
+  `resolve_supersession`): an operator-approved `supersedes` evidence link
+  atomically sets the OLD chunk's `knowledge.valid_to` (not
+  `relationships.invalid_at`). The existing `/recall` bi-temporal filter
+  (`k.valid_to IS NULL OR k.valid_to > ?at`) then excludes the old chunk by
+  default while `?at=<before-resolution>` still returns it.
+- **Graph edges** (v1.27.22, `src/graph_supersede.rs`): re-ingesting a
+  relation with a different window sets the old edge's `superseded_at`
+  (transaction-time end) and inserts the corrected version as the new current
+  belief. The full version lineage is readable via
+  `GET /graph/relationships/{id}/history`.
+
+Ceiling: vault markdown changed-file re-ingest *replaces* old chunks
+(`DELETE FROM knowledge WHERE source_path` before re-insert), so
+retire-never-delete holds for graph edges and consolidate-expired chunks, not
+the vault replace path.
 
 ---
 
 ## Governance layer
 
-- **Append-only audit log** — a keyed HMAC-SHA256 hash chain. Each row records
-  a keyed MAC of the previous row over the full record, with a per-DB epoch and
-  a pinned chain head (`/audit/verify`); pre-v1.27.31 legacy epochs verify as
-  legacy (v1.27.31). Read events (recall/search/get) are opt-in.
+- **Append-only audit log** — a keyed HMAC-SHA256 hash chain. Each link is
+  HMAC-SHA256 over the full current row *including* its stored `prev_hash`
+  (8-field keyed link, length-prefixed so no separator can shift), with a
+  per-DB epoch and a pinned chain head (`schema_meta.audit_chain_head`,
+  `/audit/verify`); pre-v1.27.31 legacy epochs verify as legacy (v1.27.31).
+  Read events (recall/search/get) are opt-in.
 - **Workflow governance** — governed runs on lineage events (branch-never-delete
   rewind), role-gated with audited transitions; the outcome scoreboard,
   monthly calibration signing, and since v1.28.34 the ISO 10002/10003
@@ -356,12 +489,16 @@ Graph edges are superseded two ways, both retire-never-delete:
 - **Calibrated abstention**, **span verification** (`/verify`), and **reviewable
   proposals** keep the memory honest without an LLM.
 - **Read-seam sanitization** — every emitted text field passes redaction →
-  invisible-Unicode strip → markdown-reference strip (EchoLeak) → hostile-element
-  strip (element tier + attribute tier: `on*` handlers and
-  `javascript:`/`vbscript:`/`data:` schemes on surviving elements die; the tier
-  is scheme-hostile, not attribute-hostile) before leaving the server, so a
-  stored chunk cannot smuggle context out through a rendered URL or
-  bidi/zero-width trickery (v1.20.3 / v1.20.27 / v1.28.72 / v1.28.86).
+  invisible-Unicode strip → markdown-reference strip (EchoLeak) →
+  control-char strip (C0/C1, so a control byte splitting `<script>` cannot
+  dodge the element-name match) → hostile-element strip (element tier +
+  attribute tier: `on*` handlers and `javascript:`/`vbscript:`/`data:`
+  schemes on surviving elements die; the tier is scheme-hostile, not
+  attribute-hostile) → sentinel strip (fence literals never ride read output;
+  sentinels go last so no later transform can re-weld a split marker), the
+  strips running to their fixed points, before leaving the server, so a stored
+  chunk cannot smuggle context out through a rendered URL or bidi/zero-width
+  trickery (v1.20.3 / v1.20.27 / v1.28.72 / v1.28.86).
 - **Fail-closed bind + SSRF-hardened egress** — startup refuses a non-loopback
   bind without auth (v1.20.29); outbound webhook/alert calls follow no redirects
   (v1.20.26).
@@ -370,11 +507,14 @@ Graph edges are superseded two ways, both retire-never-delete:
 
 ## Data storage
 
-- **SQLite** in WAL mode, with `busy_timeout` so concurrent writers queue rather
-  than fail.
-- **`vec0`** for quantized embeddings; **FTS5** for lexical search; relational
-  tables for the knowledge graph, sources/revisions, and governance.
-- **Backup/restore** — AES-256-GCM encrypted, checksummed, excludes secrets.
+- **SQLite** in WAL mode (`journal_mode=WAL`, `busy_timeout=5000` —
+  `src/migration.rs`), so concurrent writers queue rather than fail.
+- **`vec0`** for quantized embeddings (`embedding_int8` int8 + `embedding_bit`
+  binary, cosine); **FTS5** (`knowledge_fts` + sync triggers) for lexical
+  search; relational tables for the knowledge graph, sources/revisions, and
+  governance.
+- **Backup/restore** — AES-256-GCM encrypted, checksummed, excludes secret
+  contents (`src/backup.rs` `backup_excludes_secret_contents`).
 
 ---
 
@@ -386,7 +526,8 @@ across domains on a miss. The fallback can mix the shared global corpus into a
 domain answer; every such response carries `included_global: true` so the mixing
 is visible (v1.28.80). True storage isolation is a separate deployment mode
 (`BRAIN_MULTI_DB`), not the default shim.
-This is a v1.x foundation (see [Roadmap](./roadmap.md)).
+Shipped as v1.0 "Domains" (see [Roadmap](./roadmap.md)); `included_global`
+mixing labeled since v1.28.80.
 
 ---
 

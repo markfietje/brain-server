@@ -124,6 +124,7 @@ A domain name string (see bounds above). The reserved domain `global` is the fal
 | `domain` | string | no | the domain the hit came from (present when `provenance=true`) |
 | `source` | `"vector"` \| `"fts"` \| `"both"` \| `"graph"` | no | retrieval path (present when `provenance=true`) |
 | `provenance` | object | no | per-retriever ranks + fused score (present when `provenance=true`) |
+| `untrusted` | boolean | yes | always `true` on served hits (v1.28.65 X-R1 — recall/search/suggest parity; the consumer contract) |
 
 ### `provenance` (per-hit)
 The shape of `RecallHit.provenance` (defined in `src/search/mod.rs`):
@@ -198,6 +199,7 @@ cross-encoder rerank → cross-domain fallback on miss → cap → return.
 | `hits` | `RecallHit[]` | yes | ordered by descending `score`; length ≤ `limit` |
 | `domain` | string | yes | the **primary** domain chosen by routing (or the forced domain) |
 | `domainsSearched` | string[] | yes | domains of the returned hits (empty array when no hits). Always present (v1.13.3); no longer gated on `provenance`. |
+| `included_global` | boolean | yes | always present (v1.28.80): `true` when the fallback mixed the shared global corpus into a domain answer, so the mixing is visible |
 | `telemetry` | object | no | per-stage retrieval telemetry. Present when `provenance=true`. |
 
 ### `telemetry` (per-response)
@@ -270,6 +272,7 @@ annotation engine was retired in v0.9.0).
 | `domain` | string | no | force domain; omit → resolved to `global` |
 | `entities` | `Entity[]` | no | upsert into the domain KG |
 | `relations` | `Relation[]` | no | upsert; `from`/`to` upserted as entities if new |
+| `origin_context` | `"owner"` \| `"channel"` | no | v1.28.74: absent = `owner` (byte-compat); `"channel"` stores origin `channel-capture` (recall labels it); any other value is `400` |
 
 ### Response — `200 OK`
 ```json
@@ -518,7 +521,7 @@ pub struct RecallRequest {
     #[serde(default)] pub trace: bool,
 }
 ```
-> Canonical field list as of v1.20.29; the current source is authoritative —
+> Canonical field list as of v1.28.92 (`untrusted` hits, `included_global`, `origin_context` all documented above); the current source is authoritative —
 > see `src/handlers/recall.rs`.
 ```
 

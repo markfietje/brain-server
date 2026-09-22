@@ -148,7 +148,7 @@ memory.
 | Who you are | What you need | What Brain Server gives you | Status |
 |---|---|---|---|
 | **Retail / logistics field ops** | Offline memory on thin hardware | Single binary, low power, Jetson / Raspberry Pi | **Shipped** |
-| **Industrial / remote / air-gapped sites** | No cloud dependency, deterministic | Local static embeddings, no data egress | **Shipped** |
+| **Industrial / remote / air-gapped sites** | No cloud dependency, deterministic | Local static embeddings, no retrieval-path egress | **Shipped** |
 
 ## 5. Knowledge workers & individuals
 

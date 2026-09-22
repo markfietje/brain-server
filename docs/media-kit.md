@@ -41,14 +41,16 @@ roadmap).
 - **BPOs & multi-client contact-center operators** — the v2.0 "Cortex" roadmap
   is explicitly call-center intelligence (multi-team tenancy, ticket-pattern
   resolution). The *controls* they need are shipped today (per-domain
-  isolation, per-tenant audit, DSAR, PII containment, human-gated writes);
-  multi-client tenancy on one shared backend is the documented v2.0 piece.
+  scoping, per-tenant audit, DSAR, PII containment, human-gated writes);
+  multi-client tenancy on one shared backend is the documented v2.0 piece
+  (true storage isolation is the separate `BRAIN_MULTI_DB` mode, not the
+  default shim).
 - **In-house contact & support centers** — agent-assist memory that recalls
   past resolutions and policy, supervised and audited, without fabricating
   answers (calibrated abstention + span verification).
 - **Regulated enterprises** (finance, healthcare, legal, government) — memory
   that stays on-prem, is auditable to a chain, honors DSAR, and is explainable.
-- **Edge / field / air-gapped deployments** — a single binary under 5 W.
+- **Edge / field / air-gapped deployments** — a single self-hosted runtime on 4 GB ARM.
 - **Delivery partners** (SIs, MSPs, consultants) — a deployable, auditable
   memory layer with procurement-grade evidence (`RFP_RESPONSE_KIT.md`).
 
@@ -77,15 +79,15 @@ roadmap).
 | Zero LLM in loop | **Yes** | no | no | no |
 
 *Honest ceilings we don't claim (each owned + versioned):* multi-team tenancy
-(v2.0), per-tenant limits (v2.1), pricing/licensing (v2.2 "Meridian").
+(v2.0), per-tenant limits (v2.1), pricing/licensing (v2.2).
 Retrieval is deterministic, not SOTA-generative; multi-hop graph quality is
 corpus-bound; abstention is heuristic, not learned.
 
 ## Headline stats (verify in the proof map)
 
-- **UMP 1.0 / L3** conformance — reference-suite scored 13/13.
+- **UMP 1.0** — 13/13 reference-suite checks (`@universalmemoryprotocol/core`, CI re-run): L3 signed on a keyed instance, L2 hash-only without a key.
 - **`$0`** per query — no LLM/embedding API in recall or writes.
-- **< 5 W** — runs on a 4 GB ARM device (Jetson Nano / RPi 5).
+- **Small-device capable** — runs on a 4 GB ARM device (Jetson Nano / RPi 5); no power-draw figure is claimed (none measured).
 - **`{"ok":true}`** in one command — `/audit/verify` proves the chain intact.
 - **OWASP 2026** matrix — 100% control coverage (shipped or owned ceiling).
 

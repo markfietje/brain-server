@@ -68,7 +68,7 @@ AI agent running on a Jetson Nano (4 GB RAM, ARM Cortex-A57).
 
 ## 2. Package & Dependencies
 
-From `Cargo.toml` (`name = "brain-server"`, `version = "1.28.80"`, `edition = "2024"`):
+From `Cargo.toml` (`name = "brain-server"`, `version = "1.28.92"`, `edition = "2024"`):
 
 | Purpose | Crate | Version |
 |---|---|---|
@@ -123,7 +123,7 @@ below are *defined but not actually used* by the code path they name. Flagged in
 | `RUST_LOG` | `info` | tracing filter | |
 | `BRAIN_WORKER_THREADS` | number of cores | tokio multi-thread runtime worker count (v1.3.0). Jetson target = `2` to save ~10 MB RSS + context-switch overhead; unset = cores. | Ignored if ≤ 0 |
 | `ANNOTATOR_ENABLED` | — | **removed** (v0.9.0 took out the TOML annotator module entirely) |
-| `CORS_ORIGINS` / `CORS_METHODS` / `CORS_HEADERS` | — | **documented but ignored** | CORS is hardcoded `Any` (see §6) |
+| `CORS_ORIGINS` / `CORS_METHODS` / `CORS_HEADERS` | — | **env-driven** (see §6; loopback-only fallback) |
 
 > Database file path reads `BRAIN_DB_PATH`, falling back to the default
 > workspace directory.

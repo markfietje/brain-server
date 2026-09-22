@@ -57,8 +57,11 @@ controls. The server core (retrieval, graph, governance) is stable and heavily t
 | **v1.28.36–1.28.45** | Conformance + channels | Keystone closes the Order-of-Care gaps; Access/Lexicon/Advocate/Handshake/Terrain complete the Conformance Line; Valet ships the assistant; Switchboard/Caravel/Herald open the governed channel edges (Signal, WhatsApp, Slack, Teams) |
 | **v1.28.46–1.28.55** | Foundation + Spire | The service-layer convergence (handler SQL enforced to zero) and the thin-binary law, machine-enforced |
 | **v1.28.58–1.28.62** | The Enterprise Line | Throughput (concurrent truth + the calendar as code), Headroom (durability + lock telemetry), Loom (opt-in parallelism), Standby (warm DR + CodeQL closure), Attestation (provenance marks, the principal kill-switch, approval-fatigue telemetry, the crypto inventory) |
-| **v1.28.63–1.28.80** | Hardening to Lockdown | Seam vocabulary, egress/process boundaries, operator/agent token split, screen + read-seam hygiene, key lifecycle, origin labels, dormant-exec hardening, finished erasure, unconditional quarantine, third-pass close-out, Lockdown (transport, quorum, visibility) |
-| **v1.28.82 (planned)** | September-research lane | End-to-end red-team harness (PipePoison-class write→retrieve→utilize chains), multimodal carrier screening (EXIF/OCR/QR per MMPIBench vectors), MCP OAuth Protected Resource Metadata on HTTP mode (2026-07-28 spec) |
+| **v1.28.63–1.28.80** | Hardening to Lockdown | Seam vocabulary, egress/process boundaries, operator/agent token split, screen + read-seam hygiene, key lifecycle, origin labels, exec mediation hardening (dormant, then wired + OS-bounded in .92), finished erasure, unconditional quarantine, third-pass close-out, Lockdown (transport, quorum, visibility) |
+| **v1.28.81–1.28.85** | AgBOM + fix releases | AgBOM (live agent bill of materials, .81), Vigil (.82), Recall (.83), Quarterly (.84), SixthPass (.85) |
+| **v1.28.86–1.28.90** | Seventh-pass closures + service | Attrbane (.86, read-seam attribute tier), Ownerstamp (.87, owner stamps + crew seam), Clocktruth (.88), Bounded (.89), Refresh (.90, dependency service bump) |
+| **v1.28.91–1.28.92** | Evidence + the loop record | Notary (.91: off-host `brain anchor` / `--verify`, physical `brain shred`), Ledger (.92: the governed diagnostic loop through 1.32.7, disagreement corpus + account record layers, LAYA System-1 Phase 0, exec OS boundary) |
+| **Planned research lane** | Red-team harness | End-to-end red-team harness (PipePoison-class write→retrieve→utilize chains), multimodal carrier screening (EXIF/OCR/QR per MMPIBench vectors), MCP OAuth Protected Resource Metadata on HTTP mode (2026-07-28 spec) |
 | **v2.0 "Cortex"** | Multi-team tenancy + authorization-state integrity | Tenancy plus EAL-class permission records bound to source events |
 
 ---
@@ -74,7 +77,9 @@ controls. The server core (retrieval, graph, governance) is stable and heavily t
 
 The v1.19–v1.28 intermediate milestones (profiles, regulated modes, roles,
 connectors, BPO operations, the hardening/correctness line, the four
-v1.28 lines, and hardening through 1.28.80) are complete. Next: **v2.0 "Cortex"** —
+v1.28 lines, hardening through 1.28.80, the AgBOM/fix releases, the
+seventh-pass closures, and the Notary/Ledger evidence + loop record) are
+complete. Next: **v2.0 "Cortex"** —
 multi-team tenancy, the first externally-pilotable release. The plan is
 evidence-gated: work is only shipped
 when it is verifiable and earned by a need, not speculation.

@@ -54,13 +54,13 @@ curl -X POST http://localhost:8765/recall \
 
 **The problem.** You need to answer "what did the system recall, and why?" — and honor erasure requests.
 
-**The fix.** The **append-only SHA-256 audit chain** proves nothing was tampered with. **Recall traces** replay exactly what informed a retrieval. The **DSAR workflow** locates, exports, purges, and issues a chain-verifiable deletion certificate. See **[Governance & Compliance](./compliance.md)**.
+**The fix.** The **append-only keyed hash chain** (HMAC-SHA256, per-DB epoch) proves nothing was tampered with. **Recall traces** replay exactly what informed a retrieval. The **DSAR workflow** locates, exports, purges, and issues a chain-verifiable deletion certificate. See **[Governance & Compliance](./compliance.md)**.
 
-## 7. An edge deployment that draws under 5 watts
+## 7. An edge deployment on 4 GB ARM
 
 **The problem.** You want memory on a Jetson Nano or Raspberry Pi, not in the cloud.
 
-**The fix.** One Rust binary, embedded SQLite + sqlite-vec, int8-quantized vectors, bounded RSS (default 512 MiB on Jetson via `CAPACITY_MAX_RSS_MIB`; since v1.28 Caliber the **desktop** capacity target defaults to 1024 MiB — jetson stays 512) on 4 GB ARM. No GPU, no embedding API, no Docker stack. Set `BRAIN_WORKER_THREADS=2` to trim RSS further.
+**The fix.** One self-hosted runtime, embedded SQLite + sqlite-vec, int8-quantized vectors, bounded RSS (default 512 MiB on Jetson via `CAPACITY_MAX_RSS_MIB`; since v1.28 Caliber the **desktop** capacity target defaults to 1024 MiB — jetson stays 512) on 4 GB ARM. No GPU, no embedding API, no Docker stack. Set `BRAIN_WORKER_THREADS=2` to trim RSS further. (Power draw is not stated — it was never measured.)
 
 ## Next steps
 

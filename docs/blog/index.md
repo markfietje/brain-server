@@ -24,5 +24,9 @@ proof map.
 - [The redirect that never happens](./17-the-redirect-that-never-happens.md), *bearer safety and manual-redirect transport*
 - [Signatures with a stated ceiling](./18-signatures-with-a-stated-ceiling.md), *signed pin acks, TOFU limits stated plainly*
 - [Visible mixing beats pretend isolation](./19-visible-mixing-beats-pretend-isolation.md), *the included_global flag and honest tenancy*
+- [Why I built the governance layer](./20-why-i-built-the-governance-layer.md), *the operating thesis, 2026-09-11*
+- [The week runtime enforcement got a standard](./21-runtime-enforcement-got-a-standard.md), *OWASP Top 10 2026 + Agent Control Standard v0.1, updated for v1.28.81*
+- [Local judgment vs rented judgment](./22-laya-vs-jev.md), *the System-1 port is Laya, not Jev — v1.28.92*
+- [The loop learned clinical discipline](./23-healthcare-diagnostics-loop.md), *the 1.32.7 diagnostics loop and what it buys — v1.28.92*
 
 Positions and one-liners live in the [media kit](../media-kit.md).

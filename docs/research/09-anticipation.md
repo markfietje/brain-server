@@ -42,6 +42,13 @@ narrow and honest:
   chunk, recording which anticipations were useful.
 - **`GET /suggest/metrics`**, the **false-positive rate** (the roadmap exit
   criterion): feedback analytics that measure how often `suggest` is wrong.
+- **Consumer-contract labels (v1.28.65 X-R1):** every `/suggest` hit carries
+  `untrusted: true` — recall/search parity, the one content-returning surface
+  that had broken the consumer contract (`src/handlers/suggest.rs`).
+- **KCS evidence side-effect gated (v1.28.72 X-W6):** the `GET suggestions`
+  evidence write requires Write + the `workflow` role; Read-only principals
+  get the body unchanged with `evidence_recorded: false`
+  (`src/handlers/workflow.rs`).
 
 Session identity is **client-owned** (a caller-supplied opaque `run_id`); the
 server does no session-boundary detection, no timeout, no embedding mean. No new

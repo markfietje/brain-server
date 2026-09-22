@@ -47,7 +47,11 @@ After the push, `scripts/release.sh` BLOCKS until the CI run for the exact
 tagged commit is green (fail-closed — the tag itself re-runs no tests, so
 that wait is the only automated bridge between "pushed main" and
 "shipped binaries"). These local gates are the pre-push redundancy, not a
-substitute for the wait.
+substitute for the wait. CI-side facts the releaser should know are current
+as of 1.28.92: the `audit` job runs the `cargo-audit` binary over every
+tracked lockfile (`.github/workflows/ci.yml`), and the conformance pack
+follows the two-door rule (explicit `GDL_R10_PACK_DIR` = fail-closed
+operator request; plain absence on CI = named skip — `src/handlers/case_run.rs`).
 
 ## Badges are facts, not hand-typed claims
 
@@ -61,13 +65,13 @@ own completeness.
 
 ### SBOM scope (what the committed file does and does NOT cover)
 
-`sbom/brain-server-<version>.cdx.json` (1.28.83: **375 components** vs
-**520** `Cargo.lock` packages) covers the shipped runtime closure as
+`sbom/brain-server-<version>.cdx.json` (1.28.92: **374 components** vs
+**523** `Cargo.lock` packages) covers the shipped runtime closure as
 emitted by `cargo-cyclonedx`. **Spec version (v1.28.88):** the file is
 CycloneDX **1.5** — the ceiling of cargo-cyclonedx 0.5.9 (latest; it emits
 1.3/1.4/1.5 and reads no config file), pinned as `--spec-version 1.5` in
 `scripts/sbom.sh`; bump that one flag when upstream ships 1.6/1.7. The
-~145-package gap is dev-dependencies +
+~149-package gap is dev-dependencies +
 build-transitive crates that never ship in the release binary — excluded by
 the generator's default scope, not by hand-editing. Per the CISA 2026
 Minimum Elements for SBOM (published 29 Jul 2026, supersedes the NTIA 2021
@@ -102,16 +106,18 @@ router-only exclusions. Counted production set: 8.
 
 | Route | Router registration | Handler |
 |---|---|---|
-| `/.well-known/openid-configuration` | `src/server/router/auth.rs:518` | `src/handlers/well_known.rs:22` |
-| `/.well-known/jwks.json` | `auth.rs:521` | `well_known.rs:28` |
-| `/.well-known/security.txt` | `auth.rs:523` | `well_known.rs:44` |
-| `/.well-known/ai-notice` | `auth.rs:527` | `well_known.rs:74` |
-| `/.well-known/ai-literacy` | `auth.rs:531` | `well_known.rs:91` |
-| `/.well-known/cop-notice` | `auth.rs:535` | `well_known.rs:109` |
+| `/.well-known/openid-configuration` | `src/server/router/auth.rs:518` | `src/handlers/well_known.rs:24` |
+| `/.well-known/jwks.json` | `auth.rs:521` | `well_known.rs:30` |
+| `/.well-known/security.txt` | `auth.rs:523` | `well_known.rs:50` |
+| `/.well-known/ai-notice` | `auth.rs:527` | `well_known.rs:79` |
+| `/.well-known/ai-literacy` | `auth.rs:531` | `well_known.rs:97` |
+| `/.well-known/cop-notice` | `auth.rs:535` | `well_known.rs:113` |
 | `/.well-known/ump.json` | `src/server/router/ump.rs:27` | `src/handlers/ump_ops.rs:1` (`capabilities`) |
 
 All 7 are also public-path listed (`route_guards.rs:19-40` `PUBLIC_PATHS`)
-and present in `openapi.yaml` (:2990 ump.json, :6538-:6651 the six).
+and present in `openapi.yaml` (:3028 ump.json, :6854-:6990 the six; file
+8203 lines, `x-api-version: "1.21.0"` — unchanged across 1.28.80–92: every
+wire change in that span was additive, so the stamp correctly did not move).
 Standing rule: a new well-known route MUST land in all three places
 (router + `PUBLIC_PATHS` + openapi) or fail review.
 

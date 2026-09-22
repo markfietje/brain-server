@@ -23,8 +23,9 @@ faithful to the reference:
 
 - `PPR_ALPHA = 0.5` (the reference's real default, not the 0.85 some drafts
   quote), `PPR_EPSILON = 1e-6`, `MAX_PPR_ITER = 50`, `MAX_VISITED = 256`.
-- **No LLM, no new schema, no embeddings in the graph leg**, the `< 5 W`
-  manifesto holds. Edge weight = `COUNT(DISTINCT knowledge_id)` per pair,
+- **No LLM, no new schema, no embeddings in the graph leg** — the edge
+  manifesto holds (cheap enough for 4 GB ARM; power draw itself unmeasured).
+  Edge weight = `COUNT(DISTINCT knowledge_id)` per pair,
   scaled by relation-type (see the Discern explainer).
 - Seeds = query→entity-name containment via the existing linker vocabulary;
   top entities expand back to chunks (respecting `flagged=0` / `valid_to IS

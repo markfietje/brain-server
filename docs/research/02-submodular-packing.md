@@ -21,7 +21,10 @@ a diversity gate keeps the set from collapsing onto one cluster.
 
 `src/search/packing.rs::pack` is a deterministic lazy-greedy under a knapsack:
 
-- `DEFAULT_MAX_CONTEXT_TOKENS = 160`, `MAX_CANDIDATES = 64` cap the work.
+- The token budget is caller-supplied (`PackRequest.max_context_tokens`,
+  via `/recall?max_context_tokens=`); there is no fixed default — the "~160"
+  figure in `packing.rs` is the paper's hot spot the `chars/4` heuristic is
+  calibrated against, not a const. `MAX_CANDIDATES = 64` caps the work.
 - Objective = **relevance + coverage + representativeness** (the `Weights`
   config, tunable via env), gated by an MMR-style diversity bound:
   `DEDUP_SIMILARITY = 0.85`, a candidate whose best overlap to an already-

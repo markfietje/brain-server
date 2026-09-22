@@ -31,9 +31,13 @@ Brain Server is the tamper-evident, human-gated memory store that defuses it.**
     v1.28.62 "Attestation" with signed provenance marks on every engine-generated
     artifact, the principal kill-switch, and the cryptographic inventory —
     then hardening through v1.28.80 "Lockdown" (two-principal approvals,
-    fail-closed auth admissions, visible mixing flags).
+    fail-closed auth admissions, visible mixing flags), the off-host anchor +
+    physical shred (v1.28.91 "Notary"), and the governed diagnostic loop with
+    its OS-bounded exec path, machine-refusal law, and dual-gated bulk reads
+    (v1.28.92 "Ledger").
 3. **Tamper-evident audit** — every decision (and, opt-in, every read) lands in
-   a SHA-256 hash chain you can verify end to end. DSARs produce chain-
+   a keyed hash chain (HMAC-SHA256 under a per-DB epoch, legacy rows verifying
+   as legacy) you can verify end to end. DSARs produce chain-
    verifiable deletion certificates. Every security/compliance claim in the
    docs is *reproducible live*, not asserted. See
    [`docs/trust/proof-map.md`](../trust/proof-map.md).

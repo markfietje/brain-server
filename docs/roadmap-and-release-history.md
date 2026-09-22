@@ -151,6 +151,18 @@ Brain Server ships on a strict linear release chain. This page is the roadmap su
 | 1.28.78 | Unconditional | Quarantine on every leg; at-least-once channel delivery |
 | 1.28.79 | Parity | Multiline-token refusal; redirect re-pin; chat-gated mirrors; quarantine-closed reindex |
 | 1.28.80 | Lockdown | Manual-redirect transport; system-prompt merge sanitize; single-block tool envelope; signed pin acks; auth/wildcard admissions; optional approval quorum; `included_global`, `authn`, tripwire echoes |
+| 1.28.81 | AgBOM | The live agent bill of materials (`GET /ops/agents/bom`) |
+| 1.28.82 | Vigil | The deep-round fix release |
+| 1.28.83 | Recall | Security fix release |
+| 1.28.84 | Quarterly | Security fix release |
+| 1.28.85 | SixthPass | Sixth-pass closures |
+| 1.28.86 | Attrbane | Seventh-pass closures 1/4: read-seam attribute tier |
+| 1.28.87 | Ownerstamp | Seventh-pass closures 2/4: content owner stamps, crew seam, admin-evidence seams |
+| 1.28.88 | Clocktruth | Seventh-pass closures 3/4: clocks, labels, transport-free guard recursion |
+| 1.28.89 | Bounded | Seventh-pass closures 4/4 |
+| 1.28.90 | Refresh | Dependency service bump |
+| 1.28.91 | Notary | Off-host `brain anchor` / `--verify` state fingerprint; physical `brain shred` residue drop |
+| 1.28.92 | Ledger | The governed diagnostic loop through 1.32.7; disagreement corpus + account record layers; LAYA System-1 Phase 0 pure port; loop-exec OS boundary |
 
 ## Milestone themes
 

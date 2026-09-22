@@ -72,7 +72,7 @@ including the JWT key directory, PRF tuning, suggest kill-switch, and DSAR webho
   - **Opaque bearer** (default): `AUTH_TOKEN` / `AUTH_TOKEN_FILE`, constant-time
     compare, multiple tokens for rotation.
   - **JWT/JWS** (opt-in): set `BRAIN_JWT_ISSUER` + generate keys with
-    `brain key generate`. RS256/ES256/EdDSA only; revocation + refresh-chain reuse
+    `brain key generate`. RS256/RS384/RS512/ES256/ES384/EdDSA only; revocation + refresh-chain reuse
     detection; per-route AuthZ.
 - **Auth token file is 0600.** The install script relocates any plaintext token out
   of the launchd plist into the secret file.

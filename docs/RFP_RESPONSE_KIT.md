@@ -1,6 +1,6 @@
 # RFP Response Kit — brain-server
 
-**Applies to:** brain-server 1.28.80 · **Last updated:** 2026-09-11
+**Applies to:** brain-server 1.28.92 · **Last updated:** 2026-09-22
 
 A two-to-three page map from common enterprise RFP sections to the concrete
 brain-server features that satisfy them, so a procurement response can cite
@@ -30,6 +30,21 @@ file (`COMPLIANCE.md`), threat model (`THREAT_MODEL.md`), security map
 > `BRAIN_ALLOW_WILDCARD_GRANT`, 1.28.80), and the **`included_global`
 > recall flag** that makes cross-domain mixing explicit (1.28.80). The Enterprise Line is complete; v2.0 tenancy remains the
 > roadmap item (see §4).
+>
+> **Freshness note (2026-09-22, through v1.28.92 "Ledger"):** add to any
+> security/traceability response: the **agent software bill of materials**
+> (`GET /ops/agents/bom`, 1.28.81), the **off-host state anchor**
+> (`brain anchor` / `--verify`: chain head + knowledge census + counts,
+> diffed off-host) and **physical shred** (`brain shred`: secure_delete →
+> checkpoint(TRUNCATE) → VACUUM → integrity_check, freelist 0) (1.28.91),
+> the **loop-exec OS boundary** (deny-default sandbox-exec Seatbelt /
+> Landlock, fail-closed on unavailable backend) with **machine-refusal**
+> (`decision_ref` required on every obligation-minting surface, agent class
+> refused before any row) and **DPO-dual-gated bulk reads** (corpus export +
+> account listing: Admin + DPO, audited per call, seam de-identified)
+> (1.28.92), and the **governed diagnostic loop** itself (7-phase case
+> machine with law-cited gates, healthcare-hardened triage/closure/referral
+> in 1.32.7 — see `docs/architecture.md`).
 
 ## 1. Security & Access Control
 

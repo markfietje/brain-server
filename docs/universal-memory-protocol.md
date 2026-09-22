@@ -41,7 +41,7 @@ curl http://127.0.0.1:8765/ump/capabilities
 
 ```json
 {
-  "server": { "name": "brain-server", "version": "1.28.80" },
+  "server": { "name": "brain-server", "version": "1.28.92" },
   "ump": "1.0",
   "conformance": "L3",
   "kinds": ["semantic", "episodic", "procedural", "working", "identity"],

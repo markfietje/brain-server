@@ -7,8 +7,8 @@
 
 ## 1. What data does brain-server process?
 
-- **Kinds:** fact, episodic, procedure, step, decision (the `memory_kind`
-  vocabulary, populated by ingest + connectors).
+- **Kinds:** fact, episodic, procedure, step, decision, entitlement (the `memory_kind`
+  vocabulary, populated by ingest + connectors; `src/procedural.rs` `MemoryKind`).
 - **PII posture:** deterministic read-time output redaction + at-rest LUKS; a
   write-time placeholder vault is deliberately **not** a vault (see COMPLIANCE.md
   §vault). No raw PII is copied into pii_map.

@@ -24,7 +24,7 @@ writes `dist/cra-kit/`:
 
 | Artifact | Source | What it evidences |
 |----------|--------|-------------------|
-| `brain-server-<ver>.cdx.json` | `scripts/sbom.sh` (CycloneDX from `Cargo.lock`) | SBOM — full dependency tree for component/supply-chain scan |
+| `brain-server-<ver>.cdx.json` | `scripts/sbom.sh` (CycloneDX from `Cargo.lock`) | SBOM — shipped runtime closure for component/supply-chain scan (not the dev+build tree; see `docs/release-checklist.md` SBOM scope) |
 | `SECURITY.md` | repo | reporting path + supported-versions window |
 | `SUPPORT.md` | repo | support statement + update guidance + no-SLA honesty |
 | `deployment.md` | `docs/deployment.md` | how the product is deployed/updated |
@@ -36,8 +36,8 @@ macOS and Linux).
 
 ## Relationship to the SBOM (pre-existing)
 
-The per-release CycloneDX SBOM predates this kit (v1.17.5 ships it into `dist/`
-on every tag release; `SECURITY.md` §SBOM documents it). The kit merely wraps
+The per-release CycloneDX SBOM predates this kit (v1.17.5 ships it into `sbom/`
+as `brain-server-<version>.cdx.json` on every tag release; `SECURITY.md` §SBOM documents it). The kit merely wraps
 it with the reporting + support docs the CRA pairs with it, so the whole
 evidentiary story is answerable in one command.
 

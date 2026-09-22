@@ -1,6 +1,6 @@
 # Security
 
-> Coverage current through v1.28.80 (2026-09-11).
+> Coverage current through v1.28.92 (2026-09-22).
 
 Brain Server is a local-first memory component for AI agents, so its security
 model centers on three questions: **who is allowed to talk to it, what can they
@@ -107,6 +107,22 @@ what it may. Capability/scope denials return `403`; resource-visibility paths
   with redirects disabled (`redirect: none`), so a misconfigured callback URL
   that 302s to a cloud-metadata or loopback address is surfaced, never followed
   (v1.20.26).
+- **Required webhook signing** — `BRAIN_REQUIRE_WEBHOOK_SIGNING` defaults
+  REQUIRED: a sink URL without its secret refuses the boot; the DSAR path has
+  no opt-out (v1.28.86).
+- **SSE re-auth heartbeat** — both SSE endpoints re-consult the identity
+  kill-switch every `BRAIN_SSE_REAUTH_SECS` (default 30s); a revoked principal
+  gets a `{"revoked":true}` frame then close (v1.28.86).
+- **Agent software bill of materials** — `GET /ops/agents/bom` (v1.28.81).
+- **Off-host anchor + physical shred** — `brain anchor` / `--verify` diffs an
+  off-host state fingerprint (chain head + knowledge census + counts);
+  `brain shred` drops physical residue (secure_delete → TRUNCATE checkpoint →
+  VACUUM → integrity_check, freelist 0) after logical purge (v1.28.91).
+- **Loop-exec OS boundary** — deny-default sandbox-exec (macOS) / Landlock
+  (Linux), fail-closed on unavailable backend (`src/workflow/sandbox.rs`,
+  v1.28.92).
+- **Bulk-read dual gates** — corpus export + account listing require Admin
+  scope AND the DPO role, audit per call, de-identify at the seam (v1.28.92).
 
 ---
 

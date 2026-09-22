@@ -1,8 +1,9 @@
 # Install
 
-Brain Server is one self-hosted binary (plus the `brain` CLI). It runs on a
-4 GB ARM device drawing under 5 W up to a beefy server — the same binary, the
-same data layout.
+Brain Server is one self-hosted runtime (the server binary, plus the `brain`
+CLI, `mcp`, and `bench` from the same workspace build). It runs on a
+4 GB ARM device up to a beefy server — the same build, the
+same data layout. (No power-draw figure is claimed — none measured.)
 
 > **Operator step honesty:** installing the launchd service on macOS, signing
 > freshly-copied binaries, and Docker volumes are manual steps. The

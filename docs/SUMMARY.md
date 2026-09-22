@@ -100,6 +100,7 @@
 - [Centroid Domain Auto-Routing](./research/11-domain-routing.md)
 - [Deterministic Consolidation](./research/12-consolidation.md)
 - [Benchmark landscape 2026](./research/13-benchmark-landscape-2026.md)
+- [The Governed Diagnostic Loop](./research/14-governed-diagnostic-loop.md)
 
 # Blog
 
@@ -125,6 +126,8 @@
 - [Visible mixing beats pretend isolation](./blog/19-visible-mixing-beats-pretend-isolation.md)
 - [Why I built the governance layer](./blog/20-why-i-built-the-governance-layer.md)
 - [The week runtime enforcement got a standard](./blog/21-runtime-enforcement-got-a-standard.md)
+- [Local judgment vs rented judgment](./blog/22-laya-vs-jev.md)
+- [The loop learned clinical discipline](./blog/23-healthcare-diagnostics-loop.md)
 
 # Product site
 

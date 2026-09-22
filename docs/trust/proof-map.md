@@ -27,14 +27,14 @@ are assumed; swap `BRAIN_TOKEN_FILE`/`-H 'authorization: Bearer …'` as needed.
 | **JWT/JWS AuthN, no HS256/`none`** | v1.2.0 | `/.well-known/openid-configuration` + `/.well-known/jwks.json`; a forged `alg=none` token → 401 |
 | **Deny-by-default AuthZ** | v1.2.0 + v1.12.1 wiring | a read-scoped token on `/reindex` → 403; cross-tenant `/audit` filter → 403 |
 | **OIDC discovery + JWKS** | v1.2.0 | `curl -s localhost:8765/.well-known/jwks.json` → RSA/EC/Ed keys |
-| **UMP 1.0 / L3 conformance** | v1.17.3/.4 | `curl -s localhost:8765/ump/capabilities` → `conformance: "UMP 1.0 / L3"` |
+| **UMP 1.0 conformance (L3 signed / L2 hash-only)** | v1.17.3/.4 | `curl -s localhost:8765/ump/capabilities` → `conformance: "UMP 1.0 / L3"` with an operator key configured, `"UMP 1.0 / L2"` without (`src/handlers/ump_ops.rs` `capabilities_payload`) |
 | **Capability tokens, least-privilege** | v1.17.3 | `brain ump keygen`; a read-only token on `/ump/remember` → 401 |
 | **Injection screen (blocklist + classifier)** | v1.20.1/.3 | a flagged payload → stored `flagged`; `/health` shows `injection_classifier_loaded` |
 | **Human-in-the-loop write gate** | v1.14.0 + v1.20.1 | `POST /ingest/proposal` creates NO knowledge row; promote only via `/proposals/{id}/approve` |
 | **Proposal TTL auto-reject** | v1.20.1 | `BRAIN_PROPOSAL_TTL_SECS`; a stale approve → 400 `proposal_expired` |
 | **PII redaction (`[redacted:…]`)** | v1.14.0 | a PII-bearing row returned to a non-`pii:read` principal → masked; `/verify` never leaks |
 | **`/health` hardening + capacity** | v1.3.0 / v0.9.9 | `curl -s localhost:8765/health` → `hardening.unsafe_blocks`, `capacity` object |
-| **SBOM (CycloneDX)** | v1.17.5 | `scripts/sbom.sh` → `dist/*.cdx.json` on release |
+| **SBOM (CycloneDX)** | v1.17.5 | `scripts/sbom.sh` → `sbom/brain-server-<version>.cdx.json` on release |
 | **OWASP 2026 matrix = 100% control coverage** | v1.20.5 | `docs/OWASP_AGENTIC_2026.md` — each row cites a shipped feature or owned ceiling |
 | **Origin provenance (`human`/`model`/`imported`)** | v1.18.2 | `/export` returns `provenance_summary {total, by_origin, by_source}` |
 | **Standard Webhooks signed timestamp** | v1.20.4 | `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1`; `/webhooks/{kind}` verifies `v1,<base64>` HMAC |

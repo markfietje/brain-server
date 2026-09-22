@@ -1,6 +1,6 @@
 # Security Policy
 
-**Last reviewed:** 2026-09-14 against OWASP Top 10:**2025** + Cheat Sheet Series (v1.28.88 "Clocktruth" refresh: CRA Art 14 final-report clock split by trigger — 14 days after the fix for exploited vulnerabilities, one month after notification for severe incidents; revocation rows re-stamped to zero-staleness; verify-JSON scoped as the consumer's out-of-band act; transport-free layer guard made recursive)
+**Last reviewed:** 2026-09-22 against OWASP Top 10:**2025** + Cheat Sheet Series (v1.28.92 "Ledger" refresh: loop-exec OS boundary, machine-refusal law, bulk-read dual gates, GDL gates, LAYA Phase 0 ungated; history rows .85–.92 added; SBOM path `dist/`→`sbom/`; dormant-exec ceiling retired)
 **Stamp policy:** this "Last reviewed" line moves in the same commit as any security-relevant claim it covers — a stamp N releases behind HEAD is itself a finding.
 (Context7-verified), OWASP Multi-Tenant Security Cheat Sheet, OWASP JSON Web
 Token Cheat Sheet, OWASP Secrets Management Cheat Sheet, OWASP gRPC + Microservices
@@ -17,7 +17,7 @@ that shipped it and the exact live `curl`/`brain` command that proves it in
 
 | Version | Supported          | Notes |
 | ------- | ------------------ | ----- |
-| 1.28.x  | :white_check_mark: | Current — governed workflow + hostcall mediations + Lockdown transport/approval/visibility controls (through 1.28.84 "Quarterly", the SSE-kill + webhook-signing fix release) |
+| 1.28.x  | :white_check_mark: | Current — governed workflow + hostcall mediations + Lockdown transport/approval/visibility controls (through 1.28.92 "Ledger", the exec-OS-boundary + dual-gate + GDL release) |
 | 1.27.x  | :white_check_mark: | Previous minor — security fixes only (ends at the AuditRepair re-anchor line) |
 | < 1.27  | :x:                | Unsupported — upgrade before exposing beyond loopback |
 
@@ -64,9 +64,9 @@ A CycloneDX SBOM is generated for each release by `scripts/sbom.sh` (requires
 lists the full dependency tree from `Cargo.lock` so consumers can scan for
 known vulnerabilities (EU CRA Art 13/14; OWASP A03:2025 supply-chain coverage).
 
-Since **v1.17.5** the tag release workflow runs the same script and stages
-the SBOM into `dist/` alongside the binaries — every GitHub release ships its
-own `brain-server-<version>.cdx.json`, so consumers never need to build to
+Since **v1.17.5** the tag release workflow runs the same script and commits
+the SBOM to `sbom/` as `brain-server-<version>.cdx.json` — every GitHub release ships its
+own file, so consumers never need to build to
 obtain it. Local operator path unchanged: `scripts/sbom.sh`.
 
 ---
@@ -588,8 +588,10 @@ splitting a CAS/event twin).
 | `events` | outbox-only door: `workflow/*` topics, ≤64 KiB payload, idempotency key required | events allowed by profile | `workflow/hostcall/events/{ok\|denied}` |
 | `ui` | named refusal — `reserved: lands with Cockpit` | prompts → Denied server-side | dispatch audit denied |
 
-Honest ceilings: this gates the hostcall boundary only — it is not a sandbox
-for hostile code running inside an engine (worker-thread isolation is not a
+Honest ceilings: the hostcall mediation gates the boundary AND (v1.28.92) the
+loop-exec path runs OS-bounded (deny-default sandbox-exec / Landlock,
+fail-closed on unavailable backend) — but neither is a sandbox for hostile
+code running inside an engine (worker-thread isolation is not a
 security boundary); exec timeout is the fixed 30 s budget default (the per-op
 budget seam lands with the GUI crank); DNS-rebinding across the egress
 client's connection-pool TTL remains the documented webhook ceiling.
@@ -715,6 +717,15 @@ rulings) — the runbook's quarterly re-check rule applies.
 ## Version History
 
 | Version | Date | Changes |
+|---|---|---|
+| 1.28.92 | 2026-09-22 | "Ledger" — loop-exec OS boundary (sandbox-exec/Landlock, fail-closed); machine-refusal law (`decision_ref` required, agent class refused); bulk-read dual gates (Admin+DPO, audited, seam-de-identified); GDL law-cited gates through 1.32.7; LAYA System-1 Phase 0 pure (ungated, no callers). |
+| 1.28.91 | 2026-09-15 | "Notary" — off-host `brain anchor` / `--verify` state fingerprint (catches business-row tamper behind a green chain); physical `brain shred` residue drop (freelist 0, `forget` row). |
+| 1.28.90 | 2026-09-14 | "Refresh" — dependency service bump (nine Dependabot PRs applied and verified). |
+| 1.28.89 | 2026-09-14 | "Bounded" — seventh-pass closures, release 4 of 4. |
+| 1.28.88 | 2026-09-14 | "Clocktruth" — seventh-pass closures, release 3 of 4 (CRA clock split by trigger, recursive transport-free guard). |
+| 1.28.87 | 2026-09-14 | "Ownerstamp" — seventh-pass closures, release 2 of 4 (content owner stamps, crew seam). |
+| 1.28.86 | 2026-09-13 | "Attrbane" — seventh-pass closures, release 1 of 4 (read-seam attribute tier). |
+| 1.28.85 | 2026-09-13 | "SixthPass" — sixth-pass closures (Forget-kind erasure rows, fork hostile-element mirror). |
 |---|---|---|
 | 1.28.84 | 2026-09-13 | "Quarterly" — bounded SSE revocation kill (`sse_reauth` re-auth pump, default 30s, fail-closed), required-by-default webhook signing (HMAC-SHA256, boot refuses URL-without-secret, posture surfaced at `/ready`; DSAR path no opt-out), complete hostile-element read-seam set (26 elements incl. opaque `math`/`style`, 30 MathML fallbacks, four fixture-pinned lanes), newer-schema open refusal + rehearse parity, embedder saturation gauge, 25-row error taxonomy + 7 singularity pins, CodeQL #73 cleared (test-key literal), docs-truth pass (UMP badge from CI conformance, env-truth gate, SBOM scope per CISA-2026, `/ready` probe → JSON). |
 | 1.28.83 | 2026-09-12 | "Recall" — the fifth-pass fix release (+ untagged fourth-pass closures): availability-first kill-switch (warn-not-refuse, supersedes the untagged refuse), evidenced/complete/bounded single-chunk erasure, fail-closed injection thresholds, segment-exact CSP seat, 0700 secret dirs, multi-get source convergence, behavioral poison/lock pins, honest SQL guard, US map (TAKE IT DOWN 48h, CO HB26-1263, IL SB315) + Art 17 directive, no-slice gate law, plugin 0.6.6/0.6.7, fork turn-prepare hygiene fix. |

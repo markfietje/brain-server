@@ -1,7 +1,7 @@
 # Hybrid Fusion: RRF over BM25 + quantized vectors
 
 **File:** `src/search/mod.rs` (`RRF_K`, vector + FTS legs, `rrf_fuse`) ·
-`src/main.rs` (`vec0` int8/binary) · `src/chunker.rs` (structure-aware split)
+`src/migration.rs` + `src/server/bootstrap.rs` (`vec0` int8/binary store) · `src/chunker.rs` (structure-aware split)
 
 ## The problem
 
@@ -20,7 +20,7 @@ rank-based method and stores vectors in a space-efficient quantized form.
   `1/(k + rank)` and sums across result lists, it needs only ranks, not
   scores, so it fuses lists on incomparable scales. The paper reports it
   outperforming individual systems and Condorcet/CombMNZ on TREC + LETOR.
-  Brain Server uses the same constant `RRF_K = 60` (`src/search/mod.rs:29`),
+  Brain Server uses the same constant `RRF_K = 60` (`src/search/mod.rs:31`),
   the standard value from the paper.
 - **BM25 (lexical leg).** Robertson, S. E., & Zaragoza, H. (2009). *The
   Probabilistic Relevance Framework: BM25 and Beyond.* Foundations and Trends

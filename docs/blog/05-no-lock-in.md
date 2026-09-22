@@ -22,8 +22,9 @@ memory through a proprietary channel at all.
 
 ## Brain Server's no-lock-in answer
 
-- **UMP 1.0 / L3 conformance**, a published memory-protocol standard, scored
-  by the reference conformance suite (13/13, L3). Your memory is readable and
+- **UMP 1.0 conformance**, a published memory-protocol standard, scored
+  by the reference conformance suite (13/13, L3 on a keyed instance —
+  keyless instances honestly report L2). Your memory is readable and
   writable through a standard wire, not a private API. Leave our product and the
   protocol, and your data, travel with you.
 - **An open HTTP contract**, `GET /openapi.yaml` documents every route, served

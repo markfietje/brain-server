@@ -1,6 +1,6 @@
 # COMPLIANCE.md — Compliance Posture & Technical File
 
-**Version:** 1.28.75 "Preflight" · **Last updated:** 2026-09-09
+**Version:** 1.28.92 "Ledger" · **Last updated:** 2026-09-22
 
 This is the buyer-facing technical file: what brain-server IS, what it logs,
 how it erases, and how it maps to the frameworks procurement asks about. It is
@@ -70,7 +70,9 @@ paths are explicit client calls; nothing is inferred or scraped.
  > **EU AI Act Art 9 (risk management) anchor.** The risk-management system is
  > `THREAT_MODEL.md` (STRIDE) + `SECURITY.md` defense-in-depth + `AUDIT.md`
  > lifecycle, summarized as the risk register in `docs/risk-register.md` (ID ·
- > likelihood × impact · treatment · owner · residual). Clause 6.1/8.2/9.x/10.x.
+ > likelihood × impact · treatment · owner · residual, through R-18: loop-exec
+ > OS boundary, agent machine-refusal, bulk-read dual gates, corpus-poisoning
+ > resistance — v1.28.92). Clause 6.1/8.2/9.x/10.x.
 
 ## 3. Logging Specification (EU AI Act Art 12 / Art 26(6) posture)
 
@@ -268,10 +270,10 @@ explicit operator action.
   `docs/US_STATE_MAP.md` (Sep 11 2026 round: TX TRAIGA Jan 1 2026 live, CA SB53/AB2013 Jan 1 2026 live, CA SB942 covered-provider Aug 2 2026 live, IL HB3773 Jan 1 2026 live, UT SB149 live as amended 2025, NYC LL144 live since 2023, CT Oct 1 2026 / Oct 1 2027 phased, CO SB26-189 Jan 1 2027 scheduled, CA ADMT Jan 1 2027 scheduled, plus FL/WA narrow + 40-state deepfake/election bucket).
 
   Reverse-lookup gaps (code truth, with roadmap owners):
-  - **End-to-end red-team harness — missing.** September 2026 research (PipePoison, arXiv 2609.00523) shows poisoning optimized across the whole write→retrieve→utilize chain beats single-stage attacks and survives staged defenses. No harness exercises that chain here. Owner: v1.28.82 red-team lane.
+   - **End-to-end red-team harness — missing.** September 2026 research (PipePoison, arXiv 2609.00523) shows poisoning optimized across the whole write→retrieve→utilize chain beats single-stage attacks and survives staged defenses. No harness exercises that chain here. Owner: the planned research lane (see `docs/roadmap.md`).
   - **Authorization-state integrity — partial.** EAL-Bench (arXiv 2609.01836) shows memory-stored permissions granting false authority. Delegation lineage events exist, but no invariant binds a stored permission to its source event. Owner: v2.0 Cortex (permission records carry source-event links).
-  - **Multimodal carriers — partial.** MMPIBench (arXiv 2609.09404) demonstrates image/audio injection vectors. Oversize images are withheld and remote images gated, but no EXIF/OCR/QR inspection exists. Owner: v1.28.82 screen lane.
-  - **MCP authorization metadata — missing on HTTP mode.** The 2026-07-28 MCP spec requires OAuth 2.0 Protected Resource Metadata. The stdio binary needs none; the Streamable HTTP mode serves none today. Owner: v1.28.82 MCP lane.
+   - **Multimodal carriers — partial.** MMPIBench (arXiv 2609.09404) demonstrates image/audio injection vectors. Oversize images are withheld and remote images gated, but no EXIF/OCR/QR inspection exists. Owner: the planned research lane.
+   - **MCP authorization metadata — missing on HTTP mode.** The 2026-07-28 MCP spec requires OAuth 2.0 Protected Resource Metadata. The stdio binary needs none; the Streamable HTTP mode serves none today. Owner: the planned research lane.
 
 ### 6.4 EU AI Act Art 4 (AI literacy)
 
@@ -473,7 +475,8 @@ the artifact itself:
 
 - **SBOM ships with the release** (EU CRA Art 13/14; OWASP A03:2025). The tag
   release workflow generates a CycloneDX SBOM from `Cargo.lock` via
-  `scripts/sbom.sh` (`cargo-cyclonedx`) and stages it into `dist/` alongside
+  `scripts/sbom.sh` (`cargo-cyclonedx`) and commits it to `sbom/` as
+  `brain-server-<version>.cdx.json` alongside
   the binaries; the same script is the local operator path. `SECURITY.md`
   §SBOM explains scanning use.
 - **Retrieval-quality gate runs in CI.** The `integration` job (release
@@ -600,4 +603,4 @@ the boundary, encryption, and monitoring layers the operator positions.
 
 Correction: prior rounds tracked CA/CO/TX only and listed SB942 as Jan 1 2026. Corrected timeline - SB942 covered-provider duties operative Aug 2 2026 per AB853 amendments (platform/hosting/capture phases 2027-2028), CO SB24-205 repealed by SB26-189 signed May 14 2026 with Jan 1 2027 ADMT regime (old Jun 30 2026 date dead), CT PA26-15/PA26-100 phased Oct 1 2026 then Oct 1 2027 AEDT.
 
-Scope statement for US reviewers: brain-server v1.28.80 as a memory component does not trigger frontier-developer duties (CA SB53), training-data duties (CA AB2013), or detection-tool duties (CA SB942) by itself. It supplies trace + audit + DSAR purge/tombstone/certificate + export provenance + retention report + legal hold + proposal gate that deployer impact assessments, bias audits (NYC LL144, IL HB3773), disclosure copy (UT, CT, CA deployer layer), and takedown SOPs (TX TRAIGA, FL, deepfake bucket) consume. All consequential-decision compliance (CO/CA ADMT assessments, notices, opt-outs, human review) remains operator duty. See docs/US_STATE_MAP.md for the full table and enterprise profile snippet. Within stated scope / subject to operator attestation - ISO 42001 / SOC 2 remain external audits.
+Scope statement for US reviewers: brain-server v1.28.92 as a memory component does not trigger frontier-developer duties (CA SB53), training-data duties (CA AB2013), or detection-tool duties (CA SB942) by itself. It supplies trace + audit + DSAR purge/tombstone/certificate + export provenance + retention report + legal hold + proposal gate that deployer impact assessments, bias audits (NYC LL144, IL HB3773), disclosure copy (UT, CT, CA deployer layer), and takedown SOPs (TX TRAIGA, FL, deepfake bucket) consume. All consequential-decision compliance (CO/CA ADMT assessments, notices, opt-outs, human review) remains operator duty. See docs/US_STATE_MAP.md for the full table and enterprise profile snippet. Within stated scope / subject to operator attestation - ISO 42001 / SOC 2 remain external audits.
