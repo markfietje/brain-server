@@ -22,6 +22,7 @@
 
 #![allow(dead_code)]
 
+pub(crate) mod accounts;
 pub mod calibration;
 pub(crate) mod case_status;
 pub(crate) mod channel;
@@ -105,6 +106,62 @@ pub fn fuzz_reflection_record_parser(question: &str) -> String {
     crate::workflow::reflection::parse_reflection_record(&value)
         .map_or_else(|e| e, |r| serde_json::to_string(&r).unwrap_or_default())
 }
+
+/// Fuzz seam for the account record parser — the total parser every stored
+/// account record round-trips through. Any input yields plain data (the
+/// record, or the named `account: …` refusal) and never panics.
+#[doc(hidden)]
+pub fn fuzz_account_parser(question: &str) -> String {
+    let value: serde_json::Value =
+        serde_json::from_str(question).unwrap_or(serde_json::Value::Null);
+    crate::workflow::accounts::parse_account_record(&value)
+        .map_or_else(|e| e, |r| serde_json::to_string(&r).unwrap_or_default())
+}
+
+/// Fuzz seam for the pipeline transition gate: any `{from, to,
+/// decision_ref}` soup yields the named refusal or the accepted edge, never
+/// a panic.
+#[doc(hidden)]
+pub fn fuzz_pipeline_transition(question: &str) -> String {
+    let value: serde_json::Value =
+        serde_json::from_str(question).unwrap_or(serde_json::Value::Null);
+    let from = value
+        .get("from")
+        .and_then(serde_json::Value::as_str)
+        .and_then(crate::workflow::pipeline::Stage::parse);
+    let to = value
+        .get("to")
+        .and_then(serde_json::Value::as_str)
+        .and_then(crate::workflow::pipeline::Stage::parse);
+    let decision_ref = value
+        .get("decision_ref")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    match (from, to) {
+        (Some(from), Some(to)) => {
+            crate::workflow::pipeline::validate_transition(from, to, decision_ref)
+                .map(|()| {
+                    serde_json::json!({ "ok": true, "from": from.as_str(), "to": to.as_str() })
+                        .to_string()
+                })
+                .unwrap_or_else(|e| e)
+        }
+        _ => "pipeline_stage_unknown".to_string(),
+    }
+}
+
+/// Fuzz seam for the wizard pack validator — the total validator every
+/// committed pack rides. Any input yields plain data (the pack summary, or
+/// the named `wizard_pack_invalid: …` refusal) and never panics.
+#[doc(hidden)]
+pub fn fuzz_wizard_pack(question: &str) -> String {
+    let value: serde_json::Value =
+        serde_json::from_str(question).unwrap_or(serde_json::Value::Null);
+    crate::workflow::wizard::validate_wizard_pack(&value).map_or_else(
+        |e| e,
+        |p| serde_json::json!({ "pack": p.pack, "questions": p.questions.len() }).to_string(),
+    )
+}
 #[cfg(test)]
 mod eval_kappa;
 pub(crate) mod evidence;
@@ -121,6 +178,7 @@ pub(crate) mod mesh;
 pub mod outbox;
 pub(crate) mod outreach;
 pub(crate) mod parcels;
+pub(crate) mod pipeline;
 pub(crate) mod proficiency;
 pub(crate) mod recall;
 pub(crate) mod reflection;
@@ -136,6 +194,7 @@ pub(crate) mod tiers;
 pub(crate) mod tx;
 pub mod valet;
 pub(crate) mod wfm;
+pub(crate) mod wizard;
 pub(crate) mod workload;
 
 use crate::audit::{AuditKind, AuditStatus, record_tenant};

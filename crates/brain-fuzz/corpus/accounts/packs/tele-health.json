@@ -1,0 +1,41 @@
+{
+  "pack": "tele-health",
+  "first": "q_consent",
+  "questions": [
+    {
+      "id": "q_consent",
+      "qtype": "noul",
+      "instructions": "The patient consents to a tele-health visit.",
+      "next": {
+        "false": "end",
+        "true": "q_modality"
+      }
+    },
+    {
+      "id": "q_modality",
+      "qtype": "choice",
+      "instructions": "Which modality does the patient prefer?",
+      "criteria": {
+        "video": "camera and a stable connection",
+        "phone": "no camera needed",
+        "either": null
+      },
+      "next": {
+        "video": "q_urgent",
+        "phone": "q_urgent",
+        "either": "q_urgent"
+      }
+    },
+    {
+      "id": "q_urgent",
+      "qtype": "score",
+      "instructions": "How urgent is the request?",
+      "criteria": ["routine", "same_day", "emergency"],
+      "next": {
+        "0": "end",
+        "1": "end",
+        "2": "end"
+      }
+    }
+  ]
+}

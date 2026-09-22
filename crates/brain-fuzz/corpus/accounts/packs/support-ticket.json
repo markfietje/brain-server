@@ -1,0 +1,45 @@
+{
+  "pack": "support-ticket",
+  "first": "q_class",
+  "questions": [
+    {
+      "id": "q_class",
+      "qtype": "choice",
+      "instructions": "Which class does this ticket belong to?",
+      "criteria": {
+        "billing": "payment, invoice, refund",
+        "technical": "device, software, connectivity",
+        "scheduling": null
+      },
+      "next": {
+        "billing": "q_priority",
+        "technical": "q_priority",
+        "scheduling": "q_priority"
+      }
+    },
+    {
+      "id": "q_priority",
+      "qtype": "score",
+      "instructions": "How urgent is this ticket?",
+      "criteria": ["low", "medium", "high"],
+      "next": {
+        "0": "q_known",
+        "1": "q_known",
+        "2": "end"
+      }
+    },
+    {
+      "id": "q_known",
+      "qtype": "noul",
+      "instructions": "The account is already known to support.",
+      "criteria": {
+        "false": "no, new account",
+        "true": "yes, existing account"
+      },
+      "next": {
+        "false": "end",
+        "true": "end"
+      }
+    }
+  ]
+}

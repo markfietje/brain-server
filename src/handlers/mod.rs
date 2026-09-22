@@ -17,6 +17,7 @@
 //!    bodies are deliberately minimal so they can be filled in without
 //!    changing the contract.
 
+pub mod accounts;
 pub mod auth;
 pub mod breaches;
 pub mod case_run;

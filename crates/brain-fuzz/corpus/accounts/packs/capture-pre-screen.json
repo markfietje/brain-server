@@ -1,0 +1,41 @@
+{
+  "pack": "capture-pre-screen",
+  "first": "q_scope",
+  "questions": [
+    {
+      "id": "q_scope",
+      "qtype": "choice",
+      "instructions": "What does this capture concern?",
+      "criteria": {
+        "hardware": "devices, components, wiring",
+        "software": "applications, firmware, services",
+        "process": "procedures, documentation, training"
+      },
+      "next": {
+        "hardware": "q_repro",
+        "software": "q_repro",
+        "process": "end"
+      }
+    },
+    {
+      "id": "q_repro",
+      "qtype": "noul",
+      "instructions": "The issue reproduces on demand.",
+      "next": {
+        "false": "end",
+        "true": "q_severity"
+      }
+    },
+    {
+      "id": "q_severity",
+      "qtype": "score",
+      "instructions": "How severe is the impact?",
+      "criteria": ["minor", "major", "blocking"],
+      "next": {
+        "0": "end",
+        "1": "end",
+        "2": "end"
+      }
+    }
+  ]
+}

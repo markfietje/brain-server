@@ -257,7 +257,8 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
             .replace("{trace_id}", "nonexistent-trace")
             .replace("{offer_id}", "1")
             .replace("{delegation_id}", "1")
-            .replace("{invite_id}", "1");
+            .replace("{invite_id}", "1")
+            .replace("{run_id}", "1");
         // /search's `q` is a required query param (the Query extractor 400s
         // before the handler body otherwise) — carry a benign query.
         let concrete = match *template {
@@ -350,6 +351,15 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
             "/workflow/runs/{id}/handoff/decision" => {
                 ("POST", r#"{"transition":"delivered","decision_ref":"m"}"#)
             }
+            // The account surfaces: the listing row drives the DPO-gated
+            // GET side (the gate row's stricter handler); the {id} routes
+            // resolve the account FIRST, so id 1 (absent in this fixture)
+            // answers the probe-blind 404 (PRE_GATE_404).
+            "/accounts" => ("GET", ""),
+            "/accounts/{id}" => ("GET", ""),
+            "/accounts/{id}/pipeline" => ("POST", r#"{"stage":"qualified","decision_ref":"m"}"#),
+            "/accounts/{id}/requests" => ("GET", ""),
+            "/accounts/{id}/requests/{run_id}/link" => ("POST", ""),
             "/workflow/runs/{id}/back-referral/return" => (
                 "POST",
                 r#"{"contract_key":"m","report":{},"decision_ref":"m"}"#,
@@ -499,6 +509,13 @@ const PRE_GATE_404: &[&str] = &[
     "/workflow/runs/{id}/delegations/{delegation_id}/result",
     "/kcs/articles/{id}/approve",
     "/kcs/articles/{id}/publish",
+    // The account {id} routes resolve the account BEFORE any gate: an
+    // absent id (and a non-account id — the same answer) is the probe-blind
+    // 404.
+    "/accounts/{id}",
+    "/accounts/{id}/pipeline",
+    "/accounts/{id}/requests",
+    "/accounts/{id}/requests/{run_id}/link",
 ];
 /// The legacy soft-deny surface: these routes predate the 403 vocabulary and
 /// deliberately answer their deny with a 200 body so old clients keep
@@ -545,6 +562,8 @@ const EMPTY_SAFE_200: &[&str] = &[
     "/parcels",
     "/kcs/articles",
     "/workflow/runs",
+    // the DPO-gated listing on an empty corpus is a literal 200
+    "/accounts",
 ];
 
 async fn send(
@@ -1901,6 +1920,14 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/workflow/valet/brief",
     "/workflow/valet/consent",
     "/workflow/runs/{id}/handover/offer",
+    // The StewardOS account surfaces: writes and per-account reads demand
+    // the `workflow` role; the listing carries the DPO dual gate (the
+    // agent HAS roles, so the dual gate binds).
+    "/accounts",
+    "/accounts/{id}",
+    "/accounts/{id}/pipeline",
+    "/accounts/{id}/requests",
+    "/accounts/{id}/requests/{run_id}/link",
     // The operator decision surfaces: both handlers demand the `workflow`
     // role (the HITL law's gate shape) on top of the Write scope, so the
     // agent class is refused 403 exactly like the offer route.

@@ -6994,6 +6994,10 @@ Final paragraph after the rule.";
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/case_run.rs"
                             )),
+                            "accounts" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/accounts.rs"
+                            )),
                             "workflow_decisions" => include_str!(concat!(
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/workflow_decisions.rs"
@@ -16497,6 +16501,317 @@ Final paragraph after the rule.";
             .expect_err("a non-object report refuses");
             assert_eq!(err.inner.code, "report_invalid");
         }
+    }
+    // ── R21: the StewardOS account surfaces ─────────────────────────────
+    //
+    // Handler-shape laws over the real composed state. They live in the
+    // integration tree because the no-SQL-in-handlers law counts every
+    // statement under src/handlers/* — assertions included.
+
+    /// A minimal account row (kind 'account', the record in state_json).
+    fn seed_account(state: &Arc<AppState>, name: &str) -> i64 {
+        let conn = state.pool.get().unwrap();
+        let record = serde_json::json!({
+            "account_id": "0",
+            "name": name,
+            "owner_principal": "hash:seed",
+            "status": "active",
+            "created_at": 1,
+            "updated_at": 1,
+        });
+        conn.execute(
+            "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+             VALUES ('acme', 'account', ?1, 0, 'active', 1, 1)",
+            [record.to_string()],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn account_agent_principal() -> brain_server::auth::Principal {
+        use brain_server::auth::Scope;
+        brain_server::auth::Principal {
+            sub: "user:agent-acc".to_string(),
+            tenant: "team-alpha".to_string(),
+            scopes: vec![Scope::parse("write:team-alpha/acme").unwrap()],
+            jti: "j-acc".to_string(),
+            roles: vec!["agent".to_string()],
+            manages: vec![],
+            kind: brain_server::auth::PrincipalKind::Jwt,
+        }
+    }
+
+    /// accounts_role_gated_agent_denied — the agent class cannot mint
+    /// account rows nor read an account: the scope admits, the `workflow`
+    /// ROLE gate refuses 403 (the seeded `agent` role carries no such
+    /// capability).
+    #[tokio::test]
+    async fn accounts_role_gated_agent_denied() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let account_id = seed_account(&state, "Acme Limited");
+        let agent = account_agent_principal();
+        let err = brain_server::handlers::accounts::post_account(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(Some(agent.clone())),
+            Json(brain_server::handlers::accounts::CreateAccountBody {
+                name: "Malicious Corp".to_string(),
+                domain: "acme".to_string(),
+            }),
+        )
+        .await
+        .expect_err("the agent role cannot mint account rows");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        let err = brain_server::handlers::accounts::get_account(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(Some(agent)),
+            Path(account_id),
+        )
+        .await
+        .expect_err("the agent role cannot read an account");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        // Nothing was minted by the refused calls.
+        let conn = state.pool.get().unwrap();
+        let accounts: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM workflow_runs WHERE kind = 'account'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(accounts, 1, "the agent minted nothing");
+    }
+
+    /// account_listing_dpo_gated — the listing is the exfiltration surface:
+    /// Admin scope alone is not enough (a role holder without the DPO role
+    /// is refused 403), the DPO role passes, and EVERY listing call lands
+    /// its global audit row.
+    #[tokio::test]
+    async fn account_listing_dpo_gated() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        seed_account(&state, "Acme Limited");
+        let mk = |roles: &[&str]| brain_server::auth::Principal {
+            sub: "user:list".to_string(),
+            tenant: "team-alpha".to_string(),
+            scopes: vec![brain_server::auth::Scope::parse("admin:team-alpha/*").unwrap()],
+            jti: "j-list".to_string(),
+            roles: roles.iter().map(|s| s.to_string()).collect(),
+            manages: vec![],
+            kind: brain_server::auth::PrincipalKind::Jwt,
+        };
+        // The controller role is broad but carries neither the dpo name nor
+        // the admin capability — the dual gate refuses.
+        let err = brain_server::handlers::accounts::get_accounts(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(Some(mk(&["controller"]))),
+            Query(brain_server::handlers::accounts::AccountsQuery { limit: None }),
+        )
+        .await
+        .expect_err("admin scope without the DPO role refuses");
+        assert_eq!(err.status, axum::http::StatusCode::FORBIDDEN);
+        // The DPO role passes the dual gate; the page is bounded + shaped.
+        let view = brain_server::handlers::accounts::get_accounts(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(Some(mk(&["dpo"]))),
+            Query(brain_server::handlers::accounts::AccountsQuery { limit: None }),
+        )
+        .await
+        .expect("the DPO role passes the dual gate");
+        assert_eq!(view.0["count"], serde_json::json!(1));
+        assert_eq!(view.0["rows"][0]["name"], "Acme Limited");
+        // EVERY listing call audited (the DPO call; the refused call wrote
+        // no audit row — denials ride the middleware/gate, not the chain).
+        let conn = state.pool.get().unwrap();
+        let audits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'workflow' AND target_hash = ?1",
+                [brain_server::audit::hash("accounts_listing")],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(audits, 1);
+    }
+
+    /// probe_blind_404_on_absent_account — an absent id and a non-account
+    /// id answer the SAME probe-blind 404: the surface never reveals
+    /// whether an id exists as some other kind of run.
+    #[tokio::test]
+    async fn probe_blind_404_on_absent_account() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let absent = brain_server::handlers::accounts::get_account(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(None),
+            Path(999_999),
+        )
+        .await
+        .expect_err("an absent account is 404");
+        assert_eq!(absent.status, axum::http::StatusCode::NOT_FOUND);
+        // A real run of a DIFFERENT kind is the same 404, byte for byte.
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('acme', 'interview', '{}', 0, 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let non_account = brain_server::handlers::accounts::get_account(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(None),
+            Path(1),
+        )
+        .await
+        .expect_err("a non-account id is 404");
+        assert_eq!(non_account.status, absent.status);
+        assert_eq!(non_account.inner.code, absent.inner.code);
+        assert_eq!(non_account.inner.message, absent.inner.message);
+    }
+
+    /// accounts_surface_round_trips — the wired happy path: create → link
+    /// → decision_ref-gated advance → the single view (stage + timeline) →
+    /// the per-account history join → the DPO listing; and the pipeline's
+    /// named refusals at the wire (unknown stage, illegal edge, absent
+    /// reference).
+    #[tokio::test]
+    async fn accounts_surface_round_trips() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let state = drawbridge_state(&tmp);
+        let none = || brain_server::handlers::auth::OptPrincipal(None);
+        // Create: the server derives everything but the name + domain.
+        let created = brain_server::handlers::accounts::post_account(
+            State(state.clone()),
+            none(),
+            Json(brain_server::handlers::accounts::CreateAccountBody {
+                name: "Acme Limited".to_string(),
+                domain: "acme".to_string(),
+            }),
+        )
+        .await
+        .expect("the loopback operator creates the account");
+        let account_id = created.0["account_id"].as_i64().unwrap();
+        assert_eq!(created.0["audited"], serde_json::json!(true));
+        // A request run to link.
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('acme', 'troubleshoot', '{}', 0, 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+        }
+        let linked = brain_server::handlers::accounts::post_link(
+            State(state.clone()),
+            none(),
+            Path((account_id, 1)),
+        )
+        .await
+        .expect("the link lands");
+        assert_eq!(linked.0["status"], "linked");
+        // Advance: no reference refuses at the surface (the shipped
+        // vocabulary), an unknown stage names the vocabulary, and the
+        // legal edge lands audited.
+        let err = brain_server::handlers::accounts::post_pipeline(
+            State(state.clone()),
+            none(),
+            Path(account_id),
+            Json(brain_server::handlers::accounts::PipelineBody {
+                stage: "qualified".to_string(),
+                decision_ref: None,
+            }),
+        )
+        .await
+        .expect_err("no reference, no movement");
+        assert_eq!(err.inner.code, "decision_ref_required");
+        let err = brain_server::handlers::accounts::post_pipeline(
+            State(state.clone()),
+            none(),
+            Path(account_id),
+            Json(brain_server::handlers::accounts::PipelineBody {
+                stage: "archived".to_string(),
+                decision_ref: Some("op-1".to_string()),
+            }),
+        )
+        .await
+        .expect_err("the stage vocabulary is closed");
+        assert_eq!(err.inner.code, "pipeline_stage_unknown");
+        let advanced = brain_server::handlers::accounts::post_pipeline(
+            State(state.clone()),
+            none(),
+            Path(account_id),
+            Json(brain_server::handlers::accounts::PipelineBody {
+                stage: "qualified".to_string(),
+                decision_ref: Some("op-1".to_string()),
+            }),
+        )
+        .await
+        .expect("the legal edge lands");
+        assert_eq!(advanced.0["stage"], "qualified");
+        assert_eq!(advanced.0["prev_stage"], "lead");
+        // The illegal edge (self-transition) names source→target.
+        let err = brain_server::handlers::accounts::post_pipeline(
+            State(state.clone()),
+            none(),
+            Path(account_id),
+            Json(brain_server::handlers::accounts::PipelineBody {
+                stage: "qualified".to_string(),
+                decision_ref: Some("op-2".to_string()),
+            }),
+        )
+        .await
+        .expect_err("self-transitions refuse");
+        assert_eq!(err.inner.code, "illegal_stage_transition");
+        assert_eq!(
+            err.inner.details,
+            Some(serde_json::json!({"from": "qualified", "to": "qualified"}))
+        );
+        // The single view: record + derived stage + timeline.
+        let view = brain_server::handlers::accounts::get_account(
+            State(state.clone()),
+            none(),
+            Path(account_id),
+        )
+        .await
+        .expect("the account view");
+        assert_eq!(view.0["account"]["name"], "Acme Limited");
+        assert_eq!(view.0["stage"], "qualified");
+        assert_eq!(view.0["timeline"].as_array().unwrap().len(), 1);
+        // The history join: the linked run with its (empty) decision list.
+        let history = brain_server::handlers::accounts::get_account_requests(
+            State(state.clone()),
+            none(),
+            Path(account_id),
+            Query(brain_server::handlers::accounts::AccountRequestsQuery { limit: None }),
+        )
+        .await
+        .expect("the history join");
+        assert_eq!(history.0["count"], serde_json::json!(1));
+        assert_eq!(history.0["rows"][0]["run_id"], serde_json::json!(1));
+        // The bounded page refuses out-of-bounds limits.
+        let err = brain_server::handlers::accounts::get_account_requests(
+            State(state.clone()),
+            none(),
+            Path(account_id),
+            Query(brain_server::handlers::accounts::AccountRequestsQuery { limit: Some(501) }),
+        )
+        .await
+        .expect_err("the page is bounded");
+        assert_eq!(err.inner.code, "account_limit_out_of_bounds");
+        // The DPO listing (loopback = the incumbent).
+        let listing = brain_server::handlers::accounts::get_accounts(
+            State(state.clone()),
+            none(),
+            Query(brain_server::handlers::accounts::AccountsQuery { limit: None }),
+        )
+        .await
+        .expect("the listing");
+        assert_eq!(listing.0["count"], serde_json::json!(1));
+        // The chain verifies with every account write on it.
+        let conn = state.pool.get().unwrap();
+        assert!(brain_server::audit::verify_chain(&conn));
     }
 }
 

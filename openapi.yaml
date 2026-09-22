@@ -6988,6 +6988,250 @@ paths:
                   service: brain-server
                   cop: true
                   status: self_attested
+  /accounts:
+    get:
+      summary: The bounded account listing (DPO/admin dual gate; audited per call)
+      description: >
+        The DPO's read window over the account record layer: every account
+        row, newest first, bounded page. The DPO dual gate holds — the Admin
+        scope AND the DPO role (the scoreboard/corpus posture) — and EVERY
+        listing lands a global audit row naming the principal, the filter,
+        and the row count. Account rows hold identifiers (name, owner label,
+        status, timestamps), never request bodies.
+      operationId: listAccounts
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: The bounded listing page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        account_id: { type: integer }
+                        name: { type: string }
+                        status: { type: string, enum: [active, archived] }
+                        domain: { type: string }
+                        created_at: { type: integer }
+                        updated_at: { type: integer }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (the DPO dual gate) }
+    post:
+      summary: Create the account record (Write on the body domain + workflow role)
+      description: >
+        The deliberately-not-a-CRM record layer: accounts are workflow_runs
+        rows of kind `account`. The client supplies the name (screened,
+        bounded 1..=256, control/invisible-refused) and the domain; the id,
+        the owner label, the status (`active`), and the clock are
+        server-derived. The record + its audit row land in ONE transaction.
+        Agents cannot mint account rows (the role gate).
+      operationId: createAccount
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, domain]
+              additionalProperties: false
+              properties:
+                name: { type: string, minLength: 1, maxLength: 256 }
+                domain: { type: string }
+      responses:
+        "200":
+          description: The create receipt (the account id is the run id)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  account_id: { type: integer }
+                  name: { type: string }
+                  domain: { type: string }
+                  audited: { type: boolean }
+        "400": { description: account_name_required | account_name_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+  /accounts/{id}:
+    get:
+      summary: The account record + derived stage + pipeline timeline (Write on domain + workflow role)
+      description: >
+        The single account view. The stage is DERIVED, never stored: the
+        latest `pipeline` row's stage under the account's run id, else the
+        entry stage `lead`. An absent id AND a non-account id answer the
+        SAME probe-blind 404 — the surface never reveals whether an id
+        exists as some other kind of run.
+      operationId: getAccount
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The account view
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  account:
+                    type: object
+                    properties:
+                      account_id: { type: string }
+                      name: { type: string }
+                      owner_principal: { type: string }
+                      status: { type: string, enum: [active, archived] }
+                      created_at: { type: integer }
+                      updated_at: { type: integer }
+                  stage: { type: string, enum: [lead, qualified, proposal, closed_won, closed_lost] }
+                  timeline:
+                    type: array
+                    items: { type: object }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Account not found (probe-blind; non-account ids answer the same) }
+  /accounts/{id}/pipeline:
+    post:
+      summary: Advance the pipeline stage — decision_ref REQUIRED (Write on domain + workflow role)
+      description: >
+        The thin pipeline over the closed, operator-ratified vocabulary
+        (lead, qualified, proposal, closed_won, closed_lost; the
+        allowed-edge table; self-transitions refuse). The machine-refusal
+        law holds verbatim: no decision reference, no movement —
+        `400 decision_ref_required` at the surface and an independent core
+        refusal. The appended timeline row carries {stage, decision_ref,
+        prev_stage}; the stage row and its audit land in ONE transaction.
+        The classifier NEVER advances a stage.
+      operationId: advanceAccountPipeline
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stage]
+              additionalProperties: false
+              properties:
+                stage: { type: string, enum: [lead, qualified, proposal, closed_won, closed_lost] }
+                decision_ref: { type: string, maxLength: 256 }
+      responses:
+        "200":
+          description: The advance receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  account_id: { type: integer }
+                  stage: { type: string }
+                  prev_stage: { type: string }
+                  decision_ref: { type: string }
+                  audited: { type: boolean }
+        "400": { description: decision_ref_required | decision_ref_invalid | pipeline_stage_unknown | illegal_stage_transition | account_archived }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Account not found (probe-blind) }
+  /accounts/{id}/requests:
+    get:
+      summary: The bounded per-account request history — the decision join (Write on domain + workflow role)
+      description: >
+        The account's link rows joined to their request runs' headlines and
+        recorded decision rows (the pure join over existing rows; no new
+        table shape). The page is bounded (limit inside 1..=500).
+      operationId: listAccountRequests
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: The bounded history page
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: { type: integer }
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        run_id: { type: integer }
+                        linked_at: { type: integer }
+                        link_seq: { type: integer }
+                        run: { type: object }
+                        decisions:
+                          type: array
+                          items: { type: object }
+        "400": { description: account_limit_out_of_bounds }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Account not found (probe-blind) }
+  /accounts/{id}/requests/{run_id}/link:
+    post:
+      summary: Attach one request run to the account (Write on the account's domain + workflow role)
+      description: >
+        The request→account linkage: an additive `account:link` row under
+        the ACCOUNT's run id plus its audited row, atomic in ONE
+        transaction. Re-links append new audited rows — rows are never
+        mutated; archived accounts refuse (`400 account_archived`); absent
+        ids answer the probe-blind 404s.
+      operationId: linkAccountRequest
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+        - name: run_id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The link receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  account_id: { type: integer }
+                  run_id: { type: integer }
+                  status: { type: string, enum: [linked] }
+                  audited: { type: boolean }
+        "400": { description: account_archived }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized }
+        "404": { description: Account or request run not found (probe-blind) }
 components:
   securitySchemes:
     bearerAuth:

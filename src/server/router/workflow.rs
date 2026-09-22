@@ -335,6 +335,26 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             "/workflow/reflection/corpus",
             get(handlers::reflection::get_reflection_corpus),
         )
+        // The StewardOS account surfaces (deliberately-not-a-CRM): the
+        // record, the decision_ref-gated pipeline, and the per-account
+        // request history. POST /accounts registers FIRST; the DPO-gated
+        // GET /accounts registers LAST so the authz source-scan maps the
+        // shared path to the stricter handler (the /retention convention).
+        .route("/accounts", post(handlers::accounts::post_account))
+        .route("/accounts/{id}", get(handlers::accounts::get_account))
+        .route(
+            "/accounts/{id}/pipeline",
+            post(handlers::accounts::post_pipeline),
+        )
+        .route(
+            "/accounts/{id}/requests/{run_id}/link",
+            post(handlers::accounts::post_link),
+        )
+        .route(
+            "/accounts/{id}/requests",
+            get(handlers::accounts::get_account_requests),
+        )
+        .route("/accounts", get(handlers::accounts::get_accounts))
         .route(
             "/workflow/calibration/sign",
             post(handlers::workflow::post_calibration_sign),
