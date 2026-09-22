@@ -37,6 +37,16 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      # The opentelemetry family moves as ONE unit: otlp 0.33 requires
+      # opentelemetry 0.33 + sdk 0.33, so separate per-crate PRs conflict
+      # with each other and with cargo resolution — same structural
+      # hazard as the codeql-action pair, on the cargo side.
+      opentelemetry-family:
+        patterns:
+          - "opentelemetry"
+          - "opentelemetry_sdk"
+          - "opentelemetry-otlp"
     ignore:
       - dependency-name: fastembed
         versions: [">=7"]
