@@ -1,0 +1,16 @@
+{
+	"app.title": "StewardOS wizard",
+	"app.subtitle": "A branched conversation — never free text.",
+	"pick.heading": "Choose a form",
+	"pick.open": "Open",
+	"pack.count": "{count} questions",
+	"flow.progress": "Progress",
+	"flow.continue": "Continue",
+	"flow.restart": "Start over",
+	"flow.done": "All questions answered.",
+	"flow.export": "Download answers (JSON)",
+	"flow.exported": "Answers downloaded.",
+	"abstain.title": "Needs a human",
+	"abstain.body": "This answer is ambiguous or unanswered — the flow stopped rather than guess. Nothing was invented.",
+	"wire.error": "Could not reach the kernel. Start the kernel on 127.0.0.1:8765 and reload."
+}

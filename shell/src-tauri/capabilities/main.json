@@ -1,0 +1,7 @@
+{
+	"$schema": "gen/schemas/desktop-schema.json",
+	"identifier": "main",
+	"description": "The one capability for the main window: the Tauri core defaults ONLY. No fs, no shell, no http, no process plugins are installed at all — the updater is absent (M4 later); the webview reaches the kernel over the pinned loopback origin through the page's own fetch, never through Tauri.",
+	"windows": ["main"],
+	"permissions": ["core:default"]
+}

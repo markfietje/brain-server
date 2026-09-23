@@ -1,0 +1,16 @@
+{
+	"app.title": "StewardOS-assistent",
+	"app.subtitle": "Een vertakt gesprek — nooit vrije tekst.",
+	"pick.heading": "Kies een formulier",
+	"pick.open": "Openen",
+	"pack.count": "{count} vragen",
+	"flow.progress": "Voortgang",
+	"flow.continue": "Verder",
+	"flow.restart": "Opnieuw beginnen",
+	"flow.done": "Alle vragen beantwoord.",
+	"flow.export": "Antwoorden downloaden (JSON)",
+	"flow.exported": "Antwoorden gedownload.",
+	"abstain.title": "Vereist een mens",
+	"abstain.body": "Dit antwoord is dubbelzinnig of onbeantwoord — de flow is gestopt in plaats van te gokken. Er is niets verzonnen.",
+	"wire.error": "De kernel is niet bereikt. Start de kernel op 127.0.0.1:8765 en herlaad."
+}

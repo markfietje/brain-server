@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<link rel="icon" href="%sveltekit.assets%/favicon.svg" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<!-- The PWA build's Content-Security-Policy (D6): 'self' only plus the
+			pinned loopback kernel origin. No remote content is loadable. The
+			DEV SERVER strips this meta (see vite.config.ts) so HMR works; every
+			BUILD keeps it strict. -->
+		<meta
+			http-equiv="Content-Security-Policy"
+			content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' http://127.0.0.1:8765; object-src 'none'; base-uri 'self'; frame-ancestors 'none'"
+		/>
+		%sveltekit.head%
+	</head>
+	<body data-sveltekit-preload-data="hover">
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

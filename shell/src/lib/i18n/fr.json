@@ -1,0 +1,16 @@
+{
+	"app.title": "Assistant StewardOS",
+	"app.subtitle": "Une conversation ramifiée — jamais de texte libre.",
+	"pick.heading": "Choisir un formulaire",
+	"pick.open": "Ouvrir",
+	"pack.count": "{count} questions",
+	"flow.progress": "Progression",
+	"flow.continue": "Continuer",
+	"flow.restart": "Recommencer",
+	"flow.done": "Toutes les questions ont été traitées.",
+	"flow.export": "Télécharger les réponses (JSON)",
+	"flow.exported": "Réponses téléchargées.",
+	"abstain.title": "Nécessite un humain",
+	"abstain.body": "Cette réponse est ambiguë ou sans réponse — le flux s'est arrêté au lieu de deviner. Rien n'a été inventé.",
+	"wire.error": "Le noyau est inaccessible. Démarrez le noyau sur 127.0.0.1:8765 puis rechargez."
+}

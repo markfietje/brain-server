@@ -1,0 +1,14 @@
+# pnpm 12's build-script policy (scaffolded by pnpm itself at first
+# install). The enumerated allowlist IS the supply-chain posture: nothing
+# runs a postinstall except what is explicitly allowed, with the reason
+# recorded.
+allowBuilds:
+  # The platform-binary installer (`node install.js`, the
+  # @esbuild/darwin-arm64 fallback wiring) — esbuild's chosen binary is
+  # wired by this script.
+  esbuild: true
+  # Deliberately denied: es5-ext's postinstall is a try/catch-wrapped
+  # funding notice (`node -e "try{require('./_postinstall')}catch(e){}"`)
+  # pulled in transitively via svelte-i18n's messageformat chain. Nothing
+  # functional depends on it.
+  es5-ext: false

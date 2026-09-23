@@ -1,0 +1,16 @@
+{
+	"app.title": "StewardOS-Assistent",
+	"app.subtitle": "Ein verzweigtes Gespräch — nie Freitext.",
+	"pick.heading": "Formular wählen",
+	"pick.open": "Öffnen",
+	"pack.count": "{count} Fragen",
+	"flow.progress": "Fortschritt",
+	"flow.continue": "Weiter",
+	"flow.restart": "Von vorn beginnen",
+	"flow.done": "Alle Fragen beantwortet.",
+	"flow.export": "Antworten herunterladen (JSON)",
+	"flow.exported": "Antworten heruntergeladen.",
+	"abstain.title": "Braucht einen Menschen",
+	"abstain.body": "Diese Antwort ist mehrdeutig oder unbeantwortet — der Ablauf wurde angehalten statt zu raten. Nichts wurde erfunden.",
+	"wire.error": "Der Kernel ist nicht erreichbar. Starten Sie den Kernel auf 127.0.0.1:8765 und laden Sie neu."
+}

@@ -1,0 +1,87 @@
+:root {
+	font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+	color-scheme: light dark;
+	color: #1a1a2e;
+	background: #f7f8fa;
+}
+
+body {
+	margin: 0;
+	line-height: 1.5;
+}
+
+main {
+	max-width: 42rem;
+	margin: 0 auto;
+	padding: 1.5rem 1rem 4rem;
+}
+
+h1 {
+	font-size: 1.4rem;
+}
+
+button {
+	font: inherit;
+	padding: 0.45rem 0.9rem;
+	border-radius: 6px;
+	border: 1px solid #9aa0ac;
+	background: #ffffff;
+	cursor: pointer;
+}
+
+button:hover {
+	background: #eef0f4;
+}
+
+button:disabled {
+	opacity: 0.55;
+	cursor: not-allowed;
+}
+
+fieldset {
+	border: 1px solid #c6cad3;
+	border-radius: 8px;
+	margin: 0 0 1rem;
+}
+
+fieldset legend {
+	font-weight: 600;
+	padding: 0 0.4rem;
+}
+
+label {
+	display: block;
+	margin: 0.35rem 0;
+}
+
+pre {
+	background: #eceef2;
+	padding: 0.75rem;
+	border-radius: 6px;
+	overflow-x: auto;
+}
+
+.error {
+	color: #a4262c;
+}
+
+.abstain {
+	border: 2px solid #b58a00;
+	background: #fff8e1;
+	padding: 0.75rem;
+	border-radius: 8px;
+}
+
+.progressbar {
+	height: 0.6rem;
+	background: #dfe2e8;
+	border-radius: 999px;
+	overflow: hidden;
+	margin: 0.5rem 0 1rem;
+}
+
+.progressbar > div {
+	height: 100%;
+	background: #2e6f40;
+	transition: width 0.2s ease;
+}

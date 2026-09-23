@@ -1,0 +1,16 @@
+{
+	"app.title": "Asistente StewardOS",
+	"app.subtitle": "Una conversación ramificada — nunca texto libre.",
+	"pick.heading": "Elegir un formulario",
+	"pick.open": "Abrir",
+	"pack.count": "{count} preguntas",
+	"flow.progress": "Progreso",
+	"flow.continue": "Continuar",
+	"flow.restart": "Empezar de nuevo",
+	"flow.done": "Todas las preguntas respondidas.",
+	"flow.export": "Descargar respuestas (JSON)",
+	"flow.exported": "Respuestas descargadas.",
+	"abstain.title": "Requiere una persona",
+	"abstain.body": "Esta respuesta es ambigua o quedó sin responder — el flujo se detuvo en lugar de adivinar. No se inventó nada.",
+	"wire.error": "No se pudo alcanzar el kernel. Inicie el kernel en 127.0.0.1:8765 y recargue."
+}

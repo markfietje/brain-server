@@ -1,0 +1,7 @@
+node_modules/
+build/
+.svelte-kit/
+src-tauri/target/
+playwright-report/
+test-results/
+vite.config.ts.timestamp-*
