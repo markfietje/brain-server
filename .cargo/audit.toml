@@ -31,15 +31,26 @@
 # model2vec/static-model equivalent — swapping embedders would invalidate the
 # retrieval-quality golden pins and the recall floors.
 #
+# RUSTSEC-2024-0429 (glib 0.18.5 VariantStrIter unsoundness / GHSA-wrw7-89jp-8q8g):
+# fixed ONLY in glib ≥ 0.20.0. The shell (and client) lockfiles pin
+# glib 0.18.5 via tauri 2.x → gtk 0.18 → glib ^0.18 (Linux backend only;
+# macOS/Windows do not load this code). No tauri 2.x release allows glib 0.20 —
+# it needs the GTK4 / gtk 0.20 migration (tauri-apps/tauri#12561). Our shell
+# has exactly one command (D7 token env pass-through) and never calls
+# VariantStrIter / GVariant child iteration. Accepted as tolerable risk;
+# Dependabot alert #3 dismissed 2026-09-23 on the same grounds.
+#
 # Re-check triggers (any one → revisit these ignores):
 #   - model2vec-rs releases with hf-hub >= 0.5  (clears number_prefix)
 #   - tokenizers release without paste          (clears paste)
 #   - a real vulnerability lands against either crate (re-evaluate posture)
+#   - tauri 2.x bumps gtk ≥ 0.19 / glib ≥ 0.20  (clears RUSTSEC-2024-0429)
 #
 # Re-check with: cargo audit (exit 0 required for green CI).
 [advisories]
 ignore = [
     "RUSTSEC-2023-0071",
     "RUSTSEC-2024-0436",
+    "RUSTSEC-2024-0429",
     "RUSTSEC-2025-0119",
 ]

@@ -118,6 +118,7 @@ model, not a substitute.
 | **D**enial of service | CVE in dep causes crash | `CatchPanicLayer`; advisory monitoring; rapid patch process | ✅ |
 | **E**levation of privilege | Dep with CVE pre-auth | Pin versions; `cargo audit --deny warnings` in CI | ✅ |
 | **T**ampering | Timing sidechannel on RSA private-key ops (`rsa` crate, RUSTSEC-2023-0071 "Marvin") | No fixed release exists anywhere (verified 2026-08-04: `rsa` 0.10.0-rc.18 and `jsonwebtoken` 11 both still affected). Accepted with documentation in `.cargo/audit.toml`: local-daemon timing model (attacker with local timing access already owns the machine), keys at 0600, EdDSA (Ed25519) keys avoid RSA entirely and are supported since v1.2 | audit.toml ignore + docs |
+| **T**ampering | Unsound `glib::VariantStrIter` iterator (RUSTSEC-2024-0429 / GHSA-wrw7-89jp-8q8g) in the shell's Linux backend | Fixed only in glib ≥ 0.20; shell/client pin glib 0.18.5 via tauri 2 → gtk 0.18 (no tauri 2.x allows the bump — needs GTK4, tauri#12561). VariantStrIter unused by brain-shell's single D7 command; Linux-only load path. Dependabot alert #3 dismissed `tolerable_risk` 2026-09-23 | audit.toml ignore + Dependabot dismiss |
 
 ### Asset 5: Network transport
 
