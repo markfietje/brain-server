@@ -2243,6 +2243,7 @@ pub fn run_migration_with_store_dim(
     )?;
 
     // Bumped once per release that changes this function.
+    // v1.32.11 "DecisionTrace": decision_run_traces table → 1.32.11.
     // v1.32.0 "LoopCore": agent_session_events table (the agent-loop
     // session event log: append-only, per-run seq, exactly-once by key) → 1.32.0.
     // v1.28.77 "Erasure": suggest_feedback.owner (additive, nullable) → 1.28.77.
@@ -2310,9 +2311,32 @@ pub fn run_migration_with_store_dim(
              ON agent_session_events(run_id, seq);",
     )?;
 
+    // ── the decision-run trace table ────────────────────────────────────
+    // The decision harness's replayable run artifact (digests, refs, and
+    // per-stage records — query-adjacent free text is hashed, never stored
+    // raw), one row per persisted decision run. Mirrors the recall_traces
+    // precedent: additive, no migration of existing tables, no FK on
+    // purpose (same posture as agent_session_events — foreign runs are the
+    // writer's refusal, not the schema's). The session-log decision_*
+    // kinds are the event face; this row is the bounded-listing + replay
+    // artifact.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS decision_run_traces(
+            id               INTEGER PRIMARY KEY,
+            run_id           INTEGER NOT NULL,
+            mode             TEXT NOT NULL,
+            pipeline_version TEXT NOT NULL,
+            config_hash      TEXT NOT NULL,
+            trace_json       TEXT NOT NULL,
+            created_at       INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_decision_run_traces_run
+            ON decision_run_traces(run_id);",
+    )?;
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.0')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.0';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.11')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.11';",
         [],
     )?;
 

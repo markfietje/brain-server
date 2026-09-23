@@ -8,21 +8,33 @@
 //! is plain data. Promotion, persistence, routes, and side effects are
 //! the pipeline's and the gate's job — this module ships NONE of them.
 //!
-//! This round is the SEAM only: the SDK trait + types consumed
-//! ([`model`]), the deterministic reference model over a declared rule
-//! table and the decide adapter ([`models`]), and the additive
-//! session-log kind constants the decision-run record (the next lane's
-//! consumer) will read. No routes, no state change, no GDL contact —
-//! inert to the loop (the non-troubleshoot law): nothing outside this
-//! module reads these constants, and no gate consults them.
+//! The module's lanes: the seam re-exports ([`model`]), the deterministic
+//! reference model and the decide adapter ([`models`]), the pipeline
+//! engine's config document and canonical hashing ([`config`]), the
+//! deterministic stage runner and its per-stage records ([`pipeline`]),
+//! and the run-trace persistence ([`trace`], additive storage + the
+//! session-log kinds below). The engine writes no durable state itself —
+//! the trace writer is the only persistence, and no route reads or writes
+//! any of it. No GDL contact — inert to the loop (the non-troubleshoot
+//! law): nothing outside this module's callers consults it, and no gate
+//! reads the kind constants.
 
+pub(crate) mod config;
 pub(crate) mod model;
 pub(crate) mod models;
+pub(crate) mod pipeline;
+pub(crate) mod trace;
 
-/// Additive session-log kinds for the decision-run record (its consumer
-/// lands with the run-record lane; recorded per run from day one so
-/// nothing exploratory can masquerade as governed). Constants ONLY this
-/// round: zero migration, zero routes, inert to the loop.
+/// The harness pipeline's compile-time version (the recorded
+/// `pipeline_version` on every trace) — a constant of this module, never
+/// read from the environment.
+pub(crate) const PIPELINE_VERSION: &str = "1.32.11";
+
+/// Additive session-log kinds for the decision-run record: emitted by the
+/// trace writer ([`trace`]) under the caller's run id — `decision_run` on
+/// the run's logical start, `decision_output`/`decision_refusal` per stage
+/// outcome — exactly-once by idempotency key. No routes read or write
+/// them; nothing treats them as control rows (inert to the loop).
 pub(crate) const DECISION_RUN_KIND: &str = "decision_run";
 pub(crate) const DECISION_OUTPUT_KIND: &str = "decision_output";
 pub(crate) const DECISION_REFUSAL_KIND: &str = "decision_refusal";

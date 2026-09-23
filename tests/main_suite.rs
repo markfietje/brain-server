@@ -3561,6 +3561,10 @@ Final paragraph after the rule.";
             // v1.32.0 "LoopCore": the agent loop's append-only session event
             // log (the declared loop-state table; replayable, exactly-once).
             "agent_session_events",
+            // v1.32.11 "DecisionTrace": the decision harness's additive
+            // run-trace table (digests and refs; the recall_traces
+            // precedent). Referenced by name from the trace writer.
+            "decision_run_traces",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -3803,9 +3807,11 @@ Final paragraph after the rule.";
         // evidence — the session arm).
         // LoopCore for the agent_session_events table (the agent loop's
         // append-only session event log — the declared loop-state table).
+        // DecisionTrace for the decision_run_traces table (the decision
+        // harness's additive run-trace artifact).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_0),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_11),
             "schema_version must be recorded as the current release after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×

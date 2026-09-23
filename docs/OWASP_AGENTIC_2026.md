@@ -88,6 +88,35 @@ v1.32.8 gate is untouched. The type-level controls:
 | **ASI10 Rogue Agents / LLM06 Excessive Agency** | The monotonic-narrow authority law — **a DecisionModel proposes; only the gate disposes** — pinned at the type level: `&self` receivers and plain-data seam types (`Send + Sync + 'static`, no durable-state handles), so a model's output alone cannot mutate durable state |
 | **ASI01/ASI06 (pre-wiring)** | Evidence enters the seam as PROVENANCE REFS only (ids + closed trust tiers); raw text is unrepresentable, and a ref without provenance (an empty id) qualifies as nothing |
 
+### Dated addendum — 2026-09-23 (the Decision Harness engine, v1.32.11 part 1 — engine only)
+
+The harness's deterministic pipeline engine landed as code + tests only
+(the config document with canonical hashing, the pure stage runner with
+per-stage provenance records, the additive run-trace table + session-log
+kinds' writer). No routes, no learned models, no inference — the
+v1.32.8 gate is untouched. The engine-level controls:
+
+| Control | The engine-level law |
+|---|---|
+| **ASI02 Tool Misuse** | The stages are internal pure functions of a typed input and a validated config document — the harness is not an agent tool and not an MCP tool; nothing can invoke a single stage from outside, and (no routes this round) nothing external reaches the engine at all yet |
+| **ASI04 Agentic Supply Chain / LLM04** | The pipeline config is digest-pinned by construction: the config hash is the sha256 of the canonical re-serialization of the LOADED document, every stage record carries it, and the model binding is a config-digest pair the model itself verifies at evaluation. No network-sourced configs exist on this path |
+| **ASI05 Unexpected Code Execution** | Every stage is a pure function — no eval, no dynamic loading, no unsafe, no I/O in the stage path; the loader is total (a hostile config refuses by name, never partially loads, never panics) |
+| **ASI07 Cascading Agents** | No self-invocation: stages are pure functions called once each by a linear runner over a config-declared, bound-checked list — structurally recursion-free; there is no agent-to-agent channel, and escalation is the human path |
+| **ASI08 Resource Exhaustion** | Bounds live at the config validator: the stage list is capped at the architecture's fixed eight with duplicate/unknown/out-of-order refusals, and retrieval limits are clamped at 100 (the existing search-side over-fetch law) |
+| **ASI10 Rogue Agents / LLM06** | Monotonic-narrow end to end: a stage refusal folds into a typed escalation record — the engine writes no durable state, and the only persistence is the trace artifact itself (digests and refs). Outputs propose; only the human gate disposes |
+
+The AI-law note (code vs legal, deliberately not overstated): automatic
+per-run traces with immutable references — input/context digests, config
+hash, model digests, retrieval parameters, a compile-time environment
+fingerprint — are the TECHNICAL LOGGING CAPABILITY behind EU AI Act
+Art. 12(1)-style automatic event recording (high-risk obligations
+generally apply from 2026-08-02; the deployer-side retention duty, e.g.
+the six-month minimum, is the deployer's, not the software's) and keep
+GDPR Art. 22-style transparency consistent (a decision trace an operator
+can replay and inspect). This round ships the capability and its tests;
+it makes NO legal conclusion — whether any given deployment is in scope
+of those regimes is the operator's determination with counsel.
+
 ## Part 3 — AIUC-1 crosswalk (procurement bridge)
 
 A crosswalk maps ASI01–ASI10 to the AI-Under-Contract (AIUC-1) requirements so

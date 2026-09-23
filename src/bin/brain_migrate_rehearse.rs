@@ -112,6 +112,9 @@ const PARITY_TABLES: &[&str] = &[
     "rules",
     "rule_rates",
     "domain_centroids",
+    // the decision harness's additive run-trace table (digests and refs;
+    // the recall_traces precedent).
+    "decision_run_traces",
 ];
 
 /// Size of the random vec0 spot-check. ponytail: 50 is a heuristic — the formal
