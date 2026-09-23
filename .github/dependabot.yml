@@ -87,3 +87,15 @@ updates:
       - dependency-name: glib
         versions: ["<0.20"]
         # pinned by gtk4-rs under dioxus-desktop — no resolvable fix
+  # The SvelteTauri shell (Phase A, R23): the shell's own supply chain,
+  # covered like the kernel's — pnpm for the SvelteKit app, cargo for the
+  # Tauri core (committed lockfiles on both; the shell README records the
+  # audit gates).
+  - package-ecosystem: npm
+    directory: /shell
+    schedule:
+      interval: weekly
+  - package-ecosystem: cargo
+    directory: /shell/src-tauri
+    schedule:
+      interval: weekly

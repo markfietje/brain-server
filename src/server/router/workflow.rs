@@ -371,6 +371,13 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             "/workflow/kappa/report",
             get(handlers::kappa::get_kappa_report),
         )
+        // The wizard pack catalog: the three ratified packs as read-only
+        // validated data — the SvelteTauri shell's one declared kernel need
+        // (Read on global, any authenticated principal; pure data, no pool).
+        .route(
+            "/workflow/wizard/packs",
+            get(handlers::wizard::get_wizard_packs),
+        )
         .route(
             "/workflow/calibration/sign",
             post(handlers::workflow::post_calibration_sign),

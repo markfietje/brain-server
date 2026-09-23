@@ -307,6 +307,75 @@ pub(crate) fn assemble_answers(
     }))
 }
 
+/// The operator-ratified pack ids, in the catalog's served order (sorted).
+/// The catalog serves these THREE and nothing else — a new pack joins only
+/// by an operator ratification naming it here with its corpus file.
+pub(crate) const RATIFIED_PACK_IDS: &[&str] =
+    &["capture-pre-screen", "support-ticket", "tele-health"];
+
+/// The ratified packs embedded at COMPILE TIME straight from the committed
+/// fuzz-corpus files — ONE source of truth (the corpus data is never
+/// copied), no runtime fs reads, no new deps.
+const EMBEDDED_RATIFIED_PACKS: &[(&str, &str)] = &[
+    (
+        "support-ticket",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/crates/brain-fuzz/corpus/accounts/packs/support-ticket.json"
+        )),
+    ),
+    (
+        "tele-health",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/crates/brain-fuzz/corpus/accounts/packs/tele-health.json"
+        )),
+    ),
+    (
+        "capture-pre-screen",
+        include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/crates/brain-fuzz/corpus/accounts/packs/capture-pre-screen.json"
+        )),
+    ),
+];
+
+/// One catalog entry: the ratified id, the question count, and the
+/// validated pack JSON verbatim.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct WizardPackEntry {
+    pub id: &'static str,
+    pub question_count: usize,
+    pub pack: serde_json::Value,
+}
+
+/// The total pack catalog: every embedded pack parsed + re-validated
+/// through [`validate_wizard_pack`] at read time, served in
+/// [`RATIFIED_PACK_IDS`] order — the ratified set drives the walk, so the
+/// catalog's order IS the ratification, by construction. ONLY validated
+/// entries are constructed, so the fn is total and panic-free by shape. A
+/// corrupt embed surfaces as a MISSING entry — which the compile-time test
+/// pins (`wizard_pack_catalog_serves_the_three_ratified_packs`), making the
+/// failure mode a red gate, never a runtime panic.
+pub(crate) fn wizard_pack_catalog() -> Vec<WizardPackEntry> {
+    RATIFIED_PACK_IDS
+        .iter()
+        .filter_map(|id| {
+            let bytes = EMBEDDED_RATIFIED_PACKS
+                .iter()
+                .find(|(embed, _)| embed == id)
+                .map(|(_, bytes)| bytes)?;
+            let value = serde_json::from_str::<serde_json::Value>(bytes).ok()?;
+            let pack = validate_wizard_pack(&value).ok()?;
+            Some(WizardPackEntry {
+                id,
+                question_count: pack.questions.len(),
+                pack: value,
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -622,6 +691,42 @@ mod tests {
         ] {
             let err = validate_wizard_pack(&bad).unwrap_err();
             assert!(err.starts_with("wizard_pack_invalid: "), "{err}");
+        }
+    }
+
+    /// wizard_pack_catalog_serves_the_three_ratified_packs — the embedded
+    /// catalog serves EXACTLY the ratified id set, every entry re-validates
+    /// through the shipped total validator, and the served JSON is the
+    /// corpus bytes verbatim (ONE source of truth). A corrupt or missing
+    /// embed makes this test RED — the compile-time failure mode, never a
+    /// runtime panic.
+    #[test]
+    fn wizard_pack_catalog_serves_the_three_ratified_packs() {
+        let catalog = wizard_pack_catalog();
+        let ids: Vec<&str> = catalog.iter().map(|e| e.id).collect();
+        assert_eq!(ids, RATIFIED_PACK_IDS.to_vec());
+        for entry in &catalog {
+            let reparsed: serde_json::Value = serde_json::from_str(
+                EMBEDDED_RATIFIED_PACKS
+                    .iter()
+                    .find(|(id, _)| *id == entry.id)
+                    .expect("the served id is one of the embeds")
+                    .1,
+            )
+            .expect("the embedded pack bytes are valid JSON");
+            assert_eq!(
+                entry.pack, reparsed,
+                "{}: served JSON == the corpus bytes",
+                entry.id
+            );
+            let pack = validate_wizard_pack(&entry.pack)
+                .unwrap_or_else(|e| panic!("{}: the served pack re-validates: {e}", entry.id));
+            assert_eq!(pack.pack, entry.id);
+            assert_eq!(entry.question_count, pack.questions.len());
+            assert_eq!(
+                entry.question_count,
+                entry.pack["questions"].as_array().unwrap().len()
+            );
         }
     }
 }

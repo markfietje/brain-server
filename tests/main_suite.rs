@@ -7006,6 +7006,10 @@ Final paragraph after the rule.";
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/workflow_decisions.rs"
                             )),
+                            "wizard" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/wizard.rs"
+                            )),
                             "reflection" => include_str!(concat!(
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/reflection.rs"
@@ -17117,6 +17121,73 @@ Final paragraph after the rule.";
             assert_eq!(err.status, axum::http::StatusCode::NOT_FOUND);
             assert_eq!(err.inner.code, "not_found");
             assert_eq!(err.inner.message, "no such assignment");
+        }
+    }
+
+    /// wizard_pack_route_serves_validated_data — the catalog route over
+    /// real composed state: the loopback/opaque principal (None) reads 200,
+    /// the id set is EXACTLY the ratified three, and every served pack is
+    /// deep-equal to the committed corpus file — re-validation by
+    /// construction (ONE source of truth). The handler takes NO state: the
+    /// composed state exists and the route still needs none of it (the
+    /// gate-free purity, pinned here end to end).
+    #[tokio::test]
+    async fn wizard_pack_route_serves_validated_data() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let _state = drawbridge_state(&tmp);
+        let served = brain_server::handlers::wizard::get_wizard_packs(
+            brain_server::handlers::auth::OptPrincipal(None),
+        )
+        .await
+        .expect("the catalog reads 200 for the loopback principal");
+        let entries = served.0["packs"].as_array().unwrap();
+        let ids: Vec<&str> = entries.iter().map(|p| p["id"].as_str().unwrap()).collect();
+        assert_eq!(
+            ids,
+            vec!["capture-pre-screen", "support-ticket", "tele-health"]
+        );
+        assert_eq!(served.0["count"], serde_json::json!(entries.len()));
+        for (entry, bytes) in [
+            (
+                entries
+                    .iter()
+                    .find(|p| p["id"] == serde_json::json!("capture-pre-screen"))
+                    .expect("capture-pre-screen served"),
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/crates/brain-fuzz/corpus/accounts/packs/capture-pre-screen.json"
+                )),
+            ),
+            (
+                entries
+                    .iter()
+                    .find(|p| p["id"] == serde_json::json!("support-ticket"))
+                    .expect("support-ticket served"),
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/crates/brain-fuzz/corpus/accounts/packs/support-ticket.json"
+                )),
+            ),
+            (
+                entries
+                    .iter()
+                    .find(|p| p["id"] == serde_json::json!("tele-health"))
+                    .expect("tele-health served"),
+                include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/crates/brain-fuzz/corpus/accounts/packs/tele-health.json"
+                )),
+            ),
+        ] {
+            let corpus: serde_json::Value = serde_json::from_str(bytes).unwrap();
+            assert_eq!(
+                entry["pack"],
+                corpus,
+                "{}: the served pack is the corpus file verbatim",
+                entry["id"].as_str().unwrap()
+            );
+            assert!(entry["question_count"].as_u64().unwrap() >= 1);
+            assert!(entry["pack"]["first"].is_string());
         }
     }
 }

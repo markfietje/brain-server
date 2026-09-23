@@ -270,6 +270,8 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/workflow/kappa/queue",
     "/workflow/kappa/labels",
     "/workflow/kappa/report",
+    // The wizard pack catalog (the shell renderer's pack read).
+    "/workflow/wizard/packs",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -568,4 +570,8 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/kappa/queue", "Write"),
     ("/workflow/kappa/labels", "Write"),
     ("/workflow/kappa/report", "Admin"),
+    // The wizard pack catalog: a plain Read on the global domain — the
+    // ratified posture (PII-free schema templates; no role gate, no
+    // PRE_GATE/empty-safe joins).
+    ("/workflow/wizard/packs", "Read"),
 ];

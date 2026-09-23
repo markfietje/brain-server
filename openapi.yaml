@@ -7372,6 +7372,59 @@ paths:
         "400": { description: kappa_limit_out_of_bounds }
         "401": { description: Not authenticated }
         "403": { description: Not authorized (the DPO dual gate + calibrate) }
+  /workflow/wizard/packs:
+    get:
+      summary: The ratified wizard pack catalog (Read on global; validated data)
+      description: >
+        The three operator-ratified wizard packs as read-only, validated
+        data: the pack templates are compile-time-embedded from the
+        committed corpus files (ONE source of truth) and EVERY served entry
+        re-validates through the total pack validator at read time — a
+        corrupt pack is a compile-time test failure, never a runtime panic.
+        The renderer (the SvelteTauri shell) branches client-side on the
+        packs' total next-maps; answers never ride this route. Plain Read
+        gate on the global domain (any authenticated principal) — reading a
+        PII-free schema template is not a privileged act.
+      operationId: workflowWizardPacks
+      responses:
+        "200":
+          description: The validated pack catalog (never empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [packs, count]
+                properties:
+                  packs:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, question_count, pack]
+                      properties:
+                        id: { type: string }
+                        question_count: { type: integer, minimum: 1 }
+                        pack:
+                          type: object
+                          required: [pack, first, questions]
+                          properties:
+                            pack: { type: string }
+                            first: { type: string }
+                            questions:
+                              type: array
+                              items:
+                                type: object
+                                required: [id, qtype, instructions, next]
+                                properties:
+                                  id: { type: string }
+                                  qtype: { type: string, enum: [choice, score, noul] }
+                                  instructions: { type: string }
+                                  criteria: {}
+                                  next:
+                                    type: object
+                                    additionalProperties: { type: string }
+                  count: { type: integer }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Read on the global domain) }
 components:
   securitySchemes:
     bearerAuth:
@@ -7405,6 +7458,21 @@ components:
           schema: { $ref: "#/components/schemas/ApiError" }
     PayloadTooLarge:
       description: Body exceeded the size cap
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    Unauthorized:
+      description: >
+        Not authenticated: no bearer, an unverifiable one, or a configured-but-
+        empty token store. Shape `{error, code}` per the middleware.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/ApiError" }
+    Forbidden:
+      description: >
+        Authenticated but not authorized for (action, team, domain) — the
+        authorize gate's 403. Shape `{error, code}` per the handler error
+        vocabulary.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
@@ -7688,6 +7756,19 @@ components:
           description: unix ts when the workflow completed; null while open.
     ApiError:
       type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details: { type: object, nullable: true }
+    Error:
+      type: object
+      description: >
+        The error shape under its original name — the same object `ApiError`
+        models (the rename missed these route blocks; both names resolve to
+        the identical shape).
       properties:
         error:
           type: object
