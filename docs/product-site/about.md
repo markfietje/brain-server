@@ -1,6 +1,6 @@
 # About & Contact
 
-**Brain Server** is a local-first semantic memory and knowledge-graph server for
+**Brain Server** is governed, local-first memory and decision infrastructure for
 AI agents. It is built to answer the hardest question an agent memory system
 faces in 2026: *"what did the agent know, when, and why — and can I delete it
 on request?"*

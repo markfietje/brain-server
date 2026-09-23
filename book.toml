@@ -1,7 +1,7 @@
 [book]
-title = "brain-server"
+title = "Brain Server"
 authors = ["markfietje"]
-description = "Local-first semantic memory for AI agents"
+description = "Governed, local-first memory and decision infrastructure for AI agents"
 language = "en"
 src = "docs"
 

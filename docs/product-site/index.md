@@ -1,7 +1,7 @@
 # Brain Server
 
-**Local-first semantic memory + knowledge graph for AI agents. Deterministic,
-privacy-preserving, human-auditable.**
+**Governed, local-first memory and decision infrastructure for AI agents.
+Deterministic, privacy-preserving, human-auditable.**
 
 Brain Server gives an agent a second brain that lives on the operator's own
 device. Recall never has to think: a static, local embedding model plus a
