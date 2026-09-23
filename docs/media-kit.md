@@ -8,27 +8,30 @@
 ## Name / one-liner
 
 - **Product:** Brain Server
-- **One-line (technical):** "A local-first semantic-memory and knowledge-graph
-  server for AI agents — deterministic retrieval, a human-in-the-loop write
-  gate, and a tamper-evident audit chain."
-- **One-line (buyer):** "Agent memory you can verify, budget, and delete on
-  request — no LLM per query, no data egress, no vendor lock-in."
-- **Three-word elevator:** "Verifiable agent memory."
-- **One-line (contact-center / BPO support):** "Agent-assist memory that recalls
-  past resolutions and policy for every agent, stays on-prem where client data
-  must not leave, and is yours to audit and erase — no per-query LLM, no
-  vendor lock-in."
+- **One-line (technical):** "A local-first decision and memory substrate for AI
+  agents — deterministic retrieval, human-gated state promotion, tamper-evident
+  provenance, and structured decision traces."
+- **One-line (primary positioning):** "Governed decision and memory substrate
+  for AI agents — deterministic local recall, human-gated permanent state, and
+  tamper-evident audit, with structured decision traces."
+- **One-line (buyer):** "Agent memory and decisions you can verify, budget, and
+  delete on request — no LLM per query, no data egress, no vendor lock-in."
+- **Three-word elevator:** "Verifiable agent decisions."
+- **One-line (contact-center / BPO support):** "Agent-assist memory and decision
+  substrate that recalls past resolutions and policy, stays on-prem, and is
+  yours to audit and erase — no per-query LLM, no vendor lock-in."
 
 ## Positioning statement
 
-For teams building AI agents that must hold memory responsibly, Brain Server is
-a self-hosted memory store that makes agent recall **deterministic, human-
-gated, and tamper-evident** — unlike cloud memory services that charge per
-query and keep user memory in a third-party datacenter. Because it runs on the
-operator's own device with no LLM in the loop, it delivers **zero per-query
-cost, zero data egress, and an audit trail a reviewer can verify live** — and,
-unlike framework-bound memory layers, it is **standard-based** (UMP 1.0 / L3,
-open HTTP, MCP) so it never locks you in.
+For teams building AI agents that must hold memory and make structured
+decisions responsibly, Brain Server is a self-hosted substrate that makes both
+recall and the decisions that depend on it deterministic, human-gated, and
+tamper-evident — unlike cloud memory services that charge per query and keep
+user data in a third-party datacenter.
+
+Because it runs on the operator's own infrastructure with no LLM in the hot
+recall path, it delivers **zero per-query cost, zero data egress, and an audit
+trail a reviewer can verify live**.
 
 ## Who it's for
 

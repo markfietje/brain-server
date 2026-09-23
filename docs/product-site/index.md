@@ -44,7 +44,8 @@ Brain Server is the tamper-evident, human-gated memory store that defuses it.**
 
 ## What it is not
 
-- Not an LLM — it stores and recalls, it does not generate.
+- Not an LLM — it stores, recalls, and supports structured decisions; it does
+  not generate free-form prose.
 - Not a SaaS lock-in — one self-hosted binary, zero telemetry, no vendor.
 - Not a black box — every mechanism has a documented, deterministic
   implementation and an honest ceiling.

@@ -1,12 +1,12 @@
 # Brain Server — Who it's for (target audiences)
 
 > **Meta description:** Brain Server is a local-first, offline, deterministic
-> semantic-memory and knowledge-graph server for AI agents. Zero token cost,
+> decision and memory substrate for AI agents. Zero token cost,
 > human-gated writes, GDPR/DSAR erasure, SHA-256 audit, and the current MCP
 > 2026-07-28 stateless protocol — all in one self-hosted Rust binary.
 
-Brain Server is a **local-first, offline, deterministic semantic-memory and
-knowledge-graph server for AI agents**. This page maps the product's **shipped**
+Brain Server is a **local-first, offline, deterministic decision and
+memory substrate for AI agents**. This page maps the product's **shipped**
 capabilities to the **concrete people and teams** who use them, so you can tell
 at a glance whether it fits your job — and exactly what you'd get.
 

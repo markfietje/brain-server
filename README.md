@@ -1,8 +1,12 @@
 # Brain Server
 
-**Governed, local-first memory for AI agents in regulated environments.**
+**Governed, local-first memory and decision infrastructure for AI agents.**
 
-Governance is usually side work: nobody owns quality, access, or cleanup. This server owns it. Nothing becomes permanent knowledge until a human approves the exact bytes. Single-process server, no cloud, no embedding API, no data leaving the box by default. Built for teams that treat memory poisoning (OWASP ASI06) as a production risk.
+Brain Server is a **self-hosted AI agent memory server** for systems where incorrect, poisoned, or unauthorized memory has real consequences.
+
+It provides **deterministic hybrid retrieval, human-gated memory promotion, provenance, tamper-evident audit, quarantine, verifiable deletion, and least-privilege access** in a single Rust/Axum server.
+
+> **No hosted memory service. No embedding API required. No LLM required in the hot recall path. No data leaves the system by default.**
 
 <p align="center">
 
@@ -10,108 +14,532 @@ Governance is usually side work: nobody owns quality, access, or cleanup. This s
 [![Docs](https://img.shields.io/badge/docs-brain--server-1f6feb.svg)](https://markfietje.github.io/brain-server/)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg?logo=rust)](#)
 [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
-[![Cost](https://img.shields.io/badge/cost-%240%20per%20query-success.svg)](#)
-[![Tests](https://img.shields.io/badge/tests-2188%20passed-brightgreen.svg)](#)
 
 </p>
 
 <p align="center">
-Web + desktop + mobile GUI (Dioxus) · OpenAI-compatible embeddings · MCP server · OpenClaw plugin
+
+**Rust / Axum · SQLite · FTS5 · sqlite-vec · MCP · Tauri + SvelteKit · OpenClaw**
+
 </p>
 
-![Brain Server hero](docs/assets/hero-light.png)
+![Brain Server — governed local-first AI agent memory](docs/assets/hero-light.png)
 
-## Try it in 30 seconds
+---
 
-No Docker, no API keys, no accounts. Download the binary and paste the demo. It starts empty, unauthenticated, on loopback only:
+## Table of contents
 
-```bash
-curl -L -o brain-server https://github.com/markfietje/brain-server/releases/latest/download/brain-server-darwin-arm64
-chmod +x brain-server
-./brain-server
-# 127.0.0.1:8765 - first start fetches the embedding model (~30 s, one-time;
-# every start after that is ~1 s). Other platforms: swap the suffix for
-# brain-server-{darwin,linux}-{x86_64,arm64}.
+- [Why Brain Server?](#why-brain-server)
+- [What it provides](#what-it-provides)
+- [Architecture](#architecture)
+- [Governance model](#governance-model)
+- [Local-first by default](#local-first-by-default)
+- [Security model](#security-model)
+- [Designed for reproducible agent systems](#designed-for-reproducible-agent-systems)
+- [Decision and evaluation direction](#decision-and-evaluation-direction)
+- [MCP](#mcp)
+- [OpenClaw](#openclaw)
+- [Who is it for?](#who-is-it-for)
+- [Try Brain Server](#try-brain-server)
+- [Build from source](#build-from-source)
+- [CLI](#cli)
+- [Verification and evidence](#verification-and-evidence)
+- [Universal Memory Protocol](#universal-memory-protocol)
+- [Compliance and regulated environments](#compliance-and-regulated-environments)
+- [Documentation](#documentation)
+- [Project principles](#project-principles)
+- [What Brain Server is not](#what-brain-server-is-not)
+- [License](#license)
+
+---
+
+## Why Brain Server?
+
+AI agents increasingly depend on persistent memory: customer context, operational knowledge, decisions, preferences, case history, instructions, and facts collected over time.
+
+That creates a security and governance problem.
+
+- A wrong retrieval can produce a wrong answer.
+- A poisoned memory can influence future behavior.
+- An agent should not be able to silently turn untrusted content into permanent knowledge.
+
+Brain Server is built around a simple principle:
+
+> **Memory is governed state, not just retrieved text.**
+
+The server is the authority for memory, retrieval, provenance, governance, workflow, and audit.
+
+---
+
+## What it provides
+
+### Deterministic AI agent memory
+
+Brain Server combines multiple retrieval signals without requiring an LLM in the hot recall path:
+
+- **FTS5 full-text search**
+- **Vector similarity**
+- **Reciprocal rank fusion (RRF)**
+- Provenance-bearing results
+- Explicit retrieval and decision metadata
+
+The retrieval pipeline is designed so that the same query against the same indexed state and configuration produces the same ordered result.
+
+### Human-gated memory promotion
+
+Agent-proposed knowledge is not automatically promoted to permanent memory.
+
+A proposal is reviewed by a human and approved against the **SHA-256 `content_digest` of the exact bytes being promoted**.
+
+If the content changes after review, the approval no longer matches and promotion fails.
+
+> High-risk deployments can require multiple distinct approvers.
+
+### Memory poisoning protection
+
+Incoming content is screened before it becomes trusted searchable state.
+
+Suspect content can be quarantined and excluded from:
+
+- Vector retrieval
+- Full-text retrieval
+- Graph retrieval
+
+Recalled content is explicitly represented as **untrusted data**, preventing stored instructions from silently becoming trusted agent instructions.
+
+### Provenance and evidence verification
+
+Recall results can include the evidence and provenance behind each result.
+
+Brain Server also provides a direct verification path so a claim can be checked against stored evidence rather than delegated to an LLM.
+
+```text
+POST /verify
 ```
 
-Then, in a second terminal:
+The goal is simple:
 
-```bash
-curl -s -X POST http://127.0.0.1:8765/ingest \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"Bignay","content":"Bignay is alternative to blueberry."}'
-curl -s -X POST http://127.0.0.1:8765/recall \
-  -H 'Content-Type: application/json' \
-  -d '{"query":"blueberry alternative","provenance":true}' | jq .
+> **Show the evidence. Do not ask the model to invent the evidence.**
+
+### Tamper-evident audit
+
+Brain Server maintains an append-only keyed hash chain with a verifiable head.
+
+The audit chain can be checked directly:
+
+```text
+GET /audit/verify
 ```
 
-You get `decision: ok` with ranked sources. Each hit carries its score, provenance, and the exact evidence text, fenced and labelled `untrusted`. Nothing gets invented.
+This makes later modification of recorded events detectable.
 
-Prefer to build from source?
+### Verifiable deletion
+
+Data lifecycle operations are part of the system rather than an afterthought.
+
+DSAR and purge operations can produce:
+
+- Certificates
+- Tombstones
+- Auditable deletion events
+
+Deletion therefore has a verifiable record.
+
+### Least-privilege access
+
+Agents and operators do not need the same authority.
+
+Scoped principals can be restricted to capabilities such as:
+
+- `recall`
+- `store`
+- `propose`
+
+Operator credentials remain separate from agent credentials.
+
+Revoked principals are refused immediately and cannot regain access simply by re-provisioning old credentials.
+
+---
+
+## Architecture
+
+Brain Server is the **authoritative data and governance plane**.
+
+```mermaid
+flowchart TD
+    Client["AI agent / application / MCP client"]
+    Client -->|"request"| BS
+
+    subgraph BS["brain-server — Rust / Axum"]
+        direction TB
+        Gov["Governance"]
+        Mem["Memory"]
+        Ret["Retrieval"]
+        Prov["Provenance"]
+        Aud["Audit"]
+        Wf["Workflow"]
+    end
+
+    BS --> SQLite["SQLite"]
+    BS --> FTS["FTS5"]
+    BS --> Vec["sqlite-vec"]
+
+    SQLite --> State["Evidence / State"]
+    FTS --> State
+    Vec --> State
+
+    classDef plane fill:#1f6feb22,stroke:#1f6feb,color:#e6edf3
+    classDef store fill:#3fb95022,stroke:#3fb950,color:#e6edf3
+    classDef edge fill:#d2992222,stroke:#d29922,color:#e6edf3
+    class Client edge
+    class Gov,Mem,Ret,Prov,Aud,Wf plane
+    class SQLite,FTS,Vec,State store
+```
+
+The human-facing desktop client is a **Tauri + SvelteKit application** consuming the public server contract:
+
+```mermaid
+flowchart TD
+    GUI["Tauri + SvelteKit<br/>Human Control Plane"]
+    GUI -->|"HTTP / WebSocket"| Server["brain-server<br/>single authority"]
+
+    classDef gui fill:#a371f722,stroke:#a371f7,color:#e6edf3
+    classDef srv fill:#1f6feb22,stroke:#1f6feb,color:#e6edf3
+    class GUI gui
+    class Server srv
+```
+
+The client is deliberately **not a second backend**.
+
+- It does not own the data plane, memory database, governance state, or authoritative business logic.
+- The server remains fully usable without the GUI through its binary, HTTP API, MCP interface, CLI, and verification tooling.
+
+---
+
+## Governance model
+
+Brain Server treats durable agent knowledge as a governed lifecycle:
+
+```mermaid
+flowchart TD
+    A["untrusted input"] --> B["screening"]
+    B -->|"suspect"| Q["quarantine"]
+    B -->|"passes"| C["proposal"]
+    C --> D["exact content + digest"]
+    D --> E["human approval"]
+    E --> F["durable state"]
+    F --> G["audit + provenance"]
+
+    classDef input fill:#d2992222,stroke:#d29922,color:#e6edf3
+    classDef gate fill:#f8514922,stroke:#f85149,color:#e6edf3
+    classDef ok fill:#3fb95022,stroke:#3fb950,color:#e6edf3
+    classDef warn fill:#d2992222,stroke:#d29922,color:#e6edf3
+    class A input
+    class B,D,E gate
+    class F,G ok
+    class Q warn
+```
+
+The important boundary is that **agent capture and durable memory are different states**.
+
+Human promotion is explicit and digest-bound.
+
+---
+
+## Local-first by default
+
+Brain Server is designed to run under the customer's control.
+
+The default local path does **not** require:
+
+- A hosted memory provider
+- A cloud account
+- An embedding API
+- An LLM for recall
+
+Data remains in customer-controlled storage unless an explicitly configured integration sends it elsewhere.
+
+This makes Brain Server suitable for:
+
+- Self-hosted environments
+- Private networks
+- Sovereign deployments
+- Restricted environments
+- Edge devices
+- Disconnected or tightly controlled systems
+
+---
+
+## Security model
+
+Brain Server is designed around explicit trust boundaries.
+
+Stored content is treated as **data, not trusted instructions**.
+
+The security model addresses concerns including:
+
+| Category | Concerns |
+|---|---|
+| Content | Memory poisoning, indirect prompt and instruction injection through stored content |
+| Governance | Unauthorized memory promotion, privilege escalation |
+| Evidence | Provenance loss, audit tampering |
+| Access | Unauthorized retrieval |
+| Lifecycle | Data-retention and deletion requirements |
+
+See:
+
+- [`SECURITY.md`](SECURITY.md)
+- [`THREAT_MODEL.md`](THREAT_MODEL.md)
+- [`COMPLIANCE.md`](COMPLIANCE.md)
+
+---
+
+## Designed for reproducible agent systems
+
+Brain Server is **not** a general-purpose agent runtime.
+
+It is infrastructure that agent systems can depend on for:
+
+- Trusted memory
+- Deterministic recall
+- Governed writes
+- Evidence verification
+- Workflow state
+- Provenance
+- Audit
+
+The architecture is designed to extend this same authority model into a governed decision layer, where retrieval, local decision models, deterministic policy, optional reranking, thresholds, escalation, and human approval can participate in one structured execution trace.
+
+The rule remains:
+
+> **Decision capabilities belong inside the governed server; the GUI exposes them but never becomes authoritative.**
+
+---
+
+## Decision and evaluation direction
+
+The long-term architecture introduces a versioned decision pipeline while preserving the existing governance boundary:
+
+```mermaid
+flowchart TD
+    I["Input"] --> NV["Normalize / Validate"]
+    NV --> RC["Retrieve Context"]
+    RC --> CG["Candidate Generation"]
+    CG --> DM["Local Decision Model"]
+    DM --> DP["Deterministic Policy"]
+    DP --> RR["Optional Re-ranking"]
+    RR --> TH["Threshold / Escalation"]
+    TH --> AC["Action or Human Approval"]
+
+    classDef stages fill:#1f6feb22,stroke:#1f6feb,color:#e6edf3
+    classDef decision fill:#a371f722,stroke:#a371f7,color:#e6edf3
+    classDef human fill:#3fb95022,stroke:#3fb950,color:#e6edf3
+    class I,NV,RC,CG,DP,RR stages
+    class DM,TH decision
+    class AC human
+```
+
+Decision models remain **replaceable components behind a common contract**.
+
+Possible local models include classifiers, scorers, rerankers, and specialized typed-decision models.
+
+> [!NOTE]
+> This architecture is intentionally future-facing; the current release remains focused on the governed memory and retrieval substrate.
+
+---
+
+## MCP
+
+Brain Server exposes a governed MCP surface so agent systems can use the same memory backend without creating a second data or governance layer.
+
+MCP is an **integration surface into Brain Server**, not an independent authority.
+
+See the documentation for the current MCP protocol and capability surface.
+
+---
+
+## OpenClaw
+
+Brain Server can be used as a governed memory backend for agentic coding environments and OpenClaw deployments.
+
+The integration is intentionally thin: the agent uses Brain Server for memory and governance rather than bypassing the underlying controls.
+
+---
+
+## Who is it for?
+
+Brain Server is designed for teams operating **long-lived AI agents** where memory quality, data control, provenance, and auditability matter.
+
+| Sector | Teams |
+|---|---|
+| Regulated industries | Financial services, healthcare, legal, government |
+| Operations | BPO and contact centers |
+| Assurance | Security, compliance, and platform teams |
+| Engineering | Agentic developer tools |
+| Deployment | Private and edge AI deployments |
+
+The core use case is simple:
+
+> **When a wrong memory has a cost.**
+
+---
+
+## Try Brain Server
+
+The fastest way to understand the system is the [Quickstart](https://markfietje.github.io/brain-server/quickstart.html).
+
+It covers:
+
+- Building from source
+- Starting the server
+- Health and statistics
+- Ingestion
+- The human-in-the-loop promotion gate
+- Deterministic recall
+- Provenance
+- The `brain` CLI
+- Persistent service deployment
+
+For production deployment, see the [Deployment guide](https://markfietje.github.io/brain-server/deployment.html).
+
+---
+
+## Build from source
 
 ```bash
+git clone https://github.com/markfietje/brain-server.git
+cd brain-server
+
 cargo build --release --features bench
 ./target/release/brain-server
-# same behavior; data at ~/.openclaw/workspace/brain.db
 ```
 
-The full 5-minute walkthrough, the human approval gate, the `brain` CLI, and running it as a persistent service, is in the [Quickstart](https://markfietje.github.io/brain-server/quickstart.html). Production deploys (Docker, SSO, launchd) are in [Deployment](https://markfietje.github.io/brain-server/deployment.html).
-
-## Who it is for
-
-* Teams in **financial services, healthcare, legal, government, and BPOs** that store decisions, customer context, or operational knowledge in long-lived agents.
-* **Security, compliance, and platform teams** that require human gates, digests, quarantine, and tamper-evident audit.
-* Teams running **agentic coding assistants** (Claude Code, OpenClaw, Cursor, and custom agents) that need a governed memory backend.
-
-This is not a general-purpose memory layer for quick prototypes. It is for places where a wrong recall has a cost.
-
-## Guarantees
-
-* **Human promotion gate.** Agent captures become proposals. Promotion requires explicit approval bound to the SHA-256 of the exact bytes reviewed (`content_digest`). Drift returns 409. High-risk queues can require two distinct approvers (`BRAIN_APPROVAL_QUORUM=2`).
-* **Ingest screening and quarantine.** Every write is screened. Suspect content is quarantined and excluded from vector, full-text, and graph retrieval.
-* **Untrusted fences.** Recalled content is rendered inside unforgeable boundaries, stripped of invisible-character and bidi smuggling plus auto-fetch constructs, and labelled untrusted.
-* **Deterministic retrieval with explicit verdicts.** Hybrid retrieval: vector KNN plus FTS5 via reciprocal rank fusion. Same query, same answer. Every recall carries a decision verdict and per-hit confidence instead of prose guesses, and `POST /verify` checks any claim against the stored text.
-* **Tamper-evident audit.** Append-only keyed hash chain with a verifiable head. `GET /audit/verify` checks it.
-* **Verifiable deletion.** DSAR and purge produce certificates and tombstones.
-* **Local-first, zero-token recall.** Static embeddings and hybrid retrieval. No LLM in the hot path. No data egress by default. Zero per query.
-* **Scoped principals.** Agents get least-privilege tokens limited to recall, store, and propose - separate from operator credentials. A revoked principal is refused on every route from the moment of revocation, and re-provisioning does not resurrect it.
-
-## Why this instead of a cloud memory service
-
-| Cloud memory | Brain Server |
+| Setting | Default |
 |---|---|
-| Pay per read and write | Zero per query. Local static embeddings. |
-| Data in someone else's datacenter | Data stays in SQLite on your box. No telemetry. |
-| Extra round trip | p95 around 24 ms on loopback (measured table in `BENCHMARKS.md`) |
+| Data path | `~/.openclaw/workspace/brain.db` (override: `BRAIN_DB_PATH`) |
+| Bind address | `127.0.0.1:8765` (loopback) |
 
-## Proof, not promises
+> [!IMPORTANT]
+> The server refuses a public bind unless explicitly enabled.
 
-* UMP 1.0 L3, 13 of 13 reference-suite checks, derived from the CI `integration` conformance gate (asserted every push, not hand-claimed)
-* 2,188 tests passed — count not selfcheck-verified (`scripts/badges.sh --selfcheck` guards the disclaimer, not the number); authoritative count is the full `cargo test --features bench,migrate` run / CI `integration` job for the tagged commit. `cargo fmt` and `clippy -D warnings` clean
-* Append-only SHA-256 audit chain, `GET /audit/verify` to check it
-* Maps to ISO 42001, NIST AI RMF, SOC 2, GDPR. See `COMPLIANCE.md`
+---
 
-Try the MCP server in two seconds:
+## CLI
+
+The `brain` CLI provides a terminal interface to the same backend:
 
 ```bash
-curl -L -o mcp https://github.com/markfietje/brain-server/releases/latest/download/mcp-darwin-arm64
-chmod +x mcp
-echo '{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28"}}}' | ./mcp
+./target/release/brain status
+./target/release/brain query "your query" --k 3
+./target/release/brain explain "your query"
+./target/release/brain ingest-dir ./vault
 ```
 
-## Docs
+---
 
-| | |
+## Verification and evidence
+
+Brain Server is built around the principle that important claims should be reproducible.
+
+The repository contains:
+
+- Benchmark definitions and measured results
+- Integration and conformance checks
+- Security tests
+- Audit-chain verification
+- Deletion verification
+- API contract definitions
+- A public trust and proof map
+
+Where a claim matters, the project aims to provide a path to verify it rather than relying on marketing language.
+
+See:
+
+- [`BENCHMARKS.md`](BENCHMARKS.md)
+- [`API_CONTRACT.md`](API_CONTRACT.md)
+- [`docs/trust/proof-map.md`](docs/trust/proof-map.md)
+
+---
+
+## Universal Memory Protocol
+
+Brain Server includes a bounded implementation of **Universal Memory Protocol 1.0 (UMP)**, including its local integrity layer and portable memory bindings.
+
+UMP support provides a standards-oriented path for moving governed memory records between compatible systems while retaining content integrity, capabilities, provenance, and audit semantics.
+
+See the API contract and UMP documentation for the exact implemented surface.
+
+---
+
+## Compliance and regulated environments
+
+Brain Server is designed for environments where organizations need stronger controls around persistent agent state.
+
+The repository documents mappings and evidence for frameworks including:
+
+| Framework | Status |
 |---|---|
-| Docs site | [markfietje.github.io/brain-server](https://markfietje.github.io/brain-server/) |
-| API | `GET /openapi.yaml` at runtime and `API_CONTRACT.md` |
-| Security | `SECURITY.md`, `THREAT_MODEL.md` |
-| Compliance | `COMPLIANCE.md`, `docs/RFP_RESPONSE_KIT.md` |
-| Trust map | `docs/trust/proof-map.md` - every claim traced to release and curl |
-| Roadmap | `ROADMAP.md` |
+| ISO/IEC 42001 | Mapped |
+| NIST AI RMF | Mapped |
+| SOC 2 | Mapped |
+| GDPR | Mapped |
+
+> [!WARNING]
+> These mappings describe how the implementation addresses relevant controls; they are **not** a claim of third-party certification.
+
+See [`COMPLIANCE.md`](COMPLIANCE.md).
+
+---
+
+## Documentation
+
+| Topic | Resource |
+|---|---|
+| Documentation | [brain-server docs](https://markfietje.github.io/brain-server/) |
+| Quickstart | [Get started](https://markfietje.github.io/brain-server/quickstart.html) |
+| Deployment | [Deployment guide](https://markfietje.github.io/brain-server/deployment.html) |
+| API | `GET /openapi.yaml` and [`API_CONTRACT.md`](API_CONTRACT.md) |
+| Security | [`SECURITY.md`](SECURITY.md) |
+| Threat model | [`THREAT_MODEL.md`](THREAT_MODEL.md) |
+| Compliance | [`COMPLIANCE.md`](COMPLIANCE.md) |
+| Trust / proof map | [`docs/trust/proof-map.md`](docs/trust/proof-map.md) |
+| Roadmap | [`ROADMAP.md`](ROADMAP.md) |
+
+---
+
+## Project principles
+
+Brain Server is built around a small set of non-negotiable principles:
+
+1. **The server is the authority.**
+2. **Agent-proposed durable knowledge requires human approval.**
+3. **Approval is bound to the exact content reviewed.**
+4. **Untrusted memory remains untrusted.**
+5. **Recall should be reproducible.**
+6. **Audit history should be tamper-evident.**
+7. **Deletion should be verifiable.**
+8. **The default path should not require a cloud memory service.**
+9. **The server must remain useful without a GUI.**
+
+---
+
+## What Brain Server is not
+
+Brain Server is **not**:
+
+- A chatbot
+- A general-purpose agent framework
+- A hosted cloud memory service
+- An LLM
+- A generic RAG library
+- A second agent runtime
+
+It is **infrastructure for governed, reproducible AI-agent memory and decision systems**.
+
+---
 
 ## License
 
-MIT 2026 Mark Fietje. See `LICENSE`. Issues welcome on GitHub.
+Brain Server is released under the [MIT License](LICENSE).
 
-If it saves you a query, a star helps others find it.
+Copyright © 2026 Mark Fietje.

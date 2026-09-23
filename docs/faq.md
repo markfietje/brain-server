@@ -1,11 +1,11 @@
 # FAQ
 
-Frequently asked questions about **Brain Server** — the local-first semantic-memory and knowledge-graph server for AI agents.
+Frequently asked questions about **Brain Server** — the local-first governed decision and memory substrate for AI agents.
 
 ## General
 
 **What is Brain Server?**
-A local-first semantic-memory and knowledge-graph server for AI agents. It gives an agent a second brain that lives on the operator's own device — private, offline-capable, deterministic, and free to run.
+A local-first governed decision and memory substrate for AI agents. It gives an agent a second brain that lives on the operator's own device — private, offline-capable, deterministic, and free to run.
 
 **Is it really free?**
 Yes — **zero per-query cost**. Recall uses a *static, local embedding model* and a deterministic pipeline. There is no LLM or embedding API charged on every read and write. Token accounting: **0 decision tokens, 0 embedding tokens.**
