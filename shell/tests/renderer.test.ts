@@ -49,31 +49,22 @@ test('wizard_pack_renders_as_branched_conversation', async () => {
 	await user.click(screen.getByRole('button', { name: /support-ticket/ }));
 	// ONE question at a time — the first question's instructions.
 	await waitFor(() =>
-		expect(screen.getByText('Which class does this ticket belong to?')).toBeTruthy()
+		expect(screen.getByRole('heading', { name: 'Which class does this ticket belong to?' })).toBeTruthy()
 	);
 	expect(screen.queryByText('How urgent is this ticket?')).toBeNull();
 	// Answer billing → the flow BRANCHES to the priority question.
-	await user.selectOptions(
-		screen.getByRole('combobox'),
-		screen.getByRole('option', { name: /payment, invoice, refund/ })
-	);
+	await user.click(screen.getByText('Billing'));
 	await user.click(screen.getByRole('button', { name: 'Continue' }));
-	await waitFor(() => expect(screen.getByText('How urgent is this ticket?')).toBeTruthy());
+	await waitFor(() => expect(screen.getByRole('heading', { name: 'How urgent is this ticket?' })).toBeTruthy());
 	expect(screen.queryByText('The account is already known to support.')).toBeNull();
 	// Score 0 (low) → the KNOWN question (the next-map says so).
-	await user.selectOptions(
-		screen.getByRole('combobox'),
-		screen.getByRole('option', { name: /level 0: low/ })
-	);
+	await user.click(screen.getByText('low'));
 	await user.click(screen.getByRole('button', { name: 'Continue' }));
 	await waitFor(() =>
 		expect(screen.getByText('The account is already known to support.')).toBeTruthy()
 	);
-	// noul true → end → the done state with the export door.
-	await user.selectOptions(
-		screen.getByRole('combobox'),
-		screen.getByRole('option', { name: /yes, existing account/ })
-	);
+	// noul true → end → the done state with the export door (the SWITCH).
+	await user.click(screen.getByRole('switch'));
 	await user.click(screen.getByRole('button', { name: 'Continue' }));
 	await waitFor(() => expect(screen.getByText('All questions answered.')).toBeTruthy());
 	expect(screen.getByTestId('export')).toBeTruthy();
@@ -86,23 +77,17 @@ test('wizard_branch_follows_answer_not_free_text', async () => {
 	await waitFor(() => expect(screen.getByText('Choose a form')).toBeTruthy());
 	await user.click(screen.getByRole('button', { name: /support-ticket/ }));
 	await waitFor(() =>
-		expect(screen.getByText('Which class does this ticket belong to?')).toBeTruthy()
+		expect(screen.getByRole('heading', { name: 'Which class does this ticket belong to?' })).toBeTruthy()
 	);
 	// The TECHNICAL branch drives to a DIFFERENT next question than billing
 	// would: the ANSWER map steers the flow — the choice control cannot
 	// express anything but the three ratified labels, so no text can steer.
-	await user.selectOptions(
-		screen.getByRole('combobox'),
-		screen.getByRole('option', { name: /device, software, connectivity/ })
-	);
+	await user.click(screen.getByText('Technical'));
 	await user.click(screen.getByRole('button', { name: 'Continue' }));
 	// technical → q_priority (same target here), so take score 2 (high) →
 	// end per the next-map (0/1 would have gone to q_known).
-	await waitFor(() => expect(screen.getByText('How urgent is this ticket?')).toBeTruthy());
-	await user.selectOptions(
-		screen.getByRole('combobox'),
-		screen.getByRole('option', { name: /level 2: high/ })
-	);
+	await waitFor(() => expect(screen.getByRole('heading', { name: 'How urgent is this ticket?' })).toBeTruthy());
+	await user.click(screen.getByText('high'));
 	await user.click(screen.getByRole('button', { name: 'Continue' }));
 	await waitFor(() => expect(screen.getByText('All questions answered.')).toBeTruthy());
 });
@@ -136,7 +121,7 @@ test('branch_engine_refuses_unknown_answers_with_the_abstain_card', async () => 
 	await waitFor(() => expect(screen.getByText('Choose a form')).toBeTruthy());
 	await userEvent.click(screen.getByRole('button', { name: /support-ticket/ }));
 	await waitFor(() =>
-		expect(screen.getByText('Which class does this ticket belong to?')).toBeTruthy()
+		expect(screen.getByRole('heading', { name: 'Which class does this ticket belong to?' })).toBeTruthy()
 	);
 	// Force the refusal path through the page: no option can be invalid via
 	// the form, so drive the abstain by finishing with an empty walk —

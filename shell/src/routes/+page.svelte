@@ -160,8 +160,10 @@
 </script>
 
 <main>
-	<h1>{$_('app.title')}</h1>
-	<p>{$_('app.subtitle')}</p>
+	<!-- The header doubles as the window drag region under the macOS
+	     Overlay titlebar (inert outside Tauri). -->
+	<h1 data-tauri-drag-region>{$_('app.title')}</h1>
+	<p data-tauri-drag-region>{$_('app.subtitle')}</p>
 
 	{#if mode.kind === 'loading'}
 		<p aria-busy="true">…</p>

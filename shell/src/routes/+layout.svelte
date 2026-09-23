@@ -7,6 +7,15 @@
 	import es from '$lib/i18n/es.json';
 	import nl from '$lib/i18n/nl.json';
 	import { bootstrapToken } from '$lib/api/bootstrap';
+	import { applyPlatformAttr } from '$lib/platform';
+
+	// Native platform feel: <html data-platform> keys the design tokens, and
+	// form controls stay NATIVE (the OS webview draws its own popups/combos).
+	// data-tauri gates the Overlay-titlebar inset (traffic-light clearance).
+	applyPlatformAttr();
+	if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+		document.documentElement.dataset.tauri = 'true';
+	}
 
 	// The Dioxus parity locale set (D9). The catalogs' keys parity is a red
 	// test, not a hope.

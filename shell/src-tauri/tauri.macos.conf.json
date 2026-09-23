@@ -1,0 +1,19 @@
+{
+	"app": {
+		"windows": [
+			{
+				"title": "Brain Shell",
+				"label": "main",
+				"width": 1024,
+				"height": 768,
+				"resizable": true,
+				"titleBarStyle": "Overlay",
+				"transparent": true,
+				"windowEffects": {
+					"effects": ["sidebar"],
+					"state": "followsWindowActiveState"
+				}
+			}
+		]
+	}
+}

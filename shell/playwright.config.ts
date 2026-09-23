@@ -24,6 +24,10 @@ export default defineConfig({
 		port: 4173,
 		reuseExistingServer: false,
 		timeout: 120_000,
-		env: { VITE_BRAIN_API_BASE: 'http://127.0.0.1:8799' }
+		env: {
+			// Mirrors e2e/global-setup.ts's E2E_KERNEL_PORT so the page's baked
+			// API base always matches the kernel this run booted.
+			VITE_BRAIN_API_BASE: `http://127.0.0.1:${process.env.E2E_KERNEL_PORT ?? 8799}`
+		}
 	}
 });

@@ -28,18 +28,18 @@ test('shell_renders_support_ticket_over_the_live_kernel_wire', async ({ page }) 
 	await page.getByRole('button', { name: /support-ticket/ }).click();
 
 	// Q1: classification → billing.
-	await expect(page.getByText('Which class does this ticket belong to?')).toBeVisible();
-	await page.getByRole('combobox').selectOption({ label: 'payment, invoice, refund' });
+	await expect(page.getByRole('heading', { name: 'Which class does this ticket belong to?' })).toBeVisible();
+	await page.getByText('Billing', { exact: true }).click();
 	await page.getByRole('button', { name: 'Continue' }).click();
 
 	// Q2: urgency → low (branch 0) → the "already known" question.
-	await expect(page.getByText('How urgent is this ticket?')).toBeVisible();
-	await page.getByRole('combobox').selectOption({ label: 'level 0: low' });
+	await expect(page.getByRole('heading', { name: 'How urgent is this ticket?' })).toBeVisible();
+	await page.getByText('low', { exact: true }).click();
 	await page.getByRole('button', { name: 'Continue' }).click();
 
 	// Q3: known account → no → END.
-	await expect(page.getByText('The account is already known to support.')).toBeVisible();
-	await page.getByRole('combobox').selectOption({ label: 'no, new account' });
+	await expect(page.getByRole('heading', { name: 'The account is already known to support.' })).toBeVisible();
+	await page.getByText('no, new account', { exact: true }).click();
 	await page.getByRole('button', { name: 'Continue' }).click();
 
 	await expect(page.getByText('All questions answered.')).toBeVisible();

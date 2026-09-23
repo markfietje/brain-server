@@ -11,7 +11,7 @@
 	"packageManager": "pnpm@12.3.4",
 	"scripts": {
 		"dev": "vite dev",
-		"build": "vite build",
+		"build": "vite build && node scripts/inject-csp.mjs",
 		"preview": "vite preview",
 		"gen:api": "openapi-typescript ../openapi.yaml -o src/lib/api/schema.d.ts",
 		"pretest": "pnpm run gen:api",
@@ -30,10 +30,6 @@
 	"devDependencies": {
 		"@eslint/js": "^9.0.0",
 		"@playwright/test": "^1.63.0",
-		"@sjsf/ajv8-validator": "^3.8.2",
-		"@sjsf/basic-theme": "^3.8.2",
-		"@sjsf/form": "^3.8.2",
-		"@sjsf/sveltekit": "^3.8.2",
 		"@sveltejs/adapter-static": "^3.0.0",
 		"@sveltejs/kit": "^2.70.3",
 		"@sveltejs/vite-plugin-svelte": "^6.0.0",
