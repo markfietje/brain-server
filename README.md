@@ -188,9 +188,9 @@ flowchart TD
     FTS --> State
     Vec --> State
 
-    classDef plane fill:#1f6feb22,stroke:#1f6feb,color:#e6edf3
-    classDef store fill:#3fb95022,stroke:#3fb950,color:#e6edf3
-    classDef edge fill:#d2992222,stroke:#d29922,color:#e6edf3
+    classDef plane fill:#dbe9ff,stroke:#1f6feb,color:#1f2328
+    classDef store fill:#dafbe1,stroke:#3fb950,color:#1f2328
+    classDef edge fill:#fff8c5,stroke:#d29922,color:#1f2328
     class Client edge
     class Gov,Mem,Ret,Prov,Aud,Wf plane
     class SQLite,FTS,Vec,State store
@@ -203,8 +203,8 @@ flowchart TD
     GUI["Tauri + SvelteKit<br/>Human Control Plane"]
     GUI -->|"HTTP / WebSocket"| Server["brain-server<br/>single authority"]
 
-    classDef gui fill:#a371f722,stroke:#a371f7,color:#e6edf3
-    classDef srv fill:#1f6feb22,stroke:#1f6feb,color:#e6edf3
+    classDef gui fill:#efdbff,stroke:#a371f7,color:#1f2328
+    classDef srv fill:#dbe9ff,stroke:#1f6feb,color:#1f2328
     class GUI gui
     class Server srv
 ```
@@ -230,10 +230,10 @@ flowchart TD
     E --> F["durable state"]
     F --> G["audit + provenance"]
 
-    classDef input fill:#d2992222,stroke:#d29922,color:#e6edf3
-    classDef gate fill:#f8514922,stroke:#f85149,color:#e6edf3
-    classDef ok fill:#3fb95022,stroke:#3fb950,color:#e6edf3
-    classDef warn fill:#d2992222,stroke:#d29922,color:#e6edf3
+    classDef input fill:#fff8c5,stroke:#d29922,color:#1f2328
+    classDef gate fill:#ffebe9,stroke:#f85149,color:#1f2328
+    classDef ok fill:#dafbe1,stroke:#3fb950,color:#1f2328
+    classDef warn fill:#fff8c5,stroke:#d29922,color:#1f2328
     class A input
     class B,D,E gate
     class F,G ok
@@ -331,9 +331,9 @@ flowchart TD
     RR --> TH["Threshold / Escalation"]
     TH --> AC["Action or Human Approval"]
 
-    classDef stages fill:#1f6feb22,stroke:#1f6feb,color:#e6edf3
-    classDef decision fill:#a371f722,stroke:#a371f7,color:#e6edf3
-    classDef human fill:#3fb95022,stroke:#3fb950,color:#e6edf3
+    classDef stages fill:#dbe9ff,stroke:#1f6feb,color:#1f2328
+    classDef decision fill:#efdbff,stroke:#a371f7,color:#1f2328
+    classDef human fill:#dafbe1,stroke:#3fb950,color:#1f2328
     class I,NV,RC,CG,DP,RR stages
     class DM,TH decision
     class AC human
