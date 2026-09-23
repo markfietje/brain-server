@@ -94,6 +94,11 @@ export default async function () {
 			BIND_HOST: '127.0.0.1',
 			BIND_PORT: String(KERNEL_PORT),
 			BRAIN_DB_PATH: join(dataDir, 'brain.db'),
+			// The R25 trace replay e2e needs a RECORDABLE read event: the
+			// explicit env value forces read-event auditing ON for this
+			// BOOTED CHILD only (config.rs resolves the explicit value over
+			// the posture; the harness's own process env stays untouched).
+			BRAIN_AUDIT_READ_EVENTS: 'on',
 			// The page (preview origin, loopback) is a cross-origin caller:
 			// the kernel's CORS allowlist is explicit and loopback-guarded —
 			// the e2e declares exactly its own preview origin, nothing wider.
@@ -105,6 +110,34 @@ export default async function () {
 	kernel.stderr?.on('data', (d) => process.stderr.write(`[kernel!] ${d}`));
 	await waitForHealth(120_000);
 	console.log('[e2e] e2e kernel healthy');
+
+	// The R25 trace bootstrap (raw Node fetch — the typed client cannot
+	// request a trace: the openapi QueryDoc does not document `trace`,
+	// R24 FINDING 2, and the HARNESS, not the app, is the caller here):
+	// seed one document, recall it with trace:true, and expose the returned
+	// trace_id to the specs via the environment.
+	const seedText =
+		'StewardOS R25 e2e seed: the recall trace replay seed for the verbatim export gate.';
+	const addRes = await fetch(`${KERNEL_URL}/add`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ text: seedText, title: 'R25 e2e seed' })
+	});
+	if (!addRes.ok) throw new Error(`the e2e seed POST /add failed (${addRes.status})`);
+	const recallRes = await fetch(`${KERNEL_URL}/recall`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ v: 1, query: 'verbatim export gate', limit: 10, trace: true })
+	});
+	if (!recallRes.ok) throw new Error(`the traced recall POST /recall failed (${recallRes.status})`);
+	const recalled = (await recallRes.json()) as { trace_id?: number | null };
+	if (typeof recalled.trace_id !== 'number') {
+		throw new Error(
+			'the traced recall returned no trace_id — read-event auditing did not record the read'
+		);
+	}
+	process.env['E2E_TRACE_ID'] = String(recalled.trace_id);
+	console.log(`[e2e] traced recall recorded: trace_id ${recalled.trace_id}`);
 
 	// The page rebuild against this kernel origin happens in the playwright
 	// webServer command (build → preview as ONE step, so preview never

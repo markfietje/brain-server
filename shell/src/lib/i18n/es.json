@@ -65,5 +65,13 @@
 	"recall.trace.title": "Traza de recuperación",
 	"recall.trace.subtitle": "La ruta de decisión almacenada para la traza {id}. La consulta es un hash — nunca texto plano.",
 	"recall.trace.not_found": "No hay traza almacenada para este id.",
-	"recall.trace.error": "No se pudo leer la traza. ¿Está en ejecución el kernel?"
+	"recall.trace.error": "No se pudo leer la traza. ¿Está en ejecución el kernel?",
+	"recall.trace.fields.query_hash": "Hash de la consulta",
+	"recall.trace.fields.decision": "Decisión",
+	"recall.trace.fields.actor": "Actor",
+	"recall.trace.fields.scope": "Ámbito aplicado",
+	"recall.trace.fields.domains": "Dominios buscados",
+	"recall.trace.fields.hits": "Resultados",
+	"recall.trace.decayed_marker": "caducado",
+	"recall.trace.export": "Descargar la traza (JSON)"
 }

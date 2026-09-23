@@ -65,5 +65,13 @@
 	"recall.trace.title": "Abruf-Ablaufverfolgung",
 	"recall.trace.subtitle": "Der gespeicherte Entscheidungspfad für Ablaufverfolgung {id}. Die Abfrage ist ein Hash — nie Klartext.",
 	"recall.trace.not_found": "Für diese ID ist keine Ablaufverfolgung gespeichert.",
-	"recall.trace.error": "Die Ablaufverfolgung konnte nicht gelesen werden. Läuft der Kernel?"
+	"recall.trace.error": "Die Ablaufverfolgung konnte nicht gelesen werden. Läuft der Kernel?",
+	"recall.trace.fields.query_hash": "Abfrage-Hash",
+	"recall.trace.fields.decision": "Entscheidung",
+	"recall.trace.fields.actor": "Akteur",
+	"recall.trace.fields.scope": "Angewandter Zugriffsbereich",
+	"recall.trace.fields.domains": "Durchsuchte Domänen",
+	"recall.trace.fields.hits": "Treffer",
+	"recall.trace.decayed_marker": "verfallen",
+	"recall.trace.export": "Ablaufverfolgung herunterladen (JSON)"
 }

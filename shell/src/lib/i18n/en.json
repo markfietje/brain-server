@@ -65,5 +65,13 @@
 	"recall.trace.title": "Recall trace",
 	"recall.trace.subtitle": "The stored decision path for trace {id}. The query is a hash — never raw text.",
 	"recall.trace.not_found": "No trace is stored for this id.",
-	"recall.trace.error": "The trace could not be read. Is the kernel running?"
+	"recall.trace.error": "The trace could not be read. Is the kernel running?",
+	"recall.trace.fields.query_hash": "Query hash",
+	"recall.trace.fields.decision": "Decision",
+	"recall.trace.fields.actor": "Actor",
+	"recall.trace.fields.scope": "Applied scope",
+	"recall.trace.fields.domains": "Domains searched",
+	"recall.trace.fields.hits": "Hits",
+	"recall.trace.decayed_marker": "decayed",
+	"recall.trace.export": "Download trace (JSON)"
 }

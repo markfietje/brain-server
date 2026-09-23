@@ -62,16 +62,49 @@ const bearerMiddleware: Middleware = {
 	}
 };
 
+/**
+ * The R25 byte-parity capture (R25_PREREG §2): the trace export law binds
+ * the downloaded evidence to the EXACT `GET /recall/{trace_id}/trace`
+ * response bytes — not a re-serialization. The typed wire stays the ONLY
+ * wire (D5): this middleware rides it, cloning the undisturbed response
+ * to capture the raw text of the NEXT response only (opt-in per call
+ * site). Capture is best-effort: if it cannot run, the caller falls back
+ * to the typed parse's own stringify (disclosed) — never an error surface.
+ */
+let rawTextSink: ((text: string) => void) | null = null;
+
+/** Arms the raw-text capture for the next response on this client. */
+export function captureNextRawText(sink: (text: string) => void): void {
+	rawTextSink = sink;
+}
+
+const rawCaptureMiddleware: Middleware = {
+	async onResponse({ response }) {
+		const sink = rawTextSink;
+		rawTextSink = null;
+		if (sink) {
+			try {
+				sink(await response.clone().text());
+			} catch {
+				// capture unavailable → the caller's disclosed fallback stands
+			}
+		}
+		return response;
+	}
+};
+
 /** The live typed client. Rebuilt by setApiBase/resetApiBase — ESM live
  * bindings propagate the reassignment to every importer. */
 export let client = createClient<paths>({ baseUrl: activeBase });
 // Middleware registers imperatively in this openapi-fetch line (0.17).
 client.use(bearerMiddleware);
+client.use(rawCaptureMiddleware);
 
 function rebuildClient(base: string): void {
 	activeBase = base;
 	client = createClient<paths>({ baseUrl: base });
 	client.use(bearerMiddleware);
+	client.use(rawCaptureMiddleware);
 }
 
 /**

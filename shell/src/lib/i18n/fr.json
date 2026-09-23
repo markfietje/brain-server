@@ -65,5 +65,13 @@
 	"recall.trace.title": "Trace de rappel",
 	"recall.trace.subtitle": "Le chemin de décision stocké pour la trace {id}. La requête est un haché — jamais de texte brut.",
 	"recall.trace.not_found": "Aucune trace n'est stockée pour cet identifiant.",
-	"recall.trace.error": "La trace n'a pas pu être lue. Le noyau est-il en cours d'exécution ?"
+	"recall.trace.error": "La trace n'a pas pu être lue. Le noyau est-il en cours d'exécution ?",
+	"recall.trace.fields.query_hash": "Empreinte de la requête",
+	"recall.trace.fields.decision": "Décision",
+	"recall.trace.fields.actor": "Acteur",
+	"recall.trace.fields.scope": "Périmètre appliqué",
+	"recall.trace.fields.domains": "Domaines recherchés",
+	"recall.trace.fields.hits": "Résultats",
+	"recall.trace.decayed_marker": "périmé",
+	"recall.trace.export": "Télécharger la trace (JSON)"
 }

@@ -65,5 +65,13 @@
 	"recall.trace.title": "Terughaaltrace",
 	"recall.trace.subtitle": "Het opgeslagen beslispad voor trace {id}. De query is een hash — nooit platte tekst.",
 	"recall.trace.not_found": "Er is geen trace opgeslagen voor deze id.",
-	"recall.trace.error": "De trace kon niet worden gelezen. Draait de kernel?"
+	"recall.trace.error": "De trace kon niet worden gelezen. Draait de kernel?",
+	"recall.trace.fields.query_hash": "Query-hash",
+	"recall.trace.fields.decision": "Beslissing",
+	"recall.trace.fields.actor": "Actor",
+	"recall.trace.fields.scope": "Toegepast toegangsbereik",
+	"recall.trace.fields.domains": "Doorzochte domeinen",
+	"recall.trace.fields.hits": "Resultaten",
+	"recall.trace.decayed_marker": "vervallen",
+	"recall.trace.export": "Trace downloaden (JSON)"
 }
