@@ -534,7 +534,6 @@ See the full row-by-row control maps in [`COMPLIANCE.md`](COMPLIANCE.md) and the
 | Threat model | [`THREAT_MODEL.md`](THREAT_MODEL.md) |
 | Compliance | [`COMPLIANCE.md`](COMPLIANCE.md) |
 | Trust / proof map | [`docs/trust/proof-map.md`](docs/trust/proof-map.md) |
-| Roadmap | [`ROADMAP.md`](ROADMAP.md) |
 
 ---
 
