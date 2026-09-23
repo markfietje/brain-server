@@ -4,6 +4,25 @@ export default defineConfig({
 	testDir: 'e2e',
 	timeout: 120_000,
 	globalSetup: './e2e/global-setup.ts',
+	// TWO projects over the SAME built page + booted kernel:
+	//  - chromium: the full live-wire smoke (the documented harness
+	//    accommodation bypassCSP:true — the built page's strict CSP meta
+	//    is asserted by the specs themselves, not trusted).
+	//  - webkit: the NO-bypass leg (bypassCSP:false, never) — the R23
+	//    blank-page bug class (blocked inline bootstrap scripts → an empty
+	//    shell) fails here if the hashed-CSP injection ever regresses.
+	projects: [
+		{
+			name: 'chromium',
+			use: { browserName: 'chromium', bypassCSP: true },
+			testIgnore: /webkit\.spec\.ts/
+		},
+		{
+			name: 'webkit',
+			use: { browserName: 'webkit', bypassCSP: false },
+			testMatch: /webkit\.spec\.ts/
+		}
+	],
 	use: {
 		baseURL: 'http://127.0.0.1:4173',
 		headless: true,
@@ -12,7 +31,7 @@ export default defineConfig({
 		// 8765), while the built page's strict CSP meta pins the default
 		// origin only. The shipped artifact keeps the pin — the spec asserts
 		// it against build/index.html; the TEST context crosses its own
-		// origin.
+		// origin. (Per-project: chromium bypasses; the webkit leg does NOT.)
 		bypassCSP: true
 	},
 	webServer: {

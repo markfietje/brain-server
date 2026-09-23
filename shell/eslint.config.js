@@ -50,6 +50,15 @@ export default [
 				'no-console': 'off'
 			}
 		},
+		{
+			// The design-system components under components/ui are GENERATED
+			// (shadcn-svelte CLI, regenerable) — navigation lint posture is
+			// enforced on the app's own routes/components, not vendor code.
+			files: ['src/lib/components/ui/**'],
+			rules: {
+				'svelte/no-navigation-without-resolve': 'off'
+			}
+		},
 	{
 		ignores: ['build/', '.svelte-kit/', 'src-tauri/target/', 'playwright-report/', 'node_modules/']
 	}

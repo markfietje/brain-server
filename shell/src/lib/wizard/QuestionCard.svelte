@@ -11,6 +11,8 @@
 	import { sanitizeTemplateText } from '$lib/sanitize';
 	import { recordTouch } from '$lib/telemetry/buffer';
 	import { _ } from 'svelte-i18n';
+	import { Button } from '$lib/components/ui/button';
+	import { Card } from '$lib/components/ui/card';
 
 	interface Props {
 		question: WizardQuestion;
@@ -102,8 +104,8 @@
 	});
 </script>
 
-<section aria-labelledby="{formId}-heading">
-	<h2 id="{formId}-heading">{sanitizeTemplateText(question.instructions)}</h2>
+<Card class="p-5" aria-labelledby="{formId}-heading">
+	<h2 id="{formId}-heading" class="text-lg font-semibold tracking-tight">{sanitizeTemplateText(question.instructions)}</h2>
 
 	{#if useSwitch}
 		<div class="switchrow">
@@ -169,7 +171,7 @@
 		</select>
 	{/if}
 
-	<button type="button" class="continue" disabled={pending === null} onclick={commit}>
+	<Button class="mt-4 w-full" disabled={pending === null} onclick={commit}>
 		{$_('flow.continue')}
-	</button>
-</section>
+	</Button>
+</Card>

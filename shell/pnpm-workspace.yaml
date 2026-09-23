@@ -12,3 +12,6 @@ allowBuilds:
   # pulled in transitively via svelte-i18n's messageformat chain. Nothing
   # functional depends on it.
   es5-ext: false
+minimumReleaseAgeExclude:
+  - bits-ui@2.19.3
+  - cn@0.4.0

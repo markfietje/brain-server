@@ -1,3 +1,7 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+@import 'shadcn-svelte/tailwind.css';
+
 /* UX foundation — native-first platform policy:
    The shell runs in the OS's own webview (WKWebView / WebView2 /
    WebKitGTK), so FORM CONTROLS ARE LEFT NATIVE — the platform draws its
@@ -5,8 +9,56 @@
    only sets type (16px base — no zoom-on-focus, WCAG-comfortable),
    spacing, and per-platform TOKENS (<html data-platform>, set by
    src/lib/platform.ts): macOS / Windows / GNOME each get their type
-   family, radii and metrics. A Tailwind v4 @theme can absorb these tokens
-   one-to-one in the M2 design-system phase. */
+   family, radii and metrics. The M2 design system (Tailwind v4) rides
+   ON TOP of these tokens — the @theme inline mapping below turns each
+   one into a Tailwind utility namespace WITHOUT duplicating it, so the
+   platform/dark overrides keep propagating everywhere. The shadcn
+   semantic names (--background, --primary, …) are ALIASES onto these
+   same tokens; the OS type family stays the authority (the vega style's
+   webfont import is deliberately absent). */
+
+@theme inline {
+	/* shadcn semantic names → the app's platform-tracked tokens */
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-card: var(--card);
+	--color-card-foreground: var(--card-foreground);
+	--color-popover: var(--popover);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-primary: var(--primary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-secondary: var(--secondary);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-muted: var(--muted);
+	--color-muted-foreground: var(--muted-foreground);
+	/* shadcn's "accent" is the hover WASH, not the brand green — the app's
+	   raw --accent (green) stays untouched and ships as --color-brand. */
+	--color-accent: var(--surface-2);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-destructive: var(--destructive);
+	--color-border: var(--border);
+	--color-input: var(--input);
+	--color-ring: var(--ring);
+	/* the app's own token vocabulary, 1:1 */
+	--color-bg: var(--bg);
+	--color-surface: var(--surface);
+	--color-surface-2: var(--surface-2);
+	--color-text: var(--text);
+	--color-text-muted: var(--text-muted);
+	--color-brand: var(--accent);
+	--color-warn-bg: var(--warn-bg);
+	--color-warn-border: var(--warn-border);
+	--color-focus: var(--focus);
+	--color-input-border: var(--input-border);
+	--color-input-border-hover: var(--input-border-hover);
+	/* radii track the platform layer's single --radius */
+	--radius-sm: calc(var(--radius) - 4px);
+	--radius-md: calc(var(--radius) - 2px);
+	--radius-lg: var(--radius-lg);
+	--radius-xl: var(--radius-lg);
+	/* the base type stack; the platform layer overrides the family */
+	--font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
 
 :root {
 	--bg: #f7f8fa;
@@ -26,6 +78,7 @@
 	--radius: 8px;
 	--radius-lg: 12px;
 	--control-min-height: 36px;
+	--error: #b4232a;
 
 	color-scheme: light dark;
 	font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -34,6 +87,23 @@
 	-webkit-font-smoothing: antialiased;
 	color: var(--text);
 	background: var(--bg);
+	/* shadcn semantic aliases — each points at a platform token above, so
+	   the design system and the platform layer share ONE source of truth. */
+	--background: var(--bg);
+	--foreground: var(--text);
+	--card: var(--surface);
+	--card-foreground: var(--text);
+	--popover: var(--surface);
+	--popover-foreground: var(--text);
+	--primary: var(--accent);
+	--primary-foreground: #ffffff;
+	--secondary: var(--surface-2);
+	--secondary-foreground: var(--text);
+	--muted: var(--surface-2);
+	--muted-foreground: var(--text-muted);
+	--accent-foreground: var(--text);
+	--destructive: var(--error);
+	--input: var(--input-border);
 }
 
 /* ── platform tokens (macOS / Windows / GNOME) ──────────────────────── */
@@ -54,10 +124,10 @@
 	--glass-blur: blur(24px) saturate(1.4);
 }
 
-:root[data-platform='macos'][data-tauri='true'] main {
-	/* Overlay titlebar: keep content clear of the traffic lights and make
-	   the header the drag region. */
-	padding-top: 4.25rem;
+:root[data-platform='macos'][data-tauri='true'] [data-slot='app-shell'] {
+	/* Overlay titlebar: keep the header (the drag region) clear of the
+	   traffic lights. */
+	padding-top: 3rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -113,6 +183,9 @@
 		--warn-bg: #2b230c;
 		--warn-border: #d9a514;
 		--focus: #5cab74;
+		/* the shadcn aliases need NO dark overrides — each points at a
+		   token above, so they flip with the platform blocks here. */
+		--error: #ff8f93;
 	}
 
 	:root[data-platform='windows'] {
@@ -125,22 +198,11 @@ body {
 	margin: 0;
 }
 
-main {
-	max-width: 44rem;
-	margin: 0 auto;
-	padding: 2rem 1.25rem 4rem;
-}
-
 h1 {
 	font-size: 1.375rem;
 	font-weight: 700;
 	letter-spacing: -0.01em;
 	margin: 0 0 0.25rem;
-}
-
-main > p {
-	margin: 0 0 1.5rem;
-	color: var(--text-muted);
 }
 
 h2 {
@@ -153,171 +215,18 @@ h2 {
    Custom-rendered (modern, identical across platforms) with the platform
    layer still speaking through type family + radii + metrics. The OPEN
    dropdown list stays the platform's native popup — familiar, accessible,
-   and correctly keyboard/screen-reader behaved. */
+   and correctly keyboard/screen-reader behaved. Buttons are the shadcn
+   Button component (no element-level styling anymore); the wizard's
+   custom switch/segment controls carry their full class specs below. */
 
 button,
 select,
-input,
-.sjsf-select,
-.sjsf-text {
+input {
 	font: inherit;
 	font-size: 1rem;
 }
 
-button {
-	min-height: var(--control-min-height);
-	padding: 0.5rem 1.1rem;
-	border-radius: var(--radius);
-	border: 1px solid var(--input-border);
-	background: var(--surface);
-	color: var(--text);
-	font-weight: 500;
-	box-shadow: var(--shadow-xs);
-	cursor: pointer;
-	transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
-}
-
-button:hover:not(:disabled) {
-	background: var(--surface-2);
-	border-color: var(--input-border-hover);
-}
-
-button:disabled {
-	opacity: 0.55;
-	cursor: not-allowed;
-}
-
-button:focus-visible,
-select:focus-visible,
-.sjsf-select:focus-visible,
-input:focus-visible,
-.sjsf-text:focus-visible {
-	outline: none;
-	border-color: var(--focus);
-	box-shadow: 0 0 0 3px var(--ring);
-}
-
-select,
-.sjsf-select {
-	appearance: none;
-	-webkit-appearance: none;
-	min-height: 2.75rem;
-	width: 100%;
-	box-sizing: border-box;
-	padding: 0 2.75rem 0 0.875rem;
-	border-radius: var(--radius);
-	border: 1px solid var(--input-border);
-	background:
-		url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")
-		no-repeat right 0.875rem center / 1rem,
-		var(--surface);
-	color: var(--text);
-	box-shadow: var(--shadow-xs);
-	cursor: pointer;
-	transition: border-color 120ms ease, box-shadow 120ms ease;
-}
-
-select:hover:not(:focus-visible),
-.sjsf-select:hover:not(:focus-visible) {
-	border-color: var(--input-border-hover);
-}
-
-.sjsf-text,
-input[type='text'],
-input[type='number'] {
-	min-height: 2.75rem;
-	padding: 0 0.875rem;
-	border-radius: var(--radius);
-	border: 1px solid var(--input-border);
-	background: var(--surface);
-	color: var(--text);
-	box-shadow: var(--shadow-xs);
-}
-
-.sjsf-form {
-	margin: 0;
-}
-
-.sjsf-submit-button {
-	display: none; /* the Continue button outside the form is the single path */
-}
-
 /* ── layout pieces ──────────────────────────────────────────────────── */
-
-.error {
-	color: #b4232a;
-	font-weight: 500;
-}
-
-@media (prefers-color-scheme: dark) {
-	.error {
-		color: #ff8f93;
-	}
-}
-
-.abstain {
-	border: 1px solid var(--warn-border);
-	border-left-width: 4px;
-	background: var(--warn-bg);
-	padding: 1rem 1.25rem;
-	border-radius: var(--radius-lg);
-	margin: 1rem 0;
-}
-
-.abstain strong {
-	font-size: 1.05rem;
-}
-
-.abstain code {
-	display: inline-block;
-	margin-top: 0.25rem;
-	padding: 0.1rem 0.45rem;
-	border-radius: calc(var(--radius) - 2px);
-	background: var(--surface-2);
-	font-size: 0.9rem;
-}
-
-.progressbar {
-	height: 0.5rem;
-	background: var(--surface-2);
-	border-radius: 999px;
-	overflow: hidden;
-	margin: 0.75rem 0 1.5rem;
-}
-
-.progressbar > div {
-	height: 100%;
-	background: var(--accent);
-	transition: width 200ms ease;
-}
-
-ul {
-	list-style: none;
-	padding: 0;
-	margin: 0;
-	display: grid;
-	gap: 0.6rem;
-}
-
-ul button {
-	width: 100%;
-	display: flex;
-	justify-content: space-between;
-	align-items: center;
-	text-align: left;
-}
-
-section {
-	background: var(--surface);
-	border: 1px solid var(--border);
-	border-radius: var(--radius-lg);
-	padding: 1.25rem;
-	margin-top: 0.5rem;
-}
-
-section[aria-labelledby$='-heading'] > button {
-	margin-top: 0.9rem;
-}
 
 @media (prefers-reduced-motion: reduce) {
 	* {
@@ -325,9 +234,10 @@ section[aria-labelledby$='-heading'] > button {
 	}
 }
 
-/* macOS glass sections: translucent + backdrop blur (no-ops gracefully
-   where unsupported or where the user reduces transparency). */
-:root[data-platform='macos'] section {
+/* macOS glass surfaces: translucent + backdrop blur on the design
+   system's cards (no-ops gracefully where unsupported or where the user
+   reduces transparency). */
+:root[data-platform='macos'] [data-slot='card'] {
 	backdrop-filter: var(--glass-blur);
 	-webkit-backdrop-filter: var(--glass-blur);
 }
@@ -348,6 +258,7 @@ section[aria-labelledby$='-heading'] > button {
 	box-shadow: none;
 	min-height: 2.25rem;
 	padding: 0.25rem 0.5rem;
+	border-radius: var(--radius);
 	color: var(--text-muted);
 	font-weight: 500;
 }
@@ -355,6 +266,11 @@ section[aria-labelledby$='-heading'] > button {
 .sidelabel.chosen {
 	color: var(--text);
 	font-weight: 650;
+}
+
+.sidelabel:focus-visible {
+	outline: none;
+	box-shadow: 0 0 0 3px var(--ring);
 }
 
 .switch {
@@ -369,6 +285,12 @@ section[aria-labelledby$='-heading'] > button {
 	box-shadow: inset 0 0 0 1px var(--border);
 	transition: background 160ms ease;
 	flex: none;
+}
+
+.switch:focus-visible {
+	outline: none;
+	border-radius: 999px;
+	box-shadow: 0 0 0 3px var(--ring);
 }
 
 .switch .thumb {
@@ -478,20 +400,6 @@ section[aria-labelledby$='-heading'] > button {
 	border: 0;
 }
 
-.continue {
-	width: 100%;
-	margin-top: 0.9rem;
-	background: var(--accent);
-	color: #ffffff;
-	border-color: var(--accent);
-	font-weight: 600;
-}
-
-.continue:hover:not(:disabled) {
-	background: var(--accent);
-	filter: brightness(1.08);
-}
-
 @media (prefers-color-scheme: dark) {
 	.segment.checked {
 		color: #0d1117;
@@ -499,5 +407,17 @@ section[aria-labelledby$='-heading'] > button {
 
 	.segment.checked .segment-desc {
 		color: rgba(13, 17, 23, 0.8);
+	}
+}
+
+@layer base {
+	* {
+		@apply border-border outline-ring/50;
+	}
+	body {
+		@apply bg-background text-foreground;
+	}
+	html {
+		@apply font-sans;
 	}
 }

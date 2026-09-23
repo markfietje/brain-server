@@ -16,6 +16,10 @@
 	import { beginFlow, recordAnswer, recordError, recordAbandon } from '$lib/telemetry/buffer';
 	import QuestionCard from '$lib/wizard/QuestionCard.svelte';
 	import AbstainCard from '$lib/wizard/AbstainCard.svelte';
+	import { Button } from '$lib/components/ui/button';
+	import { Alert } from '$lib/components/ui/alert';
+	import { Progress } from '$lib/components/ui/progress';
+	import { Card } from '$lib/components/ui/card';
 
 	interface CatalogEntry {
 		id: string;
@@ -159,39 +163,44 @@
 	});
 </script>
 
-<main>
+<div class="grid gap-4">
 	<!-- The header doubles as the window drag region under the macOS
 	     Overlay titlebar (inert outside Tauri). -->
-	<h1 data-tauri-drag-region>{$_('app.title')}</h1>
-	<p data-tauri-drag-region>{$_('app.subtitle')}</p>
+	<div data-tauri-drag-region>
+		<h1 data-tauri-drag-region>{$_('app.title')}</h1>
+		<p class="text-muted-foreground" data-tauri-drag-region>{$_('app.subtitle')}</p>
+	</div>
 
 	{#if mode.kind === 'loading'}
 		<p aria-busy="true">…</p>
 	{:else if mode.kind === 'wire-error'}
-		<p class="error" role="alert">{$_('wire.error')}</p>
+		<Alert variant="destructive">{$_('wire.error')}</Alert>
 	{:else if mode.kind === 'picking'}
-		<section aria-labelledby="pick-heading">
-			<h2 id="pick-heading">{$_('pick.heading')}</h2>
-			<ul>
+		<Card class="p-5" aria-labelledby="pick-heading">
+			<h2 id="pick-heading" class="text-lg font-semibold tracking-tight">{$_('pick.heading')}</h2>
+			<div class="mt-3 grid gap-2.5">
 				{#each mode.packs as pack (pack.id)}
-					<li>
-						<button type="button" onclick={() => openPack(pack.id)} data-pack={pack.id}>
-							{pack.id} — {$_('pack.count', { values: { count: pack.question_count } })}
-						</button>
-					</li>
+					<Button
+						variant="secondary"
+						class="w-full justify-between text-left"
+						onclick={() => openPack(pack.id)}
+						data-pack={pack.id}
+					>
+						{pack.id} — {$_('pack.count', { values: { count: pack.question_count } })}
+					</Button>
 				{/each}
-			</ul>
-		</section>
+			</div>
+		</Card>
 	{:else if mode.kind === 'flow'}
-		<div
-			class="progressbar"
-			role="progressbar"
-			aria-valuemin="0"
-			aria-valuemax="100"
-			aria-valuenow={progressPct}
-			aria-label={$_('flow.progress')}
-		>
-			<div style="width: {progressPct}%"></div>
+		<div class="my-3">
+			<Progress
+				value={progressPct}
+				max={100}
+				aria-label={$_('flow.progress')}
+				aria-valuemin={0}
+				aria-valuemax={100}
+				aria-valuenow={progressPct}
+			/>
 		</div>
 		{#key mode.currentId}
 			{@const q = mode.pack.byId.get(mode.currentId)}
@@ -201,10 +210,12 @@
 		{/key}
 	{:else if mode.kind === 'abstain'}
 		<AbstainCard questionId={mode.questionId} />
-		<button type="button" onclick={restart}>{$_('flow.restart')}</button>
+		<Button variant="outline" class="mt-2 w-full" onclick={restart}>{$_('flow.restart')}</Button>
 	{:else if mode.kind === 'done'}
 		<p role="status">{$_('flow.done')}</p>
-		<button type="button" onclick={exportAnswers} data-testid="export">{$_('flow.export')}</button>
-		<button type="button" onclick={restart}>{$_('flow.restart')}</button>
+		<div class="mt-3 grid gap-2.5">
+			<Button onclick={exportAnswers} data-testid="export">{$_('flow.export')}</Button>
+			<Button variant="outline" onclick={restart}>{$_('flow.restart')}</Button>
+		</div>
 	{/if}
-</main>
+</div>

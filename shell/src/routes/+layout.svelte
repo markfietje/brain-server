@@ -8,6 +8,7 @@
 	import nl from '$lib/i18n/nl.json';
 	import { bootstrapToken } from '$lib/api/bootstrap';
 	import { applyPlatformAttr } from '$lib/platform';
+	import AppShell from '$lib/components/AppShell.svelte';
 
 	// Native platform feel: <html data-platform> keys the design tokens, and
 	// form controls stay NATIVE (the OS webview draws its own popups/combos).
@@ -32,4 +33,6 @@
 	let { children } = $props();
 </script>
 
-{@render children()}
+<AppShell>
+	{@render children()}
+</AppShell>
