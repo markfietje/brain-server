@@ -475,19 +475,50 @@ See the API contract and UMP documentation for the exact implemented surface.
 
 Brain Server is designed for environments where organizations need stronger controls around persistent agent state.
 
-The repository documents mappings and evidence for frameworks including:
+The repository documents mappings and evidence for the frameworks buyers actually ask about:
 
-| Framework | Status |
+### Management systems & assurance
+
+| Framework | Where mapped |
 |---|---|
-| ISO/IEC 42001 | Mapped |
-| NIST AI RMF | Mapped |
-| SOC 2 | Mapped |
-| GDPR | Mapped |
+| ISO/IEC 42001 (AI management systems) | [`COMPLIANCE.md`](COMPLIANCE.md) §6.1 |
+| NIST AI RMF | [`COMPLIANCE.md`](COMPLIANCE.md) §6.1 |
+| SOC 2 | [`COMPLIANCE.md`](COMPLIANCE.md) §6.1 + evidence kit |
+| Intent-Based Auditing (4/4 pillars) | [`COMPLIANCE.md`](COMPLIANCE.md) §6.2 |
+
+### Privacy & data protection
+
+| Framework | Where mapped |
+|---|---|
+| GDPR (Regulation (EU) 2016/679) | [`COMPLIANCE.md`](COMPLIANCE.md) §4, §6.3 — DSAR Art 15/17/19, Art 22 trace, Art 30 RoPA |
+| UK GDPR + ICO IDTA / Addendum | Cross-border transfer register ([`docs/README.md`](docs/README.md)) |
+| CCPA / CPRA + California ADMT | [`COMPLIANCE.md`](COMPLIANCE.md) §6.3 |
+| PH Data Privacy Act (RA 10173) + NPC | [`COMPLIANCE_PH.md`](COMPLIANCE_PH.md) |
+| EU SCCs 2021, EU-U.S. DPF, CBPR, adequacy | Validated transfer register ([`COMPLIANCE.md`](COMPLIANCE.md) §6.3) |
+
+### AI-specific regulation
+
+| Framework | Where mapped |
+|---|---|
+| EU AI Act (Regulation (EU) 2024/1689) | [`COMPLIANCE.md`](COMPLIANCE.md) §3, §6.4, §6.6, §7 — Art 4 literacy, Art 12/26(6) logging, Art 50 `/.well-known/ai-notice` |
+| EU Cyber Resilience Act (CRA) | SBOM + Art 14 reporting runbook ([`docs/cra.md`](docs/cra.md)) |
+| OWASP Agentic ASI06 (memory poisoning) | [`COMPLIANCE.md`](COMPLIANCE.md) §6.5 |
+| EU CoE CETS 225 (AI Framework Convention) | [`docs/compliance.md`](docs/compliance.md) |
+
+### Sector & regulated buyers
+
+| Framework | Where mapped |
+|---|---|
+| **HIPAA** (45 CFR Part 164 — Security Rule + §164.502(g)) | [`COMPLIANCE.md`](COMPLIANCE.md) §10.1 — access, audit, integrity, minimum-necessary, PHI tokenization, legal hold, retention report |
+| SOX (17 CFR §229 / PCAOB AS 2201) | [`COMPLIANCE.md`](COMPLIANCE.md) §10.2 |
+| FedRAMP / FISMA (NIST 800-53 posture) | [`COMPLIANCE.md`](COMPLIANCE.md) §10.3 |
+| US 50-state AI statutes (TX TRAIGA, CA/CO ADMT, NYC LL144, …) | [`COMPLIANCE.md`](COMPLIANCE.md) §11 + [`docs/US_STATE_MAP.md`](docs/US_STATE_MAP.md) |
+| COPC R8.0 / ISO 18295-1 / ISO 10002–10003 (contact centre) | [`COMPLIANCE.md`](COMPLIANCE.md) §6.7 |
 
 > [!WARNING]
-> These mappings describe how the implementation addresses relevant controls; they are **not** a claim of third-party certification.
+> These mappings describe how the implementation addresses relevant controls; they are **not** a claim of third-party certification. ISO/IEC 42001 and SOC 2 attestation are organization-level audits outside this repository. PCI DSS is an **explicit non-scope** (payment-card data is never ingested — see [`THREAT_MODEL.md`](THREAT_MODEL.md) §6).
 
-See [`COMPLIANCE.md`](COMPLIANCE.md).
+See the full row-by-row control maps in [`COMPLIANCE.md`](COMPLIANCE.md) and the trust/proof map in [`docs/trust/proof-map.md`](docs/trust/proof-map.md).
 
 ---
 
