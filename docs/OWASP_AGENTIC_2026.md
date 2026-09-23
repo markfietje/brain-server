@@ -72,6 +72,22 @@ GitHub MCP exploit (supply chain), AutoGPT RCE (code exec), Gemini memory attack
 | **ASI09 Human-Agent Trust Exploitation** | Review panel surfaces **exact content + `source_prompt`** (never a summary); approval TTL; **digest-bound approval** — the approve call carries the SHA-256 of the read-canonical form and is rejected on any drift (v1.27.12), so a rubber-stamped decision can never bless modified content; optional second-approver quorum (v1.28.80); audit trail of every gate decision | **Shipped v1.20.1 / v1.27.12** |
 | **ASI10 Rogue Agents** | A compromised agent can only write via screened + gated paths; revocation; read-event audit; DSAR purge = eject-and-forget | **Shipped + v1.20.1** |
 
+### Dated addendum — 2026-09-23 (the DecisionModel seam, v1.32.10)
+
+The decision-harness seam landed as types + tests only (the `DecisionModel`
+trait in the always-on SDK `decision` module; the kernel's
+`workflow::harness` consumes it with a deterministic reference model and
+the decide adapter). No routes, no state change, no learned models — the
+v1.32.8 gate is untouched. The type-level controls:
+
+| Control | The type-level law |
+|---|---|
+| **ASI03 Identity & Privilege Abuse** | A model evaluates inside the caller's already-authorized context: `DecisionContext` reaches the model by shared reference only, so a model cannot widen its own role scope or escalate — pinned by a type-level test |
+| **ASI04 Agentic Supply Chain / LLM04** | Model identity is id + version + kind, and a LEARNED model cannot be constructed without its weights digest (`ModelKind::Learned` carries the digest structurally — un-digestable learned models are unrepresentable); deterministic models carry none |
+| **ASI05 Unexpected Code Execution** | The seam is pure evaluation: no I/O, no process spawn, no dynamic loading, no clock; `unsafe_code = "forbid"` crate-wide in the SDK, and evaluation returns results or honest refusals — never panics |
+| **ASI10 Rogue Agents / LLM06 Excessive Agency** | The monotonic-narrow authority law — **a DecisionModel proposes; only the gate disposes** — pinned at the type level: `&self` receivers and plain-data seam types (`Send + Sync + 'static`, no durable-state handles), so a model's output alone cannot mutate durable state |
+| **ASI01/ASI06 (pre-wiring)** | Evidence enters the seam as PROVENANCE REFS only (ids + closed trust tiers); raw text is unrepresentable, and a ref without provenance (an empty id) qualifies as nothing |
+
 ## Part 3 — AIUC-1 crosswalk (procurement bridge)
 
 A crosswalk maps ASI01–ASI10 to the AI-Under-Contract (AIUC-1) requirements so

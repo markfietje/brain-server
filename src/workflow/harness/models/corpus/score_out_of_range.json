@@ -1,0 +1,7 @@
+{
+  "model_id": "rules-badrange",
+  "model_version": "1.0.0",
+  "rules": [
+    { "question_id": "q1", "min_evidence": 1, "min_tier": "vetted", "output": { "Score": { "range": [0, 10], "value": 11 } } }
+  ]
+}

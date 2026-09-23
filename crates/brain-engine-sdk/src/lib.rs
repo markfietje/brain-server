@@ -39,6 +39,7 @@ pub fn requires_host(min: &str) -> bool {
     true
 }
 
+pub mod decision;
 pub mod host;
 pub mod policy;
 pub mod pure;

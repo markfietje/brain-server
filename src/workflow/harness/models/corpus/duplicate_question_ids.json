@@ -1,0 +1,8 @@
+{
+  "model_id": "rules-dup",
+  "model_version": "1.0.0",
+  "rules": [
+    { "question_id": "q1", "min_evidence": 1, "min_tier": "governed", "output": { "Noul": { "value": true } } },
+    { "question_id": "q1", "min_evidence": 1, "min_tier": "governed", "output": { "Noul": { "value": false } } }
+  ]
+}
