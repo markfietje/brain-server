@@ -40,7 +40,7 @@
 		"@tauri-apps/cli": "^2.11.5",
 		"@testing-library/svelte": "^5.2.0",
 		"@testing-library/user-event": "^14.6.0",
-		"@types/node": "^24.0.0",
+		"@types/node": "^26.6.2",
 		"@typescript-eslint/parser": "^8.0.0",
 		"axe-core": "^4.10.0",
 		"cn": "^0.4.0",
