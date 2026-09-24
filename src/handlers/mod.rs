@@ -952,6 +952,23 @@ fn is_valid_rel_type(s: &str) -> bool {
         .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
+/// Test-only: the ONE process-env lock for every test that mutates
+/// `BRAIN_LEGAL_DB_PATH`. The env is process-global, so tests in DIFFERENT
+/// modules that set/remove it must share ONE mutex — two module-local
+/// locks exclude nothing across modules (the cross-module race the
+/// sanitized gates caught). The guard is taken by the sync test fn before
+/// its runtime starts, never held across an await point.
+#[cfg(test)]
+pub(crate) mod legal_env_test_support {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Hold this for the whole test body. Poisoning is recovered (a
+    /// panicking test must not wedge every later env test).
+    pub(crate) fn lock() -> std::sync::MutexGuard<'static, ()> {
+        LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

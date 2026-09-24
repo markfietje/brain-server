@@ -80,11 +80,13 @@ mod tests {
     use axum::extract::State;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    static LEGAL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static TMP_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
     fn legal_env_lock() -> std::sync::MutexGuard<'static, ()> {
-        LEGAL_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+        // The SHARED lock (crate::handlers::legal_env_test_support): this
+        // module's tests and the workflow report test mutate the SAME
+        // process env, so their exclusion must be ONE mutex, not two.
+        crate::handlers::legal_env_test_support::lock()
     }
 
     /// Set + restore one env var (SAFETY: single-threaded under the lock).

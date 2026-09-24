@@ -2219,8 +2219,10 @@ mod tests {
     /// across an await point.
     #[test]
     fn old_report_reproducible_at_pinned_version() {
-        static LEGAL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _lock = LEGAL_ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // The SHARED lock (crate::handlers::legal_env_test_support): this
+        // test and the legal-route tests mutate the SAME process env, so
+        // their exclusion must be ONE mutex, not two.
+        let _lock = crate::handlers::legal_env_test_support::lock();
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
