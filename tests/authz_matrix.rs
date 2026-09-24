@@ -258,7 +258,8 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
             .replace("{offer_id}", "1")
             .replace("{delegation_id}", "1")
             .replace("{invite_id}", "1")
-            .replace("{run_id}", "1");
+            .replace("{run_id}", "1")
+            .replace("{model_ref}", "rules-reference@1.0.0");
         // /search's `q` is a required query param (the Query extractor 400s
         // before the handler body otherwise) — carry a benign query.
         let concrete = match *template {
@@ -379,6 +380,7 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
                 "POST",
                 r#"{"config":{},"rules_config":{},"mode":"deterministic","request_id":"m","question_ids":["m"],"query":"m"}"#,
             ),
+            "/workflow/model-registry/register" => ("POST", r#"{"kind":"deterministic-rules"}"#),
             "/workflow/runs/{id}/back-referral/return" => (
                 "POST",
                 r#"{"contract_key":"m","report":{},"decision_ref":"m"}"#,

@@ -3565,6 +3565,8 @@ Final paragraph after the rule.";
             // run-trace table (digests and refs; the recall_traces
             // precedent). Referenced by name from the trace writer.
             "decision_run_traces",
+            // model identity and lifecycle table.
+            "decision_model_registry",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -3813,7 +3815,7 @@ Final paragraph after the rule.";
         // gate's mode law).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_12),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_13),
             "schema_version must be recorded as the current release after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×
@@ -7017,6 +7019,10 @@ Final paragraph after the rule.";
                             "decision_runs" => include_str!(concat!(
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/decision_runs.rs"
+                            )),
+                            "model_registry" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/model_registry.rs"
                             )),
                             "wizard" => include_str!(concat!(
                                 env!("CARGO_MANIFEST_DIR"),

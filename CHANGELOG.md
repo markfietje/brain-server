@@ -17,7 +17,7 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
-## [Unreleased] — the decision-run surfaces (schema 1.32.12 "DecisionSurface")
+## [Unreleased] — the model registry (schema 1.32.13 "ModelRegistry")
 
 **Release notes**
 
@@ -43,25 +43,49 @@ been run, it is marked **pending** rather than asserted.
   propose, never promote; the human path for exploratory output is
   re-running the pipeline deterministically. Deterministic and ordinary
   (NULL-ref) proposals approve unchanged.
+- **The model registry is now a governed identity surface.** Three
+  workflow routes register, inspect, and list digest-pinned model
+  identities. Deterministic rules derive identity and canonical digest
+  from the in-body document; learned/reranker registrations require
+  explicit artifact references. Promotion and retirement are human-gated
+  `registry_lifecycle` proposals with exact-row digest binding. The
+  deterministic harness refuses unregistered, candidate-only, and retired
+  bindings with named 400s; exploratory runs accept candidates but never
+  unregistered or retired identities. Stored traces cite the resolved
+  registry id/version without storing model bytes.
 
 ### Security fixes
-- None (the routes add the authz posture above; no vulnerability closed).
+- **Model supply-chain and lifecycle controls.** Registration is Admin-only
+  and audited; the listing is Admin + DPO dual-gated and bounded; the
+  single-row read is Read + audited. Learned registration requires a
+  lowercase SHA-256 artifact digest, and no route directly changes a
+  lifecycle status. The registry stores identity, vocabulary, and digest
+  references only — not weights or evaluation contents.
 
 ### Engineering record
-- Schema: additive nullable `proposals.decision_run_ref` (the
-  pragma-guarded ALTER precedent; legacy rows NULL) → schema stamp
-  1.32.12. The trace persistence (decision_run_traces) shipped earlier
-  on the same line and is unchanged.
+- Schema: additive `decision_model_registry` table + status index and the
+  schema stamp `1.32.13`; the prior nullable `proposals.decision_run_ref`
+  surface remains intact. `PIPELINE_VERSION` is unchanged because this round
+  changes no pipeline semantics.
+- The registry domain core owns validation, identity/digest-only storage,
+  bounded reads, execution resolution, and lifecycle CAS/audit work; the
+  three HTTP adapters carry no SQL. The existing R28 decision-run fixtures
+  now register a promoted deterministic model before execution, and the
+  lifecycle path is disposed only through the existing human approval gate.
+- No new dependencies; root and crates lockfiles remain byte-identical.
+  `src/workflow/decide/`, the account pipeline, `src/search/`, and the
+  Dioxus client remain untouched. No version bump is made by this
+  unreleased entry.
 - The production context retriever is a NEW caller of the shipped hybrid
   search internals (the search module itself is byte-untouched; the
   recall hot path unchanged). Retrieved evidence maps to reference-only
   hits: content digests, per-leg provenance, flag/untrusted taint, and
   the least-trusting tier — the engine's policy stage escalates honestly
   on all-untrusted evidence rather than trusting a guess.
-- No version stamp in this file's heading (the release ceremony is the
-  operator's); no new dependencies; no behavior change on any existing
-  route except the new named approval refusal for exploratory-mode
-  proposals.
+- The unreleased entry does not bump the package release; the release
+  ceremony remains operator-controlled. No behavior change is claimed on
+  any existing route beyond the named registry enforcement and citation
+  additions described above.
 
 ## [1.28.92] — 2026-09-22 — "Ledger": the loop closes diagnostically, and the record layers land
 

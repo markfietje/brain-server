@@ -2243,6 +2243,7 @@ pub fn run_migration_with_store_dim(
     )?;
 
     // Bumped once per release that changes this function.
+    // v1.32.13 "ModelRegistry": decision_model_registry table → 1.32.13.
     // v1.32.12 "DecisionSurface": proposals.decision_run_ref (additive, nullable) → 1.32.12.
     // v1.32.11 "DecisionTrace": decision_run_traces table → 1.32.11.
     // v1.32.0 "LoopCore": agent_session_events table (the agent-loop
@@ -2354,9 +2355,35 @@ pub fn run_migration_with_store_dim(
         db.execute_batch("ALTER TABLE proposals ADD COLUMN decision_run_ref TEXT;")?;
     }
 
+    // ── the model identity registry ──────────────────────────────────────
+    // One row per declared model identity. Artifact/config digests and the
+    // lifecycle are the durable control-plane record; model bytes never live
+    // in this table.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS decision_model_registry(
+            id                TEXT NOT NULL,
+            version           TEXT NOT NULL,
+            kind              TEXT NOT NULL,
+            name              TEXT NOT NULL,
+            output_vocabulary TEXT NOT NULL,
+            artifact_digest   TEXT,
+            config_digest     TEXT,
+            calibration_ref   TEXT,
+            status            TEXT NOT NULL CHECK (status IN ('candidate','evaluated','promoted','retired')),
+            evaluation_refs   TEXT NOT NULL DEFAULT '[]',
+            proposed_by       TEXT NOT NULL,
+            approved_by       TEXT,
+            created_at        INTEGER NOT NULL,
+            updated_at        INTEGER NOT NULL,
+            PRIMARY KEY (id, version)
+        );
+        CREATE INDEX IF NOT EXISTS idx_registry_status
+            ON decision_model_registry(status);",
+    )?;
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.12')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.12';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.13')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.13';",
         [],
     )?;
 

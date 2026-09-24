@@ -399,6 +399,21 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             "/workflow/decision-runs",
             get(handlers::decision_runs::get_decision_runs),
         )
+        // The model registry: registration is the only write surface; the
+        // listing is registered last so the stricter DPO-gated handler owns
+        // the shared path in the authz source scan.
+        .route(
+            "/workflow/model-registry/register",
+            post(handlers::model_registry::post_register_model),
+        )
+        .route(
+            "/workflow/model-registry/{model_ref}",
+            get(handlers::model_registry::get_model),
+        )
+        .route(
+            "/workflow/model-registry",
+            get(handlers::model_registry::get_model_registry),
+        )
         .route(
             "/workflow/calibration/sign",
             post(handlers::workflow::post_calibration_sign),

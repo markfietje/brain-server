@@ -7629,6 +7629,158 @@ paths:
         "403": { description: Not authorized (Write on the run's domain + the workflow role) }
         "404": { description: Decision run trace or run not found (probe-blind) }
         "409": { description: config_hash_mismatch }
+  /workflow/model-registry:
+    get:
+      summary: List registered model identities (Admin plus DPO role; audited)
+      description: >
+        Newest-first bounded listing of model identities and lifecycle state.
+        The artifact digest is represented only by a presence boolean; its value
+        is available on the single-row read. The listing is an audited global
+        DPO/admin dual-gated surface.
+      operationId: listModelRegistry
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+        - name: status
+          in: query
+          required: false
+          schema: { type: string, enum: [candidate, evaluated, promoted, retired] }
+        - name: kind
+          in: query
+          required: false
+          schema: { type: string, enum: [deterministic-rules, learned, reranker] }
+      responses:
+        "200":
+          description: The bounded registry listing
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows, count]
+                properties:
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, version, kind, name, output_vocabulary, artifact_digest_present, config_digest, status, proposed_by, created_at, updated_at]
+                      properties:
+                        id: { type: string }
+                        version: { type: string }
+                        kind: { type: string }
+                        name: { type: string }
+                        output_vocabulary:
+                          type: array
+                          items: { type: string, enum: [choice, score, noul] }
+                        artifact_digest_present: { type: boolean }
+                        config_digest: { type: string, nullable: true }
+                        status: { type: string, enum: [candidate, evaluated, promoted, retired] }
+                        proposed_by: { type: string }
+                        created_at: { type: integer }
+                        updated_at: { type: integer }
+                  count: { type: integer }
+        "400": { description: model_registry_limit_out_of_bounds | registry_status_invalid | registry_kind_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Admin plus DPO role) }
+  /workflow/model-registry/{model_ref}:
+    get:
+      summary: Read one registered model identity by id@version (Read; audited)
+      description: >
+        The model_ref path value is one captured segment in the form
+        `{id}@{version}`. The response carries identity, vocabulary, lifecycle,
+        and digest references; it never carries weights or evaluation contents.
+        An absent row answers the same probe-blind not-found response.
+      operationId: getModelRegistryEntry
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: model_ref
+          in: path
+          required: true
+          schema: { type: string, pattern: "^[^@]+@[^@]+$" }
+      responses:
+        "200":
+          description: The full identity and digest reference record
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, version, kind, name, output_vocabulary, status, evaluation_refs, proposed_by, created_at, updated_at]
+                properties:
+                  id: { type: string }
+                  version: { type: string }
+                  kind: { type: string, enum: [deterministic-rules, learned, reranker] }
+                  name: { type: string }
+                  output_vocabulary:
+                    type: array
+                    items: { type: string, enum: [choice, score, noul] }
+                  artifact_digest: { type: string, nullable: true }
+                  config_digest: { type: string, nullable: true }
+                  calibration_ref: { type: string, nullable: true }
+                  status: { type: string, enum: [candidate, evaluated, promoted, retired] }
+                  evaluation_refs:
+                    type: array
+                    items: { type: string }
+                  proposed_by: { type: string }
+                  approved_by: { type: string, nullable: true }
+                  created_at: { type: integer }
+                  updated_at: { type: integer }
+        "400": { description: model_ref_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Read on global) }
+        "404": { description: Model registry row not found (probe-blind) }
+  /workflow/model-registry/register:
+    post:
+      summary: Register a model identity as a candidate (Admin; audited)
+      description: >
+        The deterministic-rules arm requires the actual rules document in the
+        request body; the server derives its identity and canonical digest and
+        stores no rules content. Learned and reranker registrations declare
+        identity and digest references directly. Every registration lands as
+        candidate; promotion and retirement use the existing human proposal gate.
+      operationId: registerModel
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [kind]
+              properties:
+                kind: { type: string, enum: [deterministic-rules, learned, reranker] }
+                rules_config:
+                  type: object
+                  description: Required only for deterministic-rules; supplied bytes are validated and discarded after digesting.
+                id: { type: string, maxLength: 256 }
+                version: { type: string, maxLength: 64 }
+                name: { type: string, maxLength: 256 }
+                output_vocabulary:
+                  type: array
+                  minItems: 1
+                  items: { type: string, enum: [choice, score, noul] }
+                artifact_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+                config_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+                calibration_ref: { type: string }
+      responses:
+        "201":
+          description: Candidate identity registered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, version, status, config_digest]
+                properties:
+                  id: { type: string }
+                  version: { type: string }
+                  status: { type: string, enum: [candidate] }
+                  config_digest: { type: string, nullable: true }
+        "400": { description: rules_config_invalid | registry_identity_declared | registry_identity_required | registry_vocabulary_invalid | artifact_digest_required | artifact_digest_invalid | config_digest_invalid | registry_id_invalid | registry_version_invalid | registry_kind_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Admin on global) }
+        "409": { description: model_already_registered }
 components:
   securitySchemes:
     bearerAuth:

@@ -279,6 +279,11 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/workflow/decision-runs",
     "/workflow/decision-runs/{id}",
     "/workflow/decision-runs/{id}/replay-diff",
+    // The model registry's three distinct paths; the listing is last so the
+    // stricter DPO-gated handler is the one the source scan resolves.
+    "/workflow/model-registry/register",
+    "/workflow/model-registry/{model_ref}",
+    "/workflow/model-registry",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -589,4 +594,9 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/decision-runs", "Admin"),
     ("/workflow/decision-runs/{id}", "Read"),
     ("/workflow/decision-runs/{id}/replay-diff", "Write"),
+    // Registration is an operator action; the single-row read is Read; the
+    // listing carries the additional DPO role gate in its handler.
+    ("/workflow/model-registry/register", "Admin"),
+    ("/workflow/model-registry/{model_ref}", "Read"),
+    ("/workflow/model-registry", "Admin"),
 ];

@@ -545,12 +545,23 @@ pub(crate) struct DecisionRunRequest<'a> {
     pub(crate) query: &'a str,
 }
 
+/// The registry identity attached to a trace when the binding resolved
+/// through the governed model registry. The optional field keeps older
+/// stored trace documents readable without a migration.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub(crate) struct RegistryRef {
+    pub(crate) registry_id: String,
+    pub(crate) registry_version: String,
+}
+
 /// The model identity the trace records (the seam's own metadata).
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub(crate) struct ModelRefRecord {
     pub(crate) id: String,
     pub(crate) version: String,
     pub(crate) weights_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) registry_ref: Option<RegistryRef>,
 }
 
 impl ModelRefRecord {
@@ -559,6 +570,7 @@ impl ModelRefRecord {
             id: meta.id().to_string(),
             version: meta.version().to_string(),
             weights_digest: meta.weights_digest().map(str::to_string),
+            registry_ref: None,
         }
     }
 }

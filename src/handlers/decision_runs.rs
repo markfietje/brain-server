@@ -35,9 +35,12 @@ use crate::handlers::HandlerError;
 use crate::handlers::auth::OptPrincipal;
 use crate::workflow::harness::config::DecisionPipelineConfig;
 use crate::workflow::harness::models::rules::RulesModel;
-use crate::workflow::harness::pipeline::{DecisionRunRequest, StageRecord, run_decision_pipeline};
+use crate::workflow::harness::pipeline::{
+    DecisionRunRequest, RegistryRef, StageRecord, run_decision_pipeline,
+};
 use crate::workflow::harness::retrieval::SearchRetriever;
 use crate::workflow::harness::trace::{build_decision_run_trace, persist_decision_run_trace_with};
+use crate::workflow::registry;
 use brain_engine_sdk::decision::RunMode;
 
 const MAX_DECISION_QUERY_LEN: usize = 4096;
@@ -222,6 +225,30 @@ fn load_bound_model(
     Ok((loaded, model))
 }
 
+fn resolve_registered_model(
+    conn: &rusqlite::Connection,
+    key: &str,
+    digest: &str,
+    mode: &str,
+) -> Result<registry::RegistryRow, HandlerError> {
+    match registry::resolve_for_execution(conn, key, digest, mode) {
+        Ok(Ok(row)) => Ok(row),
+        Ok(Err(registry::ResolveRefusal::NotRegistered)) => Err(HandlerError::bad_request(
+            "model_not_registered",
+            "the bound model is not present in the governed registry",
+        )),
+        Ok(Err(registry::ResolveRefusal::NotPromoted)) => Err(HandlerError::bad_request(
+            "model_not_promoted",
+            "the bound model is registered but has not passed the human promotion gate",
+        )),
+        Ok(Err(registry::ResolveRefusal::Retired)) => Err(HandlerError::bad_request(
+            "model_retired",
+            "the bound model has been retired and cannot execute",
+        )),
+        Err(error) => Err(HandlerError::internal(error.to_string())),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionRunBody {
@@ -273,6 +300,15 @@ pub async fn post_decision_run(
     };
 
     let outcome = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
+        let registry_row = {
+            let conn = pool.get().map_err(HandlerError::db_down)?;
+            resolve_registered_model(
+                &conn,
+                &loaded.config.model.key,
+                &loaded.config.model.digest,
+                inputs.mode.as_str(),
+            )?
+        };
         let req = DecisionRunRequest {
             run_id,
             mode: inputs.mode,
@@ -284,7 +320,13 @@ pub async fn post_decision_run(
             query: &inputs.query,
         };
         let result = run_decision_pipeline(&loaded, &req, &model, &retriever, &ns_clock);
-        let trace = build_decision_run_trace(&loaded, &req, &result);
+        let mut trace = build_decision_run_trace(&loaded, &req, &result);
+        if let Some(model_ref) = trace.model_refs.first_mut() {
+            model_ref.registry_ref = Some(RegistryRef {
+                registry_id: registry_row.id.clone(),
+                registry_version: registry_row.version.clone(),
+            });
+        }
 
         // The escalation proposal rides the writer's OWN transition: the
         // trace it cites and the proposal citing it commit together or not
@@ -516,6 +558,15 @@ pub async fn post_decision_run_replay_diff(
     let run_id = stored.run_id;
 
     let report = tokio::task::spawn_blocking(move || -> Result<serde_json::Value, HandlerError> {
+        {
+            let conn = pool.get().map_err(HandlerError::db_down)?;
+            resolve_registered_model(
+                &conn,
+                &loaded.config.model.key,
+                &loaded.config.model.digest,
+                inputs.mode.as_str(),
+            )?;
+        }
         let req = DecisionRunRequest {
             run_id,
             mode: inputs.mode,
@@ -794,6 +845,11 @@ mod tests {
             .to_string()
     }
 
+    fn seed_promoted_model(state: &AppState) {
+        let conn = state.pool.get().unwrap();
+        crate::workflow::registry::test_support::seed_promoted_rules_model(&conn, TABLE_JSON);
+    }
+
     /// The route-level law set: absent/foreign run → the SAME probe-blind
     /// 404; a hostile config → the named 400; digest-mismatched rules →
     /// the named 400; replay with a foreign config → the named 409. No
@@ -817,6 +873,7 @@ mod tests {
         assert_eq!(absent_body["error"]["code"], "not_found");
 
         let run_id = seed_run(&f.state, "global");
+        seed_promoted_model(&f.state);
 
         // Hostile config (unknown field) → the loader's named 400.
         let mut hostile: serde_json::Value = serde_json::from_str(&good_config).unwrap();
@@ -985,6 +1042,7 @@ mod tests {
         // the listing returns bounded columns only.
         let digest = digest_of(&table_value());
         let run_id = seed_run(&f.state, "global");
+        seed_promoted_model(&f.state);
         let (status, created) = post_json(
             &f.state,
             "/workflow/decision-runs",
@@ -1026,6 +1084,7 @@ mod tests {
         let f = fixture();
         let digest = digest_of(&table_value());
         let run_id = seed_run(&f.state, "global");
+        seed_promoted_model(&f.state);
         let (status, created) = post_json(
             &f.state,
             "/workflow/decision-runs",
@@ -1091,6 +1150,7 @@ mod tests {
         let f = fixture();
         let digest = digest_of(&table_value());
         let run_id = seed_run(&f.state, "global");
+        seed_promoted_model(&f.state);
         let body_with_proposal = format!(
             r#"{{
               "config": {},
@@ -1209,5 +1269,120 @@ mod tests {
         .await;
         assert_eq!(status, axum::http::StatusCode::OK, "body: {v}");
         assert_eq!(v["status"], "approved", "body: {v}");
+    }
+
+    #[tokio::test]
+    async fn harness_cannot_execute_retired_or_unregistered_model_in_deterministic_mode() {
+        let f = fixture();
+        let digest = digest_of(&table_value());
+        let run_id = seed_run(&f.state, "global");
+        let body = run_body(&config_json(&digest), TABLE_JSON, run_id, "deterministic");
+
+        let (status, response) = post_json(
+            &f.state,
+            "/workflow/decision-runs",
+            body.clone(),
+            Some(OP_TOKEN),
+        )
+        .await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "body: {response}"
+        );
+        assert_eq!(response["error"]["code"], "model_not_registered");
+
+        {
+            let conn = f.state.pool.get().unwrap();
+            crate::workflow::registry::test_support::seed_rules_model(
+                &conn,
+                TABLE_JSON,
+                crate::workflow::registry::STATUS_CANDIDATE,
+            );
+        }
+        let (status, response) = post_json(
+            &f.state,
+            "/workflow/decision-runs",
+            body.clone(),
+            Some(OP_TOKEN),
+        )
+        .await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "body: {response}"
+        );
+        assert_eq!(response["error"]["code"], "model_not_promoted");
+
+        {
+            let conn = f.state.pool.get().unwrap();
+            crate::workflow::registry::test_support::seed_rules_model(
+                &conn,
+                TABLE_JSON,
+                crate::workflow::registry::STATUS_PROMOTED,
+            );
+        }
+        let (status, response) = post_json(
+            &f.state,
+            "/workflow/decision-runs",
+            body.clone(),
+            Some(OP_TOKEN),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::CREATED, "body: {response}");
+
+        {
+            let conn = f.state.pool.get().unwrap();
+            crate::workflow::registry::test_support::seed_rules_model(
+                &conn,
+                TABLE_JSON,
+                crate::workflow::registry::STATUS_RETIRED,
+            );
+        }
+        let (status, response) =
+            post_json(&f.state, "/workflow/decision-runs", body, Some(OP_TOKEN)).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "body: {response}"
+        );
+        assert_eq!(response["error"]["code"], "model_retired");
+    }
+
+    #[tokio::test]
+    async fn trace_cites_registry_id_version_digest() {
+        let f = fixture();
+        let digest = digest_of(&table_value());
+        let run_id = seed_run(&f.state, "global");
+        seed_promoted_model(&f.state);
+        let (status, created) = post_json(
+            &f.state,
+            "/workflow/decision-runs",
+            run_body(&config_json(&digest), TABLE_JSON, run_id, "deterministic"),
+            Some(OP_TOKEN),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::CREATED, "body: {created}");
+        let trace_id = created["trace_id"].as_i64().unwrap();
+        let (status, trace) = get_json(
+            &f.state,
+            &format!("/workflow/decision-runs/{trace_id}"),
+            Some(OP_TOKEN),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "body: {trace}");
+        assert_eq!(
+            trace["model_refs"][0]["registry_ref"]["registry_id"],
+            "rules-reference"
+        );
+        assert_eq!(
+            trace["model_refs"][0]["registry_ref"]["registry_version"],
+            "1.0.0"
+        );
+        assert!(
+            trace["config_hash"]
+                .as_str()
+                .is_some_and(|value| value.len() == 64)
+        );
     }
 }

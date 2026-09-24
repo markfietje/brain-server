@@ -41,6 +41,7 @@ pub mod kappa;
 pub mod kcs;
 pub mod legal;
 pub mod mesh;
+pub mod model_registry;
 pub mod observe;
 pub mod parcels;
 pub mod procedure;

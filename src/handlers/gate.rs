@@ -216,8 +216,10 @@ pub(crate) async fn create_proposal(
     // promoted into knowledge.
     let is_draft = req.kind == "draft";
     let is_channel_template = req.kind == crate::workflow::channels::PROP_KIND_CHANNEL_TEMPLATE;
+    let is_registry_lifecycle = req.kind == crate::workflow::registry::PROP_KIND_REGISTRY_LIFECYCLE;
     if !is_draft
         && !is_channel_template
+        && !is_registry_lifecycle
         && !crate::procedural::MemoryKind::is_strict_valid(&req.kind)
     {
         return Err(HandlerError::bad_request(
@@ -238,6 +240,35 @@ pub(crate) async fn create_proposal(
 
     let resp = tokio::task::spawn_blocking(move || -> Result<ProposalResponse, HandlerError> {
         let conn = pool.get().map_err(HandlerError::db_down)?;
+        if is_registry_lifecycle {
+            crate::workflow::registry::validate_lifecycle_payload(&conn, &content_for_task)
+                .map_err(|error| match error {
+                    crate::workflow::registry::RegistryError::PayloadInvalid(message) => {
+                        HandlerError::bad_request("registry_payload_invalid", message)
+                    }
+                    crate::workflow::registry::RegistryError::RowAbsent => {
+                        HandlerError::bad_request(
+                            "registry_row_absent",
+                            "referenced registry row is absent",
+                        )
+                    }
+                    crate::workflow::registry::RegistryError::RowDigestMismatch => {
+                        HandlerError::bad_request(
+                            "registry_row_digest_mismatch",
+                            "the proposed row bytes do not digest to the live row",
+                        )
+                    }
+                    crate::workflow::registry::RegistryError::TransitionIllegal {
+                        action,
+                        from,
+                    } => HandlerError::conflict_with(
+                        "registry_transition_illegal",
+                        "the requested lifecycle transition is not legal",
+                        serde_json::json!({ "action": action, "from": from }),
+                    ),
+                    _ => HandlerError::internal("registry lifecycle validation failed"),
+                })?;
+        }
         // Deterministic scoring: novelty via vec0 KNN, conflict via the
         // consolidate machinery, salience via the length/entity heuristic.
         let embedding = model.encode_one(&content_for_task);
@@ -661,6 +692,84 @@ pub async fn approve_proposal(
             chrono::Utc::now().timestamp(),
         ) {
             tracing::warn!("presence touch failed on approve: {e}");
+        }
+
+        // A model lifecycle proposal is disposed by this branch before any
+        // knowledge-publication machinery can see it. The payload's displayed
+        // row and digest are rechecked against the live row in the same
+        // transaction; the status transition and proposal CAS then commit together.
+        if kind == crate::workflow::registry::PROP_KIND_REGISTRY_LIFECYCLE {
+            let payload = crate::workflow::registry::parse_lifecycle_payload(&content)
+                .map_err(|error| match error {
+                    crate::workflow::registry::RegistryError::PayloadInvalid(message) => {
+                        HandlerError::bad_request("registry_payload_invalid", message)
+                    }
+                    crate::workflow::registry::RegistryError::RowAbsent => {
+                        HandlerError::not_found("registry row not found")
+                    }
+                    crate::workflow::registry::RegistryError::RowChanged => {
+                        HandlerError::conflict_with(
+                            "registry_row_changed",
+                            "the registry row changed after the proposal was displayed",
+                            serde_json::json!([]),
+                        )
+                    }
+                    crate::workflow::registry::RegistryError::TransitionIllegal { action, from } => {
+                        HandlerError::conflict_with(
+                            "registry_transition_illegal",
+                            "the requested lifecycle transition is not legal",
+                            serde_json::json!({ "action": action, "from": from }),
+                        )
+                    }
+                    _ => HandlerError::internal("registry lifecycle approval failed"),
+                })?;
+            let now_ts = chrono::Utc::now().timestamp();
+            let approver = principal_to_owner(&principal.0).unwrap_or_else(|| "api".into());
+            let registry_status = crate::workflow::registry::apply_lifecycle(
+                &tx,
+                &payload,
+                &approver,
+                now_ts,
+            )
+            .map_err(|error| match error {
+                crate::workflow::registry::RegistryError::PayloadInvalid(message) => {
+                    HandlerError::bad_request("registry_payload_invalid", message)
+                }
+                crate::workflow::registry::RegistryError::RowAbsent => {
+                    HandlerError::not_found("registry row not found")
+                }
+                crate::workflow::registry::RegistryError::RowChanged => {
+                    HandlerError::conflict_with(
+                        "registry_row_changed",
+                        "the registry row changed after the proposal was displayed",
+                        serde_json::json!([]),
+                    )
+                }
+                crate::workflow::registry::RegistryError::TransitionIllegal { action, from } => {
+                    HandlerError::conflict_with(
+                        "registry_transition_illegal",
+                        "the requested lifecycle transition is not legal",
+                        serde_json::json!({ "action": action, "from": from }),
+                    )
+                }
+                _ => HandlerError::internal("registry lifecycle approval failed"),
+            })?;
+            let moved = crate::service::review::cas_proposal_approved(&tx, id, now_ts)
+                .map_err(|error| HandlerError::internal(error.to_string()))?;
+            if moved == 0 {
+                tx.rollback()
+                    .map_err(|error| HandlerError::internal(error.to_string()))?;
+                return Err(HandlerError::conflict(
+                    "proposal was already decided by a concurrent action",
+                ));
+            }
+            tx.commit()
+                .map_err(|error| HandlerError::internal(format!("commit failed: {error}")))?;
+            return Ok(serde_json::json!({
+                "id": id,
+                "status": "approved",
+                "registry_status": registry_status,
+            }));
         }
 
         // ── Beacon: the kcs_publish branch. Publishing is an EXTERNAL,

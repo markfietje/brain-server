@@ -145,6 +145,31 @@ technical control; it makes NO legal conclusion about any deployment's
 regulatory scope — that determination stays the operator's, with
 counsel.
 
+### Dated addendum — 2026-09-24 (the model registry: identity, lifecycle, and oversight)
+
+The model registry is a technical control plane for model identity and
+human disposition. It does not store weights or evaluation contents, and it
+does not decide whether a particular deployment is legally in scope. The
+rows below describe shipped code controls, not a legal conclusion.
+
+| Control | The registry-level law |
+|---|---|
+| **ASI04 Agentic Supply Chain / LLM04** | A learned registration cannot omit its lowercase SHA-256 artifact digest; the request body is the only registration source, so no network-sourced identity is admitted. The canonical digest, identity, version, vocabulary, and lifecycle transition are the durable pins. The separate embedding-manifest digest law is not this registry. |
+| **ASI03 Identity & Privilege Abuse** | Registration is an Admin-on-global operator action. The bulk listing is Admin plus the DPO role and audited per call. Promotion and retirement are proposal-plus-human-approval acts; no direct status-write route exists. |
+| **ASI10 Rogue Agents / LLM06** | The human gate is the only lifecycle disposer. Deterministic execution resolves the bound `(config key, config digest)` through the registry and refuses unregistered, candidate-only, and retired bindings by name; exploratory execution accepts candidates but never unregistered or retired rows. |
+| **ASI06 Memory & Context Poisoning** | Decision-layer identity, version, digest, and promotion are auditable records rather than free-form claims. A changed row refuses a previously reviewed lifecycle payload instead of silently applying stale intent. |
+| **LLM02 Sensitive Information Disclosure** | The single-row view exposes identity, vocabulary, and digest references; listings expose only a digest-presence boolean. Weights and evaluation-set contents are not registry fields, and the listing is bounded and dual-gated. |
+
+The human-approved lifecycle is an engineering analogue to an
+oversight-and-recordkeeping pattern, not a claim that a registry satisfies
+any particular legal provision. The EU AI Act's official text describes
+Article 12 automatic event recording and Article 14 human oversight, and
+states a general application date of 2 August 2026 (with specified
+provisions applying earlier); those dates and obligations are a legal
+source, not a classification of this software. Whether a deployment is
+high-risk, who is the provider/deployer, and what retention or records
+apply remain operator-and-counsel determinations.
+
 ## Part 3 — AIUC-1 crosswalk (procurement bridge)
 
 A crosswalk maps ASI01–ASI10 to the AI-Under-Contract (AIUC-1) requirements so

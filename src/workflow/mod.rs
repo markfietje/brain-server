@@ -213,6 +213,7 @@ pub(crate) mod pipeline;
 pub(crate) mod proficiency;
 pub(crate) mod recall;
 pub(crate) mod reflection;
+pub(crate) mod registry;
 pub(crate) mod relay;
 pub mod report;
 pub(crate) mod sandbox;

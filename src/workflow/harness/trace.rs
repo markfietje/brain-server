@@ -649,4 +649,44 @@ mod tests {
             "the session batch rolled back with the side effect"
         );
     }
+
+    #[test]
+    fn trace_without_registry_ref_still_deserializes() {
+        let trace = DecisionRunTrace {
+            run_id: 901,
+            pipeline_version: pipeline_version().to_string(),
+            mode: "deterministic".to_string(),
+            config_hash: "cc".repeat(32),
+            model_refs: vec![ModelRefRecord {
+                id: "rules-reference".to_string(),
+                version: "1.0.0".to_string(),
+                weights_digest: None,
+                registry_ref: None,
+            }],
+            input_digest: "dd".repeat(32),
+            context_refs: Vec::new(),
+            retrieval_params: RetrievalParams {
+                rrf_k: 60,
+                limit: 5,
+                leg: crate::workflow::harness::config::RetrievalLeg::Both,
+            },
+            env_fingerprint: EnvFingerprint {
+                kernel_version: env!("CARGO_PKG_VERSION").to_string(),
+                feature_flags: Vec::new(),
+            },
+            stages: Vec::new(),
+            outcome: TraceOutcome {
+                action: super::super::pipeline::ActionLabel::Act,
+                escalation: None,
+                output: None,
+            },
+        };
+        let mut stored = serde_json::to_value(&trace).unwrap();
+        stored["model_refs"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("registry_ref");
+        let decoded: DecisionRunTrace = serde_json::from_value(stored).unwrap();
+        assert!(decoded.model_refs[0].registry_ref.is_none());
+    }
 }
