@@ -7425,6 +7425,210 @@ paths:
                   count: { type: integer }
         "401": { description: Not authenticated }
         "403": { description: Not authorized (Read on the global domain) }
+  /workflow/decision-runs:
+    post:
+      summary: Execute one decision-pipeline run and persist its trace (Write on the run's domain + workflow role)
+      description: >
+        Runs the configured deterministic pipeline over the request's ask
+        and persists the run's trace (digests and refs only — the raw
+        query is hashed before anything durable). The config document and
+        the rules table both ride the request body; the rules table must
+        digest to the config's bound model or the run refuses
+        (`model_digest_mismatch`). With `proposal: true` AND an escalated
+        outcome, an escalation proposal is queued in the SAME transaction
+        carrying the run's provenance ref — the promotion gate reads the
+        ref's mode: an exploratory run can propose, never promote.
+      operationId: workflowDecisionRunCreate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [config, rules_config, run_id, mode, request_id, question_ids, query]
+              properties:
+                config:
+                  type: object
+                  description: The raw pipeline config document (harness.pipeline/v1); the loader's total validation applies.
+                rules_config:
+                  type: object
+                  description: The rules table document; its canonical digest must equal the config's bound model digest.
+                run_id: { type: integer }
+                mode: { type: string, enum: [deterministic, exploratory] }
+                request_id: { type: string, maxLength: 256 }
+                question_id: { type: string }
+                question_kind: { type: string, enum: [choice, score, noul] }
+                question_ids:
+                  type: array
+                  items: { type: string }
+                  maxItems: 64
+                query: { type: string, maxLength: 4096, description: The ONE raw-text field; hashed into the trace, never stored. }
+                proposal: { type: boolean, default: false }
+      responses:
+        "201":
+          description: The run executed and its trace persisted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [trace_id, action, records]
+                properties:
+                  trace_id: { type: integer }
+                  action: { type: string, enum: [act, approve, reject, escalate] }
+                  escalation:
+                    type: object
+                    properties:
+                      stage: { type: string }
+                      reason: { type: string }
+                      detail: { type: string }
+                  output:
+                    type: object
+                    description: The model's proposed decision (present whenever the model decided, even on escalate).
+                  records: { type: integer, description: The stage-record count. }
+                  proposal_id: { type: integer, description: Present only when an escalation proposal was queued. }
+        "400": { description: config_invalid | rules_config_invalid | model_digest_mismatch | mode_invalid | query_invalid | request_id_invalid | question_ids_invalid | question_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Write on the run's domain + the workflow role) }
+        "404": { description: Workflow run not found (probe-blind — absent and foreign runs answer identically) }
+    get:
+      summary: The bounded decision-run listing (DPO/admin dual gate; audited)
+      description: >
+        Newest-first page over the stored decision-run traces with bounded
+        columns only (id, run_id, mode, pipeline_version, config_hash,
+        created_at, stage_count) — the trace documents themselves never
+        ride a listing. THE exfiltration surface: the DPO dual gate (Admin
+        action AND the DPO role) plus an audited global row per call.
+      operationId: workflowDecisionRunsList
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+        - name: run_id
+          in: query
+          required: false
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The bounded listing page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows, count]
+                properties:
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, run_id, mode, pipeline_version, config_hash, created_at, stage_count]
+                      properties:
+                        id: { type: integer }
+                        run_id: { type: integer }
+                        mode: { type: string, enum: [deterministic, exploratory] }
+                        pipeline_version: { type: string }
+                        config_hash: { type: string }
+                        created_at: { type: integer }
+                        stage_count: { type: integer }
+                  count: { type: integer }
+        "400": { description: decision_runs_limit_out_of_bounds }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (the DPO dual gate — Admin action AND the DPO role) }
+  /workflow/decision-runs/{id}:
+    get:
+      summary: The stored decision-run trace by row id (Read on global + workflow role)
+      description: >
+        Returns the stored trace document verbatim — digests and refs only
+        (the input query rides only as its digest; per-stage records carry
+        input/output digests, trust tiers, and timing). Absent ids answer
+        the probe-blind 404. The read is audited.
+      operationId: workflowDecisionRunGet
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The stored trace document
+          content:
+            application/json:
+              schema:
+                type: object
+                description: The trace document (run_id, pipeline_version, mode, config_hash, model_refs, input_digest, context_refs, retrieval_params, env_fingerprint, stages[], outcome).
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Read on the global domain + the workflow role) }
+        "404": { description: Decision run trace not found (probe-blind) }
+  /workflow/decision-runs/{id}/replay-diff:
+    post:
+      summary: Re-execute a stored run under its own recorded conditions and report per-stage digest agreement (Write on the run's domain + workflow role)
+      description: >
+        Verifies the supplied config's canonical hash equals the stored
+        trace's config_hash (mismatch → 409 config_hash_mismatch — a
+        replay replays its own recorded conditions or refuses), re-builds
+        the digest-bound model, re-executes the pipeline with LIVE
+        retrieval under the server clock, and reports per-stage
+        outputs-digest agreement. Timing fields are provenance and are
+        never compared. The report is DATA (all_match is not a status) and
+        the replay persists NOTHING. POST (not GET): the config + rules
+        documents are large structured bodies, and the body must re-carry
+        the run's input fields — the stored trace binds the input only as
+        its digest.
+      operationId: workflowDecisionRunReplayDiff
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [config, rules_config, mode, request_id, question_ids, query]
+              properties:
+                config: { type: object }
+                rules_config: { type: object }
+                mode: { type: string, enum: [deterministic, exploratory] }
+                request_id: { type: string, maxLength: 256 }
+                question_id: { type: string }
+                question_kind: { type: string, enum: [choice, score, noul] }
+                question_ids:
+                  type: array
+                  items: { type: string }
+                  maxItems: 64
+                query: { type: string, maxLength: 4096 }
+      responses:
+        "200":
+          description: The replay agreement report
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [trace_id, config_hash, config_hash_match, replay_input_digest, input_digest_match, stages, all_match]
+                properties:
+                  trace_id: { type: integer }
+                  config_hash: { type: string }
+                  config_hash_match: { type: boolean }
+                  replay_input_digest: { type: string }
+                  input_digest_match: { type: boolean }
+                  stages:
+                    type: array
+                    items:
+                      type: object
+                      required: [stage, match, stored_outputs_digest, replayed_outputs_digest]
+                      properties:
+                        stage: { type: string }
+                        match: { type: boolean }
+                        stored_outputs_digest: { type: string }
+                        replayed_outputs_digest: { type: string }
+                  all_match: { type: boolean, description: DATA, not a status — mismatches are the product (poison visibility). }
+        "400": { description: config_invalid | rules_config_invalid | model_digest_mismatch | query_invalid | … }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Write on the run's domain + the workflow role) }
+        "404": { description: Decision run trace or run not found (probe-blind) }
+        "409": { description: config_hash_mismatch }
 components:
   securitySchemes:
     bearerAuth:

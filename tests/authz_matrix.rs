@@ -367,6 +367,18 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
             "/workflow/kappa/queue" => ("GET", ""),
             "/workflow/kappa/labels" => ("POST", r#"{"digest":"aa","label":"agree","run_id":1}"#),
             "/workflow/kappa/report" => ("GET", ""),
+            // The decision-runs listing row drives the DPO-gated GET side
+            // (the gate row's stricter handler, the /accounts convention);
+            // the execute POST is handler-source-pinned.
+            "/workflow/decision-runs" => ("GET", ""),
+            // The bodies only clear the typed extractor: the config loader
+            // and the probe-blind run resolution refuse downstream, which
+            // is a pass-path status for the classes that clear the gate.
+            "/workflow/decision-runs/{id}" => ("GET", ""),
+            "/workflow/decision-runs/{id}/replay-diff" => (
+                "POST",
+                r#"{"config":{},"rules_config":{},"mode":"deterministic","request_id":"m","question_ids":["m"],"query":"m"}"#,
+            ),
             "/workflow/runs/{id}/back-referral/return" => (
                 "POST",
                 r#"{"contract_key":"m","report":{},"decision_ref":"m"}"#,
@@ -523,6 +535,14 @@ const PRE_GATE_404: &[&str] = &[
     "/accounts/{id}/pipeline",
     "/accounts/{id}/requests",
     "/accounts/{id}/requests/{run_id}/link",
+    // The decision-run surfaces resolve the run (or the stored trace's
+    // run) BEFORE any gate: absent and foreign runs answer the SAME
+    // probe-blind 404 (the decision-surface pin). The shared base path's
+    // POST resolves the body's run first; its listing GET never 404s
+    // pre-gate, so the shared row stays honest for both methods.
+    "/workflow/decision-runs",
+    "/workflow/decision-runs/{id}",
+    "/workflow/decision-runs/{id}/replay-diff",
 ];
 /// The legacy soft-deny surface: these routes predate the 403 vocabulary and
 /// deliberately answer their deny with a 200 body so old clients keep
@@ -1944,6 +1964,13 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/workflow/kappa/queue",
     "/workflow/kappa/labels",
     "/workflow/kappa/report",
+    // The decision-run surfaces: execute/read/replay demand the
+    // `workflow` role on top of the scope gate, and the listing carries
+    // the DPO dual gate (the agent HAS roles, so the dual gate binds) —
+    // the agent class is refused on all three paths.
+    "/workflow/decision-runs",
+    "/workflow/decision-runs/{id}",
+    "/workflow/decision-runs/{id}/replay-diff",
     // The operator decision surfaces: both handlers demand the `workflow`
     // role (the HITL law's gate shape) on top of the Write scope, so the
     // agent class is refused 403 exactly like the offer route.

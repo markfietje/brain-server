@@ -17,6 +17,52 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [Unreleased] — the decision-run surfaces (schema 1.32.12 "DecisionSurface")
+
+**Release notes**
+
+### Improvements
+- **The decision-run surfaces** — the decision harness's first public API
+  face. `POST /workflow/decision-runs` executes a configured
+  deterministic pipeline run and persists its trace (digests and refs
+  only — the request's one raw-text field is hashed before anything
+  durable); `GET /workflow/decision-runs/{id}` returns the stored trace
+  document; `POST /workflow/decision-runs/{id}/replay-diff` re-executes a
+  stored run under its OWN recorded conditions (config-hash-verified,
+  live retrieval, per-stage digest agreement report, persists nothing —
+  mismatches are data, poison visibility); `GET /workflow/decision-runs`
+  is the bounded newest-first listing (1..=50) behind the DPO/admin dual
+  gate, audited per call. Execute/read/replay are Write/Read-gated on
+  the `workflow` role; absent and foreign runs answer the probe-blind
+  404.
+- **Exploratory is promotion-incapable (mode law end-to-end).** An
+  opt-in escalation proposal (only on escalated outcomes) carries the
+  run's provenance ref (trace id, run id, recorded mode, config hash);
+  the approval gate reads the ref and refuses exploratory proposals by
+  name (`exploratory_mode_not_promotable`) — an exploratory run can
+  propose, never promote; the human path for exploratory output is
+  re-running the pipeline deterministically. Deterministic and ordinary
+  (NULL-ref) proposals approve unchanged.
+
+### Security fixes
+- None (the routes add the authz posture above; no vulnerability closed).
+
+### Engineering record
+- Schema: additive nullable `proposals.decision_run_ref` (the
+  pragma-guarded ALTER precedent; legacy rows NULL) → schema stamp
+  1.32.12. The trace persistence (decision_run_traces) shipped earlier
+  on the same line and is unchanged.
+- The production context retriever is a NEW caller of the shipped hybrid
+  search internals (the search module itself is byte-untouched; the
+  recall hot path unchanged). Retrieved evidence maps to reference-only
+  hits: content digests, per-leg provenance, flag/untrusted taint, and
+  the least-trusting tier — the engine's policy stage escalates honestly
+  on all-untrusted evidence rather than trusting a guess.
+- No version stamp in this file's heading (the release ceremony is the
+  operator's); no new dependencies; no behavior change on any existing
+  route except the new named approval refusal for exploratory-mode
+  proposals.
+
 ## [1.28.92] — 2026-09-22 — "Ledger": the loop closes diagnostically, and the record layers land
 
 The governed loop's 1.32.x line is stamped through **1.32.7 "Diagnostic

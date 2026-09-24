@@ -194,6 +194,11 @@ pub const SCHEMA_VERSION_V1_32_0: &str = "1.32.0";
 /// decision harness's additive run-trace persistence (digests and refs,
 /// the recall_traces precedent; the writer is the only caller).
 pub const SCHEMA_VERSION_V1_32_11: &str = "1.32.11";
+/// the Decision-line surface schema: `proposals.decision_run_ref` — the
+/// additive, nullable provenance ref binding a proposal to the decision
+/// run that proposed it (the promotion gate's mode law reads it; NULL for
+/// every ordinary human/loop proposal).
+pub const SCHEMA_VERSION_V1_32_12: &str = "1.32.12";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
@@ -215,7 +220,7 @@ pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 /// Security posture: a source DB stamped NEWER than this is refused loudly
 /// ([`refuse_newer_schema`]) — migrating *down* would silently drop columns
 /// the newer release added, i.e. data loss dressed as a migration.
-pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_11;
+pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_12;
 
 /// Numeric dotted-version compare (std-only, no semver dependency).
 /// Non-numeric components are skipped (the `schema_ge` precedent in the
@@ -656,10 +661,10 @@ mod tests {
         );
         // The lexicographic trap, end to end: one-above-the-ceiling must read
         // as newer while a lexicographically LARGER-but-older string does not
-        // (numeric truth, not string truth — "1.32.9" > "1.32.11" as a raw
+        // (numeric truth, not string truth — "1.32.9" > "1.32.12" as a raw
         // string ("9" > "1") yet is numerically OLDER, and "1.28.9" <
         // "1.32.0" even though "9" > "0" would say otherwise positionally).
-        assert!(is_newer_than_known(Some("1.32.12")));
+        assert!(is_newer_than_known(Some("1.32.13")));
         assert!(!is_newer_than_known(Some("1.32.9")));
         assert!(!is_newer_than_known(Some("1.28.9")));
     }

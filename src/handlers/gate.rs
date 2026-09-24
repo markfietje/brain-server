@@ -568,6 +568,7 @@ pub async fn approve_proposal(
             qa_note,
             domain: row_domain,
             title: row_title,
+            decision_run_ref: row_decision_run_ref,
         } = row;
 
         // Triage: row-domain re-auth BEFORE any decision CAS. The top-level
@@ -592,6 +593,26 @@ pub async fn approve_proposal(
         if !review_digest_matches(&content, Some(want)) {
             return Err(HandlerError::conflict(
                 "proposal content changed since it was displayed — reload and re-approve",
+            ));
+        }
+
+        // ── The promotion gate's mode law: an exploratory decision run can
+        // PROPOSE, never promote. The provenance ref's recorded mode is
+        // read before ANY approval branch (publish / remedy / consent /
+        // campaign / template / webhook / the generic promote all ride this
+        // one check); deterministic refs and NULL refs (every ordinary
+        // human/loop proposal) pass. The human path for exploratory output
+        // is re-running the pipeline deterministically, not approving it.
+        if let Some(mode) = row_decision_run_ref
+            .as_deref()
+            .and_then(crate::service::review::decision_run_ref_mode)
+            && mode == "exploratory"
+        {
+            return Err(HandlerError::bad_request(
+                "exploratory_mode_not_promotable",
+                "this proposal came from an exploratory decision run — \
+                 exploratory output is promotion-incapable; re-run the \
+                 pipeline in deterministic mode to promote",
             ));
         }
 

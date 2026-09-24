@@ -12,17 +12,20 @@
 //! reference model and the decide adapter ([`models`]), the pipeline
 //! engine's config document and canonical hashing ([`config`]), the
 //! deterministic stage runner and its per-stage records ([`pipeline`]),
-//! and the run-trace persistence ([`trace`], additive storage + the
-//! session-log kinds below). The engine writes no durable state itself —
-//! the trace writer is the only persistence, and no route reads or writes
-//! any of it. No GDL contact — inert to the loop (the non-troubleshoot
-//! law): nothing outside this module's callers consults it, and no gate
-//! reads the kind constants.
+//! the production DB-bound context retriever ([`retrieval`], a NEW caller
+//! of the shipped search internals — the search module itself is never
+//! edited by this wiring), and the run-trace persistence ([`trace`],
+//! additive storage + the session-log kinds below). The engine writes no
+//! durable state itself — the trace writer is the only persistence, and
+//! routes consume it under their own transitions' laws. No GDL contact —
+//! inert to the loop (the non-troubleshoot law): nothing outside this
+//! module's callers consults it, and no gate reads the kind constants.
 
 pub(crate) mod config;
 pub(crate) mod model;
 pub(crate) mod models;
 pub(crate) mod pipeline;
+pub(crate) mod retrieval;
 pub(crate) mod trace;
 
 /// The harness pipeline's compile-time version (the recorded

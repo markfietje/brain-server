@@ -127,6 +127,68 @@ pub(crate) struct TracePersistReceipt {
     pub(crate) session_seqs: Vec<i64>,
 }
 
+/// The stored trace document by row id — the bounded-query face for the
+/// read route. `None` = absent id (the route answers the probe-blind 404).
+pub(crate) fn load_decision_run_trace_json(
+    conn: &Connection,
+    trace_row_id: i64,
+) -> rusqlite::Result<Option<String>> {
+    conn.query_row(
+        "SELECT trace_json FROM decision_run_traces WHERE id = ?1",
+        rusqlite::params![trace_row_id],
+        |r| r.get(0),
+    )
+    .optional()
+}
+
+/// One listing row: the bounded columns only — the trace document itself
+/// never rides a listing (the stage COUNT is core-derived; the document
+/// stays in the store).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DecisionRunListRow {
+    pub(crate) id: i64,
+    pub(crate) run_id: i64,
+    pub(crate) mode: String,
+    pub(crate) pipeline_version: String,
+    pub(crate) config_hash: String,
+    pub(crate) created_at: i64,
+    pub(crate) stage_count: usize,
+}
+
+/// The bounded listing page: newest-first, optional run filter, caller
+/// clamps the limit. The stage count is parsed from the stored document
+/// HERE so the handler never touches trace_json.
+pub(crate) fn list_decision_run_traces(
+    conn: &Connection,
+    run_id: Option<i64>,
+    limit: usize,
+) -> rusqlite::Result<Vec<DecisionRunListRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, run_id, mode, pipeline_version, config_hash, created_at, trace_json
+         FROM decision_run_traces
+         WHERE (?1 IS NULL OR run_id = ?1)
+         ORDER BY id DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![run_id, limit as i64], |r| {
+        let trace_json: String = r.get(6)?;
+        let stage_count = serde_json::from_str::<serde_json::Value>(&trace_json)
+            .ok()
+            .and_then(|v| v.get("stages").and_then(|s| s.as_array()).map(Vec::len))
+            .unwrap_or(0);
+        Ok(DecisionRunListRow {
+            id: r.get(0)?,
+            run_id: r.get(1)?,
+            mode: r.get(2)?,
+            pipeline_version: r.get(3)?,
+            config_hash: r.get(4)?,
+            created_at: r.get(5)?,
+            stage_count,
+        })
+    })?;
+    rows.collect()
+}
+
 fn refused(msg: String) -> rusqlite::Error {
     rusqlite::Error::InvalidParameterName(msg)
 }
@@ -143,6 +205,37 @@ pub(crate) fn persist_decision_run_trace(
     conn: &mut Connection,
     trace: &DecisionRunTrace,
     now: i64,
+) -> rusqlite::Result<TracePersistReceipt> {
+    persist_decision_run_trace_with(conn, trace, now, None)
+}
+
+/// The route-side side effect: one caller-owned step run inside the
+/// writer's BEGIN IMMEDIATE transaction (an `Err` rolls the whole
+/// transition back).
+pub(crate) type SideEffect<'a> = &'a dyn Fn(&rusqlite::Transaction) -> Result<(), String>;
+
+/// The route-side extension of the writer: the SAME transition, one
+/// additional caller-owned step. `side` runs inside the writer's own
+/// BEGIN IMMEDIATE transaction after the trace row + session batch and
+/// before the commit — a route's proposal write and its audit row land
+/// atomically with the trace they cite, and a failing side effect rolls
+/// the whole transition back (an exactly-once replay still no-ops without
+/// running the side effect: the original artifact is already durable).
+/// `persist_decision_run_trace` is this function with `side: None`.
+pub(crate) fn persist_decision_run_trace_with(
+    conn: &mut Connection,
+    trace: &DecisionRunTrace,
+    now: i64,
+    side: Option<SideEffect<'_>>,
+) -> rusqlite::Result<TracePersistReceipt> {
+    persist_inner(conn, trace, now, side)
+}
+
+fn persist_inner(
+    conn: &mut Connection,
+    trace: &DecisionRunTrace,
+    now: i64,
+    side: Option<SideEffect<'_>>,
 ) -> rusqlite::Result<TracePersistReceipt> {
     let trace_json = canonical_json(trace);
     // The house write discipline: ONE BEGIN IMMEDIATE transition the
@@ -245,6 +338,12 @@ pub(crate) fn persist_decision_run_trace(
             now,
         )?;
         session_seqs.push(seq);
+    }
+
+    // The caller's same-transition step (a route's proposal + audit):
+    // its refusal rolls the whole writer transition back.
+    if let Some(side) = side {
+        side(wtx.tx()).map_err(refused)?;
     }
 
     wtx.commit()?;
@@ -474,5 +573,80 @@ mod tests {
         assert_eq!(mode, "deterministic");
         assert_eq!(version, pipeline_version());
         assert_eq!(hash, refused_trace.config_hash);
+    }
+
+    /// The route-side wrapper: the caller's step runs INSIDE the writer's
+    /// BEGIN IMMEDIATE transition — its writes are invisible until the
+    /// commit lands, and a failing step rolls back the trace row AND the
+    /// session batch (all-or-nothing across the caller boundary).
+    #[test]
+    fn decision_run_side_effect_shares_the_trace_transition() {
+        let model = RulesModel::from_canonical_json(TABLE_JSON).unwrap();
+        let loaded = DecisionPipelineConfig::load(&config_json(model.digest())).unwrap();
+        let retr = DeclaredListRetriever {
+            vector: Vec::new(),
+            fts: Vec::new(),
+            graph: Vec::new(),
+        };
+        let req = super::super::pipeline::DecisionRunRequest {
+            run_id: 771,
+            mode: RunMode::Deterministic,
+            role_scope: vec![],
+            created_at: 1,
+            request_id: "req-side".into(),
+            question: None,
+            question_ids: vec!["needs_human".into()],
+            query: "side transition ask",
+        };
+        let result = run_decision_pipeline(&loaded, &req, &model, &retr, &stepping_clock());
+        let trace = build_decision_run_trace(&loaded, &req, &result);
+
+        // A committed side effect lands with the trace: only after the
+        // call returns does the proposal-grade row exist.
+        let mut conn = test_db();
+        let receipt = persist_decision_run_trace_with(&mut conn, &trace, 10, Some(&|tx| {
+            tx.execute(
+                "INSERT INTO agent_session_events(run_id, seq, idempotency_key, kind, payload_json, created_at)
+                 VALUES (771, 9000, 'side:marker', 'decision_run', '{}', 10)",
+                [],
+            )
+            .map_err(|e| e.to_string())?;
+            Ok(())
+        }))
+        .unwrap();
+        assert!(receipt.trace_created);
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE idempotency_key = 'side:marker'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "the side effect committed with the trace");
+
+        // A failing side effect rolls back EVERYTHING — no trace row, no
+        // session batch, nothing.
+        let mut conn = test_db();
+        let err = persist_decision_run_trace_with(
+            &mut conn,
+            &trace,
+            11,
+            Some(&|_tx| Err("side refused".into())),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("side refused"));
+        let (traces, events): (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM decision_run_traces), \
+                        (SELECT COUNT(*) FROM agent_session_events WHERE run_id = 771)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(traces, 0, "the trace row rolled back with the side effect");
+        assert_eq!(
+            events, 0,
+            "the session batch rolled back with the side effect"
+        );
     }
 }

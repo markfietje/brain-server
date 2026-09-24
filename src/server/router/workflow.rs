@@ -378,6 +378,27 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             "/workflow/wizard/packs",
             get(handlers::wizard::get_wizard_packs),
         )
+        // The decision-run surfaces: execute a pipeline run, read its
+        // stored trace, replay it under its own recorded conditions, and
+        // the DPO-gated listing. The POST registers FIRST; the DPO-gated
+        // listing GET registers LAST so the authz source-scan maps the
+        // shared path to the stricter handler (the /accounts convention).
+        .route(
+            "/workflow/decision-runs",
+            post(handlers::decision_runs::post_decision_run),
+        )
+        .route(
+            "/workflow/decision-runs/{id}",
+            get(handlers::decision_runs::get_decision_run),
+        )
+        .route(
+            "/workflow/decision-runs/{id}/replay-diff",
+            post(handlers::decision_runs::post_decision_run_replay_diff),
+        )
+        .route(
+            "/workflow/decision-runs",
+            get(handlers::decision_runs::get_decision_runs),
+        )
         .route(
             "/workflow/calibration/sign",
             post(handlers::workflow::post_calibration_sign),

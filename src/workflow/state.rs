@@ -426,4 +426,57 @@ pub(crate) mod test_support {
             |r| r.get(0),
         )
     }
+
+    /// Seed one operator-defined role carrying exactly the named
+    /// capabilities (the decision-run role-gate fixture).
+    pub(crate) fn seed_role_with_capabilities(
+        conn: &Connection,
+        name: &str,
+        capabilities: &[&str],
+    ) -> rusqlite::Result<()> {
+        let can: Vec<String> = capabilities.iter().map(|c| c.to_string()).collect();
+        let json = serde_json::json!({
+            "name": name,
+            "description": "test fixture role",
+            "scopes": ["read", "write", "domain", "team"],
+            "owner_filter": "all",
+            "can": can,
+            "owner_filter_all": null,
+            "panels_default": null,
+            "panels_hidden": null,
+            "tools_allowed": ["*"],
+        });
+        conn.execute(
+            "INSERT OR IGNORE INTO roles(name, json) VALUES (?1, ?2)",
+            params![name, json.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// A decision-run proposal's kind, provenance ref, content, and status
+    /// (the mode-law pin reads all four).
+    pub(crate) fn decision_run_proposal_fields(
+        conn: &Connection,
+        proposal_id: i64,
+    ) -> rusqlite::Result<(String, Option<String>, String, String)> {
+        conn.query_row(
+            "SELECT kind, decision_run_ref, content, status FROM proposals WHERE id = ?1",
+            params![proposal_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+    }
+
+    /// The workflow-kind audit row count (the route-audit pin).
+    pub(crate) fn workflow_audit_row_count(conn: &Connection) -> rusqlite::Result<i64> {
+        conn.query_row(
+            "SELECT COUNT(*) FROM audit_events WHERE kind = 'workflow'",
+            [],
+            |r| r.get(0),
+        )
+    }
+
+    /// The stored decision-run trace count (the replay-persists-nothing pin).
+    pub(crate) fn decision_run_trace_count(conn: &Connection) -> rusqlite::Result<i64> {
+        conn.query_row("SELECT COUNT(*) FROM decision_run_traces", [], |r| r.get(0))
+    }
 }

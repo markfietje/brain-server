@@ -2243,6 +2243,7 @@ pub fn run_migration_with_store_dim(
     )?;
 
     // Bumped once per release that changes this function.
+    // v1.32.12 "DecisionSurface": proposals.decision_run_ref (additive, nullable) → 1.32.12.
     // v1.32.11 "DecisionTrace": decision_run_traces table → 1.32.11.
     // v1.32.0 "LoopCore": agent_session_events table (the agent-loop
     // session event log: append-only, per-run seq, exactly-once by key) → 1.32.0.
@@ -2334,9 +2335,28 @@ pub fn run_migration_with_store_dim(
             ON decision_run_traces(run_id);",
     )?;
 
+    // ── the decision-harness provenance column ──────────────────────────
+    // `proposals.decision_run_ref` — additive, nullable TEXT carrying the
+    // decision-run provenance ref (trace id, run id, recorded mode, config
+    // hash) of the run that proposed the row; NULL for every ordinary
+    // human/loop proposal. The promotion gate reads the ref's mode: an
+    // exploratory run can propose, never promote. Legacy rows are NULL
+    // (byte-compat: every existing reader/writer is untouched).
+    let has_decision_run_ref: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('proposals') WHERE name='decision_run_ref'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !has_decision_run_ref {
+        db.execute_batch("ALTER TABLE proposals ADD COLUMN decision_run_ref TEXT;")?;
+    }
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.11')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.11';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.12')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.12';",
         [],
     )?;
 

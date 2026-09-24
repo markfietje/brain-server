@@ -3808,10 +3808,12 @@ Final paragraph after the rule.";
         // LoopCore for the agent_session_events table (the agent loop's
         // append-only session event log — the declared loop-state table).
         // DecisionTrace for the decision_run_traces table (the decision
-        // harness's additive run-trace artifact).
+        // harness's additive run-trace artifact). DecisionSurface for the
+        // proposals.decision_run_ref provenance column (the promotion
+        // gate's mode law).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_11),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_12),
             "schema_version must be recorded as the current release after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×
@@ -7011,6 +7013,10 @@ Final paragraph after the rule.";
                             "workflow_decisions" => include_str!(concat!(
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/workflow_decisions.rs"
+                            )),
+                            "decision_runs" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/decision_runs.rs"
                             )),
                             "wizard" => include_str!(concat!(
                                 env!("CARGO_MANIFEST_DIR"),

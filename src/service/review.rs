@@ -556,11 +556,13 @@ pub(crate) fn apply_edit(
     )
 }
 
-/// The approve-path pending row: the 7-column projection loaded inside the
+/// The approve-path pending row: the 9-column projection loaded inside the
 /// decision tx (re-checked `status = 'pending'` to catch a concurrent state
 /// change since the autocommit expire check). `domain` rides for the
 /// row-domain re-auth — the handler re-authorizes BEFORE any branch CASes.
-/// `None` = the frozen 404.
+/// `decision_run_ref` rides for the promotion gate's mode law — the gate
+/// reads the run mode out of the provenance ref and refuses exploratory
+/// proposals before any branch. `None` = the frozen 404.
 pub(crate) struct ApproveRow {
     pub kind: String,
     pub content: String,
@@ -570,11 +572,12 @@ pub(crate) struct ApproveRow {
     pub qa_note: Option<String>,
     pub domain: String,
     pub title: Option<String>,
+    pub decision_run_ref: Option<String>,
 }
 
 pub(crate) fn approve_pending_row(conn: &Connection, id: i64) -> Option<ApproveRow> {
     conn.query_row(
-        "SELECT kind, content, source, authority, observed_at, qa_note, domain, title
+        "SELECT kind, content, source, authority, observed_at, qa_note, domain, title, decision_run_ref
          FROM proposals WHERE id = ?1 AND status = 'pending'",
         params![id],
         |r| {
@@ -587,10 +590,80 @@ pub(crate) fn approve_pending_row(conn: &Connection, id: i64) -> Option<ApproveR
                 qa_note: r.get(5)?,
                 domain: r.get(6)?,
                 title: r.get(7)?,
+                decision_run_ref: r.get(8)?,
             })
         },
     )
     .ok()
+}
+
+/// The decision-run provenance ref's run mode: `"deterministic"` or
+/// `"exploratory"` out of a well-formed ref, `None` for anything else
+/// (ordinary NULL proposals AND malformed refs — a malformed ref is a
+/// data-quality note, never a gate key; the mode is the only field the
+/// promotion gate reads).
+pub(crate) fn decision_run_ref_mode(ref_json: &str) -> Option<String> {
+    serde_json::from_str::<serde_json::Value>(ref_json)
+        .ok()?
+        .get("mode")?
+        .as_str()
+        .filter(|m| *m == "deterministic" || *m == "exploratory")
+        .map(str::to_string)
+}
+
+/// The proposal kind a decision-run escalation queues under. Unknown
+/// kinds ride the gate's generic promote branch — exactly the path an
+/// approved decision proposal should take; the mode law gates it
+/// upstream.
+pub(crate) const DECISION_REVIEW_PROPOSAL_KIND: &str = "decision_review";
+
+/// A decision-run escalation proposal, exactly as the insert persists it.
+/// The caller (the decision-runs route) has already screened every field;
+/// `decision_run_ref` binds the proposal to the trace that proposed it —
+/// the provenance the promotion gate's mode law reads.
+pub(crate) struct NewDecisionRunProposal<'a> {
+    pub content: &'a str,
+    pub created_at: i64,
+    pub owner: Option<&'a str>,
+    pub domain: &'a str,
+    pub decision_run_ref: &'a str,
+}
+
+/// Queue one decision-run escalation proposal: the `proposals` insert +
+/// its `proposal_pending` audit row, inside the caller's transition (the
+/// decision-runs route rides the trace writer's OWN transaction — the
+/// proposal and the trace that proposed it commit together or not at
+/// all). A dedicated insert (not [`insert_proposal`]) so every existing
+/// caller's shape stays untouched.
+pub(crate) fn insert_decision_run_proposal(
+    conn: &Connection,
+    p: &NewDecisionRunProposal<'_>,
+) -> Result<i64, GateError> {
+    let id: i64 = conn
+        .query_row(
+            "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner, domain, decision_run_ref)
+             VALUES (?1, ?2, 0, 0, ?3, ?4, ?5, ?6)
+             RETURNING id",
+            rusqlite::params![
+                DECISION_REVIEW_PROPOSAL_KIND,
+                p.content,
+                p.created_at,
+                p.owner,
+                p.domain,
+                p.decision_run_ref
+            ],
+            |r| r.get(0),
+        )
+        .map_err(|e| GateError::Database(format!("decision-run proposal insert failed: {e}")))?;
+    crate::audit::record(
+        conn,
+        crate::audit::AuditKind::Ingest,
+        p.owner.unwrap_or("api"),
+        &format!("proposal:{id}"),
+        crate::audit::AuditStatus::Ok,
+        "proposal_pending",
+    );
+    Ok(id)
 }
 
 /// The shared decision CAS — one definition behind every approve branch
@@ -643,6 +716,29 @@ mod tests {
     use super::*;
 
     static QUORUM_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The provenance ref's mode extraction: the closed modes read,
+    /// everything else (NULL absent at the caller, malformed JSON, wrong
+    /// type, an out-of-vocabulary mode) is None — never a guess, never a
+    /// gate on unparseable data.
+    #[test]
+    fn decision_run_ref_mode_extraction_is_pure() {
+        let deterministic =
+            r#"{"trace_id":9,"run_id":5,"mode":"deterministic","config_hash":"ab"}"#;
+        let exploratory = r#"{"trace_id":9,"run_id":5,"mode":"exploratory","config_hash":"ab"}"#;
+        assert_eq!(
+            decision_run_ref_mode(deterministic).as_deref(),
+            Some("deterministic")
+        );
+        assert_eq!(
+            decision_run_ref_mode(exploratory).as_deref(),
+            Some("exploratory")
+        );
+        assert_eq!(decision_run_ref_mode("not json"), None);
+        assert_eq!(decision_run_ref_mode(r#"{"mode":7}"#), None);
+        assert_eq!(decision_run_ref_mode(r#"{"mode":"wild"}"#), None);
+        assert_eq!(decision_run_ref_mode(r#"{}"#), None);
+    }
 
     fn restore_env(key: &str, prev: Option<String>) {
         if let Some(v) = prev {

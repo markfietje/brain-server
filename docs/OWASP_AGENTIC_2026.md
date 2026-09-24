@@ -117,6 +117,34 @@ can replay and inspect). This round ships the capability and its tests;
 it makes NO legal conclusion — whether any given deployment is in scope
 of those regimes is the operator's determination with counsel.
 
+### Dated addendum — 2026-09-24 (the Decision Harness surfaces, v1.32.11 part 2 — routes + enforcement)
+
+The harness's public-safe route face landed: execute a run, read its
+stored trace, replay it under its own recorded conditions, and the
+DPO-gated listing — plus the gate-side enforcement of the mode law (an
+exploratory run can propose, never promote). The pipeline semantics stay
+the line's private core; what is public here is route EXISTENCE and the
+authz posture. The surface-level controls:
+
+| Control | The surface-level law |
+|---|---|
+| **ASI03 Identity & Credential Abuse** | Every route is role-gated (Write/Read plus the `workflow` capability) and no route is public; the listing — the exfiltration surface — is DUAL-gated (Admin action AND the DPO role) and audited per call; absent and foreign runs answer the SAME probe-blind 404 (no existence oracle) |
+| **ASI09 Human Oversight & Transparency** | Traces render provenance honestly: per-stage algorithm labels, digests, trust tiers, and timing are the recorded record, and the replay report names per-stage agreement with BOTH digests. As with the κ bar, `all_match` is DATA for the operator's read — the value never auto-gates anything |
+| **ASI10 Rogue Agents / LLM06** | The mode law is enforced at the GATE, not the proposal write: an exploratory run's proposal carries its provenance ref, is listable and reviewable, and is permanently promotion-incapable (`exploratory_mode_not_promotable`) — deterministic and human proposals approve unchanged; the gate remains the only disposer |
+| **ASI02 Tool Misuse** | The routes expose exactly the four documented verbs over ONE validated config path — the config documents ride the request body (never the environment), the loader's total validation applies at the surface, and the model binding is digest-verified before any execution (`model_digest_mismatch`) |
+| **ASI08 Resource Exhaustion** | The route layer adds no unbounded input: the config loader's bounds govern execution, the listing clamps 1..=50, the raw query is length-capped and screened, and a replay is one bounded re-execution of an already-bounded config |
+
+The AI-law note, continued (code vs legal, no legal conclusions): the
+trace READ surface — a bounded, audited, role-gated route returning the
+stored trace document — is the ACCESS side of the same Art. 12-style
+logging capability shipped earlier on this line (the high-risk
+obligations regime generally applies from 2026-08-02 for in-scope
+systems; deployer retention remains the deployer's duty, not the
+software's). Shipping access control around log inspection is a
+technical control; it makes NO legal conclusion about any deployment's
+regulatory scope — that determination stays the operator's, with
+counsel.
+
 ## Part 3 — AIUC-1 crosswalk (procurement bridge)
 
 A crosswalk maps ASI01–ASI10 to the AI-Under-Contract (AIUC-1) requirements so

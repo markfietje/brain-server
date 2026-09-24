@@ -272,6 +272,13 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/workflow/kappa/report",
     // The wizard pack catalog (the shell renderer's pack read).
     "/workflow/wizard/packs",
+    // The decision-run surfaces: execute (POST), the stored trace by row
+    // id (GET), and the replay-diff (POST). POST + GET share the base
+    // path; the tables are path-keyed, the stricter (DPO-gated) listing
+    // registers last (the /accounts convention).
+    "/workflow/decision-runs",
+    "/workflow/decision-runs/{id}",
+    "/workflow/decision-runs/{id}/replay-diff",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -574,4 +581,12 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     // ratified posture (PII-free schema templates; no role gate, no
     // PRE_GATE/empty-safe joins).
     ("/workflow/wizard/packs", "Read"),
+    // The decision-run surfaces: the execute POST and the replay POST are
+    // Writes on the run's domain (the role gate is pinned by the handler
+    // source); the by-id trace read is a Read. POST and GET share the
+    // base path and the scan maps the path to the LAST registered handler
+    // (the DPO dual gate — the stricter check, the /accounts convention).
+    ("/workflow/decision-runs", "Admin"),
+    ("/workflow/decision-runs/{id}", "Read"),
+    ("/workflow/decision-runs/{id}/replay-diff", "Write"),
 ];
