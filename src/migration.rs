@@ -2243,6 +2243,7 @@ pub fn run_migration_with_store_dim(
     )?;
 
     // Bumped once per release that changes this function.
+    // v1.32.14 "DecisionEvaluation": decision_evaluation_runs table → 1.32.14.
     // v1.32.13 "ModelRegistry": decision_model_registry table → 1.32.13.
     // v1.32.12 "DecisionSurface": proposals.decision_run_ref (additive, nullable) → 1.32.12.
     // v1.32.11 "DecisionTrace": decision_run_traces table → 1.32.11.
@@ -2381,9 +2382,42 @@ pub fn run_migration_with_store_dim(
             ON decision_model_registry(status);",
     )?;
 
+    // ── the decision-evaluation record ──────────────────────────────────
+    // Bounded metadata, references, closed labels, and aggregate reports only;
+    // no raw query, evidence text, model bytes, or secrets are stored here.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS decision_evaluation_runs(
+            evaluation_id          TEXT PRIMARY KEY,
+            idempotency_key        TEXT NOT NULL UNIQUE,
+            request_digest         TEXT NOT NULL,
+            pipeline_version       TEXT NOT NULL,
+            config_hash            TEXT NOT NULL,
+            model_registry_id      TEXT NOT NULL,
+            model_registry_version TEXT NOT NULL,
+            model_registry_digest  TEXT NOT NULL,
+            model_artifact_digest  TEXT,
+            judgment_set_ref       TEXT NOT NULL,
+            judgment_set_source    TEXT NOT NULL CHECK (judgment_set_source IN ('operator_declared')),
+            judgment_set_digest    TEXT NOT NULL,
+            judgment_set_count     INTEGER NOT NULL,
+            judgment_set_frozen_at INTEGER NOT NULL,
+            manifest_json          TEXT NOT NULL,
+            report_json            TEXT NOT NULL,
+            acceptance_state       TEXT NOT NULL CHECK (acceptance_state = 'operator_accepted_non_authoritative'),
+            acceptance_bars_json   TEXT NOT NULL,
+            creator_id             TEXT NOT NULL,
+            reviewer_id            TEXT NOT NULL,
+            created_at             INTEGER NOT NULL,
+            record_digest          TEXT NOT NULL,
+            audit_target           TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_decision_evaluation_runs_created
+            ON decision_evaluation_runs(created_at);",
+    )?;
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.13')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.13';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.14')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.14';",
         [],
     )?;
 

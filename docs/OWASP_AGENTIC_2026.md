@@ -170,6 +170,33 @@ source, not a classification of this software. Whether a deployment is
 high-risk, who is the provider/deployer, and what retention or records
 apply remain operator-and-counsel determinations.
 
+### Dated addendum — 2026-09-24 (decision evaluation records, schema 1.32.14)
+
+R30 adds a bounded decision-evaluation record, not an authoritative judgment
+oracle. The only accepted source in this round is an operator-declared,
+non-authoritative manifest whose case and manifest digests are checked against
+persisted decision traces. QC/GDL gold packs are not decision labels, and
+missing metric legs are not represented as zero. The controls below describe
+shipped technical behavior only.
+
+| Control | The evaluation-record law |
+|---|---|
+| **ASI03 Identity & Privilege Abuse** | Evaluation creation and listing are Admin-on-global plus the existing DPO role; detail uses the same conservative confidential posture, authorizes before lookup, audits found reads, and returns the same probe-blind 404 shape for absent records. No new `eval` capability or direct registry-status route is introduced. |
+| **ASI04 Agentic Supply Chain / LLM04** | The target binds pipeline version, config hash, registry id/version/digest, and a learned artifact digest when applicable. Manifest and per-case labels are canonical SHA-256 commitments; raw model bytes, weights, and network-fetched artifacts are not evaluation inputs. |
+| **ASI06 Memory & Context Poisoning** | Every case cites a persisted decision-trace id and bounded evidence ids, and the target is checked against that trace's model citation, pipeline, and config. Operator-declared data is explicitly non-authoritative; no gold-pack relabeling or training/labeling-pool write occurs. |
+| **ASI08 Resource Exhaustion** | Case count, evidence-id count, string/digest/timestamp bounds, serialized manifest/report limits, and the 1..=50 listing page are checked before durable work. Database work is bounded and isolated behind `spawn_blocking`; no unbounded environment or corpus scan is exposed. |
+| **ASI09 Human-Agent Trust Exploitation** | Acceptance bars are serialized as `reported_as_data_only`; the report names unavailable legs and their reasons, and no bar changes registry status. The checked audit row binds the canonical record digest, but it is not described as a detached cryptographic signature. |
+| **ASI10 Rogue Agents / LLM06** | Evaluation records cannot write knowledge, advance a workflow, attach a registry reference, or promote/retire a model. The existing human gate remains the only lifecycle disposer; `evaluation_refs` stays fail-closed until a verified accepted producer exists. |
+| **LLM02 Sensitive Information Disclosure** | The durable manifest/report contains bounded identifiers, closed labels, digests, and aggregate metrics only. Raw queries, raw evidence text, model weights, secrets, and unrestricted free text have no field in the record or emitted JSON; listings omit the full report. |
+
+The technical audit receipt and evaluation record are evidence mechanisms, not
+legal conclusions. The official EU AI Act text describes logging and human
+oversight obligations in its own scope; NIST AI 600-1 and the OWASP Agentic
+Security Initiative provide risk/security guidance. They do not determine
+whether a deployment is high-risk, who is provider versus deployer, or which
+retention, documentation, lawful-basis, consent, or jurisdiction-specific duties
+apply. Those remain operator-and-counsel decisions.
+
 ## Part 3 — AIUC-1 crosswalk (procurement bridge)
 
 A crosswalk maps ASI01–ASI10 to the AI-Under-Contract (AIUC-1) requirements so

@@ -117,6 +117,8 @@ const PARITY_TABLES: &[&str] = &[
     "decision_run_traces",
     // the model identity and lifecycle table.
     "decision_model_registry",
+    // the bounded decision-evaluation record table.
+    "decision_evaluation_runs",
 ];
 
 /// Size of the random vec0 spot-check. ponytail: 50 is a heuristic — the formal

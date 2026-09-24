@@ -284,6 +284,10 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/workflow/model-registry/register",
     "/workflow/model-registry/{model_ref}",
     "/workflow/model-registry",
+    // The decision-evaluation control plane. The base path carries POST and
+    // the DPO-gated listing GET; the detail path is the id-scoped read.
+    "/workflow/decision-evals",
+    "/workflow/decision-evals/{id}",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -599,4 +603,8 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/model-registry/register", "Admin"),
     ("/workflow/model-registry/{model_ref}", "Read"),
     ("/workflow/model-registry", "Admin"),
+    // Evaluation creation and listing are Admin-on-global operator/DPO
+    // actions; the detail uses the same conservative confidential posture.
+    ("/workflow/decision-evals", "Admin"),
+    ("/workflow/decision-evals/{id}", "Admin"),
 ];

@@ -202,6 +202,9 @@ pub const SCHEMA_VERSION_V1_32_12: &str = "1.32.12";
 /// the model identity registry schema: one digest-pinned row per declared
 /// model identity and lifecycle state.
 pub const SCHEMA_VERSION_V1_32_13: &str = "1.32.13";
+/// the decision-evaluation record schema: bounded, digest-pinned evaluation
+/// runs with explicit leg availability and non-authoritative acceptance data.
+pub const SCHEMA_VERSION_V1_32_14: &str = "1.32.14";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
@@ -223,7 +226,7 @@ pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 /// Security posture: a source DB stamped NEWER than this is refused loudly
 /// ([`refuse_newer_schema`]) — migrating *down* would silently drop columns
 /// the newer release added, i.e. data loss dressed as a migration.
-pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_13;
+pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_14;
 
 /// Numeric dotted-version compare (std-only, no semver dependency).
 /// Non-numeric components are skipped (the `schema_ge` precedent in the
@@ -667,7 +670,7 @@ mod tests {
         // (numeric truth, not string truth — "1.32.9" > "1.32.12" as a raw
         // string ("9" > "1") yet is numerically OLDER, and "1.28.9" <
         // "1.32.0" even though "9" > "0" would say otherwise positionally).
-        assert!(is_newer_than_known(Some("1.32.14")));
+        assert!(is_newer_than_known(Some("1.32.15")));
         assert!(!is_newer_than_known(Some("1.32.9")));
         assert!(!is_newer_than_known(Some("1.28.9")));
     }

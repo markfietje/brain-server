@@ -29,6 +29,7 @@ pub mod compliance;
 pub mod connectors;
 pub mod consolidate;
 pub mod crew;
+pub mod decision_evals;
 pub mod decision_runs;
 pub mod domains;
 pub mod forget;

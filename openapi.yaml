@@ -7629,6 +7629,145 @@ paths:
         "403": { description: Not authorized (Write on the run's domain + the workflow role) }
         "404": { description: Decision run trace or run not found (probe-blind) }
         "409": { description: config_hash_mismatch }
+  /workflow/decision-evals:
+    post:
+      summary: Create a digest-pinned, non-authoritative decision evaluation (Admin plus DPO)
+      description: >
+        Evaluates a bounded operator-declared judgment manifest against
+        persisted decision traces. The manifest is explicitly non-authoritative;
+        no gold pack is treated as a decision label, raw query/evidence text is
+        not accepted, and missing metric legs remain unavailable rather than
+        zero. The acceptance state is a checked audit fact, not a detached
+        cryptographic signature.
+      operationId: createDecisionEvaluation
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [idempotency_key, target, judgment_set]
+              properties:
+                idempotency_key: { type: string, minLength: 1, maxLength: 128 }
+                target:
+                  type: object
+                  additionalProperties: false
+                  required: [pipeline_version, config_hash, model_registry_id, model_registry_version, model_registry_digest]
+                  properties:
+                    pipeline_version: { type: string, maxLength: 64 }
+                    config_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+                    model_registry_id: { type: string, maxLength: 256 }
+                    model_registry_version: { type: string, maxLength: 128 }
+                    model_registry_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+                    model_artifact_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+                judgment_set:
+                  type: object
+                  additionalProperties: false
+                  required: [source, authoritative, judgment_set_ref, frozen_at, manifest_digest, cases]
+                  properties:
+                    source: { type: string, enum: [operator_declared] }
+                    authoritative: { type: boolean, enum: [false] }
+                    judgment_set_ref: { type: string, maxLength: 256 }
+                    frozen_at: { type: integer, format: int64, minimum: 1 }
+                    manifest_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+                    cases:
+                      type: array
+                      minItems: 1
+                      maxItems: 128
+                      items:
+                        type: object
+                        additionalProperties: false
+                        required: [case_id, trace_id, relevant_evidence_ids, expected_action, expected_output_label, expected_output_digest, case_digest]
+                        properties:
+                          case_id: { type: string, maxLength: 256 }
+                          trace_id: { type: integer, format: int64, minimum: 1 }
+                          relevant_evidence_ids:
+                            type: array
+                            minItems: 1
+                            maxItems: 32
+                            items: { type: string, maxLength: 256 }
+                          expected_action: { type: string, enum: [act, approve, reject, escalate] }
+                          expected_output_label: { type: string, enum: [choice, score, noul, none] }
+                          expected_output_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+                          case_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+      responses:
+        "201":
+          description: Evaluation record created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionEvaluationRecord"
+        "200":
+          description: Idempotent replay of the original evaluation record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionEvaluationRecord"
+        "400": { description: judgment_set_unavailable | judgment_set_digest_mismatch | evaluation_target_mismatch | model_artifact_digest_required | evaluation_idempotency_key_invalid | evaluation_target_invalid | judgment_set_size_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Admin on global plus DPO role) }
+        "409": { description: evaluation_idempotency_conflict }
+    get:
+      summary: List bounded decision evaluation records (Admin plus DPO; audited)
+      operationId: listDecisionEvaluations
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        "200":
+          description: Bounded evaluation metadata; full manifests and reports are omitted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rows, count]
+                properties:
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      required: [evaluation_id, pipeline_version, config_hash, model_registry_id, model_registry_version, judgment_set_ref, judgment_set_digest, judgment_set_count, acceptance_state, created_at]
+                      properties:
+                        evaluation_id: { type: string }
+                        pipeline_version: { type: string }
+                        config_hash: { type: string }
+                        model_registry_id: { type: string }
+                        model_registry_version: { type: string }
+                        judgment_set_ref: { type: string }
+                        judgment_set_digest: { type: string }
+                        judgment_set_count: { type: integer }
+                        acceptance_state: { type: string, enum: [operator_accepted_non_authoritative] }
+                        created_at: { type: integer, format: int64 }
+                  count: { type: integer }
+        "400": { description: evaluation_limit_out_of_bounds }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Admin on global plus DPO role) }
+  /workflow/decision-evals/{id}:
+    get:
+      summary: Read one decision evaluation record (Admin plus DPO; audited)
+      operationId: getDecisionEvaluation
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, pattern: "^eval_[0-9a-f]{32}$" }
+      responses:
+        "200":
+          description: The digest-verified evaluation record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DecisionEvaluationRecord"
+        "400": { description: evaluation_id_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Admin on global plus DPO role) }
+        "404": { description: Evaluation record not found (probe-blind) }
   /workflow/model-registry:
     get:
       summary: List registered model identities (Admin plus DPO role; audited)
@@ -7854,6 +7993,71 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
   schemas:
+    DecisionEvaluationRecord:
+      type: object
+      additionalProperties: false
+      required: [evaluation_id, idempotency_key, request_digest, target, judgment_set, report, acceptance_state, acceptance_bars, creator_id, reviewer_id, created_at, record_digest, audit_target]
+      properties:
+        evaluation_id: { type: string, pattern: "^eval_[0-9a-f]{32}$" }
+        idempotency_key: { type: string, maxLength: 128 }
+        request_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+        target:
+          type: object
+          additionalProperties: false
+          required: [pipeline_version, config_hash, model_registry_id, model_registry_version, model_registry_digest]
+          properties:
+            pipeline_version: { type: string }
+            config_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+            model_registry_id: { type: string }
+            model_registry_version: { type: string }
+            model_registry_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+            model_artifact_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+        judgment_set:
+          type: object
+          additionalProperties: false
+          required: [source, authoritative, judgment_set_ref, frozen_at, manifest_digest, cases]
+          properties:
+            source: { type: string, enum: [operator_declared] }
+            authoritative: { type: boolean, enum: [false] }
+            judgment_set_ref: { type: string }
+            frozen_at: { type: integer, format: int64 }
+            manifest_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+            cases:
+              type: array
+              maxItems: 128
+              items:
+                type: object
+                additionalProperties: false
+                required: [case_id, trace_id, relevant_evidence_ids, expected_action, expected_output_label, expected_output_digest, case_digest]
+                properties:
+                  case_id: { type: string }
+                  trace_id: { type: integer, format: int64 }
+                  relevant_evidence_ids: { type: array, items: { type: string } }
+                  expected_action: { type: string, enum: [act, approve, reject, escalate] }
+                  expected_output_label: { type: string, enum: [choice, score, noul, none] }
+                  expected_output_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+                  case_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+        report:
+          type: object
+          required: [report_version, case_results, retrieval, agreement, abstention, ood_abstention, calibration, red_team, acceptance_reported_as_data_only, acceptance_bars]
+          properties:
+            report_version: { type: string }
+            case_results: { type: array, items: { type: object } }
+            retrieval: { type: object }
+            agreement: { type: object }
+            abstention: { type: object }
+            ood_abstention: { type: object }
+            calibration: { type: object }
+            red_team: { type: object }
+            acceptance_reported_as_data_only: { type: boolean, enum: [true] }
+            acceptance_bars: { type: object }
+        acceptance_state: { type: string, enum: [operator_accepted_non_authoritative] }
+        acceptance_bars: { type: object }
+        creator_id: { type: string }
+        reviewer_id: { type: string }
+        created_at: { type: integer, format: int64 }
+        record_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+        audit_target: { type: string }
     ProposalView:
       type: object
       description: >-

@@ -17,6 +17,37 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [Unreleased] — the decision evaluation record (schema 1.32.14 "DecisionEvaluation")
+
+**Release notes**
+
+### Improvements
+- **Decision evaluation records** — `POST /workflow/decision-evals` accepts a
+  bounded, digest-pinned, explicitly non-authoritative operator-declared
+  judgment manifest over persisted decision traces. The route stores bounded
+  metadata, closed labels, digests, and aggregate leg statuses only; it never
+  treats QC/GDL gold packs as decision labels and never persists raw query or
+  evidence text. `GET /workflow/decision-evals/{id}` and the bounded
+  `GET /workflow/decision-evals` listing are DPO/Admin-gated, audited, and
+  probe-blind where applicable.
+
+### Security fixes
+- Evaluation target, registry identity, model artifact digest, manifest digest,
+  per-case labels, and canonical record digest are checked before the checked
+  acceptance audit row and the evaluation row commit in one transaction.
+  Acceptance bars are explicitly `reported_as_data_only`; missing metric legs
+  remain unavailable, never fabricated zeroes. No registry status transition,
+  `evaluation_refs` attachment, autonomous promotion, or calibration-signature
+  claim is introduced.
+
+### Engineering record
+- Schema: additive `decision_evaluation_runs` table and stamp `1.32.14`; no
+  package/public version bump and `PIPELINE_VERSION` remains `1.32.11`.
+- The new core reuses shipped retrieval and kappa metrics, records ECE only
+  when confidence observations exist, and marks OOD/red-team legs unavailable
+  until separately pinned sets exist. Both lockfiles remain unchanged; the
+  decide/search/client forbidden areas remain untouched.
+
 ## [Unreleased] — the model registry (schema 1.32.13 "ModelRegistry")
 
 **Release notes**

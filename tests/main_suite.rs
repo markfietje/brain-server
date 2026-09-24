@@ -3567,6 +3567,8 @@ Final paragraph after the rule.";
             "decision_run_traces",
             // model identity and lifecycle table.
             "decision_model_registry",
+            // bounded decision-evaluation records.
+            "decision_evaluation_runs",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -3815,7 +3817,7 @@ Final paragraph after the rule.";
         // gate's mode law).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_13),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_14),
             "schema_version must be recorded as the current release after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×
@@ -7020,6 +7022,10 @@ Final paragraph after the rule.";
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/decision_runs.rs"
                             )),
+                            "decision_evals" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/decision_evals.rs"
+                            )),
                             "model_registry" => include_str!(concat!(
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/model_registry.rs"
@@ -8005,6 +8011,10 @@ Final paragraph after the rule.";
             env!("CARGO_MANIFEST_DIR"),
             "/src/server/router/core.rs"
         ));
+        let decision_evals_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/handlers/decision_evals.rs"
+        ));
         // (source, handler/helper name, the seam call it must reference).
         // The seam names deliberately pair with the response field each site
         // emits; the assert is a substring check on the handler body.
@@ -8059,6 +8069,23 @@ Final paragraph after the rule.";
             (profiles_src, "list_profiles", "sanitize_value_strings"),
             (profiles_src, "get_profile", "sanitize_value_strings"),
             (audit_src, "list_audit", "sanitize_value_strings"),
+            // Decision-evaluation records emit bounded stored metadata and
+            // report projections through the same deep string seam.
+            (
+                decision_evals_src,
+                "post_decision_eval",
+                "sanitize_value_strings",
+            ),
+            (
+                decision_evals_src,
+                "get_decision_eval",
+                "sanitize_value_strings",
+            ),
+            (
+                decision_evals_src,
+                "get_decision_evals",
+                "sanitize_value_strings",
+            ),
         ];
         for (src, name, seam) in sites {
             let body = handler_body(src, name)

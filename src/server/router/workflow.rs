@@ -414,6 +414,21 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             "/workflow/model-registry",
             get(handlers::model_registry::get_model_registry),
         )
+        // Decision-evaluation records: the POST registers first, the detail
+        // read follows, and the DPO-gated bounded listing owns the shared base
+        // path last (the existing decision-run/model-registry convention).
+        .route(
+            "/workflow/decision-evals",
+            post(handlers::decision_evals::post_decision_eval),
+        )
+        .route(
+            "/workflow/decision-evals/{id}",
+            get(handlers::decision_evals::get_decision_eval),
+        )
+        .route(
+            "/workflow/decision-evals",
+            get(handlers::decision_evals::get_decision_evals),
+        )
         .route(
             "/workflow/calibration/sign",
             post(handlers::workflow::post_calibration_sign),

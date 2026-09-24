@@ -596,6 +596,8 @@ const EMPTY_SAFE_200: &[&str] = &[
     // the κ bench reads on an empty corpus are literal 200s
     "/workflow/kappa/queue",
     "/workflow/kappa/report",
+    // the evaluation listing has an empty-corpus 200 anchor
+    "/workflow/decision-evals",
 ];
 
 async fn send(
@@ -1973,6 +1975,8 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/workflow/decision-runs",
     "/workflow/decision-runs/{id}",
     "/workflow/decision-runs/{id}/replay-diff",
+    "/workflow/decision-evals",
+    "/workflow/decision-evals/{id}",
     // The operator decision surfaces: both handlers demand the `workflow`
     // role (the HITL law's gate shape) on top of the Write scope, so the
     // agent class is refused 403 exactly like the offer route.
