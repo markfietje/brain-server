@@ -17,6 +17,20 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [Unreleased] — delivery loop, fourth top-level (D0 ratified)
+
+### Release notes
+
+**Improvements**
+- **The delivery loop is ratified as the fourth top-level loop, and its pure decision core ships.** `crates/brain-delivery-core` carries the closed autonomy-tier vocabulary, the forward-only phase machine, the deny-wins promotion gate, the attestation predicate, the budget ledger, the replay comparator, and the release-status machine. It is pure and total — no clock, no store, no network, no provider — so it decides without a running host. It has **no callers**: there is no route, no table, no migration, and no persistence behind it, and nothing about the running server changes.
+
+### Engineering record
+
+- **D0 recorded** (2026-09-26): Deliver is the fourth top-level loop, a different axis from the three memory loops rather than a fourth rung. `docs/architecture.md` gains the D1–D5 shape, the extended law sentence (*a model proposes; only the gate disposes — including delivery*), and the statement that Git, CI, registries, deploy targets, PM trackers, and incident systems remain external systems of record. Nothing in Loops 1–3 changes.
+- **Two structural ceilings, not incidental ones.** The crate does not sign and does not verify signatures, so an unsigned or foreign-signer case is a refusal the *host* must make and never a degraded mark from the core; and autonomy only narrows, so `promote` reads the tier and never the recorded trace mode. `BudgetKind::BlastRadius` is carried but unenforced — recorded, never consulted.
+- **10 pins, 2,136 lines, deps exactly `serde`/`serde_json`/`sha2`.** Root `Cargo.lock` is byte-identical; `crates/Cargo.lock` gains one additive `[[package]]` entry (65 → 66) with zero third-party additions.
+- **No wire, no tables, no `src/`.** Persistence, routes, attestation signing, and the remaining phases are later rounds.
+
 ## [1.29.0] — 2026-09-25 — "GDL boundary, governed decisions, and model identity"
 
 This release closes the GDL provider boundary and launch-integrity work accumulated since 1.28.92, alongside the governed model identity, decision-run, and evaluation-record surfaces. The GDL launch request is intentionally breaking; its migration is called out first.

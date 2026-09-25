@@ -206,7 +206,10 @@ satisfy a phase routes or escalates instead).
 The phase machine is deterministic Rust: the model proposes a phase artifact
 as JSON, a pure arbiter (`parse_and_gate`) decides, and a rejected artifact is
 retried bounded-then-routed — one original ask plus `MAX_PHASE_ATTEMPTS = 3`
-gate-error re-asks; exhausting them ROUTES the case (route, not resolve).
+gate-error re-asks; exhausting them ROUTES the case (route, not resolve). The
+same law governs Loop 4 — a model proposes, only the gate disposes — where the
+arbiter is `brain-delivery-core`'s `promote` instead (see The delivery loop —
+Loop 4).
 Persistence per phase-pass is ONE `WorkflowTx`: the phase's `workflow_steps`
 row (Act adds one sub-row per executed test-log row), the CAS run-state
 advance (with its own audit row), and one audit row per inserted step —
@@ -282,6 +285,52 @@ healthcare: TreeHandoff (R17 session-tree infrastructure), the LAYA System-1
 decide port (R19 pure modules, ungated, zero behavior change), and the 1.32.8
 classifier consume (deliberately absent — opener-gated on the operator
 labeling round).
+
+---
+
+## The delivery loop — Loop 4
+
+**D0, recorded 2026-09-26:** the operator has ratified **Deliver as the fourth
+top-level loop**. The three loops above turn over *memory*; this one turns over
+*artifacts*, so it is a different axis rather than a fourth rung beside them.
+Nothing in Loops 1–3 changes.
+
+```mermaid
+flowchart LR
+    D1["D1 Scope<br/>intake → goal → done-criteria"] --> D2["D2 Design<br/>plan → decision → policy"]
+    D2 --> D3["D3 Verify<br/>implement → test → QA → critic"]
+    D3 --> D4["D4 Release<br/>build → attest → approve → promote"]
+    D4 --> D5["D5 Operate<br/>observe → attribute → improve"]
+```
+
+**Its state today: ratified, with a pure decision core and nothing else.** The
+decision law ships as `crates/brain-delivery-core` — the closed autonomy-tier
+vocabulary, the phase machine, the promotion gate, the attestation predicate,
+the budget ledger, the replay comparator, and the release-status machine. That
+crate is **pure and total**: no clock, no store, no network, no provider, so it
+decides without a running host and deny always wins.
+
+It also has **no callers**. There is no table, no route, no migration, and no
+persistence behind it; the phases above are the ratified shape, not a running
+pipeline. **This section describes a ratified decision and a shipped pure core —
+it does not describe shipped runtime behavior.**
+
+**The law sentence, extended to include it: a model proposes; only the gate
+disposes.** In Loops 1–3 that arbiter is the GDL phase machine's
+`parse_and_gate`. In D4 it is `promote`, a pure deny-wins function that reads the
+run's **autonomy tier** and never the recorded trace mode — a trace that claims
+to be deterministic buys no authority it was not granted, and the two narrowest
+tiers propose and never promote. Two ceilings are structural, not incidental:
+the crate does not sign and does not verify signatures, so an unsigned or
+foreign-signer case is a refusal the **host** must make and never a degraded
+mark from the core; and autonomy only ever narrows, so no tier can widen what a
+principal may do.
+
+**External authorities and systems of record stay external.** Git, CI, package
+registries, deploy targets, project-management trackers, and incident systems
+remain the systems of record for whatever they own. This loop observes and
+attributes against them; it does not become their writer, and nothing it derives
+is a substitute for their own record.
 
 ---
 

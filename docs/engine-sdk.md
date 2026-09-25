@@ -33,7 +33,9 @@ some filled, some deliberate scaffolds so the graph stays green:
 
 - Filled: `brain-aftersales-core` (dispositions/evidence/gates),
   `brain-interview-core`, `brain-troubleshoot-core`, `brain-care-core`,
-  `brain-fuzz` (corpus replay).
+  `brain-fuzz` (corpus replay), `brain-delivery-core` (autonomy tiers, phase
+  machine, promotion gate, attestation predicate, budget ledger, replay
+  comparator, release-status machine — pure, no I/O, and ungated: no callers yet).
 - Scaffolds (lib-only by design): `brain-consensus-core`,
   `brain-executor-core`, `legal-rules-db`.
 
