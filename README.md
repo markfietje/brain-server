@@ -13,9 +13,12 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 [![Version](https://img.shields.io/badge/version-1.28.92-blue.svg)](#)
 [![Docs](https://img.shields.io/badge/docs-brain--server-1f6feb.svg)](https://markfietje.github.io/brain-server/)
 [![Rust](https://img.shields.io/badge/rust-2024-orange.svg?logo=rust)](#)
+[![Tests](https://img.shields.io/badge/tests-2247%20passed-brightgreen.svg)](#)
 [![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
 
 </p>
+
+*The test-count badge is derived by `scripts/badges.sh`; it is not selfcheck-verified by the lightweight `--selfcheck` path.*
 
 <p align="center">
 
@@ -463,7 +466,7 @@ See:
 
 ## Universal Memory Protocol
 
-Brain Server includes a bounded implementation of **Universal Memory Protocol 1.0 (UMP)**, including its local integrity layer and portable memory bindings.
+Brain Server includes a bounded implementation of **Universal Memory Protocol 1.0 (UMP)**, including its local integrity layer and portable memory bindings. The **UMP 1.0 L3** badge is derived from the conformance gate in `.github/workflows/ci.yml`.
 
 UMP support provides a standards-oriented path for moving governed memory records between compatible systems while retaining content integrity, capabilities, provenance, and audit semantics.
 

@@ -197,9 +197,7 @@ fi
 #   - package.json: the fork-field patch table (5b) owns the typebox
 #     specifier; the delta must be typebox-lines-only.
 DIFF_OUT="$(diff -rq "$SRC" "$TARGET" -x node_modules -x package-lock.json -x .DS_Store || true)"
-DECLARED_FILES=()
 if [[ -n "$DIFF_OUT" ]]; then
-	DECLARED_FILES=("format.test.ts" "package.json")
 	UNDECLARED="$(printf '%s\n' "$DIFF_OUT" | grep -v -e 'format.test.ts' -e 'package.json' || true)"
 	if [[ -n "$UNDECLARED" ]]; then
 		echo "SYNC UNVERIFIED: drift outside the declared exception list (format.test.ts, package.json):" >&2

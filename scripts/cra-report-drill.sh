@@ -123,7 +123,6 @@ DUE_FINAL_INCIDENT="$(date -u -r $((SENT + 30 * 24 * 3600)) +"%Y-%m-%dT%H:%M:%SZ
 
 # ── step 6: timing report ────────────────────────────────────────────────────
 step "6/6 write timing report"
-DONE="$(now_s)"
 ELAPSED_CLASS=$((CLASSIFIED - T0))
 ELAPSED_ASSEMBLE=$((ASSEMBLED - CLASSIFIED))
 ELAPSED_DRAFT=$((DRAFTED - ASSEMBLED))

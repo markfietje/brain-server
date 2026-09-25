@@ -1,3 +1,7 @@
+overrides:
+  cookie: 0.7.2
+  esbuild: 0.25.12
+
 # pnpm 12's build-script policy (scaffolded by pnpm itself at first
 # install). The enumerated allowlist IS the supply-chain posture: nothing
 # runs a postinstall except what is explicitly allowed, with the reason
