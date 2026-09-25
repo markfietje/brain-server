@@ -52,7 +52,6 @@ dependencies = [
 name = "brain-delivery-core"
 version = "1.29.0"
 dependencies = [
- "hex",
  "serde",
  "serde_json",
  "sha2",

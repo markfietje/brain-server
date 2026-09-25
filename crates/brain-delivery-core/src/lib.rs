@@ -26,6 +26,22 @@
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+/// Lowercase hex, self-contained.
+///
+/// The prereg fixes this crate's dependency set at exactly `serde`,
+/// `serde_json`, and `sha2`, and a need for anything else is a
+/// stop-and-preregister-addendum event. Hex encoding is eight lines, so it lives
+/// here rather than arriving as a fourth dependency.
+fn hex_encode(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
 /// The predicate type this crate builds, as specified in-repo. A resolvable
 /// in-repo identifier; no external interoperability is claimed for it.
 pub const PREDICATE_TYPE: &str = "urn:brain:attest:delivery:v1";
@@ -481,7 +497,7 @@ impl Attestation {
         message.extend_from_slice(self.signer_did.as_bytes());
         message.push(b'|');
         message.extend_from_slice(self.parent_digest.as_bytes());
-        hex::encode(Sha256::digest(&message))
+        hex_encode(&Sha256::digest(&message))
     }
 
     /// Every field a link must carry to be usable as evidence. An empty field
@@ -922,7 +938,7 @@ pub fn canonical_predicate_bytes(predicate: &AttestationPredicate) -> Vec<u8> {
 pub fn predicate_digest(predicate: &AttestationPredicate) -> String {
     let mut message = Vec::from(PREDICATE_DIGEST_DOMAIN);
     message.extend_from_slice(&canonical_predicate_bytes(predicate));
-    hex::encode(Sha256::digest(&message))
+    hex_encode(&Sha256::digest(&message))
 }
 
 /// Decode a canonical predicate.
@@ -1774,7 +1790,7 @@ mod tests {
 
         // The digest is domain-separated, so it is not the digest of the bare
         // document, and any change to any field moves it.
-        let bare = hex::encode(Sha256::digest(&bytes));
+        let bare = hex_encode(&Sha256::digest(&bytes));
         assert_ne!(predicate_digest(&predicate), bare);
         let mut changed = predicate.clone();
         changed.plan_digest = "sha256:other-plan".to_string();
@@ -2061,7 +2077,7 @@ mod tests {
         // path from a comparison to a model.
         assert_eq!(
             declared_dependency_names(),
-            vec!["serde", "serde_json", "sha2", "hex"]
+            vec!["serde", "serde_json", "sha2"]
         );
         let source = include_str!("lib.rs");
         for (head, tail) in [
@@ -2087,5 +2103,34 @@ mod tests {
                 needle(head, tail)
             );
         }
+    }
+
+    /// The digest is pinned to an answer computed OUTSIDE this crate.
+    ///
+    /// Every other pin in this file compares a digest only against another
+    /// digest this file produced, so an encoder that emitted uppercase, swapped
+    /// the nibbles, or dropped a leading zero would satisfy all of them while
+    /// producing a digest no host could reproduce. The expected value was
+    /// computed with an independent SHA-256 implementation over the message the
+    /// crate builds by hand, and it pins three things at once: the hex
+    /// encoding, the exact bytes of the record domain separator, and the field
+    /// order with its `|` framing.
+    #[test]
+    fn digest_encoding_is_a_known_answer_not_only_self_consistent() {
+        // The encoder itself: empty, a leading zero byte, a high nibble, and a
+        // byte whose nibbles differ (0x10 -> "10", never "01").
+        assert_eq!(hex_encode(b""), "");
+        assert_eq!(hex_encode(&[0x00, 0x0f, 0x10, 0xff]), "000f10ff");
+        assert_eq!(hex_encode(&[0xab, 0xcd]), "abcd");
+        // And the framed, domain-separated record digest of the root fixture.
+        assert_eq!(
+            root_link().record_digest(),
+            "9fbcf60dabc26c8905a2eb8820100e6709df27a0a409d49f04eab59d85a60037"
+        );
+        // A one-byte change to any framed field moves the digest, so the
+        // separator is load-bearing rather than decorative.
+        let mut moved = root_link();
+        moved.signer_did = "did:key:zOperato".to_string();
+        assert_ne!(moved.record_digest(), root_link().record_digest());
     }
 }

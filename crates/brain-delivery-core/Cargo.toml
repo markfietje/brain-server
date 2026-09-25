@@ -8,7 +8,11 @@ description = "The delivery-loop decision core (autonomy tiers, phase machine, p
 publish = false
 
 [dependencies]
+# EXACTLY the brain-executor-core precedent's core three, per the R37 prereg:
+# "serde, serde_json, sha2 -- NOTHING else". A need for any other dependency is
+# a stop-and-preregister-addendum event. (Note: the executor-core manifest has
+# since drifted to four, adding `hex`; this crate follows the prereg's letter and
+# keeps the hex encoder self-contained. See the R37 evidence file.)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
-hex = "0.4"
