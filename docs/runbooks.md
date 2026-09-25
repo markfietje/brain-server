@@ -293,6 +293,57 @@ same-tx law  : revocation + audit + drain committed atomically (the pin
                revoked_owner_no_new_dispatch asserts the rollback twin)
 ```
 
+## GDL provider launch integrity (R35)
+
+Use this procedure when configuring or diagnosing the GDL case-launch boundary.
+It does not use the private GDL conformance pack and does not require provider
+bodies, bearer values, or secret paths in the operator record.
+
+### Configure and verify
+
+1. Set all four server variables together: `BRAIN_GDL_PROVIDER_BASE_URL`,
+   `BRAIN_GDL_PROVIDER_MODEL`, `BRAIN_GDL_PROVIDER_SECRET_FILE`, and
+   `BRAIN_GDL_PROVIDER_SECRET_ROOT`. The root is absolute; the bearer file is
+   regular, owner-only, confined beneath that root, single-line, and bounded.
+2. Use an HTTPS endpoint without userinfo, query, fragment, or redirect
+   behavior. Keep provider destination and model server-owned; the accepted
+   request is `{ "ticket": "..." }` only.
+3. Check `/ready` before launching. `gdl_provider: "disabled"` means all four
+   variables are absent and GDL provider work is not configured. `"configured"`
+   means the static profile passed. `"invalid"` means partial or invalid
+   configuration; normal bootstrap refuses it and readiness is `NOT_READY`.
+4. Grant only the `workflow-operator` role to JWT operators that need this
+   surface. The role carries `workflow` and no publication capability. The
+   `agent` preset remains denied; role-less and unknown-role JWTs are denied
+   before profile or secret work.
+
+### Provider failure response
+
+1. Launch only a fresh `troubleshoot` run. After GDL admission, a provider
+   transport, response, or total-deadline failure is converted into the durable
+   `gdl_provider_failed` terminal outcome.
+2. Expect the first request to return HTTP 503 with stable code
+   `gdl_provider_failed`. The exchange receipt, invocation completion, checkpoint,
+   audit row, and outer claim release commit through the existing transaction
+   seams.
+3. A later launch against that run returns HTTP 409 with the same named code;
+   it does not replay provider work. There is no public recovery API in this
+   round. Preserve the run and its audit evidence for the operator's normal
+   incident process.
+4. Inspect only redacted evidence: the audit detail is the fixed string
+   `gdl_provider_failed`. Do not copy provider bodies, bearer values, secret
+   paths, or secret-bearing URLs into tickets, logs, or incident notes.
+
+### Timeout and cancellation checks
+
+The provider request has a 25-second total request/body deadline in addition
+to the 5-second connect and 30-second first-byte/read bounds. A response that
+continues a slow drip is terminated at the total deadline. Dropping the stream
+receiver cancels the actual in-flight HTTP future; a held response body is not
+left running in the background. The stable public classes are
+`provider_unavailable`, `provider_refused`, `provider_response_invalid`,
+`provider_timeout`, and `provider_cancelled`.
+
 ## Next steps
 
 - **[One Brain for the Whole Team](./team-workflow.md)** — where procedures fit in the shared-store workflow.

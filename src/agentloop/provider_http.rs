@@ -66,8 +66,10 @@ pub(crate) struct HttpProviderConfig {
     /// Connect-phase timeout.
     pub connect_timeout: Duration,
     /// Per-read idle timeout (first byte and every subsequent read —
-    /// a stalled stream refuses instead of hanging).
+    /// a stalled read refuses instead of hanging).
     pub first_byte_timeout: Duration,
+    /// Total wall-clock deadline from request start through response-body end.
+    pub total_timeout: Duration,
     /// Whole-response byte ceiling (SSE bytes, headers excluded).
     pub max_response_bytes: usize,
 }
@@ -81,6 +83,7 @@ impl std::fmt::Debug for HttpProviderConfig {
             .field("auth_header", &"[REDACTED]")
             .field("connect_timeout", &self.connect_timeout)
             .field("first_byte_timeout", &self.first_byte_timeout)
+            .field("total_timeout", &self.total_timeout)
             .field("max_response_bytes", &self.max_response_bytes)
             .finish()
     }
@@ -105,9 +108,8 @@ impl HttpProvider {
     pub(crate) fn new(cfg: HttpProviderConfig) -> Result<Arc<Self>, ProviderError> {
         Self::validate_config(&cfg)?;
         let (host, port) = split_host_port(&cfg.base_url)?;
-        let addrs = webhook::resolve_and_validate_sink(&host, port, false).map_err(|_| {
-            ProviderError::Refused("provider endpoint refused by egress screen".to_string())
-        })?;
+        let addrs = webhook::resolve_and_validate_sink(&host, port, false)
+            .map_err(|_| ProviderError::Refused)?;
         let client = Self::build_client(&cfg, Some((&host, &addrs)), true);
         Ok(Arc::new(Self {
             label: "provider_http".to_string(),
@@ -131,9 +133,7 @@ impl HttpProvider {
             || cfg.model.len() > MAX_PROVIDER_MODEL_BYTES
             || cfg.model.chars().any(char::is_control)
         {
-            return Err(ProviderError::Refused(
-                "provider model configuration is invalid".to_string(),
-            ));
+            return Err(ProviderError::Refused);
         }
         if cfg.auth_header.is_empty()
             || cfg.auth_header.len() > MAX_PROVIDER_SECRET_HEADER_BYTES
@@ -142,14 +142,10 @@ impl HttpProvider {
                 .chars()
                 .any(|character| character == '\r' || character == '\n' || character.is_control())
         {
-            return Err(ProviderError::Refused(
-                "provider authorization configuration is invalid".to_string(),
-            ));
+            return Err(ProviderError::Refused);
         }
-        if cfg.max_response_bytes == 0 {
-            return Err(ProviderError::Refused(
-                "provider response bound is invalid".to_string(),
-            ));
+        if cfg.max_response_bytes == 0 || cfg.total_timeout.is_zero() {
+            return Err(ProviderError::Refused);
         }
         Ok(())
     }
@@ -181,8 +177,12 @@ impl HttpProvider {
             // Redirects are never followed: the screen validated ONE
             // endpoint; a redirect is a different endpoint (named refusal).
             .redirect(reqwest::redirect::Policy::none())
+            // The validated address set is meaningful only for a direct
+            // connection; never let ambient proxy variables bypass the pin.
+            .no_proxy()
             .connect_timeout(cfg.connect_timeout)
-            .read_timeout(cfg.first_byte_timeout);
+            .read_timeout(cfg.first_byte_timeout)
+            .timeout(cfg.total_timeout);
         if require_https {
             builder = builder.https_only(true);
         }
@@ -217,39 +217,35 @@ impl LlmProvider for HttpProvider {
             "tools": req.tools,
         });
         tokio::spawn(async move {
-            let response = match client
-                .post(&url)
-                .header("authorization", &auth)
-                .header("accept", "text/event-stream")
-                .json(&body)
-                .send()
-                .await
-            {
+            let response = tokio::select! {
+                biased;
+                _ = tx.closed() => return,
+                result = client
+                    .post(&url)
+                    .header("authorization", &auth)
+                    .header("accept", "text/event-stream")
+                    .json(&body)
+                    .send() => result,
+            };
+            let response = match response {
                 Ok(r) => r,
-                Err(_) => {
-                    let _ = tx
-                        .send(Err(ProviderError::Unavailable(
-                            "provider transport failed".to_string(),
-                        )))
-                        .await;
+                Err(error) => {
+                    let failure = if error.is_timeout() {
+                        ProviderError::Timeout
+                    } else {
+                        ProviderError::Unavailable
+                    };
+                    let _ = tx.send(Err(failure)).await;
                     return;
                 }
             };
             let status = response.status();
             if status.is_client_error() {
-                let _ = tx
-                    .send(Err(ProviderError::Refused(
-                        "provider refused the request".to_string(),
-                    )))
-                    .await;
+                let _ = tx.send(Err(ProviderError::Refused)).await;
                 return;
             }
-            if !(status.is_success()) {
-                let _ = tx
-                    .send(Err(ProviderError::Unavailable(
-                        "provider returned an unsuccessful status".to_string(),
-                    )))
-                    .await;
+            if !status.is_success() {
+                let _ = tx.send(Err(ProviderError::Unavailable)).await;
                 return;
             }
             let mut stream = response.bytes_stream();
@@ -259,37 +255,40 @@ impl LlmProvider for HttpProvider {
             // only fixed by the saturating_add against a usize below, and
             // inference cannot see through the method receiver.
             let mut total = 0usize;
-            while let Some(item) = stream.next().await {
+            loop {
+                let item = tokio::select! {
+                    biased;
+                    _ = tx.closed() => return,
+                    item = stream.next() => item,
+                };
+                let Some(item) = item else {
+                    if !ended {
+                        let _ = tx.send(Err(ProviderError::Malformed)).await;
+                    }
+                    return;
+                };
                 let chunk = match item {
                     Ok(c) => c,
-                    Err(_) => {
-                        let _ = tx
-                            .send(Err(ProviderError::Unavailable(
-                                "provider stream failed".to_string(),
-                            )))
-                            .await;
+                    Err(error) => {
+                        let failure = if error.is_timeout() {
+                            ProviderError::Timeout
+                        } else {
+                            ProviderError::Unavailable
+                        };
+                        let _ = tx.send(Err(failure)).await;
                         return;
                     }
                 };
                 total = total.saturating_add(chunk.len());
                 if total > max_bytes {
-                    let _ = tx
-                        .send(Err(ProviderError::Refused(
-                            "response exceeded max_response_bytes; refusing, never truncating"
-                                .to_string(),
-                        )))
-                        .await;
+                    let _ = tx.send(Err(ProviderError::Malformed)).await;
                     return;
                 }
                 buf.extend_from_slice(&chunk);
                 while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                     let line: Vec<u8> = buf.drain(..=pos).collect();
                     if line.len() > MAX_SSE_LINE_BYTES {
-                        let _ = tx
-                            .send(Err(ProviderError::Refused(
-                                "oversized SSE frame exceeded the line bound".to_string(),
-                            )))
-                            .await;
+                        let _ = tx.send(Err(ProviderError::Malformed)).await;
                         return;
                     }
                     match parse_line(&line) {
@@ -315,11 +314,8 @@ impl LlmProvider for HttpProvider {
                     return;
                 }
             }
-            // Stream ended without message_end: the server closed
-            // mid-stream — the drop-cancel-compatible acknowledgement.
-            if !ended {
-                let _ = tx.send(Err(ProviderError::Cancelled)).await;
-            }
+            // A stream that ends without message_end is a provider protocol
+            // failure, not consumer cancellation.
         });
         Ok(rx)
     }
@@ -327,26 +323,17 @@ impl LlmProvider for HttpProvider {
 
 fn split_host_port(url: &str) -> Result<(String, u16), ProviderError> {
     if url.len() > MAX_ENDPOINT_URL_BYTES || url.bytes().any(|byte| byte <= b' ' || byte == 0x7f) {
-        return Err(ProviderError::Refused(
-            "provider endpoint shape is invalid".to_string(),
-        ));
+        return Err(ProviderError::Refused);
     }
     let Some(authority) = url.strip_prefix("https://") else {
-        return Err(ProviderError::Refused(
-            "provider endpoint must use HTTPS".to_string(),
-        ));
+        return Err(ProviderError::Refused);
     };
     if authority.is_empty() || authority.starts_with('/') {
-        return Err(ProviderError::Refused(
-            "provider endpoint host is invalid".to_string(),
-        ));
+        return Err(ProviderError::Refused);
     }
-    let parsed = reqwest::Url::parse(url)
-        .map_err(|_| ProviderError::Refused("provider endpoint is malformed".to_string()))?;
+    let parsed = reqwest::Url::parse(url).map_err(|_| ProviderError::Refused)?;
     if parsed.scheme() != "https" {
-        return Err(ProviderError::Refused(
-            "provider endpoint must use HTTPS".to_string(),
-        ));
+        return Err(ProviderError::Refused);
     }
     let authority_head = authority.split('/').next().unwrap_or_default();
     if authority_head.contains('@')
@@ -355,18 +342,12 @@ fn split_host_port(url: &str) -> Result<(String, u16), ProviderError> {
         || parsed.fragment().is_some()
         || parsed.query().is_some()
     {
-        return Err(ProviderError::Refused(
-            "provider endpoint contains an unsupported URL component".to_string(),
-        ));
+        return Err(ProviderError::Refused);
     }
     let port = parsed.port_or_known_default().unwrap_or(443);
-    let raw = parsed
-        .host_str()
-        .ok_or_else(|| ProviderError::Refused("provider endpoint has no host".to_string()))?;
+    let raw = parsed.host_str().ok_or(ProviderError::Refused)?;
     if raw.is_empty() || raw.chars().any(char::is_whitespace) {
-        return Err(ProviderError::Refused(
-            "provider endpoint host is invalid".to_string(),
-        ));
+        return Err(ProviderError::Refused);
     }
     let host = raw.to_ascii_lowercase();
     Ok((host, port))
@@ -389,16 +370,9 @@ enum Parsed {
 fn parse_line(line: &[u8]) -> Parsed {
     let s = match std::str::from_utf8(line) {
         Ok(s) => s.trim_end_matches(['\n', '\r']),
-        Err(_) => {
-            return Parsed::Refuse(ProviderError::Refused(
-                "malformed SSE payload: line is not UTF-8".to_string(),
-            ));
-        }
+        Err(_) => return Parsed::Refuse(ProviderError::Malformed),
     };
     let Some(data) = s.strip_prefix("data:") else {
-        // Non-data lines (SSE comments, `event:`/`id:`/`retry:` framing)
-        // are ignorable under this dialect: each `data:` line is
-        // self-contained.
         return Parsed::Ignore;
     };
     let payload = data.trim_start();
@@ -406,23 +380,15 @@ fn parse_line(line: &[u8]) -> Parsed {
         return Parsed::Ignore;
     }
     let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
-        return Parsed::Refuse(ProviderError::Refused(
-            "malformed SSE payload: not valid JSON".to_string(),
-        ));
+        return Parsed::Refuse(ProviderError::Malformed);
     };
     let Some(kind) = v.get("type").and_then(|t| t.as_str()) else {
-        return Parsed::Refuse(ProviderError::Refused(
-            "malformed SSE payload: event has no \"type\"".to_string(),
-        ));
+        return Parsed::Refuse(ProviderError::Malformed);
     };
     match kind {
         "message_start" => Parsed::Event(StreamEvent::MessageStart),
         "text_delta" => v.get("text").and_then(|t| t.as_str()).map_or_else(
-            || {
-                Parsed::Refuse(ProviderError::Refused(
-                    "malformed SSE payload: text_delta without \"text\"".to_string(),
-                ))
-            },
+            || Parsed::Refuse(ProviderError::Malformed),
             |text| Parsed::Event(StreamEvent::TextDelta(text.to_string())),
         ),
         "tool_call_delta" => {
@@ -435,11 +401,7 @@ fn parse_line(line: &[u8]) -> Parsed {
                         arguments_delta,
                     })
                 }
-                _ => Parsed::Refuse(ProviderError::Refused(
-                    "malformed SSE payload: tool_call_delta needs \
-                     \"id\", \"name\" and \"arguments_delta\""
-                        .to_string(),
-                )),
+                _ => Parsed::Refuse(ProviderError::Malformed),
             }
         }
         "message_end" => {
@@ -447,34 +409,20 @@ fn parse_line(line: &[u8]) -> Parsed {
                 Some("end_turn") => StopReason::EndTurn,
                 Some("tool_use") => StopReason::ToolUse,
                 Some("max_tokens") => StopReason::MaxTokens,
-                _ => {
-                    return Parsed::Refuse(ProviderError::Refused(
-                        "malformed SSE payload: message_end without a known \
-                         \"stop_reason\" (end_turn|tool_use|max_tokens)"
-                            .to_string(),
-                    ));
-                }
+                _ => return Parsed::Refuse(ProviderError::Malformed),
             };
             let usage = match v
                 .get("usage")
                 .map(|u| serde_json::from_value::<Usage>(u.clone()))
             {
                 Some(Ok(u)) => u,
-                Some(Err(_)) => {
-                    return Parsed::Refuse(ProviderError::Refused(
-                        "malformed SSE payload: invalid usage".to_string(),
-                    ));
-                }
+                Some(Err(_)) => return Parsed::Refuse(ProviderError::Malformed),
                 None => Usage::default(),
             };
             Parsed::Event(StreamEvent::MessageEnd { stop_reason, usage })
         }
-        "error" => Parsed::Refuse(ProviderError::Refused(
-            "provider returned an error frame".to_string(),
-        )),
-        _ => Parsed::Refuse(ProviderError::Refused(
-            "malformed SSE payload: unknown event type".to_string(),
-        )),
+        "error" => Parsed::Refuse(ProviderError::Refused),
+        _ => Parsed::Refuse(ProviderError::Malformed),
     }
 }
 
@@ -499,6 +447,7 @@ mod tests {
             auth_header: "Bearer test-key".to_string(),
             connect_timeout: Duration::from_secs(2),
             first_byte_timeout: Duration::from_secs(5),
+            total_timeout: Duration::from_secs(10),
             max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
         }
     }
@@ -513,6 +462,11 @@ mod tests {
         Status(u16),
         /// Record the raw request bytes, then serve start+end SSE frames.
         RecordThenSse,
+        /// Send headers and one start frame, then hold the body open until
+        /// the client closes it. Used to prove the body future is dropped.
+        HoldAfterStart,
+        /// Send a valid partial SSE line repeatedly before the total deadline.
+        SlowDrip,
     }
 
     static RECORDED_REQUEST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
@@ -561,13 +515,13 @@ mod tests {
         let handle = tokio::spawn(async move {
             let (mut sock, _) = listener.accept().await.unwrap();
             let request = read_request(&mut sock).await;
-            if matches!(behavior, Behavior::RecordThenSse) {
+            if matches!(&behavior, Behavior::RecordThenSse) {
                 RECORDED_REQUEST
                     .lock()
                     .unwrap()
                     .replace(String::from_utf8_lossy(&request).to_string());
             }
-            let lines = match behavior {
+            let lines = match &behavior {
                 Behavior::Status(code) => {
                     let head = format!(
                         "HTTP/1.1 {code} NOPE\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
@@ -580,12 +534,46 @@ mod tests {
                     format!("data: {}\n\n", sse_event("message_start")),
                     format!("data: {}\n\n", sse_event("message_end")),
                 ],
-                Behavior::Sse(lines) => lines,
+                Behavior::Sse(lines) => lines.clone(),
+                Behavior::HoldAfterStart | Behavior::SlowDrip => Vec::new(),
             };
             let mut body = String::from(
                 "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
                  transfer-encoding: chunked\r\nconnection: close\r\n\r\n",
             );
+            if matches!(&behavior, Behavior::HoldAfterStart) {
+                let start = format!("data: {}\n\n", sse_event("message_start"));
+                let _ = sock
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n{:x}\r\n{}\r\n",
+                            start.len(),
+                            start
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+                let mut byte = [0_u8; 1];
+                let _ = sock.read(&mut byte).await;
+                return;
+            }
+            if matches!(&behavior, Behavior::SlowDrip) {
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n",
+                    )
+                    .await;
+                let line = "data: {\"type\":\"text_delta\",\"text\":\"x\"}\n\n";
+                let chunk = format!("{:x}\r\n{}\r\n", line.len(), line);
+                let mut ticker = tokio::time::interval(Duration::from_millis(10));
+                ticker.tick().await;
+                loop {
+                    if sock.write_all(chunk.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    ticker.tick().await;
+                }
+            }
             for line in &lines {
                 body.push_str(&format!("{:x}\r\n{}\r\n", line.len(), line));
             }
@@ -634,6 +622,54 @@ mod tests {
             }
         }
         out
+    }
+
+    #[tokio::test]
+    async fn gdl_provider_timeout_cancels_in_flight_http_body() {
+        let (addr, server) = spawn_server(Behavior::HoldAfterStart).await;
+        let mut config = cfg(format!("http://{addr}/v1/stream"));
+        config.total_timeout = Duration::from_millis(120);
+        config.first_byte_timeout = Duration::from_secs(2);
+        let provider = HttpProvider::new_unscreened(config, addr);
+        let events = tokio::time::timeout(
+            Duration::from_secs(2),
+            drain(provider.stream(request()).unwrap()),
+        )
+        .await
+        .expect("provider timeout must be bounded");
+        assert!(
+            matches!(events.last(), Some(Err(ProviderError::Timeout))),
+            "held body must end at the total deadline: {events:?}"
+        );
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .expect("provider task must observe the dropped body")
+            .expect("test server task");
+    }
+
+    #[tokio::test]
+    async fn gdl_provider_slow_drip_obeys_total_deadline() {
+        let (addr, server) = spawn_server(Behavior::SlowDrip).await;
+        let mut config = cfg(format!("http://{addr}/v1/stream"));
+        config.total_timeout = Duration::from_millis(120);
+        config.first_byte_timeout = Duration::from_secs(2);
+        let provider = HttpProvider::new_unscreened(config, addr);
+        let started = std::time::Instant::now();
+        let events = tokio::time::timeout(
+            Duration::from_secs(2),
+            drain(provider.stream(request()).unwrap()),
+        )
+        .await
+        .expect("slow-drip response must obey the total deadline");
+        assert!(
+            matches!(events.last(), Some(Err(ProviderError::Timeout))),
+            "slow drip must not reset the total deadline: {events:?}"
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "slow-drip response exceeded the deterministic bound"
+        );
+        server.abort();
     }
 
     #[tokio::test]
@@ -719,7 +755,7 @@ mod tests {
         let provider = adapter_for(addr);
         let events = drain(provider.stream(request()).unwrap()).await;
         assert_eq!(events.len(), 3, "start + delta + the close acknowledgement");
-        assert_eq!(events[2], Err(ProviderError::Cancelled));
+        assert_eq!(events[2], Err(ProviderError::Malformed));
         server.abort();
     }
 
@@ -733,7 +769,7 @@ mod tests {
         let provider = adapter_for(addr);
         let events = drain(provider.stream(request()).unwrap()).await;
         assert!(
-            matches!(events.as_slice(), [Err(ProviderError::Unavailable(_))]),
+            matches!(events.as_slice(), [Err(ProviderError::Unavailable)]),
             "connect-refused must name Unavailable, got {events:?}"
         );
     }
@@ -744,7 +780,7 @@ mod tests {
         let provider = adapter_for(addr);
         let events = drain(provider.stream(request()).unwrap()).await;
         assert!(
-            matches!(events.as_slice(), [Err(ProviderError::Unavailable(_))]),
+            matches!(events.as_slice(), [Err(ProviderError::Unavailable)]),
             "5xx must name Unavailable, got {events:?}"
         );
         server.abort();
@@ -756,7 +792,7 @@ mod tests {
         let provider = adapter_for(addr);
         let events = drain(provider.stream(request()).unwrap()).await;
         assert!(
-            matches!(events.as_slice(), [Err(ProviderError::Refused(_))]),
+            matches!(events.as_slice(), [Err(ProviderError::Refused)]),
             "4xx must name Refused, got {events:?}"
         );
         server.abort();
@@ -772,10 +808,7 @@ mod tests {
         let provider = adapter_for(addr);
         let events = drain(provider.stream(request()).unwrap()).await;
         assert!(
-            matches!(
-                events.as_slice(),
-                [.., Err(ProviderError::Refused(m))] if m.contains("oversized"),
-            ),
+            matches!(events.as_slice(), [.., Err(ProviderError::Malformed)],),
             "an oversized frame must be a NAMED refusal, got {:?}",
             events.last()
         );
@@ -798,10 +831,7 @@ mod tests {
         let provider = HttpProvider::new_unscreened(c, addr);
         let events = drain(provider.stream(request()).unwrap()).await;
         assert!(
-            matches!(
-                events.as_slice(),
-                [.., Err(ProviderError::Refused(m))] if m.contains("max_response_bytes"),
-            ),
+            matches!(events.as_slice(), [.., Err(ProviderError::Malformed)],),
             "a response beyond the cap must be a NAMED refusal, got {:?}",
             events.last()
         );
@@ -818,10 +848,7 @@ mod tests {
         let provider = adapter_for(addr);
         let events = drain(provider.stream(request()).unwrap()).await;
         assert!(
-            matches!(
-                events.as_slice(),
-                [Err(ProviderError::Refused(m)), ..] if m.contains("malformed"),
-            ),
+            matches!(events.as_slice(), [Err(ProviderError::Malformed), ..],),
             "malformed SSE must be a NAMED refusal, got {events:?}"
         );
         server.abort();
@@ -869,7 +896,7 @@ mod tests {
             Ok(_) => panic!("loopback endpoint must be refused at construction"),
         };
         assert!(
-            matches!(err, ProviderError::Refused(ref m) if m.contains("egress screen")),
+            matches!(err, ProviderError::Refused),
             "loopback endpoint refused at construction: {err}"
         );
     }
@@ -886,7 +913,7 @@ mod tests {
                 Ok(_) => panic!("{url} must be refused at construction"),
             };
             assert!(
-                matches!(err, ProviderError::Refused(ref m) if m.contains("egress screen")),
+                matches!(err, ProviderError::Refused),
                 "{url} refused at construction: {err}"
             );
         }
@@ -897,7 +924,7 @@ mod tests {
         let err = split_host_port("http://provider.example/v1/stream")
             .expect_err("production provider endpoints must require HTTPS");
         assert!(
-            matches!(err, ProviderError::Refused(_)),
+            matches!(err, ProviderError::Refused),
             "HTTP refusal must stay typed: {err}"
         );
     }
@@ -909,7 +936,7 @@ mod tests {
             Err(error) => error,
         };
         assert!(
-            matches!(screened, ProviderError::Refused(ref message) if message.contains("egress screen")),
+            matches!(screened, ProviderError::Refused),
             "address screening remains in the production constructor: {screened}"
         );
 
@@ -941,7 +968,7 @@ mod tests {
         let provider = HttpProvider::new_unscreened(cfg(format!("http://{addr}/v1/stream")), addr);
         let events = drain(provider.stream(request()).unwrap()).await;
         assert!(
-            matches!(events.as_slice(), [Err(ProviderError::Unavailable(_))]),
+            matches!(events.as_slice(), [Err(ProviderError::Unavailable)]),
             "redirect responses are not followed: {events:?}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;

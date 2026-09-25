@@ -61,6 +61,7 @@ fn outcome_summary(run_id: i64, outcome: &GdlOutcome) -> serde_json::Value {
         GdlOutcome::VerifyFailed { at, .. } => ("verify_failed", Some(at.as_str().to_string())),
         GdlOutcome::Canceled => ("canceled", None),
         GdlOutcome::Capped { at, .. } => ("capped", Some(at.as_str().to_string())),
+        GdlOutcome::ProviderFailed { at, .. } => ("provider_failed", Some(at.as_str().to_string())),
     };
     serde_json::json!({
         "run_id": run_id,
@@ -78,14 +79,22 @@ fn refused_from_provider(e: ProviderError) -> HandlerError {
         // Provider text is deliberately discarded at the public seam. The
         // typed class is enough for an operator-safe response and cannot
         // carry a bearer, URL, malformed frame, or upstream body.
-        ProviderError::Unavailable(_) => HandlerError::internal_with(
+        ProviderError::Unavailable => HandlerError::internal_with(
             "provider_unavailable",
             "provider unavailable",
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
         ),
-        ProviderError::Refused(_) => {
+        ProviderError::Refused => {
             HandlerError::unprocessable("provider_refused", "provider request refused")
         }
+        ProviderError::Malformed => {
+            HandlerError::unprocessable("provider_response_invalid", "provider response invalid")
+        }
+        ProviderError::Timeout => HandlerError::internal_with(
+            "provider_timeout",
+            "provider timeout",
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        ),
         ProviderError::Cancelled => HandlerError::internal_with(
             "provider_cancelled",
             "provider stream cancelled",
@@ -139,6 +148,27 @@ pub(crate) async fn run_gdl_case(
     // the probe-blind run lookup and before every profile/secret/DNS edge.
     authorize(&principal, crate::auth::Action::Write, "", &domain)?;
     require_gdl_workflow_role(&principal, &state.pool)?;
+
+    // A provider-failed terminal is a named conflict, not a generic freshness
+    // refusal. Probe it only after authentication/role authorization and before
+    // ticket, profile, secret, DNS, or provider work.
+    let terminal_failed = tokio::task::spawn_blocking({
+        let pool = state.pool.clone();
+        move || {
+            let conn = pool.get().map_err(|_| "database unavailable".to_string())?;
+            crate::workflow::gdl::provider_failed_terminal(&conn, run_id)
+        }
+    })
+    .await
+    .map_err(|_| HandlerError::internal("GDL terminal probe failed"))?
+    .map_err(|_| HandlerError::internal("GDL terminal state is unreadable"))?;
+    if terminal_failed {
+        return Err(HandlerError::conflict_with(
+            "gdl_provider_failed",
+            "GDL episode is terminal after provider failure",
+            serde_json::json!({}),
+        ));
+    }
 
     // The launch law: a FRESH troubleshoot run only (the checkpoint admits
     // nothing else — pre-checked here for a cheap, honest refusal).
@@ -210,6 +240,13 @@ pub(crate) async fn run_gdl_case(
                 axum::http::StatusCode::SERVICE_UNAVAILABLE,
             ),
         })?;
+    if matches!(outcome, GdlOutcome::ProviderFailed { .. }) {
+        return Err(HandlerError::internal_with(
+            "gdl_provider_failed",
+            "GDL provider failed",
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        ));
+    }
     Ok(Json(outcome_summary(run_id, &outcome)))
 }
 
@@ -287,6 +324,7 @@ fn build_provider(
         auth_header,
         connect_timeout: Duration::from_secs(5),
         first_byte_timeout: Duration::from_secs(30),
+        total_timeout: Duration::from_secs(25),
         max_response_bytes: crate::agentloop::provider_http::DEFAULT_MAX_RESPONSE_BYTES,
     };
     let provider: Arc<dyn LlmProvider> = HttpProvider::new(cfg).map_err(provider_endpoint_error)?;
@@ -450,6 +488,7 @@ pub(crate) mod tests {
             auth_header: "Bearer test-key".to_string(),
             connect_timeout: std::time::Duration::from_secs(2),
             first_byte_timeout: std::time::Duration::from_secs(10),
+            total_timeout: std::time::Duration::from_secs(5),
             max_response_bytes: crate::agentloop::provider_http::DEFAULT_MAX_RESPONSE_BYTES,
         };
         HttpProvider::new_unscreened(cfg, addr) as Arc<dyn LlmProvider>
@@ -704,10 +743,10 @@ pub(crate) mod tests {
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "body: {v}"
         );
-        assert_eq!(v["error"]["code"], "provider_unavailable", "body: {v}");
+        assert_eq!(v["error"]["code"], "gdl_provider_failed", "body: {v}");
         assert_eq!(
-            v["error"]["message"], "provider unavailable",
-            "the refusal must be stable and operator-safe: {v}"
+            v["error"]["message"], "GDL provider failed",
+            "the terminal refusal must be stable and operator-safe: {v}"
         );
     }
 
@@ -748,11 +787,7 @@ pub(crate) mod tests {
         > {
             let (tx, rx) = tokio::sync::mpsc::channel(1);
             tokio::spawn(async move {
-                let _ = tx
-                    .send(Err(ProviderError::Refused(
-                        "Bearer provider-secret upstream-body".to_string(),
-                    )))
-                    .await;
+                let _ = tx.send(Err(ProviderError::Refused)).await;
             });
             Ok(rx)
         }
@@ -774,10 +809,10 @@ pub(crate) mod tests {
         .await;
         assert_eq!(
             status,
-            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "body: {body}"
         );
-        assert_eq!(body["error"]["code"], "provider_refused", "body: {body}");
+        assert_eq!(body["error"]["code"], "gdl_provider_failed", "body: {body}");
         let rendered = body.to_string();
         assert!(
             !rendered.contains("provider-secret") && !rendered.contains("upstream-body"),
@@ -786,7 +821,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn gdl_audit_detail_contains_no_secret_or_provider_body() {
+    async fn gdl_provider_failure_audit_is_stable_and_secret_free() {
         let f = fixture();
         let run_id = seed_run(&f.state, "acme");
         let (status, body) = body_bytes(
@@ -801,7 +836,7 @@ pub(crate) mod tests {
         .await;
         assert_eq!(
             status,
-            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "body: {body}"
         );
         let conn = f.state.pool.get().expect("db");
@@ -809,19 +844,76 @@ pub(crate) mod tests {
             crate::audit::verify_chain(&conn),
             "the provider refusal must leave the audit chain valid"
         );
-        let workflow_detail =
-            crate::workflow::state::test_support::workflow_audit_detail_hash(&conn, run_id)
-                .unwrap_or_default();
-        assert_ne!(
-            workflow_detail,
-            crate::audit::hash("Bearer provider-secret upstream-body"),
-            "provider body must not enter audit details"
-        );
+        let provider_audit_rows = crate::workflow::gdl::provider_failure_audit_count(&conn)
+            .expect("provider audit count");
+        assert_eq!(provider_audit_rows, 1, "stable provider failure audit row");
         assert!(
             !body.to_string().contains("provider-secret")
                 && !body.to_string().contains("upstream-body"),
             "provider body must not enter the route error seam"
         );
+    }
+
+    struct CountingErrorProvider(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl LlmProvider for CountingErrorProvider {
+        fn name(&self) -> &str {
+            "counting-error-test"
+        }
+
+        fn stream(
+            &self,
+            _request: crate::agentloop::provider::ProviderRequest,
+        ) -> Result<
+            tokio::sync::mpsc::Receiver<
+                Result<crate::agentloop::provider::StreamEvent, ProviderError>,
+            >,
+            ProviderError,
+        > {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tokio::spawn(async move {
+                let _ = tx.send(Err(ProviderError::Refused)).await;
+            });
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn gdl_retry_after_provider_failure_returns_named_conflict() {
+        let f = fixture();
+        let run_id = seed_run(&f.state, "acme");
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider: Arc<dyn LlmProvider> = Arc::new(CountingErrorProvider(Arc::clone(&calls)));
+        let first = body_bytes(
+            post_launch(
+                &f.state,
+                run_id,
+                launch_body("first provider failure", ""),
+                Some(Arc::clone(&provider)),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(first.0, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(first.1["error"]["code"], "gdl_provider_failed");
+        let second = body_bytes(
+            post_launch(
+                &f.state,
+                run_id,
+                launch_body("retry after provider failure", ""),
+                Some(provider),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            second.0,
+            axum::http::StatusCode::CONFLICT,
+            "body: {second:?}"
+        );
+        assert_eq!(second.1["error"]["code"], "gdl_provider_failed");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 
     fn test_runtime() -> tokio::runtime::Runtime {
@@ -1214,6 +1306,7 @@ mod conformance {
                     auth_header: "Bearer test-key".to_string(),
                     connect_timeout: std::time::Duration::from_secs(2),
                     first_byte_timeout: std::time::Duration::from_secs(10),
+                    total_timeout: std::time::Duration::from_secs(5),
                     max_response_bytes: crate::agentloop::provider_http::DEFAULT_MAX_RESPONSE_BYTES,
                 };
                 crate::agentloop::provider_http::HttpProvider::new_unscreened(cfg, addr)

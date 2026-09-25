@@ -41,6 +41,7 @@ pub const CAN_ACTIONS: &[&str] = &[
     "dsar_export",
     "purge",
     "admin",
+    "workflow",
 ];
 
 /// The operator-console panel names a role's `panels_default`/`panels_hidden`
@@ -314,6 +315,10 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
         r#"{"name":"agent","description":"Front-line worker: sees only their own private memory, can write + decide their own drafts","scopes":["private"],"owner_filter":"self","can":["read","write","reject"],"panels_default":["overview","ingest","recall","health"],"panels_hidden":["audit","subjects"],"tools_allowed":["ump.recall","ump.get","ump.feedback"]}"#,
     ),
     (
+        "workflow-operator",
+        r#"{"name":"workflow-operator","description":"Workflow operator: governed workflow execution without administrative or publication authority","scopes":[],"owner_filter":"self","can":["workflow"],"panels_default":["health"],"panels_hidden":null,"tools_allowed":[]}"#,
+    ),
+    (
         "supervisor",
         r#"{"name":"supervisor","description":"Call-center lead: sees only their agents' rows (manages claim), approves/rejects their queue","scopes":["private","domain","team"],"owner_filter":"reports","can":["read","write","approve","reject","calibrate","release_quarantine","dsar_export"],"panels_default":["overview","review","recall","security","audit","data","health"],"panels_hidden":["subjects"],"tools_allowed":["ump.recall","ump.get","ump.revise","ump.feedback","ump.remember"]}"#,
     ),
@@ -391,7 +396,7 @@ mod tests {
     #[test]
     fn all_presets_parse_and_validate() {
         let all = presets();
-        assert_eq!(all.len(), PRESETS_RAW.len(), "12 ship-with roles");
+        assert_eq!(all.len(), PRESETS_RAW.len(), "13 ship-with roles");
         for r in &all {
             validate(r).unwrap_or_else(|e| panic!("role {} invalid: {e}", r.name));
         }
@@ -404,6 +409,14 @@ mod tests {
         assert_eq!(auditor.can, vec!["read"], "client-auditor is read-only");
         let ops = all.iter().find(|r| r.name == "bpo-ops").unwrap();
         assert_eq!(ops.can, vec!["read"], "bpo-ops is read-only");
+        let workflow = all.iter().find(|r| r.name == "workflow-operator").unwrap();
+        assert_eq!(workflow.can, vec!["workflow"]);
+        assert!(
+            !all.iter()
+                .find(|r| r.name == "agent")
+                .unwrap()
+                .can("workflow")
+        );
     }
 
     #[test]

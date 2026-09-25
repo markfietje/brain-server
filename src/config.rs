@@ -134,23 +134,19 @@ impl GdlProviderProfile {
     /// configuration values into an error string. Detailed diagnostics belong
     /// at the operator's config boundary; the route receives a stable code.
     pub(crate) fn from_env() -> Result<Option<Self>, String> {
+        let read = |name: &str| -> Result<Option<String>, String> {
+            std::env::var_os(name).map_or(Ok(None), |value| {
+                value
+                    .into_string()
+                    .map(Some)
+                    .map_err(|_| "GDL provider profile is invalid".to_string())
+            })
+        };
         let values = [
-            std::env::var("BRAIN_GDL_PROVIDER_BASE_URL")
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty()),
-            std::env::var("BRAIN_GDL_PROVIDER_MODEL")
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty()),
-            std::env::var("BRAIN_GDL_PROVIDER_SECRET_FILE")
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty()),
-            std::env::var("BRAIN_GDL_PROVIDER_SECRET_ROOT")
-                .ok()
-                .map(|v| v.trim().to_string())
-                .filter(|v| !v.is_empty()),
+            read("BRAIN_GDL_PROVIDER_BASE_URL")?,
+            read("BRAIN_GDL_PROVIDER_MODEL")?,
+            read("BRAIN_GDL_PROVIDER_SECRET_FILE")?,
+            read("BRAIN_GDL_PROVIDER_SECRET_ROOT")?,
         ];
         let present = values.iter().filter(|value| value.is_some()).count();
         if present == 0 {
@@ -160,37 +156,110 @@ impl GdlProviderProfile {
             return Err("GDL provider profile is incomplete".to_string());
         }
         let [
-            Some(base_url),
-            Some(model),
-            Some(secret_file),
-            Some(secret_root),
+            Some(base_url_value),
+            Some(model_value),
+            Some(secret_file_value),
+            Some(secret_root_value),
         ] = values
         else {
             return Err("GDL provider profile is incomplete".to_string());
         };
-        if base_url.len() > 2048
-            || base_url.chars().any(char::is_control)
-            || model.is_empty()
-            || model.len() > 256
-            || model.chars().any(char::is_control)
+        if base_url_value.chars().any(char::is_control)
+            || model_value.chars().any(char::is_control)
+            || secret_file_value.chars().any(char::is_control)
+            || secret_root_value.chars().any(char::is_control)
         {
             return Err("GDL provider profile is invalid".to_string());
         }
-        let secret_root = std::path::PathBuf::from(secret_root);
+        let base_url = base_url_value.trim();
+        let model = model_value.trim();
+        let secret_file_value = secret_file_value.trim();
+        let secret_root_value = secret_root_value.trim();
+        if base_url.is_empty()
+            || base_url.len() > 2048
+            || model.is_empty()
+            || model.len() > 256
+            || secret_file_value.is_empty()
+            || secret_root_value.is_empty()
+        {
+            return Err("GDL provider profile is invalid".to_string());
+        }
+        let secret_root = std::path::PathBuf::from(secret_root_value);
         if !secret_root.is_absolute() {
             return Err("GDL provider secret root must be absolute".to_string());
         }
-        let secret_file = std::path::PathBuf::from(secret_file);
-        if secret_file.as_os_str().is_empty() {
-            return Err("GDL provider secret file is invalid".to_string());
-        }
+        let secret_file = std::path::PathBuf::from(secret_file_value);
         Ok(Some(Self {
-            base_url,
-            model,
+            base_url: base_url.to_string(),
+            model: model.to_string(),
             secret_file,
             secret_root,
         }))
     }
+}
+
+/// Redacted GDL provider configuration posture. No URL, path, model, or
+/// credential is retained in this value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GdlProviderPosture {
+    Disabled,
+    Configured,
+    Invalid,
+}
+
+impl GdlProviderPosture {
+    pub(crate) const fn as_ready_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Configured => "configured",
+            Self::Invalid => "invalid",
+        }
+    }
+}
+
+/// Resolve the current redacted posture without reading a bearer or retaining a
+/// provider path. This is safe for `/ready` and reports a changed environment
+/// honestly; normal bootstrap separately refuses invalid configuration.
+pub(crate) fn gdl_provider_posture() -> GdlProviderPosture {
+    validate_gdl_provider_config().unwrap_or(GdlProviderPosture::Invalid)
+}
+
+/// Validate the complete-or-absent profile during normal serving bootstrap.
+/// URL shape and static profile bounds are checked here; secret contents and
+/// provider reachability remain launch-time checks at the existing reader and
+/// constructor seams.
+pub(crate) fn validate_gdl_provider_config() -> Result<GdlProviderPosture, String> {
+    let profile = GdlProviderProfile::from_env()
+        .map_err(|_| "GDL provider configuration is invalid or incomplete".to_string())?;
+    let Some(profile) = profile else {
+        return Ok(GdlProviderPosture::Disabled);
+    };
+    if profile.base_url.len() > 2048
+        || profile
+            .base_url
+            .bytes()
+            .any(|byte| byte <= b' ' || byte == 0x7f)
+        || profile.model.is_empty()
+        || profile.model.len() > 256
+        || profile.model.chars().any(char::is_control)
+        || !profile.secret_root.is_absolute()
+        || profile.secret_file.as_os_str().is_empty()
+    {
+        return Err("GDL provider configuration is invalid".to_string());
+    }
+    let Ok(url) = reqwest::Url::parse(&profile.base_url) else {
+        return Err("GDL provider configuration is invalid".to_string());
+    };
+    if url.scheme() != "https"
+        || url.host_str().is_none_or(str::is_empty)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err("GDL provider configuration is invalid".to_string());
+    }
+    Ok(GdlProviderPosture::Configured)
 }
 
 pub fn proposal_ttl_secs() -> i64 {
@@ -1619,12 +1688,8 @@ mod tests {
         set(prev.as_deref());
     }
 
-    static STREAMKILL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     fn with_env(key: &str, v: Option<&str>, f: impl FnOnce()) {
-        let _guard = STREAMKILL_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let _guard = crate::test_support::lock_env();
         let prev = std::env::var(key).ok();
         set_or_remove_env(key, v.map(str::to_string));
         f();
@@ -1740,12 +1805,10 @@ mod tests {
         assert!(!dsar_unsigned_send_refused(false, true));
     }
 
-    /// Set several env vars under ONE lock acquisition (`with_env` holds
-    /// the non-reentrant `STREAMKILL_ENV_LOCK` — nesting it deadlocks).
+    /// Set several env vars under ONE lock acquisition (`with_env` uses the
+    /// same crate-wide lock; nesting it deadlocks).
     fn with_envs(vars: &[(&str, Option<&str>)], f: impl FnOnce()) {
-        let _guard = STREAMKILL_ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
+        let _guard = crate::test_support::lock_env();
         let prev: Vec<(&str, Option<String>)> = vars
             .iter()
             .map(|(k, _)| (*k, std::env::var(k).ok()))
@@ -1762,6 +1825,142 @@ mod tests {
     /// A-01 red (v1.28.86r): `/ready` posture resolves from the live
     /// environment through the same guard the boot uses — so what the
     /// operator sees is what the boot enforced.
+    #[test]
+    fn gdl_absent_provider_config_reports_disabled_readiness() {
+        with_envs(
+            &[
+                ("BRAIN_GDL_PROVIDER_BASE_URL", None),
+                ("BRAIN_GDL_PROVIDER_MODEL", None),
+                ("BRAIN_GDL_PROVIDER_SECRET_FILE", None),
+                ("BRAIN_GDL_PROVIDER_SECRET_ROOT", None),
+            ],
+            || {
+                assert_eq!(gdl_provider_posture(), GdlProviderPosture::Disabled);
+                let body = crate::server::router::core::ready_body(
+                    true,
+                    WebhookSigningPosture::On,
+                    GdlProviderPosture::Disabled,
+                );
+                assert_eq!(body["status"], "OK");
+                assert_eq!(body["gdl_provider"], "disabled");
+            },
+        );
+    }
+
+    #[test]
+    fn gdl_complete_provider_config_reports_configured_readiness() {
+        with_envs(
+            &[
+                (
+                    "BRAIN_GDL_PROVIDER_BASE_URL",
+                    Some("https://provider.example/v1/stream"),
+                ),
+                ("BRAIN_GDL_PROVIDER_MODEL", Some("server-model")),
+                ("BRAIN_GDL_PROVIDER_SECRET_FILE", Some("provider.key")),
+                ("BRAIN_GDL_PROVIDER_SECRET_ROOT", Some("/tmp/gdl-root")),
+            ],
+            || {
+                assert_eq!(gdl_provider_posture(), GdlProviderPosture::Configured);
+                let body = crate::server::router::core::ready_body(
+                    true,
+                    WebhookSigningPosture::On,
+                    GdlProviderPosture::Configured,
+                );
+                assert_eq!(body["status"], "OK");
+                assert_eq!(body["gdl_provider"], "configured");
+            },
+        );
+    }
+
+    #[test]
+    fn gdl_partial_provider_config_refuses_bootstrap() {
+        with_envs(
+            &[
+                (
+                    "BRAIN_GDL_PROVIDER_BASE_URL",
+                    Some("https://provider.example/v1/stream"),
+                ),
+                ("BRAIN_GDL_PROVIDER_MODEL", Some("server-model")),
+                ("BRAIN_GDL_PROVIDER_SECRET_FILE", Some("provider.key")),
+                ("BRAIN_GDL_PROVIDER_SECRET_ROOT", None),
+            ],
+            || {
+                let error = validate_gdl_provider_config().unwrap_err();
+                assert_eq!(error, "GDL provider configuration is invalid or incomplete");
+                assert!(!error.contains("provider.example"));
+                assert!(!error.contains("provider.key"));
+                assert_eq!(gdl_provider_posture(), GdlProviderPosture::Invalid);
+            },
+        );
+        with_envs(
+            &[
+                ("BRAIN_GDL_PROVIDER_BASE_URL", Some("")),
+                ("BRAIN_GDL_PROVIDER_MODEL", None),
+                ("BRAIN_GDL_PROVIDER_SECRET_FILE", None),
+                ("BRAIN_GDL_PROVIDER_SECRET_ROOT", None),
+            ],
+            || {
+                assert!(validate_gdl_provider_config().is_err());
+                assert_eq!(gdl_provider_posture(), GdlProviderPosture::Invalid);
+            },
+        );
+    }
+
+    #[test]
+    fn gdl_provider_posture_is_redacted_and_boot_validated() {
+        let keys = [
+            "BRAIN_GDL_PROVIDER_BASE_URL",
+            "BRAIN_GDL_PROVIDER_MODEL",
+            "BRAIN_GDL_PROVIDER_SECRET_FILE",
+            "BRAIN_GDL_PROVIDER_SECRET_ROOT",
+        ];
+        with_envs(
+            &[
+                (keys[0], None),
+                (keys[1], None),
+                (keys[2], None),
+                (keys[3], None),
+            ],
+            || {
+                assert_eq!(gdl_provider_posture(), GdlProviderPosture::Disabled);
+                assert_eq!(
+                    validate_gdl_provider_config().unwrap(),
+                    GdlProviderPosture::Disabled
+                );
+            },
+        );
+        with_envs(
+            &[
+                (keys[0], Some("https://provider.example/v1/stream")),
+                (keys[1], Some("server-model")),
+                (keys[2], Some("provider.key")),
+                (keys[3], Some("/tmp/gdl-root")),
+            ],
+            || {
+                assert_eq!(gdl_provider_posture(), GdlProviderPosture::Configured);
+                assert_eq!(
+                    validate_gdl_provider_config().unwrap(),
+                    GdlProviderPosture::Configured
+                );
+            },
+        );
+        with_envs(
+            &[
+                (keys[0], Some("https://provider.example/v1/stream")),
+                (keys[1], Some("server-model")),
+                (keys[2], Some("provider.key")),
+                (keys[3], None),
+            ],
+            || {
+                let error = validate_gdl_provider_config().unwrap_err();
+                assert_eq!(error, "GDL provider configuration is invalid or incomplete");
+                assert!(!error.contains("provider.example"));
+                assert!(!error.contains("provider.key"));
+                assert_eq!(gdl_provider_posture(), GdlProviderPosture::Invalid);
+            },
+        );
+    }
+
     #[test]
     fn ready_posture_resolves_through_boot_guard() {
         // No sinks: On (moot), even with REQUIRE unset.

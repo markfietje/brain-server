@@ -3966,14 +3966,14 @@ Final paragraph after the rule.";
             .unwrap();
         assert_eq!(bindings, 0, "no domain is bound to a profile by default");
 
-        // the roles table exists and the 12 ship-with roles
+        // the roles table exists and the 13 ship-with roles
         // are seeded (INSERT OR IGNORE — a re-migration never overwrites an
         // operator edit). The `solo` SMB role carries every action (the
         // simplest default).
         let roles_seeded: i64 = db
             .query_row("SELECT COUNT(*) FROM roles", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(roles_seeded, 12, "the 12 ship-with roles are seeded");
+        assert_eq!(roles_seeded, 13, "the 13 ship-with roles are seeded");
         // the BPO client postures are among them.
         let auditor: String = db
             .query_row(

@@ -28,7 +28,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::Pool;
 use crate::agentloop::hooks::LoopHooks;
-use crate::agentloop::provider::{LlmProvider, Usage};
+use crate::agentloop::provider::{LlmProvider, ProviderError, Usage};
 use crate::agentloop::run_loop::{ExchangeReceipt, LoopConfig, LoopDriver, LoopError, RunOutcome};
 use crate::workflow::host::SqliteWorkflowHost;
 
@@ -537,6 +537,8 @@ pub(crate) enum SubagentOutcome {
     },
     /// The caller's token fired.
     Canceled,
+    /// The child provider failed after admission; no finding was produced.
+    ProviderFailed { failure: ProviderError },
 }
 
 /// Delegate one scoped task to a child loop: same host (same audit chain),
@@ -719,6 +721,14 @@ fn child_result(
         RunOutcome::Canceled => (
             SubagentOutcome::Canceled,
             serde_json::json!({"name": spec.name, "outcome": "canceled"}),
+        ),
+        RunOutcome::ProviderFailed { failure } => (
+            SubagentOutcome::ProviderFailed { failure: *failure },
+            serde_json::json!({
+                "name": spec.name,
+                "outcome": "provider_failed",
+                "code": failure.code(),
+            }),
         ),
     }
 }
@@ -1300,13 +1310,14 @@ mod tests {
             &CancellationToken::new(),
             &parent,
         ));
-        let outcome = match outcome {
-            Ok(_) => panic!("the broken stream must fail"),
-            Err(error) => error,
-        };
         assert!(
-            outcome.to_string().contains("MessageEnd"),
-            "the broken stream is the failure: {outcome}"
+            matches!(
+                outcome,
+                Ok(SubagentOutcome::ProviderFailed {
+                    failure: ProviderError::Malformed
+                })
+            ),
+            "the broken stream is a typed provider failure: {outcome:?}"
         );
         // Unknown spend: no invented zero or MAX on the shared authority.
         assert_eq!(parent.usage(), Usage::default());

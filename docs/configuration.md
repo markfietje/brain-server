@@ -39,6 +39,25 @@ Brain Server is configured entirely through **environment variables** — there 
 | `BRAIN_UMP_KEY_DIR` | `~/.config/brain-server/ump/` | Directory holding the UMP operator Ed25519 signing key (distinct from the JWT key dir). |
 | `BRAIN_TRUST_PROXY` | off | When set, trust `X-Forwarded-For` from the named proxy for real-IP + rate-limit accounting. Off by default so a spoofed header can't bypass rate limits. |
 
+## GDL provider profile (R35)
+
+The GDL launch boundary has one server-owned provider profile. Configure all four variables together; the request body carries only the ticket.
+
+| Variable | Description |
+|---|---|
+| `BRAIN_GDL_PROVIDER_BASE_URL` | HTTPS provider endpoint, including its bounded path. Userinfo, query strings, fragments, unsafe URL shapes, and non-HTTPS schemes are refused. |
+| `BRAIN_GDL_PROVIDER_MODEL` | Server-selected provider model identifier; never accepted from the launch request. |
+| `BRAIN_GDL_PROVIDER_SECRET_FILE` | Provider bearer file, relative to `BRAIN_GDL_PROVIDER_SECRET_ROOT` (or an already-confined absolute path). The file must be regular, owner-only, non-empty, single-line, and within the size bound. |
+| `BRAIN_GDL_PROVIDER_SECRET_ROOT` | Absolute directory that confines the provider secret. The path and bearer are never returned in an error, readiness body, audit detail, or log. |
+
+All four variables absent means the GDL provider is explicitly **disabled**. A partial, empty, or otherwise invalid profile refuses bootstrap with a fixed configuration error; if the environment changes while the process is running, `/ready` reports `gdl_provider: "invalid"` and `NOT_READY`. A complete, statically valid profile reports `configured`.
+
+After authentication, domain `Write`, and the GDL-local `workflow` role checks, the launch boundary validates the endpoint shape before reading the secret, then performs the existing address screen and DNS pinning. Redirects are not followed. The transport uses a 5-second connect timeout, a 30-second first-byte/read timeout, a 25-second total request/body deadline, and a 4 MiB response cap. Dropping the stream receiver cancels the in-flight HTTP future; a slow-drip body still ends at the total deadline.
+
+A provider failure after GDL admission is recorded as a terminal, non-retryable `gdl_provider_failed` outcome: the first launch returns HTTP 503 with that stable code, and a later launch against the same run returns HTTP 409 with the same code without replaying provider work. Provider bodies, bearer values, secret paths, and secret-bearing URLs are not persisted or logged. The provider client is constructed at the authenticated launch boundary; no provider client is stored in `AppState`, and this round adds no public recovery API.
+
+The least-privilege `workflow-operator` role can be granted through the public role contract. It carries `workflow` only; the `agent` preset remains without `workflow`, and role-less or unknown-role JWTs remain denied.
+
 ## Retrieval & expansion
 
 | Variable | Default | Description |

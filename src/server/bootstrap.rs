@@ -339,6 +339,12 @@ pub fn bootstrap() -> Result<BootOutcome> {
         );
     }
 
+    // ── fail-closed GDL provider posture ────────────────
+    // This runs before telemetry, sockets, model loading, or database work.
+    // The error is deliberately fixed and contains no configured value/path.
+    config::validate_gdl_provider_config()
+        .map_err(|e| anyhow::anyhow!("fatal GDL provider config: {e}"))?;
+
     // ── fail-closed write posture ─────────────────────
     // An unknown BRAIN_WRITE_POSTURE value refuses startup rather than
     // silently degrading to `open` (the Seatbelt posture).

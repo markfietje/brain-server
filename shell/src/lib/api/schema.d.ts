@@ -2759,8 +2759,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Launch one GDL case episode on a fresh run through the real configured provider (Write on domain; operators only)
-         * @description The operator case-launch boundary. Agents (`agent@loopback` bearers) are refused (403): agents do not self-launch cases. JWT callers must also hold the existing `workflow` role; role-less JWTs are refused. The run must be fresh (kind `troubleshoot`, status `active`, revision 0, state `{}`) -- the checkpoint law admits nothing else. Provider destination, model, and secret are server-owned configuration (`BRAIN_GDL_PROVIDER_BASE_URL`, `BRAIN_GDL_PROVIDER_MODEL`, `BRAIN_GDL_PROVIDER_SECRET_FILE`, and `BRAIN_GDL_PROVIDER_SECRET_ROOT`); caller-supplied legacy provider fields are refused with `gdl_request_migrated` and are never used. Production endpoints require HTTPS, reject unsafe URL shapes, pass the existing address screen and DNS pinning, and never follow redirects. Outcomes are the existing GDL vocabulary: a pending capture PROPOSAL (human-approved later) or a Handoff/route/escalation -- nothing publishes automatically. Provider failures expose stable codes only; raw provider text, credentials, and secret-bearing URLs are not reflected.
+         * Launch one GDL case episode on a fresh run through the real configured provider (Write on domain + workflow role)
+         * @description The operator case-launch boundary. Agents (`agent@loopback` bearers) are refused (403): agents do not self-launch cases. JWT callers must also hold the `workflow` role; role-less JWTs and unknown roles are refused. The run must be fresh (kind `troubleshoot`, status `active`, revision 0, state `{}`) -- the checkpoint law admits nothing else. Provider destination, model, and secret are server-owned configuration (`BRAIN_GDL_PROVIDER_BASE_URL`, `BRAIN_GDL_PROVIDER_MODEL`, `BRAIN_GDL_PROVIDER_SECRET_FILE`, and `BRAIN_GDL_PROVIDER_SECRET_ROOT`); caller-supplied legacy provider fields are refused with `gdl_request_migrated` and are never used. Production endpoints require HTTPS, reject unsafe URL shapes, pass the existing address screen and DNS pinning, and never follow redirects. The request has a 25-second total request/body deadline; dropping the stream receiver cancels the in-flight HTTP future. A provider failure after admission is durably terminal and non-retryable: the first launch returns 503 `gdl_provider_failed`, and a later launch returns 409 `gdl_provider_failed` without replaying provider work. Outcomes otherwise use the existing GDL vocabulary: a pending capture PROPOSAL (human-approved later) or a Handoff/route/escalation -- nothing publishes automatically. Provider failures expose stable codes only; raw provider text, credentials, secret paths, and secret-bearing URLs are not reflected.
          */
         post: operations["launchGdlCase"];
         delete?: never;
@@ -4072,7 +4072,7 @@ export interface components {
              */
             owner_filter?: "self" | "reports" | "all";
             /** @description Action allowlist enforced by the authorize_role gate (a held action omitted here is 403). */
-            can?: ("read" | "write" | "approve" | "reject" | "calibrate" | "release_quarantine" | "dsar_export" | "purge" | "admin")[];
+            can?: ("read" | "write" | "approve" | "reject" | "calibrate" | "release_quarantine" | "dsar_export" | "purge" | "admin" | "workflow")[];
             panels_default?: string[] | null;
             panels_hidden?: string[] | null;
             /** @description MCP ump.* tools (stored + surfaced now; enforcement is v1.24). "*" = all. */
@@ -4084,7 +4084,7 @@ export interface components {
             scopes?: ("private" | "domain" | "team")[];
             /** @enum {string} */
             owner_filter?: "self" | "reports" | "all";
-            can?: ("read" | "write" | "approve" | "reject" | "calibrate" | "release_quarantine" | "dsar_export" | "purge" | "admin")[];
+            can?: ("read" | "write" | "approve" | "reject" | "calibrate" | "release_quarantine" | "dsar_export" | "purge" | "admin" | "workflow")[];
             panels_default?: string[] | null;
             panels_hidden?: string[] | null;
             tools_allowed?: string[] | null;
@@ -4969,6 +4969,11 @@ export interface operations {
                         status?: string;
                         /** @example on */
                         webhook_signing?: string;
+                        /**
+                         * @description Redacted GDL provider configuration posture; invalid is NOT_READY.
+                         * @enum {string}
+                         */
+                        gdl_provider?: "disabled" | "configured" | "invalid";
                     };
                 };
             };
@@ -10559,7 +10564,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description run_not_fresh (the run already carries case state) */
+            /** @description run_not_fresh | gdl_provider_failed (the run is terminal after provider failure; no provider replay) */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -10573,7 +10578,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description provider_unavailable | provider_cancelled | gdl_episode_unavailable -- no loopback fallback */
+            /** @description provider_unavailable | provider_response_invalid | provider_timeout | provider_cancelled | gdl_provider_failed | gdl_episode_unavailable -- no loopback fallback */
             503: {
                 headers: {
                     [name: string]: unknown;

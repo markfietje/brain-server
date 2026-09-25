@@ -11,8 +11,8 @@ info:
     UMP capability tokens (v1.17.3 M5, spec §5.2) are accepted as
     `Authorization: Bearer` on `/ump/*` + `/export` (signature/expiry at the
     middleware, verbs × scope per handler; `audit` surfaces deny tokens).
-  version: 1.22.0
-  x-api-version: "1.22.0"
+  version: 1.23.0
+  x-api-version: "1.23.0"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -160,6 +160,10 @@ paths:
                 properties:
                   status: { type: string, example: OK }
                   webhook_signing: { type: string, example: "on" }
+                  gdl_provider:
+                    type: string
+                    enum: [disabled, configured, invalid]
+                    description: Redacted GDL provider configuration posture; invalid is NOT_READY.
   /openapi.yaml:
     get:
       summary: This OpenAPI document (machine-readable route discovery)
@@ -5330,11 +5334,11 @@ paths:
         "404": { description: Workflow run not found }
   /workflow/cases/{id}/gdl:
     post:
-      summary: Launch one GDL case episode on a fresh run through the real configured provider (Write on domain; operators only)
+      summary: Launch one GDL case episode on a fresh run through the real configured provider (Write on domain + workflow role)
       description: >
         The operator case-launch boundary. Agents (`agent@loopback` bearers)
         are refused (403): agents do not self-launch cases. JWT callers must
-        also hold the existing `workflow` role; role-less JWTs are refused.
+        also hold the `workflow` role; role-less JWTs and unknown roles are refused.
         The run must be fresh (kind `troubleshoot`, status `active`, revision 0,
         state `{}`) -- the checkpoint law admits nothing else. Provider
         destination, model, and secret are server-owned configuration
@@ -5344,10 +5348,15 @@ paths:
         fields are refused with `gdl_request_migrated` and are never used.
         Production endpoints require HTTPS, reject unsafe URL shapes, pass the
         existing address screen and DNS pinning, and never follow redirects.
-        Outcomes are the existing GDL vocabulary: a pending capture PROPOSAL
-        (human-approved later) or a Handoff/route/escalation -- nothing
-        publishes automatically. Provider failures expose stable codes only;
-        raw provider text, credentials, and secret-bearing URLs are not
+        The request has a 25-second total request/body deadline; dropping the
+        stream receiver cancels the in-flight HTTP future. A provider failure
+        after admission is durably terminal and non-retryable: the first launch
+        returns 503 `gdl_provider_failed`, and a later launch returns 409
+        `gdl_provider_failed` without replaying provider work. Outcomes
+        otherwise use the existing GDL vocabulary: a pending capture PROPOSAL
+        (human-approved later) or a Handoff/route/escalation -- nothing publishes
+        automatically. Provider failures expose stable codes only; raw provider
+        text, credentials, secret paths, and secret-bearing URLs are not
         reflected.
       operationId: launchGdlCase
       security: [{ bearerAuth: [] }]
@@ -5388,9 +5397,9 @@ paths:
         "401": { description: Not authenticated (a revoked identity dies at the middleware as 401 identity_revoked, before any route logic) }
         "403": { description: Not authorized (domain Write plus the GDL workflow role; includes the agent refusal) }
         "404": { description: Workflow run not found (refused before any provider contact) }
-        "409": { description: run_not_fresh (the run already carries case state) }
+        "409": { description: run_not_fresh | gdl_provider_failed (the run is terminal after provider failure; no provider replay) }
         "422": { description: run_kind_invalid | provider_endpoint_refused | provider_refused }
-        "503": { description: provider_unavailable | provider_cancelled | gdl_episode_unavailable -- no loopback fallback }
+        "503": { description: provider_unavailable | provider_response_invalid | provider_timeout | provider_cancelled | gdl_provider_failed | gdl_episode_unavailable -- no loopback fallback }
   /workflow/runs/{id}/complaint/lifecycle:
     post:
       summary: Advance the complaint lifecycle one legal step (Write on domain + workflow role)
@@ -8220,7 +8229,7 @@ components:
           description: Action allowlist enforced by the authorize_role gate (a held action omitted here is 403).
           items:
             type: string
-            enum: [read, write, approve, reject, calibrate, release_quarantine, dsar_export, purge, admin]
+            enum: [read, write, approve, reject, calibrate, release_quarantine, dsar_export, purge, admin, workflow]
         panels_default:
           type: array
           items: { type: string }
@@ -8247,7 +8256,7 @@ components:
           type: array
           items:
             type: string
-            enum: [read, write, approve, reject, calibrate, release_quarantine, dsar_export, purge, admin]
+            enum: [read, write, approve, reject, calibrate, release_quarantine, dsar_export, purge, admin, workflow]
         panels_default: { type: array, items: { type: string }, nullable: true }
         panels_hidden: { type: array, items: { type: string }, nullable: true }
         tools_allowed: { type: array, items: { type: string }, nullable: true }

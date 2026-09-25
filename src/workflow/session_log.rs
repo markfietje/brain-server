@@ -381,6 +381,7 @@ fn scope_child_result(
         RunOutcome::TurnCapReached { turns, .. } => ("capped", Some(turns)),
         RunOutcome::BudgetExceeded { turns, .. } => ("budget_exceeded", Some(turns)),
         RunOutcome::Canceled => ("canceled", None),
+        RunOutcome::ProviderFailed { .. } => ("provider_failed", None),
     };
     if receipt.version != 1 || result.outcome != outcome || result.turns != turns {
         return Err(refusal("context_child_outcome"));

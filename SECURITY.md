@@ -1,6 +1,6 @@
 # Security Policy
 
-**Last reviewed:** 2026-09-25 against OWASP Top 10:**2025** + Cheat Sheet Series (R34 GDL provider boundary review added: ticket-only request, server-owned profile, confined secret, HTTPS/SSRF/DNS, role and stable-error controls; v1.28.92 "Ledger" refresh context retained)
+**Last reviewed:** 2026-09-25 against OWASP Top 10:**2025** + Cheat Sheet Series (R34 GDL provider boundary and R35 GDL launch execution-integrity controls added: ticket-only request, server-owned profile, confined secret, HTTPS/SSRF/DNS, role and stable-error controls, terminal provider-failure settlement, total deadline, and receiver cancellation; v1.28.92 "Ledger" refresh context retained)
 **Stamp policy:** this "Last reviewed" line moves in the same commit as any security-relevant claim it covers — a stamp N releases behind HEAD is itself a finding.
 (Context7-verified), OWASP Multi-Tenant Security Cheat Sheet, OWASP JSON Web
 Token Cheat Sheet, OWASP Secrets Management Cheat Sheet, OWASP gRPC + Microservices
@@ -525,6 +525,24 @@ Two keys stay live during rotation; the old key drops from JWKS only after
 every cached client token has expired (the 1h JWKS cache header + 24h refresh
 lifetime bound the overlap window).
 
+### GDL provider execution boundary (R35)
+
+The GDL launch boundary constructs its provider from the server-owned profile;
+no provider client is retained in `AppState`. After the actual-domain `Write`
+check and the GDL-local `workflow` role check, endpoint shape is checked before
+the confined secret is read. The secret is never returned in a response,
+readiness body, audit detail, or log.
+
+Provider failures use a closed typed vocabulary and stable public codes. A
+failure after admission writes the exchange receipt, finishes the invocation,
+seals the GDL checkpoint, records the fixed `gdl_provider_failed` audit detail,
+and releases the claim through the existing transaction seams. The terminal is
+not retried by a later launch on that run; the route returns a named conflict.
+The request has a 25-second total request/body deadline, and dropping the
+stream receiver cancels the in-flight HTTP future. These are engineering
+controls, not a certification, conformity assessment, or claim that provider
+availability or external risk is eliminated.
+
 ### No secrets in
 
 - Process arguments (`ps aux` readable on shared hosts)
@@ -718,6 +736,7 @@ rulings) — the runbook's quarterly re-check rule applies.
 
 | Version | Date | Changes |
 |---|---|---|
+| R35 (unreleased) | 2026-09-25 | GDL launch execution integrity: provider failures finalize exchange/invocation/checkpoint/claim through existing transactions; typed terminal outcomes are non-retryable; total request/body deadline and receiver-driven HTTP cancellation; tri-state provider readiness and workflow-operator role. No recovery API or provider-body/secret reflection. |
 | R34 (unreleased) | 2026-09-25 | GDL provider boundary hardening: ticket-only request, server-owned provider profile, root-confined owner-only secret, HTTPS/URL-shape validation, retained DNS pinning/redirect refusal, fail-closed GDL role gate, and stable provider errors with no raw payload/credential reflection. |
 | 1.28.92 | 2026-09-22 | "Ledger" — loop-exec OS boundary (sandbox-exec/Landlock, fail-closed); machine-refusal law (`decision_ref` required, agent class refused); bulk-read dual gates (Admin+DPO, audited, seam-de-identified); GDL law-cited gates through 1.32.7; LAYA System-1 Phase 0 pure (ungated, no callers). |
 | 1.28.91 | 2026-09-15 | "Notary" — off-host `brain anchor` / `--verify` state fingerprint (catches business-row tamper behind a green chain); physical `brain shred` residue drop (freelist 0, `forget` row). |

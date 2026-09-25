@@ -252,6 +252,26 @@ certification, legal conclusion, conformity claim, or risk-elimination claim.
 | **LLM02 Sensitive Information Disclosure** | The configured secret is read only after authorization/configuration checks, confined beneath the configured root, rejected for symlink/empty/multiline/control/oversized content, and never persisted or logged. GDL audit details contain no provider body or secret. |
 | **ASI09 Human-Agent Trust Exploitation** | Existing GDL deny-all execution, empty tool registry, bounded streaming, pending capture, and human-review disposition laws remain unchanged. Provider availability does not create an autonomous publication path. |
 
+### Dated addendum — 2026-09-25 (R35 — GDL launch execution integrity)
+
+R35 records technical controls around the existing GDL execution and settlement
+seams. This addendum is dated engineering and risk context only. It is not a
+certification, legal conclusion, conformity claim, high-risk classification,
+risk-elimination claim, or release/publication decision.
+
+| Control | The R35 technical-control law |
+|---|---|
+| **ASI03 Identity & Privilege Abuse** | The public `workflow-operator` role is the least-privilege supported JWT path to the GDL launch boundary. The `agent` preset remains without `workflow`; role-less and unknown-role JWTs fail closed before profile, secret, DNS, or provider work. |
+| **ASI07 Insecure Inter-Agent Communication** | The provider request has a 25-second total request/body deadline. A slow-drip body cannot extend that deadline, and dropping the stream receiver drops the in-flight HTTP future rather than leaving detached work. The existing endpoint screen, DNS pinning, HTTPS requirement, and redirect refusal remain in force. |
+| **ASI08 Cascading Failures** | Provider failure is a closed typed class. After admission, the exchange receipt, invocation completion, terminal GDL checkpoint, fixed audit detail, and claim release use the existing transaction/checkpoint seams. The terminal is non-retryable on the same run and exposes only stable operator-safe codes. |
+| **LLM02 Sensitive Information Disclosure** | Provider bodies, malformed payloads, bearer values, secret paths, and secret-bearing URLs do not cross the typed error, response, or audit seam. The four-variable profile reports only `disabled`, `configured`, or `invalid`; partial/invalid configuration refuses boot or reports `NOT_READY`. |
+| **ASI09 Human-Agent Trust Exploitation** | Provider failure does not create a publication path or a recovery action. Existing deny-all execution, empty tools, human review, and one-episode-per-run boundaries remain unchanged. |
+
+The dated standards and legal materials used for R35 are engineering context.
+They do not determine provider/deployer status, regulatory scope, conformity,
+or any jurisdiction-specific obligation. Those remain operator-and-counsel
+decisions.
+
 ## Part 3 — AIUC-1 crosswalk (procurement bridge)
 
 A crosswalk maps ASI01–ASI10 to the AI-Under-Contract (AIUC-1) requirements so

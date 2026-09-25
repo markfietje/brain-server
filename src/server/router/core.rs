@@ -195,10 +195,16 @@ pub fn health_body(
 pub(crate) fn ready_body(
     db_ok: bool,
     signing: crate::config::WebhookSigningPosture,
+    gdl_provider: crate::config::GdlProviderPosture,
 ) -> serde_json::Value {
     serde_json::json!({
-        "status": if db_ok { "OK" } else { "NOT_READY" },
+        "status": if db_ok && gdl_provider != crate::config::GdlProviderPosture::Invalid {
+            "OK"
+        } else {
+            "NOT_READY"
+        },
         "webhook_signing": signing.as_ready_str(),
+        "gdl_provider": gdl_provider.as_ready_str(),
     })
 }
 
@@ -218,6 +224,7 @@ pub(crate) async fn ready(State(s): State<Arc<AppState>>) -> impl axum::response
     Json(ready_body(
         db_ok,
         crate::config::current_webhook_signing_posture(),
+        crate::config::gdl_provider_posture(),
     ))
 }
 
@@ -883,29 +890,44 @@ pub(crate) struct StatsQuery {
 #[cfg(test)]
 mod ready_body_tests {
     use super::ready_body;
-    use crate::config::WebhookSigningPosture;
+    use crate::config::{GdlProviderPosture, WebhookSigningPosture};
 
     /// A-01 red (v1.28.86r): `/ready` surfaces the signing posture — a
     /// monitor can distinguish fail-closed refusal-risk from admitted
     /// unsigned. Fails until `ready_body` exists.
     #[test]
     fn ready_body_exposes_webhook_signing_posture() {
-        let on = ready_body(true, WebhookSigningPosture::On);
+        let on = ready_body(
+            true,
+            WebhookSigningPosture::On,
+            GdlProviderPosture::Configured,
+        );
         assert_eq!(on["status"], serde_json::Value::String("OK".to_string()));
         assert_eq!(
             on["webhook_signing"],
             serde_json::Value::String("on".to_string())
         );
-        let off = ready_body(true, WebhookSigningPosture::Off);
+        let off = ready_body(
+            true,
+            WebhookSigningPosture::Off,
+            GdlProviderPosture::Disabled,
+        );
         assert_eq!(off["status"], serde_json::Value::String("OK".to_string()));
         assert_eq!(
             off["webhook_signing"],
             serde_json::Value::String("off".to_string())
         );
-        let down = ready_body(false, WebhookSigningPosture::On);
+        let down = ready_body(
+            false,
+            WebhookSigningPosture::On,
+            GdlProviderPosture::Configured,
+        );
         assert_eq!(
             down["status"],
             serde_json::Value::String("NOT_READY".to_string())
         );
+        let invalid = ready_body(true, WebhookSigningPosture::On, GdlProviderPosture::Invalid);
+        assert_eq!(invalid["status"], "NOT_READY");
+        assert_eq!(invalid["gdl_provider"], "invalid");
     }
 }

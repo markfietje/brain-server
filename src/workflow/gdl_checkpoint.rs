@@ -123,6 +123,9 @@ impl Checkpoint {
                 self.next_phase == Some(*at) && matches!(reason.as_str(), "turn_cap" | "budget")
             }
             Some(GdlOutcome::Canceled) => self.next_phase.is_some(),
+            Some(GdlOutcome::ProviderFailed { at, .. }) => {
+                self.next_phase == Some(*at) && self.case.phase == *at
+            }
             None => true,
         };
         if !terminal_matches {
@@ -285,18 +288,27 @@ impl GateRecord {
             }
             return Err(persist_error("GDL transition lacks exchange receipt"));
         };
-        let start = session_log::exact(
-            conn,
-            run,
-            &format!(
-                "control:exchange:gdl:{}:phase:{}:attempt:{}",
-                self.episode,
-                self.phase.as_str(),
-                self.attempt
-            ),
-        )
-        .map_err(persist_error)?
-        .ok_or_else(|| persist_error("GDL exchange start missing"))?;
+        let start_key: String = conn
+            .query_row(
+                "SELECT idempotency_key FROM agent_session_events WHERE run_id=?1 AND seq=?2 AND kind='control:exchange'",
+                params![run, id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(persist_error)?
+            .ok_or_else(|| persist_error("GDL exchange start missing"))?;
+        let expected_key = format!(
+            "control:exchange:gdl:{}:phase:{}:attempt:{}",
+            self.episode,
+            self.phase.as_str(),
+            self.attempt
+        );
+        if start_key != expected_key && start_key != format!("{expected_key}:confirm") {
+            return Err(persist_error("GDL exchange key mismatch"));
+        }
+        let start = session_log::exact(conn, run, &start_key)
+            .map_err(persist_error)?
+            .ok_or_else(|| persist_error("GDL exchange start missing"))?;
         let done = session_log::exact(conn, run, &format!("control:exchange_done:{id}"))
             .map_err(persist_error)?
             .ok_or_else(|| persist_error("GDL exchange receipt missing"))?;
@@ -327,7 +339,7 @@ impl GateRecord {
             RunOutcome::Completed { turns, .. }
             | RunOutcome::TurnCapReached { turns, .. }
             | RunOutcome::BudgetExceeded { turns, .. } => Some(*turns),
-            RunOutcome::Canceled => None,
+            RunOutcome::Canceled | RunOutcome::ProviderFailed { .. } => None,
         };
         let text = if let Some(key) = end.assistant_key {
             let turn = key
@@ -356,6 +368,13 @@ impl GateRecord {
         };
         let compatible = match (&end.outcome, &self.terminal) {
             (RunOutcome::Canceled, Some(GdlOutcome::Canceled)) => true,
+            (
+                RunOutcome::ProviderFailed { failure },
+                Some(GdlOutcome::ProviderFailed {
+                    failure: terminal_failure,
+                    ..
+                }),
+            ) => failure == terminal_failure,
             (RunOutcome::TurnCapReached { .. }, Some(GdlOutcome::Capped { reason, .. })) => {
                 reason == "turn_cap"
             }
@@ -685,17 +704,52 @@ fn advance_tx(
     }
     next.store(tx.tx())?;
     next.verify_link(tx.tx())?;
-    checked_audit(
-        tx.tx(),
-        &next,
-        crate::audit::AuditStatus::Ok,
-        "gdl_checkpoint_sealed",
-    )?;
+    let audit_detail = if matches!(next.terminal, Some(GdlOutcome::ProviderFailed { .. })) {
+        "gdl_provider_failed"
+    } else {
+        "gdl_checkpoint_sealed"
+    };
+    checked_audit(tx.tx(), &next, crate::audit::AuditStatus::Ok, audit_detail)?;
     if next.terminal.is_some() {
         session_log::release(tx.tx(), old.run, owner).map_err(persist_error)?;
     }
     tx.commit().map_err(persist_error)?;
     Ok(next)
+}
+
+pub(super) fn provider_failure_audit_count(conn: &Connection) -> Result<i64, LoopError> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM audit_events WHERE kind='workflow' AND detail_hash=?1",
+        [crate::audit::hash("gdl_provider_failed")],
+        |row| row.get(0),
+    )
+    .map_err(persist_error)
+}
+
+pub(super) fn provider_failed_terminal(conn: &Connection, run: i64) -> Result<bool, LoopError> {
+    let key: Option<String> = conn
+        .query_row(
+            "SELECT idempotency_key FROM agent_session_events WHERE run_id=?1 AND kind='control:gdl' ORDER BY seq DESC LIMIT 1",
+            [run],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(persist_error)?;
+    let Some(key) = key else {
+        return Ok(false);
+    };
+    let event = session_log::exact(conn, run, &key)
+        .map_err(persist_error)?
+        .ok_or_else(|| persist_error("GDL checkpoint absent"))?;
+    if event.kind != "control:gdl" {
+        return Err(persist_error("GDL checkpoint kind mismatch"));
+    }
+    let checkpoint: Checkpoint = serde_json::from_str(&event.payload_json)
+        .map_err(|_| persist_error("corrupt GDL checkpoint"))?;
+    Ok(matches!(
+        checkpoint.terminal,
+        Some(GdlOutcome::ProviderFailed { .. })
+    ))
 }
 
 pub(super) fn pause(conn: &mut Connection, cp: &Checkpoint, owner: &str) -> Result<(), LoopError> {

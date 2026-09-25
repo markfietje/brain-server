@@ -60,6 +60,40 @@ Brain Server is configured through environment variables (all resolved in
 See [Configuration](./configuration.md) and `src/config.rs` for the full list,
 including the JWT key directory, PRF tuning, suggest kill-switch, and DSAR webhook.
 
+### GDL provider profile
+
+GDL uses a server-owned provider profile; do not put provider destination, model,
+or secret fields in a launch request. Set these together in the service
+environment:
+
+```text
+BRAIN_GDL_PROVIDER_BASE_URL=https://provider.example/v1/stream
+BRAIN_GDL_PROVIDER_MODEL=operator-selected-model
+BRAIN_GDL_PROVIDER_SECRET_FILE=provider.key
+BRAIN_GDL_PROVIDER_SECRET_ROOT=/absolute/operator-owned/secret-root
+```
+
+Create the root with operator-only directory permissions and the bearer file
+with mode `0600`. The file is confined beneath the configured root; symlinks,
+outside-root paths, multiline/control content, and oversized values are
+refused. Keep the bearer out of command arguments and logs.
+
+The four variables must be complete. All absent is an explicit disabled GDL
+provider; a partial or invalid profile refuses bootstrap. A complete profile
+must use a safe HTTPS endpoint. The existing address screen and DNS pinning
+run at launch, redirects are refused, and no provider client is kept in
+`AppState`. The readiness body reports only `gdl_provider: disabled|configured|invalid`;
+`invalid` is `NOT_READY`.
+
+Grant the least-privilege `workflow-operator` role through the public role API
+to JWT operators that must launch GDL. Do not add `workflow` to the `agent`
+preset. A provider failure after admission is terminal and non-retryable:
+expect HTTP 503/`gdl_provider_failed` on the first launch and HTTP 409 with the
+same code on a later launch, with no provider replay. The provider request has
+a 25-second total body deadline; slow-drip responses cannot extend it, and
+receiver cancellation drops the in-flight HTTP future. Raw provider bodies,
+bearer values, secret paths, and secret-bearing URLs are not emitted.
+
 ---
 
 ## Security posture in deployment

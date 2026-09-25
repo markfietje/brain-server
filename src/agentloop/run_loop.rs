@@ -112,6 +112,11 @@ pub(crate) enum RunOutcome {
     /// The cumulative token budget was crossed; the loop stopped loudly
     /// at the turn boundary (a subagent's share, typically).
     BudgetExceeded { turns: u32, usage: Usage },
+    /// A provider failed after this exchange was admitted. The exchange is
+    /// durably finalized before the caller receives this terminal outcome.
+    ProviderFailed {
+        failure: crate::agentloop::provider::ProviderError,
+    },
 }
 
 /// Durable exchange result. The text is read from this exchange's exact
@@ -688,9 +693,31 @@ impl LoopDriver {
                 .unwrap_or_else(|| ExchangeGuard::root(self.config.token_budget))
         };
         let budget = budget_guard.budget().clone();
-        let (outcome, assistant_key) = self
+        let (outcome, assistant_key) = match self
             .drive_exchange(run_id, &pending_input, &exchange, cancel, &budget)
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(LoopError::Provider(failure)) => {
+                self.append_owned(
+                    run_id,
+                    &exchange,
+                    vec![(
+                        "control:exchange_done".into(),
+                        serde_json::to_string(&ExchangeEnd {
+                            version: 1,
+                            outcome: RunOutcome::ProviderFailed { failure },
+                            assistant_key: None,
+                        })
+                        .map_err(persist)?,
+                        format!("control:exchange_done:{id}"),
+                    )],
+                )
+                .await?;
+                return self.receipt(run_id, &exchange, own_claim, projection).await;
+            }
+            Err(error) => return Err(error),
+        };
         let end = serde_json::to_string(&ExchangeEnd {
             version: 1,
             outcome,
@@ -1306,9 +1333,7 @@ impl LoopDriver {
                 // Channel closed without MessageEnd: broken provider
                 // contract — spend unknown, never an empty turn.
                 budget.mark_incomplete();
-                break Err(LoopError::Provider(ProviderError::Unavailable(
-                    "stream ended without MessageEnd".into(),
-                )));
+                break Err(LoopError::Provider(ProviderError::Malformed));
             };
             match event {
                 Ok(StreamEvent::MessageEnd { stop_reason, usage }) => {
@@ -1646,7 +1671,7 @@ impl LoopDriver {
                 RunOutcome::Completed { turns, .. }
                 | RunOutcome::TurnCapReached { turns, .. }
                 | RunOutcome::BudgetExceeded { turns, .. } => Some(*turns),
-                RunOutcome::Canceled => None,
+                RunOutcome::Canceled | RunOutcome::ProviderFailed { .. } => None,
             };
             let final_text = match end.assistant_key {
                 Some(key) => {
@@ -2747,9 +2772,7 @@ mod tests {
                 std::thread::spawn(move || {
                     let _ = tx.blocking_send(Ok(StreamEvent::MessageStart));
                     let _ = tx.blocking_send(Ok(StreamEvent::TextDelta("prose ".into())));
-                    let _ = tx.blocking_send(Err(ProviderError::Unavailable(format!(
-                        "backend said {MARKER}"
-                    ))));
+                    let _ = tx.blocking_send(Err(ProviderError::Unavailable));
                 });
                 Ok(rx)
             }
@@ -2757,15 +2780,16 @@ mod tests {
         let f = fixture(vec![]);
         let driver = reopened_driver(&f, Arc::new(Leaky), LoopConfig::default());
         let runtime = rt();
-        let error = runtime
+        let outcome = runtime
             .block_on(driver.run_turns(1, "input", &CancellationToken::new()))
-            .unwrap_err();
-        eprintln!("DEBUG s1 error: {error}");
-        // Internal retention: the typed primary error carries the payload.
-        assert!(
-            error.to_string().contains(MARKER),
-            "primary values are retained internally for equality"
-        );
+            .expect("provider failure terminalizes the owned exchange");
+        assert!(matches!(
+            outcome,
+            RunOutcome::ProviderFailed {
+                failure: ProviderError::Unavailable
+            }
+        ));
+        assert!(!format!("{outcome:?}").contains(MARKER));
         // Application diagnostics: every persisted row is marker-free.
         let conn = f.pool.get().unwrap();
         for (table, column) in [
@@ -2797,14 +2821,16 @@ mod tests {
     fn r4_provider_start_error_settles() {
         rt().block_on(async {
             let f = fixture(vec![]);
-            let error = f
+            let outcome = f
                 .driver
                 .run_turns(1, "task", &CancellationToken::new())
                 .await
-                .unwrap_err();
+                .expect("provider failure terminalizes the exchange");
             assert!(matches!(
-                error,
-                LoopError::Provider(ProviderError::Unavailable(_))
+                outcome,
+                RunOutcome::ProviderFailed {
+                    failure: ProviderError::Unavailable
+                }
             ));
             assert_eq!(
                 f.driver.harness.phase(),

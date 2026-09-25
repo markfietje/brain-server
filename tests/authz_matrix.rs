@@ -80,14 +80,30 @@ fn build_server() -> TestServer {
     )
     .expect("migration");
     {
-        // the role-held cell needs ONE role carrying every capability —
-        // no ship-with preset has "workflow", so the fixture seeds its own.
+        // The broad matrix role is created through the same typed role
+        // contract as the public API. It intentionally contains every
+        // currently supported capability, but never the separate `publish`
+        // gap that this round does not absorb.
         let conn = pool.get().expect("conn");
-        conn.execute(
-            "INSERT OR IGNORE INTO roles(name, json) VALUES ('matrix-role', ?1)",
-            rusqlite::params![r#"{"name":"matrix-role","description":"authz-matrix fixture","scopes":["private","domain","team"],"owner_filter":"all","can":["read","write","approve","reject","calibrate","release_quarantine","dsar_export","purge","admin","workflow","publish"],"owner_filter_all":null,"panels_default":null,"panels_hidden":null,"tools_allowed":["*"]}"#],
-        )
-        .expect("seed matrix role");
+        let role = brain_server::role::Role {
+            name: "matrix-role".to_string(),
+            description: Some("authz-matrix fixture".to_string()),
+            scopes: vec![
+                "private".to_string(),
+                "domain".to_string(),
+                "team".to_string(),
+            ],
+            owner_filter: "all".to_string(),
+            can: brain_server::role::CAN_ACTIONS
+                .iter()
+                .map(|capability| (*capability).to_string())
+                .collect(),
+            panels_default: None,
+            panels_hidden: None,
+            tools_allowed: Some(vec!["*".to_string()]),
+        };
+        brain_server::role::validate(&role).expect("matrix role must validate");
+        brain_server::role::upsert(&conn, &role).expect("seed matrix role");
     }
     let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
         brain_server::embed::StaticEmbedder::new(brain_server::config::MODEL_ID).expect("model"),
@@ -1784,6 +1800,115 @@ async fn fresh_gdl_run(srv: &TestServer, admin: &str, domain: &str) -> i64 {
     serde_json::from_str::<serde_json::Value>(&body).expect("run JSON")["run_id"]
         .as_i64()
         .expect("run id")
+}
+
+#[tokio::test]
+async fn gdl_workflow_role_is_grantable_through_role_api() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "gdl-workflow-admin",
+        "user:gdl-workflow-admin",
+        "team-a",
+        &["admin:*/*"],
+        &["admin"],
+    );
+    let (status, body) = send_body(
+        &srv,
+        Some(&admin),
+        "/roles/workflow-operator",
+        "POST",
+        r#"{"description":"Workflow operator","scopes":[],"owner_filter":"self","can":["workflow"],"panels_default":null,"panels_hidden":null,"tools_allowed":[]}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "role API response: {body}");
+    let value: serde_json::Value = serde_json::from_str(&body).expect("role JSON");
+    assert_eq!(value["name"], "workflow-operator");
+    assert_eq!(value["can"], serde_json::json!(["workflow"]));
+    assert!(
+        !value["can"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|cap| cap == "publish")
+    );
+}
+
+#[tokio::test]
+async fn gdl_workflow_role_reaches_provider_config_handling() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "gdl-workflow-config-admin",
+        "user:gdl-workflow-config-admin",
+        "team-a",
+        &["admin:*/*"],
+        &["admin", "workflow-operator"],
+    );
+    let (role_status, role_body) = send_body(
+        &srv,
+        Some(&admin),
+        "/roles/workflow-operator",
+        "POST",
+        r#"{"description":"Workflow operator","scopes":[],"owner_filter":"self","can":["workflow"],"panels_default":null,"panels_hidden":null,"tools_allowed":[]}"#,
+    )
+    .await;
+    assert_eq!(role_status, StatusCode::OK, "role setup: {role_body}");
+    let run_id = fresh_gdl_run(&srv, &admin, "acme").await;
+    let operator = mint(
+        &srv,
+        "gdl-workflow-config-operator",
+        "user:gdl-workflow-config-operator",
+        "team-a",
+        &["write:team-a/acme"],
+        &["workflow-operator"],
+    );
+    let (status, body) = send_body(
+        &srv,
+        Some(&operator),
+        &format!("/workflow/cases/{run_id}/gdl"),
+        "POST",
+        r#"{"ticket":"workflow role reaches configuration"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "body: {body}");
+    let value: serde_json::Value = serde_json::from_str(&body).expect("error JSON");
+    assert_eq!(
+        value["error"]["code"], "provider_config_invalid",
+        "body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn gdl_agent_role_remains_denied() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "gdl-agent-admin",
+        "user:gdl-agent-admin",
+        "team-a",
+        &["admin:*/*"],
+        &["matrix-role"],
+    );
+    let run_id = fresh_gdl_run(&srv, &admin, "acme").await;
+    let agent = mint(
+        &srv,
+        "gdl-agent-role",
+        "user:gdl-agent-role",
+        "team-a",
+        &["write:team-a/*"],
+        &["agent"],
+    );
+    let (status, body) = send_body(
+        &srv,
+        Some(&agent),
+        &format!("/workflow/cases/{run_id}/gdl"),
+        "POST",
+        r#"{"ticket":"agent role remains denied"}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "body: {body}");
+    assert!(!body.contains("provider_config_invalid"), "body: {body}");
 }
 
 /// A JWT with the required Write scope but no role claim must not reach the

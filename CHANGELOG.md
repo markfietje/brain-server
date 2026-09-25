@@ -17,6 +17,21 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [Unreleased] — GDL launch execution integrity (R35)
+
+**Release notes**
+
+### Improvements
+- **Terminal provider-failure settlement.** A provider failure after GDL admission now writes a typed `control:exchange_done` receipt, finishes the invocation, seals a `gdl_provider_failed` checkpoint, records the fixed audit detail, and releases the outer claim through the existing transaction seams. The episode is terminal and non-retryable: the first launch returns HTTP 503 with `gdl_provider_failed`, while a later launch returns HTTP 409 with the same named code.
+- **Bounded provider transport.** GDL provider requests use a 25-second total request/body deadline in addition to connect and read bounds. Slow-drip responses terminate at the total deadline, and dropping the stream receiver cancels the actual in-flight HTTP future. Provider failures use closed typed classes and stable, secret-free external codes.
+- **Explicit provider readiness and role contract.** The four server-owned `BRAIN_GDL_PROVIDER_*` variables report `disabled`, `configured`, or `invalid` at `/ready`; partial or invalid profiles refuse bootstrap. The least-privilege `workflow-operator` role carries `workflow` through the public role contract, while `agent`, role-less JWTs, and unknown roles remain denied.
+
+### Security fixes
+- **Provider-failure lifecycle integrity.** No admitted GDL exchange or invocation is left unfinished by a provider failure, timeout, malformed response, or receiver cancellation. Provider bodies, bearer values, secret paths, and secret-bearing URLs are not persisted or logged. No public recovery API is added.
+
+### Engineering record
+- The GDL request remains ticket-only and provider configuration remains server-owned. The role/readiness additions are reflected in `openapi.yaml` and the generated shell type; the static API contract stamp is `1.23.0`. No route registration, migration, dependency, package/lockfile, plugin, OpenClaw, Tauri, or client change is part of R35. This is an unreleased engineering record, not a compliance, legal, conformity, certification, or public-publication decision; exact command evidence is kept in the R35 operator record.
+
 ## [Unreleased] — GDL provider boundary hardening (R34)
 
 **Release notes**

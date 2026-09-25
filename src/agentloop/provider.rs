@@ -168,27 +168,44 @@ pub(crate) enum StreamEvent {
     },
 }
 
-/// Provider failure vocabulary. Loud and typed; the loop decides policy.
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
+/// Closed provider-failure classes. No upstream text, URL, credential, or
+/// filesystem detail is carried across this boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum ProviderError {
-    /// Egress unavailable (transport, rate limit, no script left). Retryable
-    /// only by the CALLER's policy, never silently in the seam.
-    Unavailable(String),
-    /// The provider refused the request outright (policy, moderation, auth).
-    Refused(String),
-    /// The consumer dropped the stream — producer-side acknowledgement of
-    /// the drop-cancel contract.
+    /// Egress or provider service is unavailable.
+    Unavailable,
+    /// The provider refused the request (including a provider error frame).
+    Refused,
+    /// The provider response or stream violated the bounded wire contract.
+    Malformed,
+    /// The request exceeded its total deadline.
+    Timeout,
+    /// The consumer cancelled the stream.
     Cancelled,
+}
+
+impl ProviderError {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::Unavailable => "provider_unavailable",
+            Self::Refused => "provider_refused",
+            Self::Malformed => "provider_response_invalid",
+            Self::Timeout => "provider_timeout",
+            Self::Cancelled => "provider_cancelled",
+        }
+    }
 }
 
 impl std::fmt::Display for ProviderError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ProviderError::Unavailable(m) => write!(f, "provider unavailable: {m}"),
-            ProviderError::Refused(m) => write!(f, "provider refused: {m}"),
-            ProviderError::Cancelled => write!(f, "provider stream cancelled"),
-        }
+        f.write_str(match self {
+            Self::Unavailable => "provider unavailable",
+            Self::Refused => "provider refused",
+            Self::Malformed => "provider response invalid",
+            Self::Timeout => "provider timeout",
+            Self::Cancelled => "provider stream cancelled",
+        })
     }
 }
 
@@ -257,13 +274,8 @@ impl LlmProvider for LoopbackProvider {
         req: ProviderRequest,
     ) -> Result<mpsc::Receiver<Result<StreamEvent, ProviderError>>, ProviderError> {
         let turn = {
-            let mut turns = self
-                .turns
-                .lock()
-                .map_err(|_| ProviderError::Unavailable("loopback script lock poisoned".into()))?;
-            turns
-                .pop_front()
-                .ok_or_else(|| ProviderError::Unavailable("loopback script exhausted".into()))?
+            let mut turns = self.turns.lock().map_err(|_| ProviderError::Unavailable)?;
+            turns.pop_front().ok_or(ProviderError::Unavailable)?
         };
         if let Ok(mut g) = self.requests.lock() {
             g.push(req);
@@ -408,7 +420,7 @@ mod tests {
                 tools: vec![],
             });
             assert!(
-                matches!(second, Err(ProviderError::Unavailable(m)) if m.contains("exhausted")),
+                matches!(second, Err(ProviderError::Unavailable)),
                 "an over-running loop gets a typed refusal, not an empty stream"
             );
         });

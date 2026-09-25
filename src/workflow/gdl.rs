@@ -47,7 +47,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::Pool;
 use crate::agentloop::hooks::LoopHooks;
-use crate::agentloop::provider::LlmProvider;
+use crate::agentloop::provider::{LlmProvider, ProviderError};
 use crate::agentloop::run_loop::{LoopConfig, LoopDriver, LoopError, RunOutcome};
 use crate::audit::AuditStatus;
 use crate::workflow::host::SqliteWorkflowHost;
@@ -2137,9 +2137,31 @@ pub(crate) enum GdlOutcome {
         at: GdlPhase,
         reason: String,
     },
+    /// A provider failure sealed the episode after exchange finalization.
+    /// The class is closed and contains no upstream text or secret.
+    ProviderFailed {
+        at: GdlPhase,
+        failure: ProviderError,
+    },
 }
 
-// ── the driver ─────────────────────────────────────────────────────────────
+/// Read-only probe used by the authenticated launch route before its generic
+/// freshness check. A malformed checkpoint fails closed rather than becoming a
+/// misleading `run_not_fresh` response.
+pub(crate) fn provider_failed_terminal(
+    conn: &rusqlite::Connection,
+    run_id: i64,
+) -> Result<bool, String> {
+    checkpoint::provider_failed_terminal(conn, run_id)
+        .map_err(|_| "GDL terminal state is unreadable".to_string())
+}
+
+pub(crate) fn provider_failure_audit_count(conn: &rusqlite::Connection) -> Result<i64, String> {
+    checkpoint::provider_failure_audit_count(conn)
+        .map_err(|_| "GDL provider audit state is unreadable".to_string())
+}
+
+// ── the driver ───────────────────────────────────────────────────────────────
 
 /// The GDL driver: one case, seven phases, every dependency injected.
 /// Composes the loop-line's [`LoopDriver`] per phase (the 5-step loop IS the phase
@@ -2468,6 +2490,9 @@ impl GdlDriver {
                         "recheck finding was not the agreed JSON shape".into(),
                     ),
                 }
+            }
+            Ok(SubagentOutcome::ProviderFailed { .. }) => {
+                AdversarialFinding::Unavailable("provider failure".into())
             }
             Ok(_) => AdversarialFinding::Unavailable(
                 "recheck child hit its cap without a finding".into(),
@@ -3108,6 +3133,11 @@ impl GdlDriver {
                         at: phase,
                         reason: "budget".into(),
                     }),
+                    RunOutcome::ProviderFailed { failure } => {
+                        change.verdict = "fail";
+                        change.errors = vec!["gdl_provider_failed".into()];
+                        Some(GdlOutcome::ProviderFailed { at: phase, failure })
+                    }
                     RunOutcome::Completed { .. } => None,
                 };
                 // C2: the unconditional human escape, observed at the
@@ -3345,6 +3375,7 @@ impl GdlDriver {
                                             cancel,
                                         )
                                         .await?;
+                                    let confirm_exchange_id = confirm.exchange_id;
                                     change.terminal = match confirm.outcome {
                                         RunOutcome::Canceled => Some(GdlOutcome::Routed {
                                             at: phase,
@@ -3367,6 +3398,12 @@ impl GdlDriver {
                                                          interrupted: budget"
                                                     .into(),
                                             })
+                                        }
+                                        RunOutcome::ProviderFailed { failure } => {
+                                            change.verdict = "fail";
+                                            change.errors = vec!["gdl_provider_failed".into()];
+                                            change.exchange = Some(confirm_exchange_id);
+                                            Some(GdlOutcome::ProviderFailed { at: phase, failure })
                                         }
                                         RunOutcome::Completed { .. } => None,
                                     };
@@ -4076,6 +4113,272 @@ mod tests {
         }
     }
 
+    #[derive(Clone)]
+    struct FailingProvider {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl LlmProvider for FailingProvider {
+        fn name(&self) -> &str {
+            "failing"
+        }
+
+        fn stream(
+            &self,
+            _request: crate::agentloop::provider::ProviderRequest,
+        ) -> Result<
+            tokio::sync::mpsc::Receiver<
+                Result<
+                    crate::agentloop::provider::StreamEvent,
+                    crate::agentloop::provider::ProviderError,
+                >,
+            >,
+            crate::agentloop::provider::ProviderError,
+        > {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            let calls = Arc::clone(&self.calls);
+            tokio::spawn(async move {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let _ = tx
+                    .send(Err(crate::agentloop::provider::ProviderError::Unavailable))
+                    .await;
+            });
+            Ok(rx)
+        }
+    }
+
+    #[derive(Clone)]
+    struct ScriptThenFailProvider {
+        inner: Arc<LoopbackProvider>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        fail_at: usize,
+    }
+
+    impl LlmProvider for ScriptThenFailProvider {
+        fn name(&self) -> &str {
+            self.inner.name()
+        }
+
+        fn stream(
+            &self,
+            request: crate::agentloop::provider::ProviderRequest,
+        ) -> Result<
+            tokio::sync::mpsc::Receiver<
+                Result<
+                    crate::agentloop::provider::StreamEvent,
+                    crate::agentloop::provider::ProviderError,
+                >,
+            >,
+            crate::agentloop::provider::ProviderError,
+        > {
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if call < self.fail_at {
+                return self.inner.stream(request);
+            }
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tokio::spawn(async move {
+                let _ = tx
+                    .send(Err(crate::agentloop::provider::ProviderError::Unavailable))
+                    .await;
+            });
+            Ok(rx)
+        }
+    }
+
+    fn provider_failure_fixture() -> (
+        GdlDriver,
+        tempfile::NamedTempFile,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mgr = crate::pool::SqliteConnectionManager::file(tmp.path());
+        let pool: Pool = r2d2::Pool::builder().max_size(4).build(mgr).unwrap();
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('acme', 'troubleshoot', '{}', 0, 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+        let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider: Arc<dyn LlmProvider> = Arc::new(FailingProvider {
+            calls: Arc::clone(&calls),
+        });
+        let driver = GdlDriver::new(
+            pool,
+            host,
+            provider,
+            vec![],
+            ExecutionEnv {
+                fs: Arc::new(DenyAll),
+                read_only: true,
+                allow_process: false,
+                root: "/".into(),
+                allowed_commands: vec![],
+            },
+            LoopConfig::default(),
+        );
+        (driver, tmp, calls)
+    }
+
+    fn provider_failure_db_state(path: &std::path::Path) -> Connection {
+        Connection::open(path).expect("provider-failure test database")
+    }
+
+    fn confirmation_failure_fixture() -> (
+        GdlDriver,
+        tempfile::NamedTempFile,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let mgr = crate::pool::SqliteConnectionManager::file(tmp.path());
+        let pool: Pool = r2d2::Pool::builder().max_size(4).build(mgr).unwrap();
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).unwrap();
+        pool.get()
+            .unwrap()
+            .execute(
+                "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
+                 VALUES ('acme', 'troubleshoot', '{}', 0, 'active', 1, 1)",
+                [],
+            )
+            .unwrap();
+        let host = Arc::new(SqliteWorkflowHost::new(pool.clone()));
+        let inner = LoopbackProvider::new("loopback", happy_script());
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let provider: Arc<dyn LlmProvider> = Arc::new(ScriptThenFailProvider {
+            inner,
+            calls: Arc::clone(&calls),
+            // Six GDL phases, then the adversarial child, then :confirm.
+            fail_at: 7,
+        });
+        let driver = GdlDriver::new(
+            pool,
+            host,
+            provider,
+            vec![],
+            ExecutionEnv {
+                fs: Arc::new(DenyAll),
+                read_only: true,
+                allow_process: false,
+                root: "/".into(),
+                allowed_commands: vec![],
+            },
+            LoopConfig::default(),
+        );
+        (driver, tmp, calls)
+    }
+
+    #[test]
+    fn gdl_confirmation_provider_failure_uses_confirm_receipt() {
+        let (driver, tmp, calls) = confirmation_failure_fixture();
+        let outcome = rt()
+            .block_on(driver.run_case(1, "confirmation failure", &CancellationToken::new()))
+            .expect("confirmation provider failure terminalizes the GDL checkpoint");
+        assert!(matches!(outcome, GdlOutcome::ProviderFailed { .. }));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 8);
+        let conn = provider_failure_db_state(tmp.path());
+        assert!(session_log::quiescent(&conn, 1).expect("confirmation quiescence"));
+        let gate_payload: String = conn
+            .query_row(
+                "SELECT payload_json FROM agent_session_events WHERE run_id=1 AND kind='gdl_gate' ORDER BY seq DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("provider-failure gate payload");
+        let gate: serde_json::Value = serde_json::from_str(&gate_payload).expect("gate JSON");
+        let exchange = gate["exchange"].as_i64().expect("bound exchange id");
+        let key: String = conn
+            .query_row(
+                "SELECT idempotency_key FROM agent_session_events WHERE run_id=1 AND seq=?1 AND kind='control:exchange'",
+                [exchange],
+                |row| row.get(0),
+            )
+            .expect("confirmation exchange start");
+        assert!(
+            key.ends_with(":confirm"),
+            "gate must bind the confirmation exchange: {key}"
+        );
+        assert!(super::provider_failed_terminal(&conn, 1).expect("terminal probe"));
+    }
+
+    #[test]
+    fn gdl_provider_failure_releases_outer_claim() {
+        let (driver, tmp, _calls) = provider_failure_fixture();
+        let _ = rt().block_on(driver.run_case(1, "provider failure", &CancellationToken::new()));
+        let conn = provider_failure_db_state(tmp.path());
+        assert!(
+            session_log::quiescent(&conn, 1).expect("quiescence query"),
+            "provider failure must not leave the invocation or exchange unfinished"
+        );
+        let claim_seq: i64 = conn
+            .query_row(
+                "SELECT seq FROM agent_session_events WHERE run_id=1 AND kind='control:claim' ORDER BY seq DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("outer claim row");
+        let released: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE run_id=1 AND kind='control:release' AND idempotency_key=?1",
+                [format!("control:release:{claim_seq}")],
+                |row| row.get(0),
+            )
+            .expect("outer release row");
+        assert_eq!(released, 1, "the GDL-owned claim must be released");
+    }
+
+    #[test]
+    fn gdl_provider_failure_finishes_invocation_and_exchange() {
+        let (driver, tmp, _calls) = provider_failure_fixture();
+        let _ = rt().block_on(driver.run_case(1, "provider failure", &CancellationToken::new()));
+        let conn = provider_failure_db_state(tmp.path());
+        let (invocations, exchanges): (i64, i64) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM agent_session_events WHERE run_id=1 AND kind='control:invocation_done'),
+                        (SELECT COUNT(*) FROM agent_session_events WHERE run_id=1 AND kind='control:exchange_done')",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("terminal receipt counts");
+        assert_eq!(invocations, 1, "invocation must be finalized");
+        assert_eq!(exchanges, 1, "exchange must be finalized");
+        assert!(session_log::quiescent(&conn, 1).expect("quiescence query"));
+    }
+
+    #[test]
+    fn gdl_provider_failure_is_terminal_and_not_retryable() {
+        let (driver, tmp, _calls) = provider_failure_fixture();
+        let _ = rt().block_on(driver.run_case(1, "provider failure", &CancellationToken::new()));
+        let conn = provider_failure_db_state(tmp.path());
+        let payload: String = conn
+            .query_row(
+                "SELECT payload_json FROM agent_session_events WHERE run_id=1 AND kind='control:gdl' ORDER BY seq DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("terminal checkpoint payload");
+        let checkpoint: serde_json::Value =
+            serde_json::from_str(&payload).expect("checkpoint JSON");
+        assert!(
+            !checkpoint["terminal"].is_null(),
+            "provider failure must seal a terminal checkpoint: {checkpoint}"
+        );
+        drop(conn);
+        let (retry_driver, retry_provider) =
+            reload(tmp.path(), happy_script(), LoopConfig::default());
+        let _ =
+            rt().block_on(retry_driver.run_case(1, "provider failure", &CancellationToken::new()));
+        assert!(
+            retry_provider.requests().is_empty(),
+            "a provider-failed episode must never replay provider work"
+        );
+    }
+
     fn step_rows(path: &std::path::Path) -> Vec<(i64, String, String, Option<i64>)> {
         let conn = Connection::open(path).unwrap();
         let mut stmt = conn
@@ -4422,6 +4725,7 @@ mod tests {
                 GdlOutcome::VerifyFailed { .. } => "verify_failed",
                 GdlOutcome::Canceled => "canceled",
                 GdlOutcome::Capped { .. } => "capped",
+                GdlOutcome::ProviderFailed { .. } => "provider_failed",
                 GdlOutcome::Resolved { .. } => "resolved",
             };
             assert_eq!(
@@ -9331,6 +9635,7 @@ mod eval_run1 {
             GdlOutcome::VerifyFailed { .. } => ("VerifyFailed", false),
             GdlOutcome::Canceled => ("Canceled", false),
             GdlOutcome::Capped { .. } => ("Capped", false),
+            GdlOutcome::ProviderFailed { .. } => ("ProviderFailed", false),
         };
         let conn = rusqlite::Connection::open(tmp.path()).unwrap();
         let gate_rejects = session_log::replay(&conn, 1, session_log::REPLAY_CAP)
@@ -9513,6 +9818,7 @@ mod eval_run1 {
             GdlOutcome::VerifyFailed { .. } => "VerifyFailed",
             GdlOutcome::Canceled => "Canceled",
             GdlOutcome::Capped { .. } => "Capped",
+            GdlOutcome::ProviderFailed { .. } => "ProviderFailed",
         };
         let conn = rusqlite::Connection::open(tmp.path()).unwrap();
         let gates = session_log::replay(&conn, 1, session_log::REPLAY_CAP)
@@ -9714,6 +10020,7 @@ mod eval_run1 {
             GdlOutcome::VerifyFailed { .. } => ("VerifyFailed", false),
             GdlOutcome::Canceled => ("Canceled", false),
             GdlOutcome::Capped { .. } => ("Capped", false),
+            GdlOutcome::ProviderFailed { .. } => ("ProviderFailed", false),
         };
         let conn = rusqlite::Connection::open(tmp.path()).unwrap();
         let gate_rejects = session_log::replay(&conn, 1, session_log::REPLAY_CAP)
