@@ -8,11 +8,16 @@ description = "The delivery-loop decision core (autonomy tiers, phase machine, p
 publish = false
 
 [dependencies]
-# EXACTLY the brain-executor-core precedent's core three, per the R37 prereg:
-# "serde, serde_json, sha2 -- NOTHING else". A need for any other dependency is
-# a stop-and-preregister-addendum event. (Note: the executor-core manifest has
-# since drifted to four, adding `hex`; this crate follows the prereg's letter and
-# keeps the hex encoder self-contained. See the R37 evidence file.)
+# ADDENDUM 2 item 6 (plan:705) fixes this set at the brain-executor-core
+# precedent: serde (derive), serde_json, sha2, plus `hex` only if the crate
+# encodes digests as hex. It does, so `hex` is permitted -- and omitted here
+# anyway: the encoder stays self-contained, and the pin
+# `digest_encoding_is_a_known_answer_not_only_self_consistent` holds it against
+# an independently computed value.
+# Precedence is ADDENDUM 2 > AMENDMENT 1, so AMENDMENT 1's "serde/serde_json/
+# sha2 ONLY" is SUPERSEDED and is NOT the governing text. brain-executor-core
+# carrying `hex` is not drift -- it is the named precedent, and item 6
+# anticipated that line.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
