@@ -3,6 +3,7 @@ import { defineConfig } from '@playwright/test';
 export default defineConfig({
 	testDir: 'e2e',
 	timeout: 120_000,
+	workers: process.env['CI'] ? 1 : undefined,
 	globalSetup: './e2e/global-setup.ts',
 	// TWO projects over the SAME built page + booted kernel:
 	//  - chromium: the full live-wire smoke (the documented harness

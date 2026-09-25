@@ -3743,10 +3743,229 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workflow/decision-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The bounded decision-run listing (DPO/admin dual gate; audited)
+         * @description Newest-first page over the stored decision-run traces with bounded columns only (id, run_id, mode, pipeline_version, config_hash, created_at, stage_count) — the trace documents themselves never ride a listing. THE exfiltration surface: the DPO dual gate (Admin action AND the DPO role) plus an audited global row per call.
+         */
+        get: operations["workflowDecisionRunsList"];
+        put?: never;
+        /**
+         * Execute one decision-pipeline run and persist its trace (Write on the run's domain + workflow role)
+         * @description Runs the configured deterministic pipeline over the request's ask and persists the run's trace (digests and refs only — the raw query is hashed before anything durable). The config document and the rules table both ride the request body; the rules table must digest to the config's bound model or the run refuses (`model_digest_mismatch`). With `proposal: true` AND an escalated outcome, an escalation proposal is queued in the SAME transaction carrying the run's provenance ref — the promotion gate reads the ref's mode: an exploratory run can propose, never promote.
+         */
+        post: operations["workflowDecisionRunCreate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/decision-runs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The stored decision-run trace by row id (Read on global + workflow role)
+         * @description Returns the stored trace document verbatim — digests and refs only (the input query rides only as its digest; per-stage records carry input/output digests, trust tiers, and timing). Absent ids answer the probe-blind 404. The read is audited.
+         */
+        get: operations["workflowDecisionRunGet"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/decision-runs/{id}/replay-diff": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Re-execute a stored run under its own recorded conditions and report per-stage digest agreement (Write on the run's domain + workflow role)
+         * @description Verifies the supplied config's canonical hash equals the stored trace's config_hash (mismatch → 409 config_hash_mismatch — a replay replays its own recorded conditions or refuses), re-builds the digest-bound model, re-executes the pipeline with LIVE retrieval under the server clock, and reports per-stage outputs-digest agreement. Timing fields are provenance and are never compared. The report is DATA (all_match is not a status) and the replay persists NOTHING. POST (not GET): the config + rules documents are large structured bodies, and the body must re-carry the run's input fields — the stored trace binds the input only as its digest.
+         */
+        post: operations["workflowDecisionRunReplayDiff"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/decision-evals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List bounded decision evaluation records (Admin plus DPO; audited) */
+        get: operations["listDecisionEvaluations"];
+        put?: never;
+        /**
+         * Create a digest-pinned, non-authoritative decision evaluation (Admin plus DPO)
+         * @description Evaluates a bounded operator-declared judgment manifest against persisted decision traces. The manifest is explicitly non-authoritative; no gold pack is treated as a decision label, raw query/evidence text is not accepted, and missing metric legs remain unavailable rather than zero. The acceptance state is a checked audit fact, not a detached cryptographic signature.
+         */
+        post: operations["createDecisionEvaluation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/decision-evals/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one decision evaluation record (Admin plus DPO; audited) */
+        get: operations["getDecisionEvaluation"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/model-registry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List registered model identities (Admin plus DPO role; audited)
+         * @description Newest-first bounded listing of model identities and lifecycle state. The artifact digest is represented only by a presence boolean; its value is available on the single-row read. The listing is an audited global DPO/admin dual-gated surface.
+         */
+        get: operations["listModelRegistry"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/model-registry/{model_ref}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one registered model identity by id@version (Read; audited)
+         * @description The model_ref path value is one captured segment in the form `{id}@{version}`. The response carries identity, vocabulary, lifecycle, and digest references; it never carries weights or evaluation contents. An absent row answers the same probe-blind not-found response.
+         */
+        get: operations["getModelRegistryEntry"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/model-registry/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register a model identity as a candidate (Admin; audited)
+         * @description The deterministic-rules arm requires the actual rules document in the request body; the server derives its identity and canonical digest and stores no rules content. Learned and reranker registrations declare identity and digest references directly. Every registration lands as candidate; promotion and retirement use the existing human proposal gate.
+         */
+        post: operations["registerModel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        DecisionEvaluationRecord: {
+            evaluation_id: string;
+            idempotency_key: string;
+            request_digest: string;
+            target: {
+                pipeline_version: string;
+                config_hash: string;
+                model_registry_id: string;
+                model_registry_version: string;
+                model_registry_digest: string;
+                model_artifact_digest?: string;
+            };
+            judgment_set: {
+                /** @enum {string} */
+                source: "operator_declared";
+                /** @enum {boolean} */
+                authoritative: false;
+                judgment_set_ref: string;
+                /** Format: int64 */
+                frozen_at: number;
+                manifest_digest: string;
+                cases: {
+                    case_id: string;
+                    /** Format: int64 */
+                    trace_id: number;
+                    relevant_evidence_ids: string[];
+                    /** @enum {string} */
+                    expected_action: "act" | "approve" | "reject" | "escalate";
+                    /** @enum {string} */
+                    expected_output_label: "choice" | "score" | "noul" | "none";
+                    expected_output_digest: string;
+                    case_digest: string;
+                }[];
+            };
+            report: {
+                report_version: string;
+                case_results: Record<string, never>[];
+                retrieval: Record<string, never>;
+                agreement: Record<string, never>;
+                abstention: Record<string, never>;
+                ood_abstention: Record<string, never>;
+                calibration: Record<string, never>;
+                red_team: Record<string, never>;
+                /** @enum {boolean} */
+                acceptance_reported_as_data_only: true;
+                acceptance_bars: Record<string, never>;
+            };
+            /** @enum {string} */
+            acceptance_state: "operator_accepted_non_authoritative";
+            acceptance_bars: Record<string, never>;
+            creator_id: string;
+            reviewer_id: string;
+            /** Format: int64 */
+            created_at: number;
+            record_digest: string;
+            audit_target: string;
+        };
         /** @description One row of the human review queue (GET /proposals and /clients/{name}/proposals). `content` is the read-canonical form the reviewer sees; `content_digest` is the SHA-256 the approve verb binds to. */
         ProposalView: {
             id: number;
@@ -13223,6 +13442,675 @@ export interface operations {
             };
             /** @description Not authorized (Read on the global domain) */
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    workflowDecisionRunsList: {
+        parameters: {
+            query?: {
+                limit?: number;
+                run_id?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The bounded listing page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        rows: {
+                            id: number;
+                            run_id: number;
+                            /** @enum {string} */
+                            mode: "deterministic" | "exploratory";
+                            pipeline_version: string;
+                            config_hash: string;
+                            created_at: number;
+                            stage_count: number;
+                        }[];
+                        count: number;
+                    };
+                };
+            };
+            /** @description decision_runs_limit_out_of_bounds */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (the DPO dual gate — Admin action AND the DPO role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    workflowDecisionRunCreate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @description The raw pipeline config document (harness.pipeline/v1); the loader's total validation applies. */
+                    config: Record<string, never>;
+                    /** @description The rules table document; its canonical digest must equal the config's bound model digest. */
+                    rules_config: Record<string, never>;
+                    run_id: number;
+                    /** @enum {string} */
+                    mode: "deterministic" | "exploratory";
+                    request_id: string;
+                    question_id?: string;
+                    /** @enum {string} */
+                    question_kind?: "choice" | "score" | "noul";
+                    question_ids: string[];
+                    /** @description The ONE raw-text field; hashed into the trace */
+                    query: string;
+                    /** @default false */
+                    proposal?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description The run executed and its trace persisted */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        trace_id: number;
+                        /** @enum {string} */
+                        action: "act" | "approve" | "reject" | "escalate";
+                        escalation?: {
+                            stage?: string;
+                            reason?: string;
+                            detail?: string;
+                        };
+                        /** @description The model's proposed decision (present whenever the model decided, even on escalate). */
+                        output?: Record<string, never>;
+                        /** @description The stage-record count. */
+                        records: number;
+                        /** @description Present only when an escalation proposal was queued. */
+                        proposal_id?: number;
+                    };
+                };
+            };
+            /** @description config_invalid | rules_config_invalid | model_digest_mismatch | mode_invalid | query_invalid | request_id_invalid | question_ids_invalid | question_invalid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Write on the run's domain + the workflow role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Workflow run not found (probe-blind — absent and foreign runs answer identically) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    workflowDecisionRunGet: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The stored trace document */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": Record<string, never>;
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Read on the global domain + the workflow role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Decision run trace not found (probe-blind) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    workflowDecisionRunReplayDiff: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    config: Record<string, never>;
+                    rules_config: Record<string, never>;
+                    /** @enum {string} */
+                    mode: "deterministic" | "exploratory";
+                    request_id: string;
+                    question_id?: string;
+                    /** @enum {string} */
+                    question_kind?: "choice" | "score" | "noul";
+                    question_ids: string[];
+                    query: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The replay agreement report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        trace_id: number;
+                        config_hash: string;
+                        config_hash_match: boolean;
+                        replay_input_digest: string;
+                        input_digest_match: boolean;
+                        stages: {
+                            stage: string;
+                            match: boolean;
+                            stored_outputs_digest: string;
+                            replayed_outputs_digest: string;
+                        }[];
+                        /** @description DATA */
+                        all_match: boolean;
+                    };
+                };
+            };
+            /** @description config_invalid | rules_config_invalid | model_digest_mismatch | query_invalid | … */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Write on the run's domain + the workflow role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Decision run trace or run not found (probe-blind) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description config_hash_mismatch */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listDecisionEvaluations: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bounded evaluation metadata; full manifests and reports are omitted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        rows: {
+                            evaluation_id: string;
+                            pipeline_version: string;
+                            config_hash: string;
+                            model_registry_id: string;
+                            model_registry_version: string;
+                            judgment_set_ref: string;
+                            judgment_set_digest: string;
+                            judgment_set_count: number;
+                            /** @enum {string} */
+                            acceptance_state: "operator_accepted_non_authoritative";
+                            /** Format: int64 */
+                            created_at: number;
+                        }[];
+                        count: number;
+                    };
+                };
+            };
+            /** @description evaluation_limit_out_of_bounds */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Admin on global plus DPO role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createDecisionEvaluation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    idempotency_key: string;
+                    target: {
+                        pipeline_version: string;
+                        config_hash: string;
+                        model_registry_id: string;
+                        model_registry_version: string;
+                        model_registry_digest: string;
+                        model_artifact_digest?: string;
+                    };
+                    judgment_set: {
+                        /** @enum {string} */
+                        source: "operator_declared";
+                        /** @enum {boolean} */
+                        authoritative: false;
+                        judgment_set_ref: string;
+                        /** Format: int64 */
+                        frozen_at: number;
+                        manifest_digest: string;
+                        cases: {
+                            case_id: string;
+                            /** Format: int64 */
+                            trace_id: number;
+                            relevant_evidence_ids: string[];
+                            /** @enum {string} */
+                            expected_action: "act" | "approve" | "reject" | "escalate";
+                            /** @enum {string} */
+                            expected_output_label: "choice" | "score" | "noul" | "none";
+                            expected_output_digest: string;
+                            case_digest: string;
+                        }[];
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description Idempotent replay of the original evaluation record */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionEvaluationRecord"];
+                };
+            };
+            /** @description Evaluation record created */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionEvaluationRecord"];
+                };
+            };
+            /** @description judgment_set_unavailable | judgment_set_digest_mismatch | evaluation_target_mismatch | model_artifact_digest_required | evaluation_idempotency_key_invalid | evaluation_target_invalid | judgment_set_size_invalid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Admin on global plus DPO role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description evaluation_idempotency_conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getDecisionEvaluation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The digest-verified evaluation record */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DecisionEvaluationRecord"];
+                };
+            };
+            /** @description evaluation_id_invalid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Admin on global plus DPO role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Evaluation record not found (probe-blind) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listModelRegistry: {
+        parameters: {
+            query?: {
+                limit?: number;
+                status?: "candidate" | "evaluated" | "promoted" | "retired";
+                kind?: "deterministic-rules" | "learned" | "reranker";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The bounded registry listing */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        rows: {
+                            id: string;
+                            version: string;
+                            kind: string;
+                            name: string;
+                            output_vocabulary: ("choice" | "score" | "noul")[];
+                            artifact_digest_present: boolean;
+                            config_digest: string | null;
+                            /** @enum {string} */
+                            status: "candidate" | "evaluated" | "promoted" | "retired";
+                            proposed_by: string;
+                            created_at: number;
+                            updated_at: number;
+                        }[];
+                        count: number;
+                    };
+                };
+            };
+            /** @description model_registry_limit_out_of_bounds | registry_status_invalid | registry_kind_invalid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Admin plus DPO role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getModelRegistryEntry: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_ref: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The full identity and digest reference record */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        id: string;
+                        version: string;
+                        /** @enum {string} */
+                        kind: "deterministic-rules" | "learned" | "reranker";
+                        name: string;
+                        output_vocabulary: ("choice" | "score" | "noul")[];
+                        artifact_digest?: string | null;
+                        config_digest?: string | null;
+                        calibration_ref?: string | null;
+                        /** @enum {string} */
+                        status: "candidate" | "evaluated" | "promoted" | "retired";
+                        evaluation_refs: string[];
+                        proposed_by: string;
+                        approved_by?: string | null;
+                        created_at: number;
+                        updated_at: number;
+                    };
+                };
+            };
+            /** @description model_ref_invalid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Read on global) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Model registry row not found (probe-blind) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    registerModel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    kind: "deterministic-rules" | "learned" | "reranker";
+                    /** @description Required only for deterministic-rules; supplied bytes are validated and discarded after digesting. */
+                    rules_config?: Record<string, never>;
+                    id?: string;
+                    version?: string;
+                    name?: string;
+                    output_vocabulary?: ("choice" | "score" | "noul")[];
+                    artifact_digest?: string;
+                    config_digest?: string;
+                    calibration_ref?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Candidate identity registered */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        id: string;
+                        version: string;
+                        /** @enum {string} */
+                        status: "candidate";
+                        config_digest: string | null;
+                    };
+                };
+            };
+            /** @description rules_config_invalid | registry_identity_declared | registry_identity_required | registry_vocabulary_invalid | artifact_digest_required | artifact_digest_invalid | config_digest_invalid | registry_id_invalid | registry_version_invalid | registry_kind_invalid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Admin on global) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description model_already_registered */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

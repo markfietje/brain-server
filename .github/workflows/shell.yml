@@ -1,37 +1,78 @@
 name: shell
 
-# The SvelteTauri shell's own gates (Phase A): lint → typecheck → tests
-# (the drift gate + axe included) → build → audits → the Tauri core's
-# rust gates → a no-bundle tauri build (no signing, no secrets in CI).
-# The kernel's own workflows are untouched; this file gates shell/** only.
+# The SvelteTauri shell's fail-closed contract-integrity gates. The shell is
+# checked whenever its source, the kernel OpenAPI contract, or the canonical
+# invisible-class fixture changes.
 
 on:
   push:
     branches: [main]
-    paths: ['shell/**', '.github/workflows/shell.yml']
+    paths:
+      - 'shell/**'
+      - 'openapi.yaml'
+      - 'plugin/fixtures/invisible-classes.json'
+      - '.github/workflows/shell.yml'
   pull_request:
-    paths: ['shell/**', '.github/workflows/shell.yml']
+    paths:
+      - 'shell/**'
+      - 'openapi.yaml'
+      - 'plugin/fixtures/invisible-classes.json'
+      - '.github/workflows/shell.yml'
+
+permissions:
+  contents: read
 
 jobs:
   shell:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     defaults:
       run:
         working-directory: shell
     steps:
-      - uses: actions/checkout@v7
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v6
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         with:
-          version: 12
+          version: 12.3.4
 
-      - uses: actions/setup-node@v7
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: shell/pnpm-lock.yaml
 
-      - name: Install (frozen lockfile)
+      - name: Install Linux Tauri prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential curl wget file pkg-config \
+            libwebkit2gtk-4.1-dev libxdo-dev libssl-dev \
+            libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install pinned stable Rust
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, signed 2026-09-03
+        with:
+          toolchain: 1.98.1
+          components: rustfmt, clippy
+
+      - name: Rust cache (kernel root)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: .
+
+      - name: Rust cache (shell Tauri)
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: shell/src-tauri
+
+      - name: Hugging Face model prefetch
+        uses: ./.github/actions/huggingface-prefetch
+
+      - name: Install shell dependencies (frozen lockfile)
         run: pnpm install --frozen-lockfile
 
       - name: Lint
@@ -40,30 +81,49 @@ jobs:
       - name: Svelte check (strict)
         run: pnpm check
 
-      - name: Unit tests (vitest — drift gate + axe included)
+      - name: Unit tests (non-mutating vitest)
         run: pnpm test
 
-      - name: Build (adapter-static; strict CSP meta in app.html)
-        run: pnpm build
+      - name: Verify generated client is byte-stable
+        shell: bash
+        run: |
+          set -euo pipefail
+          generated="$(mktemp)"
+          trap 'rm -f "$generated"' EXIT
+          pnpm exec openapi-typescript ../openapi.yaml -o "$generated"
+          cmp src/lib/api/schema.d.ts "$generated"
 
-      - name: pnpm audit (prod deps, high+)
+      - name: Build shell and inject/verify strict CSP
+        run: |
+          pnpm build
+          grep -q 'Content-Security-Policy' build/index.html
+          ! grep -q "'unsafe-inline'" build/index.html
+
+      - name: pnpm audit (production dependencies, high+)
         run: pnpm audit --prod --audit-level high
 
-      - name: Rust cache (src-tauri)
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: shell/src-tauri
+      - name: Build root brain-server for dedicated-port e2e
+        working-directory: .
+        run: cargo build --offline --locked --bin brain-server
 
-      - name: src-tauri fmt
-        run: cargo fmt --check --manifest-path src-tauri/Cargo.toml
+      - name: Tauri fmt
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 
-      - name: src-tauri clippy
+      - name: Tauri clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
-      - name: cargo audit (src-tauri)
+      - name: Install pinned cargo-audit and audit Tauri lockfile
         run: |
-          cargo install cargo-audit --locked || true
+          cargo install cargo-audit --version 0.22.2 --locked
           cargo audit --file src-tauri/Cargo.lock
 
       - name: Tauri build (no bundle — no signing, no secrets)
         run: pnpm tauri build --no-bundle
+
+      - name: Install Playwright browsers and OS dependencies
+        run: pnpm exec playwright install --with-deps chromium webkit
+
+      - name: E2E (real loopback kernel, Chromium + WebKit, one worker)
+        env:
+          E2E_KERNEL_PORT: 8799
+        run: pnpm test:e2e --workers=1

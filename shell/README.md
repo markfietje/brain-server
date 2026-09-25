@@ -17,10 +17,10 @@ stable at this round's pin).
 ## Run it
 
 ```sh
-pnpm install          # frozen-lockfile in CI; engines: node ≥24 <25, pnpm ≥12 <13
-pnpm gen:api          # regenerate src/lib/api/schema.d.ts from ../openapi.yaml
+pnpm install --frozen-lockfile # CI install; engines: node >=24 <27, pnpm >=12 <13 (CI Node 24)
+pnpm gen:api          # intentional one-shot regeneration from ../openapi.yaml
 pnpm dev              # vite dev server (CSP meta stripped for HMR only)
-pnpm test             # vitest: engine, wire drift gate, token redaction, i18n, axe
+pnpm test             # vitest: engine, wire drift gate, token redaction, i18n, axe; never regenerates
 pnpm check            # svelte-check, strict
 pnpm lint             # eslint ({@html} is lint-banned; no-console banned)
 pnpm build            # adapter-static SPA → build/ (strict CSP meta in place)
@@ -28,8 +28,8 @@ pnpm tauri build --no-bundle   # the Tauri core compiles (no signing, no bundle)
 pnpm test:e2e         # Playwright: boots a REAL loopback kernel + drives the built shell
 ```
 
-The e2e needs the kernel server binary: `cargo build --offline --locked --bin
-brain-server` at the repo root (the e2e global setup builds it if absent).
+The e2e always builds the current kernel server binary: `cargo build --offline --locked --bin
+brain-server` at the repo root.
 The setup boots the SERVER (`target/debug/brain-server` — never the `brain`
 client CLI) on a DEDICATED port **8799** with a temp data dir, refuses to
 start if that port is already taken (a dev machine may run a live kernel on
@@ -38,9 +38,33 @@ the preview origin in `CORS_ORIGINS` (the kernel's allowlist is explicit and
 loopback-guarded), and stops the kernel after the run. The playwright web
 server rebuilds the page with the e2e origin as the API base (build/ is
 gitignored; the next plain `pnpm build` restores the default origin), and the
-test context sets `bypassCSP` because the built page's strict CSP pins the
+the test context sets `bypassCSP` because the built page's strict CSP pins the
 default origin only — the pin itself is asserted by the spec against
 `build/index.html`.
+
+`pnpm gen:api` is the only command that intentionally rewrites the committed
+`src/lib/api/schema.d.ts`. `pnpm test` is non-mutating; CI performs a temporary
+regeneration and byte-compares the result. The kernel contract remains
+`openapi.yaml`, and this round does not repair the separate registry-lifecycle
+proposal wire gap.
+
+## CI and supply-chain boundary
+
+Shell CI runs from a clean checkout on `shell/**`, `openapi.yaml`, the canonical
+invisible-class fixture, and the workflow itself. It installs the Linux Tauri
+prerequisites, the pinned stable Rust toolchain, root and shell Rust caches, and
+the existing Hugging Face model prefetch; explicitly builds the root
+`brain-server` binary before the dedicated-port e2e harness. The harness uses
+only port 8799, one CI worker, and `pnpm exec playwright install --with-deps
+chromium webkit`. The WebKit project remains `bypassCSP: false`; the live-wire
+suite is not mocked.
+
+The shell workflow grants `contents: read`, uses immutable action commits,
+runs frozen install/lint/strict check/non-mutating Vitest/build/CSP and
+production audit, checks generated-file drift, and runs Tauri fmt, clippy, a
+fail-closed `cargo-audit` 0.22.2 install/audit, and a no-bundle Tauri build.
+These are technical controls only; they make no legal, compliance, release, or
+public-publication claim.
 
 ## The typed wire (the no-guesses law)
 

@@ -14,7 +14,7 @@
 		"build": "vite build && node scripts/inject-csp.mjs",
 		"preview": "vite preview",
 		"gen:api": "openapi-typescript ../openapi.yaml -o src/lib/api/schema.d.ts",
-		"pretest": "pnpm run gen:api",
+
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:e2e": "playwright test",
