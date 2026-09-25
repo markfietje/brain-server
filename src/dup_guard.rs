@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 ///   - the last row must match today's reality (current line + live count);
 ///   - when the count hits zero, retire the whole ledger and this comment
 ///     with it.
-const DEBT_LEDGER: &[(&str, usize)] = &[("1.28", 15)];
+const DEBT_LEDGER: &[(&str, usize)] = &[("1.28", 15), ("1.29", 14)];
 
 fn parse_minor(version: &str) -> (u32, u32) {
     let mut it = version.split('.');
@@ -169,10 +169,6 @@ const ALLOWED_DUPES: &[(&str, &str)] = &[
     ("emit_error", "[bin] connector JSON emit tail"),
     ("emit_log", "[bin] connector JSON emit tail"),
     ("emit_progress", "[bin] connector JSON emit tail"),
-    (
-        "ct_eq",
-        "TODO(unify): mcp.rs + boot.rs constant-time compare — fold into one shared fn",
-    ),
     (
         "SERVER_VERSION",
         "TODO(unify): mcp.rs copy vs config::SERVER_VERSION",

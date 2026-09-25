@@ -10,15 +10,56 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 
 <p align="center">
 
-[![Version](https://img.shields.io/badge/version-1.28.92-blue.svg)](#)
-[![Docs](https://img.shields.io/badge/docs-brain--server-1f6feb.svg)](https://markfietje.github.io/brain-server/)
-[![Rust](https://img.shields.io/badge/rust-2024-orange.svg?logo=rust)](#)
-[![Tests](https://img.shields.io/badge/tests-2247%20passed-brightgreen.svg)](#)
-[![License: MIT](https://img.shields.io/github/license/markfietje/brain-server.svg)](#)
+  <a href="https://github.com/markfietje/brain-server/actions/workflows/ci.yml">
+    <img alt="CI" src="https://github.com/markfietje/brain-server/actions/workflows/ci.yml/badge.svg?branch=main">
+  </a>
+  <a href="https://github.com/markfietje/brain-server/releases/latest">
+    <img alt="Latest release" src="https://img.shields.io/github/v/release/markfietje/brain-server?include_prereleases&sort=semver">
+  </a>
+  <a href="#">
+    <img alt="Version 1.29.0" src="https://img.shields.io/badge/version-1.29.0-blue.svg">
+  </a>
+  <a href="https://markfietje.github.io/brain-server/">
+    <img alt="Documentation" src="https://img.shields.io/badge/docs-brain--server-1f6feb.svg">
+  </a>
+  <a href="https://github.com/markfietje/brain-server/blob/main/LICENSE">
+    <img alt="MIT license" src="https://img.shields.io/github/license/markfietje/brain-server.svg">
+  </a>
 
 </p>
 
-*The test-count badge is derived by `scripts/badges.sh`; it is not selfcheck-verified by the lightweight `--selfcheck` path.*
+<p align="center">
+
+  <a href="#verification-and-evidence">
+    <img alt="2284 tests passed" src="https://img.shields.io/badge/tests-2284%20passed-brightgreen.svg">
+  </a>
+  <a href="docs/universal-memory-protocol.md">
+    <img alt="UMP 1.0 L3 verified" src="https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg">
+  </a>
+  <a href="sbom/brain-server-1.29.0.cdx.json">
+    <img alt="CycloneDX 1.5 SBOM" src="https://img.shields.io/badge/SBOM-CycloneDX%201.5-013243.svg">
+  </a>
+  <a href="openapi.yaml">
+    <img alt="OpenAPI 1.23.0" src="https://img.shields.io/badge/OpenAPI-1.23.0-6b4bff.svg">
+  </a>
+  <a href="SECURITY.md">
+    <img alt="Security policy" src="https://img.shields.io/badge/security--policy-1f6feb.svg">
+  </a>
+
+</p>
+
+<p align="center">
+
+  <a href="Cargo.toml"><img alt="Rust 2024" src="https://img.shields.io/badge/Rust-2024-orange?logo=rust"></a>
+  <a href="Cargo.toml"><img alt="Axum 0.8" src="https://img.shields.io/badge/Axum-0.8-6b4bff.svg"></a>
+  <a href="#what-it-provides"><img alt="SQLite FTS5 and sqlite-vec" src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20sqlite--vec-1f6feb.svg"></a>
+  <a href="shell/package.json"><img alt="Tauri 2" src="https://img.shields.io/badge/Tauri-2-24c8db.svg"></a>
+  <a href="shell/package.json"><img alt="SvelteKit 2" src="https://img.shields.io/badge/SvelteKit-2-ff3e00.svg"></a>
+  <a href="docs/mcp.md"><img alt="MCP stdio and HTTP" src="https://img.shields.io/badge/MCP-stdio%2FHTTP-5c4dab.svg"></a>
+
+</p>
+
+*Version, test-count, UMP, and SBOM values are derived by `scripts/badges.sh`; the test-count badge is not selfcheck-verified by the lightweight `--selfcheck` path. CI and release badges are live GitHub signals; stack badges link to the in-repo manifests and docs.*
 
 <p align="center">
 

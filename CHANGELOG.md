@@ -17,159 +17,31 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
-## [Unreleased] — GDL launch execution integrity (R35)
+## [1.29.0] — 2026-09-25 — "GDL boundary, governed decisions, and model identity"
 
-**Release notes**
+This release closes the GDL provider boundary and launch-integrity work accumulated since 1.28.92, alongside the governed model identity, decision-run, and evaluation-record surfaces. The GDL launch request is intentionally breaking; its migration is called out first.
 
-### Improvements
-- **Terminal provider-failure settlement.** A provider failure after GDL admission now writes a typed `control:exchange_done` receipt, finishes the invocation, seals a `gdl_provider_failed` checkpoint, records the fixed audit detail, and releases the outer claim through the existing transaction seams. The episode is terminal and non-retryable: the first launch returns HTTP 503 with `gdl_provider_failed`, while a later launch returns HTTP 409 with the same named code.
-- **Bounded provider transport.** GDL provider requests use a 25-second total request/body deadline in addition to connect and read bounds. Slow-drip responses terminate at the total deadline, and dropping the stream receiver cancels the actual in-flight HTTP future. Provider failures use closed typed classes and stable, secret-free external codes.
-- **Explicit provider readiness and role contract.** The four server-owned `BRAIN_GDL_PROVIDER_*` variables report `disabled`, `configured`, or `invalid` at `/ready`; partial or invalid profiles refuse bootstrap. The least-privilege `workflow-operator` role carries `workflow` through the public role contract, while `agent`, role-less JWTs, and unknown roles remain denied.
+### Release notes
 
-### Security fixes
-- **Provider-failure lifecycle integrity.** No admitted GDL exchange or invocation is left unfinished by a provider failure, timeout, malformed response, or receiver cancellation. Provider bodies, bearer values, secret paths, and secret-bearing URLs are not persisted or logged. No public recovery API is added.
+**Improvements**
+- **GDL launch migration (breaking request contract).** `POST /workflow/cases/{id}/gdl` accepts the bounded `{ticket}` body only. Callers that send `base_url`, `model`, `secret_file`, or timeout/response fields receive `400 gdl_request_migrated`; configure the server-owned `BRAIN_GDL_PROVIDER_BASE_URL`, `BRAIN_GDL_PROVIDER_MODEL`, `BRAIN_GDL_PROVIDER_SECRET_FILE`, and `BRAIN_GDL_PROVIDER_SECRET_ROOT` profile instead. Readiness reports `gdl_provider: disabled|configured|invalid`; partial or invalid configuration refuses bootstrap.
+- **GDL launch integrity.** Provider failures after admission become a durable, non-retryable `gdl_provider_failed` terminal: the first launch returns HTTP 503 and a later launch against that run returns HTTP 409 without replaying provider work. The 25-second total request/body deadline bounds slow-drip responses, and receiver cancellation drops the in-flight HTTP future.
+- **Governed model identity and decision-run surfaces.** Digest-pinned model registration, inspection, listing, human-gated lifecycle, and the role-authorized decision-run execute/read/replay/listing routes are available with bounded, audited responses. Exploratory output can propose but cannot promote.
+- **Evaluation records.** Bounded, digest-pinned, explicitly non-authoritative evaluation records can be created and read through the DPO/Admin-gated route family without treating an operator judgment as an authoritative label or registry transition.
 
-### Engineering record
-- The GDL request remains ticket-only and provider configuration remains server-owned. The role/readiness additions are reflected in `openapi.yaml` and the generated shell type; the static API contract stamp is `1.23.0`. No route registration, migration, dependency, package/lockfile, plugin, OpenClaw, Tauri, or client change is part of R35. This is an unreleased engineering record, not a compliance, legal, conformity, certification, or public-publication decision; exact command evidence is kept in the R35 operator record.
-
-## [Unreleased] — GDL provider boundary hardening (R34)
-
-**Release notes**
-
-### Improvements
-- **Server-owned GDL provider profile.** `POST /workflow/cases/{id}/gdl` now accepts the bounded `{ticket}` body only. Provider endpoint, model, secret file, and secret root are resolved from the documented server-side `BRAIN_GDL_PROVIDER_*` configuration. Existing caller-selected `base_url`, `model`, `secret_file`, and timeout/response fields receive the explicit `gdl_request_migrated` refusal and are never used.
-
-### Security fixes
-- **GDL provider/secret boundary.** JWT callers require domain Write plus the existing `workflow` capability before profile, secret, DNS, or provider work. Provider endpoints require HTTPS and a safe URL shape, retain resolved-address screening and DNS pinning, and refuse redirects. Secret files are confined to the configured root, symlinks/unsafe content/oversized values are refused, and provider failures return stable operator-safe codes without raw bodies, credentials, or secret-bearing URLs.
-- **Role and error clarification.** Role-less JWTs and unknown roles fail closed on GDL without changing shared role semantics; agent, revoked, probe-blind 404, fresh-run, deny-all, empty-tool, bounded-stream, and human-capture laws remain in force.
+**Security fixes**
+- **GDL provider and secret boundary.** JWT callers need domain Write plus the supported `workflow` role before profile, secret, DNS, or provider work. The new least-privilege `workflow-operator` role is grantable through the public role contract; `agent`, role-less JWTs, and unknown roles remain denied. Provider endpoints require HTTPS and safe URL shapes, retain address screening and DNS pinning, and refuse redirects.
+- **Provider-failure settlement.** Typed exchange/invocation/checkpoint/audit/claim-release handling prevents an admitted GDL exchange or invocation from remaining unfinished. Provider bodies, bearer values, secret paths, and secret-bearing URLs are not persisted or logged.
+- **Model identity and evaluation integrity.** Registry lifecycle proposals bind the exact current row and digest; evaluation records bind their target and manifest digests. Missing or unavailable evidence is not fabricated, and no evaluation or registry surface autonomously changes lifecycle status.
 
 ### Engineering record
-- Scope: the public GDL request contract is intentionally breaking; OpenAPI and the generated shell type were updated from the kernel source, and the static API contract stamp moved to `1.22.0` because the accepted request shape moved. No route, migration, dependency, package, Tauri, plugin, OpenClaw, client, or lockfile change is claimed. This entry is not a release, legal, compliance, or conformity decision; validation evidence is recorded in the round's operator record.
+- R34 is commit `6e458bb`; R35 is commit `23cc116`. This release commit is separate from both round commits.
+- The R34/R35 OpenAPI and generated shell changes are retained; the static API contract stamp is `1.23.0`. Existing schema-stamp continuity labels (`1.32.13` and `1.32.14`) are not moved or renamed by the release commit.
+- The release prep makes the C2 cancellation test deterministic and retires the two pre-existing lipstyk match findings; it does not change product behavior. No new dependency, lockfile, migration, package, plugin, OpenClaw, Tauri, or client source change is part of this release.
+- The release is an engineering and version event only; it makes no legal, compliance, conformity, certification, or risk-elimination claim.
 
-## [Unreleased] — registry lifecycle contract integrity (R33)
 
-**Release notes**
 
-### Improvements
-- **Typed registry lifecycle wire contract.** The `registry_lifecycle` proposal
-  carries the exact serialized `{action,id,version,row_digest,row}` shape. Only
-  `promote|retire` are legal; creation makes no status/knowledge change, the
-  existing human approval gate is the only lifecycle disposer, and non-empty
-  `evaluation_refs` are refused. The existing single-row registry detail
-  contract requires the server-computed lowercase 64-hex `row_digest` over
-  canonical `RegistryRow` bytes and exposes no weights or evaluation contents.
-
-### Security fixes
-- **Exact-row lifecycle integrity.** The server-issued digest is reused at
-  proposal creation and human approval, which recheck the live canonical row;
-  a changed or stale row fails closed instead of applying reviewed intent. The
-  digest is an integrity binding, not a generic signature, and does not make
-  `evaluated` reachable.
-
-### Engineering record
-- Scope: additive contract documentation only. This unreleased entry makes no
-  release, schema, package, `x-api-version`, route, or dependency change claim.
-
-## [Unreleased] — the decision evaluation record (schema 1.32.14 "DecisionEvaluation")
-
-**Release notes**
-
-### Improvements
-- **Decision evaluation records** — `POST /workflow/decision-evals` accepts a
-  bounded, digest-pinned, explicitly non-authoritative operator-declared
-  judgment manifest over persisted decision traces. The route stores bounded
-  metadata, closed labels, digests, and aggregate leg statuses only; it never
-  treats QC/GDL gold packs as decision labels and never persists raw query or
-  evidence text. `GET /workflow/decision-evals/{id}` and the bounded
-  `GET /workflow/decision-evals` listing are DPO/Admin-gated, audited, and
-  probe-blind where applicable.
-
-### Security fixes
-- Evaluation target, registry identity, model artifact digest, manifest digest,
-  per-case labels, and canonical record digest are checked before the checked
-  acceptance audit row and the evaluation row commit in one transaction.
-  Acceptance bars are explicitly `reported_as_data_only`; missing metric legs
-  remain unavailable, never fabricated zeroes. No registry status transition,
-  `evaluation_refs` attachment, autonomous promotion, or calibration-signature
-  claim is introduced.
-
-### Engineering record
-- Schema: additive `decision_evaluation_runs` table and stamp `1.32.14`; no
-  package/public version bump and `PIPELINE_VERSION` remains `1.32.11`.
-- The new core reuses shipped retrieval and kappa metrics, records ECE only
-  when confidence observations exist, and marks OOD/red-team legs unavailable
-  until separately pinned sets exist. Both lockfiles remain unchanged; the
-  decide/search/client forbidden areas remain untouched.
-
-## [Unreleased] — the model registry (schema 1.32.13 "ModelRegistry")
-
-**Release notes**
-
-### Improvements
-- **The decision-run surfaces** — the decision harness's first public API
-  face. `POST /workflow/decision-runs` executes a configured
-  deterministic pipeline run and persists its trace (digests and refs
-  only — the request's one raw-text field is hashed before anything
-  durable); `GET /workflow/decision-runs/{id}` returns the stored trace
-  document; `POST /workflow/decision-runs/{id}/replay-diff` re-executes a
-  stored run under its OWN recorded conditions (config-hash-verified,
-  live retrieval, per-stage digest agreement report, persists nothing —
-  mismatches are data, poison visibility); `GET /workflow/decision-runs`
-  is the bounded newest-first listing (1..=50) behind the DPO/admin dual
-  gate, audited per call. Execute/read/replay are Write/Read-gated on
-  the `workflow` role; absent and foreign runs answer the probe-blind
-  404.
-- **Exploratory is promotion-incapable (mode law end-to-end).** An
-  opt-in escalation proposal (only on escalated outcomes) carries the
-  run's provenance ref (trace id, run id, recorded mode, config hash);
-  the approval gate reads the ref and refuses exploratory proposals by
-  name (`exploratory_mode_not_promotable`) — an exploratory run can
-  propose, never promote; the human path for exploratory output is
-  re-running the pipeline deterministically. Deterministic and ordinary
-  (NULL-ref) proposals approve unchanged.
-- **The model registry is now a governed identity surface.** Three
-  workflow routes register, inspect, and list digest-pinned model
-  identities. Deterministic rules derive identity and canonical digest
-  from the in-body document; learned/reranker registrations require
-  explicit artifact references. Promotion and retirement are human-gated
-  `registry_lifecycle` proposals with exact-row digest binding. The
-  deterministic harness refuses unregistered, candidate-only, and retired
-  bindings with named 400s; exploratory runs accept candidates but never
-  unregistered or retired identities. Stored traces cite the resolved
-  registry id/version without storing model bytes.
-
-### Security fixes
-- **Model supply-chain and lifecycle controls.** Registration is Admin-only
-  and audited; the listing is Admin + DPO dual-gated and bounded; the
-  single-row read is Read + audited. Learned registration requires a
-  lowercase SHA-256 artifact digest, and no route directly changes a
-  lifecycle status. The registry stores identity, vocabulary, and digest
-  references only — not weights or evaluation contents.
-
-### Engineering record
-- Schema: additive `decision_model_registry` table + status index and the
-  schema stamp `1.32.13`; the prior nullable `proposals.decision_run_ref`
-  surface remains intact. `PIPELINE_VERSION` is unchanged because this round
-  changes no pipeline semantics.
-- The registry domain core owns validation, identity/digest-only storage,
-  bounded reads, execution resolution, and lifecycle CAS/audit work; the
-  three HTTP adapters carry no SQL. The existing R28 decision-run fixtures
-  now register a promoted deterministic model before execution, and the
-  lifecycle path is disposed only through the existing human approval gate.
-- No new dependencies; root and crates lockfiles remain byte-identical.
-  `src/workflow/decide/`, the account pipeline, `src/search/`, and the
-  Dioxus client remain untouched. No version bump is made by this
-  unreleased entry.
-- The production context retriever is a NEW caller of the shipped hybrid
-  search internals (the search module itself is byte-untouched; the
-  recall hot path unchanged). Retrieved evidence maps to reference-only
-  hits: content digests, per-leg provenance, flag/untrusted taint, and
-  the least-trusting tier — the engine's policy stage escalates honestly
-  on all-untrusted evidence rather than trusting a guess.
-- The unreleased entry does not bump the package release; the release
-  ceremony remains operator-controlled. No behavior change is claimed on
-  any existing route beyond the named registry enforcement and citation
-  additions described above.
 
 ## [1.28.92] — 2026-09-22 — "Ledger": the loop closes diagnostically, and the record layers land
 

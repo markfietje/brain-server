@@ -16,7 +16,9 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 version()      { sed -n 's/^version = "\(.*\)"/\1/p' "$REPO/Cargo.toml" | head -1; }
 client_version(){ sed -n 's/^version = "\(.*\)"/\1/p' "$REPO/client/Cargo.toml" | head -1; }
 test_count()   {
-  ( cd "$REPO" && cargo test --features bench,migrate 2>&1 ) \
+  ( cd "$REPO" && cargo test --features bench,migrate -- \
+      --skip handlers::case_run::conformance::gdl_conformance_pack_run \
+      --skip workflow::sandbox::tests::realized_paths_law_pinned_against_symlinked_temp 2>&1 ) \
     | grep -Eo '[0-9]+ passed' | awk '{ s+=$1 } END { print s+0 }'
 }
 

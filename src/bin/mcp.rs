@@ -22,6 +22,7 @@
 #[path = "../bin_common/http.rs"]
 mod http;
 
+use brain_server::server::bootstrap::ct_eq;
 use http::{get, post};
 use std::io::Write;
 
@@ -1105,19 +1106,6 @@ fn check_auth(provided: Option<&str>, expected: Option<&str>) -> bool {
                 .is_some_and(|tok| ct_eq(tok.as_bytes(), want.as_bytes()))
         })
     })
-}
-
-/// Constant-time byte equality (XOR fold). Length differences leak only
-/// length, which is public configuration, not secret material.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        diff |= x ^ y;
-    }
-    diff == 0
 }
 
 /// Is this socket address loopback? Pure so the bind-refusal law is pinnable.

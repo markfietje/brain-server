@@ -10,8 +10,22 @@ Proves (execution prompt order):
   6. outbound drain returns nothing without an approved act
   7. /audit/verify ok
 """
-import base64, hashlib, hmac, json, os, shutil, sqlite3, sys, tempfile, time, urllib.request
+import base64
+import hashlib
+import hmac
+import json
+import logging
+import os
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
 
+LOGGER = logging.getLogger(__name__)
 PASS = []
 def ok(name, cond, extra=""):
     PASS.append((name, bool(cond)))
@@ -51,14 +65,16 @@ copy_note = "copied LIVE DB"
 try:
     shutil.copy(db_src, db_dst)          # DB COPY per prompt law
 except FileNotFoundError:
-    open(db_dst, "wb").close()           # absent live db → fresh schema via migration
+    with open(db_dst, "wb"):
+        pass                             # absent live db → fresh schema via migration
     copy_note = "fresh db (no live brain.db found)"
 
 conn_dir = os.path.join(work, "connectors"); os.makedirs(conn_dir, mode=0o700, exist_ok=True)
 cfg_path = os.path.join(conn_dir, "channel-signal-owner.json")
 SECRET = b"smoke-bridge-secret-0123456789abcdef"
 cfg_body = json.dumps({"domain": "global", "webhook_secret": SECRET.decode()})
-open(cfg_path, "w").write(cfg_body)
+with open(cfg_path, "w", encoding="utf-8") as cfg_file:
+    cfg_file.write(cfg_body)
 os.chmod(cfg_path, 0o600)
 
 port = 18765
@@ -66,7 +82,6 @@ env = dict(os.environ,
            BRAIN_DB_PATH=db_dst,
            BRAIN_CONNECTOR_CONFIG_DIR=conn_dir,
            BIND_PORT=str(port))
-import subprocess
 proc = subprocess.Popen(["/Users/mark/Sites/brain-server/target/debug/brain-server"],
                         env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 base = f"http://127.0.0.1:{port}"
@@ -74,14 +89,16 @@ for _ in range(60):
     time.sleep(0.5)
     try:
         get_json(base + "/health"); break
-    except Exception:
+    except (urllib.error.URLError, TimeoutError) as error:
+        LOGGER.debug("health probe not ready: %s", error)
         continue
 else:
     print("❌ server never became healthy"); proc.kill(); sys.exit(1)
 
 try:
     # 1 ── mount registration with config digest
-    digest = hashlib.sha256(open(cfg_path,'rb').read()).hexdigest()
+    with open(cfg_path, "rb") as cfg_file:
+        digest = hashlib.sha256(cfg_file.read()).hexdigest()
     st, resp = post(base + "/workflow/plugins/mount", SECRET, {
         "plugin": "channel:signal", "action": "mount",
         "domain": "global", "bundle_sha256": digest})
@@ -145,11 +162,15 @@ try:
     # 5 ── replay no-op (same external_id, fresh signature/id)
     st, rr = post(base + "/webhooks/channel/signal", SECRET, {"envelope": {
         "conversation_ref": "+639171234567", "text": "hello from smoke", "external_id": "m-1"}})
-    ok("replayed webhook is a no-op", st == 200 and rr.get("status") == "duplicate")
+    replay_is_duplicate = (
+        st == 200 and isinstance(rr, dict) and rr.get("status") == "duplicate"
+    )
+    ok("replayed webhook is a no-op", replay_is_duplicate)
 
     # 6 ── outbound requires approved act (drain empty w/o one)
     st, dr = post(base + "/webhooks/channel/signal/drain", SECRET, {})
-    ok("drain empty absent approved act", st == 200 and dr.get("count") == 0)
+    drain_is_empty = st == 200 and isinstance(dr, dict) and dr.get("count") == 0
+    ok("drain empty absent approved act", drain_is_empty)
 
     # 7 ── audit chain verifies
     v = get_json(base + "/audit/verify")
@@ -157,8 +178,11 @@ try:
 
 finally:
     proc.terminate()
-    try: proc.wait(timeout=5)
-    except Exception: proc.kill()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
 
 print(f"\n[{copy_note}] workdir {work}")
 bad = [n for n, c in PASS if not c]

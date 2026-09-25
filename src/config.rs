@@ -134,19 +134,20 @@ impl GdlProviderProfile {
     /// configuration values into an error string. Detailed diagnostics belong
     /// at the operator's config boundary; the route receives a stable code.
     pub(crate) fn from_env() -> Result<Option<Self>, String> {
-        let read = |name: &str| -> Result<Option<String>, String> {
-            std::env::var_os(name).map_or(Ok(None), |value| {
-                value
-                    .into_string()
-                    .map(Some)
-                    .map_err(|_| "GDL provider profile is invalid".to_string())
-            })
+        let decode = |value: Option<std::ffi::OsString>| -> Result<Option<String>, String> {
+            value
+                .map(|value| {
+                    value
+                        .into_string()
+                        .map_err(|_| "GDL provider profile is invalid".to_string())
+                })
+                .transpose()
         };
         let values = [
-            read("BRAIN_GDL_PROVIDER_BASE_URL")?,
-            read("BRAIN_GDL_PROVIDER_MODEL")?,
-            read("BRAIN_GDL_PROVIDER_SECRET_FILE")?,
-            read("BRAIN_GDL_PROVIDER_SECRET_ROOT")?,
+            decode(std::env::var_os("BRAIN_GDL_PROVIDER_BASE_URL"))?,
+            decode(std::env::var_os("BRAIN_GDL_PROVIDER_MODEL"))?,
+            decode(std::env::var_os("BRAIN_GDL_PROVIDER_SECRET_FILE"))?,
+            decode(std::env::var_os("BRAIN_GDL_PROVIDER_SECRET_ROOT"))?,
         ];
         let present = values.iter().filter(|value| value.is_some()).count();
         if present == 0 {

@@ -1877,7 +1877,7 @@ mod tests {
     use brain_engine_sdk::env::{DenyAll, EnvError, FsSeam};
     use rusqlite::Connection;
     use std::collections::HashMap;
-    use std::sync::Mutex as StdMutex;
+    use std::sync::{Condvar, Mutex as StdMutex};
 
     /// In-memory seam for loop tests: real reads, recorded execs.
     #[derive(Default)]
@@ -2520,16 +2520,24 @@ mod tests {
             scripted_text("unreached"),
         ]);
         let cancel = CancellationToken::new();
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new((StdMutex::new(false), Condvar::new()));
         let second_ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let tools = vec![
             {
-                let cancel = cancel.clone();
+                let entered = Arc::clone(&entered);
+                let release = Arc::clone(&release);
                 ToolDef::new(
                     "cancels",
                     "cancels before the second intent",
                     "{}",
                     move |_, _| {
-                        cancel.cancel();
+                        entered.notify_one();
+                        let (lock, wake) = &*release;
+                        let mut released = lock.lock().unwrap();
+                        while !*released {
+                            released = wake.wait(released).unwrap();
+                        }
                         Ok("first done".into())
                     },
                 )
@@ -2548,11 +2556,25 @@ mod tests {
         }
         f.driver.registry = Arc::new(registry);
         f.driver.tools = tools;
-        // The cancel fires while the FIRST runner executes: its result is
-        // never recorded (completion unknown), the second intent/runner
-        // never exist, and the uncertain claim retains ownership loudly —
-        // no fabricated Canceled receipt.
-        let outcome = rt().block_on(f.driver.run_turns(1, "two tools", &cancel));
+        // Hold the first runner until cancellation has definitely been
+        // observed, then release it. This makes the unknown-completion
+        // boundary deterministic instead of scheduler-dependent.
+        let outcome = rt().block_on(async {
+            let running = f.driver.run_turns(1, "two tools", &cancel);
+            tokio::pin!(running);
+            tokio::select! {
+                _ = entered.notified() => {
+                    cancel.cancel();
+                    let (lock, wake) = &*release;
+                    *lock.lock().unwrap() = true;
+                    wake.notify_all();
+                }
+                result = &mut running => {
+                    panic!("the first tool boundary was not observed: {result:?}");
+                }
+            }
+            running.await
+        });
         assert!(outcome.is_err(), "indeterminate work retains the claim");
         assert!(
             outcome

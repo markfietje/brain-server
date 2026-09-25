@@ -706,14 +706,14 @@ fn model_stage(
         role_scope: req.role_scope.clone(),
         created_at: req.created_at,
     };
-    match model.evaluate(&decision_input, &ctx) {
-        Ok(out) => Ok(StageOutput::Decision(SerdeDecisionOutput::of(&out))),
-        Err(e) => Err(StageRefusal {
+    model
+        .evaluate(&decision_input, &ctx)
+        .map(|out| StageOutput::Decision(SerdeDecisionOutput::of(&out)))
+        .map_err(|e| StageRefusal {
             stage: StageName::DecisionModel,
             reason: EscalationReason::from_decision_error(&e),
             detail: e.to_string(),
-        }),
-    }
+        })
 }
 
 fn policy_stage(input: &StageInput) -> Result<StageOutput, StageRefusal> {
@@ -992,16 +992,18 @@ pub(crate) fn run_decision_pipeline(
     // Every declared stage ran; the validator guarantees the last was the
     // action stage, so its record exists. The None arm is honest escalation
     // data, never a panic.
-    let (action, escalation) = match action_out {
-        Some(ActionRecord { action, escalation }) => (action, escalation),
-        None => (
-            ActionLabel::Escalate,
-            Some(EscalationRecord::at(
-                StageName::ActionEscalation,
-                EscalationReason::MissingDecision,
-            )),
-        ),
-    };
+    let (action, escalation) = action_out.map_or_else(
+        || {
+            (
+                ActionLabel::Escalate,
+                Some(EscalationRecord::at(
+                    StageName::ActionEscalation,
+                    EscalationReason::MissingDecision,
+                )),
+            )
+        },
+        |ActionRecord { action, escalation }| (action, escalation),
+    );
     DecisionRunResult {
         run_id: req.run_id,
         input_digest,
