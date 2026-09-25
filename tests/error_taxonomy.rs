@@ -75,6 +75,7 @@ const KNOWN_ERRORS: &[(&str, &str, &str, &str)] = &[
     ),
     ("WfmError", "bin_common/wfm_import.rs", "service", "display"),
     ("SecretError", "secrets.rs", "service", "display"),
+    ("ProviderSecretError", "secret_file.rs", "input", "display"),
 ];
 
 /// Accepted renderer gaps: (error type, reason, owner). The test pins this

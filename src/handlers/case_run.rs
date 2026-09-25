@@ -6,7 +6,8 @@
 //!   bearer is refused before anything else (the operator/agent split);
 //! * an unknown run refuses before any provider contact (probe-blind 404);
 //! * the provider endpoint is screened for SSRF at construction and key
-//!   material rides the `secret_file` seam — never source, never logs;
+//!   material rides the server-owned, root-confined secret seam — never
+//!   source, never logs;
 //! * the launch drives the EXISTING `GdlDriver` with the deny-all scoped
 //!   env, an empty (fail-closed) tool registry, and pass-through hooks:
 //!   every outcome is the existing loop/GDL vocabulary (a pending capture
@@ -25,24 +26,18 @@ use crate::server::bootstrap::AppState;
 use crate::workflow::gdl::{GdlDriver, GdlOutcome};
 use crate::workflow::host::SqliteWorkflowHost;
 
-use super::{HandlerError, authorize};
+use super::{HandlerError, authorize, authorize_role};
 
-/// Per-launch provider + case configuration. The endpoint/model/secret
-/// file are EXTERNALLY configured (operator-supplied per launch) — never
-/// environment-read inside the loop.
-#[derive(Debug, serde::Deserialize)]
+/// Per-launch case input. Provider destination, model, secret, and bounds
+/// are server-owned configuration; legacy request keys are captured only to
+/// return the explicit migration refusal.
+#[derive(serde::Deserialize)]
 pub(crate) struct GdlLaunchRequest {
     /// The ticket verbatim (A1: the original words are evidence). Bounded:
     /// 1..=8192 bytes.
     pub ticket: String,
-    pub base_url: String,
-    pub model: String,
-    /// Path to an owner-only (0600/0400) file carrying the bearer key.
-    /// The value is read at the boundary and never logged or persisted.
-    pub secret_file: String,
-    pub connect_timeout_ms: Option<u64>,
-    pub first_byte_timeout_ms: Option<u64>,
-    pub max_response_bytes: Option<usize>,
+    #[serde(flatten)]
+    pub legacy_fields: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
 /// Test-only provider injection: `#[cfg(test)]` tests drive the route
@@ -80,17 +75,22 @@ fn outcome_summary(run_id: i64, outcome: &GdlOutcome) -> serde_json::Value {
 
 fn refused_from_provider(e: ProviderError) -> HandlerError {
     match e {
-        // Transport-class failures: the provider could not be reached or
-        // refused outright. No loopback fallback exists to fall back to.
-        ProviderError::Unavailable(m) => HandlerError::unavailable(format!(
-            "provider unavailable: {m} — no loopback fallback by law"
-        )),
-        ProviderError::Refused(m) => {
-            HandlerError::unprocessable("provider_refused", format!("provider refused: {m}"))
+        // Provider text is deliberately discarded at the public seam. The
+        // typed class is enough for an operator-safe response and cannot
+        // carry a bearer, URL, malformed frame, or upstream body.
+        ProviderError::Unavailable(_) => HandlerError::internal_with(
+            "provider_unavailable",
+            "provider unavailable",
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        ),
+        ProviderError::Refused(_) => {
+            HandlerError::unprocessable("provider_refused", "provider request refused")
         }
-        ProviderError::Cancelled => {
-            HandlerError::unavailable("provider cancelled the stream".to_string())
-        }
+        ProviderError::Cancelled => HandlerError::internal_with(
+            "provider_cancelled",
+            "provider stream cancelled",
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        ),
     }
 }
 
@@ -134,8 +134,11 @@ pub(crate) async fn run_gdl_case(
         return Err(HandlerError::not_found("workflow run not found"));
     };
 
-    // The run's own domain authorization (operator-tier Write).
+    // The run's own domain authorization (operator-tier Write), followed by
+    // the GDL-local fail-closed role predicate. This is intentionally after
+    // the probe-blind run lookup and before every profile/secret/DNS edge.
     authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    require_gdl_workflow_role(&principal, &state.pool)?;
 
     // The launch law: a FRESH troubleshoot run only (the checkpoint admits
     // nothing else — pre-checked here for a cheap, honest refusal).
@@ -161,29 +164,26 @@ pub(crate) async fn run_gdl_case(
             "ticket must be 1..=8192 bytes after trimming",
         ));
     }
-    if body.model.trim().is_empty() || body.base_url.trim().is_empty() {
+    if !body.legacy_fields.is_empty() {
         return Err(HandlerError::bad_request(
-            "provider_config_invalid",
-            "base_url and model are required",
+            "gdl_request_migrated",
+            "caller-selected provider configuration is no longer accepted; configure the server-owned GDL provider profile",
         ));
     }
 
-    // Provider construction (secret-file read + SSRF screen + DNS pin +
-    // bounds) happens HERE, at the boundary — inside the loop nothing
-    // reads configuration. The test-only extension carries an already-
-    // constructed adapter (pinned to the in-process SSE server); in test
-    // builds the secret-file read is then skipped BY THE INJECTION, never
-    // by the production path.
+    // Provider construction is profile resolution + endpoint shape validation
+    // + confined secret read + the existing DNS-pinned constructor. The
+    // test-only extension remains an explicit already-constructed adapter.
     #[cfg(test)]
     let provider: Arc<dyn LlmProvider> = if let Some(axum::Extension(injected)) = test_provider {
         injected.0
     } else {
-        build_provider_from_request(&body).await?
+        build_provider_from_server_profile().await?
     };
     #[cfg(not(test))]
     let provider: Arc<dyn LlmProvider> = {
         let _ = test_provider; // the injection seam is test-only
-        build_provider_from_request(&body).await?
+        build_provider_from_server_profile().await?
     };
 
     // Drive the EXISTING machine: deny-all scoped env, an empty (fail-
@@ -204,49 +204,92 @@ pub(crate) async fn run_gdl_case(
         .await
         .map_err(|e| match e {
             crate::agentloop::run_loop::LoopError::Provider(p) => refused_from_provider(p),
-            other => HandlerError::unavailable(format!("case episode refused: {other}")),
+            _ => HandlerError::internal_with(
+                "gdl_episode_unavailable",
+                "GDL episode refused",
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            ),
         })?;
     Ok(Json(outcome_summary(run_id, &outcome)))
 }
 
-/// The secret-file seam: owner-only permissions are enforced BEFORE
-/// reading; the value lives in this function's memory only (never logs,
-/// never persists).
-async fn read_secret_header(body: &GdlLaunchRequest) -> Result<String, HandlerError> {
-    let path = std::path::PathBuf::from(&body.secret_file);
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
-        crate::secret_file::check_secret_permissions(&path)?;
-        std::fs::read_to_string(&path)
-            .map(|s| format!("Bearer {}", s.trim()))
-            .map_err(|e| format!("secret file unreadable: {e}"))
-    })
-    .await
-    .map_err(|e| HandlerError::internal(format!("{e}")))?
-    .map_err(|e| HandlerError::bad_request("secret_file_invalid", e))
+/// GDL's role gate is deliberately local: shared `authorize_role` retains
+/// its historical role-less compatibility semantics, while this operator-only
+/// surface requires a resolved `workflow` capability for every JWT.
+fn require_gdl_workflow_role(
+    principal: &Option<crate::auth::Principal>,
+    pool: &crate::Pool,
+) -> Result<(), HandlerError> {
+    let Some(p) = principal else {
+        // Opaque/no-JWT operator posture remains the v1.1 superuser path.
+        return Ok(());
+    };
+    if p.roles.is_empty() {
+        return Err(HandlerError::forbidden(
+            crate::auth::Action::Write,
+            &p.tenant,
+            "global",
+        ));
+    }
+    authorize_role(principal, pool, "workflow")
 }
 
-async fn build_provider_from_request(
-    body: &GdlLaunchRequest,
-) -> Result<Arc<dyn LlmProvider>, HandlerError> {
-    let auth_header = read_secret_header(body).await?;
-    build_provider(body, auth_header)
+fn provider_config_error() -> HandlerError {
+    HandlerError::bad_request(
+        "provider_config_invalid",
+        "GDL provider configuration is invalid or incomplete",
+    )
+}
+
+fn provider_endpoint_error(_: ProviderError) -> HandlerError {
+    HandlerError::unprocessable("provider_endpoint_refused", "provider endpoint refused")
+}
+
+/// The server-owned secret-file seam. Root confinement, symlink refusal,
+/// owner-only mode, content shape, and the size cap all run before the value
+/// is formatted into an Authorization header. Errors crossing this boundary
+/// are fixed and never carry a path or secret.
+async fn read_server_secret_header(
+    profile: &crate::config::GdlProviderProfile,
+) -> Result<String, HandlerError> {
+    let root = profile.secret_root.clone();
+    let path = profile.secret_file.clone();
+    tokio::task::spawn_blocking(move || crate::secret_file::read_provider_secret(&root, &path))
+        .await
+        .map_err(|_| HandlerError::internal("GDL secret read task failed"))?
+        .map(|secret| format!("Bearer {secret}"))
+        .map_err(|_| {
+            HandlerError::bad_request(
+                "secret_file_invalid",
+                "configured GDL provider secret is invalid",
+            )
+        })
+}
+
+async fn build_provider_from_server_profile() -> Result<Arc<dyn LlmProvider>, HandlerError> {
+    let profile = crate::config::GdlProviderProfile::from_env()
+        .map_err(|_| provider_config_error())?
+        .ok_or_else(provider_config_error)?;
+    // Shape validation deliberately precedes the secret read. DNS/address
+    // screening remains inside HttpProvider::new, after the secret exists.
+    HttpProvider::validate_endpoint(&profile.base_url).map_err(|_| provider_config_error())?;
+    let auth_header = read_server_secret_header(&profile).await?;
+    build_provider(profile, auth_header)
 }
 
 fn build_provider(
-    body: &GdlLaunchRequest,
+    profile: crate::config::GdlProviderProfile,
     auth_header: String,
 ) -> Result<Arc<dyn LlmProvider>, HandlerError> {
     let cfg = HttpProviderConfig {
-        base_url: body.base_url.trim().to_string(),
-        model: body.model.trim().to_string(),
+        base_url: profile.base_url,
+        model: profile.model,
         auth_header,
-        connect_timeout: Duration::from_millis(body.connect_timeout_ms.unwrap_or(5_000)),
-        first_byte_timeout: Duration::from_millis(body.first_byte_timeout_ms.unwrap_or(30_000)),
-        max_response_bytes: body
-            .max_response_bytes
-            .unwrap_or(crate::agentloop::provider_http::DEFAULT_MAX_RESPONSE_BYTES),
+        connect_timeout: Duration::from_secs(5),
+        first_byte_timeout: Duration::from_secs(30),
+        max_response_bytes: crate::agentloop::provider_http::DEFAULT_MAX_RESPONSE_BYTES,
     };
-    let provider: Arc<dyn LlmProvider> = HttpProvider::new(cfg).map_err(refused_from_provider)?;
+    let provider: Arc<dyn LlmProvider> = HttpProvider::new(cfg).map_err(provider_endpoint_error)?;
     Ok(provider)
 }
 
@@ -363,10 +406,8 @@ pub(crate) mod tests {
         insert_fresh_troubleshoot_run(&conn, domain, now).unwrap()
     }
 
-    pub(crate) fn launch_body(ticket: &str, base_url: &str) -> String {
-        format!(
-            r#"{{"ticket":"{ticket}","base_url":"{base_url}","model":"pilot-model","secret_file":"/nonexistent-secret"}}"#
-        )
+    pub(crate) fn launch_body(ticket: &str, _base_url: &str) -> String {
+        serde_json::json!({ "ticket": ticket }).to_string()
     }
 
     /// POST the launch through the REAL composed app with the real
@@ -420,7 +461,7 @@ pub(crate) mod tests {
     /// stays byte-unchanged (no automatic publication); the audit chain
     /// stays green.
     #[tokio::test]
-    async fn route_resolves_case_capture_lands_pending_only() {
+    async fn gdl_pending_capture_remains_human_reviewed() {
         let f = fixture();
         let run_id = seed_run(&f.state, "acme");
         let addr = spawn_turns(happy_script()).await;
@@ -468,6 +509,94 @@ pub(crate) mod tests {
         assert!(crate::audit::verify_chain(&conn), "audit chain green");
     }
 
+    /// A complete server profile resolves, while the explicit test transport
+    /// still drives the unchanged GDL machine through a successful episode.
+    /// The transport injection is test-only and does not claim production DNS
+    /// proof; the profile assertion is the server-side half of this pin.
+    #[test]
+    fn gdl_valid_server_configured_provider_still_runs() {
+        let root = tempfile::TempDir::new().expect("root");
+        let secret = root.path().join("secret");
+        owner_only(&secret, b"server-secret\n");
+        let f = fixture();
+        let run_id = seed_run(&f.state, "acme");
+        let rt = test_runtime();
+        let (status, v) = {
+            let _env = crate::test_support::lock_env();
+            let _restore = set_profile_env(
+                Some(root.path()),
+                Some(&secret),
+                Some("https://127.0.0.1:9/v1/stream"),
+            );
+            let profile = crate::config::GdlProviderProfile::from_env()
+                .expect("profile")
+                .expect("configured profile");
+            assert_eq!(profile.secret_root, root.path());
+            let addr = rt.block_on(spawn_turns(happy_script()));
+            let provider = pinned_adapter(addr);
+            rt.block_on(async {
+                body_bytes(
+                    post_launch(
+                        &f.state,
+                        run_id,
+                        launch_body("configured provider", &format!("http://{addr}/v1/stream")),
+                        Some(provider),
+                    )
+                    .await,
+                )
+                .await
+            })
+        };
+        assert_eq!(status, axum::http::StatusCode::OK, "body: {v}");
+        assert_eq!(v["outcome"]["kind"], "resolved", "body: {v}");
+    }
+
+    /// The fresh-run admission law remains ahead of provider construction: a
+    /// second launch against the now-advanced run is a conflict, not a new
+    /// provider episode.
+    #[tokio::test]
+    async fn gdl_fresh_troubleshoot_launch_law_is_unchanged() {
+        let f = fixture();
+        let run_id = seed_run(&f.state, "acme");
+        let addr = spawn_turns(happy_script()).await;
+        let provider = pinned_adapter(addr);
+        let body = launch_body("freshness", &format!("http://{addr}/v1/stream"));
+        let (first_status, first_body) =
+            body_bytes(post_launch(&f.state, run_id, body.clone(), Some(provider)).await).await;
+        assert_eq!(
+            first_status,
+            axum::http::StatusCode::OK,
+            "body: {first_body}"
+        );
+        let (second_status, second_body) =
+            body_bytes(post_launch(&f.state, run_id, body, Some(pinned_adapter(addr))).await).await;
+        assert_eq!(
+            second_status,
+            axum::http::StatusCode::CONFLICT,
+            "second launch body: {second_body}"
+        );
+        assert_eq!(second_body["error"]["code"], "run_not_fresh");
+    }
+
+    /// An absent run remains probe-blind and precedes every provider/config
+    /// operation.
+    #[tokio::test]
+    async fn gdl_probe_blind_404_precedes_provider_contact() {
+        let f = fixture();
+        let (status, body) = body_bytes(
+            post_launch(
+                &f.state,
+                999_999,
+                launch_body("missing run", "https://127.0.0.1:9/v1/stream"),
+                None,
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::NOT_FOUND, "body: {body}");
+        assert_eq!(body["error"]["code"], "not_found", "body: {body}");
+    }
+
     /// Verify failure is a HUMAN handoff (the escalation bundle), never a
     /// silent retry and never a publication.
     #[tokio::test]
@@ -511,7 +640,7 @@ pub(crate) mod tests {
     /// meets the existing unknown-tool refusal receipt, end-to-end through
     /// the route.
     #[tokio::test]
-    async fn route_unknown_tool_fails_closed() {
+    async fn gdl_deny_all_execution_and_empty_tool_registry_are_unchanged() {
         let f = fixture();
         let run_id = seed_run(&f.state, "acme");
         let script = vec![
@@ -575,23 +704,378 @@ pub(crate) mod tests {
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
             "body: {v}"
         );
-        let text = v.to_string();
-        assert!(
-            text.contains("provider unavailable") && text.contains("no loopback fallback"),
-            "the refusal must be named: {v}"
+        assert_eq!(v["error"]["code"], "provider_unavailable", "body: {v}");
+        assert_eq!(
+            v["error"]["message"], "provider unavailable",
+            "the refusal must be stable and operator-safe: {v}"
         );
     }
 
-    /// Absent provider config (empty base_url) refuses BEFORE any
-    /// provider contact.
-    #[tokio::test]
-    async fn route_absent_provider_config_is_400() {
+    /// Absent provider config refuses BEFORE any provider contact.
+    #[test]
+    fn route_absent_provider_config_is_400() {
         let f = fixture();
         let run_id = seed_run(&f.state, "acme");
-        let (status, v) =
-            body_bytes(post_launch(&f.state, run_id, launch_body("t", ""), None).await).await;
+        let (status, v) = {
+            let _env = crate::test_support::lock_env();
+            let _restore = ProfileEnvRestore::capture();
+            for key in PROFILE_ENV_KEYS {
+                unsafe { std::env::remove_var(key) };
+            }
+            test_runtime().block_on(async {
+                body_bytes(post_launch(&f.state, run_id, launch_body("t", ""), None).await).await
+            })
+        };
         assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "body: {v}");
         assert_eq!(v["error"]["code"], "provider_config_invalid", "body: {v}");
+    }
+
+    struct RawErrorProvider;
+
+    impl LlmProvider for RawErrorProvider {
+        fn name(&self) -> &str {
+            "raw-error-test"
+        }
+
+        fn stream(
+            &self,
+            _request: crate::agentloop::provider::ProviderRequest,
+        ) -> Result<
+            tokio::sync::mpsc::Receiver<
+                Result<crate::agentloop::provider::StreamEvent, ProviderError>,
+            >,
+            ProviderError,
+        > {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            tokio::spawn(async move {
+                let _ = tx
+                    .send(Err(ProviderError::Refused(
+                        "Bearer provider-secret upstream-body".to_string(),
+                    )))
+                    .await;
+            });
+            Ok(rx)
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_error_response_contains_stable_code_only() {
+        let f = fixture();
+        let run_id = seed_run(&f.state, "acme");
+        let (status, body) = body_bytes(
+            post_launch(
+                &f.state,
+                run_id,
+                launch_body("provider error", "https://127.0.0.1:9/v1/stream"),
+                Some(Arc::new(RawErrorProvider)),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "body: {body}"
+        );
+        assert_eq!(body["error"]["code"], "provider_refused", "body: {body}");
+        let rendered = body.to_string();
+        assert!(
+            !rendered.contains("provider-secret") && !rendered.contains("upstream-body"),
+            "raw provider text must not be reflected: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gdl_audit_detail_contains_no_secret_or_provider_body() {
+        let f = fixture();
+        let run_id = seed_run(&f.state, "acme");
+        let (status, body) = body_bytes(
+            post_launch(
+                &f.state,
+                run_id,
+                launch_body("audit safety", "https://127.0.0.1:9/v1/stream"),
+                Some(Arc::new(RawErrorProvider)),
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+            "body: {body}"
+        );
+        let conn = f.state.pool.get().expect("db");
+        assert!(
+            crate::audit::verify_chain(&conn),
+            "the provider refusal must leave the audit chain valid"
+        );
+        let workflow_detail =
+            crate::workflow::state::test_support::workflow_audit_detail_hash(&conn, run_id)
+                .unwrap_or_default();
+        assert_ne!(
+            workflow_detail,
+            crate::audit::hash("Bearer provider-secret upstream-body"),
+            "provider body must not enter audit details"
+        );
+        assert!(
+            !body.to_string().contains("provider-secret")
+                && !body.to_string().contains("upstream-body"),
+            "provider body must not enter the route error seam"
+        );
+    }
+
+    fn test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime")
+    }
+
+    const PROFILE_ENV_KEYS: [&str; 4] = [
+        "BRAIN_GDL_PROVIDER_BASE_URL",
+        "BRAIN_GDL_PROVIDER_MODEL",
+        "BRAIN_GDL_PROVIDER_SECRET_FILE",
+        "BRAIN_GDL_PROVIDER_SECRET_ROOT",
+    ];
+
+    struct ProfileEnvRestore(Vec<(&'static str, Option<String>)>);
+
+    impl ProfileEnvRestore {
+        fn capture() -> Self {
+            Self(
+                PROFILE_ENV_KEYS
+                    .iter()
+                    .map(|key| (*key, std::env::var(key).ok()))
+                    .collect(),
+            )
+        }
+    }
+
+    impl Drop for ProfileEnvRestore {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..) {
+                if let Some(value) = value {
+                    unsafe { std::env::set_var(key, value) };
+                } else {
+                    unsafe { std::env::remove_var(key) };
+                }
+            }
+        }
+    }
+
+    fn set_profile_env(
+        root: Option<&std::path::Path>,
+        secret: Option<&std::path::Path>,
+        base_url: Option<&str>,
+    ) -> ProfileEnvRestore {
+        let restore = ProfileEnvRestore::capture();
+        let set = |key: &str, value: Option<String>| {
+            if let Some(value) = value {
+                unsafe { std::env::set_var(key, value) };
+            } else {
+                unsafe { std::env::remove_var(key) };
+            }
+        };
+        set("BRAIN_GDL_PROVIDER_BASE_URL", base_url.map(str::to_string));
+        set("BRAIN_GDL_PROVIDER_MODEL", Some("server-model".to_string()));
+        set(
+            "BRAIN_GDL_PROVIDER_SECRET_FILE",
+            secret.map(|p| p.to_string_lossy().into_owned()),
+        );
+        set(
+            "BRAIN_GDL_PROVIDER_SECRET_ROOT",
+            root.map(|p| p.to_string_lossy().into_owned()),
+        );
+        restore
+    }
+
+    fn owner_only(path: &std::path::Path, contents: &[u8]) {
+        std::fs::write(path, contents).expect("write secret fixture");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .expect("owner-only secret fixture");
+        }
+    }
+
+    fn ticket_body(ticket: &str) -> String {
+        serde_json::json!({ "ticket": ticket }).to_string()
+    }
+
+    fn legacy_body(ticket: &str, base_url: &str, secret_file: &std::path::Path) -> String {
+        serde_json::json!({
+            "ticket": ticket,
+            "base_url": base_url,
+            "model": "caller-model",
+            "secret_file": secret_file,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn gdl_secret_file_rejects_path_outside_configured_root() {
+        let root = tempfile::TempDir::new().expect("root");
+        let outside = tempfile::TempDir::new().expect("outside");
+        let outside_secret = outside.path().join("secret");
+        owner_only(&outside_secret, b"outside-secret\n");
+        let f = fixture();
+        let run_id = seed_run(&f.state, "acme");
+        let (status, body) = {
+            let _env = crate::test_support::lock_env();
+            let _restore = set_profile_env(
+                Some(root.path()),
+                Some(&outside_secret),
+                Some("https://127.0.0.1:9/v1/stream"),
+            );
+            test_runtime().block_on(async {
+                body_bytes(post_launch(&f.state, run_id, ticket_body("outside-root"), None).await)
+                    .await
+            })
+        };
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "body: {body}");
+        assert_eq!(body["error"]["code"], "secret_file_invalid", "body: {body}");
+    }
+
+    #[test]
+    fn gdl_secret_file_rejects_symlink_to_outside_secret() {
+        let root = tempfile::TempDir::new().expect("root");
+        let outside = tempfile::TempDir::new().expect("outside");
+        let outside_secret = outside.path().join("secret");
+        let linked_secret = root.path().join("linked-secret");
+        owner_only(&outside_secret, b"outside-secret\n");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_secret, &linked_secret).expect("symlink fixture");
+        let f = fixture();
+        let run_id = seed_run(&f.state, "acme");
+        let (status, body) = {
+            let _env = crate::test_support::lock_env();
+            let _restore = set_profile_env(
+                Some(root.path()),
+                Some(&linked_secret),
+                Some("https://127.0.0.1:9/v1/stream"),
+            );
+            test_runtime().block_on(async {
+                body_bytes(post_launch(&f.state, run_id, ticket_body("symlink-escape"), None).await)
+                    .await
+            })
+        };
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "body: {body}");
+        assert_eq!(body["error"]["code"], "secret_file_invalid", "body: {body}");
+    }
+
+    #[test]
+    fn gdl_secret_file_rejects_empty_and_multiline_secret() {
+        let root = tempfile::TempDir::new().expect("root");
+        let empty = root.path().join("empty");
+        let multiline = root.path().join("multiline");
+        owner_only(&empty, b"\n");
+        owner_only(&multiline, b"first\nsecond\n");
+        let f = fixture();
+        let first_run = seed_run(&f.state, "acme");
+        let second_run = seed_run(&f.state, "acme");
+        let (empty_status, empty_body, multi_status, multi_body) = {
+            let _env = crate::test_support::lock_env();
+            let _restore = ProfileEnvRestore::capture();
+            let set = |path: &std::path::Path| unsafe {
+                std::env::set_var(
+                    "BRAIN_GDL_PROVIDER_BASE_URL",
+                    "https://127.0.0.1:9/v1/stream",
+                );
+                std::env::set_var("BRAIN_GDL_PROVIDER_MODEL", "server-model");
+                std::env::set_var("BRAIN_GDL_PROVIDER_SECRET_FILE", path);
+                std::env::set_var("BRAIN_GDL_PROVIDER_SECRET_ROOT", root.path());
+            };
+            set(&empty);
+            let (empty_status, empty_body) = test_runtime().block_on(async {
+                body_bytes(
+                    post_launch(&f.state, first_run, ticket_body("empty-secret"), None).await,
+                )
+                .await
+            });
+            set(&multiline);
+            let (multi_status, multi_body) = test_runtime().block_on(async {
+                body_bytes(
+                    post_launch(&f.state, second_run, ticket_body("multiline-secret"), None).await,
+                )
+                .await
+            });
+            (empty_status, empty_body, multi_status, multi_body)
+        };
+        assert_eq!(
+            empty_status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "body: {empty_body}"
+        );
+        assert_eq!(
+            empty_body["error"]["code"], "secret_file_invalid",
+            "body: {empty_body}"
+        );
+        assert_eq!(
+            multi_status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "body: {multi_body}"
+        );
+        assert_eq!(
+            multi_body["error"]["code"], "secret_file_invalid",
+            "body: {multi_body}"
+        );
+    }
+
+    #[test]
+    fn gdl_legacy_request_fields_are_refused_or_migrated_without_use() {
+        let root = tempfile::TempDir::new().expect("root");
+        let secret = root.path().join("secret");
+        owner_only(&secret, b"server-secret\n");
+        let f = fixture();
+        let run_id = seed_run(&f.state, "acme");
+        let (status, body) = {
+            let _env = crate::test_support::lock_env();
+            let _restore = set_profile_env(
+                Some(root.path()),
+                Some(&secret),
+                Some("https://127.0.0.1:9/v1/stream"),
+            );
+            test_runtime().block_on(async {
+                body_bytes(
+                    post_launch(
+                        &f.state,
+                        run_id,
+                        legacy_body("legacy", "https://127.0.0.1:9/v1/stream", &secret),
+                        None,
+                    )
+                    .await,
+                )
+                .await
+            })
+        };
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "body: {body}");
+        assert_eq!(
+            body["error"]["code"], "gdl_request_migrated",
+            "body: {body}"
+        );
+    }
+
+    #[test]
+    fn gdl_provider_profile_is_resolved_server_side() {
+        let f = fixture();
+        let run_id = seed_run(&f.state, "acme");
+        let (status, body) = {
+            let _env = crate::test_support::lock_env();
+            let _restore = ProfileEnvRestore::capture();
+            for key in PROFILE_ENV_KEYS {
+                unsafe { std::env::remove_var(key) };
+            }
+            test_runtime().block_on(async {
+                body_bytes(post_launch(&f.state, run_id, ticket_body("no-profile"), None).await)
+                    .await
+            })
+        };
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST, "body: {body}");
+        assert_eq!(
+            body["error"]["code"], "provider_config_invalid",
+            "body: {body}"
+        );
     }
 }
 
@@ -802,27 +1286,25 @@ mod conformance {
     }
 
     /// C7 — the live configured case. Runs ONLY with operator-provided
-    /// configuration in the environment (endpoint + model + secret file +
-    /// ticket); `#[ignore]` keeps it out of every lane. The endpoint is
-    /// SSRF-screened by the production constructor — a private endpoint is
-    /// refused here exactly as in production. This test is the runbook:
-    ///   R10_LIVE_BASE_URL=https://<provider>/v1/stream \
-    ///   R10_LIVE_MODEL=<model-id> \
-    ///   R10_LIVE_SECRET_FILE=/path/to/0600-key \
+    /// `BRAIN_GDL_PROVIDER_*` configuration in the environment; `#[ignore]`
+    /// keeps it out of every lane. The route itself performs endpoint-shape,
+    /// secret-root, SSRF, DNS-pin, and bounds checks. This test is the
+    /// runbook:
+    ///   BRAIN_GDL_PROVIDER_BASE_URL=https://<provider>/v1/stream \
+    ///   BRAIN_GDL_PROVIDER_MODEL=<model-id> \
+    ///   BRAIN_GDL_PROVIDER_SECRET_FILE=/path/to/0600-key \
+    ///   BRAIN_GDL_PROVIDER_SECRET_ROOT=/path/to/secret-root \
     ///   cargo test --offline --locked --lib --features bench \
     ///     live_configured_case_real_provider -- --ignored --nocapture
-    /// The evidence records model id, endpoint class, date, and the
-    /// scrubbed trace hash from the printed line. Absent credentials,
-    /// this stays the named dataset-readiness gate — never simulated.
+    /// The evidence records model id, endpoint class, date, and the scrubbed
+    /// trace hash from the printed line. Absent credentials, this stays the
+    /// named dataset-readiness gate — never simulated.
     #[tokio::test]
-    #[ignore = "live configured case: runs only with operator-provided R10_LIVE_* configuration (C7 runbook)"]
+    #[ignore = "live configured case: runs only with operator-provided BRAIN_GDL_PROVIDER_* configuration (C7 runbook)"]
     async fn live_configured_case_real_provider() {
-        let base_url = std::env::var("R10_LIVE_BASE_URL")
-            .expect("R10_LIVE_BASE_URL must name the operator's provider endpoint");
-        let model = std::env::var("R10_LIVE_MODEL")
-            .expect("R10_LIVE_MODEL must name the operator's model id");
-        let secret_file = std::env::var("R10_LIVE_SECRET_FILE")
-            .expect("R10_LIVE_SECRET_FILE must name an owner-only key file");
+        let profile = crate::config::GdlProviderProfile::from_env()
+            .expect("BRAIN_GDL_PROVIDER_* must be complete")
+            .expect("BRAIN_GDL_PROVIDER_* must be configured");
         let ticket =
             std::env::var("R10_LIVE_TICKET").unwrap_or_else(|_| "live configured case".into());
 
@@ -833,35 +1315,12 @@ mod conformance {
         let run_id = insert_fresh_troubleshoot_run(&conn, "acme", now).expect("seed fresh run");
         drop(conn);
 
-        // The REAL constructor: SSRF screen + DNS pin + bounds. No
-        // injection — this is the production path.
-        let cfg = HttpProviderConfig {
-            base_url: base_url.clone(),
-            model: model.clone(),
-            auth_header: {
-                let path = std::path::PathBuf::from(&secret_file);
-                crate::secret_file::check_secret_permissions(&path).expect("key file permissions");
-                format!(
-                    "Bearer {}",
-                    std::fs::read_to_string(&path).expect("key file").trim()
-                )
-            },
-            connect_timeout: std::time::Duration::from_secs(5),
-            first_byte_timeout: std::time::Duration::from_secs(60),
-            max_response_bytes: crate::agentloop::provider_http::DEFAULT_MAX_RESPONSE_BYTES,
-        };
-        let _screen_check: std::sync::Arc<dyn crate::agentloop::provider::LlmProvider> =
-            match crate::agentloop::provider_http::HttpProvider::new(cfg) {
-                Ok(p) => p,
-                Err(e) => panic!("live endpoint refused at construction (screen): {e}"),
-            };
-
         let req = Request::builder()
             .method("POST")
             .uri(format!("/workflow/cases/{run_id}/gdl"))
             .header("authorization", "Bearer r10-op-token")
             .header("content-type", "application/json")
-            .body(Body::from(launch_body(&ticket, &base_url)))
+            .body(Body::from(launch_body(&ticket, &profile.base_url)))
             .unwrap();
         let res = crate::server::router::app(f.state.clone())
             .oneshot(req)
@@ -873,7 +1332,8 @@ mod conformance {
             .unwrap();
         let trace_hash = hex(&Sha256::digest(&bytes));
         println!(
-            "LIVE CASE: model={model} endpoint_class=operator-provided date={} http={status} trace_sha256={trace_hash}",
+            "LIVE CASE: model={} endpoint_class=operator-provided date={} http={status} trace_sha256={trace_hash}",
+            profile.model,
             chrono::Utc::now().format("%Y-%m-%d")
         );
         println!("LIVE BODY: {}", String::from_utf8_lossy(&bytes));

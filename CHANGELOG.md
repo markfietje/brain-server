@@ -17,6 +17,20 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [Unreleased] — GDL provider boundary hardening (R34)
+
+**Release notes**
+
+### Improvements
+- **Server-owned GDL provider profile.** `POST /workflow/cases/{id}/gdl` now accepts the bounded `{ticket}` body only. Provider endpoint, model, secret file, and secret root are resolved from the documented server-side `BRAIN_GDL_PROVIDER_*` configuration. Existing caller-selected `base_url`, `model`, `secret_file`, and timeout/response fields receive the explicit `gdl_request_migrated` refusal and are never used.
+
+### Security fixes
+- **GDL provider/secret boundary.** JWT callers require domain Write plus the existing `workflow` capability before profile, secret, DNS, or provider work. Provider endpoints require HTTPS and a safe URL shape, retain resolved-address screening and DNS pinning, and refuse redirects. Secret files are confined to the configured root, symlinks/unsafe content/oversized values are refused, and provider failures return stable operator-safe codes without raw bodies, credentials, or secret-bearing URLs.
+- **Role and error clarification.** Role-less JWTs and unknown roles fail closed on GDL without changing shared role semantics; agent, revoked, probe-blind 404, fresh-run, deny-all, empty-tool, bounded-stream, and human-capture laws remain in force.
+
+### Engineering record
+- Scope: the public GDL request contract is intentionally breaking; OpenAPI and the generated shell type were updated from the kernel source, and the static API contract stamp moved to `1.22.0` because the accepted request shape moved. No route, migration, dependency, package, Tauri, plugin, OpenClaw, client, or lockfile change is claimed. This entry is not a release, legal, compliance, or conformity decision; validation evidence is recorded in the round's operator record.
+
 ## [Unreleased] — registry lifecycle contract integrity (R33)
 
 **Release notes**

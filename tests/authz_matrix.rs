@@ -744,7 +744,13 @@ async fn authz_matrix_rows_x_classes_through_composed_app() {
         }
 
         let st = send(&srv, Some(&write_tok), &path, method, body).await;
-        if can_write && LAYOUT_CONDITIONAL.contains(&template) {
+        if template == "/workflow/cases/{id}/gdl" {
+            assert_eq!(
+                st,
+                StatusCode::FORBIDDEN,
+                "{method} {template} (write) is the GDL role-gated exception"
+            );
+        } else if can_write && LAYOUT_CONDITIONAL.contains(&template) {
             assert_eq!(
                 st,
                 StatusCode::FORBIDDEN,
@@ -1757,13 +1763,213 @@ async fn revoked_agent_principal_denied_everywhere() {
     assert_ne!(st, StatusCode::UNAUTHORIZED, "the operator is untouched");
 }
 
+/// Create a fresh troubleshoot run through the real route for the GDL
+/// authorization pins below. The fixture role carries `workflow`; the
+/// principal under test is deliberately different.
+async fn fresh_gdl_run(srv: &TestServer, admin: &str, domain: &str) -> i64 {
+    let (status, body) = send_body(
+        srv,
+        Some(admin),
+        "/workflow/runs",
+        "POST",
+        &serde_json::json!({
+            "domain": domain,
+            "kind": "troubleshoot",
+            "state_json": "{}"
+        })
+        .to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "fresh run creation failed: {body}");
+    serde_json::from_str::<serde_json::Value>(&body).expect("run JSON")["run_id"]
+        .as_i64()
+        .expect("run id")
+}
+
+/// A JWT with the required Write scope but no role claim must not reach the
+/// server-owned provider configuration or secret reader.
+#[tokio::test]
+async fn gdl_route_rejects_role_less_write_principal() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "gdl-admin-role-less",
+        "user:gdl-admin-role-less",
+        "team-a",
+        &["admin:*/*"],
+        &["matrix-role"],
+    );
+    let run_id = fresh_gdl_run(&srv, &admin, "acme").await;
+    let roleless = mint(
+        &srv,
+        "gdl-roleless",
+        "user:gdl-roleless",
+        "team-a",
+        &["write:team-a/*"],
+        &[],
+    );
+    let (status, body) = send_body(
+        &srv,
+        Some(&roleless),
+        &format!("/workflow/cases/{run_id}/gdl"),
+        "POST",
+        r#"{"ticket":"role gate before secret"}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a role-less Write principal must be denied before profile/secret work: {body}"
+    );
+    assert!(
+        !body.contains("secret_file"),
+        "role refusal stays operator-safe"
+    );
+}
+
+/// An asserted role name that is absent from the server role store contributes
+/// no capability; it must fail closed rather than falling through to scopes.
+#[tokio::test]
+async fn gdl_route_rejects_unknown_role() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "gdl-admin-unknown-role",
+        "user:gdl-admin-unknown-role",
+        "team-a",
+        &["admin:*/*"],
+        &["matrix-role"],
+    );
+    let run_id = fresh_gdl_run(&srv, &admin, "acme").await;
+    let unknown_role = mint(
+        &srv,
+        "gdl-unknown-role",
+        "user:gdl-unknown-role",
+        "team-a",
+        &["write:team-a/*"],
+        &["role-that-does-not-exist"],
+    );
+    let (status, body) = send_body(
+        &srv,
+        Some(&unknown_role),
+        &format!("/workflow/cases/{run_id}/gdl"),
+        "POST",
+        r#"{"ticket":"unknown role before secret"}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "an unknown role must not authorize GDL: {body}"
+    );
+}
+
+/// The run's actual domain, not a request-selected or global scope, is the
+/// authorization input. A token scoped to a different domain is refused.
+#[tokio::test]
+async fn gdl_route_authorizes_the_actual_run_domain() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "gdl-admin-domain",
+        "user:gdl-admin-domain",
+        "team-a",
+        &["admin:*/*"],
+        &["matrix-role"],
+    );
+    let run_id = fresh_gdl_run(&srv, &admin, "forbidden-domain").await;
+    let wrong_domain = mint(
+        &srv,
+        "gdl-wrong-domain",
+        "user:gdl-wrong-domain",
+        "team-a",
+        &["write:team-a/allowed-domain"],
+        &["matrix-role"],
+    );
+    let (status, body) = send_body(
+        &srv,
+        Some(&wrong_domain),
+        &format!("/workflow/cases/{run_id}/gdl"),
+        "POST",
+        r#"{"ticket":"wrong domain before secret"}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "GDL must authorize the run's actual domain: {body}"
+    );
+}
+
+/// Authorization and profile refusal must both precede the secret reader. A
+/// role-less principal is denied even when a profile is configured; an
+/// authorized operator with no profile receives only the stable config code.
+#[tokio::test]
+async fn gdl_provider_never_reads_secret_before_authorization_and_config_refusal() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "gdl-admin-order",
+        "user:gdl-admin-order",
+        "team-a",
+        &["admin:*/*"],
+        &["matrix-role"],
+    );
+    let run_id = fresh_gdl_run(&srv, &admin, "acme").await;
+    let roleless = mint(
+        &srv,
+        "gdl-order-roleless",
+        "user:gdl-order-roleless",
+        "team-a",
+        &["write:team-a/*"],
+        &[],
+    );
+    let (status, body) = send_body(
+        &srv,
+        Some(&roleless),
+        &format!("/workflow/cases/{run_id}/gdl"),
+        "POST",
+        r#"{"ticket":"authorization before secret"}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "role refusal came first: {body}"
+    );
+    assert!(!body.contains("secret"), "no secret diagnostic escaped");
+
+    let (status, body) = send_body(
+        &srv,
+        Some(&admin),
+        &format!("/workflow/cases/{run_id}/gdl"),
+        "POST",
+        r#"{"ticket":"configuration before secret"}"#,
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "config refusal came first: {body}"
+    );
+    let value: serde_json::Value = serde_json::from_str(&body).expect("error JSON");
+    assert_eq!(
+        value["error"]["code"], "provider_config_invalid",
+        "body: {body}"
+    );
+    assert!(
+        !body.contains("secret_file"),
+        "config refusal stays operator-safe"
+    );
+}
+
 /// The case-launch boundary maps authority at the authenticated border:
 /// the AGENT bearer is refused BY KIND (403 — agents do not self-launch
 /// cases) even where a scope check would pass, while the OPERATOR on the
 /// same absent run passes the gate and reaches the probe-blind 404 —
 /// both BEFORE any provider contact (no provider config is even read).
 #[tokio::test]
-async fn agent_cannot_self_launch_gdl_cases_operator_reaches_run_lookup() {
+async fn gdl_route_rejects_agent_before_secret_read_and_dns() {
     let srv = twokey_server();
     let launch = r#"{"ticket":"m","base_url":"https://provider.invalid/v1/stream","model":"m","secret_file":"/nonexistent-secret"}"#;
     let (st, _) = send_body(
@@ -1800,7 +2006,7 @@ async fn agent_cannot_self_launch_gdl_cases_operator_reaches_run_lookup() {
 /// before any provider contact). The route-level refusal (403) is the
 /// live agent's posture; revocation removes the identity entirely.
 #[tokio::test]
-async fn revoked_agent_gdl_launch_is_401_identity_revoked() {
+async fn gdl_route_rejects_revoked_principal() {
     let srv = twokey_server();
     revoke_via_route(&srv, TWOKEY_OP, "agent@loopback").await;
     let (st, text) = send_body(

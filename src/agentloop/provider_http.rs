@@ -6,13 +6,15 @@
 //! Trust posture: provider output is UNTRUSTED INPUT. It enters the loop
 //! only as typed streamed deltas; context shaping, payload caps, and the
 //! hook boundaries apply downstream of this seam. Key material rides the
-//! `secret_file` path — never source, never logs, never the loop. The
+//! server-owned, root-confined secret path — never source, never logs, never
+//! the loop. The
 //! endpoint is screened for SSRF at construction (the webhook sink-screen
 //! precedent: every resolved address must be globally routable; the client
 //! is DNS-pinned to the validated set, closing rebinding). No retries in
 //! the seam (a failed stream is the caller's typed error), no silent
 //! fallback (a missing/unreachable provider is a named
-//! [`ProviderError::Unavailable`]), no env knobs (constructor config only).
+//! [`ProviderError::Unavailable`]), no request-selected configuration
+//! (constructor config only).
 //!
 //! Wire dialect (bounded, own contract): POST the canonical
 //! `ProviderRequest` serde shape plus `model`; read `text/event-stream`
@@ -44,11 +46,16 @@ pub(crate) const DEFAULT_MAX_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 /// the bounded parser's per-frame bound (a model delta never needs a
 /// megabyte line; a wall of text that size is hostile or broken).
 pub(crate) const MAX_SSE_LINE_BYTES: usize = 64 * 1024;
+/// Provider endpoints are operator configuration, not arbitrary request
+/// strings. Keep URL-shape validation bounded before DNS or secret work.
+const MAX_ENDPOINT_URL_BYTES: usize = 2048;
+const MAX_PROVIDER_MODEL_BYTES: usize = 256;
+const MAX_PROVIDER_SECRET_HEADER_BYTES: usize = 16 * 1024 + 16;
 
 /// Externally configured constructor input for the adapter. Resolved at
 /// the authenticated boundary (the case handler); nothing here is read
 /// from the environment inside the loop.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct HttpProviderConfig {
     /// The provider endpoint (base URL, screened at construction).
     pub base_url: String,
@@ -65,6 +72,20 @@ pub(crate) struct HttpProviderConfig {
     pub max_response_bytes: usize,
 }
 
+impl std::fmt::Debug for HttpProviderConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HttpProviderConfig")
+            .field("base_url", &"[REDACTED]")
+            .field("model", &self.model)
+            .field("auth_header", &"[REDACTED]")
+            .field("connect_timeout", &self.connect_timeout)
+            .field("first_byte_timeout", &self.first_byte_timeout)
+            .field("max_response_bytes", &self.max_response_bytes)
+            .finish()
+    }
+}
+
 /// The screened, DNS-pinned, bounded HTTP transport implementing
 /// [`LlmProvider`]. Kernel-side by design: the SDK gains nothing.
 pub(crate) struct HttpProvider {
@@ -77,15 +98,17 @@ pub(crate) struct HttpProvider {
 }
 
 impl HttpProvider {
-    /// Production constructor: screen `base_url` (private/loopback/
-    /// metadata refused, every resolved address validated), pin the
-    /// client to the validated address set, apply the configured bounds.
+    /// Production constructor: validate endpoint shape, require HTTPS,
+    /// screen `base_url` (private/loopback/metadata refused, every resolved
+    /// address validated), pin the client to the validated address set, and
+    /// apply the configured bounds.
     pub(crate) fn new(cfg: HttpProviderConfig) -> Result<Arc<Self>, ProviderError> {
+        Self::validate_config(&cfg)?;
         let (host, port) = split_host_port(&cfg.base_url)?;
-        let addrs = webhook::resolve_and_validate_sink(&host, port, false).map_err(|e| {
-            ProviderError::Refused(format!("endpoint refused by egress screen: {e}"))
+        let addrs = webhook::resolve_and_validate_sink(&host, port, false).map_err(|_| {
+            ProviderError::Refused("provider endpoint refused by egress screen".to_string())
         })?;
-        let client = Self::build_client(&cfg, Some((&host, &addrs)));
+        let client = Self::build_client(&cfg, Some((&host, &addrs)), true);
         Ok(Arc::new(Self {
             label: "provider_http".to_string(),
             url: cfg.base_url,
@@ -96,6 +119,41 @@ impl HttpProvider {
         }))
     }
 
+    /// Validate only the endpoint shape. The GDL boundary calls this before
+    /// reading a secret; DNS/address screening remains in `new`.
+    pub(crate) fn validate_endpoint(url: &str) -> Result<(), ProviderError> {
+        split_host_port(url).map(|_| ())
+    }
+
+    fn validate_config(cfg: &HttpProviderConfig) -> Result<(), ProviderError> {
+        Self::validate_endpoint(&cfg.base_url)?;
+        if cfg.model.trim().is_empty()
+            || cfg.model.len() > MAX_PROVIDER_MODEL_BYTES
+            || cfg.model.chars().any(char::is_control)
+        {
+            return Err(ProviderError::Refused(
+                "provider model configuration is invalid".to_string(),
+            ));
+        }
+        if cfg.auth_header.is_empty()
+            || cfg.auth_header.len() > MAX_PROVIDER_SECRET_HEADER_BYTES
+            || cfg
+                .auth_header
+                .chars()
+                .any(|character| character == '\r' || character == '\n' || character.is_control())
+        {
+            return Err(ProviderError::Refused(
+                "provider authorization configuration is invalid".to_string(),
+            ));
+        }
+        if cfg.max_response_bytes == 0 {
+            return Err(ProviderError::Refused(
+                "provider response bound is invalid".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Test-only constructor: pins the adapter to an exact socket (the
     /// in-process SSE server on 127.0.0.1:0) WITHOUT the egress screen —
     /// the screen's production posture is unchanged; tests must reach a
@@ -103,7 +161,7 @@ impl HttpProvider {
     #[cfg(test)]
     pub(crate) fn new_unscreened(cfg: HttpProviderConfig, addr: std::net::SocketAddr) -> Arc<Self> {
         let host = addr.ip().to_string();
-        let client = Self::build_client(&cfg, Some((&host, &[addr])));
+        let client = Self::build_client(&cfg, Some((&host, &[addr])), false);
         Arc::new(Self {
             label: "provider_http_test".to_string(),
             url: cfg.base_url,
@@ -117,6 +175,7 @@ impl HttpProvider {
     fn build_client(
         cfg: &HttpProviderConfig,
         pin: Option<(&str, &[std::net::SocketAddr])>,
+        require_https: bool,
     ) -> reqwest::Client {
         let mut builder = reqwest::Client::builder()
             // Redirects are never followed: the screen validated ONE
@@ -124,6 +183,9 @@ impl HttpProvider {
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(cfg.connect_timeout)
             .read_timeout(cfg.first_byte_timeout);
+        if require_https {
+            builder = builder.https_only(true);
+        }
         if let Some((host, addrs)) = pin {
             builder = builder.resolve_to_addrs(host, addrs);
         }
@@ -164,11 +226,11 @@ impl LlmProvider for HttpProvider {
                 .await
             {
                 Ok(r) => r,
-                Err(e) => {
+                Err(_) => {
                     let _ = tx
-                        .send(Err(ProviderError::Unavailable(format!(
-                            "provider request failed: {e}"
-                        ))))
+                        .send(Err(ProviderError::Unavailable(
+                            "provider transport failed".to_string(),
+                        )))
                         .await;
                     return;
                 }
@@ -176,17 +238,17 @@ impl LlmProvider for HttpProvider {
             let status = response.status();
             if status.is_client_error() {
                 let _ = tx
-                    .send(Err(ProviderError::Refused(format!(
-                        "provider refused the request (HTTP {status})"
-                    ))))
+                    .send(Err(ProviderError::Refused(
+                        "provider refused the request".to_string(),
+                    )))
                     .await;
                 return;
             }
             if !(status.is_success()) {
                 let _ = tx
-                    .send(Err(ProviderError::Unavailable(format!(
-                        "provider unavailable (HTTP {status})"
-                    ))))
+                    .send(Err(ProviderError::Unavailable(
+                        "provider returned an unsuccessful status".to_string(),
+                    )))
                     .await;
                 return;
             }
@@ -200,11 +262,11 @@ impl LlmProvider for HttpProvider {
             while let Some(item) = stream.next().await {
                 let chunk = match item {
                     Ok(c) => c,
-                    Err(e) => {
+                    Err(_) => {
                         let _ = tx
-                            .send(Err(ProviderError::Unavailable(format!(
-                                "provider stream failed: {e}"
-                            ))))
+                            .send(Err(ProviderError::Unavailable(
+                                "provider stream failed".to_string(),
+                            )))
                             .await;
                         return;
                     }
@@ -212,10 +274,10 @@ impl LlmProvider for HttpProvider {
                 total = total.saturating_add(chunk.len());
                 if total > max_bytes {
                     let _ = tx
-                        .send(Err(ProviderError::Refused(format!(
-                            "response exceeded max_response_bytes ({max_bytes} bytes): \
-                             refusing, never truncating"
-                        ))))
+                        .send(Err(ProviderError::Refused(
+                            "response exceeded max_response_bytes; refusing, never truncating"
+                                .to_string(),
+                        )))
                         .await;
                     return;
                 }
@@ -224,11 +286,9 @@ impl LlmProvider for HttpProvider {
                     let line: Vec<u8> = buf.drain(..=pos).collect();
                     if line.len() > MAX_SSE_LINE_BYTES {
                         let _ = tx
-                            .send(Err(ProviderError::Refused(format!(
-                                "oversized SSE frame: {} bytes exceeds the \
-                                 {MAX_SSE_LINE_BYTES}-byte line bound",
-                                line.len()
-                            ))))
+                            .send(Err(ProviderError::Refused(
+                                "oversized SSE frame exceeded the line bound".to_string(),
+                            )))
                             .await;
                         return;
                     }
@@ -266,23 +326,49 @@ impl LlmProvider for HttpProvider {
 }
 
 fn split_host_port(url: &str) -> Result<(String, u16), ProviderError> {
-    let parsed = reqwest::Url::parse(url)
-        .map_err(|e| ProviderError::Refused(format!("endpoint unparseable: {e}")))?;
-    if parsed.scheme() != "https" && parsed.scheme() != "http" {
-        return Err(ProviderError::Refused(format!(
-            "endpoint scheme must be http(s), got {:?}",
-            parsed.scheme()
-        )));
+    if url.len() > MAX_ENDPOINT_URL_BYTES || url.bytes().any(|byte| byte <= b' ' || byte == 0x7f) {
+        return Err(ProviderError::Refused(
+            "provider endpoint shape is invalid".to_string(),
+        ));
     }
-    let port = parsed.port_or_known_default().unwrap_or(80);
+    let Some(authority) = url.strip_prefix("https://") else {
+        return Err(ProviderError::Refused(
+            "provider endpoint must use HTTPS".to_string(),
+        ));
+    };
+    if authority.is_empty() || authority.starts_with('/') {
+        return Err(ProviderError::Refused(
+            "provider endpoint host is invalid".to_string(),
+        ));
+    }
+    let parsed = reqwest::Url::parse(url)
+        .map_err(|_| ProviderError::Refused("provider endpoint is malformed".to_string()))?;
+    if parsed.scheme() != "https" {
+        return Err(ProviderError::Refused(
+            "provider endpoint must use HTTPS".to_string(),
+        ));
+    }
+    let authority_head = authority.split('/').next().unwrap_or_default();
+    if authority_head.contains('@')
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
+        || parsed.query().is_some()
+    {
+        return Err(ProviderError::Refused(
+            "provider endpoint contains an unsupported URL component".to_string(),
+        ));
+    }
+    let port = parsed.port_or_known_default().unwrap_or(443);
     let raw = parsed
         .host_str()
-        .ok_or_else(|| ProviderError::Refused("endpoint has no host".to_string()))?;
-    let host = raw
-        .strip_prefix('[')
-        .and_then(|h| h.strip_suffix(']'))
-        .unwrap_or(raw)
-        .to_ascii_lowercase();
+        .ok_or_else(|| ProviderError::Refused("provider endpoint has no host".to_string()))?;
+    if raw.is_empty() || raw.chars().any(char::is_whitespace) {
+        return Err(ProviderError::Refused(
+            "provider endpoint host is invalid".to_string(),
+        ));
+    }
+    let host = raw.to_ascii_lowercase();
     Ok((host, port))
 }
 
@@ -320,9 +406,9 @@ fn parse_line(line: &[u8]) -> Parsed {
         return Parsed::Ignore;
     }
     let Ok(v) = serde_json::from_str::<serde_json::Value>(payload) else {
-        return Parsed::Refuse(ProviderError::Refused(format!(
-            "malformed SSE payload: not valid JSON: {payload}"
-        )));
+        return Parsed::Refuse(ProviderError::Refused(
+            "malformed SSE payload: not valid JSON".to_string(),
+        ));
     };
     let Some(kind) = v.get("type").and_then(|t| t.as_str()) else {
         return Parsed::Refuse(ProviderError::Refused(
@@ -374,24 +460,21 @@ fn parse_line(line: &[u8]) -> Parsed {
                 .map(|u| serde_json::from_value::<Usage>(u.clone()))
             {
                 Some(Ok(u)) => u,
-                Some(Err(e)) => {
-                    return Parsed::Refuse(ProviderError::Refused(format!(
-                        "malformed SSE payload: usage: {e}"
-                    )));
+                Some(Err(_)) => {
+                    return Parsed::Refuse(ProviderError::Refused(
+                        "malformed SSE payload: invalid usage".to_string(),
+                    ));
                 }
                 None => Usage::default(),
             };
             Parsed::Event(StreamEvent::MessageEnd { stop_reason, usage })
         }
         "error" => Parsed::Refuse(ProviderError::Refused(
-            v.get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("provider returned an error frame without a message")
-                .to_string(),
+            "provider returned an error frame".to_string(),
         )),
-        other => Parsed::Refuse(ProviderError::Refused(format!(
-            "malformed SSE payload: unknown event type {other:?}"
-        ))),
+        _ => Parsed::Refuse(ProviderError::Refused(
+            "malformed SSE payload: unknown event type".to_string(),
+        )),
     }
 }
 
@@ -781,7 +864,7 @@ mod tests {
     fn screen_refuses_loopback_endpoint() {
         // The production screen refuses a loopback endpoint BEFORE any
         // request exists — the SSRF posture the tests bypass explicitly.
-        let err = match HttpProvider::new(cfg("http://127.0.0.1:9/v1/stream".to_string())) {
+        let err = match HttpProvider::new(cfg("https://127.0.0.1:9/v1/stream".to_string())) {
             Err(e) => e,
             Ok(_) => panic!("loopback endpoint must be refused at construction"),
         };
@@ -794,9 +877,9 @@ mod tests {
     #[test]
     fn screen_refuses_private_and_metadata_endpoints() {
         for url in [
-            "http://10.0.0.1:9/v1/stream",
-            "http://192.168.1.1:9/v1/stream",
-            "http://metadata.amazonaws.com/v1/stream",
+            "https://10.0.0.1:9/v1/stream",
+            "https://192.168.1.1:9/v1/stream",
+            "https://metadata.amazonaws.com/v1/stream",
         ] {
             let err = match HttpProvider::new(cfg(url.to_string())) {
                 Err(e) => e,
@@ -807,6 +890,136 @@ mod tests {
                 "{url} refused at construction: {err}"
             );
         }
+    }
+
+    #[test]
+    fn gdl_provider_rejects_public_http() {
+        let err = split_host_port("http://provider.example/v1/stream")
+            .expect_err("production provider endpoints must require HTTPS");
+        assert!(
+            matches!(err, ProviderError::Refused(_)),
+            "HTTP refusal must stay typed: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn gdl_provider_keeps_existing_dns_pinning_and_redirect_refusal() {
+        let screened = match HttpProvider::new(cfg("https://127.0.0.1:9/v1/stream".to_string())) {
+            Ok(_) => panic!("private DNS target must be screened"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(screened, ProviderError::Refused(ref message) if message.contains("egress screen")),
+            "address screening remains in the production constructor: {screened}"
+        );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let redirect_hit = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hit = redirect_hit.clone();
+        let server = tokio::spawn(async move {
+            let (mut first, _) = listener.accept().await.unwrap();
+            read_request(&mut first).await;
+            let location = format!("http://{addr}/redirected");
+            let head = format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nlocation: {location}\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
+            );
+            first.write_all(head.as_bytes()).await.unwrap();
+            if let Ok(Ok((mut second, _))) =
+                tokio::time::timeout(Duration::from_millis(500), listener.accept()).await
+            {
+                hit.store(true, std::sync::atomic::Ordering::SeqCst);
+                let body = "data: {\"type\":\"message_start\"}\n\ndata: {\"type\":\"message_end\",\"stop_reason\":\"end_turn\"}\n\n";
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                second.write_all(head.as_bytes()).await.unwrap();
+                second.write_all(body.as_bytes()).await.unwrap();
+            }
+        });
+        let provider = HttpProvider::new_unscreened(cfg(format!("http://{addr}/v1/stream")), addr);
+        let events = drain(provider.stream(request()).unwrap()).await;
+        assert!(
+            matches!(events.as_slice(), [Err(ProviderError::Unavailable(_))]),
+            "redirect responses are not followed: {events:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !redirect_hit.load(std::sync::atomic::Ordering::SeqCst),
+            "the redirect target must never receive a second request"
+        );
+        server.abort();
+    }
+
+    #[test]
+    fn gdl_provider_rejects_url_userinfo_and_fragment() {
+        for url in [
+            "https://user:password@provider.example/v1/stream",
+            "https://provider.example/v1/stream#fragment",
+            "https://provider.example/v1/stream?token=not-allowed",
+        ] {
+            assert!(
+                split_host_port(url).is_err(),
+                "unsafe provider URL shape must be refused: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn gdl_provider_rejects_unsupported_or_malformed_endpoint() {
+        for url in [
+            "file:///etc/passwd",
+            "ftp://provider.example/v1/stream",
+            "https:///missing-host",
+            "https://provider.example/v1/stream?query=not-allowed",
+        ] {
+            assert!(
+                split_host_port(url).is_err(),
+                "unsupported or malformed provider endpoint must be refused: {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_error_frame_is_not_reflected() {
+        let raw = "provider-secret-and-upstream-text";
+        let line = format!("data: {{\"type\":\"error\",\"message\":\"{raw}\"}}\n");
+        let Parsed::Refuse(error) = parse_line(line.as_bytes()) else {
+            panic!("provider error frame must be refused");
+        };
+        let rendered = error.to_string();
+        assert!(
+            !rendered.contains(raw),
+            "provider error text must not cross the typed error boundary: {rendered}"
+        );
+    }
+
+    #[test]
+    fn malformed_sse_does_not_echo_raw_payload() {
+        let raw = "Bearer should-never-echo";
+        let line = format!("data: {{not-json:{raw}}}\n");
+        let Parsed::Refuse(error) = parse_line(line.as_bytes()) else {
+            panic!("malformed SSE must be refused");
+        };
+        let rendered = error.to_string();
+        assert!(
+            !rendered.contains(raw),
+            "malformed SSE must not echo its raw payload: {rendered}"
+        );
+    }
+
+    #[test]
+    fn provider_error_logs_contain_no_secret_or_raw_body() {
+        let raw = "upstream-body-secret";
+        let line = format!("data: {{\"type\":\"error\",\"message\":\"{raw}\"}}\n");
+        let Parsed::Refuse(error) = parse_line(line.as_bytes()) else {
+            panic!("provider error frame must be refused");
+        };
+        assert!(
+            !error.to_string().contains(raw),
+            "provider error rendering is log-safe"
+        );
     }
 }
 

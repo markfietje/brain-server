@@ -118,6 +118,81 @@ pub fn alert_webhook_secret() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// The one server-owned provider profile used by the GDL launch boundary.
+/// None means the operator has not configured the surface; a partial profile
+/// is a configuration error. The request never selects any of these values.
+#[derive(Clone)]
+pub(crate) struct GdlProviderProfile {
+    pub(crate) base_url: String,
+    pub(crate) model: String,
+    pub(crate) secret_file: std::path::PathBuf,
+    pub(crate) secret_root: std::path::PathBuf,
+}
+
+impl GdlProviderProfile {
+    /// Resolve the profile without copying paths, credentials, or other
+    /// configuration values into an error string. Detailed diagnostics belong
+    /// at the operator's config boundary; the route receives a stable code.
+    pub(crate) fn from_env() -> Result<Option<Self>, String> {
+        let values = [
+            std::env::var("BRAIN_GDL_PROVIDER_BASE_URL")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            std::env::var("BRAIN_GDL_PROVIDER_MODEL")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            std::env::var("BRAIN_GDL_PROVIDER_SECRET_FILE")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+            std::env::var("BRAIN_GDL_PROVIDER_SECRET_ROOT")
+                .ok()
+                .map(|v| v.trim().to_string())
+                .filter(|v| !v.is_empty()),
+        ];
+        let present = values.iter().filter(|value| value.is_some()).count();
+        if present == 0 {
+            return Ok(None);
+        }
+        if present != values.len() {
+            return Err("GDL provider profile is incomplete".to_string());
+        }
+        let [
+            Some(base_url),
+            Some(model),
+            Some(secret_file),
+            Some(secret_root),
+        ] = values
+        else {
+            return Err("GDL provider profile is incomplete".to_string());
+        };
+        if base_url.len() > 2048
+            || base_url.chars().any(char::is_control)
+            || model.is_empty()
+            || model.len() > 256
+            || model.chars().any(char::is_control)
+        {
+            return Err("GDL provider profile is invalid".to_string());
+        }
+        let secret_root = std::path::PathBuf::from(secret_root);
+        if !secret_root.is_absolute() {
+            return Err("GDL provider secret root must be absolute".to_string());
+        }
+        let secret_file = std::path::PathBuf::from(secret_file);
+        if secret_file.as_os_str().is_empty() {
+            return Err("GDL provider secret file is invalid".to_string());
+        }
+        Ok(Some(Self {
+            base_url,
+            model,
+            secret_file,
+            secret_root,
+        }))
+    }
+}
+
 pub fn proposal_ttl_secs() -> i64 {
     std::env::var("BRAIN_PROPOSAL_TTL_SECS")
         .ok()
@@ -2157,5 +2232,44 @@ mod tests {
             let msg = agent_token_misconfigured().expect("missing file refuses the boot");
             assert!(msg.contains("missing, unreadable, or empty"), "{msg}");
         });
+    }
+
+    #[test]
+    fn gdl_provider_profile_is_resolved_server_side() {
+        let _env = crate::test_support::lock_env();
+        let keys = [
+            "BRAIN_GDL_PROVIDER_BASE_URL",
+            "BRAIN_GDL_PROVIDER_MODEL",
+            "BRAIN_GDL_PROVIDER_SECRET_FILE",
+            "BRAIN_GDL_PROVIDER_SECRET_ROOT",
+        ];
+        let previous: Vec<_> = keys
+            .iter()
+            .map(|key| (*key, std::env::var(key).ok()))
+            .collect();
+        let root = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var(
+                "BRAIN_GDL_PROVIDER_BASE_URL",
+                "https://provider.example/v1/stream",
+            );
+            std::env::set_var("BRAIN_GDL_PROVIDER_MODEL", "server-model");
+            std::env::set_var("BRAIN_GDL_PROVIDER_SECRET_FILE", "provider.key");
+            std::env::set_var("BRAIN_GDL_PROVIDER_SECRET_ROOT", root.path());
+        }
+        let profile = GdlProviderProfile::from_env()
+            .expect("complete profile")
+            .expect("configured profile");
+        assert_eq!(profile.base_url, "https://provider.example/v1/stream");
+        assert_eq!(profile.model, "server-model");
+        assert_eq!(profile.secret_file, std::path::Path::new("provider.key"));
+        assert_eq!(profile.secret_root, root.path());
+        for (key, value) in previous {
+            if let Some(value) = value {
+                unsafe { std::env::set_var(key, value) };
+            } else {
+                unsafe { std::env::remove_var(key) };
+            }
+        }
     }
 }

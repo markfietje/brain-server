@@ -239,6 +239,19 @@ compliance claim.
 | **ASI10 Rogue Agents / LLM06** | The digest is an integrity binding, not a generic signature, and does not make `evaluated` reachable. Non-empty `evaluation_refs` is refused; the registry stores no weights or evaluation contents. |
 | **LLM02 Sensitive Information Disclosure** | The lifecycle contract carries the exact registry row and digest references, never model weights or evaluation contents. |
 
+### Dated addendum — 2026-09-25 (R34 — GDL provider boundary hardening)
+
+R34 records technical controls at the existing GDL launch seam. It is not a
+certification, legal conclusion, conformity claim, or risk-elimination claim.
+
+| Control | The R34 technical-control law |
+|---|---|
+| **ASI03 Identity & Privilege Abuse** | The public GDL request carries only the ticket. Provider destination, model, secret file, and secret root are server-owned configuration. A JWT must pass actual-domain Write authorization and a GDL-local `workflow` capability check before profile resolution, secret access, DNS, or provider construction; role-less JWTs and unknown roles fail closed. `AgentLoopback` remains refused before run lookup. |
+| **ASI07 Insecure Inter-Agent Communication** | Production provider construction requires HTTPS, rejects userinfo/fragments/queries/unsafe URL shapes, retains resolved-address validation and DNS pinning, and refuses redirects. The test-only loopback adapter remains isolated from production construction. |
+| **ASI08 Cascading Failures** | Provider transport, status, stream, response-cap, and parser failures are bounded and mapped to stable operator-safe codes. Raw provider bodies, malformed payloads, bearer values, secret-bearing URLs, and filesystem paths do not cross the public error seam. |
+| **LLM02 Sensitive Information Disclosure** | The configured secret is read only after authorization/configuration checks, confined beneath the configured root, rejected for symlink/empty/multiline/control/oversized content, and never persisted or logged. GDL audit details contain no provider body or secret. |
+| **ASI09 Human-Agent Trust Exploitation** | Existing GDL deny-all execution, empty tool registry, bounded streaming, pending capture, and human-review disposition laws remain unchanged. Provider availability does not create an autonomous publication path. |
+
 ## Part 3 — AIUC-1 crosswalk (procurement bridge)
 
 A crosswalk maps ASI01–ASI10 to the AI-Under-Contract (AIUC-1) requirements so

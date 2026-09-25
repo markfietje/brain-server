@@ -1,6 +1,6 @@
 # Security Policy
 
-**Last reviewed:** 2026-09-22 against OWASP Top 10:**2025** + Cheat Sheet Series (v1.28.92 "Ledger" refresh: loop-exec OS boundary, machine-refusal law, bulk-read dual gates, GDL gates, LAYA Phase 0 ungated; history rows .85–.92 added; SBOM path `dist/`→`sbom/`; dormant-exec ceiling retired)
+**Last reviewed:** 2026-09-25 against OWASP Top 10:**2025** + Cheat Sheet Series (R34 GDL provider boundary review added: ticket-only request, server-owned profile, confined secret, HTTPS/SSRF/DNS, role and stable-error controls; v1.28.92 "Ledger" refresh context retained)
 **Stamp policy:** this "Last reviewed" line moves in the same commit as any security-relevant claim it covers — a stamp N releases behind HEAD is itself a finding.
 (Context7-verified), OWASP Multi-Tenant Security Cheat Sheet, OWASP JSON Web
 Token Cheat Sheet, OWASP Secrets Management Cheat Sheet, OWASP gRPC + Microservices
@@ -718,6 +718,7 @@ rulings) — the runbook's quarterly re-check rule applies.
 
 | Version | Date | Changes |
 |---|---|---|
+| R34 (unreleased) | 2026-09-25 | GDL provider boundary hardening: ticket-only request, server-owned provider profile, root-confined owner-only secret, HTTPS/URL-shape validation, retained DNS pinning/redirect refusal, fail-closed GDL role gate, and stable provider errors with no raw payload/credential reflection. |
 | 1.28.92 | 2026-09-22 | "Ledger" — loop-exec OS boundary (sandbox-exec/Landlock, fail-closed); machine-refusal law (`decision_ref` required, agent class refused); bulk-read dual gates (Admin+DPO, audited, seam-de-identified); GDL law-cited gates through 1.32.7; LAYA System-1 Phase 0 pure (ungated, no callers). |
 | 1.28.91 | 2026-09-15 | "Notary" — off-host `brain anchor` / `--verify` state fingerprint (catches business-row tamper behind a green chain); physical `brain shred` residue drop (freelist 0, `forget` row). |
 | 1.28.90 | 2026-09-14 | "Refresh" — dependency service bump (nine Dependabot PRs applied and verified). |

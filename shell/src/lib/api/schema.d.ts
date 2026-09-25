@@ -2760,7 +2760,7 @@ export interface paths {
         put?: never;
         /**
          * Launch one GDL case episode on a fresh run through the real configured provider (Write on domain; operators only)
-         * @description The operator case-launch boundary. Agents (`agent@loopback` bearers) are refused (403): agents do not self-launch cases. The run must be fresh (kind `troubleshoot`, status `active`, revision 0, state `{}`) -- the checkpoint law admits nothing else. The provider endpoint is SSRF-screened at construction (private/loopback/metadata ranges refused) and the key rides an owner-only secret file; key material is never logged. Outcomes are the existing GDL vocabulary: a pending capture PROPOSAL (human-approved later) or a Handoff/route/escalation -- nothing publishes automatically. Transport-class provider failures are named refusals; there is no loopback fallback.
+         * @description The operator case-launch boundary. Agents (`agent@loopback` bearers) are refused (403): agents do not self-launch cases. JWT callers must also hold the existing `workflow` role; role-less JWTs are refused. The run must be fresh (kind `troubleshoot`, status `active`, revision 0, state `{}`) -- the checkpoint law admits nothing else. Provider destination, model, and secret are server-owned configuration (`BRAIN_GDL_PROVIDER_BASE_URL`, `BRAIN_GDL_PROVIDER_MODEL`, `BRAIN_GDL_PROVIDER_SECRET_FILE`, and `BRAIN_GDL_PROVIDER_SECRET_ROOT`); caller-supplied legacy provider fields are refused with `gdl_request_migrated` and are never used. Production endpoints require HTTPS, reject unsafe URL shapes, pass the existing address screen and DNS pinning, and never follow redirects. Outcomes are the existing GDL vocabulary: a pending capture PROPOSAL (human-approved later) or a Handoff/route/escalation -- nothing publishes automatically. Provider failures expose stable codes only; raw provider text, credentials, and secret-bearing URLs are not reflected.
          */
         post: operations["launchGdlCase"];
         delete?: never;
@@ -10509,17 +10509,6 @@ export interface operations {
                 "application/json": {
                     /** @description The ticket verbatim (bounded 1..=8192 bytes after trimming). */
                     ticket: string;
-                    /** @description HTTP(S) endpoint of the provider; SSRF-screened */
-                    base_url: string;
-                    model: string;
-                    /** @description Path to an owner-only (0600/0400) file carrying the bearer key; read at the boundary */
-                    secret_file: string;
-                    /** @default 5000 */
-                    connect_timeout_ms?: number;
-                    /** @default 30000 */
-                    first_byte_timeout_ms?: number;
-                    /** @default 4194304 */
-                    max_response_bytes?: number;
                 };
             };
         };
@@ -10542,7 +10531,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description ticket_invalid | provider_config_invalid | secret_file_invalid */
+            /** @description ticket_invalid | provider_config_invalid | secret_file_invalid | gdl_request_migrated */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -10556,7 +10545,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Not authorized (domain Write) -- includes the agent refusal agent@loopback bearers may not self-launch cases */
+            /** @description Not authorized (domain Write plus the GDL workflow role; includes the agent refusal) */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -10577,14 +10566,14 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description run_kind_invalid | provider_refused (the provider refused the request; policy */
+            /** @description run_kind_invalid | provider_endpoint_refused | provider_refused */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
             };
-            /** @description provider unavailable (transport */
+            /** @description provider_unavailable | provider_cancelled | gdl_episode_unavailable -- no loopback fallback */
             503: {
                 headers: {
                     [name: string]: unknown;
