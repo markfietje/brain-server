@@ -1298,12 +1298,16 @@ mod tests {
 
     fn declared_dependency_names() -> Vec<String> {
         let manifest = include_str!("../Cargo.toml");
-        let dependencies = manifest
+        let after_table = manifest
             .split_once("[dependencies]")
             .expect("the manifest declares a dependencies table")
-            .1
+            .1;
+        // The table runs to the end of the file when it is the last section, so
+        // an absent following header keeps the whole tail — truncating there
+        // would scan nothing and report an empty dependency set.
+        let dependencies = after_table
             .split_once("\n[")
-            .map_or("", |(body, _)| body);
+            .map_or(after_table, |(body, _)| body);
         dependencies
             .lines()
             .map(str::trim)
@@ -1358,7 +1362,7 @@ mod tests {
         for (index, from) in Phase::ALL.iter().enumerate() {
             let next = Phase::ALL.get(index + 1);
             assert_eq!(
-                is_legal_phase_transition(*from, Phase::Done) || next.is_none(),
+                is_legal_phase_transition(*from, Phase::Done),
                 *from == Phase::Operate,
                 "only the operate phase may hand the run to done"
             );
@@ -1487,7 +1491,11 @@ mod tests {
         );
 
         // One defect at a time: each refuses on its own reason, and the
-        // precedence order is the declared one.
+        // precedence order is the declared one. The subject-mismatch case moves
+        // the APPROVAL off the artifact rather than the live digest, because
+        // moving the live digest also moves the chain off it — two defects at
+        // once, and the chain check would win and name the wrong fact.
+        let foreign_approval = approval_for(OTHER_SUBJECT);
         let cases: [(DenyReason, PromotionRequest<'_>); 5] = [
             (
                 DenyReason::AttestationChainBroken,
@@ -1513,7 +1521,7 @@ mod tests {
             (
                 DenyReason::ApprovalSubjectMismatch,
                 PromotionRequest {
-                    live_subject_digest: OTHER_SUBJECT,
+                    approval: Some(&foreign_approval),
                     ..good_request(&chain, &approval, &budgets)
                 },
             ),
@@ -1602,19 +1610,34 @@ mod tests {
         let same = good_request(&chain, &approval, &budgets);
         assert_eq!(promote(&same), Decision::Allow);
 
-        // ...and one byte later in the artifact is not. Both the chain and the
-        // approval then speak about an artifact that is no longer the one being
-        // promoted, and the refusal says which fact failed.
+        // ...and one byte later in the artifact is not. The approval is what
+        // goes stale, so the isolated case moves the APPROVAL off the artifact
+        // and leaves the chain describing what is being promoted: the refusal
+        // then names the approval, which is the fact that actually failed.
+        let foreign = approval_for(OTHER_SUBJECT);
+        let mismatched = PromotionRequest {
+            approval: Some(&foreign),
+            ..good_request(&chain, &approval, &budgets)
+        };
+        assert_eq!(
+            promote(&mismatched),
+            Decision::Deny(DenyReason::ApprovalSubjectMismatch)
+        );
+
+        // Moving the live digest instead also moves the chain off that
+        // artifact, so two facts fail at once and the chain check fires first
+        // and names the refusal. The declared precedence, observed.
         let moved = PromotionRequest {
             live_subject_digest: OTHER_SUBJECT,
             ..good_request(&chain, &approval, &budgets)
         };
         assert_eq!(
             promote(&moved),
-            Decision::Deny(DenyReason::ApprovalSubjectMismatch)
+            Decision::Deny(DenyReason::AttestationChainBroken)
         );
         // The chain check fires first, because the chain does not describe the
-        // artifact either.
+        // artifact either. Rebasing the chain onto the new artifact leaves every
+        // fact consistent, and the same approval is good again.
         let moved_with_moved_chain = vec![Attestation {
             subject_digest: OTHER_SUBJECT.to_string(),
             ..root_link()
@@ -1801,10 +1824,15 @@ mod tests {
         assert_eq!(saturated.spend(7).spent, u64::MAX);
         assert_eq!(Budget::new(BudgetKind::Tokens, 0).spend(1).spent, 1);
 
-        // Exhausted at the boundary, in both directions.
+        // Exhausted at the boundary, in both directions: drawn exactly to the
+        // ceiling, and overdrawn past it. A budget with nothing left and an
+        // overdrawn one are the same fact.
         assert!(Budget::new(BudgetKind::Files, 5).spend(5).is_exhausted());
-        assert!(!Budget::new(BudgetKind::Files, 5).spend(4).has_headroom());
-        assert!(!Budget::new(BudgetKind::Files, 5).has_headroom());
+        assert!(Budget::new(BudgetKind::Files, 5).spend(6).is_exhausted());
+        // Below the boundary there is headroom left, and an undrawn ceiling is
+        // all headroom.
+        assert!(Budget::new(BudgetKind::Files, 5).spend(4).has_headroom());
+        assert!(Budget::new(BudgetKind::Files, 5).has_headroom());
         assert!(Budget::new(BudgetKind::Files, u64::MAX).has_headroom());
 
         // A ledger that was never granted anything refuses: the default grants
