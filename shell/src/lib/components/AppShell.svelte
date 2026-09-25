@@ -12,6 +12,7 @@
 	import HouseIcon from '@lucide/svelte/icons/house';
 	import ClipboardListIcon from '@lucide/svelte/icons/clipboard-list';
 	import SearchIcon from '@lucide/svelte/icons/search';
+	import ListTreeIcon from '@lucide/svelte/icons/list-tree';
 	import HistoryIcon from '@lucide/svelte/icons/history';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import CommandIcon from '@lucide/svelte/icons/command';
@@ -26,6 +27,7 @@
 		{ route: '/overview', key: 'nav.overview', Icon: HouseIcon },
 		{ route: '/', key: 'nav.wizard', Icon: ClipboardListIcon },
 		{ route: '/search', key: 'nav.search', Icon: SearchIcon },
+		{ route: '/decisions', key: 'nav.decisions', Icon: ListTreeIcon },
 		{ route: '/recall', key: 'nav.recall', Icon: HistoryIcon }
 	] as const;
 

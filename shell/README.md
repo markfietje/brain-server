@@ -76,6 +76,31 @@ URL defaults to the pinned loopback origin `http://127.0.0.1:8765` and any
 override is **loopback-enforced client-side** (non-loopback falls back to
 the default).
 
+## Decision Explorer (M6-S1 / R32)
+
+`/decisions` lists the kernel's bounded decision-run summary page and
+`/decisions/[id]` shows a digest/reference-only trace projection. The list
+client sends only `limit` (1–50, default 20) and optional `run_id`; mode,
+model, outcome, date, escalation, cursor, and total-search filters are not
+server-backed and are not simulated in the UI.
+
+`src/lib/decision-run.ts` is the runtime boundary for the generated free-form
+wire. It validates closed enums and finite numeric fields, bounds rows,
+references, stages, labels, opaque previews, and the 1 MiB raw capture, and
+passes displayed strings through the canonical invisible-character sanitizer.
+The detail view offers exact-byte JSON download only inside that capture ceiling.
+The stored trace does not contain the original query, evidence text, config,
+or rules.
+
+Replay is deliberately operator-supplied and transient: config, rules, and
+input are never prefilled, reconstructed, stored, logged, or placed in a URL.
+The stored mode is read-only. A replay response renders config/input/stage
+agreement as data only; it never promotes, approves, or changes the trace.
+Exploratory runs are visibly non-promotable. The dedicated-port e2e seeds a
+synthetic candidate rules model and exploratory trace through the existing
+public kernel routes, verifies the trace over the real wire, and runs with one
+worker on port 8799; the WebKit project remains the static no-bypass CSP leg.
+
 ## Security posture
 
 - **Tauri least privilege (D6):** ONE capability (`capabilities/main.json`)

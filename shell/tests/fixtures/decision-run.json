@@ -1,0 +1,94 @@
+{
+  "run_id": 42,
+  "pipeline_version": "1.32.11",
+  "mode": "exploratory",
+  "config_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "model_refs": [
+    {
+      "id": "rules-r32-fixture",
+      "version": "1.0.0",
+      "weights_digest": null,
+      "registry_ref": {
+        "registry_id": "rules-r32-fixture",
+        "registry_version": "1.0.0"
+      }
+    }
+  ],
+  "input_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "context_refs": [
+    {
+      "evidence_id": "evidence-1",
+      "content_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "tier": "untrusted",
+      "vector_rank": 1,
+      "fts_rank": 2,
+      "graph_rank": null,
+      "fused_score": 0.75,
+      "flagged": false,
+      "untrusted": true
+    }
+  ],
+  "retrieval_params": {
+    "rrf_k": 60,
+    "limit": 5,
+    "leg": "both"
+  },
+  "env_fingerprint": {
+    "kernel_version": "1.28.92",
+    "feature_flags": ["fixture"]
+  },
+  "stages": [
+    {
+      "stage": "normalize",
+      "algorithm": "harness.normalize/v1",
+      "config_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "inputs_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "outputs_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "outputs": {
+        "Normalized": {
+          "request_id": "r32-fixture-request",
+          "question": { "id": "needs_human", "kind": "choice" },
+          "question_ids": ["needs_human"],
+          "query_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        }
+      },
+      "trust_tiers_seen": [],
+      "started_at": 1750000000000000000,
+      "duration_ns": 1200
+    },
+    {
+      "stage": "retrieve_context",
+      "algorithm": "search.perform_search/v1",
+      "config_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "inputs_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+      "outputs_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+      "outputs": {
+        "Retrieved": [
+          {
+            "evidence_id": "evidence-1",
+            "content_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "tier": "untrusted"
+          }
+        ]
+      },
+      "trust_tiers_seen": ["untrusted"],
+      "started_at": 1750000000000001200,
+      "duration_ns": 3400
+    }
+  ],
+  "outcome": {
+    "action": "escalate",
+    "escalation": {
+      "stage": "rules_policy",
+      "reason": "policy_untrusted_only",
+      "detail": "All retrieved evidence remained untrusted."
+    },
+    "output": {
+      "model_id": "rules-r32-fixture",
+      "model_version": "1.0.0",
+      "produced_at": 1750000000,
+      "value": { "choice": { "label": "act", "probabilities": null, "confidence": 0.8 } },
+      "evidence_refs": [{ "evidence_id": "evidence-1", "tier": "untrusted" }]
+    }
+  }
+}
