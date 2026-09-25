@@ -387,8 +387,10 @@ pub async fn get_model(
     .await
     .map_err(|error| HandlerError::internal(format!("{error}")))??;
     let row = row.ok_or_else(|| HandlerError::not_found("model registry row not found"))?;
+    let row_digest = registry::row_digest(&row).map_err(HandlerError::internal)?;
     let mut response =
         serde_json::to_value(row).map_err(|error| HandlerError::internal(error.to_string()))?;
+    response["row_digest"] = serde_json::Value::String(row_digest);
     super::sanitize_value_strings(&mut response);
     Ok(Json(response))
 }
@@ -527,6 +529,67 @@ mod tests {
         response
     }
 
+    async fn detail_lifecycle_row(state: &Arc<AppState>) -> (registry::RegistryRow, String) {
+        let registered = register_reference(state).await;
+        let id = registered["id"].as_str().unwrap().to_string();
+        let version = registered["version"].as_str().unwrap().to_string();
+        let path = format!("/workflow/model-registry/{id}@{version}");
+        let (status, detail) = get_json(state, &path, Some(OP_TOKEN)).await;
+        assert_eq!(status, StatusCode::OK, "body: {detail}");
+
+        let digest = detail
+            .get("row_digest")
+            .and_then(serde_json::Value::as_str)
+            .expect("detail must expose row_digest")
+            .to_string();
+        assert_eq!(digest.len(), 64);
+        assert!(
+            digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+
+        let mut row_json = detail.clone();
+        let object = row_json
+            .as_object_mut()
+            .expect("registry detail must be an object");
+        assert!(object.remove("row_digest").is_some());
+        let row: registry::RegistryRow =
+            serde_json::from_value(row_json).expect("detail row must deserialize as RegistryRow");
+        assert_eq!(registry::row_digest(&row).unwrap(), digest);
+        (row, digest)
+    }
+
+    fn lifecycle_payload(
+        action: &str,
+        row: &registry::RegistryRow,
+        row_digest: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "action": action,
+            "id": row.id,
+            "version": row.version,
+            "row_digest": row_digest,
+            "row": row,
+        })
+    }
+
+    async fn submit_lifecycle_proposal(
+        state: &Arc<AppState>,
+        action: &str,
+        row: &registry::RegistryRow,
+        row_digest: &str,
+    ) -> (StatusCode, serde_json::Value, String) {
+        let payload_text = lifecycle_payload(action, row, row_digest).to_string();
+        let body = serde_json::json!({
+            "content": payload_text.as_str(),
+            "kind": PROP_KIND_REGISTRY_LIFECYCLE,
+        })
+        .to_string();
+        let (status, response) = post_json(state, "/ingest/proposal", body, Some(OP_TOKEN)).await;
+        (status, response, payload_text)
+    }
+
     async fn promote_reference(state: &Arc<AppState>) -> (String, String) {
         let registered = register_reference(state).await;
         let id = registered["id"].as_str().unwrap().to_string();
@@ -596,6 +659,175 @@ mod tests {
             (knowledge, vectors),
             (0, 0),
             "lifecycle approval creates no knowledge row"
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_detail_exposes_server_canonical_row_digest() {
+        let f = fixture();
+        let (row, digest) = detail_lifecycle_row(&f.state).await;
+
+        assert_eq!(digest.len(), 64);
+        assert!(
+            digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
+        assert_eq!(registry::row_digest(&row).unwrap(), digest);
+    }
+
+    #[tokio::test]
+    async fn registry_detail_row_digest_matches_lifecycle_proposal() {
+        let f = fixture();
+        let (row, digest) = detail_lifecycle_row(&f.state).await;
+        let (status, proposal, payload_text) =
+            submit_lifecycle_proposal(&f.state, "promote", &row, &digest).await;
+
+        assert_eq!(status, StatusCode::OK, "body: {proposal}");
+        assert_eq!(proposal["status"], "pending");
+        let proposal_id = proposal["id"].as_i64().unwrap();
+
+        {
+            let conn = f.state.pool.get().unwrap();
+            let pending =
+                crate::service::review::pending_page(&conn, "pending", 200, None, Some("global"))
+                    .unwrap();
+            assert_eq!(pending.len(), 1);
+            assert_eq!(pending[0].kind, PROP_KIND_REGISTRY_LIFECYCLE);
+        }
+
+        let review_digest = crate::handlers::gate::review_digest(&payload_text);
+        let (status, approved) = post_json(
+            &f.state,
+            &format!("/proposals/{proposal_id}/approve?digest={review_digest}"),
+            String::new(),
+            Some(OP_TOKEN),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "body: {approved}");
+        assert_eq!(approved["status"], "approved");
+
+        let conn = f.state.pool.get().unwrap();
+        assert_eq!(
+            registry::test_support::registry_row_status(&conn, &row.id, &row.version).unwrap(),
+            registry::STATUS_PROMOTED
+        );
+        let target = format!("registry:{}@{}", row.id, row.version);
+        assert!(registry::test_support::audit_rows_for_target(&conn, &target) >= 2);
+        assert!(crate::audit::verify_chain(&conn));
+        assert_eq!(
+            crate::workflow::state::test_support::knowledge_and_vec_counts(&conn).unwrap(),
+            (0, 0),
+            "lifecycle approval must not create knowledge or vector rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_lifecycle_proposal_creation_does_not_change_status() {
+        let f = fixture();
+        let (row, digest) = detail_lifecycle_row(&f.state).await;
+
+        let (before_status, before_counts) = {
+            let conn = f.state.pool.get().unwrap();
+            (
+                registry::test_support::registry_row_status(&conn, &row.id, &row.version).unwrap(),
+                crate::workflow::state::test_support::knowledge_and_vec_counts(&conn).unwrap(),
+            )
+        };
+        assert_eq!(before_status, registry::STATUS_CANDIDATE);
+        assert_eq!(before_counts, (0, 0));
+
+        let (status, proposal, _) =
+            submit_lifecycle_proposal(&f.state, "promote", &row, &digest).await;
+        assert_eq!(status, StatusCode::OK, "body: {proposal}");
+        assert_eq!(proposal["status"], "pending");
+
+        let conn = f.state.pool.get().unwrap();
+        assert_eq!(
+            registry::test_support::registry_row_status(&conn, &row.id, &row.version).unwrap(),
+            registry::STATUS_CANDIDATE
+        );
+        assert_eq!(
+            crate::workflow::state::test_support::knowledge_and_vec_counts(&conn).unwrap(),
+            (0, 0),
+            "lifecycle proposal creation must not create knowledge or vector rows"
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_lifecycle_approval_rechecks_the_server_issued_digest() {
+        let f = fixture();
+        let (row, digest) = detail_lifecycle_row(&f.state).await;
+        let (status, proposal, payload_text) =
+            submit_lifecycle_proposal(&f.state, "promote", &row, &digest).await;
+        assert_eq!(status, StatusCode::OK, "body: {proposal}");
+        let proposal_id = proposal["id"].as_i64().unwrap();
+
+        {
+            let conn = f.state.pool.get().unwrap();
+            registry::test_support::seed_rules_model(&conn, RULES, registry::STATUS_PROMOTED);
+        }
+
+        let review_digest = crate::handlers::gate::review_digest(&payload_text);
+        let (status, response) = post_json(
+            &f.state,
+            &format!("/proposals/{proposal_id}/approve?digest={review_digest}"),
+            String::new(),
+            Some(OP_TOKEN),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::CONFLICT, "body: {response}");
+        assert_eq!(response["error"]["code"], "registry_row_changed");
+
+        let conn = f.state.pool.get().unwrap();
+        assert_eq!(
+            registry::test_support::registry_row_status(&conn, &row.id, &row.version).unwrap(),
+            registry::STATUS_PROMOTED,
+            "the stale proposal must not transition the live row"
+        );
+        let pending =
+            crate::service::review::pending_page(&conn, "pending", 200, None, Some("global"))
+                .unwrap();
+        assert!(
+            pending.iter().any(|item| item.id == proposal_id),
+            "a stale approval must leave the proposal pending"
+        );
+        assert_eq!(
+            crate::workflow::state::test_support::knowledge_and_vec_counts(&conn).unwrap(),
+            (0, 0),
+            "a stale lifecycle approval must not create knowledge"
+        );
+    }
+
+    #[tokio::test]
+    async fn registry_lifecycle_still_refuses_nonempty_evaluation_refs() {
+        let f = fixture();
+        let (mut row, _) = detail_lifecycle_row(&f.state).await;
+        row.evaluation_refs = vec!["unsigned-record".to_string()];
+        let digest = registry::row_digest(&row).unwrap();
+
+        let (status, response, _) =
+            submit_lifecycle_proposal(&f.state, "promote", &row, &digest).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {response}");
+        assert_eq!(response["error"]["code"], "registry_payload_invalid");
+
+        let conn = f.state.pool.get().unwrap();
+        assert_eq!(
+            registry::test_support::registry_row_status(&conn, &row.id, &row.version).unwrap(),
+            registry::STATUS_CANDIDATE
+        );
+        let pending =
+            crate::service::review::pending_page(&conn, "pending", 200, None, Some("global"))
+                .unwrap();
+        assert!(
+            pending.is_empty(),
+            "nonempty evaluation_refs must not create a proposal"
+        );
+        assert_eq!(
+            crate::workflow::state::test_support::knowledge_and_vec_counts(&conn).unwrap(),
+            (0, 0),
+            "evaluation_refs refusal must not create knowledge"
         );
     }
 
@@ -714,39 +946,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn evaluation_refs_must_resolve_to_signed_records() {
+    async fn registry_registration_rejects_unknown_evaluation_refs_field() {
         let f = fixture();
-        let registered = register_reference(&f.state).await;
-        let id = registered["id"].as_str().unwrap();
-        let version = registered["version"].as_str().unwrap();
-        let mut row = {
-            let conn = f.state.pool.get().unwrap();
-            registry::row_by_ref(&conn, id, version).unwrap().unwrap()
-        };
-        row.evaluation_refs = vec!["unsigned-record".into()];
-        let digest = registry::row_digest(&row).unwrap();
-        let payload = serde_json::json!({
-            "action": "promote",
-            "id": id,
-            "version": version,
-            "row_digest": digest,
-            "row": row,
-        });
-        let (status, response) = post_json(
-            &f.state,
-            "/ingest/proposal",
-            serde_json::json!({
-                "content": payload.to_string(),
-                "kind": PROP_KIND_REGISTRY_LIFECYCLE,
-            })
-            .to_string(),
-            Some(OP_TOKEN),
-        )
-        .await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "body: {response}");
-        assert_eq!(response["error"]["code"], "registry_payload_invalid");
-
-        let (status, _) = post_json(
+        let (status, _response) = post_json(
             &f.state,
             "/workflow/model-registry/register",
             serde_json::json!({

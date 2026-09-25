@@ -225,6 +225,20 @@ compliance, release, or public-publication determination. Provider/deployer
 status, regulatory scope, retention, documentation, and jurisdiction-specific
 duties remain operator-and-counsel decisions.
 
+### Dated addendum — 2026-09-25 (R33 — registry lifecycle contract integrity)
+
+R33 records the technical controls around the existing registry row and the
+`registry_lifecycle` proposal contract. This addendum makes no legal or
+compliance claim.
+
+| Control | The R33 technical-control law |
+|---|---|
+| **ASI04 Agentic Supply Chain / LLM04** | The single-row detail response issues a server-computed `row_digest` as lowercase 64-hex SHA-256 over the canonical compact `RegistryRow` serialization. A lifecycle proposal reuses that server-issued digest and the exact current row; creation and human approval recheck both, so any drift fails closed. |
+| **ASI06 Memory & Context Poisoning** | This is the proposal-only agency boundary: the `registry_lifecycle` proposal's content is the exact serialized `{action,id,version,row_digest,row}` shape, only `promote\|retire` are legal, and creation makes no status/knowledge change. It cannot become a knowledge node or dispose itself. |
+| **ASI09 Human-Agent Trust Exploitation** | `promote` and `retire` are human-approval-only lifecycle actions. The existing human gate is the only human disposal path; no autonomous status transition is accepted. |
+| **ASI10 Rogue Agents / LLM06** | The digest is an integrity binding, not a generic signature, and does not make `evaluated` reachable. Non-empty `evaluation_refs` is refused; the registry stores no weights or evaluation contents. |
+| **LLM02 Sensitive Information Disclosure** | The lifecycle contract carries the exact registry row and digest references, never model weights or evaluation contents. |
+
 ## Part 3 — AIUC-1 crosswalk (procurement bridge)
 
 A crosswalk maps ASI01–ASI10 to the AI-Under-Contract (AIUC-1) requirements so

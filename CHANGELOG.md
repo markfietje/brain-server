@@ -17,6 +17,30 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [Unreleased] — registry lifecycle contract integrity (R33)
+
+**Release notes**
+
+### Improvements
+- **Typed registry lifecycle wire contract.** The `registry_lifecycle` proposal
+  carries the exact serialized `{action,id,version,row_digest,row}` shape. Only
+  `promote|retire` are legal; creation makes no status/knowledge change, the
+  existing human approval gate is the only lifecycle disposer, and non-empty
+  `evaluation_refs` are refused. The existing single-row registry detail
+  contract requires the server-computed lowercase 64-hex `row_digest` over
+  canonical `RegistryRow` bytes and exposes no weights or evaluation contents.
+
+### Security fixes
+- **Exact-row lifecycle integrity.** The server-issued digest is reused at
+  proposal creation and human approval, which recheck the live canonical row;
+  a changed or stale row fails closed instead of applying reviewed intent. The
+  digest is an integrity binding, not a generic signature, and does not make
+  `evaluated` reachable.
+
+### Engineering record
+- Scope: additive contract documentation only. This unreleased entry makes no
+  release, schema, package, `x-api-version`, route, or dependency change claim.
+
 ## [Unreleased] — the decision evaluation record (schema 1.32.14 "DecisionEvaluation")
 
 **Release notes**

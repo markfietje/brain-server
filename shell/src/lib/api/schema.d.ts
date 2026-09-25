@@ -6759,11 +6759,11 @@ export interface operations {
                 "application/json": {
                     content: string;
                     /**
-                     * @description `draft` is proposal-only (never becomes a knowledge node_kind). `channel/template` (Caravel) is likewise proposal-only: its content is the JSON send packet `{tenant, conversation_ref, template, body}` and approval dispatches through the channel seam — never promoted to knowledge.
+                     * @description `draft` is proposal-only (never becomes a knowledge node_kind). `channel/template` (Caravel) is likewise proposal-only: its content is the JSON send packet `{tenant, conversation_ref, template, body}` and approval dispatches through the channel seam — never promoted to knowledge. `registry_lifecycle` is proposal-only (never becomes a knowledge node_kind). Its `content` string is the exact JSON serialization of `{"action":"promote"|"retire","id":"<registry id>","version":"<registry version>","row_digest":"<64 lowercase hex>","row":{"id":"<same id>","version":"<same version>","kind":"deterministic-rules"|"learned"|"reranker","name":"<bounded name>","output_vocabulary":["choice"|"score"|"noul"],"artifact_digest":"<64 lowercase hex>"|null,"config_digest":"<64 lowercase hex>"|null,"calibration_ref":"<bounded string>"|null,"status":"candidate"|"evaluated"|"promoted"|"retired","evaluation_refs":[],"proposed_by":"<actor label>","approved_by":"<actor label>"|null,"created_at":0,"updated_at":0}}`. Copy `row` and `row_digest` unchanged from the single-row `GET /workflow/model-registry/{model_ref}` response. Only `promote` and `retire` are legal. Creation validates the live row, digest, and legal transition but does not dispose the proposal, create knowledge, or change status; only the existing human approval gate disposes it. Non-empty `evaluation_refs` are refused. This is not a generic signature record and does not make `evaluated` reachable.
                      * @default fact
                      * @enum {string}
                      */
-                    kind?: "fact" | "procedure" | "step" | "decision" | "episodic" | "entitlement" | "draft" | "channel/template";
+                    kind?: "fact" | "procedure" | "step" | "decision" | "episodic" | "entitlement" | "draft" | "channel/template" | "registry_lifecycle";
                     source?: string;
                     /**
                      * @description `channel` stamps the proposal's source as `channel-capture` — the review-queue badge the operator approves against; the promoted row carries the origin.
@@ -14015,6 +14015,8 @@ export interface operations {
                         approved_by?: string | null;
                         created_at: number;
                         updated_at: number;
+                        /** @description Server-computed SHA-256 over the canonical compact RegistryRow bytes; this is the exact digest required by a registry_lifecycle proposal. */
+                        row_digest: string;
                     };
                 };
             };

@@ -45,8 +45,10 @@ default origin only — the pin itself is asserted by the spec against
 `pnpm gen:api` is the only command that intentionally rewrites the committed
 `src/lib/api/schema.d.ts`. `pnpm test` is non-mutating; CI performs a temporary
 regeneration and byte-compares the result. The kernel contract remains
-`openapi.yaml`, and this round does not repair the separate registry-lifecycle
-proposal wire gap.
+`openapi.yaml`; the registry-lifecycle proposal wire gap is now closed by the
+typed `{action,id,version,row_digest,row}` contract and the required
+server-issued `row_digest` on the single-row detail response. M6-S2 remains
+unbuilt.
 
 ## CI and supply-chain boundary
 
