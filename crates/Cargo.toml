@@ -19,6 +19,7 @@ members = [
     "brain-aftersales-core",
     "brain-consensus-core",
     "brain-executor-core",
+    "brain-delivery-core",
     "brain-troubleshoot-core",
     "legal-rules-db",
 ]
