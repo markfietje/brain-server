@@ -4,6 +4,21 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.11] — 2026-09-25
+
+**Diagnostic and type-safety repairs** — test/runtime contract clarity and
+compiler coverage, with no dependency changes:
+
+- `tsconfig.json` now includes the plugin test tree, so strict diagnostics
+  cover both production and test code instead of excluding tests.
+- Added ambient declarations for the OpenClaw plugin SDK, TypeBox, Node
+  built-ins, and Vitest APIs used by the plugin; the local diagnostic lane no
+  longer depends on editor-only inference.
+- Tightened procedural-tool step inference and the registration/test mocks
+  with explicit structural types and narrowing helpers; removed unsafe
+  non-null assertions from the affected test assertions.
+- No runtime dependency or wire-contract changes.
+
 ## [0.6.10] — 2026-09-14
 
 **Uniformity release** (patch: hygiene fixes) — the two seams where

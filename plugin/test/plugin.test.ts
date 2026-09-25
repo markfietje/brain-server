@@ -35,21 +35,75 @@ import { MAX_HIT_CHARS } from "../src/tools.js";
  * can invoke it directly.
  */
 type HookHandler = (...args: unknown[]) => unknown;
+type MockService = {
+  id: string;
+  start: (() => unknown) | undefined;
+  stop: (() => void) | undefined;
+};
+type MockRuntime =
+  | { config: { current: (() => unknown) | undefined } | undefined }
+  | Record<string, never>;
+type HookOptions = { timeoutMs: number | undefined };
+type ToolOptions = { name: string | undefined };
+type HookRegistrationArgs = [
+  name: string,
+  handler: HookHandler,
+  ...options: [] | [HookOptions],
+];
+type ToolRegistrationArgs = [tool: unknown, ...options: [] | [ToolOptions]];
+type MockTool = {
+  name?: string;
+  execute?: (toolCallId: string, params: unknown) => unknown;
+};
+type RegisteredTool = {
+  execute: (toolCallId: string, params: unknown) => unknown;
+};
+type MemoryCapability = { promptBuilder: () => ReadonlyArray<unknown> };
+type CorpusResult = {
+  corpus: string;
+  snippet: string;
+  id: string;
+};
+type CorpusSupplement = {
+  search(p: {
+    query: string;
+    maxResults?: number;
+    agentId?: string;
+    sandboxed?: boolean;
+  }): Promise<ReadonlyArray<CorpusResult>>;
+};
 type MockApi = {
   pluginConfig: unknown;
-  runtime: { config?: { current?: unknown } };
+  runtime: MockRuntime;
   logger: {
-    info?: (...args: unknown[]) => void;
-    warn?: (...args: unknown[]) => void;
-    error?: (...args: unknown[]) => void;
-    debug?: (...args: unknown[]) => void;
+    info: (message: string) => void;
+    warn: (message: string) => void;
+    error: (message: string) => void;
+    debug: (message: string) => void;
   };
-  on: (name: string, handler: HookHandler, opts?: unknown) => void;
-  registerTool: (tool: unknown, opts?: { name?: string }) => void;
-  registerService: (s: { id: string; start?: () => unknown; stop?: () => void }) => void;
-  registerMemoryCapability?: (cap: { promptBuilder: () => unknown[] }) => void;
-  registerMemoryCorpusSupplement?: (supplement: unknown) => void;
+  on: (...args: HookRegistrationArgs) => void;
+  registerTool: (...args: ToolRegistrationArgs) => void;
+  registerService: (service: MockService) => void;
+  registerMemoryCapability: (capability: MemoryCapability) => void;
+  registerMemoryCorpusSupplement: (supplement: CorpusSupplement) => void;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function objectProperty(value: unknown, property: string): unknown {
+  return isRecord(value) ? value[property] : undefined;
+}
+
+function stringProperty(value: unknown, property: string): string | undefined {
+  const propertyValue = objectProperty(value, property);
+  return typeof propertyValue === "string" ? propertyValue : undefined;
+}
+
+function isToolExecute(value: unknown): value is (toolCallId: string, params: unknown) => unknown {
+  return typeof value === "function";
+}
 
 function mockResponse(body: unknown, init: { status?: number } = {}) {
   const status = init.status ?? 200;
@@ -65,25 +119,42 @@ function mockResponse(body: unknown, init: { status?: number } = {}) {
 /** Register the plugin with a recording mock API; return captured registrations. */
 function registerPlugin(pluginConfig: unknown) {
   const hooks = new Map<string, HookHandler>();
-  const tools = new Map<string, { execute: (...args: unknown[]) => unknown }>();
-  const services: Array<{ id: string; start?: () => unknown; stop?: () => void }> = [];
-  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  const tools = new Map<string, RegisteredTool>();
+  const services: MockService[] = [];
+  const logger = {
+    info: vi.fn<[message: string], void>(),
+    warn: vi.fn<[message: string], void>(),
+    error: vi.fn<[message: string], void>(),
+    debug: vi.fn<[message: string], void>(),
+  };
 
   const api: MockApi = {
     pluginConfig,
     runtime: {},
     logger,
-    on: vi.fn((name: string, handler: HookHandler) => hooks.set(name, handler)),
-    registerTool: vi.fn((tool, opts) => {
-      const t = tool as { name?: string; execute?: (...a: unknown[]) => unknown };
-      const name = opts?.name ?? t.name;
-      if (name && t.execute) {
-        tools.set(name, t as { execute: (...a: unknown[]) => unknown });
+    on: vi.fn<HookRegistrationArgs, void>((...args: HookRegistrationArgs) => {
+      const [name, handler] = args;
+      hooks.set(name, handler);
+    }),
+    registerTool: vi.fn<ToolRegistrationArgs, void>((...args: ToolRegistrationArgs) => {
+      const [tool, opts] = args;
+      let name: string | undefined;
+      if (opts !== undefined) {
+        name = opts.name;
+      }
+      if (name === undefined) {
+        name = stringProperty(tool, "name");
+      }
+      const toolExecution = objectProperty(tool, "execute");
+      if (typeof name === "string" && isToolExecute(toolExecution)) {
+        tools.set(name, { execute: toolExecution });
       }
     }),
-    registerService: vi.fn((s) => services.push(s)),
-    registerMemoryCapability: vi.fn(),
-    registerMemoryCorpusSupplement: vi.fn(),
+    registerService: vi.fn<[service: MockService], void>((service) => {
+      services.push(service);
+    }),
+    registerMemoryCapability: vi.fn<[capability: MemoryCapability], void>(),
+    registerMemoryCorpusSupplement: vi.fn<[supplement: CorpusSupplement], void>(),
   };
 
   plugin.register(api as unknown as OpenClawPluginApi);
@@ -131,7 +202,7 @@ describe("plugin registration", () => {
   });
 
   test("registers a static memory capability (prompt-cached system guidance)", () => {
-    const registerMemoryCapability = vi.fn();
+    const registerMemoryCapability = vi.fn<[capability: MemoryCapability], void>();
     const api = {
       pluginConfig: { agents: ["main"] },
       runtime: {},
@@ -144,9 +215,9 @@ describe("plugin registration", () => {
     } as unknown as MockApi;
     plugin.register(api as unknown as OpenClawPluginApi);
     expect(registerMemoryCapability).toHaveBeenCalledTimes(1);
-    const cap = registerMemoryCapability.mock.calls[0]?.[0] as { promptBuilder: () => unknown[] };
+    const cap = registerMemoryCapability.mock.calls[0]?.[0];
     // Static guidance must mention treating memories as untrusted (LLM01/LLM02).
-    const out = cap.promptBuilder();
+    const out = cap?.promptBuilder() ?? [];
     expect(String(out)).toContain("untrusted");
   });
 });
@@ -276,8 +347,8 @@ describe("live config — re-reads the plugin slice from the runtime snapshot", 
   /** Register with a live runtime config snapshot the plugin can re-read each turn. */
   function registerWithLiveConfig(pluginConfig: unknown, liveEntryConfig: unknown) {
     const hooks = new Map<string, HookHandler>();
-    const tools = new Map<string, { execute: (...args: unknown[]) => unknown }>();
-    const services: Array<{ id: string; start?: () => unknown; stop?: () => void }> = [];
+    const tools = new Map<string, RegisteredTool>();
+    const services: MockService[] = [];
     const api: MockApi = {
       pluginConfig,
       runtime: {
@@ -287,18 +358,35 @@ describe("live config — re-reads the plugin slice from the runtime snapshot", 
           }),
         },
       },
-      logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-      on: vi.fn((name: string, handler: HookHandler) => hooks.set(name, handler)),
-      registerTool: vi.fn((tool, opts) => {
-        const t = tool as { name?: string; execute?: (...a: unknown[]) => unknown };
-        const name = opts?.name ?? t.name;
-        if (name && t.execute) {
-          tools.set(name, t as { execute: (...a: unknown[]) => unknown });
+      logger: {
+        info: vi.fn<[message: string], void>(),
+        warn: vi.fn<[message: string], void>(),
+        error: vi.fn<[message: string], void>(),
+        debug: vi.fn<[message: string], void>(),
+      },
+      on: vi.fn<HookRegistrationArgs, void>((...args: HookRegistrationArgs) => {
+        const [name, handler] = args;
+        hooks.set(name, handler);
+      }),
+      registerTool: vi.fn<ToolRegistrationArgs, void>((...args: ToolRegistrationArgs) => {
+        const [tool, opts] = args;
+        let name: string | undefined;
+        if (opts !== undefined) {
+          name = opts.name;
+        }
+        if (name === undefined) {
+          name = stringProperty(tool, "name");
+        }
+        const toolExecution = objectProperty(tool, "execute");
+        if (typeof name === "string" && isToolExecute(toolExecution)) {
+          tools.set(name, { execute: toolExecution });
         }
       }),
-      registerService: vi.fn((s) => services.push(s)),
-      registerMemoryCapability: vi.fn(),
-      registerMemoryCorpusSupplement: vi.fn(),
+      registerService: vi.fn<[service: MockService], void>((service) => {
+        services.push(service);
+      }),
+      registerMemoryCapability: vi.fn<[capability: MemoryCapability], void>(),
+      registerMemoryCorpusSupplement: vi.fn<[supplement: CorpusSupplement], void>(),
     };
     plugin.register(api as unknown as OpenClawPluginApi);
     return { hooks, tools, services };
@@ -728,16 +816,7 @@ describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus su
   });
 
   test("registers a memory corpus supplement whose search maps recall hits", async () => {
-    let supplement:
-      | {
-          search(p: {
-            query: string;
-            maxResults?: number;
-            agentId?: string;
-            sandboxed?: boolean;
-          }): Promise<unknown[]>;
-        }
-      | undefined;
+    let supplement: CorpusSupplement | undefined;
     const api = {
       pluginConfig: { agents: ["main"] },
       runtime: {},
@@ -746,23 +825,21 @@ describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus su
       registerTool: vi.fn(),
       registerService: vi.fn(),
       registerMemoryCapability: vi.fn(),
-      registerMemoryCorpusSupplement: vi.fn((s) => {
-        supplement = s;
+      registerMemoryCorpusSupplement: vi.fn<[supplement: CorpusSupplement], void>((value) => {
+        supplement = value;
       }),
     } as unknown as MockApi;
     plugin.register(api as unknown as OpenClawPluginApi);
     expect(api.registerMemoryCorpusSupplement).toHaveBeenCalledTimes(1);
-    expect(supplement).toBeDefined();
+    if (supplement === undefined) {
+      throw new Error("memory corpus supplement was not registered");
+    }
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse({
         hits: [{ id: 9, content: "a fact", title: "t", domain: "health", score: 0.7 }],
       }),
     );
-    const out = (await supplement!.search({ query: "fact", agentId: "main" })) as Array<{
-      corpus: string;
-      snippet: string;
-      id: string;
-    }>;
+    const out = await supplement.search({ query: "fact", agentId: "main" });
     expect(out.length).toBe(1);
     expect(out[0]?.corpus).toBe("brain-server");
     expect(out[0]?.id).toBe("9");
@@ -770,9 +847,7 @@ describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus su
   });
 
   test("corpus supplement search honors the agent allowlist (empty => none)", async () => {
-    let supplement:
-      | { search(p: { query: string; agentId?: string }): Promise<unknown[]> }
-      | undefined;
+    let supplement: CorpusSupplement | undefined;
     const api = {
       // No agents opted in => gate denies everyone.
       pluginConfig: { agents: [] },
@@ -782,13 +857,16 @@ describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus su
       registerTool: vi.fn(),
       registerService: vi.fn(),
       registerMemoryCapability: vi.fn(),
-      registerMemoryCorpusSupplement: vi.fn((s) => {
-        supplement = s;
+      registerMemoryCorpusSupplement: vi.fn<[supplement: CorpusSupplement], void>((value) => {
+        supplement = value;
       }),
     } as unknown as MockApi;
     plugin.register(api as unknown as OpenClawPluginApi);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
-    const out = await supplement!.search({ query: "anything", agentId: "main" });
+    if (supplement === undefined) {
+      throw new Error("memory corpus supplement was not registered");
+    }
+    const out = await supplement.search({ query: "anything", agentId: "main" });
     expect(out).toEqual([]);
     expect(fetchMock).not.toHaveBeenCalled();
   });

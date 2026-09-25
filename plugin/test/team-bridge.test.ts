@@ -39,12 +39,17 @@ function mockResponse(body: unknown, init: { status?: number } = {}) {
 
 function registerPlugin(pluginConfig: unknown) {
   const hooks = new Map<string, HookHandler>();
-  const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+  const logger = {
+    info: vi.fn<[message: string], void>(),
+    warn: vi.fn<[message: string], void>(),
+    error: vi.fn<[message: string], void>(),
+    debug: vi.fn<[message: string], void>(),
+  };
   const api = {
     pluginConfig,
     runtime: {},
     logger,
-    on: vi.fn((name: string, handler: HookHandler) => {
+    on: vi.fn<[name: string, handler: HookHandler], void>((name, handler) => {
       // one handler per hook — house rule; a second registration shadows and
       // MUST fail loudly in tests instead of silently in production.
       if (hooks.has(name)) {

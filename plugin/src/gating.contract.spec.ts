@@ -1,26 +1,8 @@
 import { describe, expect, test } from "vitest";
-import { DEFAULTS } from "./config.js";
-import type { ResolvedBrainConfig } from "./config.js";
+import { resolveConfig } from "./config.js";
 import { deriveChatType, isRecallAllowed } from "./gating.js";
 
-const baseCfg = (): ResolvedBrainConfig => ({
-  enabled: true,
-  baseUrl: DEFAULTS.baseUrl,
-  agents: [],
-  allowedChatTypes: [...DEFAULTS.allowedChatTypes],
-  allowedChatIds: [],
-  deniedChatIds: [],
-  autoRecall: true,
-  autoCapture: false,
-  captureMode: DEFAULTS.captureMode,
-  strictDomain: false,
-  defaultDomain: DEFAULTS.defaultDomain,
-  autoRecallTopK: DEFAULTS.autoRecallTopK,
-  autoRecallTimeoutMs: DEFAULTS.autoRecallTimeoutMs,
-  requestTimeoutMs: DEFAULTS.requestTimeoutMs,
-  minQueryLength: DEFAULTS.minQueryLength,
-  recallMaxChars: DEFAULTS.recallMaxChars,
-});
+const baseCfg = () => resolveConfig({});
 
 describe("isRecallAllowed", () => {
   test("disabled plugin => blocked", () => {

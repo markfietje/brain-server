@@ -302,6 +302,7 @@ export function registerProceduralTools(
     domain: Type.Optional(Type.String()),
   });
   type MemoryProcedureStoreParams = Partial<Static<typeof memoryProcedureStoreParamsSchema>>;
+  type MemoryProcedureStep = NonNullable<MemoryProcedureStoreParams["steps"]>[number];
 
   api.registerTool(
     {
@@ -328,7 +329,7 @@ export function registerProceduralTools(
             content,
             // No conditional spread: isDecision defaults to false and the
             // server treats missing/false identically (#[serde(default)]).
-            steps: steps.map((s) => ({
+            steps: steps.map((s: MemoryProcedureStep) => ({
               title: (s.title ?? "").trim(),
               content: (s.content ?? "").trim(),
               isDecision: s.isDecision === true,
