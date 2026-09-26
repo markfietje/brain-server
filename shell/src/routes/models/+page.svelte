@@ -430,7 +430,7 @@
 									</td>
 									<td class="px-3 py-2 font-mono">{show(row.version)}</td>
 									<td class="px-3 py-2">{kindLabel(row.kind)}</td>
-									<td class="max-w-[18rem] break-words px-3 py-2">{show(row.name)}</td>
+									<td class="max-w-72 wrap-break-word px-3 py-2">{show(row.name)}</td>
 									<!-- The listing carries the artifact digest as a PRESENCE
 									     BOOLEAN only; its value lives on the single-row read. -->
 									<td class="px-3 py-2 text-xs" data-testid="models-list-artifact">
@@ -438,7 +438,7 @@
 											? $_('models.digest.presence.present')
 											: $_('models.digest.presence.absent')}
 									</td>
-									<td class="max-w-[12rem] break-all px-3 py-2 font-mono text-xs">
+									<td class="max-w-48 break-all px-3 py-2 font-mono text-xs">
 										{show(row.configDigest)}
 									</td>
 									<td class="px-3 py-2 font-mono text-xs">{show(row.proposedBy)}</td>
