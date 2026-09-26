@@ -7854,6 +7854,15 @@ paths:
         and a rewind are both refusals, and a lost CAS refuses the whole pass
         rather than overwriting the winner. The run closes `completed` only at
         the terminal phase, inside the engine's existing closed status set.
+        An optional `artifact` rides the pass: a TYPED artifact the phase
+        produces, filed in the SAME transaction as a PENDING proposal with no
+        disposition, so a reviewable artifact can never cite a pass that did not
+        commit. The executor proposes; only the gate disposes. On a `build` pass
+        the artifact's `quality_gate` is evaluated first and an artifact whose
+        evidence is not a live surface is refused before anything is written.
+        The response's `proposal_id` is the proposal the artifact filed, or `0`
+        when the pass carried none. The digest is derived server-side — there is
+        no digest field to supply.
       operationId: advanceDeliveryRun
       security: [{ bearerAuth: [] }]
       requestBody:
@@ -7874,6 +7883,8 @@ paths:
                   minItems: 0
                   maxItems: 32
                   items: { type: string, maxLength: 256 }
+                artifact:
+                  $ref: "#/components/schemas/DeliveryArtifact"
       responses:
         "200":
           description: Phase pass committed
@@ -7881,11 +7892,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DeliveryRunAdvanced"
-        "400": { description: delivery_unknown_vocabulary }
+        "400":
+          description: delivery_unknown_vocabulary | artifact_screened_reject | delivery_input_too_long | delivery_input_too_many
         "401": { description: Not authenticated }
         "403": { description: Not authorized (Write on the run's domain plus the `workflow` role) }
         "404": { description: Delivery run not found (probe-blind; unaudited) }
-        "409": { description: delivery_gate_stale_revision | delivery_illegal_phase_transition | delivery_terminal_phase }
+        "409":
+          description: delivery_gate_stale_revision | delivery_illegal_phase_transition | delivery_terminal_phase | delivery_quality_gate_refused | artifact_screened_quarantine
   /workflow/delivery/runs/{id}/answer:
     post:
       summary: Answer a delivery run's pending question (Write plus the `workflow` role)
@@ -8202,7 +8215,7 @@ components:
     DeliveryRunAdvanced:
       type: object
       additionalProperties: false
-      required: [run_id, phase, tier, trace_mode, trace_id, state_revision, step_id]
+      required: [run_id, phase, tier, trace_mode, trace_id, state_revision, step_id, proposal_id]
       properties:
         run_id: { type: integer, format: int64, minimum: 1 }
         phase: { type: string, enum: [scope, design, build, release, operate, done] }
@@ -8211,6 +8224,32 @@ components:
         trace_id: { type: string, pattern: "^trc_[0-9a-f]{32}$" }
         state_revision: { type: integer, format: int64, minimum: 0 }
         step_id: { type: integer, format: int64, minimum: 1 }
+        proposal_id:
+          type: integer
+          format: int64
+          minimum: 0
+          description: The pending proposal the typed artifact filed, or 0 when the pass carried no artifact
+    DeliveryArtifact:
+      type: object
+      additionalProperties: false
+      required: [id, content]
+      description: >
+        The typed artifact a phase pass carries. Its SHA-256 is derived
+        server-side from `content` — there is no digest field, so a client
+        cannot name the digest of an artifact the server did not derive. The
+        content is screened at this boundary (reject 400, quarantine 409) and
+        stored verbatim, so the approval digest is computed over one shape.
+      properties:
+        id: { type: string, minLength: 1, maxLength: 128 }
+        content: { type: string, minLength: 1, maxLength: 8000 }
+        quality_gate:
+          type: string
+          maxLength: 8000
+          description: >
+            The executor's checkpoint gate as JSON, evaluated by the shipped
+            validator on a `build` pass. Consulted only when the pass targets
+            `build`; carried and ignored on every other phase. Parsed as
+            structured data and never rendered.
     DeliveryRunAnswered:
       type: object
       additionalProperties: false

@@ -73,8 +73,13 @@ const ARTIFACT_PROPOSAL_KIND: &str = "delivery/artifact";
 /// narrative"). It is NOT the reserved `control:` family, so these rows are
 /// visible to `replay` and to the context projection; that visibility is
 /// intended, because the narrative is what a replaying agent reads.
+///
+/// There is deliberately NO `ddl_artifact_refused` kind. A gate refusal is
+/// raised BEFORE the transaction writes anything, so it leaves no residue to
+/// narrate — the refusal is the error, and the fail-closed audit of the
+/// *passing* transaction is the evidence. Naming a kind nothing can emit would
+/// be the same validated-but-dropped vocabulary the executor core just shed.
 pub(crate) const DDL_ARTIFACT_KIND: &str = "ddl_artifact";
-pub(crate) const DDL_ARTIFACT_REFUSED_KIND: &str = "ddl_artifact_refused";
 
 /// The typed artifact the phase pass may carry. A REUSED shape, not a new
 /// type: [`Self::typed`] builds the shipped
@@ -2098,17 +2103,16 @@ mod tests {
         )
         .unwrap();
 
-        for kind in [DDL_ARTIFACT_KIND, DDL_ARTIFACT_REFUSED_KIND] {
-            assert!(!kind.is_empty());
-            assert!(
-                !kind.starts_with("control:"),
-                "the control: family stays reserved: {kind}"
-            );
-            assert!(
-                kind.starts_with("ddl_"),
-                "the family prefix is ddl_: {kind}"
-            );
-        }
+        let kind = DDL_ARTIFACT_KIND;
+        assert!(!kind.is_empty());
+        assert!(
+            !kind.starts_with("control:"),
+            "the control: family stays reserved: {kind}"
+        );
+        assert!(
+            kind.starts_with("ddl_"),
+            "the family prefix is ddl_: {kind}"
+        );
 
         // The pass really appended the narrative row, and replay sees it.
         let replayed = crate::workflow::session_log::replay(

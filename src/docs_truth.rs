@@ -211,6 +211,106 @@ mod pins {
         }
     }
 
+    /// The delivery phase pass's WIRE contract, pinned field by field.
+    ///
+    /// The whole delivery battery went green while `openapi.yaml` described a
+    /// route that no longer existed: the advance request body is
+    /// `additionalProperties: false` and did not list the `artifact` field the
+    /// handler accepts, and the `DeliveryRunAdvanced` response schema is
+    /// `additionalProperties: false` and did not list the `proposal_id` the
+    /// server returns on EVERY success. Spec-conformant clients rejected the
+    /// response; strict validators rejected the body.
+    ///
+    /// It stayed green because the existing route guards are **path-level only** —
+    /// `test_openapi_covers_routes` proves every path is documented, never that
+    /// a documented path's FIELDS match the handler. Nothing in the repository
+    /// compared a Rust response struct to its schema. This is that comparison,
+    /// scoped to the one route this round changed.
+    #[test]
+    fn delivery_advance_wire_schema_matches_the_handler() {
+        let spec = doc("openapi.yaml");
+
+        // The response schema: every field the Rust struct serializes must be
+        // listed, and `additionalProperties: false` means a missing one is a
+        // hard contract violation rather than a nicety.
+        let start = spec
+            .find("    DeliveryRunAdvanced:")
+            .unwrap_or_else(|| panic!("openapi.yaml lost the DeliveryRunAdvanced schema"));
+        let schema = &spec[start..];
+        let end = schema.find("\n    DeliveryRun").unwrap_or(schema.len());
+        let schema = &schema[..end];
+        assert!(
+            schema.contains("additionalProperties: false"),
+            "anti-vacuity: the response must still be closed, or this pin is moot"
+        );
+        // Collect the schema's ACTUAL property keys, by INDENT: the keys sit at
+        // 8 spaces and their nested values (`type:`, `description:`) at 10+. A
+        // `contains("{field}:")` substring test is vacuous — renaming the field
+        // to `xproposal_id` satisfies it — which is the same self-matching
+        // failure the crate-root `forbid` scan had.
+        let declared: Vec<&str> = schema
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with("properties:"))
+            .skip(1)
+            .take_while(|l| l.starts_with("        ") || l.trim().is_empty())
+            .filter(|l| l.starts_with("        ") && !l.starts_with("          "))
+            .filter_map(|l| l.get(8..)?.split(':').next())
+            .filter(|k| !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+            .collect();
+        assert!(
+            declared.len() >= 8,
+            "the response property scan found only {} keys ({declared:?}) — the \
+             scanner or the schema changed shape",
+            declared.len()
+        );
+        for field in [
+            "run_id",
+            "phase",
+            "tier",
+            "trace_mode",
+            "trace_id",
+            "state_revision",
+            "step_id",
+            "proposal_id",
+        ] {
+            assert!(
+                declared.contains(&field),
+                "the advance response schema omits `{field}` (declared: {declared:?}) \
+                 — with additionalProperties:false a client that trusts the spec \
+                 rejects the real response. Add the field in the same commit as the \
+                 change."
+            );
+        }
+
+        // The request body: the advance path's schema must carry `artifact`.
+        let path = spec
+            .find("  /workflow/delivery/runs/{id}/advance:")
+            .unwrap_or_else(|| panic!("openapi.yaml lost the delivery advance path"));
+        let block = &spec[path..];
+        let end = block.find("\n  /workflow/").unwrap_or(block.len());
+        let block = &block[..end];
+        assert!(
+            block.contains("artifact:"),
+            "the advance request body omits `artifact` — with \
+             additionalProperties:false a client that trusts the spec cannot send \
+             the typed artifact the handler accepts"
+        );
+        assert!(
+            block.contains("#/components/schemas/DeliveryArtifact"),
+            "the advance request must $ref the DeliveryArtifact schema"
+        );
+        assert!(
+            spec.contains("    DeliveryArtifact:"),
+            "the advance request $refs a DeliveryArtifact schema that openapi.yaml \
+             does not define — a dangling ref is not a contract"
+        );
+        assert!(
+            block.contains("delivery_quality_gate_refused"),
+            "the advance 409 list must carry the checkpoint-gate refusal — a client \
+             cannot handle an error the spec does not name"
+        );
+    }
+
     /// The AI Act DEPLOYER horizons live in docs and are pinned nowhere in code
     /// — `reg_watch` holds the Art 50 marking clock and the general application
     /// clock, and its own comment says the deployer horizons are "tracked in

@@ -24,8 +24,8 @@ been run, it is marked **pending** rather than asserted.
 > repository, so `scripts/release.sh` can never be satisfied and the gate was
 > bypassed by explicit operator decision, not skipped by accident. Nothing here
 > claims the release passed CI — see "The CI gate was not run". The full local
-> battery did pass: 1926 lib tests + all integration lanes, clippy `-D warnings`
-> on four shapes, fmt on two targets, lipstyk-gate with zero diagnostics, eight
+> battery did pass: **2318** tests across all lanes, clippy `-D warnings` on four
+> shapes, fmt on two targets, lipstyk-gate with zero diagnostics, eight
 > `cargo audit`s, `cargo machete`, `env-truth`, `badges --selfcheck`, and
 > `repo-brief` all green.
 
@@ -69,11 +69,48 @@ been run, it is marked **pending** rather than asserted.
 ### Engineering record
 
 **The round.** R39 wires the D2/D3 engines into the delivery run lifecycle and
-lands the per-phase typed-artifact proposal seam. It adds **no route, no table,
-no schema stamp, and no migration** — `src/migration.rs`,
+lands the per-phase typed-artifact proposal seam. It adds **no new route, no
+table, no schema stamp, and no migration** — `src/migration.rs`,
 `src/storage_layout.rs`, and `src/spire_inventory.rs` are byte-untouched and
-`LATEST_KNOWN_SCHEMA` stays `1.32.15`. The seam rides the existing
+`LATEST_KNOWN_SCHEMA` stays `1.32.15`. The seam rides the **existing**
 `POST /workflow/delivery/runs/{id}/advance`.
+
+**The route's CONTRACT moved, and that is disclosed rather than claimed away.**
+No path was added or removed — the composed chain still registers 234 route
+sites — but the advance route gained an optional `artifact` request field and
+the response gained `proposal_id`, and both `openapi.yaml` schemas are
+`additionalProperties: false`. Leaving the spec frozen would have made it a
+**false contract in both directions**: a spec-conformant client would reject
+every real response, and a strict request validator would reject a valid body.
+`openapi.yaml` therefore ships in this release, adding the `DeliveryArtifact`
+component, the `artifact` `$ref`, `proposal_id`, and the two new error codes.
+`x-api-version` stays at `1.23.0` — that stamp tracks **breaking** wire
+changes, and it has not moved since v1.20.1 (the previous release added four
+routes without moving it either).
+
+**That break was invisible to the whole battery, and the pin that now catches
+it says why.** The existing route guards are **path-level only** —
+It stayed green because the existing route guards are **path-level only** —
+`test_openapi_covers_routes` proves every path is documented, never that a
+documented path's FIELDS match the handler. Nothing in the repository compared
+a Rust response struct to its schema, so 2317 green tests could not see a spec
+that no longer described the server. `delivery_advance_wire_schema_matches_the_handler`
+is that comparison, scoped to the route this round changed: it parses the
+response schema's property keys **by indentation** (a substring test is vacuous —
+renaming the field to `xproposal_id` satisfies `contains("proposal_id:")`) and
+asserts exact membership, then checks the request `$ref`, the component's
+existence, and the 409 vocabulary.
+
+**Writing that pin surfaced a second defect, in a guard I did not know was
+load-bearing.** My first `openapi.yaml` edit put a blank line inside the advance
+path's folded description. `test_openapi_covers_routes` scans path keys with a
+line scanner that treats a blank line as the end of the `paths:` block — so my
+blank line silently truncated the scan and the guard reported **five** routes
+missing, including three model-registry routes I never touched. The YAML was
+valid; the *scanner* was the fragile thing. The fix was to follow the file's
+existing convention (no blank lines inside a path block) rather than to weaken
+the guard, and it is recorded here because the trap is still armed for the next
+person who adds prose to a spec path.
 
 **The typed artifact is a reused shape, not an invention.** `DeliveryArtifact`
 projects onto the shipped `brain_consensus_core::Artifact { id, content, hash }`,
@@ -139,16 +176,18 @@ declaration is still true and **the doc was left alone**. The design owner's
 "harness consumption" clause is therefore **deferred**, with the reason.
 
 **`docs/engine-sdk.md` was rot in four places, and is now machine-checked.** The
-file had no reader anywhere in the repository. `brain-care-core` (80 lines, 1
-test) was listed Filled beside `legal-rules-db` (1217 lines, 11 tests) listed as
-a Scaffold; `brain-engine-sdk` — the file's own subject — was not listed at all;
-and `brain-delivery-core` was described as *"ungated: no callers yet"*, which
-the previous release made **false** by wiring it. The new
+file had no **machine** reader anywhere in the repository. `brain-care-core`
+(80 lines, 1 test) was listed Filled beside `legal-rules-db` (1217 lines, 11
+tests) listed as a Scaffold — the smallest "Filled" crate is a **fifteenth** the
+size of the largest "Scaffold" one — `brain-engine-sdk` — the file's own
+subject, 13,452 lines and 192 tests — was not listed at all; and
+`brain-delivery-core` was described as *"ungated: no callers yet"*, which the
+previous release made **false** by wiring it. The new
 `engine_sdk_crate_map_is_accurate` pin deliberately does **not** compare line
-counts — size is a bad proxy, and the smallest "Filled" crate is a third the
-size of the smallest "Scaffold" one. It checks the two things that were actually
-false: every named crate exists on disk and the SDK is listed, and a crate the
-server actually calls is not classified as a Scaffold.
+counts — size is a bad proxy, and those two numbers are exactly why. It checks
+the two things that were actually false: every named crate exists on disk and
+the SDK is listed, and a crate the server actually calls is not classified as a
+Scaffold.
 
 **A compliance pin that landed green — which is the finding.** The execution
 plan for this round asserted a "100%-verifiable defect": that the repo carried
@@ -183,22 +222,49 @@ and `yanked` notices in trees this release does not touch, and the root lockfile
 — the only one that moved — reports **zero** advisories.
 
 **Tests.** RED-first with recorded RED text and exit codes, and every guard
-red-proofed by deliberately breaking the thing it guards. Twelve new pins
-(7 kernel, 2 crate, 2 docs-truth, plus red-proof coverage) and two existing
-tests reused rather than re-authored, as the plan's own list duplicated three
-executor-core tests that already existed. `CRATE_TEST_FLOOR` needs **no** bump:
-1,568 pinned against **2,115** measured, so the round's growth is absorbed.
+red-proofed by deliberately breaking the thing it guards. **Nineteen** new tests
+(8 in the delivery core, 8 across the two engine crates, 3 in `docs_truth`),
+plus **three** existing executor-core tests reused rather than re-authored — the
+plan's own list duplicated `quality_gate_requires_live_surface_evidence`,
+`big_scope_mandates_delegation` and the nested unknown-keys test, and the plan
+was right that the **top-level** unknown-key path was the genuinely uncovered
+one. `CRATE_TEST_FLOOR` needs **no** bump: 1,568 pinned against **2,115**
+measured, so the round's growth is absorbed.
+
+**Two counts this record originally got wrong, corrected here.** The
+`delivery.rs` suite went **12 → 20**, not "15 → 22" — the earlier figure counted
+neither the pre-change total nor the delta correctly. And the pin count was
+understated as "twelve (7 kernel, 2 crate, 2 docs-truth)", whose own breakdown
+did not sum to twelve. The three figures a reader is most likely to re-derive
+mean different things and are stated with their units: **2,115** is a static
+`#[test]` needle over `src` + `tests` (what `CRATE_TEST_FLOOR` measures, and it
+excludes `#[tokio::test]`), **1,927** is the lib target under default features,
+and **2,318** is the `badges.sh` total across every lane — that last one is what
+the README badge carries.
 
 **Ceilings, stated honestly.** The `ddl_*` narrative row carries the digest, the
 ids, and the gate flag — never the artifact body, which is the proposal's job.
-`model_ref` stays `None`: writing one would pre-empt the digest-pinned
-model-citation law the attestation round pins. Budgets are still stored and
-still unenforced, and `blast_radius` is still referenced by no code line. The
-`forbid(unsafe_code)` attribute now makes the two engine cores *stricter* than
-the four that already carried `deny`, which is deliberate and disclosed rather
-than made uniform in a wider diff than this round's scope. A client's artifact
-body is screened but its `quality_gate` JSON is **not** — the gate is parsed as
-structured data by the engine's own validator, never rendered.
+There is deliberately **no** `ddl_artifact_refused` kind: a gate refusal is
+raised *before* the transaction writes anything, so it leaves no residue to
+narrate, and a kind nothing can emit is the same validated-but-dropped
+vocabulary this release removed from the executor core. `model_ref` stays
+`None`: writing one would pre-empt the digest-pinned model-citation law the
+attestation round pins. Budgets are still stored and still unenforced, and
+`blast_radius` is still referenced by no code line. The `forbid(unsafe_code)`
+attribute now makes the two engine cores *stricter* than the four that already
+carried `deny`, which is deliberate and disclosed rather than made uniform in a
+wider diff than this round's scope. A client's artifact body is screened but its
+`quality_gate` JSON is **not** — the gate is parsed as structured data by the
+engine's own validator, never rendered.
+
+**A ceiling on the test run itself.** The suite is green with `TMPDIR=/tmp`, and
+**one pre-existing sandbox test fails under a default `TMPDIR`** on this host
+(`workflow::sandbox::tests::realized_paths_law_pinned_against_symlinked_temp`)
+because the agent sandbox's `TMPDIR` is already a resolved path and the test
+cannot create its symlink alias. That is an environment property, not a code
+defect, and it is not introduced here — but it means "0 failed" is
+`TMPDIR`-conditional and nothing in the battery pins that. Recorded rather than
+quietly worked around.
 
 ## [1.29.1] — 2026-09-26 — "Delivery persistence": the loop gets a storage plane
 
