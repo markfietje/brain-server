@@ -13,6 +13,7 @@
 	import ClipboardListIcon from '@lucide/svelte/icons/clipboard-list';
 	import SearchIcon from '@lucide/svelte/icons/search';
 	import ListTreeIcon from '@lucide/svelte/icons/list-tree';
+	import CpuIcon from '@lucide/svelte/icons/cpu';
 	import HistoryIcon from '@lucide/svelte/icons/history';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import CommandIcon from '@lucide/svelte/icons/command';
@@ -28,6 +29,7 @@
 		{ route: '/', key: 'nav.wizard', Icon: ClipboardListIcon },
 		{ route: '/search', key: 'nav.search', Icon: SearchIcon },
 		{ route: '/decisions', key: 'nav.decisions', Icon: ListTreeIcon },
+		{ route: '/models', key: 'nav.models', Icon: CpuIcon },
 		{ route: '/recall', key: 'nav.recall', Icon: HistoryIcon }
 	] as const;
 

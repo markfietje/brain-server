@@ -1,0 +1,61 @@
+{
+	"list": {
+		"rows": [
+			{
+				"id": "rules-r32-e2e",
+				"version": "1.0.0",
+				"kind": "deterministic-rules",
+				"name": "R32 e2e rules",
+				"output_vocabulary": [
+					"choice",
+					"score"
+				],
+				"artifact_digest_present": true,
+				"config_digest": "c0ffee00000000000000000000000000000000000000000000000000000000ff",
+				"status": "candidate",
+				"proposed_by": "did:key:zOperator",
+				"created_at": 1750000000,
+				"updated_at": 1750000100
+			},
+			{
+				"id": "acme/models",
+				"version": "2.1.0",
+				"kind": "learned",
+				"name": "Acme models",
+				"output_vocabulary": [
+					"noul"
+				],
+				"artifact_digest_present": false,
+				"config_digest": null,
+				"status": "retired",
+				"proposed_by": "did:key:zAgent",
+				"created_at": 1750000200,
+				"updated_at": 1750000300
+			}
+		],
+		"count": 2
+	},
+	"detail": {
+		"id": "rules-r32-e2e",
+		"version": "1.0.0",
+		"kind": "deterministic-rules",
+		"name": "R32 e2e rules",
+		"output_vocabulary": [
+			"choice",
+			"score"
+		],
+		"artifact_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+		"config_digest": "c0ffee00000000000000000000000000000000000000000000000000000000ff",
+		"calibration_ref": null,
+		"status": "candidate",
+		"evaluation_refs": [
+			"eval-r30-001",
+			"eval-r30-002"
+		],
+		"proposed_by": "did:key:zOperator",
+		"created_at": 1750000000,
+		"updated_at": 1750000100,
+		"row_digest": "9fbcf60dabc26c8905a2eb8820100e6709df27a0a409d49f04eab59d85a60037",
+		"approved_by": null
+	}
+}

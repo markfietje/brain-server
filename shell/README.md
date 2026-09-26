@@ -94,6 +94,21 @@ The detail view offers exact-byte JSON download only inside that capture ceiling
 The stored trace does not contain the original query, evidence text, config,
 or rules.
 
+`src/lib/model-registry.ts` is the runtime boundary for the generated
+model-registry wire, and `src/routes/models/+page.svelte` is its surface. The
+parser proves closed enums (`kind`, `status`, output vocabulary), requires
+digests to be EXACT lowercase 64-hex, epoch-guards every timestamp before any
+`Date` conversion, and bounds every collection and string. The list carries the
+artifact digest as a **presence boolean only**; the value is available on the
+single-row read. `row_digest` is a content **pin**, not a signature and not
+authentication, and the surface says so in those words. The only actions are
+lifecycle **proposals** drawn from the kernel's own transition table — there is
+no approve/reject control and no direct status write anywhere. Display text is
+sanitized on the way to the DOM; outbound lifecycle bytes are the **verbatim**
+wire values, and the proposal `row` is exactly the kernel's `RegistryRow` field
+set with the pin travelling beside it, never inside it. An evaluation join is
+data and can never move a status.
+
 Replay is deliberately operator-supplied and transient: config, rules, and
 input are never prefilled, reconstructed, stored, logged, or placed in a URL.
 The stored mode is read-only. A replay response renders config/input/stage
@@ -132,7 +147,12 @@ worker on port 8799; the WebKit project remains the static no-bypass CSP leg.
   answers-JSON download. No kernel write surface exists.
 - **i18n + a11y (D9):** en/de/fr/es/nl catalogs with a keys-parity red
   test; axe-core AA checks in vitest (the manual AA checklist port is M2's
-  gate). All rendered pack text passes the invis-char/spoof sanitizer.
+  gate). All rendered pack text passes the canonical **invisible-character**
+  sanitizer. That sanitizer **removes** canonical invisible code points and
+  nothing else: it is **not** homoglyph or confusable detection, and it does not
+  normalize word boundaries — stripping a zero-width space from `Acme models`
+  yields `Acmemodels`, not `Acme models`. Confusable/spoof detection is a named
+  follow-up, deliberately not claimed here.
 - **Supply chain:** committed lockfiles (pnpm + src-tauri Cargo.lock);
   `--frozen-lockfile` in CI; `pnpm audit --prod --audit-level high` as a
   gate; `cargo clippy -D warnings` + `cargo audit` on the core; postinstall
