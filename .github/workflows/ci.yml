@@ -61,6 +61,19 @@ jobs:
       - name: test (--features bench)
         # The bench feature gates the bench binary + its 4 unit tests.
         run: cargo test --all-targets --features bench
+      - name: README badge + release-checklist drift gate
+        # The badges are DERIVED (scripts/badges.sh reads Cargo.toml and the
+        # build), but nothing ran the comparison, so a release could bump the
+        # version and leave the README two releases behind — which is exactly
+        # what happened at 1.29.0/1.29.1. The guard existed and was never
+        # invoked; this step is the invocation.
+        #
+        # `--selfcheck` is the lightweight path: it re-derives the version and
+        # compares it to the README, requires the committed
+        # `sbom/brain-server-<version>.cdx.json`, and requires the test-count
+        # badge to carry its `not selfcheck-verified` disclaimer so a count
+        # that cannot be proven here is never presented as proven.
+        run: bash scripts/badges.sh --selfcheck
 
   engine-crates:
     # The engine-crate workspace node must stay decoupled from the server:

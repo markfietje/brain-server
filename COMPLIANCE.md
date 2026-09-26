@@ -235,7 +235,48 @@ explicit operator action.
 - **Philippines (DPA RA 10173):** personal data stays on the host; the DSAR
   workflow + deletion certificate are the data subject's rights-of-erasure
   implementation; breach notification is operator-side (the server provides
-  the audit evidence).
+  the audit evidence). **The statute is unchanged — RA 10173 (2012) remains the
+  operative law; re-verified against the NPC's own issuances index 2026-09-26,
+  which lists no amending or replacing Republic Act.** What HAS moved is the
+  Commission's guidance under §7(g)/§9 IRR, and three issuances bear on this
+  component. Each is **guidance, not statute**, and each is recorded as a watch
+  item rather than a conformance claim:
+  - **NPC Advisory No. 2024-04 (19 Dec 2024) — AI systems processing personal
+    data.** Directly on point for an agent-governance control plane: it applies
+    "when the processing of personal data is involved in the development or
+    deployment of AI systems, including its training and testing" (§1), and
+    carries transparency, accountability, fairness, accuracy, data-minimization
+    and lawful-basis duties. Two clauses map onto mechanisms this product
+    already ships, and are **engineering mappings, not legal conclusions**:
+    *human intervention and contesting automated decisions* (§2.B.2.a) and
+    *data-subject rights before, during and after processing* (§3.B) are
+    served by the gate-disposes authority law — a model proposes, only the
+    gate disposes — and by the DSAR locate→export→purge→certificate path
+    respectively. **The classification questions are NOT decided here**: whether
+    a memory store inside a wider agent system is itself an "AI system" under
+    this Advisory, and whether its retrieval constitutes processing "in the
+    development or deployment" of one, are operator and counsel determinations.
+    - `untrusted` recall labelling and the fenced LLM payloads are the
+      transparency evidence; they are **not** a claim of compliance.
+  - **NPC Advisory No. 2026-01 (13 Apr 2026) — data scraping of publicly
+    available personal data.** Reaffirms that public availability does **not**
+    strip DPA protection; a lawful basis and the general privacy principles
+    still apply. Relevant to any ingest path that treats public data as free of
+    obligations. No scraping surface ships in this component today.
+  - **NPC Advisory No. 2026-02 — breach-notification submission via DBNMS**, and
+    **NPC Advisory No. 2026-03 — additional period for the 2025 Annual Security
+    Incident Report**. Both are submission-channel/administrative: filing is
+    operator-side, and the server supplies the audit evidence a report needs.
+  - **NPC Circular No. 2023-04 (7 Nov 2023) — Guidelines on Consent.** Consent
+    must be specific and granular and is never implied. This component records
+    lawful basis and consent provenance as **evidence**; it does not obtain
+    consent and makes no conformity claim.
+  - **Open watch item — DRAFT NPC Circular on Data Subject Rights.** Under NPC
+    public consultation on 2026-09-26: comments due 05 Oct 2026, in-person
+    consultation 19 Oct 2026. It would "update the current guidelines on data
+    subject rights to prescribe consistent rules and procedures." **A draft
+    under consultation is not law** and nothing here is mapped to it; the DSR
+    surface is tracked so the operator can re-assess on adoption.
 - **EU (GDPR):** Art 15/17 (DSAR + erasure certificate), Art 19 (onward-
   notification webhook), Art 22 (trace replay = meaningful information about
   the logic), Art 26(6) guidance (retention ≥180 days where required).
@@ -495,6 +536,41 @@ the artifact itself:
 - **UMP conformance gate runs in CI** (see §9): the reference suite's
   `UMP 1.0 / L3` badge line is asserted on every push, keeping the README
   badge honest.
+
+### 8a. The evidence structure behind the L3 badge — stated, not implied
+
+The `UMP 1.0 / L3` badge rests on **one** automated assertion, and saying so is
+more useful than implying the layer is deeper than it is:
+
+- **What CI actually checks.** `.github/workflows/ci.yml` boots a scratch keyed
+  instance on a temp DB and runs the third-party
+  `@universalmemoryprotocol/core@1.0.0` conformance runner, then asserts its
+  stdout contains the literal `UMP 1.0 / L3`. That is a **string match against
+  a vendor runner's output**. It is real, external, and it does fail closed —
+  but it verifies the runner's *report*, not this server's internals
+  independently of the runner.
+- **The internal cross-check is currently disabled.** The in-repo mirror of the
+  same L1–L3 expectations, `tests/main_suite.rs::ump_suite_parity_l1_to_l3`, is
+  `#[ignore]`d. **The recorded reason is a genuine defect, not a weights
+  problem** (the earlier "loads model2vec" rationale was false and has been
+  corrected): the test sets `BRAIN_UMP_KEY_DIR` to make the instance L3, and the
+  record returns without its `ed25519:`-prefixed signature, failing at
+  `main_suite.rs:12300` on `Option::unwrap()` of a `None`. That is an unkeyed-
+  instance bug in the test's own setup. It has **not** been enabled: a failing
+  test is not promoted, and the fix belongs to the UMP keying owner.
+- **Net effect on the claim.** The L3 badge is **externally sourced and
+  single-sourced**. It is not a claim that the server is independently verified
+  at every L3 clause, and nothing here should be read that way. Restoring the
+  internal mirror is the named remediation; until then this paragraph is the
+  disclosure that travels with the badge.
+- **Related, now closed:** five previously-`#[ignore]`d tests — including BOTH
+  injection-screening tests (`ingest_screens_injection_like_its_siblings` and
+  `procedure_screens_injection_like_its_siblings`) — were disabled on a
+  model2vec-weights rationale that did not hold: the weights are vendored
+  in-tree, and all five pass in the default suite. They are now
+  release-blocking gates. The injection-screening pair is the only automated
+  evidence that `/ingest` and `/procedures` screen hostile content, so leaving
+  them opt-in was leaving a security control unverified.
 
 ## Honest Ceilings
 

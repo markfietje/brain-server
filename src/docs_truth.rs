@@ -321,6 +321,86 @@ mod pins {
         );
     }
 
+    /// The Philippines posture is statute PLUS the Commission's guidance, and
+    /// the guidance moves far faster than the statute. RA 10173 (2012) is still
+    /// the operative law — re-verified 2026-09-26 against the NPC's own
+    /// issuances index, which lists no amending or replacing Republic Act — but
+    /// the component's §6.3 previously cited the statute alone and said nothing
+    /// about the issuances that actually bear on it, including one squarely on
+    /// AI systems processing personal data.
+    ///
+    /// This is a **docs-truth** pin, not a compliance claim: it freezes the
+    /// issuances the doc must carry so they cannot go stale, and it pins the
+    /// no-amending-RA finding so a future editor cannot quietly "correct" the
+    /// statute line against a real but inapplicable instrument. The legal
+    /// readings above it — whether this component is an "AI system", its
+    /// provider/deployer role, whether the Advisory's scope reaches it — are
+    /// operator and counsel determinations and are deliberately NOT asserted
+    /// here.
+    #[test]
+    fn philippines_posture_cites_the_npc_issuances_not_just_the_statute() {
+        let compliance = doc("COMPLIANCE.md");
+        let ph = compliance
+            .split("### 6.3 Jurisdiction Posture")
+            .nth(1)
+            .and_then(|s| s.split("### 6.4").next())
+            .expect("COMPLIANCE.md must carry a §6.3 Jurisdiction Posture section");
+        let ph_line = ph
+            .lines()
+            .find(|l| l.contains("Philippines"))
+            .expect("§6.3 must carry a Philippines posture line");
+
+        // The statute stays cited, and the pin states the no-amending-RA finding
+        // as a dated claim rather than leaving it implied.
+        assert!(
+            ph_line.contains("RA 10173"),
+            "the Philippines posture must cite the operative statute, RA 10173"
+        );
+        assert!(
+            ph.contains("no amending or replacing Republic Act"),
+            "the statute-currency finding must be stated IN the doc, dated — a \
+             reader must not have to assume RA 10173 is still current"
+        );
+
+        // The issuances that bear on this component. Each carries its number, so
+        // a re-baseline is a visible diff rather than a silent scope change.
+        for issuance in [
+            "NPC Advisory No. 2024-04", // AI systems processing personal data
+            "NPC Advisory No. 2026-01", // data scraping of public personal data
+            "NPC Circular No. 2023-04", // guidelines on consent
+        ] {
+            assert!(
+                ph.contains(issuance),
+                "the Philippines posture omits {issuance} — the issuances index \
+                 moved and the jurisdiction posture did not. Add the issuance and \
+                 its date in the same change."
+            );
+        }
+        assert!(
+            ph.contains("guidance, not statute"),
+            "the issuances must be classified as guidance rather than law — an \
+             Advisory is issued under §7(g)/§9 IRR and does not amend the DPA"
+        );
+        assert!(
+            ph.contains("not decided here") || ph.contains("NOT decided here"),
+            "the AI-scope reading must remain an operator/counsel question, not a \
+             conclusion written into a compliance surface"
+        );
+
+        // The draft-under-consultation item is named as a watch item, with its
+        // consultation dates, so it is visible BEFORE adoption rather than
+        // discovered after.
+        assert!(
+            ph.contains("DRAFT NPC Circular on Data Subject Rights"),
+            "the open DS-Rights consultation must stay registered as a watch item"
+        );
+        assert!(
+            ph.contains("05 Oct 2026") && ph.contains("19 Oct 2026"),
+            "the consultation's comment deadline and hearing date must stay \
+             stamped — a watch item without its clock is not a watch item"
+        );
+    }
+
     /// The AI Act DEPLOYER horizons live in docs and are pinned nowhere in code
     /// — `reg_watch` holds the Art 50 marking clock and the general application
     /// clock, and its own comment says the deployer horizons are "tracked in

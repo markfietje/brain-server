@@ -2409,16 +2409,16 @@ mod tests {
     // ── recall eval harness (pure-vector vs hybrid vs hybrid+PRF) ──
     //
     // Measures recall@5 / recall@10 across the retrieval configs on a small
-    // in-process corpus. `#[ignore]` because it loads the model2vec weights
-    // (network/disk). Run with:
-    //   cargo test --release -- --ignored --nocapture eval_recall_harness
+    // in-process corpus. Was `#[ignore]`d for a model2vec-weights blocker that
+    // did not exist: the weights are vendored in-tree, and the test passes in
+    // the default suite. Enabled, with the measurement caveat above kept —
+    // this is a directional signal, NOT a release-blocking quality gate.
     //
     // ponytail: the eval corpus is a 10-doc smoke set, NOT sufficient for a
     // parity claim (see tests/fixtures/eval_queries.md). It demonstrates the
     // harness works and gives a directional signal. Expand to ≥100 judged
     // queries before drawing release-blocking conclusions.
     #[test]
-    #[ignore]
     fn eval_recall_harness() {
         use tempfile::NamedTempFile;
 
@@ -11400,10 +11400,9 @@ Final paragraph after the rule.";
     /// `ump_id` + overlay, and returns the per-record envelope (one failure
     /// never aborts the batch); a single-record batch keeps the v1.17.1
     /// plain `IngestResponse` reply; an unknown format is rejected.
-    /// `#[ignore]` because it loads the model2vec weights (same precedent as
-    /// `eval_recall_harness`); run with `--ignored` before release.
+    /// Was `#[ignore]`d as a model2vec-weights test; the weights are vendored
+    /// in-tree and it passes in the default suite. Enabled.
     #[tokio::test]
-    #[ignore]
     async fn ump_batch_ingest_round_trip() {
         use axum::body::to_bytes;
         use axum::http::Request;
@@ -11583,11 +11582,10 @@ Final paragraph after the rule.";
     /// `ttl_days` survives (the row wins over the profile's episodic 90);
     /// (3) the wizard's bind flow lands the binding + effective knobs;
     /// (4) an unbound domain is byte-identical to pre-v1.21 (raw content,
-    /// column-default scope, scan-based pii flag). `#[ignore]` — loads
-    /// model2vec (same precedent as `ump_batch_ingest_round_trip`); run with
-    /// `--ignored` before release.
+    /// column-default scope, scan-based pii flag). Was `#[ignore]`d as a
+    /// model2vec-weights test; the weights are vendored in-tree and it passes
+    /// in the default suite. Enabled.
     #[tokio::test]
-    #[ignore]
     async fn profiles_end_to_end_wizard_and_ingest() {
         use axum::body::to_bytes;
         use axum::http::Request;
@@ -11839,10 +11837,11 @@ Final paragraph after the rule.";
     /// `Quarantine` policy a crafted instruction body is stored but flagged
     /// (excluded from recall) and gets NO KG edges; with `INJECTION_POLICY=reject`
     /// the same body is rejected with 400 `input_rejected`; a benign doc
-    /// passes clean (flagged=0). `#[ignore]` — loads model2vec (same precedent
-    /// as `ump_batch_ingest_round_trip`).
+    /// passes clean (flagged=0). Enabled: the model2vec
+    /// weights are vendored in-tree, so the stated blocker was not real. This is
+    /// SECURITY-RELEVANT — the only evidence that `/ingest` screens injection
+    /// like its siblings — and is now a release-blocking gate.
     #[tokio::test]
-    #[ignore]
     async fn ingest_screens_injection_like_its_siblings() {
         use axum::body::to_bytes;
         use axum::http::Request;
@@ -11981,10 +11980,12 @@ Final paragraph after the rule.";
     /// had a hole here (it INSERTed into `knowledge` directly). Under the
     /// default Quarantine policy a crafted procedure body lands flagged
     /// (root + each tripped step) and produces no `next_step` KG edges; under
-    /// Reject policy it is refused. `#[ignore]` — loads model2vec (same
-    /// precedent as `ingest_screens_injection_like_its_siblings`).
+    /// Reject policy it is refused. Was `#[ignore]`d as a model2vec-weights
+    /// test; the weights are vendored in-tree and it passes in the default
+    /// suite. SECURITY-RELEVANT — this and its ingest sibling are the only
+    /// evidence that the screen covers `/procedures` — so the gate is now
+    /// release-blocking rather than opt-in.
     #[tokio::test]
-    #[ignore]
     async fn procedure_screens_injection_like_its_siblings() {
         use axum::body::to_bytes;
         use axum::http::Request;
@@ -12135,8 +12136,14 @@ Final paragraph after the rule.";
     /// `time.valid_to` + `superseded_by`, forget → `tombstoned`, validation →
     /// 400 `invalid_record`, feedback → `{ok:true}`. Mirrors
     /// `conformance.ts` L1–L3 (canonical-format signing pinned separately by
-    /// the `ump_integrity` unit tests). `#[ignore]` — same model2vec-weights
-    /// precedent as `ump_batch_ingest_round_trip`; run with `--ignored`.
+    /// the `ump_integrity` unit tests). STILL `#[ignore]`d, and the recorded
+    /// reason is now the TRUE one: this test sets `BRAIN_UMP_KEY_DIR` to make
+    /// the instance L3, and the record comes back WITHOUT its
+    /// `ed25519:`-prefixed signature — an unkeyed-instance defect in the test's
+    /// own setup, not a weights problem. It fails on the assertion at
+    /// main_suite.rs:12300. NOT silently enabled: a failing test must not be
+    /// promoted, and the fix belongs to whoever owns UMP keying. Owner + date
+    /// recorded in the R39 evidence pack.
     #[tokio::test]
     #[ignore]
     async fn ump_suite_parity_l1_to_l3() {
