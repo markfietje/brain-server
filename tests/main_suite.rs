@@ -8129,6 +8129,16 @@ Final paragraph after the rule.";
                 "get_delivery_attestations",
                 "sanitize_value_strings",
             ),
+            // the replay round: TWO more stored-bytes reads. Both emit stored
+            // text (stage labels, actors, artifact ref JSON) and both carry the
+            // same seam. A read that assembled its response without it would
+            // return operator-authored bytes straight off the table.
+            (
+                delivery_src,
+                "get_delivery_replay_verify",
+                "sanitize_value_strings",
+            ),
+            (delivery_src, "get_delivery_trace", "sanitize_value_strings"),
         ];
         for (src, name, seam) in sites {
             let body = handler_body(src, name)
@@ -18034,9 +18044,10 @@ mod r38_delivery {
                 "a delivery route path carrying `status` would be a status-write sibling: {line}"
             );
         }
-        // The four registered routes, and exactly four. the attestation round added a FIFTH —
-        // the attestation read — and this assertion is deliberately widened
-        // rather than deleted, so a SIXTH still fails here.
+        // The registered routes, and exactly seven. an earlier round shipped four
+        // writes and no read; the attestation round added the FIFTH, and this round
+        // adds TWO more reads. The assertion is deliberately widened rather than
+        // deleted, so an EIGHTH still fails here.
         let registered: Vec<String> = router
             .match_indices("/workflow/delivery/")
             .map(|(i, _)| {
@@ -18053,9 +18064,11 @@ mod r38_delivery {
                 "/workflow/delivery/runs/{id}/answer",
                 "/workflow/delivery/runs/{id}/gates",
                 "/workflow/delivery/runs/{id}/attestations",
+                "/workflow/delivery/runs/{id}/replay-verify",
+                "/workflow/delivery/runs/{id}/trace",
             ],
-            "the attestation round owns these five: four writes plus the attestation read. A sixth is a \
-             new decision, not a free addition."
+            "four writes plus THREE reads (the attestation chain, the replay verdict, the raw \
+             trace). A fourth is a new decision, not a free addition."
         );
         // The status the core CAN write is a closed set, and only ever through
         // cas_update.
@@ -18112,9 +18125,14 @@ mod r38_delivery {
         assert_eq!(writes.len(), 4, "the four writes are unchanged: {writes:?}");
         assert_eq!(
             reads,
-            vec!["/workflow/delivery/runs/{id}/attestations"],
-            "exactly ONE read: the attestation chain. A second GET is a new decision, not a \
-             free addition."
+            vec![
+                "/workflow/delivery/runs/{id}/attestations",
+                "/workflow/delivery/runs/{id}/replay-verify",
+                "/workflow/delivery/runs/{id}/trace",
+            ],
+            "exactly THREE reads: the attestation chain, the replay verdict, and the raw trace. \
+             All three re-derive or serve from STORED BYTES and take no body, which is why GET is \
+             correct for each. A fourth GET is a new decision, not a free addition."
         );
         // And the guard tables agree with the router, in both directions.
         let guards = src("src/server/router/route_guards.rs");
@@ -18123,11 +18141,38 @@ mod r38_delivery {
             "/workflow/delivery/runs/{id}/advance",
             "/workflow/delivery/runs/{id}/answer",
             "/workflow/delivery/runs/{id}/gates",
+            "/workflow/delivery/runs/{id}/attestations",
+            "/workflow/delivery/runs/{id}/replay-verify",
+            "/workflow/delivery/runs/{id}/trace",
         ] {
             assert_eq!(
                 guards.matches(&format!("\"{p}\"")).count(),
                 2,
                 "{p} must appear once in OPENAPI_ROUTES and once in AUTHZ_GATES"
+            );
+        }
+        // The three reads are Read, and the four writes are Write. A read that
+        // demanded Write would be a privilege nobody asked for; a write that
+        // demanded Read would be an open door.
+        for p in [
+            "/workflow/delivery/runs/{id}/attestations",
+            "/workflow/delivery/runs/{id}/replay-verify",
+            "/workflow/delivery/runs/{id}/trace",
+        ] {
+            assert!(
+                guards.contains(&format!("(\"{p}\", \"Read\")")),
+                "{p} is a stored-bytes read and must be gated Read"
+            );
+        }
+        for p in [
+            "/workflow/delivery/runs",
+            "/workflow/delivery/runs/{id}/advance",
+            "/workflow/delivery/runs/{id}/answer",
+            "/workflow/delivery/runs/{id}/gates",
+        ] {
+            assert!(
+                guards.contains(&format!("(\"{p}\", \"Write\")")),
+                "{p} mutates and must stay gated Write"
             );
         }
     }
@@ -18764,8 +18809,603 @@ mod r40_attestations {
         );
         assert!(
             production.contains("ump_integrity::content_hash_string"),
-            "anti-vacuity: the module must actually route its hashing through the shipped \\
+            "anti-vacuity: the module must actually route its hashing through the shipped \
              stack, or the ban above proves nothing"
+        );
+    }
+}
+
+/// R41 — the replay-verify surface. The reads `delivery_traces` had never had.
+mod r41_replay {
+    use super::tests::handler_body;
+    use super::*;
+
+    fn src(rel: &str) -> String {
+        std::fs::read_to_string(format!("{}/{rel}", env!("CARGO_MANIFEST_DIR")))
+            .unwrap_or_else(|e| panic!("read {rel}: {e}"))
+    }
+
+    /// The production region of a source file, with the `#[cfg(test)]` boundary
+    /// LOCATED rather than assumed. R39 found four vacuous checks and R40 a
+    /// fifth, all of this shape: a scan that covered a region it never verified
+    /// it was covering.
+    fn production_of(rel: &str) -> String {
+        let full = src(rel);
+        let boundary = full
+            .find("#[cfg(test)]")
+            .unwrap_or_else(|| panic!("{rel} has no #[cfg(test)] boundary to scan against"));
+        assert!(
+            boundary > 0,
+            "{rel}'s test region starts at byte 0 — the scan would cover nothing"
+        );
+        full[..boundary].to_string()
+    }
+
+    /// B7, the design owner's named test, landed here as the round assigns it:
+    /// the tier → trace-mode mapping, server-side, over the closed vocabularies.
+    ///
+    /// The pure crate pins the function itself. This pins the SERVER's use of
+    /// it: that the mode stamped onto every delivery response is the one the
+    /// mapping names, that the mapping is TOTAL over all four tiers, and that
+    /// the wire vocabulary is exactly the two words the crate parses.
+    #[test]
+    fn delivery_tier_mode_mapping_is_pinned() {
+        use brain_delivery_core::{AutonomyTier, TraceMode, trace_mode_for_tier};
+
+        // The DO's mapping, as a table over the crate's OWN tier spellings.
+        // (`bounded_auto` is the crate's spelling; the server's WIRE spelling is
+        // `bounded-auto`, translated by `tier_wire_to_core` — the crate's
+        // vocabulary is what the pure mapping is written against.)
+        let expected = [
+            (AutonomyTier::Observe, "observe", "exploratory"),
+            (AutonomyTier::Propose, "propose", "exploratory"),
+            (
+                AutonomyTier::BoundedAuto,
+                "bounded_auto",
+                "deterministic",
+            ),
+            (
+                AutonomyTier::Delegated,
+                "delegated",
+                "deterministic",
+            ),
+        ];
+
+        // TOTAL: the mapping covers every tier and nothing else. A fifth tier
+        // in the crate without a row here fails, and a row without a tier fails
+        // the membership assert.
+        assert_eq!(
+            AutonomyTier::ALL.len(),
+            expected.len(),
+            "the mapping table must cover the WHOLE tier vocabulary — a new tier is a decision, \
+             not a silent default"
+        );
+
+        for (tier, spelling, want_mode) in expected {
+            assert!(
+                AutonomyTier::ALL.contains(&tier),
+                "{spelling} is a real tier — a row for a tier the crate does not have is a \
+                 mapping that no longer describes the system"
+            );
+            assert_eq!(
+                tier.as_str(),
+                spelling,
+                "the table's spelling and the crate's own must agree, or the mapping is pinned \
+                 against a name no row carries"
+            );
+            // Round-trips through the crate's own parser: the mapping's domain
+            // is exactly the parseable vocabulary, so an unparseable tier can
+            // never reach it.
+            assert_eq!(
+                AutonomyTier::parse(spelling).ok(),
+                Some(tier),
+                "{spelling} round-trips through the crate's parser"
+            );
+            assert_eq!(
+                trace_mode_for_tier(tier).as_str(),
+                want_mode,
+                "{} traces {want_mode}",
+                tier.as_str()
+            );
+        }
+
+        // The mode vocabulary is not overloaded: two words, closed, and an
+        // unknown word is an error rather than a guessed default.
+        assert_eq!(TraceMode::ALL.len(), 2);
+        for mode in TraceMode::ALL {
+            assert!(TraceMode::parse(mode.as_str()).is_ok());
+        }
+        for rejected in ["Deterministic", "auto", "", "exploratory "] {
+            assert!(
+                TraceMode::parse(rejected).is_err(),
+                "`{rejected}` must not parse — a mode vocabulary that guesses is a mode an \
+                 operator cannot rely on"
+            );
+        }
+    }
+
+    /// The server stamps `trace_mode` on three responses. The stamp must be the
+    /// MAPPING's answer for that run's tier, not a literal and not a guess — so
+    /// this asserts the call sites route through `trace_mode_for_tier`.
+    #[test]
+    fn delivery_server_stamps_the_mapped_trace_mode() {
+        let production = production_of("src/workflow/delivery.rs");
+        for symbol in ["create_run", "advance", "gates"] {
+            let body = handler_body(&production, symbol)
+                .unwrap_or_else(|| panic!("`fn {symbol}` must be locatable in delivery.rs"));
+            assert!(
+                body.contains("trace_mode_for_tier("),
+                "`{symbol}` stamps trace_mode and must derive it from the MAPPING, not from a \
+                 literal — a hard-coded mode would drift from the tier law silently"
+            );
+        }
+        // And the four literals do not appear as stamps.
+        assert!(
+            !production.contains(r#"trace_mode: "deterministic""#),
+            "no response may hard-code its trace mode"
+        );
+        assert!(
+            !production.contains(r#"trace_mode: "exploratory""#),
+            "no response may hard-code its trace mode"
+        );
+    }
+
+    /// Both new reads are gated exactly like the five that came before them:
+    /// probe-blind 404 → `authorize(Read, "", run's own domain)` → pool →
+    /// `authorize_role("workflow")`. The order is the contract, so it is
+    /// asserted positionally rather than by substring presence.
+    #[test]
+    fn delivery_read_surfaces_share_the_house_gate_order() {
+        let handler = src("src/handlers/delivery.rs");
+        for symbol in [
+            "get_delivery_attestations",
+            "get_delivery_replay_verify",
+            "get_delivery_trace",
+        ] {
+            let body = handler_body(&handler, symbol)
+                .unwrap_or_else(|| panic!("`fn {symbol}` must be locatable in handlers/delivery.rs"));
+
+            // Every step is present...
+            for needle in [
+                "run_domain(",
+                "Action::Read",
+                "authorize_role(",
+                "\"workflow\"",
+                "spawn_blocking",
+                "sanitize_value_strings",
+            ] {
+                assert!(
+                    body.contains(needle),
+                    "{symbol} is missing `{needle}` — all five delivery reads share one gate order"
+                );
+            }
+            // ...and in the HOUSE order. The failure this prevents is a lookup
+            // that moved behind the authorize, which would authorize against a
+            // domain the caller has not yet proved they may read.
+            let domain = body
+                .find("run_domain(")
+                .unwrap_or_else(|| panic!("{symbol} resolves the run"));
+            let authorize = body
+                .find("Action::Read")
+                .unwrap_or_else(|| panic!("{symbol} authorizes Read"));
+            let role = body
+                .find("authorize_role(")
+                .unwrap_or_else(|| panic!("{symbol} gates the role"));
+            assert!(
+                domain < authorize,
+                "{symbol}: the probe-blind run lookup must precede the scope gate — the domain is \
+                 unknowable without the run, and authorizing against anything else checks the \
+                 wrong domain"
+            );
+            assert!(
+                authorize < role,
+                "{symbol}: the scope gate must precede the role gate, matching the five reads \
+                 already shipped"
+            );
+            // Least privilege: a read must not demand Write anywhere.
+            assert!(
+                !body.contains("Action::Write"),
+                "{symbol} is a read surface and must never demand Write"
+            );
+        }
+    }
+
+    /// The replay route's adjacency to the pre-existing decision-run
+    /// `replay-diff` is DISCLOSED, not hidden and not "unified". Two routes
+    /// publish a similar concept under similar wire keys; a reader who has seen
+    /// one has no way to guess the other's philosophy from its name.
+    #[test]
+    fn delivery_replay_route_discloses_the_decision_run_adjacency() {
+        let spec = src("openapi.yaml");
+        let start = spec
+            .find("  /workflow/delivery/runs/{id}/replay-verify:")
+            .unwrap_or_else(|| panic!("openapi.yaml lost the replay-verify path"));
+        let block = &spec[start..];
+        let end = block.find("\n  /workflow/").unwrap_or(block.len());
+        let block = &block[..end];
+        let lower = block
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+
+        // The adjacency is named, and the difference is named with it.
+        assert!(
+            lower.contains("decision-runs"),
+            "the replay-verify route must name the pre-existing decision-run replay-diff route — \
+             two routes publishing a similar concept under similar keys is exactly the case a \
+             reader needs told about"
+        );
+        for claim in [
+            "does not re-execute",
+            "re-derive",
+            "stored bytes",
+        ] {
+            assert!(
+                lower.contains(claim),
+                "the adjacency disclosure must carry `{claim}` — the decision-run route LOADS A \
+                 BOUND MODEL and re-executes the pipeline, which is the opposite philosophy, and \
+                 a reader must not assume the two agree"
+            );
+        }
+        // The non-claims, as negations.
+        for (claim, negation) in [
+            ("tamper-proof", "not tamper-proofing"),
+            ("compliance", "not a compliance finding"),
+        ] {
+            assert!(
+                lower.contains(claim) && lower.contains(negation),
+                "the route description mentions `{claim}` without the explicit negation \
+                 `{negation}` — the replay verdict is tamper-EVIDENCE over stored bytes, and \
+                 saying so without the negation is the claim"
+            );
+        }
+        // ...and the words that would turn an adjacency into a conformance claim.
+        for banned in ["dsse", "in-toto", "slsa", "dora"] {
+            assert!(
+                !lower.contains(banned),
+                "the replay-verify route description must never mention `{banned}`"
+            );
+        }
+    }
+
+    /// B5, at the WIRE: the report is a fixed, closed shape whose keys say what
+    /// they are. A replay report a client cannot parse is not a contract, and
+    /// `additionalProperties: false` is what makes a client trust it.
+    #[test]
+    fn delivery_replay_wire_schema_is_closed_and_complete() {
+        let spec = src("openapi.yaml");
+        for schema in ["DeliveryReplayReport", "DeliveryTraceListing"] {
+            assert!(
+                spec.contains(&format!("    {schema}:")),
+                "the route $refs a schema openapi.yaml does not define — a dangling ref is not a \
+                 contract"
+            );
+            let lines: Vec<&str> = spec.lines().collect();
+            let start = lines
+                .iter()
+                .position(|l| l.trim_end() == &format!("    {schema}:"))
+                .unwrap();
+            let end = lines[start + 1..]
+                .iter()
+                .position(|l| l.starts_with("    ") && !l.starts_with("     ") && !l.trim().is_empty())
+                .map_or(lines.len(), |i| start + 1 + i);
+            let block = lines[start..end].join("\n");
+            assert!(
+                block.contains("additionalProperties: false"),
+                "anti-vacuity: {schema} must still be closed, or the pins below are moot"
+            );
+            // The window's cap and truncation flag are the B6 disclosure. A
+            // client must be able to tell a bounded window from the whole run.
+            for key in ["cap", "truncated"] {
+                assert!(
+                    block.contains(&format!("{key}:")),
+                    "{schema} must disclose `{key}` — a bounded window that does not say it is \
+                     bounded is a silent short read"
+                );
+            }
+        }
+        // The replay report's verdict keys. Collected by INDENT: a
+        // `contains("compared:")` test is satisfied by a rename elsewhere.
+        let lines: Vec<&str> = spec.lines().collect();
+        let start = lines
+            .iter()
+            .position(|l| l.trim_end() == "    DeliveryReplayReport:")
+            .expect("DeliveryReplayReport is defined");
+        let end = lines[start + 1..]
+            .iter()
+            .position(|l| l.starts_with("    ") && !l.starts_with("     ") && !l.trim().is_empty())
+            .map_or(lines.len(), |i| start + 1 + i);
+        let schema = lines[start..end].join("\n");
+        let declared: Vec<&str> = schema
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with("properties:"))
+            .skip(1)
+            .take_while(|l| l.starts_with("        ") || l.trim().is_empty())
+            .filter(|l| l.starts_with("        ") && !l.starts_with("          "))
+            .filter_map(|l| l.get(8..)?.split(':').next())
+            .filter(|k| !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+            .collect();
+        assert!(
+            declared.len() >= 6,
+            "the replay report property scan found only {} keys ({declared:?}) — the scanner or \
+             the schema changed shape",
+            declared.len()
+        );
+        for key in [
+            "run_id",
+            "order_ok",
+            "compared",
+            "matched",
+            "mismatched",
+            "diffs",
+        ] {
+            assert!(
+                declared.contains(&key),
+                "DeliveryReplayReport omits `{key}` (declared: {declared:?}) — with \
+                 additionalProperties:false a client that trusts the spec rejects the real response"
+            );
+        }
+    }
+
+    /// D1, the round's highest-value item. The attestation read shipped with
+    /// ZERO route-level authz coverage: nothing proved a Read-capable
+    /// role-less principal was refused, and nothing proved a foreign run was
+    /// probe-blind. R41's two reads inherit the same duty, and this pin makes
+    /// the omission impossible to repeat by asserting the coverage EXISTS.
+    ///
+    /// It is a SOURCE pin over the matrix, not a behavioural one — the seeded
+    /// behavioural proof is `delivery_routes_role_gated_agent_and_revoked_denied`
+    /// in `authz_matrix.rs`, which this round extends to the reads.
+    #[test]
+    fn delivery_reads_are_covered_by_the_authz_matrix() {
+        let matrix = src("tests/authz_matrix.rs");
+        for route in [
+            "/workflow/delivery/runs/{id}/attestations",
+            "/workflow/delivery/runs/{id}/replay-verify",
+            "/workflow/delivery/runs/{id}/trace",
+        ] {
+            assert!(
+                matrix.contains(&format!("\"{route}\"")),
+                "{route} is a Read surface and must appear in the authz matrix — a delivery read \
+                 with no route-level authz coverage is the failure mode: signed evidence and \
+                 replay verdicts leaking to a principal that should never see them"
+            );
+        }
+        // All three are in the ROLE-gated list, not merely somewhere in the
+        // file: the list is what makes the agent class 403.
+        let role_gated = matrix
+            .split("const ROLE_GATED_FOR_AGENT")
+            .nth(1)
+            .and_then(|rest| rest.split("\nconst ").next())
+            .expect("ROLE_GATED_FOR_AGENT must exist");
+        for route in [
+            "/workflow/delivery/runs/{id}/attestations",
+            "/workflow/delivery/runs/{id}/replay-verify",
+            "/workflow/delivery/runs/{id}/trace",
+        ] {
+            assert!(
+                role_gated.contains(&format!("\"{route}\"")),
+                "{route} demands the `workflow` role in its handler and MUST be listed in \
+                 ROLE_GATED_FOR_AGENT — otherwise the class matrix expects the agent class to \
+                 PASS a route the handler refuses, and the divergence is asserted nowhere"
+            );
+        }
+        // And all three are in the probe-blind 404 list: they resolve the run
+        // before any gate, so an absent run is the same 404 for every class.
+        let pre_gate = matrix
+            .split("const PRE_GATE_404")
+            .nth(1)
+            .and_then(|rest| rest.split("\nconst ").next())
+            .expect("PRE_GATE_404 must exist");
+        for route in [
+            "/workflow/delivery/runs/{id}/attestations",
+            "/workflow/delivery/runs/{id}/replay-verify",
+            "/workflow/delivery/runs/{id}/trace",
+        ] {
+            assert!(
+                pre_gate.contains(&format!("\"{route}\"")),
+                "{route} resolves the run BEFORE any gate and must be in PRE_GATE_404 — absence \
+                 must be indistinguishable between classes"
+            );
+        }
+    }
+
+    /// D2, partly: the `?verify=1` parameter and the 200-not-409 contract are
+    /// documented in three places. The docs pin is in `docs_truth.rs`; the
+    /// behavioural half — the parameter is ACCEPTED and returns the IDENTICAL
+    /// payload — is pinned here against the handler's own query struct, because
+    /// a parameter that is documented and silently ignored is a contract that
+    /// lies about itself.
+    #[test]
+    fn delivery_attestation_verify_parameter_is_declared_and_unconditional() {
+        let handler = src("src/handlers/delivery.rs");
+        // The parameter is declared, optional, and typed as an opaque string —
+        // it selects nothing, so an unrecognized value must not 400.
+        assert!(
+            handler.contains("pub verify: Option<String>"),
+            "the attestation route declares `?verify=1` and must keep accepting it"
+        );
+        let query = handler_body(&handler, "get_delivery_attestations")
+            .expect("the attestation read must be locatable");
+        assert!(
+            query.contains("Query("),
+            "the verify parameter is extracted by the typed Query extractor"
+        );
+        assert!(
+            query.contains("DeliveryError")
+                || query.contains("HandlerError::bad_request")
+                || !query.contains("verify.eq("),
+            "the handler must not BRANCH on the verify value — the chain verdict is unconditional, \
+             and a branch would make the parameter switch verification off"
+        );
+        // And the refusal vocabulary a non-verifying chain reports with is
+        // named, so a 200 never reads as a verified chain.
+        let attestation = src("src/workflow/attestations.rs");
+        let read = handler_body(&attestation, "read_surface")
+            .expect("read_surface must be locatable in attestations.rs");
+        assert!(
+            read.contains("refusal"),
+            "a non-verifying chain is 200 with a NAMED per-link refusal, never a silent empty \
+             chain that reads as verified"
+        );
+    }
+
+    /// The scope proof, as a test. R41 ships NO table, NO stamp, and NO
+    /// migration — so `src/migration.rs`, `PARITY_TABLES`, and the frozen crate
+    /// are byte-untouched, and the schema the round reads is the schema the
+    /// attestation round left.
+    ///
+    /// This is asserted at the DATA level rather than by diffing git, because a
+    /// test that only works on a clean tree proves nothing in a dirty one. The
+    /// git diff is the other half and is recorded in the evidence file.
+    #[test]
+    fn delivery_r41_adds_no_table_and_no_stamp() {
+        let db = {
+            brain_server::register_sqlite_vec::register_sqlite_vec();
+            let mut db = rusqlite::Connection::open_in_memory().expect("open");
+            brain_server::migration::run_migration(&mut db, 512).expect("migration");
+            db
+        };
+        // The three tables shipped SO FAR, and no fourth. The line's plan names
+        // five tables across four stamps (1.32.15–1.32.18); only three have
+        // shipped, and this round adds none — so a fourth `delivery_%` table
+        // appearing here is a new decision someone made without recording it.
+        let delivery_tables: Vec<String> = {
+            let mut stmt = db
+                .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'delivery_%' ORDER BY name")
+                .expect("prepare");
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .expect("query");
+            rows.map(std::result::Result::unwrap).collect()
+        };
+        assert_eq!(
+            delivery_tables,
+            vec![
+                "delivery_attestations",
+                "delivery_budgets",
+                "delivery_traces",
+            ],
+            "the replay round adds a read surface over tables that already existed — a fourth \
+             `delivery_%` table is a new decision ({delivery_tables:?})"
+        );
+        // The stamp did not move.
+        assert_eq!(
+            brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
+            "1.32.16",
+            "R41 is not a schema round: the stamp stays where the attestation round left it"
+        );
+        assert_eq!(
+            brain_server::storage_layout::schema_version(&db).as_deref(),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_16),
+        );
+        // ...and the parity table the migration rehearsal walks is unchanged:
+        // R41 ships no table, so it has no row there.
+        let parity = src("src/bin/brain_migrate_rehearse.rs");
+        assert!(
+            !parity.contains("delivery_replay"),
+            "PARITY_TABLES must carry no R41 row — the round adds no table to rehearse"
+        );
+    }
+
+    /// Zero new dependencies. The pure comparator's crate is unchanged and the
+    /// server gained no edge: the lockfile delta is the real proof and is
+    /// recorded in the evidence file, but the manifest is checked here too,
+    /// because a dependency added and not yet resolved still shows up in
+    /// `Cargo.toml` first.
+    #[test]
+    fn delivery_r41_adds_no_dependency() {
+        // The comparator's crate is the whole dependency question: the replay
+        // verdict is computed by `compare_replay`, so the crate's dependency
+        // set IS the surface's model-reachability. It is serde/serde_json/sha2.
+        let core = src("crates/brain-delivery-core/Cargo.toml");
+        let deps = core
+            .split("[dependencies]")
+            .nth(1)
+            .expect("the core crate has a [dependencies] section");
+        let mut names: Vec<&str> = Vec::new();
+        for line in deps.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') || line.starts_with('[') {
+                continue;
+            }
+            if let Some((name, _)) = line.split_once('=') {
+                names.push(name.trim().trim_matches('"'));
+            }
+        }
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec!["serde", "serde_json", "sha2"],
+            "the comparator's dependency set is the STRUCTURAL proof that the replay verdict \
+             cannot call a model: it has no provider, no client, and no network stack. A new \
+             entry here would be a new edge the zero-model claim rests on ({names:?})"
+        );
+
+        // And the server manifest gains nothing either. Names are compared
+        // exactly: a substring scan over the whole file would match a
+        // dependency this server legitimately carries for an unrelated egress
+        // path, and a ban that fires on correct code is a ban that gets
+        // deleted.
+        let manifest = src("Cargo.toml");
+        for line in manifest.lines() {
+            let line = line.trim();
+            if line.starts_with('[') || line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+            let Some((name, _)) = line.split_once('=') else {
+                continue;
+            };
+            let lowered = name.trim().trim_matches('"').to_ascii_lowercase();
+            for forbidden in ["openai", "anthropic", "tungstenite", "octocrab", "git2"] {
+                assert_ne!(
+                    lowered, forbidden,
+                    "the replay surface must not need `{forbidden}` — the verdict is computable \
+                     from stored bytes alone"
+                );
+            }
+        }
+    }
+
+    /// The four legal `stage` values, and no fifth. `delivery_traces.stage` is
+    /// CHECKed to `run|phase|gate|answer` in the DDL; the projection must pass
+    /// that column through rather than inventing a vocabulary the crate does
+    /// not have (`StageDigest.stage` is a bare `String` with no validation
+    /// anywhere in the frozen crate).
+    #[test]
+    fn delivery_stage_vocabulary_is_the_stored_check() {
+        let spec = src("src/migration.rs");
+        let start = spec
+            .find("CREATE TABLE IF NOT EXISTS delivery_traces")
+            .expect("the delivery_traces DDL exists");
+        let ddl = &spec[start..];
+        let end = ddl.find(");").unwrap_or(ddl.len());
+        let ddl = &ddl[..end];
+        assert!(
+            ddl.contains("CHECK (stage IN ('run','phase','gate','answer'))"),
+            "the stage vocabulary is the DDL's CHECK, and it is the ONLY vocabulary — the \
+             projection reads the stored column and adds nothing"
+        );
+        // The writers emit exactly those four.
+        let production = production_of("src/workflow/delivery.rs");
+        let stages: Vec<&str> = production
+            .match_indices("stage: \"")
+            .map(|(i, _)| {
+                let rest = &production[i + "stage: \"".len()..];
+                &rest[..rest.find('"').unwrap()]
+            })
+            .collect();
+        for stage in &stages {
+            assert!(
+                ["run", "phase", "gate", "answer"].contains(stage),
+                "a writer emits stage `{stage}`, which the DDL's CHECK would refuse"
+            );
+        }
+        assert_eq!(
+            stages.len(),
+            4,
+            "the four production writers emit exactly the four legal stage values"
         );
     }
 }

@@ -3070,4 +3070,401 @@ mod tests {
              disposition"
         );
     }
+
+    // ── R41: the replay read surface ───────────────────────────────────────
+
+    /// A run with several trace rows, each recorded through the real writers, so
+    /// the read surface is exercised over rows production actually produced
+    /// rather than over hand-inserted fixtures.
+    fn seeded_run(conn: &mut Connection) -> Created {
+        let run = open(conn, "observe");
+        // A phase pass and a gate evaluation: three rows, seq 1..3.
+        advance_one(conn, run.run_id, 0, "design").expect("the phase pass lands");
+        gates(
+            conn,
+            &Gates {
+                run_id: run.run_id,
+                to_phase: Some("build"),
+                actor: "tester",
+                now: 3,
+            },
+        )
+        .expect("the gate evaluates");
+        run
+    }
+
+    /// B2, the projection law, pinned once and for all: a `TraceRow` becomes a
+    /// pair of `StageDigest`s, and the two sides differ in exactly one place —
+    /// the content address, recorded on the left and re-derived on the right.
+    ///
+    /// The golden vector is the anti-vacuity device. A pin that only asserts
+    /// `compare_replay` returns no diffs would pass on a projection that mapped
+    /// EVERY field to a constant. This asserts the concrete bytes, so a
+    /// projection that drifts in either direction is caught.
+    #[test]
+    fn delivery_replay_projection_is_pinned() {
+        let row = TraceRow {
+            id: "trc_ignored_by_the_projection".into(),
+            run_id: 7,
+            seq: 3,
+            stage: "phase".into(),
+            phase: "design".into(),
+            status: "advanced".into(),
+            tier: "observe".into(),
+            actor: "operator".into(),
+            model_ref: None,
+            policy_digest: None,
+            config_digest: None,
+            pipeline_version: PIPELINE_VERSION.into(),
+            budget_digest: None,
+            artifact_refs_json: "[]".into(),
+            attestation_root: None,
+            created_at: 1_700_000_000,
+        };
+        let (recorded, rederived) = stage_digest_projection(&row);
+
+        // The stage is the STORED column, projected — never invented.
+        assert_eq!(recorded.stage, "phase");
+        assert_eq!(rederived.stage, "phase");
+
+        // `input_digest` is the row's committed facts: the sha256 of the
+        // canonical bytes, prefixed. It does NOT frame `id` and does NOT frame
+        // `created_at` — so it is stable across a re-read of the same row.
+        let expected_input = format!("sha256:{}", crate::audit::hex_encode(&row.canonical_bytes()));
+        assert_eq!(recorded.input_digest, expected_input);
+        assert_eq!(rederived.input_digest, expected_input);
+
+        // `output_digest` is where the two sides DIVERGE: the recorded side
+        // carries the stored address, the re-derived side the recomputed one.
+        assert_eq!(
+            recorded.output_digest, "trc_ignored_by_the_projection",
+            "the recorded side carries the STORED content address"
+        );
+        assert_eq!(
+            rederived.output_digest,
+            row.content_id(),
+            "the re-derived side carries the address recomputed from the stored columns"
+        );
+
+        // ...and the recomputed address ignores the stored one, which is the
+        // whole reason the check is not a tautology.
+        assert_ne!(
+            recorded.output_digest, rederived.output_digest,
+            "a row whose stored id does not match its columns MUST produce two different \
+             output digests — this is the one comparison in the round that is not tautological"
+        );
+    }
+
+    /// The DO's named test. A run that has not been tampered with re-derives
+    /// exactly: every row's recomputed content address equals the stored one, and
+    /// the verdict is "compared == matched, mismatched == 0".
+    ///
+    /// **And it makes no model call.** That is not asserted by reading this
+    /// test; it is asserted structurally by
+    /// `delivery_replay_makes_no_model_call_and_persists_nothing` below, which
+    /// scans the read path for every provider call site.
+    #[test]
+    fn delivery_replay_verify_is_byte_exact_and_zero_model_calls() {
+        let mut conn = seed();
+        let run = seeded_run(&mut conn);
+
+        let report = replay_verify(&conn, run.run_id, 2).expect("the replay report assembles");
+
+        assert_eq!(report.window.rows, 3, "three recorded rows");
+        assert!(!report.window.truncated, "three rows is far below the cap");
+        assert!(report.order_ok, "seq 1..3 is contiguous ascending");
+        assert_eq!(report.compared, 3);
+        assert_eq!(report.matched, 3);
+        assert_eq!(
+            report.mismatched, 0,
+            "an untampered run re-derives byte-exactly; diffs: {:?}",
+            report.diffs
+        );
+        assert!(
+            report.all_digests_match(),
+            "the verdict is the crate's own, not a re-implementation"
+        );
+    }
+
+    /// B5: a mismatch is DATA. Corrupting one stored `trc_` address must
+    /// produce a diff row and a non-clean verdict — never an error, never a
+    /// status, and never a 500.
+    #[test]
+    fn delivery_replay_reports_mismatches_as_data_not_status() {
+        let mut conn = seed();
+        let run = seeded_run(&mut conn);
+
+        // Flip one stored address, directly — the shape an out-of-band edit
+        // leaves behind.
+        conn.execute(
+            "UPDATE delivery_traces SET id = 'trc_0000000000000000000000000000dead' \
+             WHERE run_id = ?1 AND seq = 2",
+            params![run.run_id],
+        )
+        .expect("the tamper lands");
+
+        let report = replay_verify(&conn, run.run_id, 2).expect("a mismatch is never an error");
+
+        assert_eq!(report.compared, 3, "every position is still compared");
+        assert_eq!(report.mismatched, 1, "exactly the tampered row");
+        assert_eq!(report.diffs.len(), 1);
+        assert!(
+            !report.all_digests_match(),
+            "the verdict must be non-clean: the stored address no longer follows from the columns"
+        );
+        let diff = &report.diffs[0];
+        assert_eq!(diff.stage, "phase", "the diff names the row's own stage");
+        assert_eq!(diff.mismatch, "output_digest_differs");
+        let recorded = diff.recorded.as_ref().expect("the recorded side is present");
+        let rederived = diff.rederived.as_ref().expect("the re-derived side is present");
+        assert_eq!(
+            recorded.output_digest, "trc_0000000000000000000000000000dead",
+            "the report shows WHAT was stored"
+        );
+        assert_eq!(
+            rederived.output_digest, recorded.output_digest.replace("0000000000000000000000000000dead", "").to_string() + "0000000000000000000000000000dead",
+            "sanity: the re-derived side is a well-formed address"
+        );
+        assert_ne!(
+            recorded.output_digest, rederived.output_digest,
+            "and the two sides disagree, which is the finding"
+        );
+        assert!(
+            diff.recorded.is_some() && diff.rederived.is_some(),
+            "a field mismatch carries BOTH sides: a reader learns what was stored AND what the \
+             columns imply"
+        );
+    }
+
+    /// B3: the ordinal series must be contiguous ascending. A deleted middle
+    /// row leaves a GAP, and the gap is reported as an `order` mismatch — a
+    /// diff row, never an error status, and never a silently shorter window.
+    #[test]
+    fn delivery_replay_orders_by_seq_and_requires_contiguity() {
+        let mut conn = seed();
+        let run = seeded_run(&mut conn);
+
+        // Delete the middle row. `UNIQUE(run_id, seq)` does not defend against
+        // a DELETE, and `MAX(seq)+1` would reissue 3 — so the gap is real
+        // state a reader must be able to see.
+        conn.execute(
+            "DELETE FROM delivery_traces WHERE run_id = ?1 AND seq = 2",
+            params![run.run_id],
+        )
+        .expect("the delete lands");
+
+        let report = replay_verify(&conn, run.run_id, 2).expect("a gap is never an error");
+
+        assert_eq!(report.window.rows, 2, "the window holds what is stored");
+        assert!(
+            !report.order_ok,
+            "seq 1,3 is not contiguous — the ordinal series is broken"
+        );
+        let order: Vec<&StageDiffRead> = report
+            .diffs
+            .iter()
+            .filter(|d| d.stage == "order")
+            .collect();
+        assert!(
+            !order.is_empty(),
+            "the gap is REPORTED as an `order` diff, not merely flagged: {:?}",
+            report.diffs
+        );
+        assert!(
+            report.mismatched >= 1,
+            "an order violation counts as a mismatch — it is the product, not a status"
+        );
+    }
+
+    /// B6: no silent short read. The trace window is capped, and the cap is
+    /// DISCLOSED in the payload with a truncation flag, so a reader can never
+    /// mistake a bounded window for the whole run.
+    #[test]
+    fn delivery_replay_discloses_a_capped_event_log() {
+        let mut conn = seed();
+        let run = open(&mut conn, "observe");
+
+        // More rows than the cap. Each insert is a real writer, so the ordinals
+        // are allocated the way production allocates them.
+        for _ in 0..(MAX_TRACE_ROWS + 5) {
+            gates(
+                &mut conn,
+                &Gates {
+                    run_id: run.run_id,
+                    to_phase: Some("build"),
+                    actor: "tester",
+                    now: 9,
+                },
+            )
+            .expect("the gate evaluates");
+        }
+        let total = count(
+            &conn,
+            &format!(
+                "SELECT COUNT(*) FROM delivery_traces WHERE run_id = {}",
+                run.run_id
+            ),
+        );
+        assert_eq!(total as usize, MAX_TRACE_ROWS + 5, "the fixture is over the cap");
+
+        let report = replay_verify(&conn, run.run_id, 2).expect("the report assembles");
+
+        assert_eq!(report.window.cap, MAX_TRACE_ROWS, "the cap is DISCLOSED");
+        assert!(report.window.truncated, "the window is short and says so");
+        assert_eq!(
+            report.window.rows, MAX_TRACE_ROWS,
+            "the cap is a real bound, not a label"
+        );
+        // The appendix is bounded and discloses its own cap, separately.
+        assert_eq!(report.event_log.cap, crate::workflow::session_log::REPLAY_CAP);
+        assert!(
+            report.event_log.rows.len() <= report.event_log.cap,
+            "the appendix is bounded by its own cap"
+        );
+    }
+
+    /// The `/trace` surface: the run's rows in ordinal order, plus the chain
+    /// head, plus the same disclosed appendix. It rides the SAME read
+    /// function, so the two surfaces can never disagree about what is stored.
+    #[test]
+    fn delivery_trace_read_returns_rows_and_head() {
+        let mut conn = seed();
+        let run = seeded_run(&mut conn);
+
+        let listing = trace_listing(&conn, run.run_id, 2).expect("the listing assembles");
+
+        assert_eq!(listing.run_id, run.run_id);
+        assert_eq!(listing.window.rows, 3);
+        let seqs: Vec<i64> = listing.rows.iter().map(|r| r.seq).collect();
+        assert_eq!(
+            seqs,
+            vec![1, 2, 3],
+            "the listing is in ORDINAL order — the stored series, not insertion accident"
+        );
+        // The head is the chain's head, or None before the first link.
+        let head = crate::workflow::attestations::chain_head(&conn, run.run_id).ok().flatten();
+        assert_eq!(
+            listing.attestation_root, head,
+            "the listing names the chain head it actually read"
+        );
+        assert_eq!(listing.window.cap, MAX_TRACE_ROWS);
+    }
+
+    /// Zero model calls, and nothing persisted. Both are STRUCTURAL claims, so
+    /// they are checked against the source rather than against a run that
+    /// happened not to need a model.
+    ///
+    /// The scan is scoped to the production region with the `#[cfg(test)]`
+    /// boundary LOCATED (R39 found four vacuous checks and R40 a fifth; a guard
+    /// is believed only after it has been deliberately broken), and it asserts
+    /// its own symbols are locatable before asserting anything about them.
+    #[test]
+    fn delivery_replay_makes_no_model_call_and_persists_nothing() {
+        let full = include_str!("delivery.rs");
+        let boundary = full
+            .find("#[cfg(test)]")
+            .expect("delivery.rs has a #[cfg(test)] boundary");
+        assert!(boundary > 0, "the test region must not start at byte 0");
+        let production = &full[..boundary];
+
+        for symbol in ["read_run_traces", "replay_verify", "stage_digest_projection"] {
+            assert!(
+                production.contains(&format!("fn {symbol}")),
+                "`fn {symbol}` must exist in the PRODUCTION region — a scan that cannot find \
+                 its subject proves nothing"
+            );
+        }
+
+        // No write SQL anywhere in the read path's own functions.
+        for symbol in ["read_run_traces", "replay_verify", "trace_listing"] {
+            let start = production
+                .find(&format!("fn {symbol}"))
+                .expect("locate the read path");
+            let body = &production[start..];
+            let end = body.find("\nfn ").unwrap_or(body.len());
+            let body = &body[..end];
+            for verb in ["INSERT", "UPDATE ", "DELETE FROM", "REPLACE INTO"] {
+                assert!(
+                    !body.contains(verb),
+                    "`{symbol}` contains `{verb}` — the replay surface persists NOTHING: a \
+                     replay verdict is a report, and a report that writes is a mutation"
+                );
+            }
+        }
+
+        // No model provider on the read path. The pure comparator's crate has
+        // no model dependency, so any provider call here would be a NEW edge.
+        for banned in [
+            "resolve_for_execution",
+            "run_model",
+            "embed_text",
+            "reqwest::",
+            "http://",
+            "https://",
+        ] {
+            assert!(
+                !production.contains(banned),
+                "the read path must not reach `{banned}` — the replay verdict is computable \
+                 from stored bytes alone"
+            );
+        }
+    }
+
+    /// D5: AGENTS.md forbids `let _ =` on writes because it reads like a
+    /// swallowed error. This one sat in PRODUCTION on the attestation tie.
+    /// Pinned so the idiom cannot come back on this file.
+    #[test]
+    fn delivery_production_carries_no_swallowed_let_underscore() {
+        let full = include_str!("delivery.rs");
+        let boundary = full
+            .find("#[cfg(test)]")
+            .expect("delivery.rs has a #[cfg(test)] boundary");
+        let production = &full[..boundary];
+        for (i, line) in production.lines().enumerate() {
+            let trimmed = line.trim();
+            assert!(
+                !trimmed.starts_with("let _ ="),
+                "delivery.rs:{}: `let _ =` in the production region reads like a swallowed \
+                 error (AGENTS.md forbids it on writes). Line: {trimmed}",
+                i + 1
+            );
+        }
+    }
+
+    /// D4: the "4 of 13 predicate fields non-empty" ceiling is a DOC claim with
+    /// no pin. R42 will populate `approval_ref` and move it silently. This
+    /// pins WHICH four stay empty, so a future round cannot move the ceiling
+    /// without a test going red and a decision being recorded.
+    #[test]
+    fn delivery_attestation_predicate_keeps_its_four_empty_fields() {
+        let full = include_str!("attestations.rs");
+        let boundary = full
+            .find("#[cfg(test)]")
+            .expect("attestations.rs has a #[cfg(test)] boundary");
+        let production = &full[..boundary];
+        let body = production
+            .split("fn predicate_for")
+            .nth(1)
+            .and_then(|rest| rest.split("\nfn ").next())
+            .expect("`fn predicate_for` must be locatable in the production region");
+
+        // The four fields the ceiling names are ASSIGNED EMPTY, not merely
+        // absent. Each must appear as an explicit empty assignment.
+        for field in [
+            "gate_verdicts",
+            "approval_ref",
+            "authority_receipts",
+            "budget_spend",
+        ] {
+            let assigned_empty = body
+                .lines()
+                .any(|l| l.contains(&format!("{field}")) && l.contains("Default::default()"));
+            assert!(
+                assigned_empty,
+                "`{field}` must be explicitly assigned empty in `predicate_for` — the 4-of-13 \
+                 ceiling is a stated claim, and a field that silently becomes populated is a \
+                 ceiling that moved without a decision"
+            );
+        }
+    }
 }

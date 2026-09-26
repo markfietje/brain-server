@@ -573,6 +573,14 @@ const PRE_GATE_404: &[&str] = &[
     "/workflow/delivery/runs/{id}/advance",
     "/workflow/delivery/runs/{id}/answer",
     "/workflow/delivery/runs/{id}/gates",
+    // ...and the line's THREE id-scoped READS. They resolve the run before any
+    // gate exactly as the writes do, so an absent run is the same probe-blind
+    // 404 — and that is the whole point of listing them here: a read that
+    // leaked existence (403 for one class, 404 for another) would be an oracle
+    // telling a principal which runs exist.
+    "/workflow/delivery/runs/{id}/attestations",
+    "/workflow/delivery/runs/{id}/replay-verify",
+    "/workflow/delivery/runs/{id}/trace",
     // The account {id} routes resolve the account BEFORE any gate: an
     // absent id (and a non-account id — the same answer) is the probe-blind
     // 404.
@@ -2343,12 +2351,22 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     // The delivery loop's four run writes: each demands the `workflow` role on
     // top of Write on the run's own domain, so the agent class is refused 403
     // on all four. The gate-evaluation route is included deliberately — a
-    // disposition an agent could read would hand back the run's phase and
+    // dispositions an agent could read would hand back the run's phase and
     // tier to the class that must not be able to drive them.
     "/workflow/delivery/runs",
     "/workflow/delivery/runs/{id}/advance",
     "/workflow/delivery/runs/{id}/answer",
     "/workflow/delivery/runs/{id}/gates",
+    // ...and the three READS, which demand the same role. A read is not a
+    // lesser surface: the attestation chain carries signed evidence, and the
+    // replay report carries a verdict about a run's integrity. Either leaking
+    // to a class that cannot drive the run is the same failure, so the reads
+    // are refused here for the same reason the writes are. (The attestation
+    // read shipped WITHOUT this row — an unasserted divergence where the matrix
+    // expected the agent class to pass a route the handler refuses. Closed.)
+    "/workflow/delivery/runs/{id}/attestations",
+    "/workflow/delivery/runs/{id}/replay-verify",
+    "/workflow/delivery/runs/{id}/trace",
     // NOT workflow-gated (verified: the relay `workflow` sites both live in
     // post_handover_offer; accept/decline + mesh's post_delegation_result
     // carry only the scope gate — they pass for this class on Write)
@@ -2591,27 +2609,51 @@ async fn delivery_routes_role_gated_agent_and_revoked_denied() {
     let advance = r#"{"expected_revision":0,"to_phase":"design","artifact_refs":[]}"#;
     let answer = r#"{"expected_revision":0,"answer":"yes"}"#;
     let gates = r#"{"to_phase":"design"}"#;
-    let cases: Vec<(&str, String, &str)> = vec![
+    // (label, path, method, body). The three reads join the three writes: a
+    // read is not a lesser surface here, because the chain carries signed
+    // evidence and the replay report carries a verdict about the run.
+    let cases: Vec<(&str, String, &str, &str)> = vec![
         (
             "advance",
             format!("/workflow/delivery/runs/{run_id}/advance"),
+            "POST",
             advance,
         ),
         (
             "answer",
             format!("/workflow/delivery/runs/{run_id}/answer"),
+            "POST",
             answer,
         ),
         (
             "gates",
             format!("/workflow/delivery/runs/{run_id}/gates"),
+            "POST",
             gates,
+        ),
+        (
+            "attestations",
+            format!("/workflow/delivery/runs/{run_id}/attestations"),
+            "GET",
+            "",
+        ),
+        (
+            "replay-verify",
+            format!("/workflow/delivery/runs/{run_id}/replay-verify"),
+            "GET",
+            "",
+        ),
+        (
+            "trace",
+            format!("/workflow/delivery/runs/{run_id}/trace"),
+            "GET",
+            "",
         ),
     ];
 
     // The agent's scopes pass; only the ROLE is missing.
-    for (label, path, body) in &cases {
-        let (st, _) = send_body(&srv, Some(TWOKEY_AGENT), path, "POST", body).await;
+    for (label, path, method, body) in &cases {
+        let (st, _) = send_body(&srv, Some(TWOKEY_AGENT), path, method, body).await;
         assert_eq!(
             st,
             StatusCode::FORBIDDEN,
@@ -2620,28 +2662,27 @@ async fn delivery_routes_role_gated_agent_and_revoked_denied() {
         );
     }
 
+    // ...and the OPERATOR clears all six on that same run. Without this arm the
+    // 403 above would be satisfied by a route that refuses everybody, which is
+    // not a gate.
+    for (label, path, method, body) in &cases {
+        let (st, text) = send_body(&srv, Some(TWOKEY_OP), path, method, body).await;
+        assert!(
+            st == StatusCode::OK || st == StatusCode::CONFLICT,
+            "the operator — who HAS the workflow role — is not refused on /{label} (got {st}: \
+             {text}). A 403-for-everybody is not a gate."
+        );
+    }
+
     // Probe-blind: an absent run reads the same 404 for both classes.
-    for (label, path, body) in &cases {
-        let (st_op, _) = send_body(
-            &srv,
-            Some(TWOKEY_OP),
-            &path.replacen(&run_id.to_string(), "999999", 1),
-            "POST",
-            body,
-        )
-        .await;
-        let (st_agent, _) = send_body(
-            &srv,
-            Some(TWOKEY_AGENT),
-            &path.replacen(&run_id.to_string(), "999999", 1),
-            "POST",
-            body,
-        )
-        .await;
+    for (label, path, method, body) in &cases {
+        let absent = path.replacen(&run_id.to_string(), "999999", 1);
+        let (st_op, _) = send_body(&srv, Some(TWOKEY_OP), &absent, method, body).await;
+        let (st_agent, _) = send_body(&srv, Some(TWOKEY_AGENT), &absent, method, body).await;
         assert_eq!(
             st_op,
             StatusCode::NOT_FOUND,
-            "absent run 404s for the operator"
+            "absent run 404s for the operator on /{label}"
         );
         assert_eq!(
             st_agent, st_op,
@@ -2651,11 +2692,256 @@ async fn delivery_routes_role_gated_agent_and_revoked_denied() {
 
     // Revocation kills the identity before the handler exists to gate it.
     revoke_via_route(&srv, TWOKEY_OP, "agent@loopback").await;
-    let (st, text) = send_body(&srv, Some(TWOKEY_AGENT), &cases[0].1, "POST", cases[0].2).await;
+    let (st, text) = send_body(
+        &srv,
+        Some(TWOKEY_AGENT),
+        &cases[0].1,
+        cases[0].2,
+        cases[0].3,
+    )
+    .await;
     assert_eq!(
         st,
         StatusCode::UNAUTHORIZED,
         "a revoked agent dies at the middleware"
     );
     assert_eq!(text, revoked_body("identity_revoked"));
+
+    // ...and on a READ too: revocation is not a write-scoped kill switch.
+    let (st, text) = send_body(
+        &srv,
+        Some(TWOKEY_AGENT),
+        "/workflow/delivery/runs/1/replay-verify",
+        "GET",
+        "",
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "a revoked agent dies at the middleware on the replay read too — a kill switch that \
+         spares the read surfaces would leave the evidence readable by a dead identity"
+    );
+    assert_eq!(text, revoked_body("identity_revoked"));
+}
+
+/// D2: `?verify=1` is documented in three places and was pinned NOWHERE
+/// behaviourally. The verdict is UNCONDITIONAL — the parameter is an explicit
+/// request for the IDENTICAL payload, and no value of it can switch
+/// verification off. This opens a real run and reads it four ways.
+#[tokio::test]
+async fn delivery_attestation_verify_parameter_returns_the_identical_payload() {
+    let srv = twokey_server();
+    let (st, body) = send_body(
+        &srv,
+        Some(TWOKEY_OP),
+        "/workflow/delivery/runs",
+        "POST",
+        r#"{"domain":"global","goal":"verify-param","tier":"observe"}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "the operator opens a run: {body}");
+    let run_id: i64 = serde_json::from_str::<serde_json::Value>(&body).unwrap()["run_id"]
+        .as_i64()
+        .expect("a run id");
+    let path = format!("/workflow/delivery/runs/{run_id}/attestations");
+
+    let (st, bare) = send_body(&srv, Some(TWOKEY_OP), &path, "GET", "").await;
+    assert_eq!(st, StatusCode::OK, "the read serves without the parameter: {bare}");
+    let (st, asked) = send_body(&srv, Some(TWOKEY_OP), &format!("{path}?verify=1"), "GET", "").await;
+    assert_eq!(st, StatusCode::OK, "`?verify=1` is accepted: {asked}");
+    let (st, wrong) = send_body(
+        &srv,
+        Some(TWOKEY_OP),
+        &format!("{path}?verify=0"),
+        "GET",
+        "",
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "an unrecognized value is still the identical payload — the parameter selects nothing, \
+         so it cannot 400: {wrong}"
+    );
+
+    // The verdict is the same in all three. Only the report's own `generated_at`
+    // could legitimately differ, and it does not — the assembly takes `now` from
+    // the handler, and the chain payload carries no clock field.
+    let a: serde_json::Value = serde_json::from_str(&bare).expect("json");
+    let b: serde_json::Value = serde_json::from_str(&asked).expect("json");
+    let c: serde_json::Value = serde_json::from_str(&wrong).expect("json");
+    assert_eq!(a, b, "`?verify=1` returns the IDENTICAL payload");
+    assert_eq!(a, c, "an unrecognized value returns the IDENTICAL payload");
+    // A non-verifying chain is 200 with a NAMED per-link refusal, never a
+    // silent empty chain that reads as verified. This run has NO links, so the
+    // honest shape is: verified over zero links, and the link list is empty.
+    assert_eq!(
+        a["verdict"]["link_count"], 0,
+        "a run with no signed link has no link to refuse"
+    );
+    assert_eq!(
+        a["chain"].as_array().map(Vec::len),
+        Some(0),
+        "the chain list is empty, and the verdict says so rather than implying verification"
+    );
+}
+
+/// D3: the keyless-host `409 delivery_attestation_refused` was proven at the
+/// CORE (both arms, the real resolver) and at NO HTTP hop. A core-level proof
+/// cannot see a handler that maps the refusal to the wrong status, or drops it
+/// into a 500.
+#[tokio::test]
+async fn delivery_attestation_read_refuses_with_409_on_a_keyless_host() {
+    // The keyless posture is ARMED, not assumed. A developer machine (and this
+    // one) carries a real operator key, so a test that merely ran here would
+    // pass vacuously on a keyed host and prove nothing about the refusal. The
+    // env lock is this file's own `BK_ENV_LOCK` precedent: the var is process
+    // global, so the guard is held for the whole test.
+    let _env = BK_ENV_LOCK.lock().await;
+    let keyless_dir = tempfile::TempDir::new().expect("an empty key dir");
+    let previous_key_dir = std::env::var_os("BRAIN_UMP_KEY_DIR");
+    unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", keyless_dir.path()) };
+
+    // A single-token opaque server: the operator token exists, and there is NO
+    // agent token — so no operator key is provisioned, which is the posture a
+    // fresh host is in.
+    let dir = tempfile::TempDir::new().expect("temp dir");
+    let db_path = dir.path().join("brain.db");
+    brain_server::register_sqlite_vec::register_sqlite_vec();
+    let mgr = SqliteConnectionManager::file(&db_path);
+    let pool: brain_server::Pool = r2d2::Pool::builder()
+        .max_size(2)
+        .build(mgr)
+        .expect("pool");
+    brain_server::migration::run_migration(
+        &mut pool.get().expect("conn"),
+        brain_server::config::DB_MMAP_SIZE_MIB,
+    )
+    .expect("migration");
+    let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+        brain_server::embed::StaticEmbedder::new(brain_server::config::MODEL_ID).expect("model"),
+    );
+    let tok_file = dir.path().join("tokens");
+    std::fs::write(&tok_file, "keyless-op-token\n").expect("token file");
+    let token_store = brain_server::auth::TokenStore::from_file(Some(tok_file));
+    token_store.reload_parts_from(vec!["keyless-op-token".to_string()], None);
+    let jwt_middleware_state = Arc::new(JwtMiddlewareState::opaque_for_tests(
+        pool.clone(),
+        db_path.clone(),
+    ));
+    let state = Arc::new(brain_server::AppState {
+        token_store,
+        jwt_middleware_state,
+        cors: tower_http::cors::CorsLayer::new(),
+        durability: Default::default(),
+        loom: Default::default(),
+        model,
+        registry: brain_server::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
+        pool,
+        db_path,
+        connection_tracker: Arc::new(brain_server::http_limit::ConnectionTracker::new()),
+        rate_limiter: Arc::new(brain_server::http_limit::RateLimiter::new()),
+        snapshot: brain_server::integrity::SnapshotState::default(),
+        audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+        auth_mode: brain_server::auth::AuthMode::Opaque,
+        key_store: brain_server::auth::jwks::KeyStore::default(),
+        revocation_cache: Arc::new(brain_server::auth::revocation::RevocationCache::new()),
+        jwt_issuer: String::new(),
+        jwt_audience: String::new(),
+        oidc_config: brain_server::handlers::well_known::OidcConfig::unconfigured(),
+        ump_events: tokio::sync::broadcast::channel(brain_server::config::UMP_EVENT_BUFFER).0,
+        alert_events: tokio::sync::broadcast::channel(brain_server::config::ALERT_EVENT_BUFFER).0,
+        alert_seq: std::sync::atomic::AtomicU64::new(0),
+        chain_watch: brain_server::alert::ChainWatchState::default(),
+        concurrency: &brain_server::concurrency::CONCURRENCY,
+    });
+    let srv = TestServer {
+        _dir: dir,
+        state,
+        priv_key: {
+            let mut rng = rand::rngs::ThreadRng::default();
+            rsa::RsaPrivateKey::new(&mut rng, 2048).expect("keypair")
+        },
+    };
+
+    let (st, body) = send_body(
+        &srv,
+        Some("keyless-op-token"),
+        "/workflow/delivery/runs",
+        "POST",
+        r#"{"domain":"global","goal":"keyless","tier":"observe"}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "admission does not need a key: {body}");
+    let run_id: i64 = serde_json::from_str::<serde_json::Value>(&body).unwrap()["run_id"]
+        .as_i64()
+        .expect("a run id");
+
+    // The phase pass is the thing that needs the key. On a keyless host it
+    // refuses — and it must refuse with the NAMED code, not a 500 and not a
+    // silent success with a missing link.
+    let (st, text) = send_body(
+        &srv,
+        Some("keyless-op-token"),
+        &format!("/workflow/delivery/runs/{run_id}/advance"),
+        "POST",
+        r#"{"expected_revision":0,"to_phase":"design","artifact_refs":[]}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "a phase pass with no operator key refuses with 409, never 500: {text}"
+    );
+    assert!(
+        text.contains("delivery_attestation_refused"),
+        "the refusal is NAMED — a client learns WHICH law stopped the pass, rather than parsing \
+         prose: {text}"
+    );
+
+    // The read still serves, and it serves the truth: the chain is empty
+    // because nothing was signed.
+    let (st, text) = send_body(
+        &srv,
+        Some("keyless-op-token"),
+        &format!("/workflow/delivery/runs/{run_id}/attestations"),
+        "GET",
+        "",
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "the read serves on a keyless host: {text}");
+    let read: serde_json::Value = serde_json::from_str(&text).expect("json");
+    assert_eq!(
+        read["verdict"]["link_count"], 0,
+        "no key means no link — and the read says zero rather than implying a chain"
+    );
+    // DISCLOSED CEILING, asserted as it SHIPS rather than as one might wish:
+    // `verified` is `links.iter().all(|l| l.verified)`, and `all` over an
+    // EMPTY iterator is vacuously true. So a run with no signed evidence at all
+    // reports `verified: true`. This is the shipped R40 semantics and changing
+    // it is a NEW decision (an empty chain is a fail-closed posture, not a
+    // verified one — but that is a wire-contract change to a shipped route and
+    // is NOT R41's to make). A reader must therefore read `verified` together
+    // with `link_count`, which is why both are asserted here and why the
+    // openapi route description carries the negation.
+    assert_eq!(
+        read["verdict"]["verified"], true,
+        "an empty chain is vacuously `verified` under the shipped `all()` semantics. This is \
+         R40's shipped verdict, not a claim that evidence exists: `link_count` is 0 and `head` \
+         is null. Reading `verified` WITHOUT `link_count` would misread a keyless host as an \
+         integrity claim. R41 asserts the shipped truth and discloses the ceiling rather than \
+         re-opening a made decision on a shipped wire contract."
+    );
+    assert!(
+        read["verdict"]["head"].is_null(),
+        "an empty chain has no head, and says so — a head would be a fabricated address"
+    );
+
+    // Restore the process env: the lock is released when this fn returns, and a
+    // leaked `BRAIN_UMP_KEY_DIR` would silently keyless every later test.
+    match previous_key_dir {
+        Some(v) => unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", v) },
+        None => unsafe { std::env::remove_var("BRAIN_UMP_KEY_DIR") },
+    }
 }
