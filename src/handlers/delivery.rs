@@ -99,6 +99,23 @@ pub struct AdvanceBody {
     pub to_phase: String,
     #[serde(default)]
     pub artifact_refs: Vec<String>,
+    /// The typed artifact this pass carries, if any. Absent is the previous
+    /// request body unchanged — the field is additive and defaults to absent,
+    /// so an existing client sends exactly the same bytes.
+    #[serde(default)]
+    pub artifact: Option<ArtifactBody>,
+}
+
+/// The typed artifact over the wire. The body carries the id, the content, and
+/// the checkpoint gate; the SHA-256 digest is NOT accepted from the caller —
+/// it is derived server-side by the shipped engine, so a client cannot name the
+/// digest of an artifact the server did not derive.
+#[derive(Debug, Deserialize)]
+pub struct ArtifactBody {
+    pub id: String,
+    pub content: String,
+    #[serde(default)]
+    pub quality_gate: Option<String>,
 }
 
 pub async fn post_delivery_advance(
@@ -117,6 +134,32 @@ pub async fn post_delivery_advance(
 
     let actor = super::recall::principal_label(&principal);
     let now = chrono::Utc::now().timestamp();
+
+    // The artifact is UNTRUSTED input at this boundary: it is executor-produced
+    // and arrives from a client, so it is screened exactly as `/propose`
+    // screens its content. Reject is a 400 and quarantine is a 409 — the same
+    // two answers the propose seam gives, for the same reason.
+    let artifact = body
+        .artifact
+        .map(|a| {
+            let verdict = crate::screen::screen(&a.content, &a.id);
+            if verdict == crate::screen::ScreenResult::Reject {
+                return Err(HandlerError::bad_request(
+                    "artifact_screened_reject",
+                    "the artifact content was refused by the content screen",
+                ));
+            }
+            if verdict == crate::screen::ScreenResult::Quarantine {
+                return Err(HandlerError::conflict("artifact_screened_quarantine"));
+            }
+            Ok(delivery::DeliveryArtifact {
+                id: a.id,
+                content: a.content,
+                quality_gate: a.quality_gate,
+            })
+        })
+        .transpose()?;
+
     let advanced = tokio::task::spawn_blocking(move || {
         let mut conn = pool.get().map_err(HandlerError::db_down)?;
         delivery::advance(
@@ -126,6 +169,7 @@ pub async fn post_delivery_advance(
                 expected_revision: body.expected_revision,
                 to_phase: &body.to_phase,
                 artifact_refs: &body.artifact_refs,
+                artifact: artifact.as_ref(),
                 actor: &actor,
                 now,
             },
@@ -253,6 +297,9 @@ fn delivery_error(error: DeliveryError) -> HandlerError {
             "delivery_input_too_many",
             "a bounded collection exceeded its cap",
         ),
+        DeliveryError::QualityGate { .. } => {
+            HandlerError::conflict("delivery_quality_gate_refused")
+        }
         DeliveryError::Storage(detail) => HandlerError::internal(detail),
     }
 }

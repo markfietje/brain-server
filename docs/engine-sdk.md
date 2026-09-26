@@ -28,16 +28,46 @@ Authoritative detail lives in the crate's own
 
 ## The engine crates
 
-The workspace ships focused engine crates that build on the SDK's pattern —
-some filled, some deliberate scaffolds so the graph stays green:
+The workspace ships focused engine crates that build on the SDK's pattern.
+The classification below is **machine-checked** by
+`engine_sdk_crate_map_is_accurate` in `src/docs_truth.rs`, which fails when a
+named crate does not exist on disk, when the SDK itself is missing from the
+list, or when a crate the server actually calls is still called a scaffold.
 
-- Filled: `brain-aftersales-core` (dispositions/evidence/gates),
-  `brain-interview-core`, `brain-troubleshoot-core`, `brain-care-core`,
-  `brain-fuzz` (corpus replay), `brain-delivery-core` (autonomy tiers, phase
-  machine, promotion gate, attestation predicate, budget ledger, replay
-  comparator, release-status machine — pure, no I/O, and ungated: no callers yet).
-- Scaffolds (lib-only by design): `brain-consensus-core`,
-  `brain-executor-core`, `legal-rules-db`.
+**Filled** — carries a decision core and is called:
+
+- `brain-engine-sdk` — the SDK this document describes (`pure`/`policy`/`host`;
+  13k+ lines, ~190 tests). Listed here because the crate list that omitted it
+  was the doc's own subject.
+- `brain-delivery-core` — autonomy tiers, phase machine, promotion gate,
+  attestation predicate, budget ledger, replay comparator, release-status
+  machine. Pure, no I/O. **Called by `src/workflow/delivery.rs` since the
+  delivery-persistence round** — an earlier revision of this line said "ungated:
+  no callers yet", which that round made false.
+- `brain-consensus-core` — `Artifact` (the typed artifact the delivery seam
+  reuses), `Review`/`Verdict`, the capped `advance` state machine,
+  `review_join_gate`, `approval_gate`, and `stage_writer`. Pure, no I/O.
+  **Called by the delivery phase pass.**
+- `brain-executor-core` — `Goal`/`parse_brief`, the `CheckpointGate` JSON
+  validator, `RunState` with the named critic ceiling, `requires_delegation`,
+  and `artifact_hash`. Pure, no I/O. **Called by the delivery phase pass.**
+  Two honest ceilings, both pinned: `apply_steering` is a **declared no-op**
+  (all six `SteeringKind` values are reserved vocabulary with no defined
+  semantics against a two-field `Aggregate`, and the signature is infallible
+  so it cannot report a failure it cannot have), and the `Goal`/`parse_brief`
+  pair is the scope engine the design owner assigns to D3 rather than to the
+  interview crate.
+- `brain-aftersales-core` (dispositions/evidence/gates), `brain-interview-core`,
+  `brain-care-core`, `brain-fuzz` (corpus replay).
+
+**Filled, with a disclosed gap** — carries a decision core but has **no**
+tests: `brain-troubleshoot-core` (advisor/evidence/gates/kernel/subagents).
+Listed as Filled because it is called, not because it is covered.
+
+**Scaffolds** (lib-only by design, no callers): `legal-rules-db`. It is the
+largest remaining scaffold by line count, so the earlier grouping of it
+alongside the two engine cores above was the clearest symptom of this
+classification rotting.
 
 The harness reference implementation lives in `tools/steward-harness`
 (see [API reference — workflow](api.md)).

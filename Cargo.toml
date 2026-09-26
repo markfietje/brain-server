@@ -1,6 +1,6 @@
 [package]
 name = "brain-server"
-version = "1.29.1"
+version = "1.29.2"
 edition = "2024"
 rust-version = "1.98"
 description = "Local-first agent memory server: UMP 1.0 L3, zero-token embeddings, human-in-the-loop write gate, tamper-evident audit chain, DSAR/GDPR tooling."
@@ -99,6 +99,16 @@ legal-rules-db = { path = "crates/legal-rules-db" }
 # serde_json, and sha2 are already locked). The law lives in the crate; the
 # server never re-implements it.
 brain-delivery-core = { path = "crates/brain-delivery-core" }
+# The consensus + executor cores: the D2/D3 engines the delivery run
+# lifecycle consumes on its phase pass. Same law as the edge above — the
+# server calls the pure core and owns the transaction; neither core
+# persists, signs, executes, or contacts a host, so neither can reach the
+# gate's decision column. Two more path edges, each one [[package]] entry
+# in the ROOT Cargo.lock and zero third-party entries (serde, serde_json,
+# and sha2 are already locked; the crates workspace lockfile already
+# carries both as members and must not move).
+brain-consensus-core = { path = "crates/brain-consensus-core" }
+brain-executor-core = { path = "crates/brain-executor-core" }
 # Core Embedding
 model2vec-rs = "0.3"
 # v1.28 "Caliber": the neural-tier runtime (BGE-M3 dense+sparse+colbert +

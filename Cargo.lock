@@ -328,6 +328,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-consensus-core"
+version = "1.27.29"
+dependencies = [
+ "brain-engine-sdk",
+ "hex",
+ "serde",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "brain-delivery-core"
 version = "1.29.0"
 dependencies = [
@@ -344,8 +354,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-executor-core"
+version = "1.27.29"
+dependencies = [
+ "brain-engine-sdk",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "brain-server"
-version = "1.29.1"
+version = "1.29.2"
 dependencies = [
  "aes-gcm",
  "aho-corasick",
@@ -354,8 +375,10 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "blake3",
+ "brain-consensus-core",
  "brain-delivery-core",
  "brain-engine-sdk",
+ "brain-executor-core",
  "bs58",
  "chrono",
  "dirs 7.0.0",

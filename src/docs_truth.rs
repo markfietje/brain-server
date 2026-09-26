@@ -127,4 +127,145 @@ mod pins {
             );
         }
     }
+
+    /// `docs/engine-sdk.md` classifies every engine crate as Filled or a
+    /// Scaffold, and until now NOTHING read the file — the classification had
+    /// rotted past the point where a reader could trust it: `brain-care-core`
+    /// (80 lines, 1 test) was listed Filled beside `legal-rules-db` (1217
+    /// lines, 11 tests) listed as a Scaffold, and `brain-engine-sdk` itself —
+    /// the file's own subject, 13k+ lines — was not listed at all.
+    ///
+    /// This pin is deliberately NOT a line-count comparison. Size is a bad
+    /// proxy (the smallest "Filled" crate is a third the size of the smallest
+    /// "Scaffold" one), so asserting counts would be asserting a fiction. What
+    /// it checks is the two things that were actually false:
+    ///
+    /// 1. every crate the doc names must exist on disk, and the doc must name
+    ///    at least the engine SDK — anti-vacuity, so a renamed or deleted crate
+    ///    fails rather than silently shrinking the list;
+    /// 2. the consumed engines must not be classified as Scaffolds, because
+    ///    the delivery run lifecycle now calls them.
+    #[test]
+    fn engine_sdk_crate_map_is_accurate() {
+        let sdk = doc("docs/engine-sdk.md");
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("crates");
+
+        // Every backticked `brain-*` / `legal-rules-db` name in the doc must be
+        // a real crate directory. This is the anti-vacuity arm: if the scan saw
+        // nothing, the rest of this test would pass on an empty file.
+        let mut named: Vec<String> = Vec::new();
+        let mut rest = sdk.as_str();
+        while let Some(open) = rest.find('`') {
+            let after = &rest[open + 1..];
+            let Some(close) = after.find('`') else { break };
+            let name = &after[..close];
+            if name.starts_with("brain-") || name.starts_with("legal-rules-db") {
+                named.push(name.to_string());
+            }
+            rest = &after[close + 1..];
+        }
+        assert!(
+            named.len() >= 9,
+            "the crate scan found only {} names — the scanner or the doc changed shape",
+            named.len()
+        );
+        for name in &named {
+            assert!(
+                root.join(name).join("Cargo.toml").exists(),
+                "docs/engine-sdk.md names `{name}`, which has no crates/{name}/Cargo.toml — \
+                 rename the crate or the row, never both silently"
+            );
+        }
+        assert!(
+            named.iter().any(|n| n == "brain-engine-sdk"),
+            "the SDK doc must classify the SDK itself"
+        );
+
+        // The scaffolds bullet, taken WITH its wrapped continuation. The first
+        // cut of this pin searched only the text AFTER the scaffolds line,
+        // which had already removed the very names it was checking — so
+        // re-classifying a consumed engine as a Scaffold passed a green pin.
+        // The bullet is the matching line plus its continuations.
+        let lines: Vec<&str> = sdk.lines().collect();
+        let start = lines
+            .iter()
+            .position(|l| l.contains("Scaffold"))
+            .unwrap_or_else(|| panic!("docs/engine-sdk.md lost its Scaffold line"));
+        let mut bullet = String::new();
+        for line in &lines[start..] {
+            if !bullet.is_empty() && !line.starts_with(char::is_whitespace) {
+                break; // a new bullet/paragraph ends the wrapped continuation
+            }
+            bullet.push_str(line);
+            bullet.push(' ');
+            if line.ends_with('.') && bullet.contains('`') {
+                break;
+            }
+        }
+        for consumed in ["brain-executor-core", "brain-consensus-core"] {
+            assert!(
+                !bullet.contains(consumed),
+                "`{consumed}` is consumed by the delivery phase pass and must not be \
+                 classified as a Scaffold — the scaffolds bullet reads: {bullet}"
+            );
+        }
+    }
+
+    /// The AI Act DEPLOYER horizons live in docs and are pinned nowhere in code
+    /// — `reg_watch` holds the Art 50 marking clock and the general application
+    /// clock, and its own comment says the deployer horizons are "tracked in
+    /// docs, not in code". So the two dates the Omnibus deferral moved had no
+    /// machine check at all: a well-meaning edit to the prose would have moved
+    /// a statutory date with nothing failing.
+    ///
+    /// This is a DOCS-TRUTH pin, not a legal claim and not a conformity claim.
+    /// It asserts that the docs carry the two horizons and cite the instrument
+    /// that moved them, so the text cannot drift silently. Whether this system
+    /// is an "AI system", whether it is high-risk, and which role it holds are
+    /// operator and counsel determinations and are recorded as open questions,
+    /// never decided here.
+    #[test]
+    fn ai_act_deployer_horizons_are_stamped_from_the_amending_instrument() {
+        let compliance = doc("COMPLIANCE.md");
+        let detail = doc("docs/compliance.md");
+
+        // The instrument that moved them must be cited, in both surfaces.
+        for (name, text) in [
+            ("COMPLIANCE.md", &compliance),
+            ("docs/compliance.md", &detail),
+        ] {
+            assert!(
+                text.contains("2026/1744"),
+                "{name} must cite Regulation (EU) 2026/1744 — the instrument that \
+                 deferred the high-risk regime"
+            );
+        }
+
+        // The two deployer horizons, in the readable form and the ISO form, so
+        // a rewrite that drops one of the spellings is caught.
+        assert!(
+            compliance.contains("2 December 2027"),
+            "COMPLIANCE.md lost the Annex III stand-alone high-risk horizon"
+        );
+        assert!(
+            compliance.contains("2 August 2028"),
+            "COMPLIANCE.md lost the Annex I product-embedded horizon"
+        );
+        assert!(
+            detail.contains("2027-12-02"),
+            "docs/compliance.md lost the Annex III deployer horizon stamp"
+        );
+        assert!(
+            detail.contains("2028-08-02"),
+            "docs/compliance.md lost the Annex I deployer horizon stamp"
+        );
+
+        // The superseded value must not reappear as a live claim. It survives
+        // only as a struck-through correction marker.
+        assert!(
+            !detail.contains("Annex III high-risk obligations apply from 2 Dec 2026"),
+            "docs/compliance.md states the PRE-Omnibus Annex III horizon as live — \
+             2026-12-02 is the Art 50(2) legacy-marking grace END, not this start"
+        );
+    }
 }

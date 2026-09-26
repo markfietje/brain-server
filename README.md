@@ -17,7 +17,7 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
     <img alt="Latest release" src="https://img.shields.io/github/v/release/markfietje/brain-server?include_prereleases&sort=semver">
   </a>
   <a href="#">
-    <img alt="Version 1.29.1" src="https://img.shields.io/badge/version-1.29.1-blue.svg">
+    <img alt="Version 1.29.2" src="https://img.shields.io/badge/version-1.29.2-blue.svg">
   </a>
   <a href="https://markfietje.github.io/brain-server/">
     <img alt="Documentation" src="https://img.shields.io/badge/docs-brain--server-1f6feb.svg">
@@ -31,7 +31,7 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 <p align="center">
 
   <a href="#verification-and-evidence">
-    <img alt="2307 tests passed" src="https://img.shields.io/badge/tests-2307%20passed-brightgreen.svg">
+    <img alt="2317 tests passed" src="https://img.shields.io/badge/tests-2317%20passed-brightgreen.svg">
   </a>
   <a href="docs/universal-memory-protocol.md">
     <img alt="UMP 1.0 L3 verified" src="https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg">

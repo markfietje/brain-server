@@ -53,6 +53,63 @@ const MAX_ANSWER_CHARS: usize = 2000;
 const MAX_GOAL_CHARS: usize = 2000;
 const MAX_BUDGETS: usize = 5;
 const MAX_REFS: usize = 32;
+/// The typed artifact's own caps. An artifact body is a proposal's content, so
+/// it is bounded like every other bounded caller text — and the caps are named
+/// so the refusal names them.
+const MAX_ARTIFACT_ID_CHARS: usize = 128;
+const MAX_ARTIFACT_CHARS: usize = 8000;
+const MAX_GATE_CHARS: usize = 8000;
+
+/// The delivery loop's typed-artifact proposal kind. `proposals.kind` is free
+/// text with no CHECK and no global closed vocabulary, so a new kind is
+/// admissible at the schema level with no migration — and it is deliberately
+/// NOT one of the nine kinds `POST /propose` accepts, because an executor
+/// artifact is not operator-authored knowledge and never becomes a knowledge
+/// row. It stays a proposal or it does not exist.
+const ARTIFACT_PROPOSAL_KIND: &str = "delivery/artifact";
+
+/// The `ddl_*` session-log family — the delivery trace's narrative, exactly as
+/// the design owner describes it ("the `agent_session_events` `ddl_*`
+/// narrative"). It is NOT the reserved `control:` family, so these rows are
+/// visible to `replay` and to the context projection; that visibility is
+/// intended, because the narrative is what a replaying agent reads.
+pub(crate) const DDL_ARTIFACT_KIND: &str = "ddl_artifact";
+pub(crate) const DDL_ARTIFACT_REFUSED_KIND: &str = "ddl_artifact_refused";
+
+/// The typed artifact the phase pass may carry. A REUSED shape, not a new
+/// type: [`Self::typed`] builds the shipped
+/// [`brain_consensus_core::Artifact`], whose `hash` field is the same
+/// `sha256(content)` the shipped [`brain_executor_core::artifact_hash`]
+/// computes, so the id recorded in the audit and the digest an approver
+/// computes are the same digest of the same bytes.
+///
+/// `quality_gate` is the checkpoint gate, validated by the shipped
+/// [`brain_executor_core::validate_gate_json`] rather than reimplemented here.
+/// It is consulted on the `build` phase pass; on every other phase it is
+/// carried and ignored, because a scope or design artifact has no QA evidence
+/// to offer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeliveryArtifact {
+    pub id: String,
+    pub content: String,
+    pub quality_gate: Option<String>,
+}
+
+impl DeliveryArtifact {
+    /// The shipped typed artifact, with its content digest derived.
+    pub(crate) fn typed(&self) -> brain_consensus_core::Artifact {
+        brain_consensus_core::Artifact::new(&self.id, &self.content)
+    }
+
+    /// Run the shipped QA gate. The refusal is the executor's own vocabulary,
+    /// carried verbatim so the caller learns which law refused.
+    fn quality_gate(&self) -> Result<(), String> {
+        let Some(raw) = self.quality_gate.as_deref() else {
+            return Ok(());
+        };
+        brain_executor_core::validate_gate_json(raw).map(|_| ())
+    }
+}
 
 // ── the persisted run state ────────────────────────────────────────────────
 
@@ -108,6 +165,9 @@ pub(crate) enum DeliveryError {
     TooLong { field: &'static str, max: usize },
     /// Too many budget rows, or too many artifact refs, in one request.
     TooMany { field: &'static str, max: usize },
+    /// The checkpoint gate refused the artifact. Carries the executor's own
+    /// refusal verbatim — the QA law, not a nearest-match guess.
+    QualityGate { reason: String },
     /// The storage boundary refused. The detail never reaches a caller
     /// verbatim; it exists so the failure is diagnosable.
     Storage(String),
@@ -131,6 +191,7 @@ impl std::fmt::Display for DeliveryError {
             Self::QuestionPending => write!(f, "delivery_question_pending"),
             Self::TooLong { field, max } => write!(f, "delivery_{field}_too_long:{max}"),
             Self::TooMany { field, max } => write!(f, "delivery_{field}_too_many:{max}"),
+            Self::QualityGate { reason } => write!(f, "delivery_quality_gate_refused:{reason}"),
             Self::Storage(detail) => write!(f, "delivery_storage: {detail}"),
         }
     }
@@ -572,6 +633,10 @@ pub(crate) struct Advance<'a> {
     pub expected_revision: i64,
     pub to_phase: &'a str,
     pub artifact_refs: &'a [String],
+    /// The typed artifact this phase pass carries, if any. Absent is the
+    /// previous behaviour byte for byte; present files exactly one proposal
+    /// inside this same `WorkflowTx`.
+    pub artifact: Option<&'a DeliveryArtifact>,
     pub actor: &'a str,
     pub now: i64,
 }
@@ -586,6 +651,10 @@ pub(crate) struct Advanced {
     pub trace_id: String,
     pub state_revision: i64,
     pub step_id: i64,
+    /// The proposal the typed artifact filed, or `0` when the pass carried no
+    /// artifact. A caller holding a non-zero id has evidence that the
+    /// proposal, the trace, and the audit all committed together.
+    pub proposal_id: i64,
 }
 
 pub(crate) fn advance(conn: &mut Connection, req: &Advance<'_>) -> Result<Advanced, DeliveryError> {
@@ -597,6 +666,21 @@ pub(crate) fn advance(conn: &mut Connection, req: &Advance<'_>) -> Result<Advanc
     }
     for r in req.artifact_refs {
         bounded_input("artifact_refs", r, 256)?;
+    }
+
+    // The artifact's own bounds, before any transaction opens. A typed artifact
+    // is executor-produced and therefore untrusted input at this boundary; it
+    // is screened by the handler and bounded HERE, and stored verbatim so the
+    // approval digest is computed over one shape.
+    if let Some(artifact) = req.artifact {
+        bounded_input("artifact_id", &artifact.id, MAX_ARTIFACT_ID_CHARS)?;
+        bounded_input("artifact_content", &artifact.content, MAX_ARTIFACT_CHARS)?;
+        if artifact.content.trim().is_empty() {
+            return Err(DeliveryError::Storage("artifact_content_empty".into()));
+        }
+        if let Some(gate) = artifact.quality_gate.as_deref() {
+            bounded_input("artifact_quality_gate", gate, MAX_GATE_CHARS)?;
+        }
     }
 
     let mut tx = crate::workflow::tx::WorkflowTx::begin(conn).map_err(storage)?;
@@ -626,6 +710,17 @@ pub(crate) fn advance(conn: &mut Connection, req: &Advance<'_>) -> Result<Advanc
             from: state.phase.clone(),
             to: proposed.as_str().to_string(),
         });
+    }
+
+    // 2a. the checkpoint gate — BEFORE any write. The shipped executor
+    // validator decides whether this artifact's evidence is a live surface, and
+    // a refusal aborts the whole pass with nothing landed. This is engine
+    // CONSUMPTION: the law lives in the crate and is not restated here.
+    if let Some(artifact) = req.artifact
+        && proposed == Phase::Build
+        && let Err(reason) = artifact.quality_gate()
+    {
+        return Err(DeliveryError::QualityGate { reason });
     }
 
     // 3. the step row — the phase pass's own durable artifact.
@@ -685,6 +780,63 @@ pub(crate) fn advance(conn: &mut Connection, req: &Advance<'_>) -> Result<Advanc
     row.id = row.content_id(trace_ordinal(tx.tx(), req.run_id)?);
     write_trace(tx.tx(), &row)?;
 
+    // 5a. the typed-artifact proposal seam. The artifact becomes a PENDING
+    // proposal in the SAME transaction as the step row, the CAS, and the trace:
+    // a reviewable artifact can never cite a phase pass that did not commit,
+    // and a phase pass can never commit without its artifact's evidence.
+    //
+    // The executor PROPOSES. It writes no disposition, no `decided_at`, and no
+    // routing key — the gate disposes, and the four normative keys stay the
+    // engine's. The content is stored VERBATIM so `review_digest` binds one
+    // shape: a seam that pre-sanitized here would move the digest of every
+    // outstanding approval and fail them closed with 409 at approve time.
+    let mut proposal_id = 0_i64;
+    if let Some(artifact) = req.artifact {
+        let typed = artifact.typed();
+        proposal_id = tx
+            .tx()
+            .query_row(
+                "INSERT INTO proposals(kind, content, title, source, novelty, salience, \
+                                    created_at, owner, domain, decision_run_ref)
+                 VALUES (?1, ?2, ?3, ?4, 0, 0, ?5, ?6, ?7, ?8)
+                 RETURNING id",
+                params![
+                    ARTIFACT_PROPOSAL_KIND,
+                    typed.content,
+                    typed.id,
+                    format!("delivery:{}", RUN_KIND),
+                    req.now,
+                    req.actor,
+                    domain,
+                    format!("trc:{}", row.id),
+                ],
+                |r| r.get(0),
+            )
+            .map_err(storage)?;
+
+        // The narrative row. The payload carries the digest, the ids, and the
+        // gate flag — never the artifact body, which is the proposal's job.
+        let narrative = serde_json::json!({
+            "proposal_id": proposal_id,
+            "trace_id": row.id,
+            "artifact_id": typed.id,
+            "artifact_hash": typed.hash,
+            "phase": proposed.as_str(),
+            "tier": tier.as_str(),
+            "quality_gate": artifact.quality_gate.is_some(),
+        })
+        .to_string();
+        crate::workflow::session_log::append(
+            tx.tx(),
+            req.run_id,
+            DDL_ARTIFACT_KIND,
+            &narrative,
+            &format!("ddl-artifact:{proposal_id}"),
+            req.now,
+        )
+        .map_err(|e| storage(format!("delivery session append failed: {e}")))?;
+    }
+
     // 6. the audit — LAST, fail-closed, so a pass cannot land without it.
     delivery_audit(
         tx.tx(),
@@ -692,7 +844,8 @@ pub(crate) fn advance(conn: &mut Connection, req: &Advance<'_>) -> Result<Advanc
         &format!("delivery_run:{}", req.run_id),
         AuditStatus::Ok,
         &format!(
-            "delivery phase pass {}->{} tier={} refs={} status={next_status}",
+            "delivery phase pass {}->{} tier={} refs={} status={next_status} \
+             proposal={proposal_id}",
             state.phase,
             proposed.as_str(),
             tier.as_str(),
@@ -710,6 +863,7 @@ pub(crate) fn advance(conn: &mut Connection, req: &Advance<'_>) -> Result<Advanc
         trace_id: row.id,
         state_revision: req.expected_revision + 1,
         step_id,
+        proposal_id,
     })
 }
 
@@ -935,6 +1089,7 @@ mod tests {
                 expected_revision: rev,
                 to_phase: to,
                 artifact_refs: &[],
+                artifact: None,
                 actor: "tester",
                 now: 2,
             },
@@ -1591,5 +1746,393 @@ mod tests {
     fn i_of(src: &str, v: &str) -> usize {
         src.find(&format!("DO UPDATE SET value = '{v}'"))
             .unwrap_or(0)
+    }
+
+    // ── the R39 seam: D2/D3 wiring + the typed-artifact proposal ──────────
+
+    fn artifact(id: &str, content: &str) -> DeliveryArtifact {
+        DeliveryArtifact {
+            id: id.to_string(),
+            content: content.to_string(),
+            quality_gate: None,
+        }
+    }
+
+    /// The typed artifact is a SHIPPED type, not an invention, and the two
+    /// shipped digests agree. `consensus_core::Artifact::new` derives its hash
+    /// as `sha256(content)`; `executor_core::artifact_hash` is the same digest
+    /// as a function. If they ever diverge, the id recorded in the audit and
+    /// the id an approver sees would be different digests of the same bytes —
+    /// so this is a cross-crate consistency pin, not a restatement.
+    #[test]
+    fn delivery_typed_artifact_is_a_shipped_type() {
+        let a = artifact("plan-1", "the plan body");
+        let typed = a.typed();
+        assert_eq!(typed.id, "plan-1");
+        assert_eq!(typed.content, "the plan body");
+        assert_eq!(
+            typed.hash,
+            brain_executor_core::artifact_hash("the plan body"),
+            "the consensus shape and the executor digest fn must agree byte for byte"
+        );
+        assert_eq!(typed.hash.len(), 64, "sha256 hex is 64 chars");
+    }
+
+    /// The seam lands the proposal, the trace, and the audit as ONE transition.
+    /// A caller that reads a proposal id back has evidence that all three
+    /// committed; a partial write would be a proposal nobody can audit.
+    #[test]
+    fn delivery_proposal_seam_lands_in_one_transaction() {
+        let mut conn = seed();
+        let created = open(&mut conn, "propose");
+        let a = artifact("plan-1", "the plan body");
+        let advanced = advance(
+            &mut conn,
+            &Advance {
+                run_id: created.run_id,
+                expected_revision: 0,
+                to_phase: "design",
+                artifact_refs: &[],
+                artifact: Some(&a),
+                actor: "tester",
+                now: 2,
+            },
+        )
+        .expect("the seam pass lands");
+
+        assert!(advanced.proposal_id > 0, "the pass filed a proposal");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM proposals WHERE kind = 'delivery/artifact'"
+            ),
+            1,
+            "exactly one delivery artifact proposal"
+        );
+        let (content, status): (String, String) = conn
+            .query_row(
+                "SELECT content, status FROM proposals WHERE id = ?1",
+                params![advanced.proposal_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(content, "the plan body", "content is stored verbatim");
+        assert_eq!(
+            status, "pending",
+            "a proposal lands PENDING — the executor proposes, only the gate disposes"
+        );
+        // the trace and the audit rode the same pass. The audit chain stores
+        // HASHES, not the detail text, so the row is proved by recomputing the
+        // detail hash — a `LIKE` over a plaintext `detail` column would query a
+        // column that does not exist and read back 0 rows.
+        assert!(count(&conn, "SELECT COUNT(*) FROM delivery_traces") >= 2);
+        let expected_detail = format!(
+            "delivery phase pass scope->design tier=propose refs=0 status=active \
+             proposal={proposal_id}",
+            proposal_id = advanced.proposal_id
+        );
+        let detail_hash: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE detail_hash = ?1",
+                params![crate::audit::hash(&expected_detail)],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            detail_hash, 1,
+            "the pass audit names the proposal it filed, and it is the last \
+             statement before the commit"
+        );
+    }
+
+    /// The commit-or-rollback law, proven by a poisoned statement. A seam that
+    /// filed the proposal and THEN failed would leave a reviewable artifact
+    /// citing a phase pass that never happened.
+    #[test]
+    fn delivery_proposal_and_trace_commit_or_roll_back_together() {
+        let mut conn = seed();
+        let created = open(&mut conn, "propose");
+        let a = artifact("plan-1", "the plan body");
+
+        // A trigger that poisons the audit insert: the proposal and the trace
+        // are written BEFORE it, so a non-rollback implementation leaves both.
+        conn.execute_batch(
+            "CREATE TRIGGER poison_delivery_audit BEFORE INSERT ON audit_events
+             WHEN NEW.detail LIKE '%delivery phase pass%'
+             BEGIN SELECT RAISE(ABORT, 'poisoned'); END;",
+        )
+        .unwrap();
+
+        let err = advance(
+            &mut conn,
+            &Advance {
+                run_id: created.run_id,
+                expected_revision: 0,
+                to_phase: "design",
+                artifact_refs: &[],
+                artifact: Some(&a),
+                actor: "tester",
+                now: 2,
+            },
+        )
+        .expect_err("the poisoned audit must fail the whole pass");
+        assert!(matches!(err, DeliveryError::Storage(_)), "got {err:?}");
+
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM proposals"),
+            0,
+            "the proposal rolled back with the pass"
+        );
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM delivery_traces"),
+            1,
+            "only the admission trace survives; the phase trace rolled back"
+        );
+        let revision: i64 = conn
+            .query_row(
+                "SELECT state_revision FROM workflow_runs WHERE id = ?1",
+                params![created.run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(revision, 0, "the CAS rolled back with the pass");
+    }
+
+    /// The round's structural property: an executor-produced artifact has NO
+    /// write path to a disposition. It files a PENDING proposal and stops. The
+    /// gate's column is not reachable from this seam — not by parameter, not by
+    /// a defaulted value, not by a later write in the same transaction.
+    #[test]
+    fn delivery_executor_has_no_write_path_to_gate_disposition() {
+        let mut conn = seed();
+        let created = open(&mut conn, "propose");
+        let a = artifact("plan-1", "the plan body");
+        let advanced = advance(
+            &mut conn,
+            &Advance {
+                run_id: created.run_id,
+                expected_revision: 0,
+                to_phase: "design",
+                artifact_refs: &[],
+                artifact: Some(&a),
+                actor: "tester",
+                now: 2,
+            },
+        )
+        .unwrap();
+
+        // 1. The proposal carries no disposition, and its status is the queue's.
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM proposals WHERE id = ?1",
+                params![advanced.proposal_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "pending");
+
+        // 2. The seam wrote NO approval evidence: no decided_at, and no digest
+        //    bound to an approver.
+        let decided: Option<i64> = conn
+            .query_row(
+                "SELECT decided_at FROM proposals WHERE id = ?1",
+                params![advanced.proposal_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(decided.is_none(), "an artifact is never self-decided");
+
+        // 3. The run's own status is the ENGINE's, not the executor's: the
+        //    phase pass set `active`, and nothing in the seam chose it.
+        let (run_status, disposition): (String, String) = conn
+            .query_row(
+                "SELECT r.status, t.status FROM workflow_runs r
+                 JOIN delivery_traces t ON t.run_id = r.id
+                 WHERE r.id = ?1 AND t.stage = 'phase'",
+                params![created.run_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(run_status, "active");
+        assert_eq!(
+            disposition, "advanced",
+            "the trace records that a pass happened, not that anything was approved"
+        );
+    }
+
+    /// The four normative routing keys are untouched by the seam. `status`,
+    /// `pending_question`, `next_step`, `next_state` belong to the engine; an
+    /// artifact rides the pass without moving any of them beyond the documented
+    /// phase advance.
+    #[test]
+    fn delivery_executor_cannot_move_a_normative_routing_key() {
+        let mut conn = seed();
+        let created = open(&mut conn, "propose");
+        let before: (String, String) = conn
+            .query_row(
+                "SELECT status, state_json FROM workflow_runs WHERE id = ?1",
+                params![created.run_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let before_state: DeliveryState = decode_state(&before.1).unwrap();
+        assert!(before_state.pending_question.is_none());
+
+        let a = artifact("plan-1", "the plan body");
+        advance(
+            &mut conn,
+            &Advance {
+                run_id: created.run_id,
+                expected_revision: 0,
+                to_phase: "design",
+                artifact_refs: &[],
+                artifact: Some(&a),
+                actor: "tester",
+                now: 2,
+            },
+        )
+        .unwrap();
+
+        let after: (String, String) = conn
+            .query_row(
+                "SELECT status, state_json FROM workflow_runs WHERE id = ?1",
+                params![created.run_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let after_state: DeliveryState = decode_state(&after.1).unwrap();
+        assert_eq!(after.0, "active", "the seam never closes or cancels a run");
+        assert_eq!(
+            after_state.pending_question, before_state.pending_question,
+            "an artifact does not ask a question"
+        );
+        assert_eq!(after_state.attempt, before_state.attempt + 1);
+        assert_eq!(after_state.tier, before_state.tier, "autonomy never widens");
+    }
+
+    /// The D2/D3 QA gate is CONSUMED, not reimplemented: advancing into
+    /// `build` (D3) with a quality gate runs the shipped executor validator,
+    /// and an artifact whose evidence is not a live surface is refused before
+    /// anything is written. This is the round's actual engine consumption.
+    #[test]
+    fn delivery_d3_quality_gate_is_consumed_fail_closed() {
+        let mut conn = seed();
+        let created = open(&mut conn, "propose");
+        advance_one(&mut conn, created.run_id, 0, "design").unwrap();
+
+        // No live-surface evidence → refused, and nothing landed.
+        let no_evidence = DeliveryArtifact {
+            id: "impl-1".into(),
+            content: "the implementation".into(),
+            quality_gate: Some(
+                r#"{"executorQa":{"contractCoverage":"x","surfaceEvidence":[],"adversarialCases":[],"artifactRefs":[],"iteration":1}}"#
+                    .into(),
+            ),
+        };
+        let err = advance(
+            &mut conn,
+            &Advance {
+                run_id: created.run_id,
+                expected_revision: 1,
+                to_phase: "build",
+                artifact_refs: &[],
+                artifact: Some(&no_evidence),
+                actor: "tester",
+                now: 3,
+            },
+        )
+        .expect_err("an artifact with no live-surface evidence must not advance");
+        assert!(
+            matches!(err, DeliveryError::QualityGate { .. }),
+            "the refusal is the named QA refusal, got {err:?}"
+        );
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM proposals"), 0);
+
+        // Live-surface evidence → the pass lands.
+        let with_evidence = DeliveryArtifact {
+            id: "impl-1".into(),
+            content: "the implementation".into(),
+            quality_gate: Some(
+                r#"{"executorQa":{"contractCoverage":"x","surfaceEvidence":[{"kind":"cli","receipt":"exit 0"}],"adversarialCases":[],"artifactRefs":[],"iteration":1}}"#
+                    .into(),
+            ),
+        };
+        let advanced = advance(
+            &mut conn,
+            &Advance {
+                run_id: created.run_id,
+                expected_revision: 1,
+                to_phase: "build",
+                artifact_refs: &[],
+                artifact: Some(&with_evidence),
+                actor: "tester",
+                now: 3,
+            },
+        )
+        .expect("evidence-backed artifact advances");
+        assert_eq!(advanced.phase, "build");
+        assert!(advanced.proposal_id > 0);
+    }
+
+    /// The `ddl_*` session-log family round-trips through the REAL append and
+    /// read-back, and is NOT the reserved `control:` family. The harness pin
+    /// round-trips only one of its three kinds; this one proves every kind the
+    /// delivery seam writes is representable AND visible to replay (which
+    /// filters `control:*`).
+    #[test]
+    fn delivery_ddl_kinds_round_trip_and_avoid_control() {
+        let mut conn = seed();
+        let created = open(&mut conn, "propose");
+        let a = artifact("plan-1", "the plan body");
+        advance(
+            &mut conn,
+            &Advance {
+                run_id: created.run_id,
+                expected_revision: 0,
+                to_phase: "design",
+                artifact_refs: &[],
+                artifact: Some(&a),
+                actor: "tester",
+                now: 2,
+            },
+        )
+        .unwrap();
+
+        for kind in [DDL_ARTIFACT_KIND, DDL_ARTIFACT_REFUSED_KIND] {
+            assert!(!kind.is_empty());
+            assert!(
+                !kind.starts_with("control:"),
+                "the control: family stays reserved: {kind}"
+            );
+            assert!(
+                kind.starts_with("ddl_"),
+                "the family prefix is ddl_: {kind}"
+            );
+        }
+
+        // The pass really appended the narrative row, and replay sees it.
+        let replayed = crate::workflow::session_log::replay(
+            &conn,
+            created.run_id,
+            crate::workflow::session_log::REPLAY_CAP,
+        )
+        .unwrap();
+        assert!(
+            replayed.iter().any(|r| r.kind == DDL_ARTIFACT_KIND),
+            "the ddl_ narrative row must be visible to replay — control:* would not be"
+        );
+    }
+
+    /// A phase pass with NO artifact is unchanged: the seam is additive, so
+    /// every R38 caller that passes no artifact must still work byte for byte.
+    #[test]
+    fn delivery_advance_without_an_artifact_is_unchanged() {
+        let mut conn = seed();
+        let created = open(&mut conn, "propose");
+        let advanced = advance_one(&mut conn, created.run_id, 0, "design").unwrap();
+        assert_eq!(advanced.phase, "design");
+        assert_eq!(advanced.proposal_id, 0, "no artifact, no proposal");
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM proposals"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM delivery_traces"), 2);
     }
 }

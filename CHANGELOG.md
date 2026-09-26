@@ -17,6 +17,189 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [1.29.2] — 2026-09-26 — "Engines": the delivery loop grows an executor it can actually call
+
+> **Internal release.** Prepared and tagged locally; **not pushed**, and
+> deliberately **without** the CI-green gate. CI is billing-blocked on this
+> repository, so `scripts/release.sh` can never be satisfied and the gate was
+> bypassed by explicit operator decision, not skipped by accident. Nothing here
+> claims the release passed CI — see "The CI gate was not run". The full local
+> battery did pass: 1926 lib tests + all integration lanes, clippy `-D warnings`
+> on four shapes, fmt on two targets, lipstyk-gate with zero diagnostics, eight
+> `cargo audit`s, `cargo machete`, `env-truth`, `badges --selfcheck`, and
+> `repo-brief` all green.
+
+> **Why a patch line and not a minor one.** The duplication-debt ledger
+> (`src/dup_guard.rs`) requires a new minor line to be earned by burning real
+> duplication debt; `DEBT_LEDGER` carries a row for `1.29` (14) and this release
+> adds no debt, so opening `1.30` would fail
+> `debt_ledger_reflects_reality_and_burns_down_per_line`. The house precedent
+> settles it: **patch lines carry additive work**.
+
+### Release notes
+
+**Improvements**
+
+- The delivery run lifecycle can now carry a **typed artifact** on a phase pass.
+  Advancing a run with an artifact files it as a pending proposal in the **same
+  transaction** as the step row, the compare-and-swap, and the trace row, and
+  returns its `proposal_id` — so a caller holding that id has evidence that the
+  proposal, the trace, and the audit all committed together, or that none did.
+- Advancing a run into the **build** phase with an artifact now runs the shipped
+  checkpoint gate: an artifact whose QA evidence is not a live surface is
+  refused **before anything is written**, with the gate's own refusal carried
+  through rather than restated.
+- The two engine crates the delivery loop consumes (`brain-consensus-core`,
+  `brain-executor-core`) are now described accurately in `docs/engine-sdk.md`,
+  and that description is **machine-checked** for the first time.
+
+**Security fixes**
+
+- The typed artifact is treated as untrusted input at the route boundary: its
+  content is screened exactly as proposal content is screened, and a rejected
+  artifact is a `400` while a quarantined one is a `409`.
+- A client can no longer name the digest of an artifact it supplies. The SHA-256
+  is derived **server-side** by the engine; the request body has no digest
+  field to lie with.
+- An executor-produced artifact has **no write path to a decision**. It files a
+  *pending* proposal with no disposition and no decision timestamp, and it
+  cannot move the run's status or its pending question. A model proposes; only
+  the gate disposes.
+
+### Engineering record
+
+**The round.** R39 wires the D2/D3 engines into the delivery run lifecycle and
+lands the per-phase typed-artifact proposal seam. It adds **no route, no table,
+no schema stamp, and no migration** — `src/migration.rs`,
+`src/storage_layout.rs`, and `src/spire_inventory.rs` are byte-untouched and
+`LATEST_KNOWN_SCHEMA` stays `1.32.15`. The seam rides the existing
+`POST /workflow/delivery/runs/{id}/advance`.
+
+**The typed artifact is a reused shape, not an invention.** `DeliveryArtifact`
+projects onto the shipped `brain_consensus_core::Artifact { id, content, hash }`,
+whose `hash` is the same `sha256(content)` the shipped
+`brain_executor_core::artifact_hash` computes.
+`delivery_typed_artifact_is_a_shipped_type` pins that the two agree byte for
+byte — a cross-crate consistency pin, because if they ever diverged the digest
+in the audit and the digest an approver sees would be different digests of the
+same bytes.
+
+**The engine cores, filled.** Both crates gained a `//!` header and
+`#![forbid(unsafe_code)]`; neither had either, so they were unsafe-free by
+accident of a few hundred lines rather than by gate. Four real defects closed:
+
+1. **`apply_steering` was a silent no-op** — it discarded its `kind` argument
+   (`let _ = kind;`), returned `Ok(agg.clone())`, and could never `Err`, while
+   carrying no `todo!`/`unimplemented!`/`FIXME` marker. Its existing test
+   passed identically with the stub and with a real implementation. All six
+   `SteeringKind` values are reserved vocabulary with **no defined semantics**
+   against a two-field `Aggregate`, and no caller needs a mutation — so the
+   function is now an explicitly **declared no-op** with an **infallible**
+   signature. A `Result` it could never fail made "no mutation needed"
+   indistinguishable from "refused"; removing it means a future round that needs
+   real steering must change the signature deliberately, which is the point.
+2. **The critic ceiling tripped one verdict late.** The design owner states
+   "5 → pause"; the code compared `> 5` against a bare inline literal, so the
+   **sixth** non-okay verdict paused the run. The ceiling is now a named
+   `CRITIC_CEILING` const and the comparison is `>=`, so the **fifth** pauses.
+   *This is a behaviour change* in a pure core with no callers; it is disclosed
+   here rather than buried, and the governing text was followed.
+3. **`"replayExempt"` was an accepted QA key with no `ExecutorQa` field.** With
+   no `deny_unknown_fields`, a nested `executorQa.replayExempt` validated and
+   was then silently dropped, leaving the gate's own `replay_exempt` false — a
+   caller could believe it was exempt while the gate still refused. It is now
+   refused outright. (It failed *closed*, so this was a false promise, not a
+   bypass.) Listed keys must be fields that exist.
+4. **`stage_writer` dropped artifacts silently.** It paired artifacts with kinds
+   through `zip`, which stops at the shorter of the two: three artifacts and two
+   kinds produced two files and an index that looked complete. It now refuses a
+   mismatched count by name, and returns a `Result` so the refusal is loud rather
+   than an empty return.
+
+**Two pins that were vacuous, and the red-proofs that caught them.** Both new
+source-scanning pins first shipped matching **their own test bodies**: the
+`forbid(unsafe_code)` scan passed on a crate with no attribute at all, because
+rewriting the attribute to `allow` also rewrote the string literal inside the
+assertion. The `engine_sdk` scan searched only the text *after* the scaffolds
+line, which had already removed the very crate names it was checking — so
+re-classifying a consumed engine as a Scaffold passed green. Both are now scoped
+to the production region / the bullet including its continuation. **Neither would
+have been caught without deliberately breaking the thing and re-running.**
+
+**The harness inertness law was NOT reversed — verified, not assumed.** The
+plan recorded that routing the delivery loop through the decision harness would
+reverse a machine-pinned law, and that the doc comment must not be quietly
+edited. On measurement the law is **documentation only**: no test anywhere
+asserts it, and `harness/mod.rs` is not in the repository's `include_str!`
+self-inspection inventory. But this release also **does not route through the
+harness** — the phase pass calls the two engine cores directly, exactly as the
+existing code already reads `PIPELINE_VERSION` from the harness module. Nothing
+outside the harness reads the harness's `decision_*` kind constants, so the
+declaration is still true and **the doc was left alone**. The design owner's
+"harness consumption" clause is therefore **deferred**, with the reason.
+
+**`docs/engine-sdk.md` was rot in four places, and is now machine-checked.** The
+file had no reader anywhere in the repository. `brain-care-core` (80 lines, 1
+test) was listed Filled beside `legal-rules-db` (1217 lines, 11 tests) listed as
+a Scaffold; `brain-engine-sdk` — the file's own subject — was not listed at all;
+and `brain-delivery-core` was described as *"ungated: no callers yet"*, which
+the previous release made **false** by wiring it. The new
+`engine_sdk_crate_map_is_accurate` pin deliberately does **not** compare line
+counts — size is a bad proxy, and the smallest "Filled" crate is a third the
+size of the smallest "Scaffold" one. It checks the two things that were actually
+false: every named crate exists on disk and the SDK is listed, and a crate the
+server actually calls is not classified as a Scaffold.
+
+**A compliance pin that landed green — which is the finding.** The execution
+plan for this round asserted a "100%-verifiable defect": that the repo carried
+pre-Omnibus EU AI Act dates and that Regulation (EU) 2026/1744 was absent from
+the compliance reference set. Measured, **both were already fixed** by v1.28.88
+"Clocktruth": the amending regulation is cited in five live locations and every
+Annex III statement already reads 2 December 2027. The plan had conflated the
+Art 50(2) legacy-marking grace **end** (`2026-12-02`, real and correctly
+stamped) with the Annex III **start**. The genuine gap was narrower — the
+deployer horizons live in docs and were pinned nowhere in code, since `reg_watch`
+holds the Art 50 and general-application clocks and its own comment says the
+deployer horizons are *"tracked in docs, not in code"*. So the new
+`ai_act_deployer_horizons_are_stamped_from_the_amending_instrument` pin landed
+**green on arrival**, which is the correct outcome for a correct document and is
+itself the evidence that there was no defect to fix. It is a **docs-truth** pin:
+it freezes the two horizons and the instrument so the prose cannot drift
+silently. **No conformity, certification, or risk-classification claim is made
+anywhere**, and whether this system is an "AI system", whether it is high-risk,
+whether Annex III §8 reaches a review-queue engine, whether Art 50(2) applies,
+the provider/deployer role, and Art 25(4) written agreements remain operator and
+counsel determinations.
+
+**Supply chain.** Two new path dependencies. Diffed against the committed
+lockfile, the root `Cargo.lock` gained **exactly two `[[package]]` entries and
+zero third-party packages** — every dependency the two crates name
+(`brain-engine-sdk`, `hex`, `serde`, `serde_json`, `sha2`) was already locked.
+`crates/Cargo.lock` did not move (both crates were already workspace members),
+and neither did the other six lockfiles or `shell/pnpm-lock.yaml`. One unlocked
+resolve, `--locked` everywhere after. All eight `cargo audit`s exit 0; the
+advisory *warnings* in the six non-root lockfiles are pre-existing `unmaintained`
+and `yanked` notices in trees this release does not touch, and the root lockfile
+— the only one that moved — reports **zero** advisories.
+
+**Tests.** RED-first with recorded RED text and exit codes, and every guard
+red-proofed by deliberately breaking the thing it guards. Twelve new pins
+(7 kernel, 2 crate, 2 docs-truth, plus red-proof coverage) and two existing
+tests reused rather than re-authored, as the plan's own list duplicated three
+executor-core tests that already existed. `CRATE_TEST_FLOOR` needs **no** bump:
+1,568 pinned against **2,115** measured, so the round's growth is absorbed.
+
+**Ceilings, stated honestly.** The `ddl_*` narrative row carries the digest, the
+ids, and the gate flag — never the artifact body, which is the proposal's job.
+`model_ref` stays `None`: writing one would pre-empt the digest-pinned
+model-citation law the attestation round pins. Budgets are still stored and
+still unenforced, and `blast_radius` is still referenced by no code line. The
+`forbid(unsafe_code)` attribute now makes the two engine cores *stricter* than
+the four that already carried `deny`, which is deliberate and disclosed rather
+than made uniform in a wider diff than this round's scope. A client's artifact
+body is screened but its `quality_gate` JSON is **not** — the gate is parsed as
+structured data by the engine's own validator, never rendered.
+
 ## [1.29.1] — 2026-09-26 — "Delivery persistence": the loop gets a storage plane
 
 > **Internal release.** Prepared and tagged locally; **not pushed**, and

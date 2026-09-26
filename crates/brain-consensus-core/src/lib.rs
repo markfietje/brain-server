@@ -1,3 +1,25 @@
+//! The delivery loop's consensus core — pure, total, and I/O-free.
+//!
+//! One question: has an artifact earned agreement? A [`Review`] carries a
+//! verdict from a named reviewer over a named [`Artifact`]; [`advance`] folds a
+//! round of reviews into the next [`ConsensusState`], capping at
+//! [`MAX_ITERATIONS`] and failing closed to [`ConsensusStatus::Stuck`] rather
+//! than looping; [`review_join_gate`] refuses a round whose reviewers are not
+//! distinct or do not name one artifact; and [`approval_gate`] is the one
+//! predicate that says whether execution may begin.
+//!
+//! [`Artifact`] is the typed artifact the delivery seam reuses rather than
+//! reinvents: `id`, `content`, and the `hash` that `Artifact::new` derives as
+//! `sha256(content)`. An artifact's identity is its content, so two artifacts
+//! with the same bytes are the same artifact.
+//!
+//! What is deliberately absent: this crate does not persist, does not sign,
+//! does not execute, and does not contact a host. It is a decision core — a
+//! model proposes, only the gate disposes, and the authority that disposes is
+//! not here.
+
+#![forbid(unsafe_code)]
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -125,7 +147,26 @@ pub struct StageFile {
     pub sha256: String,
 }
 
-pub fn stage_writer(artifacts: &[Artifact], kinds: &[&str]) -> (Vec<StageFile>, String) {
+/// Write the staged files and the index for a round's artifacts.
+///
+/// The pairing is total or refused: `kinds` must name exactly one kind per
+/// artifact. The prior implementation paired them with `zip`, which stops at
+/// the shorter of the two — three artifacts and two kinds produced two files
+/// and an index that looked complete, and the third artifact vanished with no
+/// error anywhere. A receipt that silently omits an artifact is worse than no
+/// receipt, so a mismatched count is a named refusal and both halves of the
+/// return are absent.
+pub fn stage_writer(
+    artifacts: &[Artifact],
+    kinds: &[&str],
+) -> Result<(Vec<StageFile>, String), String> {
+    if artifacts.len() != kinds.len() {
+        return Err(format!(
+            "stage_writer_requires_one_kind_per_artifact:{}:{}",
+            artifacts.len(),
+            kinds.len()
+        ));
+    }
     let mut files = Vec::new();
     let mut index_lines = Vec::new();
     for (i, (art, kind)) in artifacts.iter().zip(kinds.iter()).enumerate() {
@@ -154,7 +195,7 @@ pub fn stage_writer(artifacts: &[Artifact], kinds: &[&str]) -> (Vec<StageFile>, 
             .unwrap_or_default(),
     };
     files.push(pending);
-    (files, index_lines.join("\n"))
+    Ok((files, index_lines.join("\n")))
 }
 
 pub fn intent_reconciliation(
@@ -284,7 +325,7 @@ mod tests {
     #[test]
     fn stage_writer_emits_receipt() {
         let arts = vec![art("a1"), art("a2")];
-        let (files, index) = stage_writer(&arts, &["planner", "architect"]);
+        let (files, index) = stage_writer(&arts, &["planner", "architect"]).unwrap();
         assert!(files.iter().any(|f| f.sha256.len() == 64));
         assert!(index.contains("stage-01-planner.md"));
     }
@@ -292,8 +333,8 @@ mod tests {
     #[test]
     fn stage_writer_deterministic_index() {
         let arts = vec![art("a1")];
-        let (_, idx1) = stage_writer(&arts, &["planner"]);
-        let (_, idx2) = stage_writer(&arts, &["planner"]);
+        let (_, idx1) = stage_writer(&arts, &["planner"]).unwrap();
+        let (_, idx2) = stage_writer(&arts, &["planner"]).unwrap();
         assert_eq!(idx1, idx2);
     }
 
@@ -334,5 +375,61 @@ mod tests {
         state = advance(state, reviews, None).unwrap();
         assert!(approval_gate(&state.status));
         intent_reconciliation("spec-1-hash", &[], true).unwrap();
+    }
+
+    // ── the R39 battery ───────────────────────────────────────────────────
+
+    /// Anti-vacuous source scan, scoped to the PRODUCTION region only. See the
+    /// twin pin in the executor core: a whole-file `contains` matches this
+    /// test's own literal string and goes green on a crate with no attribute
+    /// at all, so the region is cut before the assertion is made.
+    #[test]
+    fn crate_forbids_unsafe_code() {
+        let src = include_str!("../src/lib.rs");
+        let production = src.split_once("#[cfg(test)]").map_or(src, |(head, _)| head);
+        assert!(
+            production.contains("#![forbid(unsafe_code)]"),
+            "the consensus core must carry the un-overridable lint at the crate root"
+        );
+        assert!(
+            production.trim_start().starts_with("//!"),
+            "the crate must open with a //! header naming what the core is and is not"
+        );
+    }
+
+    /// `stage_writer` paired artifacts with kinds through `zip`, which stops at
+    /// the SHORTER of the two. A caller passing three artifacts and two kinds
+    /// got two files and no error — an artifact silently vanished, and the
+    /// returned index looked complete. That is silent data loss in a function
+    /// whose whole job is to produce a complete receipt, so the mismatch is now
+    /// refused: a wrong count is a caller bug, never a shorter result.
+    #[test]
+    fn stage_writer_refuses_a_kind_count_mismatch() {
+        let three = vec![art("a1"), art("a2"), art("a3")];
+
+        let short = stage_writer(&three, &["planner", "architect"]).unwrap_err();
+        assert!(
+            short.contains("stage_writer_requires_one_kind_per_artifact"),
+            "a kinds slice shorter than the artifacts is a caller bug, not a \
+             shorter result: {short}"
+        );
+        assert!(
+            short.contains("3:2"),
+            "the refusal carries both counts: {short}"
+        );
+
+        let long = stage_writer(&[art("a1")], &["planner", "architect"]).unwrap_err();
+        assert!(
+            long.contains("1:2"),
+            "a longer kinds slice is refused symmetrically: {long}"
+        );
+
+        // The matched case still works — the refusal is narrow. Three artifacts
+        // yield three staged files PLUS the trailing `pending-approval.md`
+        // receipt, which is the function's documented trailing element.
+        let (files, index) = stage_writer(&three, &["planner", "architect", "critic"]).unwrap();
+        assert_eq!(files.len(), 4, "three artifacts plus the pending receipt");
+        assert!(index.contains("stage-03-critic.md"));
+        assert_eq!(files[3].name, "pending-approval.md");
     }
 }
