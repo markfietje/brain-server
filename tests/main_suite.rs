@@ -18818,7 +18818,6 @@ mod r40_attestations {
 /// R41 — the replay-verify surface. The reads `delivery_traces` had never had.
 mod r41_replay {
     use super::tests::handler_body;
-    use super::*;
 
     fn src(rel: &str) -> String {
         std::fs::read_to_string(format!("{}/{rel}", env!("CARGO_MANIFEST_DIR")))
@@ -18859,16 +18858,8 @@ mod r41_replay {
         let expected = [
             (AutonomyTier::Observe, "observe", "exploratory"),
             (AutonomyTier::Propose, "propose", "exploratory"),
-            (
-                AutonomyTier::BoundedAuto,
-                "bounded_auto",
-                "deterministic",
-            ),
-            (
-                AutonomyTier::Delegated,
-                "delegated",
-                "deterministic",
-            ),
+            (AutonomyTier::BoundedAuto, "bounded_auto", "deterministic"),
+            (AutonomyTier::Delegated, "delegated", "deterministic"),
         ];
 
         // TOTAL: the mapping covers every tier and nothing else. A fifth tier
@@ -18962,8 +18953,9 @@ mod r41_replay {
             "get_delivery_replay_verify",
             "get_delivery_trace",
         ] {
-            let body = handler_body(&handler, symbol)
-                .unwrap_or_else(|| panic!("`fn {symbol}` must be locatable in handlers/delivery.rs"));
+            let body = handler_body(&handler, symbol).unwrap_or_else(|| {
+                panic!("`fn {symbol}` must be locatable in handlers/delivery.rs")
+            });
 
             // Every step is present...
             for needle in [
@@ -19036,11 +19028,7 @@ mod r41_replay {
              two routes publishing a similar concept under similar keys is exactly the case a \
              reader needs told about"
         );
-        for claim in [
-            "does not re-execute",
-            "re-derive",
-            "stored bytes",
-        ] {
+        for claim in ["does not re-execute", "re-derive", "stored bytes"] {
             assert!(
                 lower.contains(claim),
                 "the adjacency disclosure must carry `{claim}` — the decision-run route LOADS A \
@@ -19084,26 +19072,49 @@ mod r41_replay {
             let lines: Vec<&str> = spec.lines().collect();
             let start = lines
                 .iter()
-                .position(|l| l.trim_end() == &format!("    {schema}:"))
+                .position(|l| l.trim_end() == format!("    {schema}:"))
                 .unwrap();
             let end = lines[start + 1..]
                 .iter()
-                .position(|l| l.starts_with("    ") && !l.starts_with("     ") && !l.trim().is_empty())
+                .position(|l| {
+                    l.starts_with("    ") && !l.starts_with("     ") && !l.trim().is_empty()
+                })
                 .map_or(lines.len(), |i| start + 1 + i);
             let block = lines[start..end].join("\n");
             assert!(
                 block.contains("additionalProperties: false"),
                 "anti-vacuity: {schema} must still be closed, or the pins below are moot"
             );
-            // The window's cap and truncation flag are the B6 disclosure. A
-            // client must be able to tell a bounded window from the whole run.
-            for key in ["cap", "truncated"] {
+            // The window's cap and truncation flag are the disclosure a bounded
+            // read owes its reader. They live in the `DeliveryWindow` schema,
+            // which both of these $ref — so the check is on the WINDOW's
+            // contract, with an anti-vacuity assert that the $ref is real: a
+            // dangling ref would otherwise satisfy a search of the wrong file.
+            assert!(
+                block.contains("#/components/schemas/DeliveryWindow"),
+                "{schema} must $ref the shared window schema, or it has no disclosed bound at all"
+            );
+            let wstart = spec
+                .find("\n    DeliveryWindow:")
+                .expect("openapi.yaml defines DeliveryWindow");
+            // Start AFTER the header line: searching for the next `\n    Delivery`
+            // from the header itself would match the header and yield an empty
+            // block — a scan that can pass on nothing.
+            let wblock = &spec[wstart + "\n    DeliveryWindow:".len()..];
+            let wend = wblock.find("\n    Delivery").unwrap_or(wblock.len());
+            let wblock = &wblock[..wend];
+            for key in ["cap", "truncated", "rows"] {
                 assert!(
-                    block.contains(&format!("{key}:")),
-                    "{schema} must disclose `{key}` — a bounded window that does not say it is \
-                     bounded is a silent short read"
+                    wblock.contains(&format!("{key}:")),
+                    "the window schema must declare `{key}` — a bounded window that does not say \
+                     it is bounded is a silent short read"
                 );
             }
+            assert!(
+                wblock.contains("required: [rows, cap, truncated]"),
+                "all three window fields are REQUIRED: a client must never have to guess whether \
+                 the omission meant 'unbounded'"
+            );
         }
         // The replay report's verdict keys. Collected by INDENT: a
         // `contains("compared:")` test is satisfied by a rename elsewhere.
@@ -19228,16 +19239,19 @@ mod r41_replay {
         );
         let query = handler_body(&handler, "get_delivery_attestations")
             .expect("the attestation read must be locatable");
+        // The extractor is in the SIGNATURE, which `handler_body` does not
+        // return (it yields the braced body), so this is asserted against the
+        // file: a parameter that is declared but never extracted would be a
+        // documented parameter that does nothing.
         assert!(
-            query.contains("Query("),
-            "the verify parameter is extracted by the typed Query extractor"
+            handler.contains("Query(_query): Query<AttestationsQuery>"),
+            "the verify parameter must be EXTRACTED by the typed Query extractor, or it is a \
+             declared parameter no request can reach"
         );
         assert!(
-            query.contains("DeliveryError")
-                || query.contains("HandlerError::bad_request")
-                || !query.contains("verify.eq("),
-            "the handler must not BRANCH on the verify value — the chain verdict is unconditional, \
-             and a branch would make the parameter switch verification off"
+            !query.contains("verify.eq(") && !query.contains("_query.verify"),
+            "the handler must not BRANCH on the verify value — the chain verdict is \
+             unconditional, and a branch would make the parameter switch verification off"
         );
         // And the refusal vocabulary a non-verifying chain reports with is
         // named, so a 200 never reads as a verified chain.
@@ -19387,25 +19401,38 @@ mod r41_replay {
             "the stage vocabulary is the DDL's CHECK, and it is the ONLY vocabulary — the \
              projection reads the stored column and adds nothing"
         );
-        // The writers emit exactly those four.
+        // The four PRODUCTION WRITERS emit exactly the four legal stage
+        // values. The scan is scoped to the writer functions, not the whole
+        // production region: the replay projection builds a `StageDiff` whose
+        // stage label is `"order"`, and that is a REPORT label which never
+        // reaches a column — the DDL's CHECK constrains stored values, and a
+        // module-wide scan would forbid a correct report.
         let production = production_of("src/workflow/delivery.rs");
-        let stages: Vec<&str> = production
-            .match_indices("stage: \"")
-            .map(|(i, _)| {
-                let rest = &production[i + "stage: \"".len()..];
-                &rest[..rest.find('"').unwrap()]
-            })
-            .collect();
-        for stage in &stages {
-            assert!(
-                ["run", "phase", "gate", "answer"].contains(stage),
-                "a writer emits stage `{stage}`, which the DDL's CHECK would refuse"
-            );
+        let mut stages: Vec<String> = Vec::new();
+        for symbol in ["create_run", "advance", "answer", "gates"] {
+            let body = handler_body(&production, symbol)
+                .unwrap_or_else(|| panic!("`fn {symbol}` must be locatable in delivery.rs"));
+            for (i, _) in body.match_indices("stage: \"") {
+                let rest = &body[i + "stage: \"".len()..];
+                let value = &rest[..rest.find('"').unwrap()];
+                assert!(
+                    ["run", "phase", "gate", "answer"].contains(&value),
+                    "`{symbol}` emits stage `{value}`, which the DDL's CHECK would refuse"
+                );
+                stages.push(value.to_string());
+            }
         }
         assert_eq!(
             stages.len(),
             4,
             "the four production writers emit exactly the four legal stage values"
+        );
+
+        // ...and the ORDER label exists only in the report, never in a writer.
+        assert!(
+            !production.contains(r#"stage: "order".into()"#),
+            "`order` is a report label for a broken ordinal series; it must never be a STORED \
+             stage value"
         );
     }
 }

@@ -1,15 +1,15 @@
-//! Protocol adapters for the delivery loop's four run writes.
+//! Protocol adapters for the delivery loop's four run writes and its reads.
 //!
 //! The handler parses and authorizes only. Vocabulary validation, the phase
 //! machine, the CAS, the trace and budget writes, and the fail-closed audit
 //! live in `crate::workflow::delivery`.
 //!
-//! The gate order is the same on all four routes and is not an accident:
+//! The gate order is the same on all seven routes and is not an accident:
 //! `run_domain` (probe-blind 404 on an absent or foreign run) → `authorize`
-//! (Write on the run's OWN domain) → pool → `authorize_role` (the `workflow`
-//! role, which reads the role store from the pool) → the core. Authorize
-//! before the lookup, and never let an error distinguish "absent" from
-//! "someone else's".
+//! (Write on the run's OWN domain for the four writes, Read for the three
+//! reads) → pool → `authorize_role` (the `workflow` role, which reads the role
+//! store from the pool) → the core. Authorize before the lookup, and never let
+//! an error distinguish "absent" from "someone else's".
 //!
 //! The read seam runs once on each assembled response, at the emission
 //! boundary. Nothing here holds SQL.
@@ -339,6 +339,84 @@ pub async fn get_delivery_attestations(
 
     let mut response =
         serde_json::to_value(read).map_err(|error| HandlerError::internal(error.to_string()))?;
+    super::sanitize_value_strings(&mut response);
+    Ok(Json(response))
+}
+
+/// Re-derive the run's trace and report whether it is internally consistent.
+///
+/// The gate order is the same as the four writes' and the attestation read's:
+/// `run_domain` (probe-blind 404 on an absent or foreign run) → `authorize`
+/// (Read on the run's OWN domain) → pool → `authorize_role` (the `workflow`
+/// role) → the core. It is a GET because it re-derives from stored bytes and
+/// takes no body.
+///
+/// **What the verdict is, stated here because the route name invites more.**
+/// It is tamper EVIDENCE over stored bytes: for every trace row, in ordinal
+/// order, the row's content address recomputed from its own stored columns is
+/// compared with the address stored beside it. It is NOT tamper-proofing — an
+/// attacker who edits a column AND recomputes the address leaves no trace
+/// here. It does NOT bind the row to the signed attestation chain; the chain is
+/// what binds, and this checks. And it is NOT a compliance finding: a
+/// byte-identical run is a statement about internal consistency, nothing more.
+///
+/// A mismatch is DATA. It is reported in the payload as a diff row and the
+/// request still succeeds — a report that turned a finding into an error status
+/// would tell a reader less than the finding itself does.
+pub async fn get_delivery_replay_verify(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = super::workflow::run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    super::authorize_role(&principal, &pool, "workflow")?;
+
+    let now = chrono::Utc::now().timestamp();
+    let report = tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(HandlerError::db_down)?;
+        delivery::replay_verify(&conn, id, now).map_err(delivery_error)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))??;
+
+    let mut response =
+        serde_json::to_value(report).map_err(|error| HandlerError::internal(error.to_string()))?;
+    super::sanitize_value_strings(&mut response);
+    Ok(Json(response))
+}
+
+/// The run's stored trace rows in ordinal order, plus the chain head and the
+/// narrative appendix.
+///
+/// Same gate order, same read function, same seams as the verdict above — the
+/// two surfaces ride ONE read so they can never disagree about what is stored.
+/// Where the verdict answers "is this consistent", this answers "what is
+/// actually there", which is the question a reader has when the verdict says
+/// something did not line up.
+pub async fn get_delivery_trace(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = super::workflow::run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    super::authorize_role(&principal, &pool, "workflow")?;
+
+    let now = chrono::Utc::now().timestamp();
+    let listing = tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(HandlerError::db_down)?;
+        delivery::trace_listing(&conn, id, now).map_err(delivery_error)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))??;
+
+    let mut response =
+        serde_json::to_value(listing).map_err(|error| HandlerError::internal(error.to_string()))?;
     super::sanitize_value_strings(&mut response);
     Ok(Json(response))
 }

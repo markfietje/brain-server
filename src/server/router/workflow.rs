@@ -489,4 +489,17 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             "/workflow/delivery/runs/{id}/attestations",
             get(handlers::delivery::get_delivery_attestations),
         )
+        // the replay reads. Both re-derive or serve from STORED BYTES, take no
+        // body, and persist nothing — so both are GET, both Read-scoped, and
+        // both ride the same probe-blind role-gated order as the other four
+        // reads above. The verdict is a REPORT: a mismatch is returned as a
+        // diff row, never as an error status.
+        .route(
+            "/workflow/delivery/runs/{id}/replay-verify",
+            get(handlers::delivery::get_delivery_replay_verify),
+        )
+        .route(
+            "/workflow/delivery/runs/{id}/trace",
+            get(handlers::delivery::get_delivery_trace),
+        )
 }

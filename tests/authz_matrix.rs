@@ -2747,8 +2747,19 @@ async fn delivery_attestation_verify_parameter_returns_the_identical_payload() {
     let path = format!("/workflow/delivery/runs/{run_id}/attestations");
 
     let (st, bare) = send_body(&srv, Some(TWOKEY_OP), &path, "GET", "").await;
-    assert_eq!(st, StatusCode::OK, "the read serves without the parameter: {bare}");
-    let (st, asked) = send_body(&srv, Some(TWOKEY_OP), &format!("{path}?verify=1"), "GET", "").await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the read serves without the parameter: {bare}"
+    );
+    let (st, asked) = send_body(
+        &srv,
+        Some(TWOKEY_OP),
+        &format!("{path}?verify=1"),
+        "GET",
+        "",
+    )
+    .await;
     assert_eq!(st, StatusCode::OK, "`?verify=1` is accepted: {asked}");
     let (st, wrong) = send_body(
         &srv,
@@ -2810,10 +2821,7 @@ async fn delivery_attestation_read_refuses_with_409_on_a_keyless_host() {
     let db_path = dir.path().join("brain.db");
     brain_server::register_sqlite_vec::register_sqlite_vec();
     let mgr = SqliteConnectionManager::file(&db_path);
-    let pool: brain_server::Pool = r2d2::Pool::builder()
-        .max_size(2)
-        .build(mgr)
-        .expect("pool");
+    let pool: brain_server::Pool = r2d2::Pool::builder().max_size(2).build(mgr).expect("pool");
     brain_server::migration::run_migration(
         &mut pool.get().expect("conn"),
         brain_server::config::DB_MMAP_SIZE_MIB,
@@ -2910,7 +2918,11 @@ async fn delivery_attestation_read_refuses_with_409_on_a_keyless_host() {
         "",
     )
     .await;
-    assert_eq!(st, StatusCode::OK, "the read serves on a keyless host: {text}");
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the read serves on a keyless host: {text}"
+    );
     let read: serde_json::Value = serde_json::from_str(&text).expect("json");
     assert_eq!(
         read["verdict"]["link_count"], 0,

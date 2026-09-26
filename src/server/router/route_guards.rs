@@ -296,6 +296,10 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/workflow/delivery/runs/{id}/answer",
     "/workflow/delivery/runs/{id}/gates",
     "/workflow/delivery/runs/{id}/attestations",
+    // the replay round: two more reads over the same stored bytes. Both take
+    // no body — the verdict re-derives from storage and the listing serves it.
+    "/workflow/delivery/runs/{id}/replay-verify",
+    "/workflow/delivery/runs/{id}/trace",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -624,4 +628,10 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/delivery/runs/{id}/gates", "Write"),
     // the attestation round's read: Read, on the run's OWN domain, same role gate in-handler.
     ("/workflow/delivery/runs/{id}/attestations", "Read"),
+    // the replay round's two reads: Read, on the run's OWN domain, same role
+    // gate in-handler. Least privilege — neither surface mutates, so neither
+    // demands Write. A read demanding Write would be a privilege no surface
+    // asked for.
+    ("/workflow/delivery/runs/{id}/replay-verify", "Read"),
+    ("/workflow/delivery/runs/{id}/trace", "Read"),
 ];

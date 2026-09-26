@@ -52,9 +52,31 @@ been run, it is marked **pending** rather than asserted.
 - **Trace rows carry a stored ordinal.** `delivery_traces` gains `seq` with a
   `UNIQUE(run_id, seq)` index, allocated as `MAX(seq)+1` in the caller's
   transaction. A deleted middle row no longer makes the next write collide.
+- **A delivery run's trace can now be re-derived and checked.** Two new reads,
+  `GET /workflow/delivery/runs/{id}/replay-verify` and
+  `GET /workflow/delivery/runs/{id}/trace`, give `delivery_traces` its first
+  readers. The verdict re-computes each row's content address from its own stored
+  columns and compares it against the address stored beside it, in ordinal order,
+  and separately checks that the ordinal series is contiguous — a gap is reported
+  as an `order` diff. **Models are never re-run**: the comparator lives in a crate
+  whose entire dependency set is `serde`/`serde_json`/`sha2`, so the zero-model
+  property is structural, and the verdict says nothing about whether an outcome was
+  *correct*. A mismatch is returned as **data**, never as an error status, and both
+  windows are bounded with the bound **disclosed** in every response.
 
 **Security fixes**
 
+- **The delivery loop's read surfaces are now covered by route-level
+  authorization tests.** The attestation read shipped with no authz coverage at
+  all: nothing proved a Read-capable principal without the `workflow` role was
+  refused, and nothing proved a foreign run was probe-blind. The three reads are
+  now in the class matrix, in the role-gated list, and in the probe-blind list,
+  and a seeded test opens a real run and proves the agent class is refused 403 on
+  each read while the operator clears all six delivery routes — a 403-for-everybody
+  is not a gate. Revocation is proven to be **not write-scoped**: a revoked
+  identity dies at the middleware on the read surfaces too. The keyless-host
+  `409 delivery_attestation_refused` is now proven at an HTTP hop, not only at the
+  core, with the posture armed rather than assumed.
 - **A phase pass now refuses to proceed without a usable operator key.** An
   absent key and a refused one are different causes of the same refusal, and
   neither ever degrades into an unsigned link. On a host with no operator key,
@@ -94,6 +116,19 @@ been run, it is marked **pending** rather than asserted.
 - The signed predicate carries **4 of its 13 fields** today;
   `gate_verdicts`, `approval_ref`, `authority_receipts`, and `budget_spend` stay
   empty until the rounds that populate them ship. It is not a rich claim.
+- **The replay verdict is tamper EVIDENCE over stored bytes, not tamper-proofing.**
+  It detects a row whose stored content address and stored columns disagree. It
+  does **not** survive an attacker who edits a column AND recomputes the address,
+  and it does **not** bind a trace row to the signed attestation chain — the chain
+  is what binds; this checks. **A verified replay authorises nothing**: a
+  byte-identical replay is **not a compliance finding**, and classification,
+  retention, and any legal sufficiency of this output are operator-and-counsel
+  determinations. No AI Act, CRA, GDPR, or operational-resilience conclusion is
+  drawn from it anywhere.
+- **`POST /workflow/decision-runs/{id}/replay-diff` is a different route with the
+  opposite philosophy.** It publishes a similar concept under similar wire keys
+  and **re-executes the pipeline** with a bound model. The two are deliberately
+  **not unified** and share no code.
 
 ### Engineering record
 

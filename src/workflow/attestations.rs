@@ -962,6 +962,67 @@ pub(crate) fn read_surface(
 mod tests {
     use super::*;
 
+    /// D4: the "4 of 13 predicate fields non-empty" ceiling is a DOC claim with
+    /// no pin. R42 will populate `approval_ref` and move it silently.
+    ///
+    /// It is pinned HERE, behaviourally, rather than as a source scan: the
+    /// ceiling is a statement about what a predicate ACTUALLY carries, so a
+    /// scan for the assignment syntax would be a claim about the code's shape
+    /// dressed up as a claim about its output. The four fields are left empty by
+    /// the crate's own constructor, so the honest pin builds a real link and
+    /// reads the predicate the production path produced.
+    #[test]
+    fn attestation_predicate_keeps_its_four_empty_fields() {
+        let link = ChainLink {
+            domain: "global".into(),
+            run_id: 1,
+            step_id: 2,
+            subject_name: "delivery/phase/design".into(),
+            subject_digest: format!("sha256:{}", "a".repeat(64)),
+            policy_digest: Some(format!("sha256:{}", "b".repeat(64))),
+            config_digest: Some(format!("sha256:{}", "c".repeat(64))),
+            model_ref: Some("registry/model-a".into()),
+            model_digest: Some(format!("sha256:{}", "d".repeat(64))),
+            tier: AutonomyTier::BoundedAuto,
+        };
+        let predicate = predicate_for(&link).expect("the predicate builds");
+
+        // THE CEILING. Each of these four is empty because the round that
+        // populates it has not shipped — not because it was forgotten.
+        assert!(
+            predicate.gate_verdicts.is_empty(),
+            "gate_verdicts stays empty until the gate lifecycle ships"
+        );
+        assert!(
+            predicate.approval_ref.is_empty(),
+            "approval_ref stays empty until the approval record ships — R42/R43 populate it, and \
+             that round must move this pin deliberately"
+        );
+        assert!(
+            predicate.authority_receipts.is_empty(),
+            "authority_receipts stays empty until the authority bindings ship"
+        );
+        assert!(
+            predicate.budget_spend.is_empty(),
+            "budget_spend stays empty until budget enforcement reads a ledger"
+        );
+
+        // And the fields that ARE populated prove the predicate is not simply
+        // empty — without this the four asserts above would pass on a predicate
+        // that carried nothing at all, which is the vacuity this pin exists to
+        // avoid.
+        assert_eq!(predicate.subject_name, "delivery/phase/design");
+        assert!(
+            !predicate.model_ref.is_empty(),
+            "a presented binding populates model_ref — anti-vacuity: the four empty fields above \
+             must reflect the rounds that have not shipped, not a predicate that carries nothing"
+        );
+        assert!(
+            !predicate.model_digest.is_empty(),
+            "a presented binding populates model_digest"
+        );
+    }
+
     /// A deterministic test signing key. Generated, never literal (the
     /// `src/testkeys.rs` doctrine: CodeQL's hard-coded-cryptographic-value
     /// query taint-flags literal key bytes reaching a signing sink, and these
