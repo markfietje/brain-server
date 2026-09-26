@@ -1047,6 +1047,72 @@ mod tests {
         );
     }
 
+    /// The canonicalizer is a POLICY the value space makes SAFE, and this pin
+    /// proves both halves rather than assuming either.
+    ///
+    /// The first run of this red-proof — swapping the shipped `canonical_ump`
+    /// for its bare-`serde_json` sibling `canonical_jcs` — did NOT go red. That
+    /// is not a vacuous pin; it is a fact about the two functions: on an object
+    /// of ASCII keys with no floats they emit IDENTICAL bytes, so on THIS
+    /// envelope the choice cannot be observed. The two differ only where
+    /// integral floats lose their `.0` and where U+2028/U+2029 are escaped.
+    ///
+    /// So the honest claim is not "the canonicalizer is pinned by its output". It
+    /// is: the two canonicalizers genuinely differ (witness below), AND the
+    /// signed object contains no value they could disagree about. That turns
+    /// the coincidence into a GUARANTEE, and a future change that put a float or
+    /// a U+2028 into a signed field would fail here instead of quietly producing
+    /// a signature over bytes the verifier would read differently.
+    #[test]
+    fn attestation_canonical_form_carries_nothing_the_canonicalizers_disagree_about() {
+        // Half one: the witness. If the two canonicalizers ever CONVERGED, the
+        // guarantee below would be vacuous, so the difference is proved first.
+        let witness = serde_json::json!({"a": 1.0, "b": "line\u{2028}sep"});
+        let ump = crate::ump_integrity::canonical_ump(&witness).expect("ump canonicalizes");
+        let jcs = crate::ump_integrity::canonical_jcs(&witness).expect("jcs canonicalizes");
+        assert_ne!(
+            ump, jcs,
+            "the two canonicalizers must genuinely differ, or the guarantee below proves \
+             nothing — an integral float and U+2028 are where they part company"
+        );
+
+        // Half two: the guarantee, over every link this module can seal.
+        let key = test_key(11);
+        let did = test_did(&key);
+        for mut link in [
+            root_link(),
+            ChainLink {
+                subject_name: "delivery/phase/design".to_string(),
+                subject_digest: format!("sha256:{}", "f".repeat(64)),
+                step_id: 9_817_000_000_000,
+                ..root_link()
+            },
+        ] {
+            let sealed = seal_link(&link, &did, &key).expect("seal");
+            let mut signed = sealed.envelope.clone();
+            signed.as_object_mut().expect("object").remove("integrity");
+            let canonical = crate::ump_integrity::canonical_ump(&signed).expect("canonicalize");
+            let text = String::from_utf8(canonical.clone()).expect("UTF-8");
+            assert!(
+                !text.contains('\u{2028}') && !text.contains('\u{2029}'),
+                "a U+2028/9 in a signed field is one of the two values the canonicalizers \
+                 disagree about"
+            );
+            assert!(
+                !text.contains(".0"),
+                "an integral float in a signed field is the other: the two canonicalizers \
+                 disagree about it, so it must never reach the signed object"
+            );
+            assert_eq!(
+                crate::ump_integrity::canonical_jcs(&signed).expect("jcs"),
+                canonical,
+                "on THIS value space the two agree — which is the whole point of the two \
+                 assertions above, and what makes the shipped choice safe rather than lucky"
+            );
+            link.step_id += 1;
+        }
+    }
+
     /// The pinned formula, discriminated against the SIBLING message shapes.
     ///
     /// `sign_hash` and `sign_hash_string` are not two primitives with different
