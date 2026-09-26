@@ -11,8 +11,8 @@ info:
     UMP capability tokens (v1.17.3 M5, spec §5.2) are accepted as
     `Authorization: Bearer` on `/ump/*` + `/export` (signature/expiry at the
     middleware, verbs × scope per handler; `audit` surfaces deny tokens).
-  version: 1.23.0
-  x-api-version: "1.23.0"
+  version: 1.29.2
+  x-api-version: "1.29.2"
 servers:
   - url: http://127.0.0.1:8765
     description: Default local server (override BIND_HOST/BIND_PORT)
@@ -8214,6 +8214,27 @@ components:
         principal: { type: string, maxLength: 64 }
     DeliveryRunAdvanced:
       type: object
+      description: >
+        The response of `POST /workflow/delivery/runs/{id}/advance`. Served by
+        the route handler `post_delivery_advance`, which calls
+        `workflow::delivery::advance` and serializes its return value — the
+        `pub(crate) struct Advanced` at `src/workflow/delivery.rs:651`.
+
+        The Rust and spec names deliberately differ, and this is a house
+        convention rather than a one-off: the wire vocabulary is namespaced
+        (`DeliveryRunCreated`, `DeliveryRunAdvanced`, `DeliveryRunAnswered`,
+        `DeliveryGateVerdict`) while the service-core types are terse
+        (`Created`, `Advanced`, `Answered`, `GateVerdict`) because they live in
+        one module and the module already supplies the namespace. The same
+        divergence exists across the spec (`MemorySearchResult`,
+        `DsarExport`), so renaming either side would be a repo-wide convention
+        change, not a correction — deliberately not done unilaterally.
+
+        The pairing is machine-checked, not asserted: see
+        `delivery_advance_wire_schema_matches_the_handler` in
+        `src/docs_truth.rs`, which pins the key set AND this route-to-type
+        binding, so a future rename on either side fails the build rather than
+        silently desynchronizing the spec from the served response.
       additionalProperties: false
       required: [run_id, phase, tier, trace_mode, trace_id, state_revision, step_id, proposal_id]
       properties:

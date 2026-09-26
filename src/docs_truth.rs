@@ -11,6 +11,114 @@ mod pins {
             .unwrap_or_else(|e| panic!("{rel} must exist and be readable: {e}"))
     }
 
+    /// Every README badge that states a version, a count, or a file path, plus
+    /// the OpenAPI version pair — each DERIVED from its source, never from a
+    /// constant written in this test.
+    ///
+    /// Hand-maintenance is **disproven** as a mechanism here: the spec version
+    /// sat at 1.23.0 while the server was serving `1.29.2`, the SBOM badge
+    /// linked a file two releases behind, and the test-count badge drifted —
+    /// across two consecutive releases (1.29.1 and 1.29.2). Each was invisible
+    /// because nothing compared the displayed value to its source. This is the
+    /// replacement.
+    ///
+    /// The decisive one is `x-api-version`. The router serves that header from
+    /// `env!("CARGO_PKG_VERSION")` (`src/server/router/mod.rs:258`), so a spec
+    /// claiming `1.23.0` is not stale — it is **factually wrong about the
+    /// server's own wire behaviour**, and any client reconciling the header
+    /// against the spec would compute a false version.
+    #[test]
+    fn readme_badges_and_openapi_version_are_derived_not_hand_typed() {
+        let readme = doc("README.md");
+        let cargo = doc("Cargo.toml");
+        let spec = doc("openapi.yaml");
+
+        // SOURCE 1 — the crate version. One read, everything else keys off it.
+        let version = cargo
+            .lines()
+            .find_map(|l| l.strip_prefix("version = \""))
+            .and_then(|l| l.split('"').next())
+            .unwrap_or_else(|| panic!("Cargo.toml must carry a `version = \"x.y.z\"` line"));
+        assert!(
+            !version.is_empty() && version.starts_with(|c: char| c.is_ascii_digit()),
+            "parsed crate version is not a version: {version:?}"
+        );
+
+        // Badge: the version, as displayed.
+        assert!(
+            readme.contains(&format!("badge/version-{version}-blue.svg")),
+            "README version badge does not show the crate version {version} — run \
+             scripts/badges.sh and paste the block"
+        );
+
+        // SOURCE 2 — the OpenAPI version pair must equal the served version.
+        // Both halves: `info.version` and `x-api-version`.
+        let info_version = spec
+            .lines()
+            .find_map(|l| l.strip_prefix("  version: "))
+            .map(str::trim)
+            .unwrap_or_else(|| panic!("openapi.yaml must carry an `info.version`"));
+        let api_version = spec
+            .lines()
+            .find_map(|l| l.strip_prefix("  x-api-version: \""))
+            .and_then(|l| l.split('"').next())
+            .unwrap_or_else(|| panic!("openapi.yaml must carry an `x-api-version`"));
+        assert_eq!(
+            info_version, version,
+            "openapi.yaml info.version ({info_version}) disagrees with the crate \
+             version ({version})"
+        );
+        assert_eq!(
+            api_version, version,
+            "openapi.yaml x-api-version ({api_version}) disagrees with the crate \
+             version ({version}). The router serves this header from \
+             env!(\"CARGO_PKG_VERSION\"), so a stale value here is a spec that \
+             misdescribes the running server."
+        );
+
+        // Badge: the spec version, as displayed — must follow BOTH.
+        assert!(
+            readme.contains(&format!("OpenAPI-{version}-")),
+            "README OpenAPI badge does not show {version} (the spec's own version)"
+        );
+        assert!(
+            !readme.contains("OpenAPI-1.23.0-"),
+            "the README still advertises the pre-1.29 spec version 1.23.0"
+        );
+
+        // SOURCE 3 — the SBOM file for THIS version must exist and be the one
+        // the badge links. The path is derived, so a release cannot point the
+        // badge at a stale file.
+        let sbom = format!("sbom/brain-server-{version}.cdx.json");
+        assert!(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join(&sbom)
+                .exists(),
+            "{sbom} is missing — run scripts/sbom.sh and commit it. The README \
+             links a specific SBOM, so the link and the file must be the same \
+             release."
+        );
+        assert!(
+            readme.contains(&format!("href=\"{sbom}\"")),
+            "the README SBOM link is not {sbom} — a badge pointing at another \
+             release's file is a stale link, not a cosmetic one"
+        );
+
+        // The test-count badge cannot be derived inside a unit test (it needs a
+        // full cargo run), so this pins the SHAPE rather than the number, and
+        // `scripts/badges.sh --selfcheck` owns the number in CI. Asserting a
+        // literal here would be the hand-maintenance this test replaces.
+        assert!(
+            readme.contains("img.shields.io/badge/tests-"),
+            "the README test-count badge vanished"
+        );
+        assert!(
+            readme.contains("not selfcheck-verified"),
+            "the test-count badge must carry its 'not selfcheck-verified' \
+             disclaimer — a count this file cannot prove must never read as proven"
+        );
+    }
+
     /// ISO/AWI 18295-1 is under revision (verified 2026-08). The watch item
     /// must stay registered: when the revision publishes, every clause
     /// reference has to be re-mapped deliberately, not silently.
@@ -318,6 +426,66 @@ mod pins {
             block.contains("delivery_quality_gate_refused"),
             "the advance 409 list must carry the checkpoint-gate refusal — a client \
              cannot handle an error the spec does not name"
+        );
+
+        // ── the ROUTE BINDING, which the key-set check above cannot see ──
+        // Key-set equality proves the two descriptions agree on FIELDS. It says
+        // nothing about WHICH handler serves them: a schema could be perfectly
+        // shaped, referenced from the advance path, and served by a different
+        // type. So assert the chain end to end, in source:
+        //
+        //   spec path -> $ref -> schema name
+        //   handler fn -> delivery::advance() -> its return type -> that struct
+        //
+        // Names are expected to DIFFER (Advanced vs DeliveryRunAdvanced) — that
+        // is the recorded house convention, so the check compares the RETURN
+        // TYPE of the call, not a string equality.
+        let handler = std::fs::read_to_string(format!(
+            "{}/src/handlers/delivery.rs",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("read the delivery handler");
+        let core = std::fs::read_to_string(format!(
+            "{}/src/workflow/delivery.rs",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("read the delivery core");
+
+        assert!(
+            handler.contains("pub async fn post_delivery_advance"),
+            "the advance route's handler must exist — the spec documents a route \
+             the handler tree no longer implements"
+        );
+        assert!(
+            handler.contains("delivery::advance("),
+            "post_delivery_advance must call delivery::advance — a route bound to \
+             a different core fn serves a different contract than the spec states"
+        );
+        assert!(
+            handler.contains("serde_json::to_value(advanced)"),
+            "the handler must serialize the advance result directly; a projection \
+             or hand-built object would break the field-for-field binding this \
+             schema claims"
+        );
+        assert!(
+            core.contains("pub(crate) fn advance(conn: &mut Connection, req: &Advance<'_>) -> Result<Advanced, DeliveryError>"),
+            "delivery::advance must return Result<Advanced, _> — if the return \
+             type changes, the served shape changes and this schema's key set \
+             must be re-pinned with it"
+        );
+        assert!(
+            core.contains("pub(crate) struct Advanced {"),
+            "the Advanced struct this route serves must exist at the site the \
+             schema description names"
+        );
+
+        // The description must name the divergence, so a reader who greps the
+        // spec for `Advanced` is not left to wonder whether it is a typo.
+        assert!(
+            schema.contains("struct Advanced"),
+            "the DeliveryRunAdvanced description must name the Rust type it is \
+             served from, and say the names deliberately differ — an undocumented \
+             name divergence reads as a mistake"
         );
     }
 

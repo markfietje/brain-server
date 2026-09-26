@@ -31,16 +31,16 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 <p align="center">
 
   <a href="#verification-and-evidence">
-    <img alt="2324 tests passed" src="https://img.shields.io/badge/tests-2324%20passed-brightgreen.svg">
+    <img alt="2325 tests passed" src="https://img.shields.io/badge/tests-2325%20passed-brightgreen.svg">
   </a>
   <a href="docs/universal-memory-protocol.md">
     <img alt="UMP 1.0 L3 verified" src="https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg">
   </a>
-  <a href="sbom/brain-server-1.29.0.cdx.json">
+  <a href="sbom/brain-server-1.29.2.cdx.json">
     <img alt="CycloneDX 1.5 SBOM" src="https://img.shields.io/badge/SBOM-CycloneDX%201.5-013243.svg">
   </a>
   <a href="openapi.yaml">
-    <img alt="OpenAPI 1.23.0" src="https://img.shields.io/badge/OpenAPI-1.23.0-6b4bff.svg">
+    <img alt="OpenAPI 1.29.2" src="https://img.shields.io/badge/OpenAPI-1.29.2-6b4bff.svg">
   </a>
   <a href="SECURITY.md">
     <img alt="Security policy" src="https://img.shields.io/badge/security--policy-1f6feb.svg">
