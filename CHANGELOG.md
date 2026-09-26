@@ -17,6 +17,120 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [Unreleased] — 2026-09-26 — "Ledger": the delivery loop can prove what it did, offline
+
+> **UNRELEASED — deliberately.** The SCHEMA stamp moved to `1.32.16` (a release
+> boundary the refuse-newer law reads), but the CRATE version did not: a version
+> bump drags the SBOM artifact and the generated badge block, and no release is
+> in this round's scope. The version, the badge, and the SBOM move together when
+> the release round runs.
+>
+> NOT pushed, NOT tagged. CI is billing-blocked on this repository, so no
+> CI-green claim is made anywhere in this entry. The local battery is recorded in
+> the spine evidence file, item by item, including what was NOT run.
+
+### Release notes
+
+**Improvements**
+
+- **Delivery runs now carry a signed attestation chain.** Every phase pass
+  appends ONE link — inside the same transaction as the step row, the
+  compare-and-swap, and the trace row — naming the kernel-derived subject, the
+  artifact digest, the phase, the tier, and the key that signed. The new
+  `GET /workflow/delivery/runs/{id}/attestations` returns the chain with an
+  **unconditional** verification verdict: no parameter can switch verification
+  off, and a link that does not verify is reported per link with a named refusal
+  code rather than hidden or downgraded into a mark that reads as verified. The
+  chain is verified **offline** — no key file, no network, no clock — so anyone
+  holding the chain can re-derive the verdict themselves.
+- **A phase pass may now cite the model that acted.** The advance body takes an
+  optional `model` binding; the server resolves it through the model registry and
+  the signed predicate carries that row's **artifact digest**, so a model name
+  with no bytes behind it is refused. Registry refusals stay distinct
+  (`model_not_registered` / `model_not_promoted` / `model_retired` /
+  `model_digest_missing`).
+- **Trace rows carry a stored ordinal.** `delivery_traces` gains `seq` with a
+  `UNIQUE(run_id, seq)` index, allocated as `MAX(seq)+1` in the caller's
+  transaction. A deleted middle row no longer makes the next write collide.
+
+**Security fixes**
+
+- **A phase pass now refuses to proceed without a usable operator key.** An
+  absent key and a refused one are different causes of the same refusal, and
+  neither ever degrades into an unsigned link. On a host with no operator key,
+  a delivery run is created but never advances past its admission. Operators who
+  relied on keyless phase passes will see `409 delivery_attestation_refused` —
+  install the operator key (`brain ump keygen` / the shipped installer) to
+  advance runs.
+
+**Consumer-affecting**
+
+- **Every stored and published `trc_` id changes.** The trace id digests the row's
+  stored ordinal, and the ordinal is new, so ids are re-addressed once. Any
+  consumer that persisted a `trace_id` across this upgrade must re-read it. Four
+  published response schemas carry `trace_id`
+  (`DeliveryRunCreated`, `DeliveryRunAdvanced`, `DeliveryRunAnswered`,
+  `DeliveryGateVerdict`). A database that predates the ordinal column has its
+  existing rows numbered 1..n per run in `(created_at, rowid)` order, so their
+  stored order is preserved; their ids are still re-addressed.
+- **The schema stamp is `1.32.16`.** A binary built before this release refuses a
+  migrated database by design (`refuse_newer_schema`); downgrading needs a
+  pre-upgrade backup or a forward build.
+
+**Non-claims — these are contract, not disclaimers**
+
+- The attestation envelope is **not DSSE**. It is the project envelope convention
+  and will not verify against any DSSE verifier.
+- The field names `subject_digest` / `predicate_type` / `predicate` mirror the
+  in-toto Attestation Framework's Statement v1 model as **naming adjacency
+  only**. The envelope is not an in-toto Statement and verifies against no
+  in-toto verifier.
+- **No SLSA provenance and no SLSA build level** is produced or claimed.
+- The IETF WIMSE agent-audit drafts are contemporaneous prior art, not a
+  standard: four drafts, zero RFCs, two of them individual submissions.
+- **Authorship is not authority.** A verified link proves who signed. There is no
+  PKI, no revocation oracle, and no key epoch, so a rotated key leaves history
+  verifiable, and a signature says nothing about whether the act was permitted.
+- The signed predicate carries **4 of its 13 fields** today;
+  `gate_verdicts`, `approval_ref`, `authority_receipts`, and `budget_spend` stay
+  empty until the rounds that populate them ship. It is not a rich claim.
+
+### Engineering record
+
+- **New table `delivery_attestations`** (twelve columns, the design owner's list
+  and no others) plus the `delivery_traces.seq` ordinal; stamp `1.32.16`;
+  `PARITY_TABLES`, `expected_tables`, and the refuse-newer probe all move in the
+  same commit.
+- **`src/workflow/attestations.rs`** (new): the envelope, the signer, the chain
+  writer, and the offline verifier. Module-level `#![deny(unsafe_code)]`. All
+  cryptography is routed through the shipped `ump_integrity` stack — a second
+  canonicalizer or a second content hash would be how a signature drifts onto
+  the wrong bytes, and a pin forbids one.
+- **One writer.** `advance()` is the only caller of the chain append, and a
+  tree-wide source scan proves exactly one production INSERT exists. The
+  admission, the answer, and the gate each read the chain head into their trace
+  row and append nothing.
+- **A migration bug this release found and fixed:** the `ADD COLUMN` for `seq`
+  defaults every existing row to `0`, so a run with three trace rows held three
+  `(run_id, 0)` pairs and the `CREATE UNIQUE INDEX` that follows would have
+  failed the migration on exactly the databases the guarded block exists to
+  upgrade. The ordinals are backfilled per run in `(created_at, rowid)` order
+  before the index is created, and a pin builds a populated pre-ordinal database
+  and proves the upgrade survives it.
+- **Three existing pins reversed, deliberately and by name:** the delivery route
+  census (four routes → five), the "zero reads" rule (R38's four-writes-no-reads
+  decision, which the attestation read revokes), and the schema stamp literal.
+  Each was widened rather than deleted, so a sixth route or a seventh stamp still
+  fails.
+- **One vacuous check found and rewritten.** The old "no GET under the delivery
+  prefix" pin filtered lines *containing* the path and then looked for `get(` on
+  that same line — never true, because the method is on a later line. It is now
+  a path-to-method pairing, so a second read would actually be seen.
+- Full record, with the RED→GREEN ledger, the red-proofs, the exact commands and
+  exit codes, the forbidden-path outputs, the re-measured floors, the envelope as
+  shipped, and the honest NOT RUN list: `plans/R40_EVIDENCE_ATTESTATIONS_2026-09-26.md`
+  in the `brain-steward-ip` planning repository.
+
 ## [1.29.2] — 2026-09-26 — "Engines": the delivery loop grows an executor it can actually call
 
 > **Internal release.** Prepared and tagged locally; **not pushed**, and

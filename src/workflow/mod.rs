@@ -23,6 +23,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod accounts;
+pub(crate) mod attestations;
 pub mod calibration;
 pub(crate) mod case_status;
 pub(crate) mod channel;

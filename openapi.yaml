@@ -7863,6 +7863,16 @@ paths:
         The response's `proposal_id` is the proposal the artifact filed, or `0`
         when the pass carried none. The digest is derived server-side — there is
         no digest field to supply.
+        R40: the pass now also signs an ATTESTATION link and appends it to the
+        run's chain, inside this same transaction, and the trace row names the
+        chain head. An optional `model` binding names the registry row this pass
+        executed under: the server resolves it, and the signed predicate carries
+        the row's ARTIFACT DIGEST, so a model name with no bytes behind it is
+        refused rather than recorded. The four registry refusals are distinct.
+        KEY POSTURE (fail-closed): a phase pass REFUSES when the host has no
+        usable operator key — `delivery_attestation_refused` covers an absent key
+        and a refused one alike, and neither ever degrades into an unsigned link.
+        A run on a keyless host therefore never advances past its admission.
       operationId: advanceDeliveryRun
       security: [{ bearerAuth: [] }]
       requestBody:
@@ -7885,6 +7895,8 @@ paths:
                   items: { type: string, maxLength: 256 }
                 artifact:
                   $ref: "#/components/schemas/DeliveryArtifact"
+                model:
+                  $ref: "#/components/schemas/DeliveryModelBinding"
       responses:
         "200":
           description: Phase pass committed
@@ -7898,7 +7910,7 @@ paths:
         "403": { description: Not authorized (Write on the run's domain plus the `workflow` role) }
         "404": { description: Delivery run not found (probe-blind; unaudited) }
         "409":
-          description: delivery_gate_stale_revision | delivery_illegal_phase_transition | delivery_terminal_phase | delivery_quality_gate_refused | artifact_screened_quarantine
+          description: delivery_gate_stale_revision | delivery_illegal_phase_transition | delivery_terminal_phase | delivery_quality_gate_refused | artifact_screened_quarantine | delivery_attestation_refused | delivery_model_not_registered | delivery_model_not_promoted | delivery_model_retired | delivery_model_digest_missing
   /workflow/delivery/runs/{id}/answer:
     post:
       summary: Answer a delivery run's pending question (Write plus the `workflow` role)
@@ -7968,6 +7980,80 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized (Write on the run's domain plus the `workflow` role) }
         "404": { description: Delivery run not found (probe-blind; unaudited) }
+  /workflow/delivery/runs/{id}/attestations:
+    get:
+      summary: Read the run's attestation chain and its verification verdict (Read plus the `workflow` role)
+      description: >
+        The chain of signed statements about what this run's phase passes actually
+        did, newest-last, and the UNCONDITIONAL verification verdict over it. The
+        verdict ships on every response and no parameter can switch it off;
+        `?verify=1` is accepted and is an explicit request for the IDENTICAL
+        payload. A link that does not verify is REPORTED per link with a named
+        refusal code — it is never hidden, never dropped, and never downgraded
+        into a mark that reads as verified. The only 409 is a chain that could
+        not be READ at all, which is reported rather than rendered as an empty
+        verified-looking chain.
+        THE NON-CLAIMS, which are load-bearing and not decorative.
+        This envelope is NOT DSSE. It is the project envelope convention: a
+        signature over a canonicalized JSON object. It does not implement the
+        DSSE envelope structure and does not apply the DSSE Pre-Authentication
+        Encoding (DSSE v1.0.2, 2024-05-10), and it WILL NOT VERIFY AGAINST ANY
+        DSSE VERIFIER.
+        The field names `subject_digest`, `predicate_type`, and `predicate` were
+        chosen to MIRROR the naming of the in-toto Attestation Framework's
+        Statement v1 model (`subject[].digest`, `predicateType`, `predicate`;
+        `_type` `https://in-toto.io/Statement/v1`). That is naming adjacency in
+        this project's own design lineage. The envelope is not an in-toto
+        Statement, carries no `_type` field, and verifies against neither an
+        in-toto nor a DSSE verifier.
+        No SLSA claim. SLSA (Supply-chain Levels for Software Artifacts,
+        Version 1.2, 2025-11-24) is the ecosystem's frame for BUILD provenance.
+        This is not a build artifact: there is NO SLSA PROVENANCE ATTESTATION
+        here and no SLSA build level is claimed, so the envelope will not verify
+        against a SLSA or in-toto provenance verifier either.
+        The IETF WIMSE agent-audit drafts (2026; four drafts, zero RFCs, two of
+        them individual submissions rather than Working Group documents) are
+        contemporaneous prior art for signed statements about what an agent did.
+        They are cited as prior art only: no WIMSE relationship, adoption, or
+        alignment is claimed.
+        AUTHORSHIP IS NOT AUTHORITY. A verified link proves the holder of the key
+        named in `signer_did` signed these bytes. There is no PKI, no revocation
+        oracle, and no key epoch, so a rotated key leaves historical links
+        verifiable and valid. Nothing about whether the act was PERMITTED is
+        asserted anywhere in this payload.
+        OPERATIONAL POSTURE: on a host with NO operator key, every delivery phase
+        pass REFUSES, because an attestation that cannot be signed is never
+        written as an unsigned link. A run created on such a host therefore has
+        an empty chain rather than a chain of unsigned rows.
+        The predicate carries 4 of its 13 fields non-empty today —
+        `gate_verdicts`, `approval_ref`, `authority_receipts`, and
+        `budget_spend` stay empty until the rounds that populate them ship. Do
+        not read it as a rich claim.
+      operationId: getDeliveryAttestations
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: verify
+          in: query
+          required: false
+          description: >
+            Accepted and documented for explicitness; carries no behaviour. The
+            chain verdict is unconditional and is present whether this parameter
+            is sent or not.
+          schema:
+            type: string
+            enum: ["1"]
+      responses:
+        "200":
+          description: The chain, its per-link verdicts, and the overall verdict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryAttestationChain"
+        "400": { description: delivery_unknown_vocabulary }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Read on the run's domain plus the `workflow` role) }
+        "404": { description: Delivery run not found (probe-blind) }
+        "409": { description: attestation_chain_too_long | attestation_envelope_malformed | attestation_storage }
   /workflow/model-registry:
     get:
       summary: List registered model identities (Admin plus DPO role; audited)
@@ -8299,6 +8385,115 @@ components:
           enum: [terminal-phase, illegal-phase-transition, closed-vocabulary, exhausted-budget]
         trace_id: { type: string, pattern: "^trc_[0-9a-f]{32}$" }
         evaluated_at: { type: integer, format: int64, minimum: 1 }
+    DeliveryModelBinding:
+      type: object
+      additionalProperties: false
+      required: [key, config_digest]
+      description: >
+        The registry row a phase pass executes under, NAMED by the client. The
+        server resolves the key and derives the artifact digest, so a client can
+        never vouch for a model it did not run; a row that resolves without an
+        artifact digest is refused. Absent is the previous behaviour: the trace
+        rows carry honest nulls and the signed predicate's model fields stay
+        empty.
+      properties:
+        key:
+          type: string
+          maxLength: 128
+          pattern: "^rules:[a-z0-9][a-z0-9._-]*$"
+        config_digest:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+    DeliveryAttestationLink:
+      type: object
+      additionalProperties: false
+      required: [id, run_id, step_id, subject_name, subject_digest, predicate_type, predicate_digest, signer_did, parent_id, chain_hash, created_at, verified]
+      description: >
+        One signed statement about one phase pass. `verified` is this link's own
+        verdict and `refusal` (present only when it is false) names why — a
+        closed vocabulary, never a generic failure. The raw signed envelope is
+        deliberately NOT returned: it is canonical bytes carrying a base64
+        signature, and this surface answers "does it verify, and who signed it".
+        The envelope is retrievable from storage by a holder of the chain.
+      properties:
+        id: { type: string, pattern: "^att_[0-9a-f]{32}$" }
+        run_id: { type: integer, format: int64, minimum: 1 }
+        step_id: { type: integer, format: int64, minimum: 1 }
+        subject_name:
+          type: string
+          maxLength: 160
+          description: Kernel-derived (`delivery/phase/{phase}` plus a bounded artifact-id suffix). Agent free text never becomes a signed name.
+        subject_digest: { type: string }
+        predicate_type: { type: string, enum: ["urn:brain:attest:delivery:v1"] }
+        predicate_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+        signer_did:
+          type: string
+          description: >
+            The key that signed, as a did:key. This IS the key history: there is
+            no epoch column, no revocation oracle, and no PKI, so a rotated key
+            leaves historical links verifiable. Authorship is not authority.
+        parent_id: { type: string, description: Empty at the chain root; otherwise the parent link's row id. }
+        chain_hash: { type: string, pattern: "^[0-9a-f]{64}$" }
+        created_at: { type: integer, format: int64, minimum: 1 }
+        verified: { type: boolean }
+        refusal:
+          type: string
+          description: Why this link does not verify. Present only when `verified` is false.
+          enum:
+            - attestation_root_has_parent
+            - attestation_broken_link
+            - attestation_envelope_malformed
+            - attestation_integrity_incomplete
+            - attestation_signer_mismatch
+            - attestation_content_hash_mismatch
+            - attestation_unknown_signer
+            - attestation_signature_invalid
+            - attestation_predicate_type_mismatch
+            - attestation_predicate_malformed
+            - attestation_predicate_incomplete
+            - attestation_predicate_digest_mismatch
+            - attestation_chain_hash_mismatch
+            - attestation_column_mismatch
+            - attestation_dated_in_future
+    DeliveryAttestationVerdict:
+      type: object
+      additionalProperties: false
+      required: [verified, link_count, signer_dids]
+      description: >
+        The UNCONDITIONAL verdict over the chain. There is no parameter that can
+        switch it off. An empty chain (a run that has not yet passed a phase)
+        reports `verified: true` with `link_count: 0`, which means "nothing to
+        refute", not "everything is fine".
+      properties:
+        verified: { type: boolean }
+        head:
+          type: string
+          nullable: true
+          description: The last link's row id, or null when the chain is empty.
+        link_count: { type: integer, minimum: 0, maximum: 500 }
+        signer_dids:
+          type: array
+          description: Distinct keys that signed this chain, sorted.
+          items: { type: string }
+    DeliveryAttestationChain:
+      type: object
+      additionalProperties: false
+      required: [run_id, chain, verdict]
+      description: >
+        The run's chain in append order, with the verdict. Served from
+        `brain_delivery_core`'s predicate and record-digest forms over the
+        shipped integrity stack; verified OFFLINE, with no key file, no
+        network, and no clock involved. See the route description for the
+        non-claims, which are part of the contract.
+      properties:
+        run_id: { type: integer, format: int64, minimum: 1 }
+        chain:
+          type: array
+          maxItems: 500
+          items:
+            $ref: "#/components/schemas/DeliveryAttestationLink"
+        verdict:
+          $ref: "#/components/schemas/DeliveryAttestationVerdict"
     DecisionEvaluationRecord:
       type: object
       additionalProperties: false

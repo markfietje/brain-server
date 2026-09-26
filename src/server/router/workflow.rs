@@ -464,9 +464,11 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
         // reads; fatigue alerts the scheduling human, never reassigns.
         .route("/ops/workload", get(handlers::workload::get_ops_workload))
         .route("/ops/coverage", get(handlers::workload::get_ops_coverage))
-        // The delivery loop's four run writes. Write on the run's own domain
-        // plus the `workflow` role; the gate evaluation is a disposition and
-        // mutates nothing.
+        // The delivery loop's four run writes, plus the attestation round's first read. Write on
+        // the run's own domain plus the `workflow` role; the gate evaluation is
+        // a disposition and mutates nothing. The read is Read-scoped, is
+        // probe-blind like the writes, and serves an UNCONDITIONAL chain
+        // verdict — no parameter can switch verification off.
         .route(
             "/workflow/delivery/runs",
             post(handlers::delivery::post_delivery_run),
@@ -482,5 +484,9 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
         .route(
             "/workflow/delivery/runs/{id}/gates",
             post(handlers::delivery::post_delivery_gates),
+        )
+        .route(
+            "/workflow/delivery/runs/{id}/attestations",
+            get(handlers::delivery::get_delivery_attestations),
         )
 }

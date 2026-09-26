@@ -123,9 +123,9 @@ const PARITY_TABLES: &[&str] = &[
     "delivery_traces",
     // the delivery loop's per-run budget head — stored, unenforced.
     "delivery_budgets",
-    // v1.32.16 "Attestations": the per-run signed chain. One writer, twelve
-    // columns, and row-count parity is what proves a rehearsal copied the
-    // evidence layer and not only the run tables.
+    // the per-run signed attestation chain. One writer, twelve columns, and
+    // row-count parity is what proves a rehearsal copied the evidence layer
+    // and not only the run tables.
     "delivery_attestations",
 ];
 

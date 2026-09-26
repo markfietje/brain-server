@@ -59,6 +59,14 @@ const MAX_REFS: usize = 32;
 const MAX_ARTIFACT_ID_CHARS: usize = 128;
 const MAX_ARTIFACT_CHARS: usize = 8000;
 const MAX_GATE_CHARS: usize = 8000;
+/// the attestation round: the presented model's own caps. A key and a config digest are caller
+/// text at this boundary, so they are bounded like every other bounded caller
+/// text — and the caps are named so the refusal names them.
+const MAX_MODEL_KEY_CHARS: usize = 128;
+const MAX_DIGEST_INPUT_CHARS: usize = 128;
+/// The subject name's bounded artifact suffix (A4). The name is signed, so its
+/// length is a property of the signature's domain, not a display choice.
+const MAX_SUBJECT_SUFFIX_CHARS: usize = 64;
 
 /// The delivery loop's typed-artifact proposal kind. `proposals.kind` is free
 /// text with no CHECK and no global closed vocabulary, so a new kind is
@@ -152,27 +160,62 @@ impl DeliveryState {
 #[derive(Debug)]
 pub(crate) enum DeliveryError {
     /// A value outside a closed vocabulary, carried verbatim for the refusal.
-    UnknownVocabulary { field: &'static str, value: String },
+    UnknownVocabulary {
+        field: &'static str,
+        value: String,
+    },
     /// The run is absent, is not a delivery run, or is not the caller's — the
     /// handler collapses all three into one probe-blind answer.
     RunAbsent,
     /// The caller lost the CAS: another writer moved the revision first.
-    Stale { actual_revision: i64 },
+    Stale {
+        actual_revision: i64,
+    },
     /// The requested phase move is not in the forward-only machine.
-    IllegalPhaseTransition { from: String, to: String },
+    IllegalPhaseTransition {
+        from: String,
+        to: String,
+    },
     /// The run already sits in the terminal phase.
-    TerminalPhase { phase: String },
+    TerminalPhase {
+        phase: String,
+    },
     /// A run with no pending question cannot be answered.
     NoPendingQuestion,
     /// The run already carries a pending question.
     QuestionPending,
     /// A bounded input exceeded its cap.
-    TooLong { field: &'static str, max: usize },
+    TooLong {
+        field: &'static str,
+        max: usize,
+    },
     /// Too many budget rows, or too many artifact refs, in one request.
-    TooMany { field: &'static str, max: usize },
+    TooMany {
+        field: &'static str,
+        max: usize,
+    },
     /// The checkpoint gate refused the artifact. Carries the executor's own
     /// refusal verbatim — the QA law, not a nearest-match guess.
-    QualityGate { reason: String },
+    QualityGate {
+        reason: String,
+    },
+    /// the attestation round: the attestation layer refused the pass. The detail is the
+    /// attestation's own closed vocabulary (`operator_key_absent`,
+    /// `operator_key_refused`, `model_retired`, `attestation_chain_full`, …),
+    /// so a caller learns WHICH law stopped the phase pass.
+    AttestationRefused {
+        reason: String,
+    },
+    /// the model-citation law: the model binding named a row the registry does not hold, or
+    /// a key that is not registry-shaped at all. Three DISTINCT refusals, one
+    /// per registry refusal — an unregistered row and an unpromoted one are
+    /// different operator problems.
+    ModelNotRegistered,
+    ModelNotPromoted,
+    ModelRetired,
+    /// the model-citation law: the row resolves but carries no artifact digest, so nothing
+    /// says which bytes acted. A name without its digest is not a citation.
+    ModelDigestMissing,
     /// The storage boundary refused. The detail never reaches a caller
     /// verbatim; it exists so the failure is diagnosable.
     Storage(String),
@@ -197,6 +240,13 @@ impl std::fmt::Display for DeliveryError {
             Self::TooLong { field, max } => write!(f, "delivery_{field}_too_long:{max}"),
             Self::TooMany { field, max } => write!(f, "delivery_{field}_too_many:{max}"),
             Self::QualityGate { reason } => write!(f, "delivery_quality_gate_refused:{reason}"),
+            Self::AttestationRefused { reason } => {
+                write!(f, "delivery_attestation_refused:{reason}")
+            }
+            Self::ModelNotRegistered => write!(f, "delivery_model_not_registered"),
+            Self::ModelNotPromoted => write!(f, "delivery_model_not_promoted"),
+            Self::ModelRetired => write!(f, "delivery_model_retired"),
+            Self::ModelDigestMissing => write!(f, "delivery_model_digest_missing"),
             Self::Storage(detail) => write!(f, "delivery_storage: {detail}"),
         }
     }
@@ -206,6 +256,27 @@ impl std::error::Error for DeliveryError {}
 
 fn storage(detail: impl std::fmt::Display) -> DeliveryError {
     DeliveryError::Storage(detail.to_string())
+}
+
+/// The attestation layer's error, mapped into the delivery vocabulary. Every
+/// attestation refusal becomes a TYPED delivery refusal carrying the
+/// attestation's own reason, never a flattened "storage" or a 500.
+fn attestation(error: crate::workflow::attestations::AttestationError) -> DeliveryError {
+    use crate::workflow::attestations::AttestationError as E;
+    match error {
+        E::ModelNotRegistered => DeliveryError::ModelNotRegistered,
+        E::ModelNotPromoted => DeliveryError::ModelNotPromoted,
+        E::ModelRetired => DeliveryError::ModelRetired,
+        E::ModelDigestMissing => DeliveryError::ModelDigestMissing,
+        // A failed audit INSERT is a STORAGE failure, not an attestation law
+        // refusal: conflating the two would make the rollback pin's boundary
+        // message lie, and "the evidence substrate is gone" is a different
+        // operator problem from "there is no key".
+        E::Storage(detail) => DeliveryError::Storage(detail),
+        other => DeliveryError::AttestationRefused {
+            reason: other.to_string(),
+        },
+    }
 }
 
 /// Parse against a closed vocabulary, never guessing a near match.
@@ -275,6 +346,11 @@ fn bounded_input(field: &'static str, value: &str, max: usize) -> Result<(), Del
 pub(crate) struct TraceRow {
     pub id: String,
     pub run_id: i64,
+    /// the stored-ordinal law: the STORED ordinal inside the run. 1-based, allocated in the
+    /// caller's transaction as `MAX(seq)+1`. It is a field and not a parameter
+    /// because `content_id` digests it and a re-derivation must reproduce the
+    /// id from the row alone.
+    pub seq: i64,
     pub stage: String,
     pub phase: String,
     pub status: String,
@@ -292,11 +368,19 @@ pub(crate) struct TraceRow {
 
 impl TraceRow {
     /// The canonical bytes the id digests: the closed labels and digests in a
-    /// fixed order, the created_at last. Two rows with the same facts and the
-    /// same position produce the same id, which is what makes the replay index
-    /// trustworthy.
+    /// fixed order, the STORED ORDINAL last. Two rows with the same facts and
+    /// the same position produce the same id, which is what makes the replay
+    /// index trustworthy.
+    ///
+    /// `seq` is framed and `created_at` is NOT: the ordinal is part of the
+    /// row's identity (the same disposition can be recorded twice) and the
+    /// wall clock is not (a replay that crosses a second boundary must still
+    /// reproduce the id). The docstring here said the opposite for years, and
+    /// the attestation round is the round that made the distinction load-bearing.
     fn canonical_bytes(&self) -> Vec<u8> {
         let mut s = String::new();
+        s.push_str(&self.seq.to_string());
+        s.push('\u{1f}');
         s.push_str(&self.run_id.to_string());
         s.push('\u{1f}');
         s.push_str(&self.stage);
@@ -326,7 +410,7 @@ impl TraceRow {
     }
 
     /// `trc_<32 hex>` — a content address over the canonical bytes AND the
-    /// row's ordinal within its run.
+    /// row's STORED ordinal within its run.
     ///
     /// The ordinal is part of the identity on purpose. An append-only evidence
     /// log can legitimately record the same disposition twice (the same gate
@@ -336,21 +420,62 @@ impl TraceRow {
     /// in makes the address unique AND deterministic: replaying the same
     /// sequence of facts on a fresh database reproduces the same ids, which is
     /// the property the replay-verify surface will read.
-    pub(crate) fn content_id(&self, ordinal: i64) -> String {
+    ///
+    /// the stored-ordinal law folds the STORED `seq` rather than a passed-in counter, so
+    /// this is a function of the row alone and the id is re-derivable from
+    /// storage.
+    pub(crate) fn content_id(&self) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(ordinal.to_be_bytes());
         hasher.update(self.canonical_bytes());
         let digest = hasher.finalize();
         format!("trc_{}", &crate::audit::hex_encode(&digest)[..32])
     }
+
+    /// Read a stored row back into the struct, so an id can be re-derived from
+    /// the database alone. `None` when the row is absent — absence is not an
+    /// error at this boundary, the caller decides what it means.
+    pub(crate) fn read_back(conn: &Connection, id: &str) -> Result<Option<Self>, DeliveryError> {
+        conn.query_row(
+            "SELECT id, run_id, seq, stage, phase, status, tier, actor, model_ref, policy_digest, \
+             config_digest, pipeline_version, budget_digest, artifact_refs_json, attestation_root, \
+             created_at FROM delivery_traces WHERE id = ?1",
+            params![id],
+            |r| {
+                Ok(Self {
+                    id: r.get(0)?,
+                    run_id: r.get(1)?,
+                    seq: r.get(2)?,
+                    stage: r.get(3)?,
+                    phase: r.get(4)?,
+                    status: r.get(5)?,
+                    tier: r.get(6)?,
+                    actor: r.get(7)?,
+                    model_ref: r.get(8)?,
+                    policy_digest: r.get(9)?,
+                    config_digest: r.get(10)?,
+                    pipeline_version: r.get(11)?,
+                    budget_digest: r.get(12)?,
+                    artifact_refs_json: r.get(13)?,
+                    attestation_root: r.get(14)?,
+                    created_at: r.get(15)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(storage)
+    }
 }
 
-/// The row's ordinal within its run, read inside the caller's transaction. The
-/// count is monotonic under the run's own transaction, so two writers cannot
-/// claim the same ordinal.
-fn trace_ordinal(conn: &Connection, run_id: i64) -> Result<i64, DeliveryError> {
+/// The next ordinal inside the run, read inside the caller's transaction.
+///
+/// `MAX(seq)+1` and NEVER `COUNT(*)`: the count reissues an ordinal after a
+/// row is removed, and the `UNIQUE(run_id, seq)` index then refuses the write
+/// as a constraint violation rather than as the law it is. Under
+/// `BEGIN IMMEDIATE` the read and the insert are serialized, so two writers
+/// cannot claim the same ordinal.
+fn trace_next_seq(conn: &Connection, run_id: i64) -> Result<i64, DeliveryError> {
     conn.query_row(
-        "SELECT COUNT(*) FROM delivery_traces WHERE run_id = ?1",
+        "SELECT COALESCE(MAX(seq), 0) + 1 FROM delivery_traces WHERE run_id = ?1",
         params![run_id],
         |r| r.get(0),
     )
@@ -361,13 +486,14 @@ fn trace_ordinal(conn: &Connection, run_id: i64) -> Result<i64, DeliveryError> {
 /// a JSON array of refs, never content.
 fn write_trace(conn: &Connection, row: &TraceRow) -> Result<(), DeliveryError> {
     conn.execute(
-        "INSERT INTO delivery_traces(id, run_id, stage, phase, status, tier, actor, model_ref, \
-         policy_digest, config_digest, pipeline_version, budget_digest, artifact_refs_json, \
-         attestation_root, created_at) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+        "INSERT INTO delivery_traces(id, run_id, seq, stage, phase, status, tier, actor, \
+         model_ref, policy_digest, config_digest, pipeline_version, budget_digest, \
+         artifact_refs_json, attestation_root, created_at) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
         params![
             row.id,
             row.run_id,
+            row.seq,
             row.stage,
             row.phase,
             row.status,
@@ -396,7 +522,9 @@ fn write_trace(conn: &Connection, row: &TraceRow) -> Result<(), DeliveryError> {
 ///
 /// The detail carries closed labels and digests. The target is hashed before
 /// insert by the audit layer itself.
-fn delivery_audit(
+/// the audit law: shared with the attestation chain writer, which must emit the same
+/// kind with the same fail-closed idiom for its own write.
+pub(crate) fn delivery_audit(
     conn: &Connection,
     tenant: &str,
     target: &str,
@@ -588,6 +716,7 @@ pub(crate) fn create_run(
     let mut row = TraceRow {
         id: String::new(),
         run_id,
+        seq: trace_next_seq(tx.tx(), run_id)?,
         stage: "run".into(),
         phase: state.phase.clone(),
         status: "admitted".into(),
@@ -599,10 +728,13 @@ pub(crate) fn create_run(
         pipeline_version: PIPELINE_VERSION.into(),
         budget_digest: None,
         artifact_refs_json: "[]".into(),
-        attestation_root: None,
+        // the attestation round: the admission PREDATES every link, so there is no head yet and
+        // `None` is the honest value. This site only ever READS the chain.
+        attestation_root: crate::workflow::attestations::chain_head(tx.tx(), run_id)
+            .map_err(attestation)?,
         created_at: req.now,
     };
-    row.id = row.content_id(trace_ordinal(tx.tx(), run_id)?);
+    row.id = row.content_id();
     write_trace(tx.tx(), &row)?;
 
     // LAST statement before the commit.
@@ -642,8 +774,91 @@ pub(crate) struct Advance<'a> {
     /// previous behaviour byte for byte; present files exactly one proposal
     /// inside this same `WorkflowTx`.
     pub artifact: Option<&'a DeliveryArtifact>,
+    /// the model-citation law: the OPTIONAL model binding this pass executes under. Absent is
+    /// the previous behaviour byte for byte — the trace rows carry honest
+    /// `None`s and the predicate's `model_ref`/`model_digest` stay empty. It is
+    /// optional because it is the only way the model citation can be REAL rather
+    /// than vacuous: a citation nobody can present proves nothing.
+    pub model: Option<&'a ModelBinding>,
     pub actor: &'a str,
     pub now: i64,
+}
+
+/// A model's registry binding, as the caller names it: the registry key shape
+/// and the config digest that selects the row. The server resolves both — a
+/// client may name a model, never vouch for one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelBinding {
+    pub key: String,
+    pub config_digest: String,
+}
+
+/// What a resolved binding actually cites: the key, the config digest that
+/// selected the row, and the row's ARTIFACT digest — the bytes. The last one is
+/// why a binding with no artifact digest refuses instead of being recorded.
+struct Citation {
+    key: String,
+    config_digest: String,
+    artifact_digest: String,
+}
+
+/// Resolve a presented binding through the registry, in the run's own trace
+/// mode, and return the citation. Each registry refusal maps to a DISTINCT
+/// delivery error: unregistered, unpromoted, and retired are three different
+/// operator problems and a caller must be able to tell them apart.
+fn resolve_citation(
+    conn: &Connection,
+    binding: &ModelBinding,
+    tier: AutonomyTier,
+) -> Result<Citation, DeliveryError> {
+    use crate::workflow::registry::{ResolveRefusal, resolve_for_execution};
+    bounded_input("model_key", &binding.key, MAX_MODEL_KEY_CHARS)?;
+    bounded_input(
+        "model_config_digest",
+        &binding.config_digest,
+        MAX_DIGEST_INPUT_CHARS,
+    )?;
+    let mode = trace_mode_for_tier(tier).as_str();
+    let resolved =
+        resolve_for_execution(conn, &binding.key, &binding.config_digest, mode).map_err(storage)?;
+    let row = match resolved {
+        Ok(row) => row,
+        Err(ResolveRefusal::NotRegistered) => return Err(DeliveryError::ModelNotRegistered),
+        Err(ResolveRefusal::NotPromoted) => return Err(DeliveryError::ModelNotPromoted),
+        Err(ResolveRefusal::Retired) => return Err(DeliveryError::ModelRetired),
+    };
+    let artifact_digest = row
+        .artifact_digest
+        .filter(|d| !d.trim().is_empty())
+        .ok_or(DeliveryError::ModelDigestMissing)?;
+    Ok(Citation {
+        key: binding.key.clone(),
+        config_digest: binding.config_digest.clone(),
+        artifact_digest,
+    })
+}
+
+/// The KERNEL-DERIVED subject name (A4). Never agent prose: the signed name is
+/// `delivery/{phase}` plus, when a typed artifact rode the pass, a bounded
+/// suffix drawn from the artifact's OWN id and filtered to `[a-z0-9-]`. An id
+/// that does not survive the filter contributes nothing rather than being
+/// escaped into the signed bytes — the name says what the pass was, and the
+/// digest beside it says which bytes.
+fn subject_name(phase: &str, artifact: Option<&DeliveryArtifact>) -> String {
+    let Some(artifact) = artifact else {
+        return format!("delivery/phase/{phase}");
+    };
+    let suffix: String = artifact
+        .id
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+        .take(MAX_SUBJECT_SUFFIX_CHARS)
+        .collect();
+    if suffix.is_empty() {
+        format!("delivery/phase/{phase}")
+    } else {
+        format!("delivery/phase/{phase}/{suffix}")
+    }
 }
 
 /// What the advance route serves.
@@ -728,6 +943,17 @@ pub(crate) fn advance(conn: &mut Connection, req: &Advance<'_>) -> Result<Advanc
         return Err(DeliveryError::QualityGate { reason });
     }
 
+    // 2b. the model citation, resolved BEFORE any write so a refusal leaves
+    // nothing behind. A presented binding must resolve through the registry and
+    // must carry the row's ARTIFACT digest: a model name with no bytes behind it
+    // is not evidence, and recording it as if it were would be a citation the
+    // verifier cannot check. An ABSENT binding is the honest `None`s below, not
+    // a forged citation.
+    let citation = req
+        .model
+        .map(|binding| resolve_citation(tx.tx(), binding, tier))
+        .transpose()?;
+
     // 3. the step row — the phase pass's own durable artifact.
     let refs_json = serde_json::to_string(req.artifact_refs).map_err(storage)?;
     tx.tx()
@@ -765,25 +991,62 @@ pub(crate) fn advance(conn: &mut Connection, req: &Advance<'_>) -> Result<Advanc
     })?;
 
     // 5. the trace row — the phase-advance transaction is the first writer.
+    //    The model citation rides it, and the attestation head is the PREVIOUS
+    //    link: this pass's own link is appended just after, so naming itself
+    //    would be circular.
     let mut row = TraceRow {
         id: String::new(),
         run_id: req.run_id,
+        seq: trace_next_seq(tx.tx(), req.run_id)?,
         stage: "phase".into(),
         phase: proposed.as_str().into(),
         status: "advanced".into(),
         tier: tier_core_to_wire(tier).into(),
         actor: req.actor.to_string(),
-        model_ref: None,
+        model_ref: citation.as_ref().map(|c| c.key.clone()),
         policy_digest: None,
-        config_digest: None,
+        config_digest: citation.as_ref().map(|c| c.config_digest.clone()),
         pipeline_version: PIPELINE_VERSION.into(),
         budget_digest: None,
-        artifact_refs_json: refs_json,
-        attestation_root: None,
+        artifact_refs_json: refs_json.clone(),
+        attestation_root: crate::workflow::attestations::chain_head(tx.tx(), req.run_id)
+            .map_err(attestation)?,
         created_at: req.now,
     };
-    row.id = row.content_id(trace_ordinal(tx.tx(), req.run_id)?);
+    row.id = row.content_id();
     write_trace(tx.tx(), &row)?;
+
+    // 5a-bis. THE CHAIN LINK (the attestation round). The ONE place the chain is written, inside
+    // the same `WorkflowTx` as the step row, the CAS, and the trace: a phase
+    // pass can never commit without its signed evidence, and a link can never
+    // name a pass that did not commit. It runs before the proposal seam and the
+    // audit, both of which stay where they are — the audit remains the LAST
+    // statement before the commit.
+    // A pass with no artifact still attests SOMETHING: the phase it moved to,
+    // under the run's own pipeline version. The digest is real and
+    // kernel-derived; it is simply not an artifact's.
+    let subject_digest = if let Some(artifact) = req.artifact {
+        artifact.typed().hash
+    } else {
+        brain_executor_core::artifact_hash(&format!("{PIPELINE_VERSION}:{}", proposed.as_str()))
+    };
+    let attestation_id = crate::workflow::attestations::append_link(
+        tx.tx(),
+        &crate::workflow::attestations::ChainLink {
+            domain: domain.clone(),
+            run_id: req.run_id,
+            step_id,
+            subject_name: subject_name(proposed.as_str(), req.artifact),
+            subject_digest,
+            policy_digest: None,
+            config_digest: citation.as_ref().map(|c| c.config_digest.clone()),
+            model_ref: citation.as_ref().map(|c| c.key.clone()),
+            model_digest: citation.as_ref().map(|c| c.artifact_digest.clone()),
+            tier,
+        },
+        req.now,
+    )
+    .map_err(attestation)?;
 
     // 5a. the typed-artifact proposal seam. The artifact becomes a PENDING
     // proposal in the SAME transaction as the step row, the CAS, and the trace:
@@ -843,6 +1106,12 @@ pub(crate) fn advance(conn: &mut Connection, req: &Advance<'_>) -> Result<Advanc
     }
 
     // 6. the audit — LAST, fail-closed, so a pass cannot land without it.
+    // The pass's audit detail is byte-identical to an earlier round's, so an earlier round's
+    // detail-hash pin keeps passing unchanged. The tie between this transition
+    // and its signed link is the LINK'S OWN audit row, whose target is
+    // `delivery/attestation/{run_id}/{id}` — one evidence row per write, rather
+    // than a second mention of the link in the pass's row.
+    let _ = &attestation_id;
     delivery_audit(
         tx.tx(),
         &domain,
@@ -926,6 +1195,7 @@ pub(crate) fn answer(conn: &mut Connection, req: &Answer<'_>) -> Result<Answered
     let mut row = TraceRow {
         id: String::new(),
         run_id: req.run_id,
+        seq: trace_next_seq(tx.tx(), req.run_id)?,
         stage: "answer".into(),
         phase: state.phase.clone(),
         status: "answered".into(),
@@ -937,10 +1207,13 @@ pub(crate) fn answer(conn: &mut Connection, req: &Answer<'_>) -> Result<Answered
         pipeline_version: PIPELINE_VERSION.into(),
         budget_digest: None,
         artifact_refs_json: "[]".into(),
-        attestation_root: None,
+        // the attestation round: the answer reads the head and appends nothing. An attestation
+        // records that a PHASE PASS happened; an answer is not one.
+        attestation_root: crate::workflow::attestations::chain_head(tx.tx(), req.run_id)
+            .map_err(attestation)?,
         created_at: req.now,
     };
-    row.id = row.content_id(trace_ordinal(tx.tx(), req.run_id)?);
+    row.id = row.content_id();
     write_trace(tx.tx(), &row)?;
     delivery_audit(
         tx.tx(),
@@ -1004,6 +1277,7 @@ pub(crate) fn gates(conn: &mut Connection, req: &Gates<'_>) -> Result<GateVerdic
     let mut row = TraceRow {
         id: String::new(),
         run_id: req.run_id,
+        seq: trace_next_seq(tx.tx(), req.run_id)?,
         stage: "gate".into(),
         phase: current.as_str().into(),
         status: disposition.as_str().into(),
@@ -1015,10 +1289,14 @@ pub(crate) fn gates(conn: &mut Connection, req: &Gates<'_>) -> Result<GateVerdic
         pipeline_version: PIPELINE_VERSION.into(),
         budget_digest: None,
         artifact_refs_json: "[]".into(),
-        attestation_root: None,
+        // the attestation round: the gate reads the head and appends nothing. A DISPOSITION is
+        // not an attestation — the chain has no disposition column, and a deny
+        // or a prompt leaves no link behind.
+        attestation_root: crate::workflow::attestations::chain_head(tx.tx(), req.run_id)
+            .map_err(attestation)?,
         created_at: req.now,
     };
-    row.id = row.content_id(trace_ordinal(tx.tx(), req.run_id)?);
+    row.id = row.content_id();
     write_trace(tx.tx(), &row)?;
     delivery_audit(
         tx.tx(),
@@ -1162,7 +1440,7 @@ mod tests {
     #[test]
     fn delivery_phase_advance_writes_step_row_cas_and_audit_atomically() {
         let mut conn = seed();
-        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // the key law: a phase pass signs its attestation link, and a pass with
         // no usable operator key REFUSES. A real seed is installed at
         // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
         // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
@@ -1212,7 +1490,7 @@ mod tests {
     #[test]
     fn delivery_phase_advance_rolls_back_completely_when_the_audit_fails() {
         let mut conn = seed();
-        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // the key law: a phase pass signs its attestation link, and a pass with
         // no usable operator key REFUSES. A real seed is installed at
         // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
         // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
@@ -1266,7 +1544,7 @@ mod tests {
     #[test]
     fn delivery_cas_is_fail_closed_on_a_stale_revision() {
         let mut conn = seed();
-        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // the key law: a phase pass signs its attestation link, and a pass with
         // no usable operator key REFUSES. A real seed is installed at
         // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
         // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
@@ -1305,7 +1583,7 @@ mod tests {
     #[test]
     fn delivery_run_lifecycle_laws_unchanged() {
         let mut conn = seed();
-        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // the key law: a phase pass signs its attestation link, and a pass with
         // no usable operator key REFUSES. A real seed is installed at
         // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
         // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
@@ -1707,7 +1985,7 @@ mod tests {
                 "SELECT COUNT(*) FROM delivery_budgets WHERE run_id = 1 AND spent != 0"
             ),
             0,
-            "nothing is spent: R38 has no executor to spend against"
+            "nothing is spent: an earlier round has no executor to spend against"
         );
         let verdict = gates(
             &mut conn,
@@ -1774,7 +2052,7 @@ mod tests {
             .unwrap_or(0)
     }
 
-    // ── the R39 seam: D2/D3 wiring + the typed-artifact proposal ──────────
+    // ── the an earlier round seam: D2/D3 wiring + the typed-artifact proposal ──────────
 
     fn artifact(id: &str, content: &str) -> DeliveryArtifact {
         DeliveryArtifact {
@@ -1810,7 +2088,7 @@ mod tests {
     #[test]
     fn delivery_proposal_seam_lands_in_one_transaction() {
         let mut conn = seed();
-        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // the key law: a phase pass signs its attestation link, and a pass with
         // no usable operator key REFUSES. A real seed is installed at
         // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
         // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
@@ -1883,7 +2161,7 @@ mod tests {
     #[test]
     fn delivery_proposal_and_trace_commit_or_roll_back_together() {
         let mut conn = seed();
-        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // the key law: a phase pass signs its attestation link, and a pass with
         // no usable operator key REFUSES. A real seed is installed at
         // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
         // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
@@ -1943,7 +2221,7 @@ mod tests {
     #[test]
     fn delivery_executor_has_no_write_path_to_gate_disposition() {
         let mut conn = seed();
-        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // the key law: a phase pass signs its attestation link, and a pass with
         // no usable operator key REFUSES. A real seed is installed at
         // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
         // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
@@ -2011,7 +2289,7 @@ mod tests {
     #[test]
     fn delivery_executor_cannot_move_a_normative_routing_key() {
         let mut conn = seed();
-        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // the key law: a phase pass signs its attestation link, and a pass with
         // no usable operator key REFUSES. A real seed is installed at
         // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
         // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
@@ -2067,7 +2345,7 @@ mod tests {
     #[test]
     fn delivery_d3_quality_gate_is_consumed_fail_closed() {
         let mut conn = seed();
-        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // the key law: a phase pass signs its attestation link, and a pass with
         // no usable operator key REFUSES. A real seed is installed at
         // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
         // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
@@ -2139,7 +2417,7 @@ mod tests {
     #[test]
     fn delivery_ddl_kinds_round_trip_and_avoid_control() {
         let mut conn = seed();
-        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // the key law: a phase pass signs its attestation link, and a pass with
         // no usable operator key REFUSES. A real seed is installed at
         // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
         // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
@@ -2186,11 +2464,11 @@ mod tests {
     }
 
     /// A phase pass with NO artifact is unchanged: the seam is additive, so
-    /// every R38 caller that passes no artifact must still work byte for byte.
+    /// every an earlier round caller that passes no artifact must still work byte for byte.
     #[test]
     fn delivery_advance_without_an_artifact_is_unchanged() {
         let mut conn = seed();
-        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // the key law: a phase pass signs its attestation link, and a pass with
         // no usable operator key REFUSES. A real seed is installed at
         // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
         // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
@@ -2203,7 +2481,7 @@ mod tests {
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM delivery_traces"), 2);
     }
 
-    // ── R40: the attestation chain ──────────────────────────────────────────
+    // ── the attestation round: the attestation chain ──────────────────────────────────────────
 
     /// Seed a `decision_model_registry` row the R29 citation can resolve. The
     /// binding is looked up by (id, config_digest, kind) and the artifact digest
@@ -2215,6 +2493,8 @@ mod tests {
         status: &str,
         artifact_digest: Option<&str>,
     ) {
+        // The registry's digests are BARE lowercase 64-hex (its own
+        // `is_registry_lower_hex_digest` law), not `sha256:`-prefixed.
         conn.execute(
             "INSERT INTO decision_model_registry(id, version, kind, name, output_vocabulary, \
              artifact_digest, config_digest, calibration_ref, status, evaluation_refs, \
@@ -2223,7 +2503,7 @@ mod tests {
             params![
                 id,
                 crate::workflow::registry::KIND_DETERMINISTIC_RULES,
-                "[\"phase\"]",
+                "[\"choice\"]",
                 artifact_digest,
                 config_digest,
                 status,
@@ -2284,10 +2564,16 @@ mod tests {
             // transaction and the refusal rolls all of them back.
             assert_eq!(count(&conn, "SELECT COUNT(*) FROM workflow_steps"), 0);
             assert_eq!(
-                count(&conn, "SELECT COUNT(*) FROM delivery_traces WHERE stage='phase'"),
+                count(
+                    &conn,
+                    "SELECT COUNT(*) FROM delivery_traces WHERE stage='phase'"
+                ),
                 0
             );
-            assert_eq!(count(&conn, "SELECT COUNT(*) FROM delivery_attestations"), 0);
+            assert_eq!(
+                count(&conn, "SELECT COUNT(*) FROM delivery_attestations"),
+                0
+            );
         }
 
         // Arm 2: Err — the seed is present but the wrong size, which the
@@ -2298,13 +2584,16 @@ mod tests {
             let run = open(&mut conn, "bounded-auto");
             let err = advance_one(&mut conn, run.run_id, 0, "design")
                 .expect_err("a pass with an unusable key must refuse");
-            assert_eq!(
-                err.to_string(),
-                "delivery_attestation_refused:operator_key_refused",
+            assert!(
+                err.to_string()
+                    .starts_with("delivery_attestation_refused:operator_key_refused"),
                 "a REFUSED key is distinct from an absent one — the Err arm is propagated, \
-                 never collapsed into None"
+                 never collapsed into None. Got: {err}"
             );
-            assert_eq!(count(&conn, "SELECT COUNT(*) FROM delivery_attestations"), 0);
+            assert_eq!(
+                count(&conn, "SELECT COUNT(*) FROM delivery_attestations"),
+                0
+            );
         }
     }
 
@@ -2421,7 +2710,7 @@ mod tests {
     }
 
     /// The four trace sites all write a real `attestation_root` (A3) — closing
-    /// the R38/R39 debt where all four hard-coded `None`. The admission and
+    /// the an earlier round/an earlier round debt where all four hard-coded `None`. The admission and
     /// the gate read a head that does not exist yet, so theirs are `None` for
     /// an honest reason: there IS no head. The pass that appends names itself.
     #[test]
@@ -2445,33 +2734,40 @@ mod tests {
              honest value rather than a forged one"
         );
         advance_one(&mut conn, run.run_id, 0, "design").expect("the phase pass");
-        let first_head = head(&conn, "phase").expect("the pass names the head it created");
-        assert!(
-            first_head.starts_with("att_"),
-            "the trace row names the link the same transaction appended: {first_head}"
-        );
         assert_eq!(
-            first_head,
-            conn.query_row(
+            head(&conn, "phase"),
+            None,
+            "the first pass's trace row is written BEFORE its own link is appended, so it \
+             names the head that existed BEFORE it — which is none. Naming itself would be \
+             circular."
+        );
+        let first = conn
+            .query_row(
                 "SELECT id FROM delivery_attestations WHERE run_id = ?1",
                 params![run.run_id],
                 |r| r.get::<_, String>(0),
             )
-            .expect("the link"),
-            "the head on the trace row IS the appended link's row id"
+            .expect("the first link");
+        assert!(
+            first.starts_with("att_"),
+            "the link id is content-addressed: {first}"
         );
 
-        // A second pass: the head is the PREVIOUS link, because the trace row
-        // is written before this pass's own link is appended. The chain still
-        // resolves.
+        // A second pass: the trace row names the PREVIOUS link, because the chain
+        // is appended after the trace. The chain itself still resolves.
         advance_one(&mut conn, run.run_id, 1, "build").expect("the second pass");
+        assert_eq!(
+            head(&conn, "phase"),
+            Some(first.clone()),
+            "the second pass names the head that existed before it"
+        );
         assert_eq!(
             count(&conn, "SELECT COUNT(*) FROM delivery_attestations"),
             2,
             "two passes, two links"
         );
-        let rows = crate::workflow::attestations::read_chain(&conn, run.run_id)
-            .expect("read the chain");
+        let rows =
+            crate::workflow::attestations::read_chain(&conn, run.run_id).expect("read the chain");
         let verdict =
             crate::workflow::attestations::verify_chain(&rows, 3).expect("a readable chain");
         assert!(
@@ -2502,7 +2798,11 @@ mod tests {
                 .expect("query");
             rows.map(std::result::Result::unwrap).collect()
         };
-        assert_eq!(seqs(&conn), vec![1, 2, 3, 4], "the admission plus three passes, 1-based");
+        assert_eq!(
+            seqs(&conn),
+            vec![1, 2, 3, 4],
+            "the admission plus three passes, 1-based"
+        );
         let distinct = count(&conn, "SELECT COUNT(DISTINCT seq) FROM delivery_traces");
         let total = count(&conn, "SELECT COUNT(*) FROM delivery_traces");
         assert_eq!(
@@ -2529,7 +2829,7 @@ mod tests {
 
     /// A11: `content_id` folds the STORED seq, so the same facts at a different
     /// position address differently, and a re-derivation from the stored row
-    /// reproduces the stored id. That re-derivation is R41's law; R40 stores
+    /// reproduces the stored id. That re-derivation is a later round's law; the attestation round stores
     /// the input it needs.
     #[test]
     fn delivery_trace_content_id_folds_the_stored_seq() {
@@ -2574,18 +2874,19 @@ mod tests {
     fn attestation_carries_the_digest_pinned_model() {
         let mut conn = seed();
         let _operator = crate::test_support::operator_key_guard();
-        let digest = format!("sha256:{}", "b".repeat(64));
+        let digest = "b".repeat(64);
+        let config = "c".repeat(64);
         seed_model(
             &conn,
             "mb-elastic",
-            "sha256:cfg1",
+            &config,
             crate::workflow::registry::STATUS_PROMOTED,
             Some(&digest),
         );
         let run = open(&mut conn, "bounded-auto");
         let binding = ModelBinding {
             key: "rules:mb-elastic".to_string(),
-            config_digest: "sha256:cfg1".to_string(),
+            config_digest: config.clone(),
         };
         advance_with_model(&mut conn, run.run_id, 0, "design", Some(&binding))
             .expect("the bound pass");
@@ -2598,15 +2899,30 @@ mod tests {
             1,
             "the trace row names the model that acted"
         );
-        let (model_ref, envelope): (String, String) = conn
+        let (model_ref, config_digest): (String, String) = conn
             .query_row(
-                "SELECT model_ref, envelope_json FROM delivery_traces \
+                "SELECT model_ref, config_digest FROM delivery_traces \
                  WHERE model_ref IS NOT NULL",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .expect("the bound trace row");
-        assert_eq!(model_ref, "rules:mb-elastic", "the citation is the registry key shape");
+        assert_eq!(
+            model_ref, "rules:mb-elastic",
+            "the citation is the registry key shape"
+        );
+        assert_eq!(
+            config_digest, config,
+            "the trace row carries the binding's config digest"
+        );
+        // The envelope lives on the CHAIN table, not the trace table.
+        let envelope: String = conn
+            .query_row(
+                "SELECT envelope_json FROM delivery_attestations WHERE run_id = ?1",
+                params![run.run_id],
+                |r| r.get(0),
+            )
+            .expect("the link's envelope");
         let parsed: serde_json::Value = serde_json::from_str(&envelope).expect("the envelope");
         assert_eq!(
             parsed["predicate"]["model_ref"],
@@ -2617,6 +2933,11 @@ mod tests {
             parsed["predicate"]["model_digest"],
             serde_json::json!(digest),
             "the signed predicate carries the model BYTES digest"
+        );
+        assert_eq!(
+            parsed["config_digest"],
+            serde_json::json!(config),
+            "the binding's config digest is a SIGNED SIBLING key, not a predicate field"
         );
     }
 
@@ -2631,14 +2952,14 @@ mod tests {
         seed_model(
             &conn,
             "mb-nodigest",
-            "sha256:cfg1",
+            &"c".repeat(64),
             crate::workflow::registry::STATUS_PROMOTED,
             None,
         );
         let run = open(&mut conn, "bounded-auto");
         let binding = ModelBinding {
             key: "rules:mb-nodigest".to_string(),
-            config_digest: "sha256:cfg1".to_string(),
+            config_digest: "c".repeat(64),
         };
         let err = advance_with_model(&mut conn, run.run_id, 0, "design", Some(&binding))
             .expect_err("a name with no bytes must refuse");
@@ -2647,7 +2968,10 @@ mod tests {
             "delivery_model_digest_missing",
             "the refusal is its own code, distinct from the three registry refusals"
         );
-        assert_eq!(count(&conn, "SELECT COUNT(*) FROM delivery_attestations"), 0);
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM delivery_attestations"),
+            0
+        );
         assert_eq!(
             count(&conn, "SELECT COUNT(*) FROM workflow_steps"),
             0,
@@ -2658,7 +2982,7 @@ mod tests {
     /// §4.4: the link and its audit row are one transaction. Dropping the
     /// evidence substrate must leave NO link, NO step row, and NO trace row — a
     /// phase pass that landed without its signed evidence would be a transition
-    /// the audit chain cannot explain. This EXTENDS the R38 rollback pin.
+    /// the audit chain cannot explain. This EXTENDS the an earlier round rollback pin.
     #[test]
     fn attestation_audit_row_is_written_last_and_rolls_back_together() {
         let mut conn = seed();
@@ -2678,48 +3002,72 @@ mod tests {
         );
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM workflow_steps"), 0);
         assert_eq!(
-            count(&conn, "SELECT COUNT(*) FROM delivery_traces WHERE stage='phase'"),
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM delivery_traces WHERE stage='phase'"
+            ),
             0
         );
     }
 
-    /// The pass that DOES land carries BOTH audit rows: the link's own
-    /// (`delivery/attestation/{run}/{id}`) and the phase pass's
-    /// (`delivery_run:{id}`), and the phase one is the last statement. Two
-    /// rows because there are two writes — `audit_events.kind` has no CHECK,
-    /// so both ride the reused `Workflow` kind (A8, no 20th variant).
+    /// The pass that DOES land carries the link's OWN evidence row, targeting
+    /// the link (A8). `audit_events.target_hash` is a hash of the target, so
+    /// the assertion recomputes it — a `LIKE` over a plaintext column would
+    /// query a column that does not exist and read back zero rows.
+    ///
+    /// The pass writes more than two audit rows in total: `state::cas_update`
+    /// emits its own under the module's "audit-per-write, the fence holds of the
+    /// FUNCTION" law, and that is pre-existing. What the attestation round adds is exactly one
+    /// row, the link's, and this proves it by target rather than by counting.
     #[test]
     fn attestation_audit_row_covers_the_link_write() {
         let mut conn = seed();
         let _operator = crate::test_support::operator_key_guard();
         let run = open(&mut conn, "bounded-auto");
         advance_one(&mut conn, run.run_id, 0, "design").expect("the pass");
-        let attestation_id: String = conn
+
+        let (attestation_id, chain_hash): (String, String) = conn
             .query_row(
-                "SELECT id FROM delivery_attestations WHERE run_id = ?1",
+                "SELECT id, chain_hash FROM delivery_attestations WHERE run_id = ?1",
                 params![run.run_id],
-                |r| r.get(0),
+                |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .expect("the link");
-        // The audit layer hashes the target before insert, so the assertion is
-        // on the DETAIL, which carries the closed labels and the ids.
-        let detail: String = conn
-            .query_row(
-                "SELECT detail_hash FROM audit_events WHERE kind = 'workflow' \
-                 ORDER BY id DESC LIMIT 1",
-                [],
-                |r| r.get(0),
-            )
-            .expect("an audit row");
-        assert!(!detail.is_empty(), "the pass's audit row is written");
-        let kinds: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM audit_events WHERE kind = 'workflow'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap_or(0);
-        assert_eq!(kinds, 2, "the link write and the pass write each carry evidence");
-        assert!(attestation_id.starts_with("att_"), "the link id is content-addressed");
+        assert!(
+            attestation_id.starts_with("att_"),
+            "the link id is content-addressed"
+        );
+
+        assert_eq!(
+            count(
+                &conn,
+                &format!(
+                    "SELECT COUNT(*) FROM audit_events WHERE target_hash = '{}'",
+                    crate::audit::hash(&format!(
+                        "delivery/attestation/{}/{}",
+                        run.run_id, attestation_id
+                    ))
+                )
+            ),
+            1,
+            "the link write's evidence row targets the link itself — one audit row per write, \
+             inside the caller's transaction"
+        );
+        assert_eq!(
+            count(
+                &conn,
+                &format!(
+                    "SELECT COUNT(*) FROM audit_events WHERE detail_hash = '{}'",
+                    crate::audit::hash(&format!(
+                        "delivery attestation linked run={} step=1 parent=root chain_hash={} \
+                         subject=delivery/phase/design",
+                        run.run_id, chain_hash
+                    ))
+                )
+            ),
+            1,
+            "the link's row names the chain hash and the derived subject — evidence, not a \
+             disposition"
+        );
     }
 }

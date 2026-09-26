@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
 };
 use serde::Deserialize;
 
@@ -104,6 +104,9 @@ pub struct AdvanceBody {
     /// so an existing client sends exactly the same bytes.
     #[serde(default)]
     pub artifact: Option<ArtifactBody>,
+    /// the attestation round: the optional model binding. See [`ModelBindingBody`].
+    #[serde(default)]
+    pub model: Option<ModelBindingBody>,
 }
 
 /// The typed artifact over the wire. The body carries the id, the content, and
@@ -116,6 +119,16 @@ pub struct ArtifactBody {
     pub content: String,
     #[serde(default)]
     pub quality_gate: Option<String>,
+}
+
+/// the model-citation law: the model this pass executes under. Additive and optional —
+/// absent is the previous request body unchanged. The client NAMES a binding;
+/// the server resolves it through the registry and derives the digest, so a
+/// client can never vouch for a model it did not run.
+#[derive(Debug, Deserialize)]
+pub struct ModelBindingBody {
+    pub key: String,
+    pub config_digest: String,
 }
 
 pub async fn post_delivery_advance(
@@ -160,6 +173,11 @@ pub async fn post_delivery_advance(
         })
         .transpose()?;
 
+    let model = body.model.as_ref().map(|m| delivery::ModelBinding {
+        key: m.key.clone(),
+        config_digest: m.config_digest.clone(),
+    });
+
     let advanced = tokio::task::spawn_blocking(move || {
         let mut conn = pool.get().map_err(HandlerError::db_down)?;
         delivery::advance(
@@ -170,6 +188,7 @@ pub async fn post_delivery_advance(
                 to_phase: &body.to_phase,
                 artifact_refs: &body.artifact_refs,
                 artifact: artifact.as_ref(),
+                model: model.as_ref(),
                 actor: &actor,
                 now,
             },
@@ -272,6 +291,58 @@ pub async fn post_delivery_gates(
     Ok(Json(response))
 }
 
+/// Read the run's attestation chain.
+///
+/// The line's FIRST delivery read surface, and the gate order is the same as
+/// the four writes': `run_domain` (probe-blind 404 on an absent or foreign run)
+/// → `authorize` (Read on the run's OWN domain) → pool → `authorize_role` (the
+/// `workflow` role) → the core.
+///
+/// **`?verify=1` is accepted and documented as an explicit request for the
+/// IDENTICAL payload.** The chain verdict is UNCONDITIONAL: no parameter, and
+/// no absence of one, can switch verification off. A non-verifying chain is
+/// REPORTED per link with a named refusal, never hidden and never degraded into
+/// a mark that reads as verified.
+#[derive(Debug, Deserialize)]
+pub struct AttestationsQuery {
+    /// Accepted for explicitness. Carries no behaviour: the verdict ships
+    /// whether it is present or not.
+    #[serde(default)]
+    pub verify: Option<String>,
+}
+
+pub async fn get_delivery_attestations(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Path(id): Path<i64>,
+    Query(_query): Query<AttestationsQuery>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = super::workflow::run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    super::authorize_role(&principal, &pool, "workflow")?;
+
+    let now = chrono::Utc::now().timestamp();
+    let read = tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(HandlerError::db_down)?;
+        crate::workflow::attestations::read_surface(&conn, id, now).map_err(|refusal| {
+            // The chain could not be READ at all, as opposed to read and found
+            // not to verify. That is a closed, typed refusal and a 409 — the
+            // one case on this surface where a verdict cannot be reported, so
+            // it must never be reported as a verified-looking empty chain.
+            HandlerError::conflict(refusal.as_str())
+        })
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))??;
+
+    let mut response =
+        serde_json::to_value(read).map_err(|error| HandlerError::internal(error.to_string()))?;
+    super::sanitize_value_strings(&mut response);
+    Ok(Json(response))
+}
+
 /// The typed error → HTTP mapping. Absence is 404 on every route, and a
 /// non-delivery run reads as absent rather than as a wrong-kind error, so the
 /// mapping never becomes an existence oracle.
@@ -299,6 +370,20 @@ fn delivery_error(error: DeliveryError) -> HandlerError {
         ),
         DeliveryError::QualityGate { .. } => {
             HandlerError::conflict("delivery_quality_gate_refused")
+        }
+        // the attestation round: the attestation layer's own closed vocabulary, mapped 1:1. A
+        // refused key and an absent key are different codes because they are
+        // different operator problems, and neither degrades into a 500.
+        DeliveryError::AttestationRefused { .. } => {
+            HandlerError::conflict("delivery_attestation_refused")
+        }
+        DeliveryError::ModelNotRegistered => {
+            HandlerError::conflict("delivery_model_not_registered")
+        }
+        DeliveryError::ModelNotPromoted => HandlerError::conflict("delivery_model_not_promoted"),
+        DeliveryError::ModelRetired => HandlerError::conflict("delivery_model_retired"),
+        DeliveryError::ModelDigestMissing => {
+            HandlerError::conflict("delivery_model_digest_missing")
         }
         DeliveryError::Storage(detail) => HandlerError::internal(detail),
     }

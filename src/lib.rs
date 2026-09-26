@@ -214,13 +214,15 @@ pub mod test_support {
     /// and four other suites move it.
     pub(crate) fn operator_key_guard() -> OperatorKeyGuard {
         use ed25519_dalek::SigningKey;
-        use std::ffi::OsString;
 
         let lock = lock_env();
         let dir = tempfile::tempdir().expect("a temp key dir");
         let seed = crate::testkeys::unit_hmac_key(0x0A77_0551_7A7E);
-        std::fs::write(dir.path().join(crate::handlers::ump::OPERATOR_KEY_FILE), &seed)
-            .expect("write the operator seed");
+        std::fs::write(
+            dir.path().join(crate::handlers::ump::OPERATOR_KEY_FILE),
+            &seed,
+        )
+        .expect("write the operator seed");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -249,7 +251,6 @@ pub mod test_support {
     /// Point `BRAIN_UMP_KEY_DIR` at a directory with NO key in it, for as long
     /// as the returned guard lives — the `Ok(None)` half of the key law.
     pub(crate) fn empty_key_dir_guard() -> EnvDirGuard {
-        use std::ffi::OsString;
         let lock = lock_env();
         let dir = tempfile::tempdir().expect("a temp key dir");
         let previous = std::env::var_os("BRAIN_UMP_KEY_DIR");
@@ -265,7 +266,6 @@ pub mod test_support {
     /// Point `BRAIN_UMP_KEY_DIR` at a directory whose operator seed is the
     /// WRONG SIZE, for as long as the returned guard lives — the `Err` half.
     pub(crate) fn wrong_size_key_dir_guard() -> EnvDirGuard {
-        use std::ffi::OsString;
         let lock = lock_env();
         let dir = tempfile::tempdir().expect("a temp key dir");
         let path = dir.path().join(crate::handlers::ump::OPERATOR_KEY_FILE);
@@ -319,9 +319,10 @@ pub mod test_support {
     fn restore(previous: Option<std::ffi::OsString>) {
         // SAFETY: called from the guards' Drop while they still hold ENV_LOCK.
         unsafe {
-            match previous {
-                Some(v) => std::env::set_var("BRAIN_UMP_KEY_DIR", v),
-                None => std::env::remove_var("BRAIN_UMP_KEY_DIR"),
+            if let Some(v) = previous {
+                std::env::set_var("BRAIN_UMP_KEY_DIR", v);
+            } else {
+                std::env::remove_var("BRAIN_UMP_KEY_DIR");
             }
         }
     }

@@ -212,6 +212,12 @@ pub const SCHEMA_VERSION_V1_32_14: &str = "1.32.14";
 /// until the enforcement round turns it on; `blast_radius` is admitted by the
 /// kind CHECK and referenced by nothing).
 pub const SCHEMA_VERSION_V1_32_15: &str = "1.32.15";
+/// the delivery loop's ATTESTATION schema: the `delivery_attestations` table
+/// (the per-run signed chain — one writer, the phase pass, and twelve columns
+/// that carry evidence of who acted and never a disposition) plus the
+/// `delivery_traces.seq` ordinal column and its `UNIQUE(run_id, seq)` index,
+/// which makes the trace order a stored fact rather than a runtime count.
+pub const SCHEMA_VERSION_V1_32_16: &str = "1.32.16";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
@@ -233,7 +239,7 @@ pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 /// Security posture: a source DB stamped NEWER than this is refused loudly
 /// ([`refuse_newer_schema`]) — migrating *down* would silently drop columns
 /// the newer release added, i.e. data loss dressed as a migration.
-pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_15;
+pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_16;
 
 /// Numeric dotted-version compare (std-only, no semver dependency).
 /// Non-numeric components are skipped (the `schema_ge` precedent in the
@@ -679,9 +685,10 @@ mod tests {
         // "1.32.0" even though "9" > "0" would say otherwise positionally).
         // The probe sits ABOVE the ceiling by construction: when the delivery
         // round moved the ceiling to 1.32.15, this literal became equal to it
-        // and the assertion failed until it moved again. A probe pinned AT the
+        // and the assertion failed until it moved again. the attestation round moved the ceiling
+        // to 1.32.16, so the probe moved to 1.32.17. A probe pinned AT the
         // ceiling silently tests `Equal`, not `Greater`.
-        assert!(is_newer_than_known(Some("1.32.16")));
+        assert!(is_newer_than_known(Some("1.32.17")));
         assert!(!is_newer_than_known(Some("1.32.9")));
         assert!(!is_newer_than_known(Some("1.28.9")));
     }

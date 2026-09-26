@@ -489,10 +489,10 @@ mod pins {
         );
     }
 
-    /// R40: the attestation READ surface's wire contract, and its two
+    /// the attestation round: the attestation READ surface's wire contract, and its two
     /// NON-CLAIMS, pinned against the spec and the handler together.
     ///
-    /// The field-set half is the R39 lesson applied to a new route: the route
+    /// The field-set half applies an earlier round's lesson to this new route: the route
     /// guards are path-level, so nothing else compares a Rust response struct to
     /// its schema. The non-claim half is different in kind — a reader who
     /// greps this route for `DSSE` or `in-toto` must find a NEGATION, because
@@ -572,7 +572,15 @@ mod pins {
         }
 
         // ── the two NON-CLAIMS, which must be present as negations ──
-        let lower = block.to_ascii_lowercase();
+        // YAML `>` folds newlines into spaces, so a real reader sees one line.
+        // The pin normalizes whitespace for the same reason: a phrase split
+        // across a folded line is still present to every other reader, and
+        // failing it would make the pin about line breaks rather than claims.
+        let lower = block
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
         for (claim, negation) in [
             ("dsse", "not dsse"),
             ("in-toto", "not an in-toto"),
@@ -598,7 +606,12 @@ mod pins {
              every delivery phase pass refuses"
         );
         // The words that would turn an adjacency into a claim.
-        for banned in ["dsse-compatible", "dsse conformant", "slsa-compliant", "in-toto compliant"] {
+        for banned in [
+            "dsse-compatible",
+            "dsse conformant",
+            "slsa-compliant",
+            "in-toto compliant",
+        ] {
             assert!(
                 !lower.contains(banned),
                 "the route description must never assert `{banned}` — the envelope is a project \

@@ -3824,7 +3824,7 @@ Final paragraph after the rule.";
         // gate's mode law).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_15),
+            Some(brain_server::storage_layout::LATEST_KNOWN_SCHEMA),
             "schema_version must be recorded as the current release after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×
@@ -8120,7 +8120,7 @@ Final paragraph after the rule.";
                 "post_delivery_gates",
                 "sanitize_value_strings",
             ),
-            // R40: the line's FIRST delivery READ surface, and the first one
+            // the attestation round: the line's FIRST delivery READ surface, and the first one
             // that emits operator-authored text (subject names and envelopes
             // are derived, but the envelope carries stored bytes back out).
             // Treated as a first-occurrence seam, not a follow-on.
@@ -12158,7 +12158,7 @@ Final paragraph after the rule.";
     /// own setup, not a weights problem. It fails on the assertion at
     /// main_suite.rs:12300. NOT silently enabled: a failing test must not be
     /// promoted, and the fix belongs to whoever owns UMP keying. Owner + date
-    /// recorded in the R39 evidence pack.
+    /// recorded in the an earlier round evidence pack.
     #[tokio::test]
     #[ignore]
     async fn ump_suite_parity_l1_to_l3() {
@@ -17728,7 +17728,7 @@ mod scrim {
     }
 }
 
-/// R38 — Delivery persistence + run lifecycle. The round's own battery.
+/// an earlier round — Delivery persistence + run lifecycle. The round's own battery.
 ///
 /// Schema-layer pins live here rather than in the core's own test module
 /// because every one of them reads the MIGRATED database: a shape asserted
@@ -17755,7 +17755,7 @@ mod r38_delivery {
     }
 
     /// The two tables exist with the DO's column sets, the pinned keys, the
-    /// closed-vocabulary CHECKs, and the two trace indexes DO L198 names. R40
+    /// closed-vocabulary CHECKs, and the two trace indexes DO L198 names. the attestation round
     /// adds the `seq` column to the walk: it is a delivery_traces column now,
     /// and a shape pin that does not know about it stops describing the table.
     #[test]
@@ -17785,7 +17785,7 @@ mod r38_delivery {
             "artifact_refs_json",
             "attestation_root",
             "created_at",
-            // R40 (A11): the STORED ordinal. `id` digests it, so it is a column
+            // the stored-ordinal law: the STORED ordinal. `id` digests it, so it is a column
             // of the table and not a runtime counter — a shape pin that does
             // not name it stops describing the table.
             "seq",
@@ -17801,7 +17801,7 @@ mod r38_delivery {
         // convention, and a convention is not a law. One fully-legal baseline
         // row is inserted, then each column is walked through the whole DO set
         // and finally through a value the set does not name.
-        for (col, legal) in [
+        for (probe_index, (col, legal)) in [
             ("stage", &["run", "phase", "gate", "answer"][..]),
             (
                 "phase",
@@ -17817,13 +17817,16 @@ mod r38_delivery {
                     "admitted", "advanced", "allowed", "prompt", "denied", "answered",
                 ][..],
             ),
-        ] {
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let probe = format!("probe-{col}");
             db.execute(
-                "INSERT INTO delivery_traces(id, run_id, stage, phase, status, tier, actor, \
+                "INSERT INTO delivery_traces(id, run_id, seq, stage, phase, status, tier, actor, \
                  pipeline_version, artifact_refs_json, created_at) \
-                 VALUES (?1, 1, 'phase', 'scope', 'advanced', 'observe', 'a', 'v', '[]', 1)",
-                [&probe],
+                 VALUES (?1, 1, ?2, 'phase', 'scope', 'advanced', 'observe', 'a', 'v', '[]', 1)",
+                rusqlite::params![&probe, probe_index as i64 + 1],
             )
             .expect("the legal baseline row must insert");
 
@@ -17851,7 +17854,7 @@ mod r38_delivery {
             );
         }
 
-        // The replay index is the load-bearing one: R41 re-derives a run's
+        // The replay index is the load-bearing one: A later round re-derives a run's
         // stages in order from it.
         let idx: i64 = db
             .query_row(
@@ -17882,23 +17885,23 @@ mod r38_delivery {
     /// const names it, and the guard that ties them is exercised by the
     /// sibling `latest_stamp_matches_migration` pin.
     #[test]
-    fn delivery_schema_stamp_is_the_delivery_stamp() {
+    fn delivery_schema_stamp_is_the_r40_stamp() {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_15),
-            "R38 stamps 1.32.15; both the migration literal and the const must agree"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_16),
+            "the attestation round stamps 1.32.16; both the migration literal and the const must agree"
         );
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.15",
+            "1.32.16",
             "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
              this binary cannot migrate"
         );
     }
 
     /// Re-runnability. There is no double-run idempotency test in the tree and
-    /// re-runnability was structural, not pinned; R38 pins it.
+    /// re-runnability was structural, not pinned; an earlier round pins it.
     #[test]
     fn delivery_migration_is_idempotent_and_rerunnable() {
         register_sqlite_vec();
@@ -18031,7 +18034,9 @@ mod r38_delivery {
                 "a delivery route path carrying `status` would be a status-write sibling: {line}"
             );
         }
-        // The four registered routes, and exactly four.
+        // The four registered routes, and exactly four. the attestation round added a FIFTH —
+        // the attestation read — and this assertion is deliberately widened
+        // rather than deleted, so a SIXTH still fails here.
         let registered: Vec<String> = router
             .match_indices("/workflow/delivery/")
             .map(|(i, _)| {
@@ -18047,8 +18052,10 @@ mod r38_delivery {
                 "/workflow/delivery/runs/{id}/advance",
                 "/workflow/delivery/runs/{id}/answer",
                 "/workflow/delivery/runs/{id}/gates",
+                "/workflow/delivery/runs/{id}/attestations",
             ],
-            "R38 owns exactly these four writes and no others"
+            "the attestation round owns these five: four writes plus the attestation read. A sixth is a \
+             new decision, not a free addition."
         );
         // The status the core CAN write is a closed set, and only ever through
         // cas_update.
@@ -18066,19 +18073,48 @@ mod r38_delivery {
         );
     }
 
-    /// The four routes are the round's whole public surface, and every one of
-    /// them is a POST under the delivery prefix. A fifth path, or a GET, would
-    /// be scope creep past the ratified D2 decision (four writes, zero reads).
+    /// an earlier round shipped four POSTs and no GET. **the attestation round REVERSES THAT HALF OF THE
+    /// DECISION** and this pin is deliberately updated rather than deleted: the
+    /// attestation chain is evidence a reviewer must be able to fetch, and it
+    /// re-derives from stored bytes, so it takes no body. The writes are still
+    /// the only mutating paths, and that is what this still pins.
     #[test]
-    fn delivery_ships_exactly_four_writes_and_no_reads() {
+    fn delivery_ships_four_writes_and_one_read() {
         let router = src("src/server/router/workflow.rs");
-        let deliveries: Vec<&str> = router
-            .lines()
-            .filter(|l| l.contains("/workflow/delivery/"))
-            .collect();
-        assert!(
-            deliveries.iter().all(|l| !l.contains("get(")),
-            "R38 ships zero read routes: {deliveries:?}"
+        // Pair each registered path with the method it is registered under. The
+        // previous shape filtered lines CONTAINING the path and then looked for
+        // `get(` on that same line — which is never true, because the method is
+        // on a later line. The check was therefore vacuously satisfied and a
+        // second GET would never have been seen. This pairs them properly.
+        let lines: Vec<&str> = router.lines().collect();
+        let mut writes: Vec<&str> = Vec::new();
+        let mut reads: Vec<&str> = Vec::new();
+        for (i, line) in lines.iter().enumerate() {
+            let Some(quoted) = line.trim().strip_prefix('"') else {
+                continue;
+            };
+            let Some(path) = quoted
+                .split('"')
+                .next()
+                .filter(|p| p.starts_with("/workflow/delivery/"))
+            else {
+                continue;
+            };
+            let window: String = lines[i..(i + 4).min(lines.len())].join(" ");
+            if window.contains("post(") {
+                writes.push(path);
+            } else if window.contains("get(") {
+                reads.push(path);
+            } else {
+                panic!("a delivery route is registered under no known method: {path}");
+            }
+        }
+        assert_eq!(writes.len(), 4, "the four writes are unchanged: {writes:?}");
+        assert_eq!(
+            reads,
+            vec!["/workflow/delivery/runs/{id}/attestations"],
+            "exactly ONE read: the attestation chain. A second GET is a new decision, not a \
+             free addition."
         );
         // And the guard tables agree with the router, in both directions.
         let guards = src("src/server/router/route_guards.rs");
@@ -18192,7 +18228,7 @@ mod r38_delivery {
     }
 }
 
-/// R40 — attestations: the chain table, the trace `seq` column, and the
+/// the attestation round — attestations: the chain table, the trace `seq` column, and the
 /// wiring pins. Same placement law as `r38_delivery`: every pin here reads
 /// the MIGRATED database or the committed source, never the DDL text beside
 /// it, and every source scan is scoped to a PRODUCTION region with its
@@ -18233,7 +18269,11 @@ mod r40_attestations {
         let mut out = Vec::new();
         walk(&root, &mut out);
         out.sort();
-        assert!(out.len() >= 50, "sanity: a walk that found {} files found nothing", out.len());
+        assert!(
+            out.len() >= 50,
+            "sanity: a walk that found {} files found nothing",
+            out.len()
+        );
         out
     }
 
@@ -18294,7 +18334,10 @@ mod r40_attestations {
         );
         assert_eq!(cols.len(), 12, "the column set is closed at twelve");
         for (name, ty, notnull, has_default) in &cols {
-            assert!(ty.contains("TEXT") || ty.contains("INTEGER"), "{name}: {ty}");
+            assert!(
+                ty.contains("TEXT") || ty.contains("INTEGER"),
+                "{name}: {ty}"
+            );
             assert!(*notnull == 1, "{name} is NOT NULL");
             // Only `parent_id` carries a default (the empty root parent).
             let defaulted = *has_default;
@@ -18312,7 +18355,10 @@ mod r40_attestations {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(replay, 1, "the (run_id, created_at) replay index must exist");
+        assert_eq!(
+            replay, 1,
+            "the (run_id, created_at) replay index must exist"
+        );
     }
 
     /// DO invariant 1 at the SCHEMA level: there is no column a disposition
@@ -18350,8 +18396,8 @@ mod r40_attestations {
     }
 
     /// A11: `delivery_traces` carries the stored `seq` and the UNIQUE index that
-    /// makes it load-bearing, alongside the R38 `(run_id, created_at)` replay
-    /// index. The R38 column walk is a subset check and never saw either.
+    /// makes it load-bearing, alongside the an earlier round `(run_id, created_at)` replay
+    /// index. The an earlier round column walk is a subset check and never saw either.
     #[test]
     fn delivery_traces_carries_the_seq_column_and_its_unique_index() {
         let db = test_db();
@@ -18374,11 +18420,22 @@ mod r40_attestations {
                 .expect("query");
             rows.map(std::result::Result::unwrap).collect()
         };
-        assert_eq!(seq.len(), 1, "delivery_traces must carry exactly one `seq` column");
+        assert_eq!(
+            seq.len(),
+            1,
+            "delivery_traces must carry exactly one `seq` column"
+        );
         assert_eq!(seq[0].0, "seq");
-        assert!(seq[0].1.contains("INTEGER"), "seq is an INTEGER: {}", seq[0].1);
+        assert!(
+            seq[0].1.contains("INTEGER"),
+            "seq is an INTEGER: {}",
+            seq[0].1
+        );
         assert_eq!(seq[0].2, 1, "seq is NOT NULL");
-        assert_eq!(seq[0].3, true, "seq carries a DEFAULT (0) so a pre-R40 row backfills");
+        assert!(
+            seq[0].3,
+            "seq carries a DEFAULT so a row from before the ordinal column backfills"
+        );
 
         let unique: i64 = db
             .query_row(
@@ -18400,19 +18457,94 @@ mod r40_attestations {
                 |r| r.get(0),
             )
             .unwrap_or(0);
-        assert_eq!(replay, 1, "the R38 replay index survives the seq column");
+        assert_eq!(
+            replay, 1,
+            "the an earlier round replay index survives the seq column"
+        );
+    }
+
+    /// The `seq` ordinal is BACKFILLED, not left at the column default. The
+    /// `ADD COLUMN` gives every pre-existing row `0`, and a run with three
+    /// trace rows would then hold three `(run_id, 0)` pairs — so the UNIQUE
+    /// index the very next statement creates would fail the migration on
+    /// exactly the database the guarded block exists to upgrade. This builds
+    /// that pre-ordinal database shape and proves the upgrade survives it.
+    #[test]
+    fn delivery_trace_seq_backfills_existing_rows_before_the_unique_index() {
+        let mut db = test_db();
+        // A run with three trace rows and NO seq column at all — the shape a
+        // 1.32.15 database is in — plus a second run, so the per-run numbering
+        // is visible.
+        db.execute_batch(
+            "DROP INDEX IF EXISTS idx_delivery_traces_seq;
+             DROP INDEX IF EXISTS idx_delivery_traces_replay;
+             DROP INDEX IF EXISTS idx_delivery_traces_run;
+             CREATE TABLE delivery_traces_legacy(
+                 id TEXT PRIMARY KEY, run_id INTEGER NOT NULL, stage TEXT NOT NULL,
+                 created_at INTEGER NOT NULL);
+             INSERT INTO delivery_traces_legacy(id, run_id, stage, created_at) VALUES
+                 ('t1', 10, 'run', 100), ('t2', 10, 'phase', 200), ('t3', 10, 'gate', 200),
+                 ('t4', 11, 'run', 100);
+             DROP TABLE delivery_traces;
+             ALTER TABLE delivery_traces_legacy RENAME TO delivery_traces;",
+        )
+        .expect("build the pre-ordinal table shape");
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('delivery_traces') WHERE name='seq'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap(),
+            0,
+            "the fixture really has no seq column — a fixture that already had one would \
+             prove nothing"
+        );
+
+        run_migration(&mut db, 512).expect("the migration must survive a populated legacy table");
+
+        let seqs = |db: &Connection, run: i64| -> Vec<i64> {
+            let mut stmt = db
+                .prepare("SELECT seq FROM delivery_traces WHERE run_id = ?1 ORDER BY seq")
+                .expect("prepare");
+            let rows = stmt
+                .query_map(params![run], |r| r.get::<_, i64>(0))
+                .expect("query");
+            rows.map(std::result::Result::unwrap).collect()
+        };
+        assert_eq!(
+            seqs(&db, 10),
+            vec![1, 2, 3],
+            "run 10 numbered 1..n in (created_at, rowid) order"
+        );
+        assert_eq!(
+            seqs(&db, 11),
+            vec![1],
+            "the numbering is PER RUN, not global"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
+                 AND name='idx_delivery_traces_seq'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1,
+            "the UNIQUE index exists after the backfill — the ordering is the whole point"
+        );
     }
 
     /// The schema stamp moved to 1.32.16 and the ceiling moved with it. This is
-    /// the R38 pin, deliberately re-pinned: the stamp is not a constant, it is
-    /// a release boundary, and R40 is a schema round.
+    /// the earlier pin, deliberately re-pinned: the stamp is not a constant, it
+    /// is a release boundary, and the attestation round is a schema round.
     #[test]
-    fn attestation_schema_stamp_is_the_r40_stamp() {
+    fn attestation_schema_stamp_is_the_attestation_stamp() {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
             Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_16),
-            "R40 stamps 1.32.16; both the migration literal and the const must agree"
+            "the attestation round stamps 1.32.16; both the migration literal and the const must agree"
         );
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
@@ -18434,10 +18566,26 @@ mod r40_attestations {
             production.contains("#![deny(unsafe_code)]"),
             "the attestation module must open with the module-level gate"
         );
-        let head: String = production.lines().take(40).collect::<Vec<_>>().join("\n");
+        // "In the header" means before the first real item, not merely
+        // somewhere in the file — a gate appended at the end would come after
+        // the code it is supposed to govern.
+        let first_item = production
+            .lines()
+            .position(|l| {
+                let t = l.trim();
+                !t.is_empty() && !t.starts_with("//") && t != "#![deny(unsafe_code)]"
+            })
+            .expect("the module has items");
+        let gate = production
+            .lines()
+            .position(|l| l.trim() == "#![deny(unsafe_code)]")
+            .expect("the gate");
         assert!(
-            head.contains("#![deny(unsafe_code)]"),
-            "the gate must be in the module HEADER, not appended at the end"
+            gate < first_item,
+            "the gate must precede the module's first item (gate at line {}, first item at \
+             line {}) — a gate below the code it governs is decoration",
+            gate + 1,
+            first_item + 1
         );
     }
 
@@ -18454,16 +18602,27 @@ mod r40_attestations {
     #[test]
     fn attestation_operator_signing_key_is_absent_from_the_signing_path() {
         let banned = format!("operator_{}", "signing_key");
-        for rel in ["src/workflow/attestations.rs", "src/workflow/delivery.rs"] {
+        // The SIGNING PATH, wherever it is written. `append_link` is the writer
+        // and `operator_key` is its resolver, both in the attestation module;
+        // `advance` is the only caller. Each is checked in the file that
+        // actually declares it — asking delivery.rs for a function that lives in
+        // attestations.rs would be a scan of the wrong region, which is the
+        // vacuity this pin exists to prevent.
+        for (rel, symbol) in [
+            ("src/workflow/attestations.rs", "append_link"),
+            ("src/workflow/attestations.rs", "operator_key"),
+            ("src/workflow/delivery.rs", "advance"),
+        ] {
             let production = production_of(rel);
-            let body = handler_body(&production, "append_link")
-                .expect("append_link must be locatable in the production region");
+            let body = handler_body(&production, symbol)
+                .unwrap_or_else(|| panic!("`fn {symbol}` must be locatable in {rel}"));
             assert!(
                 !body.contains(&banned),
-                "{rel}: the signing path must not use the Err-collapsing key accessor"
+                "{rel}: `{symbol}` is on the signing path and must not use the \
+                 Err-collapsing key accessor"
             );
         }
-        // And the fail-closed resolver IS what it uses.
+        // And the fail-closed resolver IS what the module uses.
         let production = production_of("src/workflow/attestations.rs");
         let resolver = handler_body(&production, "operator_key")
             .expect("the key resolver must be locatable in the production region");
@@ -18494,7 +18653,9 @@ mod r40_attestations {
                 let line = production[..i].lines().count() + 1;
                 sites.push(format!(
                     "{}:{line}",
-                    path.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap_or(&path).display()
+                    path.strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                        .unwrap_or(&path)
+                        .display()
                 ));
             }
         }
@@ -18562,10 +18723,10 @@ mod r40_attestations {
                 "in_toto",
                 "slsa",
                 "sigstore",
-                "cose",
                 "sigstore-jsonschema",
-                "jsonwebtoken",
+                "cose",
                 "attestation",
+                "tuf",
             ] {
                 if lowered == forbidden {
                     offenders.push(name);
@@ -18574,20 +18735,37 @@ mod r40_attestations {
         }
         assert!(
             offenders.is_empty(),
-            "R40 adds NO dependency: the envelope rides the shipped ump_integrity stack. \
+            "the attestation round adds NO dependency: the envelope rides the shipped ump_integrity stack. \
              Found {offenders:?}"
         );
         // And the module reaches crypto only through the shipped stack.
         let production = production_of("src/workflow/attestations.rs");
-        for third_party in ["use ed25519_dalek", "use blake3", "use sha2", "use base64"] {
-            // `ed25519_dalek` is named for the key TYPE the resolver returns;
-            // the HASH and ENCODING primitives must come from ump_integrity, or
-            // a second canonicalization could drift in beside the first.
-            assert!(
-                !production.contains(third_party),
-                "the canonicalizer, the hash, and the signature must come from \
-                 `crate::ump_integrity` — found a direct `{third_party}`"
-            );
-        }
+        // The module reaches the CONTENT HASH through the shipped stack. The
+        // other primitives are named directly and are not import-banned,
+        // because ump_integrity exposes no wrapper for them and a ban would
+        // fail a correct implementation:
+        //
+        //  · `ed25519_dalek` — the key TYPE the shipped resolver hands back.
+        //    Naming a type is not a second algorithm; it is the same crate and
+        //    the same primitive ump_integrity signs with.
+        //  · `sha2` — the row's CONTENT ADDRESS, which is a column and not
+        //    signed material. The signed bytes never touch it.
+        //  · `base64` — the signature encoding. ump_integrity has no base64
+        //    helper and the emission precedent in `handlers/ump.rs` calls the
+        //    STANDARD engine directly. What actually pins the encoding is the
+        //    known-answer test, which compares the exact emitted bytes against
+        //    a freshly computed signature — an encoding change cannot pass it.
+        //
+        // A second BLAKE3 or a second canonicalizer is the drift this forbids.
+        assert!(
+            !production.contains("use blake3"),
+            "the content hash must come from `crate::ump_integrity::content_hash_string` — a \\
+             second BLAKE3 call site is exactly how a signature drifts onto the wrong bytes"
+        );
+        assert!(
+            production.contains("ump_integrity::content_hash_string"),
+            "anti-vacuity: the module must actually route its hashing through the shipped \\
+             stack, or the ban above proves nothing"
+        );
     }
 }

@@ -2243,6 +2243,8 @@ pub fn run_migration_with_store_dim(
     )?;
 
     // Bumped once per release that changes this function.
+    // v1.32.16 "Attestations": delivery_attestations table + delivery_traces.seq
+    // (additive, guarded) → 1.32.16.
     // v1.32.15 "Delivery": delivery_traces + delivery_budgets tables → 1.32.15.
     // v1.32.14 "DecisionEvaluation": decision_evaluation_runs table → 1.32.14.
     // v1.32.13 "ModelRegistry": decision_model_registry table → 1.32.13.
@@ -2441,7 +2443,16 @@ pub fn run_migration_with_store_dim(
             budget_digest      TEXT,
             artifact_refs_json TEXT NOT NULL DEFAULT '[]',
             attestation_root   TEXT,
-            created_at         INTEGER NOT NULL
+            created_at         INTEGER NOT NULL,
+            -- the stored-ordinal law: the STORED ordinal inside the run. `id` digests it, so
+            -- the position is part of the row's identity and must be a column
+            -- and not a runtime count: `COUNT(*)` reissues an ordinal after a
+            -- delete and collides on the UNIQUE index below, which is exactly
+            -- what `MAX(seq)+1` prevents. The DEFAULT backfills an existing
+            -- 1.32.15 database's rows with 0 — declared, not repaired: the
+            -- sequence of a pre-the attestation round run is not recoverable, and the id churn
+            -- this round already causes is disclosed in the CHANGELOG.
+            seq                 INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS idx_delivery_traces_run
             ON delivery_traces(run_id);
@@ -2456,12 +2467,92 @@ pub fn run_migration_with_store_dim(
             PRIMARY KEY (run_id, kind)
         );
         CREATE INDEX IF NOT EXISTS idx_delivery_budgets_run
-            ON delivery_budgets(run_id);",
+            ON delivery_budgets(run_id);
+        -- the attestation round (A10): the per-run SIGNED CHAIN. Twelve columns,
+        -- exactly the design owner's list, and no FK on purpose (house style).
+        -- The `id` is content-addressed over
+        -- `chain_hash || run_id || step_id`, so it is stable under
+        -- re-derivation and does NOT change when later links append — unlike
+        -- `delivery_traces.attestation_root`, which names the head and
+        -- therefore moves as the chain grows. The PK is declared NOT NULL
+        -- because SQLite otherwise permits NULLs in a non-INTEGER primary key,
+        -- and a chain row with no id could never be addressed.
+        --
+        -- There is deliberately no disposition, status, decision, approval, or
+        -- outcome column: an attestation is EVIDENCE OF WHO ACTED, never a
+        -- disposition. Nothing may be promoted or denied on the strength of a
+        -- row in this table.
+        CREATE TABLE IF NOT EXISTS delivery_attestations(
+            id               TEXT PRIMARY KEY NOT NULL,
+            run_id           INTEGER NOT NULL,
+            step_id          INTEGER NOT NULL,
+            subject_name     TEXT NOT NULL,
+            subject_digest   TEXT NOT NULL,
+            predicate_type   TEXT NOT NULL,
+            predicate_digest TEXT NOT NULL,
+            envelope_json    TEXT NOT NULL,
+            signer_did       TEXT NOT NULL,
+            parent_id        TEXT NOT NULL DEFAULT '',
+            chain_hash       TEXT NOT NULL,
+            created_at       INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_delivery_attestations_replay
+            ON delivery_attestations(run_id, created_at);",
     )?;
 
+    // The guarded ALTER for a database that already ran the 1.32.15
+    // batch. Same `pragma_table_info` pattern as every other additive column in
+    // this file, so a 1.32.15 database gains the column and a fresh build gets
+    // it from the CREATE above without either path running twice.
+    //
+    // The ordinals are BACKFILLED before the index is created, and that ordering
+    // is load-bearing: the ADD COLUMN defaults every pre-existing row to 0, so a
+    // run with three trace rows would hold three (run_id, 0) pairs and
+    // `CREATE UNIQUE INDEX` would fail the whole migration on exactly the
+    // database this block exists to upgrade. The backfill numbers each row
+    // 1..n per run in `(created_at, rowid)` order — the order the chain and the
+    // replay index read in — so the stored ordinal is the row's real position
+    // and not a placeholder.
+    //
+    // The index is created HERE and not in the batch above, for the same
+    // reason: the batch's `CREATE TABLE IF NOT EXISTS` is a no-op against a
+    // 1.32.15 table, so indexing a column the batch has not added would fail
+    // there too.
+    {
+        let has_seq: bool = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('delivery_traces') WHERE name='seq'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !has_seq {
+            db.execute(
+                "ALTER TABLE delivery_traces ADD COLUMN seq INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+            db.execute(
+                "UPDATE delivery_traces SET seq = (
+                     SELECT COUNT(*) FROM delivery_traces prior
+                      WHERE prior.run_id = delivery_traces.run_id
+                        AND (prior.created_at < delivery_traces.created_at
+                             OR (prior.created_at = delivery_traces.created_at
+                                 AND prior.rowid <= delivery_traces.rowid))
+                 )",
+                [],
+            )?;
+        }
+        db.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_delivery_traces_seq
+             ON delivery_traces(run_id, seq)",
+            [],
+        )?;
+    }
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.15')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.15';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.16')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.16';",
         [],
     )?;
 

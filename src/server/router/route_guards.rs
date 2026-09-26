@@ -288,13 +288,14 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     // the DPO-gated listing GET; the detail path is the id-scoped read.
     "/workflow/decision-evals",
     "/workflow/decision-evals/{id}",
-    // The delivery loop's four run writes — no read surface in this round, so
-    // every path is POST-only and the base path is not listed ahead of a
-    // stricter sibling.
+    // The delivery loop's run writes, plus the attestation round's first READ. The read exists
+    // because the attestation chain is evidence a reviewer must be able to
+    // fetch; it re-derives from stored bytes and takes no body.
     "/workflow/delivery/runs",
     "/workflow/delivery/runs/{id}/advance",
     "/workflow/delivery/runs/{id}/answer",
     "/workflow/delivery/runs/{id}/gates",
+    "/workflow/delivery/runs/{id}/attestations",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -621,4 +622,6 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/delivery/runs/{id}/advance", "Write"),
     ("/workflow/delivery/runs/{id}/answer", "Write"),
     ("/workflow/delivery/runs/{id}/gates", "Write"),
+    // the attestation round's read: Read, on the run's OWN domain, same role gate in-handler.
+    ("/workflow/delivery/runs/{id}/attestations", "Read"),
 ];
