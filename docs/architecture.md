@@ -303,17 +303,29 @@ flowchart LR
     D4 --> D5["D5 Operate<br/>observe → attribute → improve"]
 ```
 
-**Its state today: ratified, with a pure decision core and nothing else.** The
+**Its state today: a ratified decision core, and its first persistence.** The
 decision law ships as `crates/brain-delivery-core` — the closed autonomy-tier
 vocabulary, the phase machine, the promotion gate, the attestation predicate,
 the budget ledger, the replay comparator, and the release-status machine. That
 crate is **pure and total**: no clock, no store, no network, no provider, so it
 decides without a running host and deny always wins.
 
-It also has **no callers**. There is no table, no route, no migration, and no
-persistence behind it; the phases above are the ratified shape, not a running
-pipeline. **This section describes a ratified decision and a shipped pure core —
-it does not describe shipped runtime behavior.**
+It now has its first caller. The server consumes the crate and persists what it
+decides: two tables — `delivery_traces`, content-addressed `trc_<32 hex>` over
+each row's facts *and* its ordinal, and `delivery_budgets` under a composite
+`(run_id, kind)` key — at schema `1.32.15`, behind four `POST` routes
+(`/workflow/delivery/runs`, `/runs/{id}/advance`, `/runs/{id}/answer`, and
+`/runs/{id}/gates`) that write only; there is no read route. Authorization is
+the run's own domain plus the `workflow` role.
+
+**Persistent is not complete.** What is stored is not yet enforced and not yet
+read back: budgets are recorded but unenforced, and `blast_radius` is admitted
+by the kind `CHECK` while no production path consults it. Unbuilt still are the
+replay-verify surface, authority bindings and connectors, the release and
+promotion surface, and any derived read model. One gap is on the record: no
+route sets `pending_question`, so the answer route is exercisable only by
+writing run state directly. **This section describes a ratified decision, a
+shipped pure core, and its first persistence — not a complete runtime.**
 
 **The law sentence, extended to include it: a model proposes; only the gate
 disposes.** In Loops 1–3 that arbiter is the GDL phase machine's
