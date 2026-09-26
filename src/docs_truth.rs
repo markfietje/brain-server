@@ -367,6 +367,13 @@ mod pins {
         for issuance in [
             "NPC Advisory No. 2024-04", // AI systems processing personal data
             "NPC Advisory No. 2026-01", // data scraping of public personal data
+            // 2026-03 is the newest issuance and the one a STALE NPC index
+            // mirror silently omits: on 2026-09-26 the /pips-and-pics/ path
+            // served a 2026-05-21 copy topping out at 2026-02, while
+            // /lawphil/advisories/ served a 2026-09-21 copy carrying it. Pinning
+            // only the two that both mirrors agree on would let a re-baseline
+            // against the stale copy drop the newest item and still go green.
+            "NPC Advisory No. 2026-03", // ASIR 2025 additional submission period
             "NPC Circular No. 2023-04", // guidelines on consent
         ] {
             assert!(
@@ -398,6 +405,20 @@ mod pins {
             ph.contains("05 Oct 2026") && ph.contains("19 Oct 2026"),
             "the consultation's comment deadline and hearing date must stay \
              stamped — a watch item without its clock is not a watch item"
+        );
+        // The re-verification route AND its staleness trap. An index that
+        // silently omits the newest issuance is worse than no index, because it
+        // reads as authoritative.
+        assert!(
+            ph.contains("pips-and-pics/advisories-circulars"),
+            "the Philippines block must name the authoritative NPC issuances index \
+             so the next re-baseline has a starting URL"
+        );
+        assert!(
+            ph.contains("article:modified_time"),
+            "the block must record that the NPC index is served from caches of \
+             differing freshness, and that the timestamp — not the path — is what \
+             distinguishes a current copy from a stale one"
         );
     }
 

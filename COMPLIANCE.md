@@ -261,12 +261,16 @@ explicit operator action.
   - **NPC Advisory No. 2026-01 (13 Apr 2026) — data scraping of publicly
     available personal data.** Reaffirms that public availability does **not**
     strip DPA protection; a lawful basis and the general privacy principles
-    still apply. Relevant to any ingest path that treats public data as free of
-    obligations. No scraping surface ships in this component today.
-  - **NPC Advisory No. 2026-02 — breach-notification submission via DBNMS**, and
-    **NPC Advisory No. 2026-03 — additional period for the 2025 Annual Security
-    Incident Report**. Both are submission-channel/administrative: filing is
-    operator-side, and the server supplies the audit evidence a report needs.
+    still apply, and "publicly available" is expressly **not** consent (§2;
+    large-scale scraping is defined by subject count, volume, duration and
+    geography, and carries a **mandatory PIA**). Relevant to any ingest path
+    that treats public data as free of obligations. No scraping surface ships
+    in this component today.
+  - **NPC Advisory No. 2026-02 — clarification on breach-notification
+    submission via DBNMS**, and **NPC Advisory No. 2026-03 — additional period
+    for the 2025 Annual Security Incident Report**. Both are
+    submission-channel/administrative: filing is operator-side, and the server
+    supplies the audit evidence a report needs.
   - **NPC Circular No. 2023-04 (7 Nov 2023) — Guidelines on Consent.** Consent
     must be specific and granular and is never implied. This component records
     lawful basis and consent provenance as **evidence**; it does not obtain
@@ -277,6 +281,20 @@ explicit operator action.
     subject rights to prescribe consistent rules and procedures." **A draft
     under consultation is not law** and nothing here is mapped to it; the DSR
     surface is tracked so the operator can re-assess on adoption.
+
+  **How to re-verify this block, and a source trap worth knowing.** The
+  authoritative source is the NPC issuances index at
+  `privacy.gov.ph/pips-and-pics/advisories-circulars/`. **That page is served
+  from more than one cache with different freshness**, and on 2026-09-26 the
+  two entry points returned *different lists*: the `/lawphil/advisories/` path
+  served a copy last modified **2026-09-21** carrying `2026-03`, `2025-01`
+  and the NPC-IC `2025-001` joint advisory, while the canonical
+  `/pips-and-pics/…` path served a copy last modified **2026-05-21** that
+  omitted all three and topped out at `2026-02`. **Check
+  `article:modified_time`, not just the path** — a stale mirror reads as
+  authoritative and silently omits the newest issuances. Both URLs declare the
+  same canonical and the same WordPress page id, so neither is "the wrong
+  link"; only the timestamp distinguishes them.
 - **EU (GDPR):** Art 15/17 (DSAR + erasure certificate), Art 19 (onward-
   notification webhook), Art 22 (trace replay = meaningful information about
   the logic), Art 26(6) guidance (retention ≥180 days where required).
