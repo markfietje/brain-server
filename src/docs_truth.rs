@@ -233,12 +233,22 @@ mod pins {
         // The response schema: every field the Rust struct serializes must be
         // listed, and `additionalProperties: false` means a missing one is a
         // hard contract violation rather than a nicety.
-        let start = spec
-            .find("    DeliveryRunAdvanced:")
+        // The schema's own block. The end boundary matters: `DeliveryArtifact`
+        // is defined BETWEEN `DeliveryRunAdvanced` and `DeliveryRunAnswered`,
+        // so slicing to "the next DeliveryRun* name" swallowed a second schema
+        // whole and let its keys satisfy this schema's assertions. The block
+        // ends at the next 4-space schema definition — every key at 8 spaces
+        // belongs to THIS schema.
+        let lines: Vec<&str> = spec.lines().collect();
+        let start = lines
+            .iter()
+            .position(|l| l.trim_end() == "    DeliveryRunAdvanced:")
             .unwrap_or_else(|| panic!("openapi.yaml lost the DeliveryRunAdvanced schema"));
-        let schema = &spec[start..];
-        let end = schema.find("\n    DeliveryRun").unwrap_or(schema.len());
-        let schema = &schema[..end];
+        let end = lines[start + 1..]
+            .iter()
+            .position(|l| l.starts_with("    ") && !l.starts_with("     ") && !l.trim().is_empty())
+            .map_or(lines.len(), |i| start + 1 + i);
+        let schema = lines[start..end].join("\n");
         assert!(
             schema.contains("additionalProperties: false"),
             "anti-vacuity: the response must still be closed, or this pin is moot"
