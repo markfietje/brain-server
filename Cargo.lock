@@ -328,6 +328,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-delivery-core"
+version = "1.29.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "brain-engine-sdk"
 version = "1.28.23"
 dependencies = [
@@ -345,6 +354,7 @@ dependencies = [
  "axum",
  "base64 0.23.1",
  "blake3",
+ "brain-delivery-core",
  "brain-engine-sdk",
  "bs58",
  "chrono",

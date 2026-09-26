@@ -288,6 +288,13 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     // the DPO-gated listing GET; the detail path is the id-scoped read.
     "/workflow/decision-evals",
     "/workflow/decision-evals/{id}",
+    // The delivery loop's four run writes — no read surface in this round, so
+    // every path is POST-only and the base path is not listed ahead of a
+    // stricter sibling.
+    "/workflow/delivery/runs",
+    "/workflow/delivery/runs/{id}/advance",
+    "/workflow/delivery/runs/{id}/answer",
+    "/workflow/delivery/runs/{id}/gates",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -607,4 +614,11 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     // actions; the detail uses the same conservative confidential posture.
     ("/workflow/decision-evals", "Admin"),
     ("/workflow/decision-evals/{id}", "Admin"),
+    // The delivery loop's run writes: Write on the run's own domain. The
+    // `workflow`-role gate lives in the handler (the role store reads from the
+    // pool, so it cannot be a table row) — the agent class is refused there.
+    ("/workflow/delivery/runs", "Write"),
+    ("/workflow/delivery/runs/{id}/advance", "Write"),
+    ("/workflow/delivery/runs/{id}/answer", "Write"),
+    ("/workflow/delivery/runs/{id}/gates", "Write"),
 ];

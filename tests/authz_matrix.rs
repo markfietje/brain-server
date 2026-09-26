@@ -397,6 +397,21 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
                 r#"{"config":{},"rules_config":{},"mode":"deterministic","request_id":"m","question_ids":["m"],"query":"m"}"#,
             ),
             "/workflow/model-registry/register" => ("POST", r#"{"kind":"deterministic-rules"}"#),
+            // The delivery loop's four run writes. The bodies only clear the
+            // typed extractor so the AUTHORIZATION gate is what answers: an
+            // empty body would 422 in the extractor and never reach the
+            // scope or role check, which is the whole point of these rows.
+            "/workflow/delivery/runs" => (
+                "POST",
+                r#"{"domain":"global","goal":"matrix","tier":"observe"}"#,
+            ),
+            "/workflow/delivery/runs/{id}/advance" => {
+                ("POST", r#"{"expected_revision":0,"to_phase":"design"}"#)
+            }
+            "/workflow/delivery/runs/{id}/answer" => {
+                ("POST", r#"{"expected_revision":0,"answer":"matrix"}"#)
+            }
+            "/workflow/delivery/runs/{id}/gates" => ("POST", r#"{"to_phase":"design"}"#),
             "/workflow/runs/{id}/back-referral/return" => (
                 "POST",
                 r#"{"contract_key":"m","report":{},"decision_ref":"m"}"#,
@@ -546,6 +561,18 @@ const PRE_GATE_404: &[&str] = &[
     "/workflow/runs/{id}/delegations/{delegation_id}/result",
     "/kcs/articles/{id}/approve",
     "/kcs/articles/{id}/publish",
+    // The delivery loop's three id-scoped writes. These resolve the RUN's
+    // domain before any gate — which is the contract ("Write on the run's
+    // domain"), not an ordering slip: the domain is unknowable without the
+    // run, and authorizing against anything else would check the wrong
+    // domain. So an absent run is the probe-blind 404 here, exactly as on
+    // every other run-resolved route, and the class matrix accepts 404-or-403.
+    // The 403-on-role proof is the seeded behavioural test below, which opens
+    // a real run first — a role gate proven only against an absent row would
+    // be a gate proven about nothing.
+    "/workflow/delivery/runs/{id}/advance",
+    "/workflow/delivery/runs/{id}/answer",
+    "/workflow/delivery/runs/{id}/gates",
     // The account {id} routes resolve the account BEFORE any gate: an
     // absent id (and a non-account id — the same answer) is the probe-blind
     // 404.
@@ -2313,6 +2340,15 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     // agent class is refused 403 exactly like the offer route.
     "/workflow/runs/{id}/handoff/decision",
     "/workflow/runs/{id}/back-referral/return",
+    // The delivery loop's four run writes: each demands the `workflow` role on
+    // top of Write on the run's own domain, so the agent class is refused 403
+    // on all four. The gate-evaluation route is included deliberately — a
+    // disposition an agent could read would hand back the run's phase and
+    // tier to the class that must not be able to drive them.
+    "/workflow/delivery/runs",
+    "/workflow/delivery/runs/{id}/advance",
+    "/workflow/delivery/runs/{id}/answer",
+    "/workflow/delivery/runs/{id}/gates",
     // NOT workflow-gated (verified: the relay `workflow` sites both live in
     // post_handover_offer; accept/decline + mesh's post_delegation_result
     // carry only the scope gate — they pass for this class on Write)
@@ -2515,4 +2551,111 @@ fn tenant_reader_sees_other_not_domain_names() {
         "acme-us",
         "the None superuser sees every name"
     );
+}
+
+/// The delivery loop is role-gated end to end, and the proof is seeded: the
+/// OPERATOR opens a real delivery run; the AGENT bearer — whose scopes pass
+/// and whose `workflow` role is absent — is refused 403 by the ROLE gate on
+/// that SAME run; on an ABSENT run the agent reads the same probe-blind 404
+/// the operator gets; and a REVOKED agent identity dies at the middleware with
+/// `401 identity_revoked` before any body is read.
+///
+/// The seeding is the whole point. The class matrix drives an absent row, so it
+/// can only assert 404-or-403 there; this test is what proves the gate fires
+/// on a row that actually exists.
+#[tokio::test]
+async fn delivery_routes_role_gated_agent_and_revoked_denied() {
+    let srv = twokey_server();
+    let create = r#"{"domain":"global","goal":"gated","tier":"observe"}"#;
+
+    // The operator opens the run — and the operator must clear the role gate,
+    // or "403 for the agent" would prove nothing.
+    let (st, body) = send_body(
+        &srv,
+        Some(TWOKEY_OP),
+        "/workflow/delivery/runs",
+        "POST",
+        create,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the operator opens a delivery run: {body}"
+    );
+    let run_id: i64 = serde_json::from_str::<serde_json::Value>(&body).unwrap()["run_id"]
+        .as_i64()
+        .expect("a run id in the admission receipt");
+    assert!(run_id > 0);
+
+    let advance = r#"{"expected_revision":0,"to_phase":"design","artifact_refs":[]}"#;
+    let answer = r#"{"expected_revision":0,"answer":"yes"}"#;
+    let gates = r#"{"to_phase":"design"}"#;
+    let cases: Vec<(&str, String, &str)> = vec![
+        (
+            "advance",
+            format!("/workflow/delivery/runs/{run_id}/advance"),
+            advance,
+        ),
+        (
+            "answer",
+            format!("/workflow/delivery/runs/{run_id}/answer"),
+            answer,
+        ),
+        (
+            "gates",
+            format!("/workflow/delivery/runs/{run_id}/gates"),
+            gates,
+        ),
+    ];
+
+    // The agent's scopes pass; only the ROLE is missing.
+    for (label, path, body) in &cases {
+        let (st, _) = send_body(&srv, Some(TWOKEY_AGENT), path, "POST", body).await;
+        assert_eq!(
+            st,
+            StatusCode::FORBIDDEN,
+            "the agent bearer is refused by the workflow role gate on /{label} — a gate \
+             proven only against an absent row is a gate proven about nothing"
+        );
+    }
+
+    // Probe-blind: an absent run reads the same 404 for both classes.
+    for (label, path, body) in &cases {
+        let (st_op, _) = send_body(
+            &srv,
+            Some(TWOKEY_OP),
+            &path.replacen(&run_id.to_string(), "999999", 1),
+            "POST",
+            body,
+        )
+        .await;
+        let (st_agent, _) = send_body(
+            &srv,
+            Some(TWOKEY_AGENT),
+            &path.replacen(&run_id.to_string(), "999999", 1),
+            "POST",
+            body,
+        )
+        .await;
+        assert_eq!(
+            st_op,
+            StatusCode::NOT_FOUND,
+            "absent run 404s for the operator"
+        );
+        assert_eq!(
+            st_agent, st_op,
+            "absence must be indistinguishable between classes on /{label}"
+        );
+    }
+
+    // Revocation kills the identity before the handler exists to gate it.
+    revoke_via_route(&srv, TWOKEY_OP, "agent@loopback").await;
+    let (st, text) = send_body(&srv, Some(TWOKEY_AGENT), &cases[0].1, "POST", cases[0].2).await;
+    assert_eq!(
+        st,
+        StatusCode::UNAUTHORIZED,
+        "a revoked agent dies at the middleware"
+    );
+    assert_eq!(text, revoked_body("identity_revoked"));
 }

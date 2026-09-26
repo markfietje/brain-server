@@ -92,6 +92,13 @@ brain-engine-sdk = { path = "crates/brain-engine-sdk", features = ["harness-kern
 # The curated legal vocabulary (the read-only law-version DB the /legal
 # surface reads); workspace-internal, gains nothing new to the lock.
 legal-rules-db = { path = "crates/legal-rules-db" }
+# The delivery loop's pure decision core: the closed phase machine, the tier
+# vocabulary, the trace-mode mapping, and the saturating budget arithmetic.
+# R38 is the first round to consume it, so this is the edge that moves the
+# ROOT Cargo.lock by one [[package]] entry (no third-party edge — serde,
+# serde_json, and sha2 are already locked). The law lives in the crate; the
+# server never re-implements it.
+brain-delivery-core = { path = "crates/brain-delivery-core" }
 # Core Embedding
 model2vec-rs = "0.3"
 # v1.28 "Caliber": the neural-tier runtime (BGE-M3 dense+sparse+colbert +

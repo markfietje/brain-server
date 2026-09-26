@@ -31,6 +31,7 @@ pub mod consolidate;
 pub mod crew;
 pub mod decision_evals;
 pub mod decision_runs;
+pub mod delivery;
 pub mod domains;
 pub mod forget;
 pub mod frontend;

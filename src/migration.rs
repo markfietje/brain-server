@@ -2243,6 +2243,7 @@ pub fn run_migration_with_store_dim(
     )?;
 
     // Bumped once per release that changes this function.
+    // v1.32.15 "Delivery": delivery_traces + delivery_budgets tables → 1.32.15.
     // v1.32.14 "DecisionEvaluation": decision_evaluation_runs table → 1.32.14.
     // v1.32.13 "ModelRegistry": decision_model_registry table → 1.32.13.
     // v1.32.12 "DecisionSurface": proposals.decision_run_ref (additive, nullable) → 1.32.12.
@@ -2415,9 +2416,52 @@ pub fn run_migration_with_store_dim(
             ON decision_evaluation_runs(created_at);",
     )?;
 
+    // ── the delivery loop's two persistence tables ─────────────────────
+    // Bounded metadata, references, digests, and closed labels only — no raw
+    // query, evidence text, model bytes, rules bytes, or secrets (the
+    // decision_evaluation_runs posture). Refs and digests, so a trace row is
+    // evidence rather than content.
+    //
+    // `blast_radius` is admitted by the kind CHECK because the governing spec
+    // names it, and is UNENFORCED by design: this round stores the row and no
+    // route or ceiling may reference it. Turning it on is a later round's turn.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS delivery_traces(
+            id                 TEXT PRIMARY KEY,
+            run_id             INTEGER NOT NULL,
+            stage              TEXT NOT NULL CHECK (stage IN ('run','phase','gate','answer')),
+            phase              TEXT NOT NULL CHECK (phase IN ('scope','design','build','release','operate','done')),
+            status             TEXT NOT NULL CHECK (status IN ('admitted','advanced','allowed','prompt','denied','answered')),
+            tier               TEXT NOT NULL CHECK (tier IN ('observe','propose','bounded-auto','delegated')),
+            actor              TEXT NOT NULL,
+            model_ref          TEXT,
+            policy_digest      TEXT,
+            config_digest      TEXT,
+            pipeline_version   TEXT NOT NULL,
+            budget_digest      TEXT,
+            artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+            attestation_root   TEXT,
+            created_at         INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_delivery_traces_run
+            ON delivery_traces(run_id);
+        CREATE INDEX IF NOT EXISTS idx_delivery_traces_replay
+            ON delivery_traces(run_id, created_at);
+        CREATE TABLE IF NOT EXISTS delivery_budgets(
+            run_id     INTEGER NOT NULL,
+            kind       TEXT NOT NULL CHECK (kind IN ('tokens','tool_calls','files','minutes','blast_radius')),
+            ceiling    INTEGER NOT NULL CHECK (ceiling >= 0),
+            spent      INTEGER NOT NULL DEFAULT 0 CHECK (spent >= 0),
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY (run_id, kind)
+        );
+        CREATE INDEX IF NOT EXISTS idx_delivery_budgets_run
+            ON delivery_budgets(run_id);",
+    )?;
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.14')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.14';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.15')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.15';",
         [],
     )?;
 

@@ -31,6 +31,7 @@ pub(crate) mod complaint;
 pub(crate) mod crew;
 pub(crate) mod decide;
 pub(crate) mod decision_eval;
+pub(crate) mod delivery;
 pub(crate) mod driver;
 pub(crate) mod entitlement;
 

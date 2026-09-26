@@ -7790,6 +7790,171 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized (Admin on global plus DPO role) }
         "404": { description: Evaluation record not found (probe-blind) }
+  /workflow/delivery/runs:
+    post:
+      summary: Open a delivery run (Write on the target domain plus the `workflow` role)
+      description: >
+        Admits a run onto the EXISTING run engine with kind = `delivery` — no
+        second engine and no schema widening. The phase machine is the pure
+        crate's: forward-only, total, and borrowed rather than re-derived. The
+        tier is the design owner's closed set (observe, propose, bounded-auto,
+        delegated) and the trace mode is DERIVED from it, never taken from the
+        client. Any budget ceilings in the request are STORED as evidence and
+        are not enforced by this round: no route consults a ceiling here. A
+        delivery run carries no jurisdiction, so no law-version stamp is
+        written.
+      operationId: createDeliveryRun
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [domain, goal, tier]
+              properties:
+                domain: { type: string, minLength: 1, maxLength: 128 }
+                goal: { type: string, minLength: 1, maxLength: 2000 }
+                tier:
+                  type: string
+                  enum: [observe, propose, bounded-auto, delegated]
+                policy_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+                config_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+                budgets:
+                  type: array
+                  minItems: 0
+                  maxItems: 5
+                  items:
+                    type: object
+                    additionalProperties: false
+                    required: [kind, ceiling]
+                    properties:
+                      kind:
+                        type: string
+                        enum: [tokens, tool_calls, files, minutes, blast_radius]
+                      ceiling: { type: integer, format: int64, minimum: 0 }
+      responses:
+        "200":
+          description: Delivery run admitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryRunCreated"
+        "400": { description: delivery_unknown_vocabulary | delivery_goal_too_long | delivery_budgets_too_many }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Write on the domain plus the `workflow` role) }
+  /workflow/delivery/runs/{id}/advance:
+    post:
+      summary: Advance a delivery run one phase (Write on the run's domain plus the `workflow` role)
+      description: >
+        One phase pass, and one transaction: the step row, the revision CAS, the
+        trace row, and a fail-closed audit row commit together or not at all.
+        The move is legal only if it is one of the five adjacent phases; a skip
+        and a rewind are both refusals, and a lost CAS refuses the whole pass
+        rather than overwriting the winner. The run closes `completed` only at
+        the terminal phase, inside the engine's existing closed status set.
+      operationId: advanceDeliveryRun
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expected_revision, to_phase]
+              properties:
+                expected_revision: { type: integer, format: int64, minimum: 0 }
+                to_phase:
+                  type: string
+                  enum: [scope, design, build, release, operate, done]
+                artifact_refs:
+                  type: array
+                  minItems: 0
+                  maxItems: 32
+                  items: { type: string, maxLength: 256 }
+      responses:
+        "200":
+          description: Phase pass committed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryRunAdvanced"
+        "400": { description: delivery_unknown_vocabulary }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Write on the run's domain plus the `workflow` role) }
+        "404": { description: Delivery run not found (probe-blind; unaudited) }
+        "409": { description: delivery_gate_stale_revision | delivery_illegal_phase_transition | delivery_terminal_phase }
+  /workflow/delivery/runs/{id}/answer:
+    post:
+      summary: Answer a delivery run's pending question (Write plus the `workflow` role)
+      description: >
+        Clears the run's `pending_question` routing key through the same
+        revision CAS the phase pass uses, and records that an answer happened.
+        The answer itself is operator-authored prose on a run the operator owns:
+        it is stored in the run's own state, bounded, and is never copied into
+        a trace row. A run with no pending question is a refusal.
+      operationId: answerDeliveryRun
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expected_revision, answer]
+              properties:
+                expected_revision: { type: integer, format: int64, minimum: 0 }
+                answer: { type: string, minLength: 1, maxLength: 2000 }
+      responses:
+        "200":
+          description: Question answered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryRunAnswered"
+        "400": { description: delivery_answer_too_long }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Write on the run's domain plus the `workflow` role) }
+        "404": { description: Delivery run not found (probe-blind; unaudited) }
+        "409": { description: delivery_gate_stale_revision | delivery_no_pending_question }
+  /workflow/delivery/runs/{id}/gates:
+    post:
+      summary: Evaluate the phase gate for a delivery run (Write plus the `workflow` role)
+      description: >
+        A DISPOSITION, never a mutation: the run's phase, status, and revision
+        are untouched, and the only writes are the trace row and its audit. The
+        evaluation is pure and offline. Deny wins — the terminal phase and an
+        illegal move are refusals, and a value outside the closed phase
+        vocabulary is a refusal rather than a nearest-match guess. A tier that
+        may not promote is told to ask: the disposition is `prompt`, and the
+        human's advance route is the disposal. No budget ceiling is consulted.
+      operationId: evaluateDeliveryGate
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                to_phase:
+                  type: string
+                  enum: [scope, design, build, release, operate, done]
+      responses:
+        "200":
+          description: Gate disposition (200 whatever the verdict; a deny is a recorded outcome, not a transport error)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeliveryGateVerdict"
+        "400": { description: delivery_unknown_vocabulary }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Write on the run's domain plus the `workflow` role) }
+        "404": { description: Delivery run not found (probe-blind; unaudited) }
   /workflow/model-registry:
     get:
       summary: List registered model identities (Admin plus DPO role; audited)
@@ -8022,6 +8187,58 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/ApiError" }
   schemas:
+    DeliveryRunCreated:
+      type: object
+      additionalProperties: false
+      required: [run_id, phase, tier, trace_mode, trace_id, state_revision, principal]
+      properties:
+        run_id: { type: integer, format: int64, minimum: 1 }
+        phase: { type: string, enum: [scope, design, build, release, operate, done] }
+        tier: { type: string, enum: [observe, propose, bounded-auto, delegated] }
+        trace_mode: { type: string, enum: [deterministic, exploratory] }
+        trace_id: { type: string, pattern: "^trc_[0-9a-f]{32}$" }
+        state_revision: { type: integer, format: int64, minimum: 0 }
+        principal: { type: string, maxLength: 64 }
+    DeliveryRunAdvanced:
+      type: object
+      additionalProperties: false
+      required: [run_id, phase, tier, trace_mode, trace_id, state_revision, step_id]
+      properties:
+        run_id: { type: integer, format: int64, minimum: 1 }
+        phase: { type: string, enum: [scope, design, build, release, operate, done] }
+        tier: { type: string, enum: [observe, propose, bounded-auto, delegated] }
+        trace_mode: { type: string, enum: [deterministic, exploratory] }
+        trace_id: { type: string, pattern: "^trc_[0-9a-f]{32}$" }
+        state_revision: { type: integer, format: int64, minimum: 0 }
+        step_id: { type: integer, format: int64, minimum: 1 }
+    DeliveryRunAnswered:
+      type: object
+      additionalProperties: false
+      required: [run_id, trace_id, state_revision]
+      properties:
+        run_id: { type: integer, format: int64, minimum: 1 }
+        trace_id: { type: string, pattern: "^trc_[0-9a-f]{32}$" }
+        state_revision: { type: integer, format: int64, minimum: 0 }
+    DeliveryGateVerdict:
+      type: object
+      additionalProperties: false
+      required: [run_id, phase, tier, trace_mode, disposition, deny_reason, trace_id, evaluated_at]
+      properties:
+        run_id: { type: integer, format: int64, minimum: 1 }
+        phase: { type: string, enum: [scope, design, build, release, operate, done] }
+        next_phase:
+          type: string
+          nullable: true
+          enum: [scope, design, build, release, operate, done]
+        tier: { type: string, enum: [observe, propose, bounded-auto, delegated] }
+        trace_mode: { type: string, enum: [deterministic, exploratory] }
+        disposition: { type: string, enum: [allowed, prompt, denied] }
+        deny_reason:
+          type: string
+          nullable: true
+          enum: [terminal-phase, illegal-phase-transition, closed-vocabulary, exhausted-budget]
+        trace_id: { type: string, pattern: "^trc_[0-9a-f]{32}$" }
+        evaluated_at: { type: integer, format: int64, minimum: 1 }
     DecisionEvaluationRecord:
       type: object
       additionalProperties: false

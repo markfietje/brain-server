@@ -3569,6 +3569,10 @@ Final paragraph after the rule.";
             "decision_model_registry",
             // bounded decision-evaluation records.
             "decision_evaluation_runs",
+            // the delivery loop's per-run trace index (refs and digests only).
+            "delivery_traces",
+            // the delivery loop's per-run budget head — stored, unenforced.
+            "delivery_budgets",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -3817,7 +3821,7 @@ Final paragraph after the rule.";
         // gate's mode law).
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_14),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_15),
             "schema_version must be recorded as the current release after migration"
         );
         // Outreach: every consent row is keyed domain × hashed subject ×
@@ -7107,6 +7111,10 @@ Final paragraph after the rule.";
                             "alert" => {
                                 include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/alert.rs"))
                             }
+                            "delivery" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/delivery.rs"
+                            )),
                             m => panic!("no source mapping for handlers module {m}"),
                         }
                     } else if handler.contains("handlers::") {
@@ -8015,6 +8023,10 @@ Final paragraph after the rule.";
             env!("CARGO_MANIFEST_DIR"),
             "/src/handlers/decision_evals.rs"
         ));
+        let delivery_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/handlers/delivery.rs"
+        ));
         // (source, handler/helper name, the seam call it must reference).
         // The seam names deliberately pair with the response field each site
         // emits; the assert is a substring check on the handler body.
@@ -8084,6 +8096,25 @@ Final paragraph after the rule.";
             (
                 decision_evals_src,
                 "get_decision_evals",
+                "sanitize_value_strings",
+            ),
+            // The delivery loop's four run writes: each assembles a response
+            // from stored run state (phase, tier, trace ids) and must ride the
+            // deep string seam at the emission boundary.
+            (delivery_src, "post_delivery_run", "sanitize_value_strings"),
+            (
+                delivery_src,
+                "post_delivery_advance",
+                "sanitize_value_strings",
+            ),
+            (
+                delivery_src,
+                "post_delivery_answer",
+                "sanitize_value_strings",
+            ),
+            (
+                delivery_src,
+                "post_delivery_gates",
                 "sanitize_value_strings",
             ),
         ];
@@ -17672,5 +17703,463 @@ mod scrim {
         .await
         .expect("the loopback operator opens the stream");
         let _ = sse; // response constructed — the denial path returned before this point
+    }
+}
+
+/// R38 — Delivery persistence + run lifecycle. The round's own battery.
+///
+/// Schema-layer pins live here rather than in the core's own test module
+/// because every one of them reads the MIGRATED database: a shape asserted
+/// beside the DDL text would only prove the text matches itself. The pins
+/// that need the pure crate, the service core, or a handler live with their
+/// subjects; the wiring pins (guard tables, action-scan arm, read seam) live
+/// in the tables they extend.
+mod r38_delivery {
+    use super::*;
+    use brain_server::migration::run_migration;
+    use brain_server::register_sqlite_vec::register_sqlite_vec;
+
+    /// The in-memory migrated database, the same fixture the main suite uses.
+    fn test_db() -> Connection {
+        register_sqlite_vec();
+        let mut db = Connection::open_in_memory().expect("open in-memory DB");
+        run_migration(&mut db, 512).expect("migration");
+        db
+    }
+
+    fn src(rel: &str) -> String {
+        std::fs::read_to_string(format!("{}/{rel}", env!("CARGO_MANIFEST_DIR")))
+            .unwrap_or_else(|e| panic!("read {rel}: {e}"))
+    }
+
+    /// The two tables exist with the DO's column sets, the pinned keys, the
+    /// closed-vocabulary CHECKs, and the two trace indexes DO L198 names.
+    #[test]
+    fn delivery_migration_creates_both_tables_with_pinned_shape() {
+        let db = test_db();
+
+        let trace_cols: Vec<String> = db
+            .prepare("SELECT name FROM pragma_table_info('delivery_traces')")
+            .expect("prepare")
+            .query_map([], |r| r.get(0))
+            .expect("query_map")
+            .filter_map(Result::ok)
+            .collect();
+        for col in [
+            "id",
+            "run_id",
+            "stage",
+            "phase",
+            "status",
+            "tier",
+            "actor",
+            "model_ref",
+            "policy_digest",
+            "config_digest",
+            "pipeline_version",
+            "budget_digest",
+            "artifact_refs_json",
+            "attestation_root",
+            "created_at",
+        ] {
+            assert!(
+                trace_cols.iter().any(|c| c == col),
+                "delivery_traces must carry the DO L195-198 column `{col}`; has {trace_cols:?}"
+            );
+        }
+
+        // The closed vocabularies are CHECKed, not merely conventional: a
+        // house-style closed set the database itself does not enforce is a
+        // convention, and a convention is not a law. One fully-legal baseline
+        // row is inserted, then each column is walked through the whole DO set
+        // and finally through a value the set does not name.
+        for (col, legal) in [
+            ("stage", &["run", "phase", "gate", "answer"][..]),
+            (
+                "phase",
+                &["scope", "design", "build", "release", "operate", "done"][..],
+            ),
+            (
+                "tier",
+                &["observe", "propose", "bounded-auto", "delegated"][..],
+            ),
+            (
+                "status",
+                &[
+                    "admitted", "advanced", "allowed", "prompt", "denied", "answered",
+                ][..],
+            ),
+        ] {
+            let probe = format!("probe-{col}");
+            db.execute(
+                "INSERT INTO delivery_traces(id, run_id, stage, phase, status, tier, actor, \
+                 pipeline_version, artifact_refs_json, created_at) \
+                 VALUES (?1, 1, 'phase', 'scope', 'advanced', 'observe', 'a', 'v', '[]', 1)",
+                [&probe],
+            )
+            .expect("the legal baseline row must insert");
+
+            for v in legal {
+                assert!(
+                    db.execute(
+                        &format!("UPDATE delivery_traces SET {col} = '{v}' WHERE id = '{probe}'"),
+                        [],
+                    )
+                    .is_ok(),
+                    "the DO's {col} vocabulary must admit `{v}`"
+                );
+            }
+            let illegal = db.execute(
+                &format!(
+                    "UPDATE delivery_traces SET {col} = 'not-a-real-vocabulary-value' \
+                      WHERE id = '{probe}'"
+                ),
+                [],
+            );
+            assert!(
+                illegal.is_err(),
+                "delivery_traces.{col} must be CHECK-constrained to a closed vocabulary — \
+                 the database accepted a value the DO's set does not name"
+            );
+        }
+
+        // The replay index is the load-bearing one: R41 re-derives a run's
+        // stages in order from it.
+        let idx: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
+                   AND tbl_name='delivery_traces' AND name='idx_delivery_traces_replay'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query");
+        assert_eq!(idx, 1, "the (run_id, created_at) replay index must exist");
+
+        let budget_cols: Vec<String> = db
+            .prepare("SELECT name FROM pragma_table_info('delivery_budgets')")
+            .expect("prepare")
+            .query_map([], |r| r.get(0))
+            .expect("query_map")
+            .filter_map(Result::ok)
+            .collect();
+        for col in ["run_id", "kind", "ceiling", "spent", "updated_at"] {
+            assert!(
+                budget_cols.iter().any(|c| c == col),
+                "delivery_budgets must carry the DO L206-207 column `{col}`; has {budget_cols:?}"
+            );
+        }
+    }
+
+    /// The stamp moves as one atomic unit: the migration writes it AND the
+    /// const names it, and the guard that ties them is exercised by the
+    /// sibling `latest_stamp_matches_migration` pin.
+    #[test]
+    fn delivery_schema_stamp_is_the_delivery_stamp() {
+        let db = test_db();
+        assert_eq!(
+            brain_server::storage_layout::schema_version(&db).as_deref(),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_15),
+            "R38 stamps 1.32.15; both the migration literal and the const must agree"
+        );
+        assert_eq!(
+            brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
+            "1.32.15",
+            "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
+             this binary cannot migrate"
+        );
+    }
+
+    /// Re-runnability. There is no double-run idempotency test in the tree and
+    /// re-runnability was structural, not pinned; R38 pins it.
+    #[test]
+    fn delivery_migration_is_idempotent_and_rerunnable() {
+        register_sqlite_vec();
+        let mut db = Connection::open_in_memory().expect("open");
+        run_migration(&mut db, 512).expect("first migration");
+        let first: String = brain_server::storage_layout::schema_version(&db).expect("stamp 1");
+        let tables_first: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table','index')",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count 1");
+
+        // The whole point: the SECOND run must be a clean no-op.
+        run_migration(&mut db, 512).expect("second migration must be a no-op, not an error");
+
+        assert_eq!(
+            brain_server::storage_layout::schema_version(&db).as_deref(),
+            Some(first.as_str()),
+            "a re-run must not move the stamp"
+        );
+        let tables_second: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type IN ('table','index')",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count 2");
+        assert_eq!(
+            tables_first, tables_second,
+            "a re-run must not create a duplicate index or table"
+        );
+    }
+
+    /// Budget honesty, enforced by the database: the five documented kinds are
+    /// admitted, and the CHECK actually rejects a sixth.
+    #[test]
+    fn delivery_budget_kind_check_admits_exactly_the_five_documented_values() {
+        let db = test_db();
+        for kind in ["tokens", "tool_calls", "files", "minutes", "blast_radius"] {
+            db.execute(
+                "INSERT INTO delivery_budgets(run_id, kind, ceiling, spent, updated_at) \
+                 VALUES (1, ?1, 10, 0, 1)",
+                [kind],
+            )
+            .unwrap_or_else(|e| panic!("DO L207-208 admits `{kind}`: {e}"));
+        }
+        let rejected = db.execute(
+            "INSERT INTO delivery_budgets(run_id, kind, ceiling, spent, updated_at) \
+             VALUES (1, 'seats', 10, 0, 1)",
+            [],
+        );
+        assert!(
+            rejected.is_err(),
+            "the kind vocabulary is closed; `seats` must be refused"
+        );
+    }
+
+    /// `blast_radius` is UNDEFINED: the CHECK admits it (the governing spec
+    /// names it) and nothing in the round may consult it as a ceiling. The
+    /// guard is a source scan over the round's own two files, and it is
+    /// NON-VACUOUS by requiring those files to exist and to own the table.
+    ///
+    /// The scan covers the PRODUCTION region only. A test fixture that names
+    /// the value in order to prove it is *stored* is this guard's own
+    /// evidence, not a ceiling reference — and scanning the fixture is how a
+    /// self-check ends up confidently wrong about itself.
+    #[test]
+    fn delivery_budget_stores_but_never_references_blast_radius_as_a_ceiling() {
+        let core = src("src/workflow/delivery.rs");
+        let handler = src("src/handlers/delivery.rs");
+
+        // Non-vacuity: a scan over absent files finds nothing and would pass.
+        assert!(
+            core.contains("delivery_budgets"),
+            "the service core must exist and own the budget table — an empty scan proves nothing"
+        );
+        assert!(
+            handler.contains("workflow::delivery"),
+            "the handler must exist and delegate to the core"
+        );
+
+        for (name, text) in [
+            ("src/workflow/delivery.rs", &core),
+            ("src/handlers/delivery.rs", &handler),
+        ] {
+            // The production region is everything before the test module. If
+            // the tests ever move out of this file the whole file is scanned,
+            // which is strictly stricter — never weaker.
+            let production = match text.find("#[cfg(test)]") {
+                Some(at) => &text[..at],
+                None => text.as_str(),
+            };
+            for (i, line) in production.lines().enumerate() {
+                let line = line.trim();
+                if line.starts_with("//") {
+                    continue; // a comment stating the prohibition is the point
+                }
+                assert!(
+                    !line.contains("blast_radius"),
+                    "{name}:{} — `blast_radius` is UNDEFINED and must not ship as a ceiling: \
+                     a code reference here is enforcement by accident: {line}",
+                    i + 1
+                );
+            }
+        }
+    }
+
+    /// The design owner's invariant 1, as a machine check: no delivery route
+    /// writes a run's status directly. Every status movement in this round is
+    /// a CAS inside a phase pass, which is the governed transition — a route
+    /// that took a status from the client would be the autonomous path the
+    /// invariant forbids.
+    #[test]
+    fn delivery_has_no_direct_status_write_route() {
+        let router = src("src/server/router/workflow.rs");
+        let paths: Vec<&str> = router
+            .lines()
+            .filter(|l| l.contains("/workflow/delivery/"))
+            .collect();
+        assert!(
+            !paths.is_empty(),
+            "the scan must actually see the delivery routes — a scan over absent \
+             routes proves nothing"
+        );
+        for line in &paths {
+            assert!(
+                !line.contains("status"),
+                "a delivery route path carrying `status` would be a status-write sibling: {line}"
+            );
+        }
+        // The four registered routes, and exactly four.
+        let registered: Vec<String> = router
+            .match_indices("/workflow/delivery/")
+            .map(|(i, _)| {
+                let rest = &router[i..];
+                let end = rest.find('"').unwrap();
+                rest[..end].to_string()
+            })
+            .collect();
+        assert_eq!(
+            registered,
+            vec![
+                "/workflow/delivery/runs",
+                "/workflow/delivery/runs/{id}/advance",
+                "/workflow/delivery/runs/{id}/answer",
+                "/workflow/delivery/runs/{id}/gates",
+            ],
+            "R38 owns exactly these four writes and no others"
+        );
+        // The status the core CAN write is a closed set, and only ever through
+        // cas_update.
+        let core = src("src/workflow/delivery.rs");
+        for s in ["\"active\"", "\"completed\""] {
+            assert!(
+                core.contains(s),
+                "the core's status vocabulary must include {s}"
+            );
+        }
+        assert!(
+            !core.contains("UPDATE workflow_runs SET status"),
+            "the core must never issue a bare status UPDATE — status moves only \
+             through the revision CAS"
+        );
+    }
+
+    /// The four routes are the round's whole public surface, and every one of
+    /// them is a POST under the delivery prefix. A fifth path, or a GET, would
+    /// be scope creep past the ratified D2 decision (four writes, zero reads).
+    #[test]
+    fn delivery_ships_exactly_four_writes_and_no_reads() {
+        let router = src("src/server/router/workflow.rs");
+        let deliveries: Vec<&str> = router
+            .lines()
+            .filter(|l| l.contains("/workflow/delivery/"))
+            .collect();
+        assert!(
+            deliveries.iter().all(|l| !l.contains("get(")),
+            "R38 ships zero read routes: {deliveries:?}"
+        );
+        // And the guard tables agree with the router, in both directions.
+        let guards = src("src/server/router/route_guards.rs");
+        for p in [
+            "/workflow/delivery/runs",
+            "/workflow/delivery/runs/{id}/advance",
+            "/workflow/delivery/runs/{id}/answer",
+            "/workflow/delivery/runs/{id}/gates",
+        ] {
+            assert_eq!(
+                guards.matches(&format!("\"{p}\"")).count(),
+                2,
+                "{p} must appear once in OPENAPI_ROUTES and once in AUTHZ_GATES"
+            );
+        }
+    }
+
+    /// The `law_version` is a real COLUMN and must never enter `state_json` — the
+    /// engines CAS against those exact bytes. The pin asserts both halves: the
+    /// column is where the DO says it is, and a run's state blob never carries
+    /// the key.
+    #[test]
+    fn delivery_law_version_never_enters_state_json() {
+        let db = test_db();
+        let col: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('workflow_runs') WHERE name='law_version'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("probe");
+        assert_eq!(
+            col, 1,
+            "law_version is a workflow_runs column, not state_json baggage"
+        );
+
+        // A delivery run's state carries the phase; it does not carry the law.
+        db.execute(
+            "INSERT INTO workflow_runs(id, domain, kind, status, state_json, state_revision, \
+             created_at, updated_at) VALUES (9001, 'd', 'delivery', 'active', '{\"phase\":\"scope\"}', \
+             1, 1, 1)",
+            [],
+        )
+        .expect("insert a delivery run");
+        let state: String = db
+            .query_row(
+                "SELECT state_json FROM workflow_runs WHERE id = 9001",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read state");
+        assert!(
+            !state.contains("law_version"),
+            "law_version must never live in state_json — the engines CAS against those exact bytes: {state}"
+        );
+    }
+
+    /// The stamped input is the EMPTY string, and it stays empty through every
+    /// round route. A delivery run has no jurisdiction; the delivery loop's law
+    /// identity rides policy_digest + pipeline_version, not this column.
+    #[test]
+    fn delivery_law_version_stamp_stays_empty() {
+        let db = test_db();
+        db.execute(
+            "INSERT INTO workflow_runs(id, domain, kind, status, state_json, state_revision, \
+             created_at, updated_at) VALUES (9002, 'd', 'delivery', 'active', '{\"phase\":\"scope\"}', \
+             1, 1, 1)",
+            [],
+        )
+        .expect("insert a delivery run");
+        let law: String = db
+            .query_row(
+                "SELECT law_version FROM workflow_runs WHERE id = 9002",
+                [],
+                |r| r.get(0),
+            )
+            .expect("read law_version");
+        assert_eq!(
+            law, "",
+            "a delivery run stamps no jurisdiction; report.rs documents empty as \
+             'advisory unavailable, never a refusal, never a block'. Piping PIPELINE_VERSION in \
+             here would fabricate a law_version_mismatch against the legal DB head."
+        );
+    }
+
+    /// The kind=delivery reuse law: the delivery loop rides the EXISTING run
+    /// engine. No second engine, no CHECK widening, and `workflow_steps.phase`
+    /// stays free TEXT so the delivery phase vocabulary needs no migration.
+    #[test]
+    fn delivery_reuses_the_existing_run_engine_without_a_schema_widening() {
+        let db = test_db();
+        let phase_check: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE sql LIKE '%workflow_steps%' \
+                   AND sql LIKE '%CHECK%'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("probe");
+        assert_eq!(
+            phase_check, 0,
+            "workflow_steps.phase must stay free TEXT — a CHECK here would be the migration the \
+             DO L176-177 says is not needed"
+        );
+        db.execute(
+            "INSERT INTO workflow_steps(run_id, phase, step_key, state_json) \
+             VALUES (1, 'scope', 'scope', '{}')",
+            [],
+        )
+        .expect("a delivery phase must insert into workflow_steps with no migration");
     }
 }

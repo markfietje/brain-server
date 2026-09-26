@@ -119,6 +119,10 @@ const PARITY_TABLES: &[&str] = &[
     "decision_model_registry",
     // the bounded decision-evaluation record table.
     "decision_evaluation_runs",
+    // the delivery loop's per-run trace index (refs and digests only).
+    "delivery_traces",
+    // the delivery loop's per-run budget head — stored, unenforced.
+    "delivery_budgets",
 ];
 
 /// Size of the random vec0 spot-check. ponytail: 50 is a heuristic — the formal
