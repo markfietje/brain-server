@@ -3573,6 +3573,9 @@ Final paragraph after the rule.";
             "delivery_traces",
             // the delivery loop's per-run budget head — stored, unenforced.
             "delivery_budgets",
+            // v1.32.16 "Attestations": the per-run signed chain. One writer
+            // (the phase pass), twelve columns, and no disposition column.
+            "delivery_attestations",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -8117,6 +8120,15 @@ Final paragraph after the rule.";
                 "post_delivery_gates",
                 "sanitize_value_strings",
             ),
+            // R40: the line's FIRST delivery READ surface, and the first one
+            // that emits operator-authored text (subject names and envelopes
+            // are derived, but the envelope carries stored bytes back out).
+            // Treated as a first-occurrence seam, not a follow-on.
+            (
+                delivery_src,
+                "get_delivery_attestations",
+                "sanitize_value_strings",
+            ),
         ];
         for (src, name, seam) in sites {
             let body = handler_body(src, name)
@@ -8134,7 +8146,10 @@ Final paragraph after the rule.";
     /// block comments) and the body is returned owned — a comment naming the
     /// required symbol can never false-pass the substring assert again; the
     /// assert reads code, not prose.
-    fn handler_body(src: &str, name: &str) -> Option<String> {
+    ///
+    /// `pub(super)` so the round modules below can reach the ONE extractor
+    /// rather than each growing a second, weaker copy of it.
+    pub(super) fn handler_body(src: &str, name: &str) -> Option<String> {
         let stripped = strip_line_comments(src);
         let needle = format!("fn {name}(");
         let start = stripped.find(&needle)?;
@@ -17740,7 +17755,9 @@ mod r38_delivery {
     }
 
     /// The two tables exist with the DO's column sets, the pinned keys, the
-    /// closed-vocabulary CHECKs, and the two trace indexes DO L198 names.
+    /// closed-vocabulary CHECKs, and the two trace indexes DO L198 names. R40
+    /// adds the `seq` column to the walk: it is a delivery_traces column now,
+    /// and a shape pin that does not know about it stops describing the table.
     #[test]
     fn delivery_migration_creates_both_tables_with_pinned_shape() {
         let db = test_db();
@@ -17768,6 +17785,10 @@ mod r38_delivery {
             "artifact_refs_json",
             "attestation_root",
             "created_at",
+            // R40 (A11): the STORED ordinal. `id` digests it, so it is a column
+            // of the table and not a runtime counter — a shape pin that does
+            // not name it stops describing the table.
+            "seq",
         ] {
             assert!(
                 trace_cols.iter().any(|c| c == col),
@@ -18168,5 +18189,405 @@ mod r38_delivery {
             [],
         )
         .expect("a delivery phase must insert into workflow_steps with no migration");
+    }
+}
+
+/// R40 — attestations: the chain table, the trace `seq` column, and the
+/// wiring pins. Same placement law as `r38_delivery`: every pin here reads
+/// the MIGRATED database or the committed source, never the DDL text beside
+/// it, and every source scan is scoped to a PRODUCTION region with its
+/// `#[cfg(test)]` boundary located rather than assumed.
+mod r40_attestations {
+    use super::tests::handler_body;
+    use super::*;
+    use brain_server::migration::run_migration;
+    use brain_server::register_sqlite_vec::register_sqlite_vec;
+
+    fn test_db() -> Connection {
+        register_sqlite_vec();
+        let mut db = Connection::open_in_memory().expect("open in-memory DB");
+        run_migration(&mut db, 512).expect("migration");
+        db
+    }
+
+    fn src(rel: &str) -> String {
+        std::fs::read_to_string(format!("{}/{rel}", env!("CARGO_MANIFEST_DIR")))
+            .unwrap_or_else(|e| panic!("read {rel}: {e}"))
+    }
+
+    /// Every `.rs` file under `src/`, recursively — the no-SQL guard's walker
+    /// idiom. A walker that finds nothing finds nothing, so the count is
+    /// asserted before it is believed.
+    fn src_rs_files() -> Vec<std::path::PathBuf> {
+        fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("src/ must exist") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    walk(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut out = Vec::new();
+        walk(&root, &mut out);
+        out.sort();
+        assert!(out.len() >= 50, "sanity: a walk that found {} files found nothing", out.len());
+        out
+    }
+
+    /// The PRODUCTION region of a source file: split at its `#[cfg(test)]`
+    /// boundary, which must EXIST. A file with no boundary would make every
+    /// scan over it vacuous, so its absence is a failure, not a pass.
+    fn production_of(rel: &str) -> String {
+        let full = src(rel);
+        let boundary = full
+            .find("#[cfg(test)]")
+            .unwrap_or_else(|| panic!("{rel} has no #[cfg(test)] boundary to scan against"));
+        assert!(
+            boundary > 0,
+            "{rel}'s test region starts at byte 0 — the scan would cover nothing"
+        );
+        full[..boundary].to_string()
+    }
+
+    // ── the schema ──────────────────────────────────────────────────────────
+
+    /// A10: EXACTLY the design owner's twelve columns, in order, with the
+    /// declared types, plus the `(run_id, created_at)` replay index. The column
+    /// set is CLOSED — a thirteenth column is a decision, not a convenience,
+    /// so the count is asserted and not merely the membership.
+    #[test]
+    fn delivery_attestations_table_has_the_pinned_twelve_columns() {
+        let db = test_db();
+        let cols: Vec<(String, String, i64, bool)> = {
+            let mut stmt = db
+                .prepare(
+                    "SELECT name, type, \"notnull\", dflt_value IS NOT NULL \
+                     FROM pragma_table_info('delivery_attestations')",
+                )
+                .expect("prepare");
+            let rows = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .expect("query");
+            rows.map(std::result::Result::unwrap).collect()
+        };
+        let names: Vec<&str> = cols.iter().map(|c| c.0.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "id",
+                "run_id",
+                "step_id",
+                "subject_name",
+                "subject_digest",
+                "predicate_type",
+                "predicate_digest",
+                "envelope_json",
+                "signer_did",
+                "parent_id",
+                "chain_hash",
+                "created_at",
+            ],
+            "the DO's twelve columns, in the DO's order — and no thirteenth"
+        );
+        assert_eq!(cols.len(), 12, "the column set is closed at twelve");
+        for (name, ty, notnull, has_default) in &cols {
+            assert!(ty.contains("TEXT") || ty.contains("INTEGER"), "{name}: {ty}");
+            assert!(*notnull == 1, "{name} is NOT NULL");
+            // Only `parent_id` carries a default (the empty root parent).
+            let defaulted = *has_default;
+            assert_eq!(
+                defaulted,
+                name == "parent_id",
+                "{name}: only the root's empty parent may default"
+            );
+        }
+        let replay: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
+                 AND tbl_name='delivery_attestations' AND name='idx_delivery_attestations_replay'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(replay, 1, "the (run_id, created_at) replay index must exist");
+    }
+
+    /// DO invariant 1 at the SCHEMA level: there is no column a disposition
+    /// could be written into. The chain is evidence; it has no status, no
+    /// decision, no approval, and no actor-facing outcome.
+    #[test]
+    fn attestation_table_carries_no_disposition_column() {
+        let db = test_db();
+        let cols: Vec<String> = {
+            let mut stmt = db
+                .prepare("SELECT name FROM pragma_table_info('delivery_attestations')")
+                .expect("prepare");
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .expect("query");
+            rows.map(std::result::Result::unwrap).collect()
+        };
+        for forbidden in [
+            "disposition",
+            "status",
+            "decision",
+            "approved",
+            "approved_by",
+            "decided_at",
+            "gate",
+            "verdict",
+            "outcome",
+        ] {
+            assert!(
+                !cols.iter().any(|c| c == forbidden),
+                "the chain must carry no `{forbidden}` column — an attestation is evidence of \
+                 who acted, never a disposition. Has {cols:?}"
+            );
+        }
+    }
+
+    /// A11: `delivery_traces` carries the stored `seq` and the UNIQUE index that
+    /// makes it load-bearing, alongside the R38 `(run_id, created_at)` replay
+    /// index. The R38 column walk is a subset check and never saw either.
+    #[test]
+    fn delivery_traces_carries_the_seq_column_and_its_unique_index() {
+        let db = test_db();
+        let seq: Vec<(String, String, i64, bool)> = {
+            let mut stmt = db
+                .prepare(
+                    "SELECT name, type, \"notnull\", dflt_value FROM pragma_table_info('delivery_traces') \
+                     WHERE name = 'seq'",
+                )
+                .expect("prepare");
+            let rows = stmt
+                .query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, Option<String>>(3)?.is_some(),
+                    ))
+                })
+                .expect("query");
+            rows.map(std::result::Result::unwrap).collect()
+        };
+        assert_eq!(seq.len(), 1, "delivery_traces must carry exactly one `seq` column");
+        assert_eq!(seq[0].0, "seq");
+        assert!(seq[0].1.contains("INTEGER"), "seq is an INTEGER: {}", seq[0].1);
+        assert_eq!(seq[0].2, 1, "seq is NOT NULL");
+        assert_eq!(seq[0].3, true, "seq carries a DEFAULT (0) so a pre-R40 row backfills");
+
+        let unique: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
+                 AND tbl_name='delivery_traces' AND name='idx_delivery_traces_seq' AND sql LIKE '%UNIQUE%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(
+            unique, 1,
+            "the UNIQUE(run_id, seq) index is the law that makes the ordinal monotonic"
+        );
+        let replay: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
+                 AND tbl_name='delivery_traces' AND name='idx_delivery_traces_replay'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(replay, 1, "the R38 replay index survives the seq column");
+    }
+
+    /// The schema stamp moved to 1.32.16 and the ceiling moved with it. This is
+    /// the R38 pin, deliberately re-pinned: the stamp is not a constant, it is
+    /// a release boundary, and R40 is a schema round.
+    #[test]
+    fn attestation_schema_stamp_is_the_r40_stamp() {
+        let db = test_db();
+        assert_eq!(
+            brain_server::storage_layout::schema_version(&db).as_deref(),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_16),
+            "R40 stamps 1.32.16; both the migration literal and the const must agree"
+        );
+        assert_eq!(
+            brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
+            "1.32.16",
+            "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
+             this binary cannot migrate"
+        );
+    }
+
+    // ── the wiring ──────────────────────────────────────────────────────────
+
+    /// The module opens with the module-level gate. A missing or relocated
+    /// attribute would leave the whole new surface unguarded, and nothing else
+    /// in the tree would notice.
+    #[test]
+    fn attestations_module_denies_unsafe_code() {
+        let production = production_of("src/workflow/attestations.rs");
+        assert!(
+            production.contains("#![deny(unsafe_code)]"),
+            "the attestation module must open with the module-level gate"
+        );
+        let head: String = production.lines().take(40).collect::<Vec<_>>().join("\n");
+        assert!(
+            head.contains("#![deny(unsafe_code)]"),
+            "the gate must be in the module HEADER, not appended at the end"
+        );
+    }
+
+    /// A7's banned door. `operator_signing_key()` collapses a REFUSED key into
+    /// `None` after a log line, which makes "the key is unreadable"
+    /// indistinguishable from "there is no key" — on a round whose whole law is
+    /// that an unsigned link is a refusal, that is the fail-open door. The
+    /// signing path must use `resolve_operator_key()` and propagate its `Err`.
+    ///
+    /// The scan is comment-stripped and production-scoped, so this prose — and
+    /// the banned symbol's own name — cannot satisfy or fail it. The symbol is
+    /// therefore assembled from its two halves: a pin that named it literally
+    /// would be matching its own assertion.
+    #[test]
+    fn attestation_operator_signing_key_is_absent_from_the_signing_path() {
+        let banned = format!("operator_{}", "signing_key");
+        for rel in ["src/workflow/attestations.rs", "src/workflow/delivery.rs"] {
+            let production = production_of(rel);
+            let body = handler_body(&production, "append_link")
+                .expect("append_link must be locatable in the production region");
+            assert!(
+                !body.contains(&banned),
+                "{rel}: the signing path must not use the Err-collapsing key accessor"
+            );
+        }
+        // And the fail-closed resolver IS what it uses.
+        let production = production_of("src/workflow/attestations.rs");
+        let resolver = handler_body(&production, "operator_key")
+            .expect("the key resolver must be locatable in the production region");
+        assert!(
+            resolver.contains("resolve_operator_key"),
+            "the signing path resolves through the Err-propagating resolver"
+        );
+    }
+
+    /// A3, pinned at the tree level: there is exactly ONE production INSERT
+    /// into `delivery_attestations` in the whole crate, and it lives inside
+    /// `append_link`. A second writer — anywhere — fails this, which is what
+    /// makes "one chain writer" a machine-checked fact rather than a review
+    /// note.
+    #[test]
+    fn attestation_executor_has_no_write_path_to_a_signed_column() {
+        let needle = "INSERT INTO delivery_attestations";
+        let mut sites: Vec<String> = Vec::new();
+        for path in src_rs_files() {
+            let text = std::fs::read_to_string(&path).expect("read a source file");
+            // Only the production region counts: a test that inserts a row is
+            // a fixture, not a writer.
+            let production = match text.find("#[cfg(test)]") {
+                Some(b) if b > 0 => &text[..b],
+                _ => text.as_str(),
+            };
+            for (i, _) in production.match_indices(needle) {
+                let line = production[..i].lines().count() + 1;
+                sites.push(format!(
+                    "{}:{line}",
+                    path.strip_prefix(env!("CARGO_MANIFEST_DIR")).unwrap_or(&path).display()
+                ));
+            }
+        }
+        assert_eq!(
+            sites.len(),
+            1,
+            "exactly ONE production writer may insert a chain link. Found {sites:?}"
+        );
+        assert!(
+            sites[0].contains("src/workflow/attestations.rs"),
+            "the writer is the chain writer in the workflow core, not a handler or an engine: \
+             {:?}",
+            sites[0]
+        );
+    }
+
+    /// No handler may hold the chain's SQL, and the read surface must ride the
+    /// deep string seam at the emission boundary. The second half is a row in
+    /// the suite's own read-seam table; this asserts the table carries it,
+    /// because a regression lock nobody adds a row to is not a lock.
+    #[test]
+    fn attestation_read_surface_rides_the_read_seam() {
+        let suite = src("tests/main_suite.rs");
+        assert!(
+            handler_body(&suite, "get_delivery_attestations").is_none(),
+            "the route's name belongs to the handler, not to a test named after it"
+        );
+        let handler = src("src/handlers/delivery.rs");
+        let body = handler_body(&handler, "get_delivery_attestations")
+            .expect("the read handler must be locatable");
+        assert!(
+            body.contains("sanitize_value_strings"),
+            "the first delivery READ surface emits stored text and must ride the read seam"
+        );
+        // ...and the suite's read-seam table carries the row, so a future
+        // removal of the seam call fails the table rather than this test alone.
+        assert!(
+            suite.contains("get_delivery_attestations\""),
+            "the read-seam table must carry a row for the new read surface — adding its row is \
+             part of the change (the Ownerstamp standing rule)"
+        );
+    }
+
+    /// Zero new dependencies. The lockfile delta is proven by the S1 diff; the
+    /// in-tree property is that no ATTESTATION-STANDARD library was pulled in —
+    /// the failure mode this pin exists for is a round citing DSSE, in-toto, or
+    /// SLSA in a doc comment and then reaching for a crate.
+    #[test]
+    fn attestation_r40_adds_no_dependency() {
+        let manifest = src("Cargo.toml");
+        let mut offenders: Vec<&str> = Vec::new();
+        for line in manifest.lines() {
+            let line = line.trim();
+            if line.starts_with('[') || line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+            let Some((name, _)) = line.split_once('=') else {
+                continue;
+            };
+            let name = name.trim().trim_matches('"');
+            let lowered = name.to_ascii_lowercase();
+            for forbidden in [
+                "dsse",
+                "in-toto",
+                "in_toto",
+                "slsa",
+                "sigstore",
+                "cose",
+                "sigstore-jsonschema",
+                "jsonwebtoken",
+                "attestation",
+            ] {
+                if lowered == forbidden {
+                    offenders.push(name);
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "R40 adds NO dependency: the envelope rides the shipped ump_integrity stack. \
+             Found {offenders:?}"
+        );
+        // And the module reaches crypto only through the shipped stack.
+        let production = production_of("src/workflow/attestations.rs");
+        for third_party in ["use ed25519_dalek", "use blake3", "use sha2", "use base64"] {
+            // `ed25519_dalek` is named for the key TYPE the resolver returns;
+            // the HASH and ENCODING primitives must come from ump_integrity, or
+            // a second canonicalization could drift in beside the first.
+            assert!(
+                !production.contains(third_party),
+                "the canonicalizer, the hash, and the signature must come from \
+                 `crate::ump_integrity` — found a direct `{third_party}`"
+            );
+        }
     }
 }

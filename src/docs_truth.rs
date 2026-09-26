@@ -489,6 +489,124 @@ mod pins {
         );
     }
 
+    /// R40: the attestation READ surface's wire contract, and its two
+    /// NON-CLAIMS, pinned against the spec and the handler together.
+    ///
+    /// The field-set half is the R39 lesson applied to a new route: the route
+    /// guards are path-level, so nothing else compares a Rust response struct to
+    /// its schema. The non-claim half is different in kind — a reader who
+    /// greps this route for `DSSE` or `in-toto` must find a NEGATION, because
+    /// the envelope's field names deliberately mirror the in-toto Statement
+    /// model and a description that named the lineage without the negation would
+    /// read as a conformance claim. The pin therefore fails if the words appear
+    /// WITHOUT a negation nearby, which is the only way to make a negative
+    /// machine-checked.
+    #[test]
+    fn attestation_wire_schema_matches_the_handler() {
+        let spec = doc("openapi.yaml");
+
+        // The path exists and is a GET.
+        let path = spec
+            .find("  /workflow/delivery/runs/{id}/attestations:")
+            .unwrap_or_else(|| panic!("openapi.yaml lost the attestation read path"));
+        let block = &spec[path..];
+        let end = block.find("\n  /workflow/").unwrap_or(block.len());
+        let block = &block[..end];
+        assert!(
+            block.contains("get:"),
+            "the attestation route is a GET — it re-derives from stored bytes and takes no body"
+        );
+        assert!(
+            block.contains("#/components/schemas/DeliveryAttestationChain"),
+            "the route must $ref the chain schema"
+        );
+        assert!(
+            spec.contains("    DeliveryAttestationChain:"),
+            "the route $refs a schema openapi.yaml does not define — a dangling ref is not a \
+             contract"
+        );
+        assert!(
+            block.contains("verify"),
+            "`?verify=1` must be documented on the route: the verdict is UNCONDITIONAL and the \
+             parameter is an explicit request for the identical payload"
+        );
+
+        // The response schema's property keys, collected by INDENT (a
+        // `contains("field:")` test is vacuous — a rename satisfies it).
+        let lines: Vec<&str> = spec.lines().collect();
+        let start = lines
+            .iter()
+            .position(|l| l.trim_end() == "    DeliveryAttestationChain:")
+            .unwrap_or_else(|| panic!("openapi.yaml lost the DeliveryAttestationChain schema"));
+        let end = lines[start + 1..]
+            .iter()
+            .position(|l| l.starts_with("    ") && !l.starts_with("     ") && !l.trim().is_empty())
+            .map_or(lines.len(), |i| start + 1 + i);
+        let schema = lines[start..end].join("\n");
+        assert!(
+            schema.contains("additionalProperties: false"),
+            "anti-vacuity: the response must still be closed, or this pin is moot"
+        );
+        let declared: Vec<&str> = schema
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with("properties:"))
+            .skip(1)
+            .take_while(|l| l.starts_with("        ") || l.trim().is_empty())
+            .filter(|l| l.starts_with("        ") && !l.starts_with("          "))
+            .filter_map(|l| l.get(8..)?.split(':').next())
+            .filter(|k| !k.is_empty() && k.chars().all(|c| c.is_ascii_lowercase() || c == '_'))
+            .collect();
+        assert!(
+            declared.len() >= 3,
+            "the chain response property scan found only {} keys ({declared:?}) — the scanner \
+             or the schema changed shape",
+            declared.len()
+        );
+        for field in ["run_id", "chain", "verdict"] {
+            assert!(
+                declared.contains(&field),
+                "the chain response schema omits `{field}` (declared: {declared:?}) — with \
+                 additionalProperties:false a client that trusts the spec rejects the real \
+                 response"
+            );
+        }
+
+        // ── the two NON-CLAIMS, which must be present as negations ──
+        let lower = block.to_ascii_lowercase();
+        for (claim, negation) in [
+            ("dsse", "not dsse"),
+            ("in-toto", "not an in-toto"),
+            ("slsa", "no slsa"),
+        ] {
+            assert!(
+                lower.contains(claim),
+                "the route description should name `{claim}` in order to DENY it — an \
+                 unmentioned standard is not a claim, and a mentioned one without its \
+                 negation is"
+            );
+            assert!(
+                lower.contains(negation),
+                "the route description mentions `{claim}` without the explicit negation \
+                 `{negation}` — the non-claim is not optional"
+            );
+        }
+        // And the no-key operational consequence, which is a refusal, not a
+        // degraded mark.
+        assert!(
+            lower.contains("refuses") || lower.contains("refuse"),
+            "the route description must state the key posture: on a host with no operator key \
+             every delivery phase pass refuses"
+        );
+        // The words that would turn an adjacency into a claim.
+        for banned in ["dsse-compatible", "dsse conformant", "slsa-compliant", "in-toto compliant"] {
+            assert!(
+                !lower.contains(banned),
+                "the route description must never assert `{banned}` — the envelope is a project \
+                 convention and verifies against none of their verifiers"
+            );
+        }
+    }
+
     /// The Philippines posture is statute PLUS the Commission's guidance, and
     /// the guidance moves far faster than the statute. RA 10173 (2012) is still
     /// the operative law — re-verified 2026-09-26 against the NPC's own

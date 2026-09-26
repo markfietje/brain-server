@@ -197,6 +197,134 @@ pub mod test_support {
     pub(crate) fn lock_env() -> MutexGuard<'static, ()> {
         ENV_LOCK.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    /// A generated operator signing key installed at `BRAIN_UMP_KEY_DIR` for
+    /// as long as the returned guard lives.
+    ///
+    /// Why a guard and not a `#[cfg(test)]` seam in the signing path: the
+    /// delivery core denies `unsafe_code`, so it cannot point the env var at a
+    /// fixture itself, and the shipped `resolve_operator_key()` — with its
+    /// 0600 check, its wrong-size refusal, and its did:key derivation — is the
+    /// thing worth exercising. This installs a REAL seed file, so the tests
+    /// that take it run the production resolver end to end. The refusal half of
+    /// the key law (absent dir, wrong-size seed) is pinned against the same
+    /// resolver by `attestation_key_absence_refuses_the_phase_pass`.
+    ///
+    /// The lock is the shared `ENV_LOCK` because the env var is process-global
+    /// and four other suites move it.
+    pub(crate) fn operator_key_guard() -> OperatorKeyGuard {
+        use ed25519_dalek::SigningKey;
+        use std::ffi::OsString;
+
+        let lock = lock_env();
+        let dir = tempfile::tempdir().expect("a temp key dir");
+        let seed = crate::testkeys::unit_hmac_key(0x0A77_0551_7A7E);
+        std::fs::write(dir.path().join(crate::handlers::ump::OPERATOR_KEY_FILE), &seed)
+            .expect("write the operator seed");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                dir.path().join(crate::handlers::ump::OPERATOR_KEY_FILE),
+                std::fs::Permissions::from_mode(0o600),
+            )
+            .expect("chmod 0600 the operator seed");
+        }
+        let previous = std::env::var_os("BRAIN_UMP_KEY_DIR");
+        // SAFETY: the shared ENV_LOCK is held for the guard's whole life, so no
+        // other test can read or restore this var while it is set.
+        unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", dir.path()) };
+
+        let fixed: [u8; 32] = seed.as_slice().try_into().expect("a 32-byte seed");
+        let key = SigningKey::from_bytes(&fixed);
+        OperatorKeyGuard {
+            did: crate::ump_integrity::did_key_from_ed25519(&key.verifying_key().to_bytes()),
+            key,
+            previous,
+            _dir: dir,
+            _lock: lock,
+        }
+    }
+
+    /// Point `BRAIN_UMP_KEY_DIR` at a directory with NO key in it, for as long
+    /// as the returned guard lives — the `Ok(None)` half of the key law.
+    pub(crate) fn empty_key_dir_guard() -> EnvDirGuard {
+        use std::ffi::OsString;
+        let lock = lock_env();
+        let dir = tempfile::tempdir().expect("a temp key dir");
+        let previous = std::env::var_os("BRAIN_UMP_KEY_DIR");
+        // SAFETY: the shared ENV_LOCK is held for the guard's whole life.
+        unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", dir.path()) };
+        EnvDirGuard {
+            previous,
+            _dir: dir,
+            _lock: lock,
+        }
+    }
+
+    /// Point `BRAIN_UMP_KEY_DIR` at a directory whose operator seed is the
+    /// WRONG SIZE, for as long as the returned guard lives — the `Err` half.
+    pub(crate) fn wrong_size_key_dir_guard() -> EnvDirGuard {
+        use std::ffi::OsString;
+        let lock = lock_env();
+        let dir = tempfile::tempdir().expect("a temp key dir");
+        let path = dir.path().join(crate::handlers::ump::OPERATOR_KEY_FILE);
+        std::fs::write(&path, b"too-short").expect("write the wrong-size seed");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
+                .expect("chmod 0600");
+        }
+        let previous = std::env::var_os("BRAIN_UMP_KEY_DIR");
+        // SAFETY: the shared ENV_LOCK is held for the guard's whole life.
+        unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", dir.path()) };
+        EnvDirGuard {
+            previous,
+            _dir: dir,
+            _lock: lock,
+        }
+    }
+
+    /// The installed key's identity, so a test never has to re-derive the did
+    /// from a seed it cannot see.
+    pub(crate) struct OperatorKeyGuard {
+        pub(crate) did: String,
+        #[allow(dead_code)]
+        pub(crate) key: ed25519_dalek::SigningKey,
+        previous: Option<std::ffi::OsString>,
+        _dir: tempfile::TempDir,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for OperatorKeyGuard {
+        fn drop(&mut self) {
+            restore(self.previous.take());
+        }
+    }
+
+    /// A bare env-dir guard: the point is the DIRECTORY's contents, not a key.
+    pub(crate) struct EnvDirGuard {
+        previous: Option<std::ffi::OsString>,
+        _dir: tempfile::TempDir,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for EnvDirGuard {
+        fn drop(&mut self) {
+            restore(self.previous.take());
+        }
+    }
+
+    fn restore(previous: Option<std::ffi::OsString>) {
+        // SAFETY: called from the guards' Drop while they still hold ENV_LOCK.
+        unsafe {
+            match previous {
+                Some(v) => std::env::set_var("BRAIN_UMP_KEY_DIR", v),
+                None => std::env::remove_var("BRAIN_UMP_KEY_DIR"),
+            }
+        }
+    }
 }
 // The regulation-date watch (Enterprise law 13): the calendar as code. Test-only
 // by construction — every pin is a #[test].

@@ -1095,6 +1095,7 @@ mod tests {
                 to_phase: to,
                 artifact_refs: &[],
                 artifact: None,
+                model: None,
                 actor: "tester",
                 now: 2,
             },
@@ -1161,6 +1162,11 @@ mod tests {
     #[test]
     fn delivery_phase_advance_writes_step_row_cas_and_audit_atomically() {
         let mut conn = seed();
+        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // no usable operator key REFUSES. A real seed is installed at
+        // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
+        // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
+        let _operator = crate::test_support::operator_key_guard();
         let run = open(&mut conn, "bounded-auto");
         let audits_before = count(&conn, "SELECT COUNT(*) FROM audit_events");
 
@@ -1206,6 +1212,11 @@ mod tests {
     #[test]
     fn delivery_phase_advance_rolls_back_completely_when_the_audit_fails() {
         let mut conn = seed();
+        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // no usable operator key REFUSES. A real seed is installed at
+        // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
+        // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
+        let _operator = crate::test_support::operator_key_guard();
         let run = open(&mut conn, "bounded-auto");
 
         // Break the evidence substrate, not the write path: the audit INSERT
@@ -1255,6 +1266,11 @@ mod tests {
     #[test]
     fn delivery_cas_is_fail_closed_on_a_stale_revision() {
         let mut conn = seed();
+        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // no usable operator key REFUSES. A real seed is installed at
+        // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
+        // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
+        let _operator = crate::test_support::operator_key_guard();
         let run = open(&mut conn, "bounded-auto");
         advance_one(&mut conn, run.run_id, 0, "design").expect("first pass");
 
@@ -1289,6 +1305,11 @@ mod tests {
     #[test]
     fn delivery_run_lifecycle_laws_unchanged() {
         let mut conn = seed();
+        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // no usable operator key REFUSES. A real seed is installed at
+        // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
+        // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
+        let _operator = crate::test_support::operator_key_guard();
         let run = open(&mut conn, "propose");
 
         // 1. the closed run-status set — a delivery run is inside the SAME set
@@ -1789,6 +1810,11 @@ mod tests {
     #[test]
     fn delivery_proposal_seam_lands_in_one_transaction() {
         let mut conn = seed();
+        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // no usable operator key REFUSES. A real seed is installed at
+        // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
+        // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
+        let _operator = crate::test_support::operator_key_guard();
         let created = open(&mut conn, "propose");
         let a = artifact("plan-1", "the plan body");
         let advanced = advance(
@@ -1799,6 +1825,7 @@ mod tests {
                 to_phase: "design",
                 artifact_refs: &[],
                 artifact: Some(&a),
+                model: None,
                 actor: "tester",
                 now: 2,
             },
@@ -1856,6 +1883,11 @@ mod tests {
     #[test]
     fn delivery_proposal_and_trace_commit_or_roll_back_together() {
         let mut conn = seed();
+        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // no usable operator key REFUSES. A real seed is installed at
+        // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
+        // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
+        let _operator = crate::test_support::operator_key_guard();
         let created = open(&mut conn, "propose");
         let a = artifact("plan-1", "the plan body");
 
@@ -1876,6 +1908,7 @@ mod tests {
                 to_phase: "design",
                 artifact_refs: &[],
                 artifact: Some(&a),
+                model: None,
                 actor: "tester",
                 now: 2,
             },
@@ -1910,6 +1943,11 @@ mod tests {
     #[test]
     fn delivery_executor_has_no_write_path_to_gate_disposition() {
         let mut conn = seed();
+        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // no usable operator key REFUSES. A real seed is installed at
+        // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
+        // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
+        let _operator = crate::test_support::operator_key_guard();
         let created = open(&mut conn, "propose");
         let a = artifact("plan-1", "the plan body");
         let advanced = advance(
@@ -1920,6 +1958,7 @@ mod tests {
                 to_phase: "design",
                 artifact_refs: &[],
                 artifact: Some(&a),
+                model: None,
                 actor: "tester",
                 now: 2,
             },
@@ -1972,6 +2011,11 @@ mod tests {
     #[test]
     fn delivery_executor_cannot_move_a_normative_routing_key() {
         let mut conn = seed();
+        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // no usable operator key REFUSES. A real seed is installed at
+        // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
+        // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
+        let _operator = crate::test_support::operator_key_guard();
         let created = open(&mut conn, "propose");
         let before: (String, String) = conn
             .query_row(
@@ -1992,6 +2036,7 @@ mod tests {
                 to_phase: "design",
                 artifact_refs: &[],
                 artifact: Some(&a),
+                model: None,
                 actor: "tester",
                 now: 2,
             },
@@ -2022,6 +2067,11 @@ mod tests {
     #[test]
     fn delivery_d3_quality_gate_is_consumed_fail_closed() {
         let mut conn = seed();
+        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // no usable operator key REFUSES. A real seed is installed at
+        // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
+        // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
+        let _operator = crate::test_support::operator_key_guard();
         let created = open(&mut conn, "propose");
         advance_one(&mut conn, created.run_id, 0, "design").unwrap();
 
@@ -2042,6 +2092,7 @@ mod tests {
                 to_phase: "build",
                 artifact_refs: &[],
                 artifact: Some(&no_evidence),
+                model: None,
                 actor: "tester",
                 now: 3,
             },
@@ -2070,6 +2121,7 @@ mod tests {
                 to_phase: "build",
                 artifact_refs: &[],
                 artifact: Some(&with_evidence),
+                model: None,
                 actor: "tester",
                 now: 3,
             },
@@ -2087,6 +2139,11 @@ mod tests {
     #[test]
     fn delivery_ddl_kinds_round_trip_and_avoid_control() {
         let mut conn = seed();
+        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // no usable operator key REFUSES. A real seed is installed at
+        // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
+        // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
+        let _operator = crate::test_support::operator_key_guard();
         let created = open(&mut conn, "propose");
         let a = artifact("plan-1", "the plan body");
         advance(
@@ -2097,6 +2154,7 @@ mod tests {
                 to_phase: "design",
                 artifact_refs: &[],
                 artifact: Some(&a),
+                model: None,
                 actor: "tester",
                 now: 2,
             },
@@ -2132,11 +2190,536 @@ mod tests {
     #[test]
     fn delivery_advance_without_an_artifact_is_unchanged() {
         let mut conn = seed();
+        // R40 (A7): a phase pass signs its attestation link, and a pass with
+        // no usable operator key REFUSES. A real seed is installed at
+        // `BRAIN_UMP_KEY_DIR` so the shipped resolver runs for real; the
+        // refusal half is pinned by `attestation_key_absence_refuses_the_phase_pass`.
+        let _operator = crate::test_support::operator_key_guard();
         let created = open(&mut conn, "propose");
         let advanced = advance_one(&mut conn, created.run_id, 0, "design").unwrap();
         assert_eq!(advanced.phase, "design");
         assert_eq!(advanced.proposal_id, 0, "no artifact, no proposal");
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM proposals"), 0);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM delivery_traces"), 2);
+    }
+
+    // ── R40: the attestation chain ──────────────────────────────────────────
+
+    /// Seed a `decision_model_registry` row the R29 citation can resolve. The
+    /// binding is looked up by (id, config_digest, kind) and the artifact digest
+    /// is the model BYTES digest — a name without a digest is not evidence.
+    fn seed_model(
+        conn: &Connection,
+        id: &str,
+        config_digest: &str,
+        status: &str,
+        artifact_digest: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO decision_model_registry(id, version, kind, name, output_vocabulary, \
+             artifact_digest, config_digest, calibration_ref, status, evaluation_refs, \
+             proposed_by, approved_by, created_at, updated_at) \
+             VALUES (?1,'1',?2,'m',?3,?4,?5,NULL,?6,'[]','tester','tester',1,1)",
+            params![
+                id,
+                crate::workflow::registry::KIND_DETERMINISTIC_RULES,
+                "[\"phase\"]",
+                artifact_digest,
+                config_digest,
+                status,
+            ],
+        )
+        .expect("seed a registry row");
+    }
+
+    fn advance_with_model(
+        conn: &mut Connection,
+        run_id: i64,
+        rev: i64,
+        to: &str,
+        model: Option<&ModelBinding>,
+    ) -> Result<Advanced, DeliveryError> {
+        advance(
+            conn,
+            &Advance {
+                run_id,
+                expected_revision: rev,
+                to_phase: to,
+                artifact_refs: &[],
+                artifact: None,
+                model,
+                actor: "tester",
+                now: 2,
+            },
+        )
+    }
+
+    /// A7, fail-closed. A pass with NO key at all refuses, and a pass whose key
+    /// is PRESENT BUT UNUSABLE refuses too — and the two refuse differently,
+    /// because "there is no key" and "the key is unreadable" are different
+    /// operator problems. Neither degrades into an unsigned link.
+    ///
+    /// This is pinned against the SHIPPED resolver (a real key directory, a
+    /// real 0600 check, a real size check) rather than a test seam, because the
+    /// seam would be the thing under test.
+    #[test]
+    fn attestation_key_absence_refuses_the_phase_pass() {
+        // Arm 1: Ok(None) — the key directory exists and holds no seed.
+        let mut conn = seed();
+        {
+            let _empty = crate::test_support::empty_key_dir_guard();
+            let run = open(&mut conn, "bounded-auto");
+            let err = advance_one(&mut conn, run.run_id, 0, "design")
+                .expect_err("a pass with no key must refuse");
+            assert!(
+                matches!(err, DeliveryError::AttestationRefused { .. }),
+                "an absent key is the attestation's refusal: {err:?}"
+            );
+            assert_eq!(
+                err.to_string(),
+                "delivery_attestation_refused:operator_key_absent",
+                "the refusal names the cause"
+            );
+            // Nothing landed: the step row, the CAS, and the trace are one
+            // transaction and the refusal rolls all of them back.
+            assert_eq!(count(&conn, "SELECT COUNT(*) FROM workflow_steps"), 0);
+            assert_eq!(
+                count(&conn, "SELECT COUNT(*) FROM delivery_traces WHERE stage='phase'"),
+                0
+            );
+            assert_eq!(count(&conn, "SELECT COUNT(*) FROM delivery_attestations"), 0);
+        }
+
+        // Arm 2: Err — the seed is present but the wrong size, which the
+        // resolver refuses LOUDLY rather than skipping.
+        let mut conn = seed();
+        {
+            let _wrong = crate::test_support::wrong_size_key_dir_guard();
+            let run = open(&mut conn, "bounded-auto");
+            let err = advance_one(&mut conn, run.run_id, 0, "design")
+                .expect_err("a pass with an unusable key must refuse");
+            assert_eq!(
+                err.to_string(),
+                "delivery_attestation_refused:operator_key_refused",
+                "a REFUSED key is distinct from an absent one — the Err arm is propagated, \
+                 never collapsed into None"
+            );
+            assert_eq!(count(&conn, "SELECT COUNT(*) FROM delivery_attestations"), 0);
+        }
+    }
+
+    /// A3: `advance()` is the ONLY chain writer. The admission, the answer, and
+    /// the gate each write a trace row and none of them appends a link — they
+    /// only READ the head. One writer, one place to audit.
+    #[test]
+    fn attestation_advance_is_the_only_chain_writer() {
+        let mut conn = seed();
+        let _operator = crate::test_support::operator_key_guard();
+        let run = open(&mut conn, "bounded-auto");
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM delivery_attestations"),
+            0,
+            "the admission writes no link — the chain starts at the first phase pass"
+        );
+
+        gates(
+            &mut conn,
+            &Gates {
+                run_id: run.run_id,
+                to_phase: Some("design"),
+                actor: "tester",
+                now: 2,
+            },
+        )
+        .expect("the gate evaluates");
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM delivery_attestations"),
+            0,
+            "a gate evaluation is a DISPOSITION, never an attestation"
+        );
+
+        advance_one(&mut conn, run.run_id, 0, "design").expect("the phase pass");
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM delivery_attestations"),
+            1,
+            "the phase pass appends exactly one link"
+        );
+    }
+
+    /// DO invariant 1: an attestation is EVIDENCE OF WHO ACTED, never a
+    /// disposition. A denial attests nothing, a prompt attests nothing, and no
+    /// route reads a link to decide anything. Proven behaviourally: a denying
+    /// gate writes no link, and the run's routing keys are untouched by the
+    /// presence of a link.
+    #[test]
+    fn attestation_is_not_a_disposition() {
+        let mut conn = seed();
+        let _operator = crate::test_support::operator_key_guard();
+        let run = open(&mut conn, "bounded-auto");
+        // A skip is a DENY. It must leave no attestation behind — a link records
+        // that a phase pass happened, and no phase pass happened.
+        let verdict = gates(
+            &mut conn,
+            &Gates {
+                run_id: run.run_id,
+                to_phase: Some("done"),
+                actor: "tester",
+                now: 2,
+            },
+        )
+        .expect("the gate evaluates");
+        assert_eq!(verdict.disposition, "denied", "scope->done is not adjacent");
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM delivery_attestations"),
+            0,
+            "a denial is not an attestation"
+        );
+
+        // And the link carries no disposition vocabulary at all: the predicate
+        // is a fixed 13-field shape whose only free field is the closed tier.
+        advance_one(&mut conn, run.run_id, 0, "design").expect("the phase pass");
+        let envelope: String = conn
+            .query_row(
+                "SELECT envelope_json FROM delivery_attestations WHERE run_id = ?1",
+                params![run.run_id],
+                |r| r.get(0),
+            )
+            .expect("the link is stored");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&envelope).expect("the envelope is JSON");
+        let keys: Vec<&str> = parsed
+            .as_object()
+            .expect("an envelope is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                "config_digest",
+                "created_at",
+                "integrity",
+                "parent_id",
+                "policy_digest",
+                "predicate",
+                "predicate_type",
+                "run_id",
+                "signer_did",
+                "step_id",
+                "subject_digest",
+                "subject_name",
+                "v",
+            ],
+            "the envelope's keys are a fixed shape — no disposition, no routing key, no status"
+        );
+        assert!(
+            !envelope.contains("allowed")
+                && !envelope.contains("denied")
+                && !envelope.contains("prompt"),
+            "no gate disposition vocabulary may appear in a signed envelope"
+        );
+    }
+
+    /// The four trace sites all write a real `attestation_root` (A3) — closing
+    /// the R38/R39 debt where all four hard-coded `None`. The admission and
+    /// the gate read a head that does not exist yet, so theirs are `None` for
+    /// an honest reason: there IS no head. The pass that appends names itself.
+    #[test]
+    fn delivery_trace_attestation_root_is_written() {
+        let mut conn = seed();
+        let _operator = crate::test_support::operator_key_guard();
+        let run = open(&mut conn, "bounded-auto");
+        let head = |conn: &Connection, stage: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT attestation_root FROM delivery_traces \
+                 WHERE run_id = ?1 AND stage = ?2 ORDER BY seq DESC LIMIT 1",
+                params![run.run_id, stage],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .expect("read the root")
+        };
+        assert_eq!(
+            head(&conn, "run"),
+            None,
+            "the admission trace predates every link: there is no head yet, and None is the \
+             honest value rather than a forged one"
+        );
+        advance_one(&mut conn, run.run_id, 0, "design").expect("the phase pass");
+        let first_head = head(&conn, "phase").expect("the pass names the head it created");
+        assert!(
+            first_head.starts_with("att_"),
+            "the trace row names the link the same transaction appended: {first_head}"
+        );
+        assert_eq!(
+            first_head,
+            conn.query_row(
+                "SELECT id FROM delivery_attestations WHERE run_id = ?1",
+                params![run.run_id],
+                |r| r.get::<_, String>(0),
+            )
+            .expect("the link"),
+            "the head on the trace row IS the appended link's row id"
+        );
+
+        // A second pass: the head is the PREVIOUS link, because the trace row
+        // is written before this pass's own link is appended. The chain still
+        // resolves.
+        advance_one(&mut conn, run.run_id, 1, "build").expect("the second pass");
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM delivery_attestations"),
+            2,
+            "two passes, two links"
+        );
+        let rows = crate::workflow::attestations::read_chain(&conn, run.run_id)
+            .expect("read the chain");
+        let verdict =
+            crate::workflow::attestations::verify_chain(&rows, 3).expect("a readable chain");
+        assert!(
+            verdict.verified,
+            "the chain the trace rows point into verifies: {verdict:?}"
+        );
+    }
+
+    /// A11: the ordinal is `MAX(seq)+1`, so it stays unique and monotonic even
+    /// after a row is removed — which is exactly where `COUNT(*)` failed, and
+    /// this is the case the existing content-address pin cannot reach because
+    /// it never deletes a row.
+    #[test]
+    fn delivery_trace_seq_is_unique_and_monotonic() {
+        let mut conn = seed();
+        let _operator = crate::test_support::operator_key_guard();
+        let run = open(&mut conn, "bounded-auto");
+        advance_one(&mut conn, run.run_id, 0, "design").expect("the first pass");
+        advance_one(&mut conn, run.run_id, 1, "build").expect("the second pass");
+        advance_one(&mut conn, run.run_id, 2, "release").expect("the third pass");
+
+        let seqs = |conn: &Connection| -> Vec<i64> {
+            let mut stmt = conn
+                .prepare("SELECT seq FROM delivery_traces WHERE run_id = ?1 ORDER BY seq")
+                .expect("prepare");
+            let rows = stmt
+                .query_map(params![run.run_id], |r| r.get::<_, i64>(0))
+                .expect("query");
+            rows.map(std::result::Result::unwrap).collect()
+        };
+        assert_eq!(seqs(&conn), vec![1, 2, 3, 4], "the admission plus three passes, 1-based");
+        let distinct = count(&conn, "SELECT COUNT(DISTINCT seq) FROM delivery_traces");
+        let total = count(&conn, "SELECT COUNT(*) FROM delivery_traces");
+        assert_eq!(
+            distinct, total,
+            "seq is unique inside a run — the (run_id, seq) UNIQUE index is not decorative"
+        );
+
+        // Remove a middle row. `COUNT(*)` would reissue 3 and collide on the
+        // (run_id, seq) UNIQUE index; `MAX(seq)+1` does not.
+        conn.execute(
+            "DELETE FROM delivery_traces WHERE run_id = ?1 AND seq = 2",
+            params![run.run_id],
+        )
+        .expect("remove the middle trace row");
+        assert_eq!(seqs(&conn), vec![1, 3, 4], "the gap is real");
+        let advanced = advance_one(&mut conn, run.run_id, 3, "operate").expect("the fourth pass");
+        assert!(!advanced.trace_id.is_empty());
+        assert_eq!(
+            seqs(&conn),
+            vec![1, 3, 4, 5],
+            "the next ordinal is MAX(seq)+1, never COUNT(*) — no collision after a delete"
+        );
+    }
+
+    /// A11: `content_id` folds the STORED seq, so the same facts at a different
+    /// position address differently, and a re-derivation from the stored row
+    /// reproduces the stored id. That re-derivation is R41's law; R40 stores
+    /// the input it needs.
+    #[test]
+    fn delivery_trace_content_id_folds_the_stored_seq() {
+        let mut conn = seed();
+        let _operator = crate::test_support::operator_key_guard();
+        let run = open(&mut conn, "bounded-auto");
+        advance_one(&mut conn, run.run_id, 0, "design").expect("the pass");
+
+        let row: (String, i64) = conn
+            .query_row(
+                "SELECT id, seq FROM delivery_traces WHERE run_id = ?1 AND stage = 'phase'",
+                params![run.run_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("read the phase trace row");
+        let rebuilt = TraceRow::read_back(&conn, &row.0)
+            .expect("the row reads back")
+            .expect("the row exists");
+        assert_eq!(
+            rebuilt.content_id(),
+            row.0,
+            "content_id is re-derivable from the stored row alone — the stored seq IS the input"
+        );
+        assert!(
+            row.0.starts_with("trc_") && row.0.len() == "trc_".len() + 32,
+            "the id shape is unchanged: {row:?}"
+        );
+        // A different position over identical facts addresses differently.
+        let mut moved = rebuilt.clone();
+        moved.seq = row.1 + 1;
+        assert_ne!(
+            moved.content_id(),
+            row.0,
+            "the same facts at another ordinal are another row — that is why seq is folded in"
+        );
+    }
+
+    /// A6: the model citation is digest-pinned. A binding that resolves carries
+    /// the registry row's ARTIFACT digest in the signed predicate — a name
+    /// without the bytes it names is not evidence.
+    #[test]
+    fn attestation_carries_the_digest_pinned_model() {
+        let mut conn = seed();
+        let _operator = crate::test_support::operator_key_guard();
+        let digest = format!("sha256:{}", "b".repeat(64));
+        seed_model(
+            &conn,
+            "mb-elastic",
+            "sha256:cfg1",
+            crate::workflow::registry::STATUS_PROMOTED,
+            Some(&digest),
+        );
+        let run = open(&mut conn, "bounded-auto");
+        let binding = ModelBinding {
+            key: "rules:mb-elastic".to_string(),
+            config_digest: "sha256:cfg1".to_string(),
+        };
+        advance_with_model(&mut conn, run.run_id, 0, "design", Some(&binding))
+            .expect("the bound pass");
+
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT COUNT(*) FROM delivery_traces WHERE model_ref = 'rules:mb-elastic'"
+            ),
+            1,
+            "the trace row names the model that acted"
+        );
+        let (model_ref, envelope): (String, String) = conn
+            .query_row(
+                "SELECT model_ref, envelope_json FROM delivery_traces \
+                 WHERE model_ref IS NOT NULL",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("the bound trace row");
+        assert_eq!(model_ref, "rules:mb-elastic", "the citation is the registry key shape");
+        let parsed: serde_json::Value = serde_json::from_str(&envelope).expect("the envelope");
+        assert_eq!(
+            parsed["predicate"]["model_ref"],
+            serde_json::json!("rules:mb-elastic"),
+            "the signed predicate carries the model reference"
+        );
+        assert_eq!(
+            parsed["predicate"]["model_digest"],
+            serde_json::json!(digest),
+            "the signed predicate carries the model BYTES digest"
+        );
+    }
+
+    /// A6: a registry row that resolves but carries NO artifact digest is
+    /// refused. The row exists, the name is real, and there is still nothing
+    /// that says which bytes acted — so the citation is incomplete and the pass
+    /// refuses rather than attesting a name.
+    #[test]
+    fn attestation_refuses_a_model_without_artifact_digest() {
+        let mut conn = seed();
+        let _operator = crate::test_support::operator_key_guard();
+        seed_model(
+            &conn,
+            "mb-nodigest",
+            "sha256:cfg1",
+            crate::workflow::registry::STATUS_PROMOTED,
+            None,
+        );
+        let run = open(&mut conn, "bounded-auto");
+        let binding = ModelBinding {
+            key: "rules:mb-nodigest".to_string(),
+            config_digest: "sha256:cfg1".to_string(),
+        };
+        let err = advance_with_model(&mut conn, run.run_id, 0, "design", Some(&binding))
+            .expect_err("a name with no bytes must refuse");
+        assert_eq!(
+            err.to_string(),
+            "delivery_model_digest_missing",
+            "the refusal is its own code, distinct from the three registry refusals"
+        );
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM delivery_attestations"), 0);
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM workflow_steps"),
+            0,
+            "the refusal rolls the whole pass back"
+        );
+    }
+
+    /// §4.4: the link and its audit row are one transaction. Dropping the
+    /// evidence substrate must leave NO link, NO step row, and NO trace row — a
+    /// phase pass that landed without its signed evidence would be a transition
+    /// the audit chain cannot explain. This EXTENDS the R38 rollback pin.
+    #[test]
+    fn attestation_audit_row_is_written_last_and_rolls_back_together() {
+        let mut conn = seed();
+        let _operator = crate::test_support::operator_key_guard();
+        let run = open(&mut conn, "bounded-auto");
+        conn.execute_batch("DROP TABLE audit_events").unwrap();
+        let err = advance_one(&mut conn, run.run_id, 0, "design")
+            .expect_err("a pass whose audit cannot land must fail");
+        assert!(
+            err.to_string().starts_with("delivery_storage"),
+            "the refusal names the boundary: {err}"
+        );
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM delivery_attestations"),
+            0,
+            "a link that commits without its audit row would be unattested evidence"
+        );
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM workflow_steps"), 0);
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM delivery_traces WHERE stage='phase'"),
+            0
+        );
+    }
+
+    /// The pass that DOES land carries BOTH audit rows: the link's own
+    /// (`delivery/attestation/{run}/{id}`) and the phase pass's
+    /// (`delivery_run:{id}`), and the phase one is the last statement. Two
+    /// rows because there are two writes — `audit_events.kind` has no CHECK,
+    /// so both ride the reused `Workflow` kind (A8, no 20th variant).
+    #[test]
+    fn attestation_audit_row_covers_the_link_write() {
+        let mut conn = seed();
+        let _operator = crate::test_support::operator_key_guard();
+        let run = open(&mut conn, "bounded-auto");
+        advance_one(&mut conn, run.run_id, 0, "design").expect("the pass");
+        let attestation_id: String = conn
+            .query_row(
+                "SELECT id FROM delivery_attestations WHERE run_id = ?1",
+                params![run.run_id],
+                |r| r.get(0),
+            )
+            .expect("the link");
+        // The audit layer hashes the target before insert, so the assertion is
+        // on the DETAIL, which carries the closed labels and the ids.
+        let detail: String = conn
+            .query_row(
+                "SELECT detail_hash FROM audit_events WHERE kind = 'workflow' \
+                 ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("an audit row");
+        assert!(!detail.is_empty(), "the pass's audit row is written");
+        let kinds: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'workflow'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(kinds, 2, "the link write and the pass write each carry evidence");
+        assert!(attestation_id.starts_with("att_"), "the link id is content-addressed");
     }
 }
