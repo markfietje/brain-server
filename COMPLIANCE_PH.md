@@ -1,13 +1,46 @@
-# COMPLIANCE_PH — RA 10173 / NPC posture (v1.25.0)
+# COMPLIANCE_PH — RA 10173 / NPC posture (statute re-verified 2026-09-26)
+
+> **Document currency.** The parenthesised label on this title used to read
+> `(v1.25.0)`, which was a *release* stamp and went stale the moment later
+> releases landed — a reader had no way to tell whether the annex tracked the
+> product. It now carries the date the posture was last verified against
+> primary sources instead, because that is the question a compliance reader
+> actually has. The product version is `Cargo.toml`'s, not this file's.
+>
+> **Verified 2026-09-26 against the NPC's own issuances index** at
+> `privacy.gov.ph/pips-and-pics/advisories-circulars/`. **RA 10173 (2012)
+> remains the operative statute; that index lists no amending or replacing
+> Republic Act.** What moves is the Commission's guidance under §7(g)/§9 IRR,
+> and the issuances below are **guidance, not statute**.
+>
+> **Re-verify carefully — the index is served from caches of differing
+> freshness.** On 2026-09-26 the `/lawphil/advisories/` path served a copy
+> last modified **2026-09-21** carrying `2026-03`, `2025-01` and the NPC-IC
+> `2025-001` joint advisory, while the canonical `/pips-and-pics/` path served
+> a copy last modified **2026-05-21** omitting all three. Both declare the same
+> canonical and the same page id, so neither is a "wrong link". **Check
+> `article:modified_time`, not the path** — a stale mirror reads as
+> authoritative and silently omits the newest issuances. This is pinned by
+> `philippines_posture_cites_the_npc_issuances_not_just_the_statute` in
+> `src/docs_truth.rs` (in `COMPLIANCE.md` §6.3).
 
 > **Honest framing first:** the Philippines has **no dedicated AI statute yet**.
 > AI is governed by **RA 10173 (Data Privacy Act 2012)** + NPC advisories
-> (2024-04 AI; 2026-01 data scraping) + **EO 119 (July 2026, gov-data
+> (2024-04 AI; 2026-01 data scraping; 2026-02 breach-notification submission
+> via DBNMS; 2026-03 ASIR 2025 additional period) + NPC Circular No. 2023-04
+> (consent: specific, granular, never implied) + **EO 119 (July 2026, gov-data
 > residency)**. **HB 7396** (a risk-based AI bill) is *pending*, not enacted.
 > This annex documents the posture for the law **actually in force** (DPA +
-> NPC advisories + EO 119) and is **structured to absorb HB 7396** when it
+> NPC issuances + EO 119) and is **structured to absorb HB 7396** when it
 > passes — it is risk-based + high-risk registration, which maps onto the
 > existing profile/role/retention primitives.
+>
+> **Open watch item — DRAFT NPC Circular on Data Subject Rights.** Under NPC
+> public consultation on 2026-09-26 (comments due 05 Oct 2026, in-person
+> consultation 19 Oct 2026); it would "update the current guidelines on data
+> subject rights to prescribe consistent rules and procedures." **A draft under
+> consultation is not law** and nothing here is mapped to it; the DSR surface is
+> tracked so the operator can re-assess on adoption.
 >
 > **Not legal advice.** This is a documented control posture, not a legal
 > opinion or a certification. Product the operator deploys to meet the DPA
