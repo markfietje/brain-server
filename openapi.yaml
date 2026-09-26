@@ -8379,7 +8379,7 @@ components:
         The response of `POST /workflow/delivery/runs/{id}/advance`. Served by
         the route handler `post_delivery_advance`, which calls
         `workflow::delivery::advance` and serializes its return value — the
-        `pub(crate) struct Advanced` at `src/workflow/delivery.rs:651`.
+        `pub(crate) struct Advanced` at `src/workflow/delivery.rs:868`.
 
         The Rust and spec names deliberately differ, and this is a house
         convention rather than a one-off: the wire vocabulary is namespaced
