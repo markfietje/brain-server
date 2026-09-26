@@ -17,43 +17,63 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
-## [Unreleased] — delivery loop, fifth top-level (persistence + run lifecycle)
+## [1.29.1] — 2026-09-26 — "Delivery persistence": the loop gets a storage plane
+
+> **Internal release.** Prepared and tagged locally; **not pushed**, and
+> deliberately **without** the CI-green gate. `scripts/release.sh` blocks until
+> CI is green on the exact commit being tagged and then pushes the tag; CI is
+> billing-blocked on this repository, so it can never go green and the script
+> can never be satisfied. The gate was bypassed by explicit operator decision,
+> not skipped by accident — see "The CI gate was not run" below. Nothing here
+> claims the release passed CI. The full local battery did pass: 2314 tests,
+> clippy `-D warnings` on four shapes, fmt on two targets, lipstyk-gate with
+> zero diagnostics, and `brain-migrate-rehearse` all green.
+
+> **Why a patch line and not a minor one.** The duplication-debt ledger
+> (`src/dup_guard.rs`) requires a new **minor** line to be earned by burning
+> real duplication debt — `DEBT_LEDGER` holds rows for `1.28` (15) and `1.29`
+> (14) only, and `debt_ledger_reflects_reality_and_burns_down_per_line` refuses
+> a build whose line has no strictly-smaller row. This release adds no debt, so
+> opening `1.30` would fail that guard unless an unrelated `TODO(unify)` pair
+> were unified first. The house precedent settles it: **patch lines carry
+> additive work** — `1.28.62` shipped the `revoked_principals` table and a
+> schema stamp, `1.28.77` shipped the erasure line, `1.28.84` shipped the SSE
+> revocation kill and required webhook signing — while **minor lines are the
+> earned boundary releases** (`1.29.0` "GDL boundary" is the one that burned
+> 15 → 14). The delivery line's rounds are incremental additive work on top of
+> that boundary, so `1.29.1` is the semantically honest line. Recorded here
+> because the version number is a real decision, not a formality.
+
+Covers the nine commits since `v1.29.0`.
 
 ### Release notes
 
 **Improvements**
-- **The delivery loop is now persistent and has a run lifecycle.** Two new tables land at schema `1.32.15` — `delivery_traces` (the per-run trace index over phases and gate dispositions) and `delivery_budgets` (the per-run budget head) — and four new writes under `/workflow/delivery/` open a run, advance it one phase, answer its pending question, and evaluate its phase gate. The delivery loop rides the **existing** run engine with `kind='delivery'`: no second engine, no `workflow_runs` or `workflow_steps` migration, and no change to the closed run-status set or the four normative routing keys.
+- **The delivery loop is persistent and has a run lifecycle.** Two new tables land at schema `1.32.15` — `delivery_traces` (the per-run trace index over phases and gate dispositions) and `delivery_budgets` (the per-run budget head) — and four new writes under `/workflow/delivery/` open a run, advance it one phase, answer its pending question, and evaluate its phase gate. The delivery loop rides the **existing** run engine with `kind='delivery'`: no second engine, no `workflow_runs` or `workflow_steps` migration, and no change to the closed run-status set or the four normative routing keys.
 - **A phase pass is one transaction.** The step row, the revision CAS, the trace row, and a fail-closed audit row commit together or not at all — a pass can never land without its evidence. A lost CAS refuses the whole pass rather than overwriting the winner.
 - **The gate is a disposition, not a mutation.** `POST …/gates` evaluates the phase machine purely and offline, records its verdict, and moves nothing: deny wins, an illegal move is a refusal, and a tier that may not promote is told to ask — the human's advance route is the disposal.
+- **A new model-registry view in the console.** A bounded listing, a single-row read, and proposals-only editing for declared model identities. Artifact and config digests are visible; artifact **bytes** never are. The listing carries the additional DPO role gate, and the view offers proposals rather than direct mutation — the same propose/dispose shape the rest of the system uses.
+- **The delivery loop is ratified as the fourth top-level loop, and its pure decision core ships.** `crates/brain-delivery-core` carries the closed autonomy-tier vocabulary, the forward-only phase machine, the deny-wins promotion gate, the attestation predicate, the budget ledger, the replay comparator, and the release-status machine. It is pure and total — no clock, no store, no network, no provider — so it decides without a running host. It has **no callers of its own**: this release's fourth entry above is the first consumer.
+
+**Bug fixes**
+- **An interrupted end-to-end run no longer poisons the next one.** The E2E entrypoint now self-heals its state instead of inheriting a half-finished previous run. Previously a run interrupted mid-flight could leave state that made the following run fail for a reason unrelated to the code under test.
 
 ### Engineering record
 
 - **Two new tables, house style.** `delivery_traces` (content-addressed `trc_<32 hex>` id over the row's facts *and* its ordinal in the run, closed `CHECK` vocabularies on `stage`/`phase`/`status`/`tier`, the `(run_id)` and `(run_id, created_at)` replay indexes) and `delivery_budgets` (composite `(run_id, kind)` PK). Both land in one `execute_batch` with their indexes; no FK, no down-migration, additive `CREATE TABLE IF NOT EXISTS` only. Refs, digests, and closed labels only — no raw query, evidence text, model bytes, rules bytes, or secrets.
 - **Budget honesty binds the table.** Rows are STORED and nothing enforces them: no route, ceiling, or decision path consults a budget, and `blast_radius` — admitted by the kind `CHECK` because the governing spec names it — is referenced by **no code line at all**, which a non-vacuous source scan pins over the production region of both new files. Turning enforcement on is a later round's turn.
-- **The design owner's `§7` non-goal is stale and is superseded here.** `§7` reads *"no new trace table"* — written to stop exactly this table. ADDENDUM 2 §2 decides that `delivery_traces` lands in this round with the `1.32.15` stamp, its own schema, first writer, indexes, and a replay-read contract; `§1.6` was rewritten to say so and ADDENDUM 1 item 3 carries an inline supersession marker, but `§7` itself was never corrected. Under the spec's own precedence the addendum wins. Recorded here so the clause is not re-litigated mid-implementation.
+- **The design owner's `§7` non-goal is stale and is superseded here.** `§7` reads *"no new trace table"* — written to stop exactly this table. ADDENDUM 2 §2 decides that `delivery_traces` lands in this round with the `1.32.15` stamp, its own schema, first writer, indexes, and a replay-read contract; `§1.6` was rewritten to say so and ADDENDUM 1 item 3 carries an inline supersession marker, but `§7` itself was never corrected. Under the spec's own precedence the addendum wins. Recorded here so the clause is not re-litigated mid-implementation; correcting the spec is the document owner's act, not this round's.
 - **The autonomy-tier vocabulary has two spellings, and the boundary absorbs the difference.** The governing spec spells the closed set kebab-case (`observe | propose | bounded-auto | delegated`); the pure crate spells its own variants `snake_case` (`bounded_auto`). The spec is the sole governing source and the crate is an implementation artifact of a shipped round, so the **stored column and the wire use the spec's spelling** and a closed, total, four-arm bijection at the core boundary carries the translation — not a normalization pass, not a nearest-match guess. Both directions are pinned.
 - **`law_version` stays empty, on purpose.** A delivery run has no jurisdiction, and the column is a per-jurisdiction concept written only at case intake and read only by an advisory report that documents the empty stamp as *"advisory unavailable", never a refusal, never a block"*. The delivery loop's real law identity rides `policy_digest` + `pipeline_version`, both of which the trace row does write. Piping the engine version into the law column would fabricate a `law_version_mismatch` against the legal DB head on every run.
-- **The four registries, in one commit.** `OPENAPI_ROUTES` + `AUTHZ_GATES` rows, the `openapi.yaml` coverage (4 paths + 4 schemas, and the spec's first `Delivery*` component group), the action-scan's `"delivery"` module arm — which lives in a **test file** and fails by `panic!`, not `assert!`, so it must land with the route or the whole suite aborts — and the authz matrix's `ROLE_GATED_FOR_AGENT` rows. No spire floor bump: all four floors are down-only and carry 24–31 rows of slack.
-- **Four writes, zero reads.** The read routes the spec names but never assigns (`GET /runs`, `/runs/{id}`, `/steps`, `/trace`) are **unassigned in the governing spec**; they are recorded as an open gap rather than quietly built or quietly dropped. The `/outcomes?window=` read route is likewise recorded, not struck — its table was withdrawn but the route was never reconciled.
 - **A new root dependency edge, and the lockfile moves.** This round takes its first dependency on `crates/brain-delivery-core`, so the root `Cargo.lock` gains exactly one `[[package]]` entry (509 → 510) and **zero** third-party entries — the crate depends only on `serde`, `serde_json`, and `sha2`, all already locked. One resolve without `--locked`, its entire diff inspected before anything else ran, `--locked` for every command after. `crates/Cargo.lock` gains nothing.
+- **Four writes, zero reads.** The read routes the spec names but never assigns (`GET /runs`, `/runs/{id}`, `/steps`, `/trace`) are **unassigned in the governing spec**; they are recorded as an open gap rather than quietly built or quietly dropped. The `/outcomes?window=` read route is likewise recorded, not struck — its table was withdrawn but the route was never reconciled.
 - **Authz ordering is the run's domain, and that is the contract rather than a slip.** The three id-scoped writes resolve the run's domain before any gate — the domain is unknowable without the run, and authorizing against anything else checks the wrong domain. So an absent run is the probe-blind 404, exactly as on every other run-resolved route, and the **403-on-role proof is a seeded behavioural test** that opens a real run first: a gate proven only against an absent row is a gate proven about nothing.
-- **Four red-proofs, each run rather than assumed.** Making the audit best-effort makes the atomicity test *pass a phase pass with no evidence*; a production reference to `blast_radius` trips the source scan; a one-sided schema edit turns the lockstep stamp guard red (`migration stamps 1.32.15 but LATEST_KNOWN_SCHEMA is 1.32.14`). All three were observed RED, then restored.
-- **Honest ceilings.** No read surface, so the stored answer prose has no reader yet (bounded to 2000 chars, never copied into a trace row, and not copied forward from any emit path). No session-log append on the phase pass — the reuse of the append-only narrative log belongs with the round that adds a consumer to drive it, and `check_idle` would have nothing to assert. The answer route's `pending_question` is never *set* by any route in this round, so in practice it is only answerable by a caller that writes the state directly. R38 makes no compliance, conformity, certification, or risk-classification claim; the `1.32.15`–`1.32.18` stamps are internal engineering versions, not regulatory filings.
-- Predecessor: the D0 ratification and the pure `brain-delivery-core` crate, which shipped with **no callers** and are unchanged except that this round is their first consumer.
-
-## [Unreleased] — delivery loop, fourth top-level (D0 ratified)
-
-### Release notes
-
-**Improvements**
-- **The delivery loop is ratified as the fourth top-level loop, and its pure decision core ships.** `crates/brain-delivery-core` carries the closed autonomy-tier vocabulary, the forward-only phase machine, the deny-wins promotion gate, the attestation predicate, the budget ledger, the replay comparator, and the release-status machine. It is pure and total — no clock, no store, no network, no provider — so it decides without a running host. It has **no callers**: there is no route, no table, no migration, and no persistence behind it, and nothing about the running server changes.
-
-### Engineering record
-
-- **D0 recorded** (2026-09-26): Deliver is the fourth top-level loop, a different axis from the three memory loops rather than a fourth rung. `docs/architecture.md` gains the D1–D5 shape, the extended law sentence (*a model proposes; only the gate disposes — including delivery*), and the statement that Git, CI, registries, deploy targets, PM trackers, and incident systems remain external systems of record. Nothing in Loops 1–3 changes.
-- **Two structural ceilings, not incidental ones.** The crate does not sign and does not verify signatures, so an unsigned or foreign-signer case is a refusal the *host* must make and never a degraded mark from the core; and autonomy only narrows, so `promote` reads the tier and never the recorded trace mode. `BudgetKind::BlastRadius` is carried but unenforced — recorded, never consulted.
-- **10 pins, 2,136 lines, deps exactly `serde`/`serde_json`/`sha2`.** Root `Cargo.lock` is byte-identical; `crates/Cargo.lock` gains one additive `[[package]]` entry (65 → 66) with zero third-party additions.
-- **No wire, no tables, no `src/`.** Persistence, routes, attestation signing, and the remaining phases are later rounds.
+- **Four red-proofs, each run rather than assumed.** Making the audit best-effort makes the atomicity test *pass a phase pass with no evidence*; a production reference to `blast_radius` trips the source scan; a one-sided schema edit turns the lockstep stamp guard red. All three were observed RED, then restored.
+- **The CI gate was not run, and this release therefore carries no CI evidence.** The repository's release helper blocks until CI is green on the exact tagged commit and then pushes the tag. CI is billing-blocked here and cannot report green, so the helper is unsatisfiable by construction and was not invoked; the tag was created locally and **not pushed**. Everything asserted above was verified from local command output: 2314 tests passing across 15 suites, `clippy -D warnings` clean on four shapes, `fmt` clean on two targets, `lipstyk-gate` with zero diagnostics on changed lines, `cargo machete` clean, all **eight** `cargo audit` runs at exit 0, `env-truth` and `badges` self-checks clean, and `brain-migrate-rehearse` reporting `ALL CHECKS PASSED` against a temporary database. The live database and the running service were never touched.
+- **Floors re-measured, never inherited.** 196 coverage rows / 180 authz rows / 234 router sites / 2105 crate tests against floors of 167 / 152 / 199 / 1568 — **no floor bump required**, the slack was 24–31 rows.
+- **Honest ceilings.** No read surface, so the stored answer prose has no reader yet (bounded to 2000 chars, never copied into a trace row, and not on any emit path). No session-log append on the phase pass — the reuse of the append-only narrative log belongs with the round that adds a consumer to drive it, and the idle check would have nothing to assert. `pending_question` is never *set* by any route in this release, so the answer route is only exercisable by a caller that writes run state directly. This release makes no compliance, conformity, certification, or risk-classification claim; the `1.32.15`–`1.32.18` stamps are internal engineering versions, not regulatory filings.
+- **Also in this release, not user-facing:** the models table's Tailwind classes were canonicalized to v4 forms (presentation only, no behavior change), and the D0 architecture record was written into `docs/architecture.md` (the delivery loop's placement as the fourth top-level loop, with the extended law sentence *a model proposes; only the gate disposes — including delivery*). The pure core's two structural ceilings also stand and are not incidental: it does not sign and does not verify signatures, so an unsigned or foreign-signer case is a refusal the *host* must make and never a degraded mark from the core; and autonomy only narrows, so `promote` reads the tier and never the recorded trace mode.
+- Predecessor: `v1.29.0` "GDL boundary and launch integrity".
 
 ## [1.29.0] — 2026-09-25 — "GDL boundary, governed decisions, and model identity"
 
