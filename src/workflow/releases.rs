@@ -66,7 +66,7 @@ pub(crate) struct CreateRelease<'a> {
     pub target_kind: &'a str,
     /// The governed release ref/name. Bounded, stored verbatim.
     pub ref_name: &'a str,
-    /// The OTel deployment environment. Closed four-value set (D7).
+    /// The OTel deployment environment. Closed four-value set — the design decision is recorded in the schema history.
     pub environment: &'a str,
     /// The OTel revision (`vcs.repository.ref.revision` — Release Candidate,
     /// cited by name, never claimed stable). Nullable, honestly, when the run
@@ -356,7 +356,7 @@ pub(crate) fn approve_release(
         });
     }
     // The crate's transition law decides — the CHECK in the database is the
-    // floor, this is the law (D6).
+    // floor, this is the law — the crate's transition fn decides.
     let from = ReleaseStatus::parse(&status).map_err(|_| DeliveryError::ReleaseRefused {
         reason: "illegal_transition",
     })?;
@@ -1008,15 +1008,19 @@ pub(crate) fn promote_release(
             .map_err(|e| delivery::storage_error(format!("budget files draw: {e}")))?;
 
             // The mint: promotion IS the outbox write. The intents are
-            // kernel-minted through the R42 mint (closed vocabulary,
+            // kernel-minted through the shared mint (closed vocabulary,
             // `ddl-intent-` keys, UNIQUE idempotency), so a crash after this
             // commit replays a durable row at the crank and can never
             // double-release. The payload is metadata: ids, digests, closed
             // labels — never artifact content.
-            let topic = format!(
-                "delivery/intent:{}",
-                binding_target_kind(conn, release.binding_id)?
-            );
+            // The topic comes from the declared vocabulary, never a fresh
+            // literal: the reserved-topic pin guards the ONE declaration site.
+            let kind = binding_target_kind(conn, release.binding_id)?;
+            let topic = crate::workflow::delivery_intents::INTENT_TOPICS
+                .iter()
+                .copied()
+                .find(|t| t.rsplit(':').next() == Some(kind.as_str()))
+                .ok_or_else(|| delivery::storage_error("release intent: unknown target kind"))?;
             let seq: i64 = conn
                 .query_row(
                     "SELECT COALESCE(MAX(id), 0) FROM outbox WHERE run_id = ?1",
@@ -1039,7 +1043,7 @@ pub(crate) fn promote_release(
                 conn,
                 release.run_id,
                 seq,
-                &topic,
+                topic,
                 &payload,
                 req.now,
             )
@@ -1191,7 +1195,7 @@ pub(crate) fn count_due(conn: &Connection, domain: &str) -> Result<i64, Delivery
 /// The re-verification, READ-ONLY, before any network contact. Five checks,
 /// all re-run at the crank even though the promote checked them too — the
 /// world moves between the mint and the drain:
-/// 1. authenticity (the R42 conjunction: reserved root AND minted key);
+/// 1. authenticity (the conjunction: reserved root AND minted key);
 /// 2. the release is still `promoted` (the select's answer can be stale);
 /// 3. the approval still binds the LIVE artifact digest and has not expired;
 /// 4. the approver's principal is not revoked;

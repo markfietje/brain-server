@@ -18110,12 +18110,10 @@ mod r38_delivery {
                 "a delivery route path carrying `status` would be a status-write sibling: {line}"
             );
         }
-        // The registered routes, and exactly eight. an earlier round shipped
-        // four writes and no read; the attestation round added the FIFTH, the
-        // replay round TWO more reads, and the bindings round the EIGHTH — a
-        // domain-scoped read that is not run-scoped. The assertion is
-        // deliberately widened rather than deleted, so a NINTH still fails
-        // here.
+        // The registered routes, and exactly sixteen (thirteen paths; the two
+        // shared paths are registered once per method). The assertion is
+        // deliberately widened rather than deleted each time a round lands a
+        // route, so a SEVENTEENTH still fails here.
         let registered: Vec<String> = router
             .match_indices("/workflow/delivery/")
             .map(|(i, _)| {
@@ -18135,10 +18133,19 @@ mod r38_delivery {
                 "/workflow/delivery/runs/{id}/replay-verify",
                 "/workflow/delivery/runs/{id}/trace",
                 "/workflow/delivery/bindings",
+                "/workflow/delivery/releases",
+                "/workflow/delivery/releases/{id}/approve",
+                "/workflow/delivery/releases/{id}/promote",
+                "/workflow/delivery/due",
+                "/workflow/delivery/releases",
+                "/workflow/delivery/runs",
+                "/workflow/delivery/runs/{id}",
+                "/workflow/delivery/runs/{id}/steps",
             ],
-            "four writes plus FOUR reads (the attestation chain, the replay verdict, the raw \
-             trace, and the domain-scoped bindings list). A fifth is a new decision, not a free \
-             addition."
+            "the census is current, not inherited: eight writes (four run writes, three \
+             release writes, the due crank) and eight reads, with the two shared paths \
+             registered once per method. A seventeenth registration is a new decision, \
+             not a free addition."
         );
         // The status the core CAN write is a closed set, and only ever through
         // cas_update.
@@ -18160,15 +18167,18 @@ mod r38_delivery {
     /// DECISION** and this pin is deliberately updated rather than deleted: the
     /// attestation chain is evidence a reviewer must be able to fetch, and it
     /// re-derives from stored bytes, so it takes no body. The writes are still
-    /// the only mutating paths, and that is what this still pins.
+    /// THE ROUTE CENSUS, current, not inherited. It previously asserted the
+    /// four writes and one read the run-lifecycle round shipped; the release
+    /// round completed the unassigned surface (three release writes, the
+    /// crank, and four reads), so the census is re-scoped to the completed
+    /// truth — the same re-scoping this file's table census takes each time a
+    /// decision lands. EIGHT writes and EIGHT reads, each dual-listed in the
+    /// guard tables (a shared path carries one row per action).
     #[test]
-    fn delivery_ships_four_writes_and_one_read() {
+    fn delivery_route_census_is_current() {
         let router = src("src/server/router/workflow.rs");
-        // Pair each registered path with the method it is registered under. The
-        // previous shape filtered lines CONTAINING the path and then looked for
-        // `get(` on that same line — which is never true, because the method is
-        // on a later line. The check was therefore vacuously satisfied and a
-        // second GET would never have been seen. This pairs them properly.
+        // Pair each registered path with the method it is registered under
+        // (the method is on a later line, so the pairing uses a window).
         let lines: Vec<&str> = router.lines().collect();
         let mut writes: Vec<&str> = Vec::new();
         let mut reads: Vec<&str> = Vec::new();
@@ -18192,23 +18202,30 @@ mod r38_delivery {
                 panic!("a delivery route is registered under no known method: {path}");
             }
         }
-        assert_eq!(writes.len(), 4, "the four writes are unchanged: {writes:?}");
+        assert_eq!(
+            writes.len(),
+            8,
+            "the eight writes are the current census: {writes:?}"
+        );
         assert_eq!(
             reads,
             vec![
                 "/workflow/delivery/runs/{id}/attestations",
                 "/workflow/delivery/runs/{id}/replay-verify",
                 "/workflow/delivery/runs/{id}/trace",
-                // The bindings read is domain-scoped rather than run-scoped, so
-                // it has no `{id}` — it is listed by its own name. It serves
-                // STORED rows and takes no body, which is why GET is correct.
                 "/workflow/delivery/bindings",
+                "/workflow/delivery/releases",
+                "/workflow/delivery/runs",
+                "/workflow/delivery/runs/{id}",
+                "/workflow/delivery/runs/{id}/steps",
             ],
-            "exactly THREE reads: the attestation chain, the replay verdict, and the raw trace. \
-             All three re-derive or serve from STORED BYTES and take no body, which is why GET is \
-             correct for each. A fourth GET is a new decision, not a free addition."
+            "the eight reads are the current census — every one serves stored bytes or \
+             stored rows, takes no body (or a query), and is Read-scoped"
         );
-        // And the guard tables agree with the router, in both directions.
+        // And the guard tables agree with the router, in both directions. A
+        // shared path (GET and POST on one path) carries one OPENAPI row and
+        // TWO authz rows — three occurrences; a single-method path carries
+        // exactly two.
         let guards = src("src/server/router/route_guards.rs");
         for p in [
             "/workflow/delivery/runs",
@@ -18218,24 +18235,40 @@ mod r38_delivery {
             "/workflow/delivery/runs/{id}/attestations",
             "/workflow/delivery/runs/{id}/replay-verify",
             "/workflow/delivery/runs/{id}/trace",
+            "/workflow/delivery/releases",
+            "/workflow/delivery/releases/{id}/approve",
+            "/workflow/delivery/releases/{id}/promote",
+            "/workflow/delivery/due",
+            "/workflow/delivery/runs/{id}",
+            "/workflow/delivery/runs/{id}/steps",
         ] {
+            let expected = if p == "/workflow/delivery/runs" || p == "/workflow/delivery/releases" {
+                3
+            } else {
+                2
+            };
             assert_eq!(
                 guards.matches(&format!("\"{p}\"")).count(),
-                2,
-                "{p} must appear once in OPENAPI_ROUTES and once in AUTHZ_GATES"
+                expected,
+                "{p}: one OPENAPI_ROUTES row plus one AUTHZ_GATES row per action"
             );
         }
-        // The three reads are Read, and the four writes are Write. A read that
-        // demanded Write would be a privilege nobody asked for; a write that
-        // demanded Read would be an open door.
+        // The reads are Read, and the writes are Write. A read that demanded
+        // Write would be a privilege nobody asked for; a write that demanded
+        // Read would be an open door.
         for p in [
             "/workflow/delivery/runs/{id}/attestations",
             "/workflow/delivery/runs/{id}/replay-verify",
             "/workflow/delivery/runs/{id}/trace",
+            "/workflow/delivery/bindings",
+            "/workflow/delivery/releases",
+            "/workflow/delivery/runs",
+            "/workflow/delivery/runs/{id}",
+            "/workflow/delivery/runs/{id}/steps",
         ] {
             assert!(
                 guards.contains(&format!("(\"{p}\", \"Read\")")),
-                "{p} is a stored-bytes read and must be gated Read"
+                "{p} is a read and must be gated Read"
             );
         }
         for p in [
@@ -18243,6 +18276,10 @@ mod r38_delivery {
             "/workflow/delivery/runs/{id}/advance",
             "/workflow/delivery/runs/{id}/answer",
             "/workflow/delivery/runs/{id}/gates",
+            "/workflow/delivery/releases",
+            "/workflow/delivery/releases/{id}/approve",
+            "/workflow/delivery/releases/{id}/promote",
+            "/workflow/delivery/due",
         ] {
             assert!(
                 guards.contains(&format!("(\"{p}\", \"Write\")")),
@@ -20973,7 +21010,7 @@ mod r43_releases {
         for needle in [
             "brain_delivery_core::promote",
             "Approval {",
-            "brain_delivery_core::ReleaseStatus",
+            "ReleaseStatus::",
             "is_legal_release_transition",
             "BudgetLedger",
             "chain_defect",
@@ -21126,10 +21163,18 @@ mod r43_releases {
         }
         let guards = src("src/server/router/route_guards.rs");
         for p in paths {
+            // A path shared by a GET and a POST carries one OPENAPI_ROUTES
+            // row and TWO authz rows — three occurrences; a single-method
+            // path carries exactly two.
+            let expected = if p == "/workflow/delivery/releases" {
+                3
+            } else {
+                2
+            };
             assert_eq!(
                 guards.matches(&format!("\"{p}\"")).count(),
-                2,
-                "{p} must appear once in OPENAPI_ROUTES and once in AUTHZ_GATES"
+                expected,
+                "{p}: one OPENAPI_ROUTES row plus one AUTHZ_GATES row per action"
             );
         }
         let openapi = src("openapi.yaml");
@@ -21407,10 +21452,22 @@ mod r43_releases {
                 body.contains("sanitize_value_strings"),
                 "{handler} ends at the read seam"
             );
-            let probe = body
-                .find("release_run_domain")
-                .or_else(|| body.find("run_domain"));
-            let authorize = body.find("authorize");
+            // The probe-blind law, per shape: an ID-scoped read resolves the
+            // domain from the row first (the identical 404); a QUERY-scoped
+            // read demands the domain before the scope gate. Either way,
+            // nothing is authorized against a domain the caller has not
+            // already named or proven.
+            let is_query_scoped =
+                handler == "get_delivery_releases" || handler == "get_delivery_runs";
+            let probe = if is_query_scoped {
+                body.find("domain_required")
+            } else {
+                body.find("release_run_domain")
+                    .or_else(|| body.find("run_domain"))
+            };
+            let authorize = body
+                .find("super::authorize")
+                .or_else(|| body.find("authorize("));
             assert!(
                 probe.is_some() && authorize.is_some() && probe.unwrap() < authorize.unwrap(),
                 "{handler} resolves the domain FIRST — the identical 404 on an absent or \

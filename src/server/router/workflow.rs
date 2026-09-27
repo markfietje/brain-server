@@ -541,4 +541,24 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             "/workflow/delivery/due",
             post(handlers::delivery::post_delivery_due),
         )
+        // the run read census, completing the DO's unassigned surface: a
+        // domain-scoped listing of releases, a keyset-paginated listing of
+        // delivery runs, and the two id-scoped reads, each probe-blind and
+        // role-gated exactly like the reads above.
+        .route(
+            "/workflow/delivery/releases",
+            get(handlers::delivery::get_delivery_releases),
+        )
+        .route(
+            "/workflow/delivery/runs",
+            get(handlers::delivery::get_delivery_runs),
+        )
+        .route(
+            "/workflow/delivery/runs/{id}",
+            get(handlers::delivery::get_delivery_run),
+        )
+        .route(
+            "/workflow/delivery/runs/{id}/steps",
+            get(handlers::delivery::get_delivery_run_steps),
+        )
 }

@@ -7844,6 +7844,36 @@ paths:
         "400": { description: delivery_unknown_vocabulary | delivery_goal_too_long | delivery_budgets_too_many }
         "401": { description: Not authenticated }
         "403": { description: Not authorized (Write on the domain plus the `workflow` role) }
+    get:
+      summary: The domain's delivery runs (Read on the queried domain plus the `workflow` role)
+      description: >
+        The run read census's listing: every delivery run in ONE domain, oldest
+        first, keyset-paginated on the id (`after_id`) so a caller never sees a
+        row twice. `limit` is clamped in the core — the cap is law, not a
+        request field — and both bounds are disclosed in the payload. The phase
+        and tier are read from the run's own state; the state bytes themselves
+        are not echoed (the engine-exact view is the machine surface).
+        Read on the queried domain plus the `workflow` role. Serving this list
+        grants no authority and makes no compliance finding.
+      operationId: listDeliveryRuns
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: domain
+          in: query
+          required: true
+          schema: { type: string }
+        - name: limit
+          in: query
+          schema: { type: integer, default: 50 }
+        - name: after_id
+          in: query
+          schema: { type: integer }
+      responses:
+        "200":
+          description: The domain's delivery runs plus the disclosed bounds
+        "400": { description: domain is required }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Read on the domain plus the `workflow` role) }
   /workflow/delivery/runs/{id}/advance:
     post:
       summary: Advance a delivery run one phase (Write on the run's domain plus the `workflow` role)
@@ -8221,6 +8251,27 @@ paths:
         "403": { description: Not authorized, or the agent preset }
         "404": { description: Delivery run not found (probe-blind) }
         "409": { description: The release law refused (no artifact, binding unresolved) }
+    get:
+      summary: The domain's release rows (Read on the queried domain plus the `workflow` role)
+      description: >
+        The release census: every release row in ONE domain, newest first,
+        capped, with the cap DISCLOSED in the payload. The approval columns
+        ride the row because the row IS the approval artifact; every text
+        field passes the read seam. Serving this list grants no authority,
+        approves nothing, and makes no compliance finding.
+      operationId: listDeliveryReleases
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: domain
+          in: query
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The domain's release rows plus the disclosed cap
+        "400": { description: domain is required }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Read on the domain plus the `workflow` role) }
   /workflow/delivery/releases/{id}/approve:
     post:
       summary: Record the approval (Write on the release's domain plus the `workflow` role; the agent preset is refused)
@@ -8367,6 +8418,45 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized, or the agent preset }
         "409": { description: The delivery authority is not configured }
+  /workflow/delivery/runs/{id}:
+    get:
+      summary: One delivery run's head (Read on the run's domain plus the `workflow` role)
+      description: >
+        The id-scoped half of the census. The domain resolve comes first
+        (probe-blind 404 on an absent or foreign run), and a non-delivery run
+        reads as absent rather than as a wrong-kind error — the collapse that
+        keeps this surface from being an existence oracle.
+      operationId: getDeliveryRun
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: The run's head }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Read on the run's domain plus the `workflow` role) }
+        "404": { description: Delivery run not found (probe-blind) }
+  /workflow/delivery/runs/{id}/steps:
+    get:
+      summary: One delivery run's steps (Read on the run's domain plus the `workflow` role)
+      description: >
+        The run's steps in id order, capped like every list surface. Same
+        probe-blind collapse as the head read.
+      operationId: listDeliveryRunSteps
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        "200": { description: The run's steps }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Read on the run's domain plus the `workflow` role) }
+        "404": { description: Delivery run not found (probe-blind) }
+  /webhooks/delivery/{kind}:
   /webhooks/delivery/{kind}:
     post:
       summary: An inbound AUTHORITY OBSERVATION (public; HMAC self-authenticating)

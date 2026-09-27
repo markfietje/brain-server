@@ -318,6 +318,11 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     // durable rows and drives egress, and it is scoped to the BODY's domain
     // (it has no run id to be probe-blind with).
     "/workflow/delivery/due",
+    // the run read census. The two shared-path reads (GET /releases, GET
+    // /runs) are Read rows beside their Write rows: the scan maps actions to
+    // handlers per method, and least privilege keeps every read Read.
+    "/workflow/delivery/runs/{id}",
+    "/workflow/delivery/runs/{id}/steps",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -673,4 +678,12 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/delivery/releases/{id}/approve", "Write"),
     ("/workflow/delivery/releases/{id}/promote", "Write"),
     ("/workflow/delivery/due", "Write"),
+    // the run read census: Read on the queried or resolved domain, with the
+    // workflow role checked in-handler. The two shared paths carry a Read row
+    // beside their Write rows — a read that demanded Write would be a
+    // privilege nobody asked for.
+    ("/workflow/delivery/releases", "Read"),
+    ("/workflow/delivery/runs", "Read"),
+    ("/workflow/delivery/runs/{id}", "Read"),
+    ("/workflow/delivery/runs/{id}/steps", "Read"),
 ];

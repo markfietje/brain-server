@@ -1481,6 +1481,203 @@ pub(crate) fn gates(conn: &mut Connection, req: &Gates<'_>) -> Result<GateVerdic
     })
 }
 
+// ── the run read census ────────────────────────────────────────────────────
+//
+// The DO's unassigned run reads, owned by the release round: a domain-scoped,
+// probe-blind, bounded census over the delivery family. Every list is capped
+// and the cap is DISCLOSED in the payload — a window that does not announce
+// itself is a silent short read.
+pub(crate) const MAX_RUN_LIST: usize = 100;
+pub(crate) const DEFAULT_RUN_LIST: usize = 50;
+pub(crate) const MAX_CENSUS_LIST: usize = 64;
+
+/// One release, as the census serves it. The approval columns ride the row
+/// (the row IS the approval artifact); a principal subject is an operator's
+/// own record and travels the read seam like every other text field.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ReleaseRowView {
+    pub release_id: i64,
+    pub run_id: i64,
+    pub binding_id: i64,
+    pub ref_name: String,
+    pub environment: String,
+    pub commit_sha: Option<String>,
+    pub artifact_digest: String,
+    pub status: String,
+    pub approval_subject_digest: Option<String>,
+    pub approval_principal: Option<String>,
+    pub approval_expires_at: Option<i64>,
+    pub approved_at: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub deployed_at: Option<i64>,
+    pub verified_at: Option<i64>,
+    pub rolled_back_at: Option<i64>,
+}
+
+/// The domain's release rows, newest first, capped.
+pub(crate) fn release_list(
+    conn: &Connection,
+    domain: &str,
+) -> Result<Vec<ReleaseRowView>, DeliveryError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT rel.id, rel.run_id, rel.binding_id, rel.ref, rel.environment, rel.commit_sha, \
+                    rel.artifact_digest, rel.status, rel.approval_subject_digest, \
+                    rel.approval_principal, rel.approval_expires_at, rel.approved_at, \
+                    rel.created_at, rel.updated_at, rel.deployed_at, rel.verified_at, \
+                    rel.rolled_back_at \
+               FROM delivery_releases rel \
+               JOIN workflow_runs r ON r.id = rel.run_id AND r.kind = ?1 \
+              WHERE r.domain = ?2 \
+              ORDER BY rel.id DESC LIMIT ?3",
+        )
+        .map_err(storage)?;
+    let rows = stmt
+        .query_map(params![RUN_KIND, domain, MAX_CENSUS_LIST as i64], |r| {
+            Ok(ReleaseRowView {
+                release_id: r.get(0)?,
+                run_id: r.get(1)?,
+                binding_id: r.get(2)?,
+                ref_name: r.get(3)?,
+                environment: r.get(4)?,
+                commit_sha: r.get(5)?,
+                artifact_digest: r.get(6)?,
+                status: r.get(7)?,
+                approval_subject_digest: r.get(8)?,
+                approval_principal: r.get(9)?,
+                approval_expires_at: r.get(10)?,
+                approved_at: r.get(11)?,
+                created_at: r.get(12)?,
+                updated_at: r.get(13)?,
+                deployed_at: r.get(14)?,
+                verified_at: r.get(15)?,
+                rolled_back_at: r.get(16)?,
+            })
+        })
+        .map_err(storage)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(storage)
+}
+
+/// One delivery run, as the census serves it.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RunListView {
+    pub run_id: i64,
+    pub status: String,
+    pub phase: String,
+    pub tier: String,
+    pub state_revision: i64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// The domain's delivery runs, oldest first, keyset-paginated on the id: a
+/// caller that saw up to id N asks with `after_id = N` and never sees a row
+/// twice. Both bounds are caller input, so both are clamped HERE, in the
+/// core, where the cap is law and not a request field.
+pub(crate) fn delivery_runs_list(
+    conn: &Connection,
+    domain: &str,
+    limit: usize,
+    after_id: Option<i64>,
+) -> Result<Vec<RunListView>, DeliveryError> {
+    let limit = limit.clamp(1, MAX_RUN_LIST) as i64;
+    let rows = match after_id {
+        Some(before) => conn
+            .prepare(
+                "SELECT id, status, state_json, state_revision, created_at, updated_at \
+                   FROM workflow_runs WHERE kind = ?1 AND domain = ?2 AND id > ?3 \
+                  ORDER BY id ASC LIMIT ?4",
+            )
+            .and_then(|mut s| {
+                s.query_map(params![RUN_KIND, domain, before, limit], |r| {
+                    run_list_view(r)
+                })
+                .and_then(|it| it.collect())
+            }),
+        None => conn
+            .prepare(
+                "SELECT id, status, state_json, state_revision, created_at, updated_at \
+                   FROM workflow_runs WHERE kind = ?1 AND domain = ?2 \
+                  ORDER BY id ASC LIMIT ?3",
+            )
+            .and_then(|mut s| {
+                s.query_map(params![RUN_KIND, domain, limit], run_list_view)
+                    .and_then(|it| it.collect())
+            }),
+    }
+    .map_err(storage)?;
+    Ok(rows)
+}
+
+fn run_list_view(r: &rusqlite::Row<'_>) -> rusqlite::Result<RunListView> {
+    let state_json: String = r.get(2)?;
+    let (phase, tier) = decode_state(&state_json)
+        .map(|s| (s.phase, s.tier))
+        .unwrap_or_else(|_| ("unknown".to_string(), "unknown".to_string()));
+    Ok(RunListView {
+        run_id: r.get(0)?,
+        status: r.get(1)?,
+        phase,
+        tier,
+        state_revision: r.get(3)?,
+        created_at: r.get(4)?,
+        updated_at: r.get(5)?,
+    })
+}
+
+/// One delivery run's head, as the id-scoped read serves it. A non-delivery
+/// run reads as absent (the probe-blind collapse, in the core where the
+/// kind check lives).
+pub(crate) fn run_head_view(
+    conn: &Connection,
+    run_id: i64,
+) -> Result<Option<RunListView>, DeliveryError> {
+    conn.query_row(
+        "SELECT id, status, state_json, state_revision, created_at, updated_at \
+           FROM workflow_runs WHERE id = ?1 AND kind = ?2",
+        params![run_id, RUN_KIND],
+        run_list_view,
+    )
+    .optional()
+    .map_err(storage)
+}
+
+/// One step, as the census serves it — stored forms, no state bytes echoed.
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct StepView {
+    pub step_id: i64,
+    pub run_id: i64,
+    pub phase: String,
+    pub step_key: String,
+    pub revision: i64,
+}
+
+/// The run's steps in id order, capped like every list surface.
+pub(crate) fn run_steps_view(
+    conn: &Connection,
+    run_id: i64,
+) -> Result<Vec<StepView>, DeliveryError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, run_id, phase, step_key, revision FROM workflow_steps \
+              WHERE run_id = ?1 ORDER BY id LIMIT ?2",
+        )
+        .map_err(storage)?;
+    let rows = stmt
+        .query_map(params![run_id, MAX_RUN_LIST as i64], |r| {
+            Ok(StepView {
+                step_id: r.get(0)?,
+                run_id: r.get(1)?,
+                phase: r.get(2)?,
+                step_key: r.get(3)?,
+                revision: r.get(4)?,
+            })
+        })
+        .map_err(storage)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(storage)
+}
+
 // ── the replay read surface ─────────────────────────────────────────────
 
 /// The trace window's cap (bounds law). A run's trace is an append-only log
@@ -4212,6 +4409,49 @@ mod tests {
             "the link's row names the chain hash and the derived subject — evidence, not a \
              disposition"
         );
+    }
+
+    // ── the run read census ────────────────────────────────────────────────
+
+    /// The census is domain-scoped (another domain sees nothing), bounded
+    /// (the cap is law, not a request field), and keyset-paginated (no row
+    /// twice). A non-delivery run reads as absent — the probe-blind collapse
+    /// lives in the core where the kind check is.
+    #[test]
+    fn the_read_census_is_domain_scoped_bounded_and_paginated() {
+        let mut conn = seed();
+        let a = open(&mut conn, "observe");
+        let b = open(&mut conn, "observe");
+        let _ = b;
+        // Another domain sees nothing of these runs.
+        let other_domain: Vec<RunListView> =
+            delivery_runs_list(&conn, "personal", DEFAULT_RUN_LIST, None).expect("list");
+        assert!(other_domain.is_empty());
+        // The full listing, then a page: keyset pagination never repeats a row.
+        let all = delivery_runs_list(&conn, "global", DEFAULT_RUN_LIST, None).expect("list");
+        assert!(all.len() >= 2);
+        let page = delivery_runs_list(&conn, "global", 1, Some(all[0].run_id)).expect("page");
+        assert_eq!(page.len(), 1);
+        assert_eq!(
+            page[0].run_id, all[1].run_id,
+            "the page continues past the first id"
+        );
+        // The id-scoped reads collapse a foreign kind to absent.
+        conn.execute(
+            "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at) \
+             VALUES ('global', 'interview', '{}', 0, 'active', 1, 1)",
+            [],
+        )
+        .expect("non-delivery run");
+        let foreign_kind: i64 = conn.last_insert_rowid();
+        assert!(run_head_view(&conn, foreign_kind).expect("read").is_none());
+        assert!(run_head_view(&conn, a.run_id).expect("read").is_some());
+        // The steps listing is capped and ordered.
+        let steps = run_steps_view(&conn, a.run_id).expect("steps");
+        let ids: Vec<i64> = steps.iter().map(|s| s.step_id).collect();
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(ids, sorted, "the steps arrive in id order");
     }
 
     // ── R41: the replay read surface ───────────────────────────────────────

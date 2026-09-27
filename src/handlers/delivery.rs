@@ -713,8 +713,8 @@ pub async fn post_delivery_release_promote(
 ///
 /// THREE phases, and the middle one holds NO database connection. Phase 1
 /// gathers and re-verifies (read-only). Phase 2 dispatches each verified
-/// intent through the R42 pinned read-egress path — the only egress the tree
-/// has — with no pooled connection held, so a slow or hanging authority
+/// intent through the pinned adapter read-egress path — the only egress the
+/// tree has — with no pooled connection held, so a slow or hanging authority
 /// cannot occupy the pool. Phase 3 marks each succeeded row delivered
 /// through the guarded pending->delivered write (a concurrent drain is a
 /// receipt) and reports the remainder. The ledger's BELIEF moves only when
@@ -784,7 +784,7 @@ pub async fn post_delivery_due(
     .map_err(|e| HandlerError::internal(format!("{e}")))??;
 
     // Phase 2 — the network, connection-free. The pinned egress path is the
-    // R42 adapter family: exact-host-refused, bearer read at the call, never
+    // adapter family: exact-host-refused, bearer read at the call, never
     // stored. The binding is re-resolved and cross-checked against the
     // release's own binding id — drift between the release and the live
     // binding configuration is a failure, not a dispatch.
@@ -896,6 +896,145 @@ pub async fn post_delivery_due(
         "failed": failed,
         "remaining": remaining,
     });
+    super::sanitize_value_strings(&mut response);
+    Ok(Json(response))
+}
+
+// ── the run read census ─────────────────────────────────────────────────────
+//
+// Four reads that complete the DO's unassigned surface. The gate order is the
+// house order on every one: the domain resolved FIRST (probe-blind 404 on an
+// absent or foreign row), then Read on it, then the pool, then the `workflow`
+// role, then a bounded core read, then the read seam.
+
+/// The domain's release rows, newest first, capped. The approval columns ride
+/// the row because the row IS the approval artifact; the read seam runs once
+/// over the whole response.
+pub async fn get_delivery_releases(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = q
+        .get("domain")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .ok_or_else(|| HandlerError::bad_request("domain_required", "domain is required"))?
+        .to_string();
+    super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, Some(&domain))?;
+    super::authorize_role(&principal, &pool, "workflow")?;
+
+    let releases = tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(HandlerError::db_down)?;
+        delivery::release_list(&conn, &domain).map_err(delivery_error)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))??;
+
+    let mut response = serde_json::to_value(releases)
+        .map_err(|error| HandlerError::internal(error.to_string()))?;
+    response["cap"] = serde_json::json!(delivery::MAX_CENSUS_LIST);
+    super::sanitize_value_strings(&mut response);
+    Ok(Json(response))
+}
+
+/// The domain's delivery runs, keyset-paginated on the id: `?limit=` (clamped
+/// in the core) and `?after_id=` so a caller never sees a row twice.
+pub async fn get_delivery_runs(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = q
+        .get("domain")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .ok_or_else(|| HandlerError::bad_request("domain_required", "domain is required"))?
+        .to_string();
+    super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, Some(&domain))?;
+    super::authorize_role(&principal, &pool, "workflow")?;
+
+    let limit = q
+        .get("limit")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(delivery::DEFAULT_RUN_LIST);
+    let after_id = q.get("after_id").and_then(|v| v.parse::<i64>().ok());
+
+    let runs = tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(HandlerError::db_down)?;
+        delivery::delivery_runs_list(&conn, &domain, limit, after_id).map_err(delivery_error)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))??;
+
+    let mut response =
+        serde_json::to_value(runs).map_err(|error| HandlerError::internal(error.to_string()))?;
+    response["cap"] = serde_json::json!(delivery::MAX_RUN_LIST);
+    response["default_limit"] = serde_json::json!(delivery::DEFAULT_RUN_LIST);
+    super::sanitize_value_strings(&mut response);
+    Ok(Json(response))
+}
+
+/// One delivery run's head. The domain resolve comes first (probe-blind), and
+/// a non-delivery run reads as absent rather than as a wrong-kind error.
+pub async fn get_delivery_run(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = super::workflow::run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    super::authorize_role(&principal, &pool, "workflow")?;
+
+    let run = tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(HandlerError::db_down)?;
+        delivery::run_head_view(&conn, id)
+            .map_err(delivery_error)?
+            .ok_or_else(|| HandlerError::not_found("delivery run not found"))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))??;
+
+    let mut response =
+        serde_json::to_value(run).map_err(|error| HandlerError::internal(error.to_string()))?;
+    super::sanitize_value_strings(&mut response);
+    Ok(Json(response))
+}
+
+/// One delivery run's steps, in id order, capped.
+pub async fn get_delivery_run_steps(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = super::workflow::run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    super::authorize_role(&principal, &pool, "workflow")?;
+
+    let steps = tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(HandlerError::db_down)?;
+        // A non-delivery run reads as absent here too: the census is the
+        // delivery family's, and the probe-blind collapse is the law.
+        delivery::run_head_view(&conn, id)
+            .map_err(delivery_error)?
+            .ok_or_else(|| HandlerError::not_found("delivery run not found"))?;
+        delivery::run_steps_view(&conn, id).map_err(delivery_error)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))??;
+
+    let mut response =
+        serde_json::to_value(steps).map_err(|error| HandlerError::internal(error.to_string()))?;
     super::sanitize_value_strings(&mut response);
     Ok(Json(response))
 }
