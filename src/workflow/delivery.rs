@@ -3499,6 +3499,108 @@ mod tests {
         run
     }
 
+    /// The wire form the spec DECLARES, asserted against the struct that
+    /// produces it. The openapi validator says a spec is well-formed; it cannot
+    /// say the spec still DESCRIBES the response. A field renamed in Rust and
+    /// left in openapi is a contract that lies, and with
+    /// `additionalProperties: false` a client that trusts the spec rejects the
+    /// real response.
+    ///
+    /// The nullable columns are the ones this round got wrong once: they were
+    /// first written as OpenAPI 3.1's `type: [string, "null"]`, which is not
+    /// valid in this file's 3.0.3. The spec now uses `nullable: true`, and this
+    /// pins that the Rust side really does serialize them as `null` and not as
+    /// an absent key.
+    #[test]
+    fn delivery_replay_wire_form_is_the_form_the_spec_declares() {
+        let mut conn = seed();
+        let run = open(&mut conn, "observe");
+
+        let report = serde_json::to_value(replay_verify(&conn, run.run_id, 7).unwrap())
+            .expect("the report serializes");
+        let keys: Vec<&String> = report.as_object().expect("an object").keys().collect();
+        for key in [
+            "run_id",
+            "window",
+            "order_ok",
+            "compared",
+            "matched",
+            "mismatched",
+            "diffs",
+            "event_log",
+            "generated_at",
+        ] {
+            assert!(
+                report.get(key).is_some(),
+                "the spec's `required` names `{key}` and the report must carry it (keys: {keys:?})"
+            );
+        }
+        assert!(
+            keys.len() == 9,
+            "the report carries exactly the nine declared keys, so `additionalProperties: false` \
+             is honest (keys: {keys:?})"
+        );
+        // The window and the appendix both disclose their bound.
+        for path in [report["window"].clone(), report["event_log"].clone()] {
+            let obj = path.as_object().expect("an object");
+            for key in ["rows", "cap", "truncated"] {
+                assert!(
+                    obj.contains_key(key),
+                    "the spec's window schema requires `{key}` and the payload must carry it"
+                );
+            }
+            assert_eq!(obj.len(), 3, "exactly the three declared window keys");
+        }
+
+        // The trace listing, same question.
+        let listing = serde_json::to_value(trace_listing(&conn, run.run_id, 7).unwrap())
+            .expect("the listing serializes");
+        for key in [
+            "run_id",
+            "window",
+            "rows",
+            "attestation_root",
+            "event_log",
+            "generated_at",
+        ] {
+            assert!(
+                listing.get(key).is_some(),
+                "the spec's `required` names `{key}` and the listing must carry it"
+            );
+        }
+        // ...and the NULLABLE columns serialize as a present `null`, never as an
+        // absent key. This is the exact property the 3.0.3 `nullable: true`
+        // declares; a `#[serde(skip_serializing_if)]` would break it silently.
+        let row = listing["rows"][0].as_object().expect("a row object");
+        for key in [
+            "model_ref",
+            "policy_digest",
+            "config_digest",
+            "budget_digest",
+            "attestation_root",
+        ] {
+            assert!(
+                row.contains_key(key) && row[key].is_null(),
+                "`{key}` is declared `nullable: true`, so the row must carry the key with a null \
+                 value — an ABSENT key is a different wire shape and a client reading the spec \
+                 would see a required-less field (row: {row:?})"
+            );
+        }
+        assert_eq!(
+            row.len(),
+            16,
+            "the trace row carries exactly the sixteen declared columns, so the spec's closed \
+             property set is honest"
+        );
+        // `attestation_root` is null before the first link — never a fabricated
+        // address, which the spec says in prose.
+        assert!(
+            listing["attestation_root"].is_null(),
+            "a run with no signed link has no head, and the spec says `null`, not a fabricated \
+             address"
+        );
+    }
+
     /// B2, the projection law, pinned once and for all: a `TraceRow` becomes a
     /// pair of `StageDigest`s, and the two sides differ in exactly one place —
     /// the content address, recorded on the left and re-derived on the right.

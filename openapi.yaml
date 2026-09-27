@@ -8609,13 +8609,11 @@ components:
               output_digest_differs,
             ]
         recorded:
-          oneOf:
-            - $ref: "#/components/schemas/DeliveryStageDigest"
-            - type: "null"
+          allOf: [{ $ref: "#/components/schemas/DeliveryStageDigest" }]
+          nullable: true
         rederived:
-          oneOf:
-            - $ref: "#/components/schemas/DeliveryStageDigest"
-            - type: "null"
+          allOf: [{ $ref: "#/components/schemas/DeliveryStageDigest" }]
+          nullable: true
     DeliveryEventRow:
       type: object
       additionalProperties: false
@@ -8725,13 +8723,13 @@ components:
         status: { type: string }
         tier: { type: string, enum: [observe, propose, bounded-auto, delegated] }
         actor: { type: string }
-        model_ref: { type: [string, "null"] }
-        policy_digest: { type: [string, "null"] }
-        config_digest: { type: [string, "null"] }
+        model_ref: { type: string, nullable: true }
+        policy_digest: { type: string, nullable: true }
+        config_digest: { type: string, nullable: true }
         pipeline_version: { type: string }
-        budget_digest: { type: [string, "null"] }
+        budget_digest: { type: string, nullable: true }
         artifact_refs_json: { type: string }
-        attestation_root: { type: [string, "null"] }
+        attestation_root: { type: string, nullable: true }
         created_at: { type: integer, format: int64 }
     DeliveryTraceListing:
       type: object
@@ -8750,7 +8748,7 @@ components:
           type: array
           maxItems: 500
           items: { $ref: "#/components/schemas/DeliveryTraceRow" }
-        attestation_root: { type: [string, "null"] }
+        attestation_root: { type: string, nullable: true }
         event_log: { $ref: "#/components/schemas/DeliveryEventLog" }
         generated_at: { type: integer, format: int64 }
     DecisionEvaluationRecord:
