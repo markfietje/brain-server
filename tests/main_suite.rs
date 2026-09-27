@@ -21594,3 +21594,557 @@ mod r43_releases {
         }
     }
 }
+
+// ── R44: operate — the derived delivery read model (the line's last round) ──
+//
+// The DO-named operate surface: `GET /workflow/delivery/outcomes?domain=
+// &window=`, derived read-time from `delivery_releases` joined to the
+// authority-fact findings R42's reconcile wrote. NO table, NO stamp, NO
+// migration, NO writer, NO egress: the model is a pure query core
+// (`src/workflow/delivery_read.rs`) taking `&Connection` + (window, now),
+// and every pin here fails only on MISSING production artifacts (a file that
+// does not exist, a route that is not registered, a doc that was not
+// written). Behavior proofs that need the core live with their subject in
+// the module's own `#[cfg(test)]` and land with the code they exercise.
+//
+// The typed contract is the pin: `computed` always carries a value;
+// `insufficient` never does; an absent metric is never rendered `0` and a
+// zero is never rendered absent.
+//
+// Non-claims, verbatim: DORA (DevOps Research and Assessment) is a research
+// programme, not a standard; no thresholds, tables, figures, or performance
+// bands are reproduced and the run's own history is the only baseline; the
+// surface carries no EU DORA obligation and makes no operational-resilience
+// claim; it makes no automated decision about a person, so no AI Act
+// high-risk duty is triggered by this code; no AI Act / CRA / GDPR
+// conclusion is drawn or claimable from any of it.
+mod r44_outcomes {
+    use super::tests::handler_body;
+    use super::tests::strip_cfg_test_regions;
+
+    fn src(rel: &str) -> String {
+        std::fs::read_to_string(format!("{}/{rel}", env!("CARGO_MANIFEST_DIR")))
+            .unwrap_or_else(|e| panic!("read {rel}: {e}"))
+    }
+
+    /// The production region of a source file: `#[cfg(test)]` regions stripped
+    /// by the string/comment-aware scanner (the r43 helper, verbatim).
+    fn production(rel: &str) -> String {
+        strip_cfg_test_regions(&src(rel))
+    }
+
+    /// The openapi.yaml path block for one delivery path: from the path key to
+    /// the next sibling path (the r41 scan idiom).
+    fn openapi_block(spec: &str, path: &str) -> String {
+        let start = spec
+            .find(&format!("  {path}:"))
+            .unwrap_or_else(|| panic!("openapi.yaml lost the {path} path"));
+        let block = &spec[start..];
+        let end = block.find("\n  /").unwrap_or(block.len());
+        block[..end].to_string()
+    }
+
+    /// The one docs/api.md table row for one path.
+    fn api_md_row(page: &str, path: &str) -> String {
+        let needle = format!("`{path}` |");
+        let line = page
+            .lines()
+            .find(|l| l.contains(&needle))
+            .unwrap_or_else(|| panic!("docs/api.md lost the {path} row"));
+        line.to_string()
+    }
+
+    /// One struct's source block (declaration through its closing brace).
+    fn struct_block(source: &str, name: &str) -> String {
+        let start = source
+            .find(&format!("struct {name}"))
+            .unwrap_or_else(|| panic!("struct {name} must exist"));
+        let end = source[start..]
+            .find('}')
+            .map(|e| start + e)
+            .unwrap_or(source.len());
+        source[start..=end].to_string()
+    }
+
+    /// E6's naming rule, scanned as adjacency: every `dora_name` sits beside
+    /// its `definition_match` (within two lines) — the label never travels
+    /// alone.
+    fn assert_dora_name_besides_definition_match(core: &str) {
+        for (i, line) in core.lines().enumerate() {
+            if line.contains("dora_name") {
+                let near = core
+                    .lines()
+                    .skip(i.saturating_sub(2))
+                    .take(5)
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(
+                    near.contains("definition_match"),
+                    "a `dora_name` must sit beside its `definition_match` (proxy label) — \
+                     the DORA name never travels alone (line {})",
+                    i + 1
+                );
+            }
+        }
+    }
+
+    // ── 1. the read-only pin ────────────────────────────────────────────────
+
+    /// E1 + the security table: the read model is a QUERY core and issues no
+    /// write SQL. The scan is non-vacuous by construction: it must first see
+    /// the file, its entry symbol, and a located `#[cfg(test)]` boundary — a
+    /// scan that cannot find its subject proves nothing.
+    #[test]
+    fn delivery_outcomes_is_a_read_model_and_writes_nothing() {
+        let source = src("src/workflow/delivery_read.rs");
+        let core = strip_cfg_test_regions(&source);
+        assert!(
+            source.contains("#[cfg(test)]"),
+            "the read model must carry a test boundary so the production-region scan is \
+             locatable, not vacuous"
+        );
+        assert!(
+            core.contains("pub(crate) fn delivery_outcomes"),
+            "the derivation entry symbol must exist for the scan to be non-vacuous"
+        );
+        for banned in [
+            "INSERT INTO",
+            "INSERT OR",
+            "UPDATE ",
+            "DELETE FROM",
+            "CREATE TABLE",
+            "CREATE INDEX",
+            "CREATE VIEW",
+            "ALTER TABLE",
+            "DROP TABLE",
+        ] {
+            assert!(
+                !core.contains(banned),
+                "the read model must never issue `{banned}` — it is a pure query over the \
+                 caller's connection (E1: query, never a view; never a writer)"
+            );
+        }
+    }
+
+    /// Defect (e): no stored scalar masquerading as a derived metric. Nothing
+    /// persists between calls: no schema stamp touch, no memoization, no
+    /// shared mutable state, and no clock read — the core is a function of
+    /// (window, now) with `now` passed in by the handler (the house seam).
+    #[test]
+    fn delivery_outcomes_persists_no_scalar_at_write_time() {
+        let core = production("src/workflow/delivery_read.rs");
+        assert!(
+            core.contains("pub(crate) fn delivery_outcomes"),
+            "the derivation entry symbol must exist for the scan to be non-vacuous"
+        );
+        assert!(
+            core.contains("now: i64"),
+            "the core receives `now` — no clock read inside the core; the derivation is \
+             deterministic for (window, now)"
+        );
+        for banned in [
+            "schema_meta",
+            "OnceLock",
+            "lazy_static",
+            "Utc::now",
+            "execute_batch",
+        ] {
+            assert!(
+                !core.contains(banned),
+                "the read model must never persist or memoize: `{banned}` found in the \
+                 production region"
+            );
+        }
+    }
+
+    // ── 2. the coupling law (E4) ────────────────────────────────────────────
+
+    /// Throughput and instability are ONE coupled cluster in ONE response
+    /// object served by ONE route: no per-metric registration exists for a
+    /// consumer to target throughput in isolation.
+    #[test]
+    fn delivery_outcomes_reports_throughput_and_instability_coupled() {
+        let router = production("src/server/router/workflow.rs");
+        assert_eq!(
+            router.matches("\"/workflow/delivery/outcomes\"").count(),
+            1,
+            "exactly ONE registration carries the outcomes cluster — a per-metric route \
+             would let a consumer target throughput in isolation (E4)"
+        );
+        let core = production("src/workflow/delivery_read.rs");
+        assert!(
+            core.contains("coupled cluster") && core.contains("control:"),
+            "the cluster carries the coupling note and the control binding on the \
+             throughput object"
+        );
+        let spec = src("openapi.yaml");
+        let block = openapi_block(&spec, "/workflow/delivery/outcomes");
+        assert!(
+            block.contains("coupled cluster"),
+            "the route description must carry the coupling law, not just the code"
+        );
+    }
+
+    /// ADDENDUM 3 §2: `change_fail_rate` is labeled `role: "control"` on the
+    /// throughput readings — the instability reading that governs how the
+    /// throughput numbers may be read, named on the wire.
+    #[test]
+    fn delivery_outcomes_change_fail_rate_controls_throughput_readings() {
+        let core = production("src/workflow/delivery_read.rs");
+        assert!(
+            core.contains("const CONTROL_ROLE") && core.contains("\"control\""),
+            "the control role is a named constant carrying the literal `\"control\"`"
+        );
+        assert!(
+            core.contains("role:"),
+            "the change-fail reading carries its `role` label on the wire"
+        );
+        let page = src("docs/api.md");
+        let row = api_md_row(&page, "/workflow/delivery/outcomes");
+        assert!(
+            row.contains("control"),
+            "the api.md row must name the control law, not just the code"
+        );
+    }
+
+    // ── 3. the naming law (E3) ──────────────────────────────────────────────
+
+    /// Native measures are named natively and labeled distinctly: the native
+    /// elapsed measure carries NO `dora_name`; `governed_release_cadence` is
+    /// native-named and carries `dora_name` + `definition_match` (proxy) where
+    /// DORA's name is used at all.
+    #[test]
+    fn delivery_outcomes_labels_native_measures_distinctly() {
+        let core = production("src/workflow/delivery_read.rs");
+        assert!(
+            core.contains("approval_to_promotion_elapsed")
+                && core.contains("governed_release_cadence"),
+            "the native measures exist under their native names"
+        );
+        let cadence = struct_block(&core, "CadenceMetric");
+        assert!(
+            cadence.contains("dora_name") && cadence.contains("definition_match"),
+            "governed_release_cadence uses DORA's name only beside its proxy label"
+        );
+        let native = struct_block(&core, "NativeElapsedMetric");
+        assert!(
+            !native.contains("dora_name"),
+            "the native elapsed measure carries NO dora_name — a native name is never \
+             dressed as a DORA metric"
+        );
+        assert_dora_name_besides_definition_match(&core);
+    }
+
+    /// E3's hard edge: `approval_to_promotion_elapsed` is NEVER presented as
+    /// DORA change lead time — the response says so where the confusion would
+    /// happen, and the native struct carries no DORA label at all.
+    #[test]
+    fn delivery_outcomes_never_presents_approval_elapsed_as_dora_lead_time() {
+        let core = production("src/workflow/delivery_read.rs");
+        assert!(
+            core.contains("NOT DORA change lead time"),
+            "the native-measures note must say `NOT DORA change lead time` where a reader \
+             would reach for the wrong name"
+        );
+        let native = struct_block(&core, "NativeElapsedMetric");
+        assert!(
+            !native.contains("dora_name") && !native.contains("definition_match"),
+            "the native elapsed struct carries no DORA labeling of any kind"
+        );
+    }
+
+    // ── 4. the typed insufficiency contract (E2) ────────────────────────────
+
+    /// Every metric degrades to a TYPED insufficient state with a closed
+    /// reason — never a partial number, never a nullable value masquerading as
+    /// a measurement. The closed reason vocabulary is pinned by its wire
+    /// names.
+    #[test]
+    fn delivery_outcomes_degrades_to_insufficient_not_a_partial_metric() {
+        let core = production("src/workflow/delivery_read.rs");
+        for reason in [
+            "window_empty",
+            "no_vcs_revision_recorded",
+            "no_incident_facts",
+            "no_rework_signal",
+            "insufficient_history",
+        ] {
+            assert!(
+                core.contains(reason),
+                "the closed insufficiency vocabulary must carry `{reason}` on the wire"
+            );
+        }
+    }
+
+    /// The D2-of-R44 pin: absent ≠ zero, and zero ≠ absent. The state enum is
+    /// the whole mechanism — `computed` constructs carry values, `insufficient`
+    /// constructs carry reasons — and the structural law is unit-proven in the
+    /// module (a JSON walk) because it needs seeded rows.
+    #[test]
+    fn delivery_outcomes_distinguishes_absent_from_zero() {
+        let core = production("src/workflow/delivery_read.rs");
+        assert!(
+            core.contains("MetricState::Computed") && core.contains("MetricState::Insufficient"),
+            "the typed state enum is the mechanism, not a nullable number"
+        );
+        assert!(
+            core.contains("fn computed") && core.contains("fn insufficient"),
+            "the metric constructors enforce the law structurally: a computed metric \
+             carries a value and never a reason; an insufficient metric carries a reason \
+             and never a value"
+        );
+    }
+
+    /// The prohibition, pinned where the temptation is: the derivation READS
+    /// the authority-fact findings (non-vacuously) and writes none — no
+    /// findings row, no counter row, nothing. The `evidence::reduce`
+    /// prohibition stands.
+    #[test]
+    fn delivery_outcomes_never_writes_a_findings_row() {
+        let core = production("src/workflow/delivery_read.rs");
+        assert!(
+            core.contains("FROM findings"),
+            "non-vacuous: the change-fail signal is derived by READING the findings the \
+             reconcile wrote"
+        );
+        for banned in [
+            "INSERT INTO findings",
+            "INSERT OR REPLACE INTO findings",
+            "UPDATE findings",
+            "DELETE FROM findings",
+        ] {
+            assert!(
+                !core.contains(banned),
+                "the read model must never `{banned}` — findings/counter writes are \
+                 prohibited; the derivation only reads"
+            );
+        }
+    }
+
+    /// ADDENDUM 3 §4: the read model expands no connector surface — no
+    /// `connector::` reference, no client, no egress of any kind. R42's two
+    /// adapters remain the only authorized ones.
+    #[test]
+    fn delivery_outcomes_does_not_expand_the_connector_surface() {
+        let core = production("src/workflow/delivery_read.rs");
+        assert!(
+            core.contains("pub(crate) fn delivery_outcomes"),
+            "the derivation entry symbol must exist for the scan to be non-vacuous"
+        );
+        for banned in ["connector::", "reqwest", "fetch_", "hyper::", "TcpStream"] {
+            assert!(
+                !core.contains(banned),
+                "the read model must never reference `{banned}` — no egress, no connector \
+                 expansion (ADDENDUM 3 §4)"
+            );
+        }
+    }
+
+    // ── 5. the window (E5) ──────────────────────────────────────────────────
+
+    /// The window is days, integer, default 30, bounded 1..=366 — validated in
+    /// the CORE and refused (a 400-shaped typed error), never silently
+    /// clamped, with no closed-set invention. OWASP LLM10 (unbounded
+    /// consumption) is the threat; the bound is the control.
+    #[test]
+    fn delivery_outcomes_window_is_bounded() {
+        let core = production("src/workflow/delivery_read.rs");
+        assert!(
+            core.contains("DEFAULT_WINDOW_DAYS: i64 = 30"),
+            "the default window is 30 days"
+        );
+        assert!(
+            core.contains("MAX_WINDOW_DAYS: i64 = 366"),
+            "the window bound is 366 days"
+        );
+        assert!(
+            core.contains("WindowBounds"),
+            "out-of-bounds windows are refused with the typed error the handler maps to \
+             400 — never a silent clamp"
+        );
+    }
+
+    /// The surface is optional (read-time only; nothing runs when nobody
+    /// asks) and an empty window is INSUFFICIENT — `window_empty` for the
+    /// window's metrics, `insufficient_history` for the baseline — never `0`,
+    /// never a nullable masquerade.
+    #[test]
+    fn delivery_outcomes_is_optional_and_empty_windows_are_insufficient() {
+        let core = production("src/workflow/delivery_read.rs");
+        assert!(
+            core.contains("Option<&str>"),
+            "the window is optional: the derivation runs read-time only when a caller asks"
+        );
+        assert!(
+            core.contains("window_empty") && core.contains("insufficient_history"),
+            "empty windows degrade to the typed reasons: window_empty for the window, \
+             insufficient_history for the baseline"
+        );
+    }
+
+    // ── 6. the licensing rule (E6) + the naming hygiene (E7) ────────────────
+
+    /// E6, operationalized as a sibling of the r41 banned-vocabulary scan: the
+    /// word `dora` is NOT banned here (it is REQUIRED as labeled attribution) —
+    /// what is banned is the vocabulary that would turn attribution into a
+    /// benchmark claim: the performance bands, and the EU act spelled beside
+    /// the programme. The scan asserts the E6 rules over the module, the
+    /// route description, and the api.md row: no bands, no thresholds-as-
+    /// claims, `dora_name` only beside `definition_match`, the programme
+    /// spelled out on first use, and the license note present.
+    #[test]
+    fn delivery_outcomes_reproduces_no_dora_thresholds_or_bands() {
+        let core = production("src/workflow/delivery_read.rs");
+        let spec = src("openapi.yaml");
+        let block = openapi_block(&spec, "/workflow/delivery/outcomes");
+        let page = src("docs/api.md");
+        let row = api_md_row(&page, "/workflow/delivery/outcomes");
+        for artifact in [(&core, "module"), (&block, "openapi"), (&row, "api.md")] {
+            let lower = artifact.0.to_lowercase();
+            for banned in [
+                "elite",
+                "high performer",
+                "medium performer",
+                "low performer",
+                "digital operational resilience act",
+            ] {
+                assert!(
+                    !lower.contains(banned),
+                    "{}: the benchmark/band vocabulary `{banned}` must not appear — \
+                     attribution is the whole of what crosses, never a band (E6/E7)",
+                    artifact.1
+                );
+            }
+        }
+        assert!(
+            core.contains("dora.dev"),
+            "the attribution reference links the programme's own site"
+        );
+        for required in [
+            "DORA (DevOps Research and Assessment)",
+            "no thresholds or tables reproduced",
+            "no EU DORA obligation",
+            "no operational-resilience claim",
+        ] {
+            assert!(
+                block.contains(required),
+                "the route description must carry `{required}` verbatim — the naming and \
+                 licensing laws ride the route description (E6/E7)"
+            );
+        }
+        assert_dora_name_besides_definition_match(&core);
+    }
+
+    // ── 7. the byte-untouched guard (the round's scope proof, in-test) ──────
+
+    /// The round ships a route and a query core and NOTHING ELSE: no table
+    /// (`delivery_outcomes` is withdrawn — never created), no stamp (the
+    /// schema stays `1.32.18`), no dependency (the manifest count stays 51),
+    /// no view, and no migration-surface edit — while the round's own change
+    /// set (the module, the route, the docs) is present, so the guard cannot
+    /// pass on an incomplete round.
+    #[test]
+    fn delivery_r44_adds_no_table_no_stamp_no_dependency() {
+        let migration = src("src/migration.rs");
+        assert!(
+            !migration.contains("outcomes"),
+            "no migration surface may mention outcomes — the table is withdrawn forever \
+             (ADDENDUM 3 §1)"
+        );
+        assert!(
+            !migration.contains("CREATE VIEW"),
+            "the repo has never used a view; the read model is a query (E1)"
+        );
+        let layout = src("src/storage_layout.rs");
+        assert!(
+            layout.contains("pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_18;")
+                && layout.contains("\"1.32.18\""),
+            "the schema stamp is untouched: R44 ships no stamp"
+        );
+        let rehearse = src("src/bin/brain_migrate_rehearse.rs");
+        assert!(
+            !rehearse.contains("outcomes"),
+            "PARITY_TABLES gains no outcomes row — there is no table to keep parity for"
+        );
+        let manifest = src("Cargo.toml");
+        let deps = manifest
+            .split("[dependencies]")
+            .nth(1)
+            .and_then(|rest| rest.split("\n[").next())
+            .expect("a [dependencies] section");
+        let names: Vec<&str> = deps
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#') && l.contains('='))
+            .filter_map(|l| l.split('=').next())
+            .map(str::trim)
+            .collect();
+        assert_eq!(
+            names.len(),
+            51,
+            "the dependency count is frozen at 51 — the read model needs no new crate \
+             (found {names:?})"
+        );
+        // The completeness half: the guard must not pass on an empty round.
+        let core = production("src/workflow/delivery_read.rs");
+        assert!(
+            core.contains("pub(crate) fn delivery_outcomes"),
+            "the derivation core is part of the round's change set"
+        );
+        let router = production("src/server/router/workflow.rs");
+        assert!(
+            router.contains("\"/workflow/delivery/outcomes\""),
+            "the route is part of the round's change set"
+        );
+        let spec = src("openapi.yaml");
+        assert!(
+            spec.contains("/workflow/delivery/outcomes:"),
+            "the route documentation is part of the round's change set"
+        );
+    }
+
+    // ── 8. the house gate order ─────────────────────────────────────────────
+
+    /// The house gate order is restated on the new surface: `authorize` →
+    /// pool → `authorize_role` → the core, ending at the read seam — the
+    /// bindings shape, because the surface is domain-scoped (there is no run
+    /// to resolve).
+    #[test]
+    fn delivery_outcomes_surface_shares_the_house_gate_order() {
+        let handlers = production("src/handlers/delivery.rs");
+        let body = handler_body(&handlers, "get_delivery_outcomes")
+            .unwrap_or_else(|| panic!("handler fn get_delivery_outcomes must exist"));
+        let authorize = body
+            .find("super::authorize")
+            .or_else(|| body.find("authorize("));
+        let pool = body
+            .find("resolve_domain_pool")
+            .or_else(|| body.find("pool"));
+        let role = body.find("authorize_role");
+        assert!(
+            authorize.is_some() && pool.is_some() && role.is_some(),
+            "the handler carries the full gate order (authorize → pool → role)"
+        );
+        assert!(
+            authorize.unwrap() < pool.unwrap() && pool.unwrap() < role.unwrap(),
+            "the handler's gate order is authorize → pool → role, in that order"
+        );
+        assert!(
+            body.contains("Action::Read") && !body.contains("Action::Write"),
+            "the outcomes surface is Read-scoped — a Write demand here is a privilege \
+             nobody asked for"
+        );
+        assert!(
+            body.contains("spawn_blocking") && body.contains("sanitize_value_strings"),
+            "the blocking core call is off the async runtime, and the assembled response \
+             ends at the read seam"
+        );
+        for banned in ["SELECT ", "INSERT ", "UPDATE ", "DELETE FROM"] {
+            assert!(
+                !body.contains(banned),
+                "handlers are protocol adapters: `{banned}` belongs in the core, not the \
+                 handler"
+            );
+        }
+    }
+}
