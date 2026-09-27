@@ -651,6 +651,13 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     // admitted here. The promotion family below is different: its writes
     // leave the host, and the agent class is refused in handlers/delivery.rs
     // — explicitly, before any work.
+    // The two shared paths carry BOTH actions. The Read row comes FIRST on
+    // purpose: the authz matrix pairs a path's first table row with its
+    // last-registered method (the GET here), so the row it reads must be the
+    // read's. A read that demanded Write would be a privilege nobody asked
+    // for; the write rows below still pin the writes.
+    ("/workflow/delivery/runs", "Read"),
+    ("/workflow/delivery/releases", "Read"),
     ("/workflow/delivery/runs", "Write"),
     ("/workflow/delivery/runs/{id}/advance", "Write"),
     ("/workflow/delivery/runs/{id}/answer", "Write"),
@@ -678,12 +685,6 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/delivery/releases/{id}/approve", "Write"),
     ("/workflow/delivery/releases/{id}/promote", "Write"),
     ("/workflow/delivery/due", "Write"),
-    // the run read census: Read on the queried or resolved domain, with the
-    // workflow role checked in-handler. The two shared paths carry a Read row
-    // beside their Write rows — a read that demanded Write would be a
-    // privilege nobody asked for.
-    ("/workflow/delivery/releases", "Read"),
-    ("/workflow/delivery/runs", "Read"),
     ("/workflow/delivery/runs/{id}", "Read"),
     ("/workflow/delivery/runs/{id}/steps", "Read"),
 ];

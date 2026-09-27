@@ -302,6 +302,14 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
             "/workflow/delivery/bindings" => {
                 "/workflow/delivery/bindings?domain=global".to_string()
             }
+            // Same required-query-param shape on the two shared-path census
+            // reads (the scan drives the LAST registration, which is the GET):
+            // carrying a real domain exercises the cross-tenant refusal
+            // instead of the param validation.
+            "/workflow/delivery/releases" => {
+                "/workflow/delivery/releases?domain=global".to_string()
+            }
+            "/workflow/delivery/runs" => "/workflow/delivery/runs?domain=global".to_string(),
             _ => concrete,
         };
         let (method, body) = match *template {
@@ -411,10 +419,11 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
             // typed extractor so the AUTHORIZATION gate is what answers: an
             // empty body would 422 in the extractor and never reach the
             // scope or role check, which is the whole point of these rows.
-            "/workflow/delivery/runs" => (
-                "POST",
-                r#"{"domain":"global","goal":"matrix","tier":"observe"}"#,
-            ),
+            // The shared paths drive the READ side: the guard table's FIRST
+            // row for each is the Read row (see route_guards.rs), so the
+            // method must match it. The POST side is pinned by the handler
+            // source scan and the round's own battery.
+            "/workflow/delivery/runs" => ("GET", ""),
             "/workflow/delivery/runs/{id}/advance" => {
                 ("POST", r#"{"expected_revision":0,"to_phase":"design"}"#)
             }
@@ -422,6 +431,12 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
                 ("POST", r#"{"expected_revision":0,"answer":"matrix"}"#)
             }
             "/workflow/delivery/runs/{id}/gates" => ("POST", r#"{"to_phase":"design"}"#),
+            // the release family's writes. The bodies only clear the typed
+            // extractor, as on the run writes above; the release/run resolution
+            // refuses downstream for the classes that clear the gate.
+            "/workflow/delivery/releases/{id}/approve" => ("POST", r#"{"scope":"promote"}"#),
+            "/workflow/delivery/releases/{id}/promote" => ("POST", r#"{"confirm":false}"#),
+            "/workflow/delivery/due" => ("POST", r#"{"domain":"global"}"#),
             "/workflow/runs/{id}/back-referral/return" => (
                 "POST",
                 r#"{"contract_key":"m","report":{},"decision_ref":"m"}"#,
@@ -591,6 +606,13 @@ const PRE_GATE_404: &[&str] = &[
     "/workflow/delivery/runs/{id}/attestations",
     "/workflow/delivery/runs/{id}/replay-verify",
     "/workflow/delivery/runs/{id}/trace",
+    // ...and the release round's id-scoped surfaces, same contract: the two
+    // release writes resolve the release -> run before any gate, and the two
+    // id-scoped census reads resolve the run first.
+    "/workflow/delivery/releases/{id}/approve",
+    "/workflow/delivery/releases/{id}/promote",
+    "/workflow/delivery/runs/{id}",
+    "/workflow/delivery/runs/{id}/steps",
     // The account {id} routes resolve the account BEFORE any gate: an
     // absent id (and a non-account id — the same answer) is the probe-blind
     // 404.
@@ -2373,6 +2395,14 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/workflow/delivery/runs/{id}/advance",
     "/workflow/delivery/runs/{id}/answer",
     "/workflow/delivery/runs/{id}/gates",
+    // The release family's three writes and the due crank are refused HARDER
+    // than the role gate: the handler refuses the agent class BY KIND before
+    // any work, because these are the writes whose consequences reach another
+    // system. The row is here so the class cell stays asserted.
+    "/workflow/delivery/releases",
+    "/workflow/delivery/releases/{id}/approve",
+    "/workflow/delivery/releases/{id}/promote",
+    "/workflow/delivery/due",
     // ...and the three READS, which demand the same role. A read is not a
     // lesser surface: the attestation chain carries signed evidence, and the
     // replay report carries a verdict about a run's integrity. Either leaking
@@ -2383,6 +2413,11 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/workflow/delivery/runs/{id}/attestations",
     "/workflow/delivery/runs/{id}/replay-verify",
     "/workflow/delivery/runs/{id}/trace",
+    // ...and the census reads, same role law: a read is not a lesser surface.
+    "/workflow/delivery/releases",
+    "/workflow/delivery/runs",
+    "/workflow/delivery/runs/{id}",
+    "/workflow/delivery/runs/{id}/steps",
     // NOT workflow-gated (verified: the relay `workflow` sites both live in
     // post_handover_offer; accept/decline + mesh's post_delegation_result
     // carry only the scope gate — they pass for this class on Write)

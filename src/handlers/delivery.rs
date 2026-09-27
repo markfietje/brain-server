@@ -934,9 +934,12 @@ pub async fn get_delivery_releases(
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))??;
 
-    let mut response = serde_json::to_value(releases)
-        .map_err(|error| HandlerError::internal(error.to_string()))?;
-    response["cap"] = serde_json::json!(delivery::MAX_CENSUS_LIST);
+    // The response is an OBJECT, not a bare array: the disclosed cap rides
+    // beside the rows, and a JSON array cannot carry a named field.
+    let mut response = serde_json::json!({
+        "releases": releases,
+        "cap": delivery::MAX_CENSUS_LIST,
+    });
     super::sanitize_value_strings(&mut response);
     Ok(Json(response))
 }
@@ -973,10 +976,12 @@ pub async fn get_delivery_runs(
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))??;
 
-    let mut response =
-        serde_json::to_value(runs).map_err(|error| HandlerError::internal(error.to_string()))?;
-    response["cap"] = serde_json::json!(delivery::MAX_RUN_LIST);
-    response["default_limit"] = serde_json::json!(delivery::DEFAULT_RUN_LIST);
+    // Same object shape: rows beside their disclosed bounds.
+    let mut response = serde_json::json!({
+        "runs": runs,
+        "cap": delivery::MAX_RUN_LIST,
+        "default_limit": delivery::DEFAULT_RUN_LIST,
+    });
     super::sanitize_value_strings(&mut response);
     Ok(Json(response))
 }
