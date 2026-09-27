@@ -7005,6 +7005,351 @@ mod tests {
         assert!(verify_gate(&a, &case).iter().any(|e| e.starts_with("A6")));
     }
 
+    // ── R42-SH ──────────────────────────────────────────────────────────
+    // The declared-vs-enforced gaps. Each pin below FAILS on the tree as it
+    // stands; none of them weakens an existing law.
+    //
+    // The property every one of them defends: an agent's OWN record is not
+    // evidence that the agent succeeded. G1/G3 accept an unverified
+    // self-report as step closure; G4 lets the machine clear a latch it set
+    // itself; G6 defaults a damaged deadline away from escalation. The
+    // machine deciding on its own authority that it is fine is the failure
+    // mode — a refusal costs a human one look, a false pass costs a case.
+
+    /// G1 — `verify_step.pass_condition` is declared (:490), advertised to
+    /// the model (:2007), and enforced NOWHERE. `VerifyArtifact` carries no
+    /// such field, so `verify_gate` cannot compare it and the plan's
+    /// falsifiable bar does not exist. The artifact below restates a
+    /// DIFFERENT bar from the plan's `">10%/h"`; the gate must refuse.
+    ///
+    /// Deliberately NOT a natural-language threshold evaluator: a gate that
+    /// accepts `">10%/h"` as a boolean is a gate that cannot fail, and this
+    /// file says a test that cannot fail proves nothing. Equality of the
+    /// declared string is the whole contract.
+    #[test]
+    fn verify_pass_condition_is_enforced_or_refused() {
+        let case = {
+            let mut c = GdlCase::fresh("t");
+            let plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
+            c.verify_step = Some(plan.verify_step);
+            c
+        };
+        let plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
+        let declared = plan.verify_step.pass_condition.trim().to_string();
+        assert!(
+            !declared.is_empty(),
+            "the fixture declares a bar; a plan with NO bar is a different refusal"
+        );
+        let shaped = |condition: &str| {
+            format!(
+                r#"{{"re_run":"rebuild rate on VD 5 under the customer load",\
+                 "pass":true,"stability_window_min":15,"negative_check":true,\
+                 "pass_condition":{condition}}}"#
+            )
+        };
+        // Restating the planned bar verbatim is verification — it must pass.
+        let matching: VerifyArtifact =
+            serde_json::from_str(&shaped(&serde_json::to_string(&declared).unwrap())).unwrap();
+        assert!(
+            verify_gate(&matching, &case).is_empty(),
+            "restating the planned bar verbatim is verification; errors: {:?}",
+            verify_gate(&matching, &case)
+        );
+        // Restating a DIFFERENT bar must be refused. Today the field is not
+        // read at all, so both artifacts are indistinguishable — this is the
+        // RED: the declared bar is not the enforced bar.
+        let drifted: VerifyArtifact = serde_json::from_str(&shaped(r#""looks fine""#)).unwrap();
+        let errors = verify_gate(&drifted, &case);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("L6") && e.contains("pass_condition")),
+            "a verify artifact that restates a DIFFERENT bar than the plan declared \
+             must be refused — the plan's falsifiable bar is the whole contract, and \
+             an agent that may redefine success after the fact has no bar at all. \
+             Errors: {errors:?}"
+        );
+        // A plan that declares no bar is its own refusal: a plan that cannot
+        // state what "passed" means cannot be verified against one.
+        let mut bare = plan.clone();
+        bare.verify_step.pass_condition = String::new();
+        assert!(
+            plan_gate(&bare).iter().any(|e| e.contains("pass_condition")),
+            "a plan with an empty pass_condition must be refused at Plan; errors: {:?}",
+            plan_gate(&bare)
+        );
+    }
+
+    /// G2 — `PlanStep.fail_action` is declared and advertised to the model
+    /// and read by no gate: a step that fails has no defined branch, so the
+    /// machine improvises one. It must name a real step, and it must never
+    /// name its own order.
+    #[test]
+    fn plan_fail_action_is_validated_or_absent() {
+        let a = serde_json::from_str::<PlanArtifact>(PLAN_JSON).unwrap();
+        assert!(plan_gate(&a).is_empty(), "the happy plan passes");
+        let names_the_branch = |errors: &[String]| {
+            errors.iter().any(|e| e.contains("fail_action"))
+        };
+        // Out of range: the plan has 2 steps.
+        let mut oob = a.clone();
+        oob.steps[0].fail_action = Some(99);
+        assert!(
+            names_the_branch(&plan_gate(&oob)),
+            "fail_action 99 names no step of a 2-step plan; errors: {:?}",
+            plan_gate(&oob)
+        );
+        // Self-referential: a step whose failure branches to itself never
+        // terminates.
+        let mut looping = a.clone();
+        looping.steps[0].fail_action = Some(1);
+        assert!(
+            names_the_branch(&plan_gate(&looping)),
+            "a step whose fail_action is its own order is a loop, not a branch; errors: {:?}",
+            plan_gate(&looping)
+        );
+        // `None` stays legal — it declares a dead end, and L8 already
+        // requires the escalation target.
+        assert!(a.steps[1].fail_action.is_none());
+        assert!(plan_gate(&a).is_empty());
+    }
+
+    /// G3 — `Verdict::Pending` is the serde `#[default]`, so BOTH an explicit
+    /// `"pending"` and an OMITTED verdict key deserialize to it. A4's
+    /// evidence requirement matches only `Pass|Fail|Done`, while the
+    /// step-coverage map keys on `order` alone — so a `Pending` row closes a
+    /// plan step with no outcome and no evidence. It must not.
+    #[test]
+    fn act_complete_rejects_pending_or_unevidenced_rows() {
+        let case = {
+            let mut c = GdlCase::fresh("t");
+            c.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
+            let plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
+            c.plan = plan.steps;
+            c
+        };
+        let a = serde_json::from_str::<ActArtifact>(ACT_JSON).unwrap();
+        assert!(act_gate(&a, &case).is_empty(), "the happy act passes");
+        // A `Pending` row is the agent's own unevaluated record. It counts as
+        // step coverage and needs no evidence today.
+        let mut pending = a.clone();
+        pending.rows[1].verdict = Verdict::Pending;
+        pending.rows[1].actual = None;
+        pending.rows[1].evidence_ref = None;
+        let errors = act_gate(&pending, &case);
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.starts_with("A4") && e.contains("Pending")),
+            "a Pending row closes a step with no actual and no evidence_ref — an \
+             unevaluated self-report is not evidence that the step ran. Errors: {errors:?}"
+        );
+        // `Rejected` and `Experimental` are DECIDED verdicts; A4's `matches!`
+        // omitted them, so a decided row could carry no outcome at all.
+        for verdict in [Verdict::Rejected, Verdict::Experimental] {
+            let mut decided = a.clone();
+            decided.rows[1].verdict = verdict;
+            decided.rows[1].actual = None;
+            decided.rows[1].evidence_ref = None;
+            let errors = act_gate(&decided, &case);
+            assert!(
+                errors.iter().any(|e| e.starts_with("A4")),
+                "a {verdict:?} row is a decided verdict and needs its actual outcome \
+                 and evidence_ref too. Errors: {errors:?}"
+            );
+        }
+        // The serde default is the real exposure: an OMITTED verdict key is
+        // indistinguishable from an explicit `pending`.
+        let omitted: ActArtifact = serde_json::from_str(
+            r#"{"rows":[{"order":1,"kind":"check","description":"q","playbook_ref":"P-STORAGE-0104",
+                "variables":["battery state"],"expected":"Ready",
+                "dtfvc":{"diagnose":"d","test":"t"}},
+               {"order":2,"kind":"action","description":"r","playbook_ref":"P-STORAGE-0104",
+                "variables":["battery"],"expected":"battery Ready",
+                "dtfvc":{"diagnose":"d","test":"t"}}],"complete":true}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            omitted.rows[0].verdict,
+            Verdict::Pending,
+            "an omitted verdict key is Pending — that is the exposure A4 must cover"
+        );
+        assert!(
+            act_gate(&omitted, &case).iter().any(|e| e.starts_with("A4")),
+            "a complete Act whose rows never recorded a verdict must not close; \
+             errors: {:?}",
+            act_gate(&omitted, &case)
+        );
+    }
+
+    /// G4 — the machine must never clear the latch it set itself. Today
+    /// `SoftHandoffLatch` (the only real implementation) is called from
+    /// `mod tests` and nowhere in production, while the production path
+    /// writes `"justification": null` unconditionally — so `prior_justified`
+    /// is always false and a legitimately justified revisit is recorded as a
+    /// violation. Neither shape is right. The law is ONE pure decision, and
+    /// the machine's own data can never satisfy it.
+    #[test]
+    fn soft_handoff_justification_is_reachable() {
+        // The single production decision, as a pure seam.
+        let fires = |verify_pass: bool| soft_handoff_latch_fires(verify_pass);
+        // A case whose own verify passed fires the latch.
+        assert!(fires(true), "a passed verify is the soft-handoff band");
+        assert!(!fires(false), "a case without a passed verify does not");
+        // First fire: recorded, not a violation.
+        assert!(!soft_handoff_latch_violation(true, false, false));
+        // Second fire with NO justification: the named violation, whatever
+        // the machine believes. The `justification` the machine writes is
+        // its own escalation reason — it is NOT operator sign-off, and it
+        // must not be able to clear the latch it just tripped.
+        assert!(
+            soft_handoff_latch_violation(true, true, false),
+            "an unjustified revisit is the named violation"
+        );
+        // A second fire is lawful ONLY on an operator-recorded justification,
+        // which the machine cannot author.
+        assert!(
+            !soft_handoff_latch_violation(true, true, true),
+            "an operator-recorded justification clears the latch"
+        );
+    }
+
+    /// G6 — ONE `deadline_epoch` reader, failing TOWARD ESCALATION. The two
+    /// readers today default in OPPOSITE directions: the release path
+    /// `unwrap_or_default()` (0 ⇒ instantly late) and the sweep
+    /// `unwrap_or(i64::MAX)` (⇒ never escalates). A damaged deadline must
+    /// REFUSE in both, matching the posture the two lines above each reader
+    /// already take for unparseable JSON and a missing contract key.
+    #[test]
+    fn malformed_deadline_fails_closed_in_both_readers() {
+        let shaped = |raw: &str| {
+            serde_json::json!({ "contract_key": "k", "status": "open", "deadline_epoch": raw })
+        };
+        // A real deadline reads through unchanged.
+        assert_eq!(
+            back_referral_deadline(&shaped("1750000000")).unwrap(),
+            1_750_000_000
+        );
+        // Damaged: missing, null, non-integer, float, string, and negative
+        // all REFUSE. Never default — a defaulted deadline is a dropped
+        // obligation wearing a real-looking number.
+        for raw in [
+            serde_json::json!(null),
+            serde_json::json!("1750000000"),
+            serde_json::json!(1.5),
+            serde_json::json!(true),
+        ] {
+            assert!(
+                back_referral_deadline(&shaped(&raw.to_string())).is_err(),
+                "a {raw} deadline must refuse, not default — the reader's default \
+                 direction is the whole defect"
+            );
+        }
+        assert!(
+            back_referral_deadline(&serde_json::json!({"status": "open"})).is_err(),
+            "a contract row with no deadline_epoch must refuse"
+        );
+        assert!(
+            back_referral_deadline(&shaped("-1")).is_err(),
+            "a negative deadline is damaged state, not a deadline in the past"
+        );
+    }
+
+    /// G7 — the bounds law. GDL artifact `Vec` fields were unbounded where
+    /// the delivery loop caps the same class of input (`MAX_REFS = 32`,
+    /// `MAX_BUDGETS = 5`). One arm per field; 200 exceeds every cap in the
+    /// house, so each assertion is unambiguous about the direction it proves.
+    #[test]
+    fn gdl_artifact_vecs_are_bounded() {
+        let n = 200;
+        let many = |prefix: &str| (0..n).map(|i| format!("{prefix}{i}")).collect::<Vec<_>>();
+        // IntakeArtifact.telemetry_refs
+        let mut intake: IntakeArtifact = serde_json::from_str(INTAKE_JSON).unwrap();
+        intake.telemetry_refs = many("tsr://node-");
+        assert!(
+            intake_gate(&intake).iter().any(|e| e.contains("telemetry_refs")),
+            "an unbounded telemetry_refs list is unbounded consumption from an \
+             agent-authored artifact; errors: {:?}",
+            intake_gate(&intake)
+        );
+        // TriageArtifact.search_hits
+        let mut triage: TriageArtifact = serde_json::from_str(TRIAGE_JSON).unwrap();
+        triage.search_hits = many("P-STORAGE-");
+        assert!(
+            triage_gate(&triage).iter().any(|e| e.contains("search_hits")),
+            "errors: {:?}",
+            triage_gate(&triage)
+        );
+        // RedFlagArtifact.rule_out_basis
+        let mut flags = serde_json::from_str::<TriageArtifact>(TRIAGE_JSON).unwrap().red_flag;
+        flags.rule_out_basis = many("test:racadm-");
+        assert!(
+            red_flag_gate(&flags).iter().any(|e| e.contains("rule_out_basis")),
+            "errors: {:?}",
+            red_flag_gate(&flags)
+        );
+        // HypothesizeArtifact.hypotheses
+        let one: Hypothesis = serde_json::from_str::<HypothesizeArtifact>(HYPOTHESIZE_JSON)
+            .unwrap()
+            .hypotheses
+            .remove(0);
+        let hypotheses = HypothesizeArtifact {
+            hypotheses: (0..n).map(|_| one.clone()).collect(),
+        };
+        assert!(
+            hypothesize_gate(&hypotheses)
+                .iter()
+                .any(|e| e.contains("hypotheses")),
+            "errors: {:?}",
+            hypothesize_gate(&hypotheses)
+        );
+        // PlanArtifact.steps
+        let mut plan: PlanArtifact = serde_json::from_str(PLAN_JSON).unwrap();
+        plan.steps = (0..n).map(|_| plan.steps[0].clone()).collect();
+        assert!(
+            plan_gate(&plan).iter().any(|e| e.contains("steps")),
+            "errors: {:?}",
+            plan_gate(&plan).len()
+        );
+        // ActArtifact.rows
+        let case = {
+            let mut c = GdlCase::fresh("t");
+            c.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
+            c.plan = serde_json::from_str::<PlanArtifact>(PLAN_JSON).unwrap().steps;
+            c
+        };
+        let act = ActArtifact {
+            rows: (0..n)
+                .map(|_| serde_json::from_str::<ActArtifact>(ACT_JSON).unwrap().rows[0].clone())
+                .collect(),
+            complete: true,
+        };
+        assert!(
+            act_gate(&act, &case).iter().any(|e| e.contains("rows")),
+            "errors: {} rows of error text",
+            act_gate(&act, &case).len()
+        );
+        // DeadEnd.required_evidence
+        let mut dead = serde_json::from_str::<PlanArtifact>(PLAN_JSON).unwrap();
+        dead.dead_end.required_evidence = many("evidence-");
+        assert!(
+            plan_gate(&dead).iter().any(|e| e.contains("required_evidence")),
+            "errors: {:?}",
+            plan_gate(&dead)
+        );
+        // BackReferralContract.required_report
+        let mut contract: BackReferralContract =
+            serde_json::from_str(r#"{"referrer":"a","receiver":"b","clinical_question":"q"}"#)
+                .unwrap();
+        contract.status = "returned".into();
+        contract.required_report = many("report-");
+        assert!(
+            contract.release_errors().iter().any(|e| e.contains("required_report")),
+            "errors: {:?}",
+            contract.release_errors()
+        );
+    }
+
     #[test]
     fn failed_verify_hands_back_with_bundle_not_silent_retry() {
         let fail = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass":false,"stability_window_min":15,"negative_check":true}"#;
