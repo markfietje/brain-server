@@ -18840,6 +18840,54 @@ mod r41_replay {
         full[..boundary].to_string()
     }
 
+    /// The read path is KIND-FILTERED, and the narrative appendix is limited to
+    /// the family it promises.
+    ///
+    /// Two live defects this closes. Every WRITE path resolves its head through
+    /// `delivery_head`, which filters `kind = 'delivery'` and answers a foreign
+    /// run as absent; a read that skipped the filter served a
+    /// structurally-valid delivery payload for any workflow run sharing the id
+    /// space (GDL, accounts, valet), and answered 200 where every write answers
+    /// 404 — an existence oracle the write paths deliberately refuse to give.
+    ///
+    /// And `agent_session_events` is the AGENT LOOP's conversation log: the
+    /// loop appends `user`/`assistant`/`tool_result`/`compaction` rows to the
+    /// same table. A route documented as "the `ddl_*` narrative appendix" that
+    /// filtered only `control:*` would serve the model conversation transcript.
+    #[test]
+    fn delivery_read_path_is_kind_filtered_and_the_appendix_is_ddl_only() {
+        // The kind filter is on the READ path, not just the write paths.
+        let core = src("src/workflow/delivery.rs");
+        let read =
+            handler_body(&core, "read_run_traces").expect("`fn read_run_traces` must be locatable");
+        assert!(
+            read.contains("delivery_head"),
+            "the trace read must resolve the run's head the way every write path does — a read \
+             that skipped the kind filter would serve a non-delivery run as a delivery payload"
+        );
+        assert!(
+            read.contains("DeliveryError::RunAbsent"),
+            "a non-delivery run must be answered as ABSENT (404), identically to a missing one — \
+             the two must be one answer or the route becomes an existence oracle"
+        );
+
+        // And the appendix really is `ddl_*` in the SQL, not just in the prose.
+        let log =
+            handler_body(&core, "read_event_log").expect("`fn read_event_log` must be locatable");
+        assert!(
+            log.contains("kind GLOB 'ddl_*'"),
+            "the narrative appendix must filter to the `ddl_*` family — `agent_session_events` \
+             also holds the agent loop's `user`/`assistant`/`tool_result` rows, which are the \
+             model's conversation transcript and not this route's to serve"
+        );
+        // A guard that merely banned `control:*` would be the bug it replaces.
+        assert!(
+            !log.contains("NOT GLOB 'control:*'") || log.contains("GLOB 'ddl_*'"),
+            "the appendix must be positively filtered to `ddl_*`, not merely relieved of the \
+             `control:` family"
+        );
+    }
+
     /// B7, the design owner's named test, landed here as the round assigns it:
     /// the tier → trace-mode mapping, server-side, over the closed vocabularies.
     ///
@@ -18998,6 +19046,22 @@ mod r41_replay {
             assert!(
                 !body.contains("Action::Write"),
                 "{symbol} is a read surface and must never demand Write"
+            );
+            // The seam must run AFTER the response is ASSEMBLED. A seam applied
+            // to a partially-built value would leave every nested field — the
+            // per-diff digests, `artifact_refs_json`, the event-log payloads —
+            // un-shaped while this pin stayed green, because the check above
+            // only proves the call is PRESENT.
+            let assembled = body
+                .find("serde_json::to_value(")
+                .unwrap_or_else(|| panic!("{symbol} assembles a response value"));
+            let seam = body
+                .find("sanitize_value_strings")
+                .unwrap_or_else(|| panic!("{symbol} rides the read seam"));
+            assert!(
+                assembled < seam,
+                "{symbol}: the read seam must run AFTER the response is assembled — applied \
+                 earlier it would never reach the nested fields"
             );
         }
     }

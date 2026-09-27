@@ -315,17 +315,28 @@ decides: two tables — `delivery_traces`, content-addressed `trc_<32 hex>` over
 each row's facts *and* its ordinal, and `delivery_budgets` under a composite
 `(run_id, kind)` key — at schema `1.32.15`, behind four `POST` routes
 (`/workflow/delivery/runs`, `/runs/{id}/advance`, `/runs/{id}/answer`, and
-`/runs/{id}/gates`) that write only; there is no read route. Authorization is
-the run's own domain plus the `workflow` role.
+`/runs/{id}/gates`). What is stored is now read back by three `GET` routes:
+`/runs/{id}/attestations` serves the signed chain, `/runs/{id}/replay-verify`
+re-derives each trace row's content address from its own stored columns and
+reports whether they agree, and `/runs/{id}/trace` serves the rows themselves in
+ordinal order, with the chain head read from storage rather than recomputed. The
+verdict and the listing ride one read, and a mismatch is DATA — the request
+succeeds and the reader is handed the diff — because a report that turned a
+finding into an error would tell them less than the finding does. Authorization
+is the run's own domain plus the `workflow` role, and the reads ask for Read
+rather than Write.
 
-**Persistent is not complete.** What is stored is not yet enforced and not yet
-read back: budgets are recorded but unenforced, and `blast_radius` is admitted
-by the kind `CHECK` while no production path consults it. Unbuilt still are the
-replay-verify surface, authority bindings and connectors, the release and
-promotion surface, and any derived read model. One gap is on the record: no
-route sets `pending_question`, so the answer route is exercisable only by
-writing run state directly. **This section describes a ratified decision, a
-shipped pure core, and its first persistence — not a complete runtime.**
+**Persistent is not the same as complete.** The reads are evidence, not
+enforcement: budgets are recorded but unenforced, and `blast_radius` is admitted
+by the kind `CHECK` while no production path consults it. Nor does the verdict
+bind a row to the signed chain — an attacker who edits a column *and* recomputes
+the address leaves no trace, so it is tamper **evidence** over stored bytes, and
+the chain is what binds. Unbuilt still are authority bindings and connectors,
+the release and promotion surface, and any derived read model. One gap is on the
+record: no route sets `pending_question`, so the answer route is exercisable
+only by writing run state directly. **This section describes a ratified
+decision, a shipped pure core, and the persistence with a first read back — not
+a complete runtime.**
 
 **The law sentence, extended to include it: a model proposes; only the gate
 disposes.** In Loops 1–3 that arbiter is the GDL phase machine's

@@ -2798,6 +2798,43 @@ async fn delivery_attestation_verify_parameter_returns_the_identical_payload() {
     );
 }
 
+/// An RAII guard that points `BRAIN_UMP_KEY_DIR` at `dir` and restores the
+/// previous value when it DROPS — not at the end of the function body.
+///
+/// The manual save/restore this replaces was the last statement of the test,
+/// which restores on exactly one of its thirteen exit paths. A panic — and a
+/// panic is precisely what this test exists to provoke — unwound straight past
+/// the restore and left the var pointing at a `TempDir` that was itself being
+/// deleted during the unwind: a permanently dead key path for every test that
+/// ran after it. The repo already wrote this rule down in `src/lib.rs`
+/// ("Every test that mutates a process env var takes THIS lock") and already has
+/// the `Drop`-based idiom; this adopts it.
+struct KeyDirGuard {
+    previous: Option<std::ffi::OsString>,
+}
+
+impl KeyDirGuard {
+    fn arm(dir: &std::path::Path) -> Self {
+        let previous = std::env::var_os("BRAIN_UMP_KEY_DIR");
+        // SAFETY: `BK_ENV_LOCK` is held by the caller for this guard's whole
+        // life, and the guard restores before the lock is released.
+        unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", dir) };
+        Self { previous }
+    }
+}
+
+impl Drop for KeyDirGuard {
+    fn drop(&mut self) {
+        // SAFETY: as above — the lock outlives this drop.
+        unsafe {
+            match &self.previous {
+                Some(v) => std::env::set_var("BRAIN_UMP_KEY_DIR", v),
+                None => std::env::remove_var("BRAIN_UMP_KEY_DIR"),
+            }
+        }
+    }
+}
+
 /// D3: the keyless-host `409 delivery_attestation_refused` was proven at the
 /// CORE (both arms, the real resolver) and at NO HTTP hop. A core-level proof
 /// cannot see a handler that maps the refusal to the wrong status, or drops it
@@ -2808,11 +2845,11 @@ async fn delivery_attestation_read_refuses_with_409_on_a_keyless_host() {
     // one) carries a real operator key, so a test that merely ran here would
     // pass vacuously on a keyed host and prove nothing about the refusal. The
     // env lock is this file's own `BK_ENV_LOCK` precedent: the var is process
-    // global, so the guard is held for the whole test.
+    // global, so the guard is held for the whole test. The var itself is set
+    // through a `Drop` guard, so a failing assert cannot leak it.
     let _env = BK_ENV_LOCK.lock().await;
     let keyless_dir = tempfile::TempDir::new().expect("an empty key dir");
-    let previous_key_dir = std::env::var_os("BRAIN_UMP_KEY_DIR");
-    unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", keyless_dir.path()) };
+    let _keyless = KeyDirGuard::arm(keyless_dir.path());
 
     // A single-token opaque server: the operator token exists, and there is NO
     // agent token — so no operator key is provisioned, which is the posture a
@@ -2950,10 +2987,7 @@ async fn delivery_attestation_read_refuses_with_409_on_a_keyless_host() {
         "an empty chain has no head, and says so — a head would be a fabricated address"
     );
 
-    // Restore the process env: the lock is released when this fn returns, and a
-    // leaked `BRAIN_UMP_KEY_DIR` would silently keyless every later test.
-    match previous_key_dir {
-        Some(v) => unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", v) },
-        None => unsafe { std::env::remove_var("BRAIN_UMP_KEY_DIR") },
-    }
+    // The guard restores `BRAIN_UMP_KEY_DIR` on the way out, INCLUDING on a
+    // panic — a leak here would silently keyless every later test in the
+    // process.
 }

@@ -1420,14 +1420,30 @@ pub(crate) struct ReplayReport {
 }
 
 impl ReplayReport {
-    /// The crate's own verdict, not a re-implementation of it.
-    fn all_digests_match(&self) -> bool {
+    /// Whether the report is CLEAN — no digest mismatch and no order violation.
+    ///
+    /// This is NOT the crate's `ReplayDiff::all_digests_match()`, and the
+    /// difference matters: the crate's is `mismatched == 0` over the
+    /// COMPARATOR's count, while this report's `mismatched` has order
+    /// violations folded in. A run with a broken ordinal series and no digest
+    /// mismatch reads `false` here and `true` there. This is the stricter rule
+    /// and the one a reader of THIS payload wants.
+    fn is_clean(&self) -> bool {
         self.mismatched == 0
     }
 }
 
-/// The raw trace listing. It rides the SAME read function as the verdict, so
-/// the two surfaces can never disagree about what is stored.
+/// The trace listing. It rides the SAME read function and the SAME window
+/// function as the verdict.
+///
+/// **What "the same read function" does and does not promise.** The two are
+/// separate HTTP requests, on separate pooled connections, at separate
+/// wall-clock times, with no shared transaction or snapshot. What sharing
+/// guarantees is that both apply IDENTICAL logic — the same ordering, the same
+/// window, the same truncation rule — so **any difference you observe between
+/// the two is a change in storage, not a difference of method.** It does not
+/// promise the two saw the same bytes: a row appended between the two calls
+/// shows up as a difference, which is the honest reading of a live run.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct TraceListing {
     pub run_id: i64,
@@ -1444,7 +1460,15 @@ pub(crate) struct TraceListing {
 /// The stored stage column's four legal values, mirrored from the DDL's CHECK
 /// (`migration.rs`). The projection reads the STORED column and adds nothing —
 /// `StageDigest.stage` is a bare `String` with no vocabulary in the crate, so
-/// this mirror is what keeps a fifth value from reaching the wire unexamined.
+/// this mirror is the only examination a stored value gets before it reaches
+/// the wire.
+///
+/// It is enforced by a real check, not a `debug_assert!`. A debug-only guard
+/// compiles to nothing in release, and the round's stated threat model is
+/// exactly "a stored column was edited" — the one case a release build must
+/// still catch. The `CHECK` binds today, so reaching this needs an
+/// out-of-band edit, and a bad value is reported as a mismatch rather than
+/// panicked on.
 const LEGAL_STAGES: [&str; 4] = ["run", "phase", "gate", "answer"];
 
 /// Read the run's trace rows in ORDINAL order, bounded by [`MAX_TRACE_ROWS`].
@@ -1465,6 +1489,14 @@ pub(crate) fn read_run_traces(
     run_id: i64,
     cap: usize,
 ) -> Result<Vec<TraceRow>, DeliveryError> {
+    // The run must be a DELIVERY run. Every write path resolves its head
+    // through `delivery_head`, which filters `kind = 'delivery'` and answers a
+    // foreign run as absent; a read that skipped the filter would serve a
+    // structurally-valid delivery payload for a GDL or account run that merely
+    // shares the id space. Worse, it would turn "this id is not a delivery run"
+    // into a 200 where every write says 404 — an existence answer the write
+    // paths deliberately refuse to give. One kind, one answer.
+    delivery_head(conn, run_id)?.ok_or(DeliveryError::RunAbsent)?;
     let mut stmt = conn
         .prepare(
             "SELECT id, run_id, seq, stage, phase, status, tier, actor, model_ref, \
@@ -1521,22 +1553,36 @@ fn stage_digest_projection(row: &TraceRow) -> (StageDigest, StageDigest) {
     // The stage is PROJECTED from the stored column, never invented: the DDL
     // CHECKs it to four values and the crate's `StageDigest.stage` is an
     // unvalidated `String`, so this is the only place the vocabulary is
-    // examined.
-    debug_assert!(
-        LEGAL_STAGES.contains(&row.stage.as_str()),
-        "delivery_traces.stage is CHECKed to the four legal values; a fifth means the DDL and \
-         this mirror have drifted"
-    );
+    // examined. An out-of-band value is passed through with a marker prefix
+    // rather than dropped or panicked on: this surface's whole job is to
+    // REPORT what storage holds, and a row whose stage is out of vocabulary is
+    // a finding a reader needs, not a request to be refused.
+    let stage = if LEGAL_STAGES.contains(&row.stage.as_str()) {
+        row.stage.clone()
+    } else {
+        format!("unexpected:{}", row.stage)
+    };
     let input = format!(
         "sha256:{}",
         crate::audit::hex_encode(&row.canonical_bytes())
     );
-    let stage = row.stage.clone();
     (
         StageDigest::new(stage.clone(), input.clone(), row.id.clone()),
         StageDigest::new(stage, input, row.content_id()),
     )
 }
+
+/// The wire name for the order fold's own mismatch.
+///
+/// It is deliberately NOT one of the crate's five. `StageMismatch` is frozen
+/// this round, and borrowing `InputDigestDiffers` for an ordinal violation
+/// would have contradicted the spec: the schema says the `input_digest` arms
+/// "always agree", and then emitted `input_digest_differs` on every gap. A
+/// client applying that rule would mis-diagnose a hole in the evidence log as
+/// a malformed projection — two different operator responses.
+///
+/// So the order fold carries its own code on the wire, mapped here.
+const ORDER_MISMATCH: &str = "order_not_contiguous";
 
 /// B3, the order-integrity fold, and the order violations it reports as data.
 ///
@@ -1550,6 +1596,15 @@ fn stage_digest_projection(row: &TraceRow) -> (StageDigest, StageDigest) {
 /// A duplicate is unreachable through the write path — `UNIQUE(run_id, seq)`
 /// refuses it — so it is reported here anyway, because a database whose index
 /// was dropped or rebuilt is exactly the state a reader needs to be told about.
+///
+/// **A TAIL DELETION IS INVISIBLE HERE, and that is a stated ceiling.** Removing
+/// the last row leaves a shorter but still contiguous `1..n` series, so a run
+/// whose evidence log was truncated at the end reports a CLEAN verdict. The
+/// same vacuous-truth shape as an empty chain, and disclosed for the same
+/// reason: only the head of the log is a window, and a window cannot detect
+/// what fell out of it. `window.rows` is the only signal, and a reader
+/// comparing it against the run's own phase count is doing that comparison
+/// themselves.
 fn order_diff(expected: i64, actual: i64) -> StageDiff {
     StageDiff {
         stage: "order".to_string(),
@@ -1567,6 +1622,40 @@ fn order_diff(expected: i64, actual: i64) -> StageDiff {
     }
 }
 
+/// The shared, truncated window both surfaces report.
+///
+/// This existed as the SAME twelve lines pasted into `replay_verify` and
+/// `trace_listing` — and the round's own headline claim was that the two
+/// surfaces cannot disagree. Duplicating the one field a reader consults to
+/// decide whether the window IS the whole run is the exact failure that claim
+/// was meant to foreclose. One function, two callers.
+///
+/// `rows_len` is what `read_run_traces` returned. The overflow row was already
+/// discarded there, so truncation is a FACT and not an inference: the read was
+/// `LIMIT cap + 1`, and this asks whether that extra row existed.
+fn trace_window(
+    conn: &Connection,
+    run_id: i64,
+    rows_len: usize,
+) -> Result<WindowRead, DeliveryError> {
+    let truncated = rows_len == MAX_TRACE_ROWS && {
+        let more: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM (SELECT 1 FROM delivery_traces WHERE run_id = ?1 \
+                 ORDER BY seq LIMIT ?2)",
+                params![run_id, MAX_TRACE_ROWS as i64 + 1],
+                |r| r.get(0),
+            )
+            .map_err(storage)?;
+        more as usize > MAX_TRACE_ROWS
+    };
+    Ok(WindowRead {
+        rows: rows_len,
+        cap: MAX_TRACE_ROWS,
+        truncated,
+    })
+}
+
 /// Assemble the replay verdict over the run's stored trace rows.
 ///
 /// `compare_replay` does the comparison; this function's own work is the read,
@@ -1579,20 +1668,7 @@ pub(crate) fn replay_verify(
     now: i64,
 ) -> Result<ReplayReport, DeliveryError> {
     let rows = read_run_traces(conn, run_id, MAX_TRACE_ROWS)?;
-    let truncated = rows.len() == MAX_TRACE_ROWS && {
-        // The overflow row was discarded by `read_run_traces`; ask again with
-        // one more to learn whether there WAS one. This is the same one-past-the
-        // -bound idiom the attestation read uses, for the same reason.
-        let more: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM (SELECT 1 FROM delivery_traces WHERE run_id = ?1 \
-                 ORDER BY seq LIMIT ?2)",
-                params![run_id, MAX_TRACE_ROWS as i64 + 1],
-                |r| r.get(0),
-            )
-            .map_err(storage)?;
-        more as usize > MAX_TRACE_ROWS
-    };
+    let window = trace_window(conn, run_id, rows.len())?;
 
     // The order fold. The stage digests are projected in the SAME order, so the
     // positional comparison lines up with the stored series by construction —
@@ -1624,11 +1700,7 @@ pub(crate) fn replay_verify(
 
     Ok(ReplayReport {
         run_id,
-        window: WindowRead {
-            rows: rows.len(),
-            cap: MAX_TRACE_ROWS,
-            truncated,
-        },
+        window,
         order_ok,
         compared: diff.compared + extra,
         matched: diff.matched,
@@ -1645,30 +1717,16 @@ pub(crate) fn trace_listing(
     run_id: i64,
     now: i64,
 ) -> Result<TraceListing, DeliveryError> {
-    let report_window = read_run_traces(conn, run_id, MAX_TRACE_ROWS)?;
-    let truncated = report_window.len() == MAX_TRACE_ROWS && {
-        let more: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM (SELECT 1 FROM delivery_traces WHERE run_id = ?1 \
-                 ORDER BY seq LIMIT ?2)",
-                params![run_id, MAX_TRACE_ROWS as i64 + 1],
-                |r| r.get(0),
-            )
-            .map_err(storage)?;
-        more as usize > MAX_TRACE_ROWS
-    };
-    // The head is READ, not recomputed, so the two surfaces cannot disagree
-    // about it.
+    let rows = read_run_traces(conn, run_id, MAX_TRACE_ROWS)?;
+    let window = trace_window(conn, run_id, rows.len())?;
+    // The head is READ, not recomputed, so the two surfaces apply the same
+    // logic to it.
     let attestation_root =
         crate::workflow::attestations::chain_head(conn, run_id).map_err(attestation)?;
     Ok(TraceListing {
         run_id,
-        window: WindowRead {
-            rows: report_window.len(),
-            cap: MAX_TRACE_ROWS,
-            truncated,
-        },
-        rows: report_window,
+        window,
+        rows,
         attestation_root,
         event_log: read_event_log(conn, run_id)?,
         generated_at: now,
@@ -1679,15 +1737,42 @@ pub(crate) fn trace_listing(
 /// it. `session_log::replay` returns the `cap` MOST RECENT events oldest-first,
 /// so the window is a tail — which is stated by the shape, not left for a reader
 /// to infer.
+///
+/// **The `ddl_*` filter is load-bearing, not cosmetic.** `agent_session_events`
+/// is the AGENT LOOP's conversation log, shared with the GDL engine: the loop
+/// appends `user`, `assistant`, `tool_result` and `compaction` rows to the same
+/// table. `session_log::replay` excludes only the `control:*` family, so
+/// without this filter a route documented in three places as "the `ddl_*`
+/// narrative appendix" would serve the model conversation transcript of any run
+/// whose id also carried loop history. The read filters to the family it
+/// promises, so the appendix can only ever be the delivery narrative.
 fn read_event_log(conn: &Connection, run_id: i64) -> Result<EventLogRead, DeliveryError> {
     let cap = crate::workflow::session_log::REPLAY_CAP;
-    let rows = crate::workflow::session_log::replay(conn, run_id, cap)
-        .map_err(|e| storage(format!("delivery event log read failed: {e}")))?;
-    let truncated = rows.len() == cap && {
-        let more = crate::workflow::session_log::replay(conn, run_id, cap + 1)
+    let read = |limit: usize| -> Result<Vec<SessionEventRow>, DeliveryError> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT seq, kind, payload_json, created_at FROM agent_session_events \
+                 WHERE run_id = ?1 AND kind GLOB 'ddl_*' ORDER BY seq DESC LIMIT ?2",
+            )
             .map_err(|e| storage(format!("delivery event log read failed: {e}")))?;
-        more.len() > cap
+        let mut rows = stmt
+            .query_map(params![run_id, limit as i64], |r| {
+                Ok(SessionEventRow {
+                    seq: r.get(0)?,
+                    kind: r.get(1)?,
+                    payload_json: r.get(2)?,
+                    created_at: r.get(3)?,
+                })
+            })
+            .map_err(|e| storage(format!("delivery event log read failed: {e}")))?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| storage(format!("delivery event log read failed: {e}")))?;
+        // DESC + reverse: the tail window, oldest-first, prefix-stable.
+        rows.reverse();
+        Ok(rows)
     };
+    let rows = read(cap)?;
+    let truncated = rows.len() == cap && read(cap + 1)?.len() > cap;
     Ok(EventLogRead {
         rows: rows.into_iter().map(event_row_read).collect(),
         cap,
@@ -1709,7 +1794,15 @@ fn event_row_read(e: SessionEventRow) -> EventRowRead {
 fn stage_diff_read(diff: &StageDiff) -> StageDiffRead {
     StageDiffRead {
         stage: diff.stage.clone(),
-        mismatch: mismatch_name(diff.mismatch),
+        // The order fold reuses a crate variant internally but has its OWN wire
+        // code: the schema states the `input_digest` arms always agree, so
+        // emitting `input_digest_differs` for an ordinal gap would contradict
+        // the contract the same document publishes.
+        mismatch: if diff.stage == "order" {
+            ORDER_MISMATCH
+        } else {
+            mismatch_name(diff.mismatch)
+        },
         recorded: diff.recorded.as_ref().map(stage_digest_read),
         rederived: diff.rederived.as_ref().map(stage_digest_read),
     }
@@ -1723,9 +1816,15 @@ fn stage_digest_read(d: &StageDigest) -> StageDigestRead {
     }
 }
 
-/// The wire name for a mismatch. EXHAUSTIVE over the crate's five variants,
-/// and it panics on a sixth: a new variant must be given a name deliberately
-/// rather than reaching a client as an unlabelled value.
+/// The wire name for a mismatch.
+///
+/// EXHAUSTIVE over the crate's five variants, and a sixth is a **COMPILE
+/// ERROR**, not a runtime panic: `StageMismatch` is not `#[non_exhaustive]`, so
+/// a new variant cannot be added without this match failing to build. That is
+/// the stronger guarantee — a new mismatch cannot reach a client unlabelled, and
+/// no deployed binary can crash here. A previous version of this comment
+/// claimed a runtime panic, which described a failure that cannot occur and
+/// would have misled the next reader into expecting a crash path.
 fn mismatch_name(m: StageMismatch) -> &'static str {
     match m {
         StageMismatch::MissingRecorded => "missing_recorded",
@@ -3601,6 +3700,97 @@ mod tests {
         );
     }
 
+    /// A non-delivery run is ABSENT, not an empty delivery run. The two must be
+    /// one answer: `workflow_runs` is a shared table whose id space also holds
+    /// GDL, account, and valet runs, and every WRITE path filters
+    /// `kind = 'delivery'`. A read that skipped the filter answered 200 with an
+    /// empty window for a foreign run — an existence oracle the write paths
+    /// deliberately refuse to give, and a payload shaped exactly like a real one.
+    #[test]
+    fn delivery_replay_treats_a_non_delivery_run_as_absent() {
+        let conn = seed();
+        // A run of another kind, sharing the id space and holding NO trace rows.
+        conn.execute(
+            "INSERT INTO workflow_runs(id, kind, domain, state_json, state_revision, status, \
+             created_at, updated_at) VALUES (77, 'troubleshoot', 'global', '{}', 0, 'active', 1, 1)",
+            [],
+        )
+        .expect("the foreign run lands");
+
+        let report = replay_verify(&conn, 77, 2);
+        assert!(
+            matches!(report, Err(DeliveryError::RunAbsent)),
+            "a run that is not a delivery run reads as ABSENT, identically to a missing one — \
+             a 200 with an empty window would be an existence oracle across kinds. Got: \
+             {report:?}"
+        );
+        let listing = trace_listing(&conn, 77, 2);
+        assert!(
+            matches!(listing, Err(DeliveryError::RunAbsent)),
+            "the listing must answer the foreign run the same way the verdict does — the two \
+             ride one read for a reason"
+        );
+        // And a genuinely absent id is the SAME error, so the two collapse.
+        assert!(
+            matches!(replay_verify(&conn, 999, 2), Err(DeliveryError::RunAbsent)),
+            "a missing run and a foreign-kind run must be one indistinguishable answer"
+        );
+    }
+
+    /// The narrative appendix is the DELIVERY narrative, not the agent loop's
+    /// conversation transcript.
+    ///
+    /// `agent_session_events` is shared: the loop appends `user`, `assistant`,
+    /// `tool_result` and `compaction` rows to the same table, and
+    #[test]
+    fn delivery_event_log_serves_only_the_ddl_family() {
+        let mut conn = seed();
+        let run = open(&mut conn, "observe");
+
+        // A loop transcript and a delivery narrative on the SAME run.
+        crate::workflow::session_log::append(
+            &conn,
+            run.run_id,
+            "user",
+            "{\"text\":\"a user turn\"}",
+            "k1",
+            1,
+        )
+        .expect("the loop writes its turns");
+        crate::workflow::session_log::append(
+            &conn,
+            run.run_id,
+            "assistant",
+            "{\"text\":\"a model turn\"}",
+            "k2",
+            1,
+        )
+        .expect("the loop writes its turns");
+        crate::workflow::session_log::append(
+            &conn,
+            run.run_id,
+            DDL_ARTIFACT_KIND,
+            "{\"text\":\"a delivery narrative\"}",
+            "k3",
+            1,
+        )
+        .expect("the delivery narrative appends");
+
+        let report = replay_verify(&conn, run.run_id, 2).expect("the report assembles");
+        let kinds: Vec<&str> = report
+            .event_log
+            .rows
+            .iter()
+            .map(|r| r.kind.as_str())
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["ddl_artifact"],
+            "the appendix carries the `ddl_*` family and nothing else — the agent loop's \
+             `user`/`assistant` transcript is not this route's to serve (got {kinds:?})"
+        );
+    }
+
     /// B2, the projection law, pinned once and for all: a `TraceRow` becomes a
     /// pair of `StageDigest`s, and the two sides differ in exactly one place —
     /// the content address, recorded on the left and re-derived on the right.
@@ -3692,8 +3882,8 @@ mod tests {
             report.diffs
         );
         assert!(
-            report.all_digests_match(),
-            "the verdict is the crate's own, not a re-implementation"
+            report.is_clean(),
+            "the verdict is the report's own, and folds order violations in"
         );
     }
 
@@ -3720,7 +3910,7 @@ mod tests {
         assert_eq!(report.mismatched, 1, "exactly the tampered row");
         assert_eq!(report.diffs.len(), 1);
         assert!(
-            !report.all_digests_match(),
+            !report.is_clean(),
             "the verdict must be non-clean: the stored address no longer follows from the columns"
         );
         let diff = &report.diffs[0];

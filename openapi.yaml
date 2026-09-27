@@ -8109,10 +8109,13 @@ paths:
         The rows `delivery_traces` actually holds for this run, in the stored
         ordinal order, plus the attestation chain head read from storage and the
         same bounded, self-disclosing `ddl_*` narrative appendix the replay
-        verdict carries. It rides the SAME read function as the replay verdict, so
-        the two surfaces cannot disagree about what is stored: this one answers
-        "what is actually there", which is the question a reader has when the
-        verdict reports that something did not line up.
+        verdict carries. It rides the SAME read function and the SAME window
+        function as the verdict, so the two apply identical logic to storage:
+        any difference you observe between them is a change in storage, not a
+        difference of method. They are two separate requests with no shared
+        snapshot, so this is not a consistency guarantee across a moving run —
+        this one answers "what is actually there", which is the question a
+        reader has when the verdict reports that something did not line up.
         Serving these bytes is not an endorsement of them. The rows are
         operator-authored text and digests, returned as stored.
         The window is bounded at 500 rows and the bound is DISCLOSED in every
@@ -8595,7 +8598,12 @@ components:
         request returns 200 and the reader is handed what was stored, what the
         columns imply, and which of the two comparisons failed. `stage` is
         `order` when the STORED ORDINAL series is not contiguous ascending, in
-        which case the digests carry the expected and actual ordinals.
+        which case the digests carry the expected and actual ordinals and
+        `mismatch` is `order_not_contiguous` — a code of its own, because
+        `input_digest_differs` is reserved for a digest comparison and (per
+        `DeliveryStageDigest` above) those arms can never actually disagree.
+        A violation of contiguity means a hole in the evidence log, not a
+        malformed projection, and the two demand different responses.
       properties:
         stage: { type: string, enum: [run, phase, gate, answer, order] }
         mismatch:
@@ -8607,6 +8615,7 @@ components:
               stage_differs,
               input_digest_differs,
               output_digest_differs,
+              order_not_contiguous,
             ]
         recorded:
           allOf: [{ $ref: "#/components/schemas/DeliveryStageDigest" }]
@@ -8685,7 +8694,7 @@ components:
         mismatched: { type: integer, minimum: 0 }
         diffs:
           type: array
-          maxItems: 501
+          maxItems: 1000
           items: { $ref: "#/components/schemas/DeliveryStageDiff" }
         event_log: { $ref: "#/components/schemas/DeliveryEventLog" }
         generated_at: { type: integer, format: int64 }
@@ -8737,10 +8746,14 @@ components:
       required: [run_id, window, rows, attestation_root, event_log, generated_at]
       description: >
         The run's stored rows in ORDINAL order, the attestation chain head READ
+        runs in ORDINAL order, the attestation chain head READ
         from storage (`null` before the first link — never a fabricated address),
         and the same bounded, self-disclosing narrative appendix the replay
-        verdict carries. It rides the same read function as the verdict, so the
-        two surfaces cannot disagree about what is stored.
+        verdict carries. It rides the same read function and the same window
+        function as the verdict, so the two apply identical logic to storage:
+        any difference you observe between them is a change in storage, not a
+        difference of method. They are two separate requests with no shared
+        snapshot, so this is not a consistency guarantee across a moving run.
       properties:
         run_id: { type: integer, format: int64, minimum: 1 }
         window: { $ref: "#/components/schemas/DeliveryWindow" }
