@@ -17,6 +17,124 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [Unreleased] — 2026-09-28 — "Releases": the governed release, the approval binding, and the /due crank
+
+### Release notes
+
+**Improvements**
+- `POST /workflow/delivery/releases` files a governed release: the machine's
+  proposal to move ONE artifact toward ONE external authority. The kernel names
+  everything that binds — the artifact digest is derived from the run's own
+  typed-artifact bytes and the authority binding is resolved from the run's own
+  domain — while the request names only the run, the target kind, the governed
+  ref, the OTel environment, and, honestly optionally, the OTel revision
+  (`vcs.repository.ref.revision` is Release Candidate — cited by name, never
+  claimed stable).
+- `POST /workflow/delivery/releases/{id}/approve` records the approval as
+  COLUMNS on the release row (no sixth table), bound THREE-WAY: content digest,
+  authority digest, and the run's state revision at approval. The expiry is
+  measured from `approved_at` and is evaluated inside the promote transaction.
+- `POST /workflow/delivery/releases/{id}/promote` re-verifies everything
+  inside one transaction — the signature chain, the live digest, the authority
+  (drift is a 409), the revision, the approver's principal, the tier agreement —
+  then hands the pure crate's total gate the decision, deny-wins, first reason
+  reported. A permitted promotion walks the crate's one-step-at-a-time
+  transition law, lands `promoted`, and mints the dispatch intents. Promotion
+  IS the outbox write; nothing here touches the network.
+- `POST /workflow/delivery/due` is the crank: request-scoped, a bounded batch
+  that drains, every intent re-verified before any network contact, each row
+  marked delivered only on connector success, `remaining` reported and audited.
+- The run read census completes the DO's unassigned surface: the domain's
+  releases and delivery runs (keyset-paginated), and the two id-scoped reads
+  (head, steps), all Read-scoped, probe-blind, and bounded.
+- The phase gate's `prompt` disposition now writes a bounded, screened pending
+  question the `/answer` route consumes — the AskHuman seam is exercisable by
+  route for the first time, and a second prompt while a question is pending is
+  a typed 409.
+
+**Security fixes**
+- The promotion family is the first route family whose writes leave the host:
+  the agent preset is refused EXPLICITLY in the handlers, before any work
+  (agents hold `write:*`, so the role gate alone would admit them). The
+  route-guards comment that claimed such a refusal already existed — it did
+  not — is corrected in the same commit.
+- Budgets are enforced at PROMOTION TIME, inside the promote transaction, and
+  fail closed: every enforced budget kind needs explicit, unexhausted headroom,
+  a ledger is built from the operator's stored rows and never from a default
+  (a default grants nothing), and `blast_radius` is never enforced (crate law).
+  The hostcall seam the design named is a 30 s wall clock the delivery loop
+  never touches; the re-scope is a measured correction, recorded here.
+- An approval that binds content but not the AUTHORITY is replayable against a
+  different external system, and one that binds both but not the REVISION is
+  replayable across a later phase pass; the approval is therefore bound to all
+  three, re-verified inside the promote transaction, with drift failing closed.
+- A crash between commit and send can never double-release: promotion IS the
+  outbox write (durable, UNIQUE-keyed intents), and the crank's dispatch is a
+  read through the pinned exact-host path, marked delivered only on connector
+  success.
+- The ledger's belief moves only when the inbound authority observation
+  reconciles: the reconcile path records `verified_at` on a match (promoted →
+  verified via the crate's transition law); the crank never writes it.
+
+**Bug fixes**
+- `resolve_binding` selects `delivery_bindings.secret_file_name`, but the
+  bindings batch never created the column and the provisioner never wrote it —
+  the resolver's first real caller arrives with this round and caught it. The
+  column now ships in the batch (fresh builds), rides a guarded ALTER (existing
+  databases), and the provisioner writes it.
+
+### Engineering record
+
+Schema `1.32.17` → **`1.32.18`**. New table `delivery_releases` (nine-value
+status CHECK — the pure crate's `ReleaseStatus` vocabulary, which does not fit
+`delivery_traces`' trace-vocabulary CHECK; approval columns; the OTel
+revision/environment columns). `PARITY_TABLES` and the expected-table census
+moved with it in the same commit; the refuse-newer probe moved to `1.32.19` so
+it keeps testing `Greater`.
+
+The chain writer now carries the run's admission policy into every signed link
+— the field existed for exactly the comparison the promotion gate makes. A run
+admitted under no policy still refuses, fail-closed.
+
+The pin asserting the intents were "demonstrably undispatchable" is **re-scoped
+to its positive successor, in the same commit as the code that breaks it**: an
+intent leaves `pending` only through a promotion that minted it, and the drain
+re-verifies before any network contact. The route census pins are re-scoped the
+same way (eight writes, eight reads). The comment guard's law held: zero round
+labels in `src/` production comments.
+
+**Honest ceilings.**
+- An already-granted approval is not independently revokable this round: the
+  mitigations are the expiry window (measured from `approved_at`), the
+  principal kill-switch checked inside the promote transaction, and the
+  three-way digest binding. A revocation mechanism for the ARTIFACT itself is a
+  new decision, not an omission silently inherited.
+- The DSAR sweep gains no delivery arm: approval evidence is the authorization
+  artifact, not an identity record, and pruning it would unexplain a promotion.
+  Widening the sweep is a new decision.
+- Promotion audit rows ride `AuditKind::Workflow` in `audit_events`, and the
+  audit-retention prune is kind-blind: promotion evidence ages exactly like
+  every other audit row, per the operator's `BRAIN_AUDIT_RETENTION_DAYS`. The
+  durable lifecycle record is the release row itself, which no retention pass
+  touches, so a pruned promotion is still explained by its row.
+- Step-up/re-authentication is ABSENT: the digest-in-hand pattern is
+  co-presence, not freshness. The approval's freshness law is the expiry
+  window, named here rather than overstated.
+- The crank's dispatch is a READ through the pinned adapter path (the only
+  egress the tree has); the external state change is made by the operator's own
+  pipeline, not by this server, and the intent is drained when that observation
+  contact succeeds.
+- Multi-subject chains refuse: the crate's law requires every link to describe
+  the same artifact, so a run mixing artifact and phase-only links in its chain
+  promotes nothing (reported as `attestation_chain_broken`, first in push
+  order).
+
+**None** for these categories is not claimed anywhere: this entry asserts what
+the code does, not a conformance, certification, or compliance finding. No AI
+Act / CRA / GDPR / DORA conclusion is drawn or claimable from any of it; the
+project envelope is **not DSSE**; a verifying chain is well-formed and
+digest-bound, NOT authenticated.
+
 ## [Unreleased] — 2026-09-27 — "Bindings": the machine's standing authority to read an external system
 
 ### Release notes
