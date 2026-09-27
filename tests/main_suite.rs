@@ -20726,3 +20726,785 @@ mod r42_authority_bindings {
         );
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The release round: releases + promote + approval binding + the /due crank.
+//
+// The battery is RED-first and compile-clean: every pin here fails only on
+// MISSING PRODUCTION CODE (a file that does not exist, a symbol that is not
+// locatable, a table the migration has not created, a route that is not
+// registered) — never on a test-side defect. Behavior proofs that need the
+// service core live with their subject in `src/workflow/releases.rs` and land
+// in the same commits as the core they exercise; this module pins the WIRE,
+// the SCHEMA, the LAWS, and the production-caller proofs.
+//
+// Non-claims, verbatim: a valid approval proves co-presence of a digest and a
+// principal, not freshness or identity re-verification; the crate's
+// `record_digest` is a digest, not a signature; a chain that verifies is
+// well-formed and digest-bound, NOT authenticated; nothing here is DSSE; no
+// AI Act / CRA / GDPR / DORA conclusion is drawn or claimable from any of it.
+mod r43_releases {
+    use super::tests::handler_body;
+    use super::tests::strip_cfg_test_regions;
+    use super::*;
+    use brain_server::migration::run_migration;
+    use brain_server::register_sqlite_vec::register_sqlite_vec;
+
+    /// The in-memory migrated database, the same fixture the other round
+    /// modules use.
+    fn test_db() -> Connection {
+        register_sqlite_vec();
+        let mut db = Connection::open_in_memory().expect("open in-memory DB");
+        run_migration(&mut db, 512).expect("migration");
+        db
+    }
+
+    fn src(rel: &str) -> String {
+        std::fs::read_to_string(format!("{}/{rel}", env!("CARGO_MANIFEST_DIR")))
+            .unwrap_or_else(|e| panic!("read {rel}: {e}"))
+    }
+
+    /// The production region of a source file: `#[cfg(test)]` regions stripped
+    /// by the string/comment-aware scanner. `production_of` is never used in
+    /// this module: it panics on a file with no `#[cfg(test)]` boundary
+    /// (`src/handlers/delivery.rs`, `src/server/router/workflow.rs`) and is
+    /// silently vacuous on `src/server/router/route_guards.rs`, whose `//!`
+    /// header names `#[cfg(test)]` on line 3.
+    fn production(rel: &str) -> String {
+        strip_cfg_test_regions(&src(rel))
+    }
+
+    // ── 1. the table ────────────────────────────────────────────────────────
+
+    /// The release table ships the WHOLE lifecycle shape: the nine-value
+    /// status CHECK (the crate's `ReleaseStatus::ALL` wire names — a status
+    /// that does not fit `delivery_traces`' six-value CHECK needs its own
+    /// closed set), the approval COLUMNS (a sixth table is a new decision the
+    /// line has not made), and the OTel revision/environment columns.
+    #[test]
+    fn delivery_releases_table_ships_the_lifecycle_shape() {
+        let db = test_db();
+        let table: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='delivery_releases'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("pragma probe");
+        assert_eq!(table, 1, "delivery_releases must exist after the migration");
+
+        for column in [
+            "run_id",
+            "binding_id",
+            "ref",
+            "commit_sha",
+            "environment",
+            "artifact_digest",
+            "approval_subject_digest",
+            "approval_principal",
+            "approval_scope",
+            "approval_authority_digest",
+            "approval_state_revision",
+            "approval_expires_at",
+            "approved_at",
+            "status",
+            "deployed_at",
+            "verified_at",
+            "rolled_back_at",
+        ] {
+            let n: i64 = db
+                .query_row(
+                    "SELECT COUNT(*) FROM pragma_table_info('delivery_releases') WHERE name=?1",
+                    [column],
+                    |r| r.get(0),
+                )
+                .expect("pragma probe");
+            assert_eq!(n, 1, "delivery_releases.{column} must exist");
+        }
+
+        // The nine lifecycle statuses are the law's vocabulary, and the CHECK
+        // is strictly a FLOOR: the crate's transition function is the law, the
+        // CHECK only keeps foreign words out.
+        for status in [
+            "proposed",
+            "approved",
+            "building",
+            "attested",
+            "staged",
+            "promoted",
+            "verified",
+            "rolled_back",
+            "failed",
+        ] {
+            let ok = db.execute(
+                "INSERT INTO delivery_releases(run_id, binding_id, ref, environment, \
+                 artifact_digest, status, created_at, updated_at) \
+                 VALUES (1, 1, 'r', 'test', 'sha256:00', ?1, 1, 1)",
+                [status],
+            );
+            assert!(ok.is_ok(), "status {status} must be INSERTable");
+            db.execute("DELETE FROM delivery_releases", [])
+                .expect("clean");
+        }
+        let bad = db.execute(
+            "INSERT INTO delivery_releases(run_id, binding_id, ref, environment, \
+             artifact_digest, status, created_at, updated_at) \
+             VALUES (1, 1, 'r', 'test', 'sha256:00', 'dispatched', 1, 1)",
+            [],
+        );
+        assert!(
+            bad.is_err(),
+            "a status outside the nine must be refused by the CHECK"
+        );
+
+        for env in ["development", "test", "staging", "production"] {
+            let ok = db.execute(
+                "INSERT INTO delivery_releases(run_id, binding_id, ref, environment, \
+                 artifact_digest, status, created_at, updated_at) \
+                 VALUES (1, 1, 'r', ?1, 'sha256:00', 'proposed', 1, 1)",
+                [env],
+            );
+            assert!(ok.is_ok(), "environment {env} must be INSERTable");
+            db.execute("DELETE FROM delivery_releases", [])
+                .expect("clean");
+        }
+        let bad_env = db.execute(
+            "INSERT INTO delivery_releases(run_id, binding_id, ref, environment, \
+             artifact_digest, status, created_at, updated_at) \
+             VALUES (1, 1, 'r', 'prod', 'sha256:00', 'proposed', 1, 1)",
+            [],
+        );
+        assert!(
+            bad_env.is_err(),
+            "the environment CHECK is the CLOSED four-value OTel set; 'prod' is not in it"
+        );
+    }
+
+    /// The census moves to five tables, in the same commit as the table. The
+    /// previous census said a fifth `delivery_%` table is a new decision —
+    /// this commit IS that decision, recorded.
+    #[test]
+    fn delivery_census_carries_the_releases_table() {
+        let db = test_db();
+        let delivery_tables: Vec<String> = {
+            let mut stmt = db
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'delivery_%' \
+                     ORDER BY name",
+                )
+                .expect("prepare");
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .expect("query");
+            rows.map(std::result::Result::unwrap).collect()
+        };
+        assert_eq!(
+            delivery_tables,
+            vec![
+                "delivery_attestations",
+                "delivery_bindings",
+                "delivery_budgets",
+                "delivery_releases",
+                "delivery_traces",
+            ],
+            "the release round is the FIFTH `delivery_%` table and says so in its stamp \
+             ({delivery_tables:?})"
+        );
+        // Rehearsal parity and the expected-table census move WITH the table.
+        let parity = src("src/bin/brain_migrate_rehearse.rs");
+        assert!(
+            parity.contains("\"delivery_releases\""),
+            "PARITY_TABLES must carry the release row — a release the rehearsal does not \
+             prove it copied is a release that silently vanishes on restore"
+        );
+        assert!(
+            src("tests/main_suite.rs").contains("\"delivery_releases\","),
+            "the expected-table census must carry the release table"
+        );
+    }
+
+    /// The stamp moves with the table, both arms in lockstep, and the probe
+    /// moves ONE ABOVE the ceiling so it keeps testing `Greater`, never `Equal`.
+    #[test]
+    fn delivery_schema_stamp_is_the_release_stamp() {
+        let db = test_db();
+        assert_eq!(
+            brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
+            "1.32.18",
+            "the release round is a schema round: the stamp moves with the table that earns it"
+        );
+        assert_eq!(
+            brain_server::storage_layout::schema_version(&db).as_deref(),
+            Some("1.32.18"),
+        );
+        let migration = src("src/migration.rs");
+        assert!(
+            migration.contains("DO UPDATE SET value = '1.32.18'"),
+            "both arms of the schema_version upsert must move together"
+        );
+        let layout = src("src/storage_layout.rs");
+        assert!(
+            layout.contains("is_newer_than_known(Some(\"1.32.19\"))"),
+            "the probe must move one ABOVE the new ceiling, or it silently tests Equal"
+        );
+    }
+
+    // ── 2. the gate law, pinned at the wire ─────────────────────────────────
+
+    /// The promotion gate CONSUMES the pure crate — `promote`, `Approval`,
+    /// `ReleaseStatus`, `is_legal_release_transition`, `BudgetLedger` — and
+    /// reports the crate's OWN first reason in push order. The substrate
+    /// stops being readerless here.
+    #[test]
+    fn delivery_release_gate_reads_the_crate_and_reports_the_push_order_first_reason() {
+        let core = production("src/workflow/releases.rs");
+        for needle in [
+            "brain_delivery_core::promote",
+            "brain_delivery_core::Approval",
+            "brain_delivery_core::ReleaseStatus",
+            "is_legal_release_transition",
+            "BudgetLedger",
+            "chain_defect",
+            // deny-wins: the FIRST reason in the crate's push order is the one
+            // reported, and the crate's own `Decision::Deny` carries it.
+            "Decision::Deny",
+            "deny_reason",
+        ] {
+            assert!(
+                core.contains(needle),
+                "the release core must consume `{needle}` from the pure crate — the readerless \
+                 debt is exactly what this round exists to close"
+            );
+        }
+        // The unread law, pinned: the trace mode is CARRIED into the request
+        // and deliberately never read — a trace that claims a mode buys no
+        // authority its tier was not granted.
+        assert!(
+            core.contains("trace_mode") && core.contains("unread"),
+            "the promotion request must carry trace_mode and say, in the production region, \
+             that it is unread"
+        );
+    }
+
+    /// The approval binding is THREE-WAY: content digest + authority digest +
+    /// the run's state revision, all re-verified INSIDE the promote
+    /// transaction. An approval that binds content but not the target is
+    /// replayable against a different external system; an approval that binds
+    /// both but not the revision is replayable across a later phase pass.
+    #[test]
+    fn delivery_approval_binds_content_authority_and_revision() {
+        let core = production("src/workflow/releases.rs");
+        for needle in [
+            "approval_subject_digest",
+            "approval_authority_digest",
+            "approval_state_revision",
+            // re-verification inside the promote tx, fail-closed on drift
+            "authority_digest",
+        ] {
+            assert!(
+                core.contains(needle),
+                "the approval binding must carry `{needle}` — binding content without the \
+                 authority is replayable against a different external system"
+            );
+        }
+        // The live digest is RE-DERIVED at the promotion instant from the
+        // stored artifact bytes, never remembered from the approval.
+        assert!(
+            core.contains("artifact_hash"),
+            "the promote path must re-derive the live subject digest from the artifact bytes"
+        );
+        // The prefix law, pinned once: every digest on a release row is
+        // `sha256:<64hex>` — the crate's `binds` is string equality, so two
+        // normalizations would silently never match.
+        assert!(
+            core.contains("sha256:"),
+            "release-row digests are normalized to the sha256:<64hex> prefix, once, here"
+        );
+    }
+
+    /// The approval's expiry is evaluated INSIDE the promote transaction
+    /// against the transaction's `now` — the window that matters is exactly
+    /// the gap between approve and promote, so the expiry is measured from
+    /// `approved_at`, not from creation.
+    #[test]
+    fn delivery_approval_expiry_is_evaluated_inside_the_promote_transaction() {
+        let core = production("src/workflow/releases.rs");
+        assert!(
+            core.contains("approval_expires_at"),
+            "the release row must carry the approval expiry measured from approved_at"
+        );
+        assert!(
+            core.contains("is_current"),
+            "the crate's is_current (binds + not-expired, fail-closed at the boundary) is \
+             the law the promote transaction delegates to"
+        );
+    }
+
+    /// THE DO'S NAMED TEST, body re-scoped on four measured grounds (the
+    /// hostcall `Budget` is a 30 s wall clock with no run_id/kind/spent; the
+    /// delivery loop has zero hostcall contact; `hostcalls_build_wiring` is
+    /// machine-pinned to exactly one wiring; `delivery_budgets` had one write
+    /// and zero reads). Enforcement lands at PROMOTION TIME, inside the
+    /// promote transaction — the only shape the shipped code supports.
+    #[test]
+    fn delivery_budget_exhaustion_fails_closed_at_the_hostcall_seam() {
+        let core = production("src/workflow/releases.rs");
+        // The loader reads the STORED rows inside the promote path...
+        assert!(
+            core.contains("delivery_budgets"),
+            "the budget loader must read delivery_budgets — at promotion time, not at a \
+             hostcall seam the delivery loop never touches"
+        );
+        // ...builds Ceilings from DATA and never from the Default impl (a
+        // default ledger grants nothing, so it refuses every promotion —
+        // the fail-closed trap must come from the operator's own rows, not
+        // from a forgotten default)...
+        assert!(
+            !core.contains("BudgetLedger::default()"),
+            "BudgetLedger::default() refuses EVERY promotion; the loader builds from stored \
+             rows or the refusal is a bug, not a budget"
+        );
+        assert!(
+            core.contains("Ceilings"),
+            "the loader builds explicit Ceilings from the stored rows"
+        );
+        // ...and the post-hoc kinds' spend moves IN THE SAME transaction —
+        // honest measurement: spent only moves when a producer exists.
+        assert!(
+            core.contains("UPDATE delivery_budgets"),
+            "the promotion transaction is the first writer of delivery_budgets.spent — a \
+             ceiling nobody draws against is enforcement by accident"
+        );
+    }
+
+    /// Blast radius is NEVER enforced — the crate's own law, and the server
+    /// must not manufacture a ceiling for a dimension that has none.
+    #[test]
+    fn delivery_blast_radius_is_never_enforced() {
+        let core = production("src/workflow/releases.rs");
+        assert!(
+            !core.contains("blast_radius") || core.contains("never enforced"),
+            "blast_radius takes part in no decision; if the loader names it at all it must \
+             say why it is skipped"
+        );
+    }
+
+    // ── 3. the wire ─────────────────────────────────────────────────────────
+
+    /// Eight routes: four writes (releases create/approve/promote + the due
+    /// crank) and four reads (releases list + the run census), registered and
+    /// dual-listed in the same commit, documented in openapi.yaml.
+    #[test]
+    fn delivery_release_routes_are_registered_and_dual_listed() {
+        let router = production("src/server/router/workflow.rs");
+        let paths = [
+            "/workflow/delivery/releases",
+            "/workflow/delivery/releases/{id}/approve",
+            "/workflow/delivery/releases/{id}/promote",
+            "/workflow/delivery/due",
+            "/workflow/delivery/runs/{id}",
+            "/workflow/delivery/runs/{id}/steps",
+        ];
+        for p in paths {
+            assert!(
+                router.contains(&format!("\"{p}\"")),
+                "route {p} must be registered — the release surface is the round's wire"
+            );
+        }
+        let guards = src("src/server/router/route_guards.rs");
+        for p in paths {
+            assert_eq!(
+                guards.matches(&format!("\"{p}\"")).count(),
+                2,
+                "{p} must appear once in OPENAPI_ROUTES and once in AUTHZ_GATES"
+            );
+        }
+        let openapi = src("openapi.yaml");
+        for p in paths {
+            assert!(
+                openapi.contains(&format!("{p}:")),
+                "openapi.yaml must document {p} in the same commit as the registration"
+            );
+        }
+    }
+
+    /// THE agent-class refusal. The promotion family is the first route family
+    /// whose writes LEAVE THE HOST, so its four write handlers refuse the
+    /// agent preset explicitly — before any other work, the `case_run`
+    /// precedent — and the route-guards comment that claimed the refusal
+    /// already existed is made true where it is true and corrected where it
+    /// is not.
+    #[test]
+    fn delivery_promotion_writes_refuse_the_agent_class() {
+        let handlers = production("src/handlers/delivery.rs");
+        for handler in [
+            "post_delivery_release",
+            "post_delivery_release_approve",
+            "post_delivery_release_promote",
+            "post_delivery_due",
+        ] {
+            let body = handler_body(&handlers, handler).unwrap_or_else(|| {
+                panic!("handler fn {handler} must exist in src/handlers/delivery.rs")
+            });
+            let refusal = body.find("PrincipalKind::AgentLoopback");
+            let core_call = body.find("spawn_blocking");
+            assert!(
+                refusal.is_some(),
+                "{handler} must refuse the agent class explicitly — agents hold write:* so \
+                 the role gate alone admits them, and a promotion is the one write that \
+                 leaves the host"
+            );
+            assert!(
+                core_call.is_some() && refusal.unwrap() < core_call.unwrap(),
+                "{handler}'s agent refusal must precede any work (the self-launch precedent: \
+                 no probe oracle)"
+            );
+        }
+        // The false comment is corrected in the same commit: the run writes
+        // admit agents (role-gated); the promotion family refuses them, and
+        // the comment names where.
+        let guards = production("src/server/router/route_guards.rs");
+        assert!(
+            guards.contains("refused in handlers/delivery.rs"),
+            "the route-guards comment must name the file that carries the agent refusal"
+        );
+        assert!(
+            !guards.contains("the agent class is refused there"),
+            "the old comment claimed a refusal that existed nowhere; the corrected text \
+             replaces it"
+        );
+    }
+
+    /// Every new gate has a PRODUCTION caller, by name. A gate only tests call
+    /// is the `attachment_errors` shape: shipped, tested, and dead. The
+    /// workflow module's truthful `#![allow(dead_code)]` means the compiler
+    /// will NOT catch a dead gate here — this pin is the dead-code watchdog
+    /// for the whole round.
+    #[test]
+    fn every_release_gate_has_a_production_caller() {
+        assert!(
+            std::path::Path::new(&format!(
+                "{}/src/workflow/releases.rs",
+                env!("CARGO_MANIFEST_DIR")
+            ))
+            .exists(),
+            "src/workflow/releases.rs must exist before its callers are believed"
+        );
+        let handlers = production("src/handlers/delivery.rs");
+        for (symbol, call) in [
+            ("fn create_release", "create_release("),
+            ("fn approve_release", "approve_release("),
+            ("fn promote_release", "promote_release("),
+        ] {
+            let core = production("src/workflow/releases.rs");
+            assert!(
+                core.contains(symbol),
+                "{symbol} must be DEFINED in the release core's production region"
+            );
+            assert!(
+                handlers.contains(call),
+                "{symbol} has no PRODUCTION caller by name in the handler layer — a gate \
+                 only tests call is shipped, tested, and dead"
+            );
+        }
+        // And the handler layer is the router's, not a dead end: the three
+        // write handlers are reachable from the registrations pin above.
+    }
+
+    // ── 4. the crank ────────────────────────────────────────────────────────
+
+    /// The crank transplants the valet law: request-scoped (the cron recipe IS
+    /// the scheduler), a bounded batch that DRAINS, `remaining` reported AND
+    /// audited, idempotency pre-check before any write, and a HARD in-handler
+    /// batch cap — no route-level limiter exists, so the cap is the only thing
+    /// between a crank and an egress storm.
+    #[test]
+    fn delivery_due_crank_is_bounded_and_drains_with_the_valet_law() {
+        let handlers = production("src/handlers/delivery.rs");
+        let body = handler_body(&handlers, "post_delivery_due")
+            .unwrap_or_else(|| panic!("handler fn post_delivery_due must exist"));
+        // The domain scope is checked immediately after authz, before any
+        // pool work (the /due route has no run id to be probe-blind with).
+        let domain = body
+            .find("&domain")
+            .or_else(|| body.find("domain_required"));
+        let authorize = body.find("authorize");
+        assert!(authorize.is_some(), "the crank authorizes like every route");
+        assert!(
+            domain.is_some(),
+            "the crank is scoped BY DOMAIN — it has no run id, and an unscoped drain is a \
+             cross-tenant egress"
+        );
+        // The hard cap is a NAMED constant, and the batch drains (remaining
+        // reported), never wedges.
+        let core = production("src/workflow/releases.rs");
+        assert!(
+            core.contains("MAX_DUE") || handlers.contains("MAX_DUE"),
+            "the crank's batch cap must be a named constant — the valet MAX_DUE_SCAN \
+             precedent is the house law against an unbounded batch"
+        );
+        assert!(
+            body.contains("remaining"),
+            "the crank reports `remaining` — a bounded batch that does not say what it left \
+             behind is a silent short drain"
+        );
+    }
+
+    /// The crank re-verifies EACH intent before any network contact:
+    /// authenticity (the R42 conjunction), the release still promoted, the
+    /// approval still current, the approver not revoked, and the chain still
+    /// verifying — and it marks the row delivered only on connector success,
+    /// through the guarded `status='pending'` update so a concurrent drain is
+    /// a receipt and not a second effect.
+    #[test]
+    fn delivery_due_reverifies_before_network_contact_and_marks_delivered_only_on_success() {
+        let core = production("src/workflow/releases.rs");
+        for needle in [
+            "intent_is_authentic",
+            // the guarded marking: the UPDATE that only moves a `pending` row
+            "status = 'pending'",
+        ] {
+            assert!(
+                core.contains(needle),
+                "the crank must re-verify/mark through `{needle}` — a drain that trusts its \
+                 own selection is a forge amplifier"
+            );
+        }
+        // Promotion is the outbox write: the promote transaction mints the
+        // durable intent rows through the kernel mint, so a crash between the
+        // commit and any later send is a replay of a durable row, never a
+        // double-release.
+        assert!(
+            core.contains("mint_intent"),
+            "the promote walk must mint the dispatch intents through the kernel mint — \
+             promotion IS the outbox write"
+        );
+    }
+
+    /// The reconcile-only law: the ledger believes the world changed only when
+    /// the inbound authority observation reconciles, so `verified_at` is
+    /// written by the RECONCILE path and never by the crank.
+    #[test]
+    fn delivery_verified_at_is_the_reconcile_paths_alone() {
+        let delivery = production("src/workflow/delivery.rs");
+        assert!(
+            delivery.contains("verified_at"),
+            "the inbound reconcile path records verified_at on a promoted release — the \
+             one place the ledger's belief may move"
+        );
+        let core = production("src/workflow/releases.rs");
+        let crank_region = core
+            .split("fn select_due_batch")
+            .nth(1)
+            .map(|rest| rest.split("mod tests").next().unwrap_or(rest).to_string())
+            .unwrap_or_default();
+        if !crank_region.is_empty() {
+            assert!(
+                !crank_region.contains("verified_at"),
+                "the crank NEVER sets verified_at — it drains an intent; only the authority's \
+                 inbound observation moves the ledger's belief"
+            );
+        }
+    }
+
+    // ── 5. the pending-question seam ────────────────────────────────────────
+
+    /// The gates route, on a `prompt` disposition, writes a bounded screened
+    /// question into run state via CAS in the same transaction — and a second
+    /// prompt while one is pending is the typed `QuestionPending` refusal,
+    /// mapped 409. `/answer` becomes exercisable by route for the first time.
+    #[test]
+    fn delivery_pending_question_is_set_on_prompt_and_consumed_by_answer() {
+        let core = production("src/workflow/delivery.rs");
+        let gates = core
+            .split("pub(crate) fn gates(")
+            .nth(1)
+            .expect("the gates core must exist")
+            .split("pub(crate) fn ")
+            .next()
+            .expect("region")
+            .to_string();
+        assert!(
+            gates.contains("pending_question"),
+            "the gates core must write the pending question on a prompt disposition"
+        );
+        assert!(
+            gates.contains("cas_update"),
+            "the question is written through the CAS — the same transaction that writes the \
+             gate's trace row"
+        );
+        assert!(
+            gates.contains("QuestionPending"),
+            "a second prompt while a question is pending is the typed QuestionPending \
+             refusal, not a silent overwrite"
+        );
+        let handlers = production("src/handlers/delivery.rs");
+        let mapping = handlers
+            .split("fn delivery_error")
+            .nth(1)
+            .expect("the error mapping must exist")
+            .split("fn ")
+            .next()
+            .expect("region")
+            .to_string();
+        assert!(
+            mapping.contains("QuestionPending"),
+            "QuestionPending must be mapped at the handler (409) — dead vocabulary no more"
+        );
+    }
+
+    // ── 6. the read census ──────────────────────────────────────────────────
+
+    /// The run read census completes the DO's unassigned surface: domain-
+    /// scoped, probe-blind on every id-scoped route, role-gated, read-seam
+    /// sanitized, and bounded (a list without a cap is an unbounded-
+    /// consumption bug with a response body attached).
+    #[test]
+    fn delivery_run_read_census_is_domain_scoped_probe_blind_and_bounded() {
+        let handlers = production("src/handlers/delivery.rs");
+        for handler in [
+            "get_delivery_releases",
+            "get_delivery_runs",
+            "get_delivery_run",
+            "get_delivery_run_steps",
+        ] {
+            let body = handler_body(&handlers, handler)
+                .unwrap_or_else(|| panic!("handler fn {handler} must exist"));
+            assert!(
+                body.contains("Action::Read") && body.contains("authorize_role"),
+                "{handler} is a read: Read-scoped with the workflow role gate"
+            );
+            assert!(
+                body.contains("sanitize_value_strings"),
+                "{handler} ends at the read seam"
+            );
+            let probe = body
+                .find("release_run_domain")
+                .or_else(|| body.find("run_domain"));
+            let authorize = body.find("authorize");
+            assert!(
+                probe.is_some() && authorize.is_some() && probe.unwrap() < authorize.unwrap(),
+                "{handler} resolves the domain FIRST — the identical 404 on an absent or \
+                 foreign row is the probe-blind law"
+            );
+        }
+        let core = production("src/workflow/delivery.rs");
+        assert!(
+            core.contains("MAX_RUN_LIST")
+                || production("src/workflow/releases.rs").contains("MAX_RUN_LIST"),
+            "the census listing is CAPPED — a named bound, pinned by this pin's existence"
+        );
+    }
+
+    // ── 7. the standing guards, restated for the new surface ────────────────
+
+    /// Zero new dependencies — the crate count stays frozen at 51; the
+    /// lockfile half of the proof is the git diff in the evidence file.
+    #[test]
+    fn delivery_r43_adds_no_dependency() {
+        let manifest = src("Cargo.toml");
+        let deps = manifest
+            .split("[dependencies]")
+            .nth(1)
+            .and_then(|rest| rest.split("\n[").next())
+            .expect("a [dependencies] section");
+        let names: Vec<&str> = deps
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#') && l.contains('='))
+            .filter_map(|l| l.split('=').next())
+            .map(str::trim)
+            .collect();
+        assert_eq!(
+            names.len(),
+            51,
+            "the dependency count is frozen at 51 — the release round needs no new crate \
+             (found {names:?})"
+        );
+    }
+
+    /// The DSAR posture, decided and pinned: the sweep gains no delivery arm
+    /// in this round. An approval is an authorization ARTIFACT, not an
+    /// identity record — erasing `approval_principal` from a release row
+    /// would unexplain a promotion, which is the one thing the audit law
+    /// forbids. A data subject's own rows are reached through the existing
+    /// arms; widening the sweep to the delivery family is a new decision.
+    #[test]
+    fn delivery_release_dsar_posture_is_decided() {
+        let sweep = src("src/service/dsar/sweep.rs");
+        assert!(
+            !sweep.contains("delivery"),
+            "the DSAR sweep gains no delivery arm: approval evidence is the authorization \
+             artifact, not an identity record, and pruning it would unexplain a promotion"
+        );
+    }
+
+    /// The retention posture, decided and pinned: promotion audit rows ride
+    /// `AuditKind::Workflow` in `audit_events`, and the audit-retention prune
+    /// is KIND-BLIND — promotion evidence ages exactly like every other audit
+    /// row, per the operator's own `BRAIN_AUDIT_RETENTION_DAYS`. The durable
+    /// lifecycle record is the release row itself, which no retention pass
+    /// touches, so a pruned promotion is still explained by its row.
+    #[test]
+    fn delivery_promotion_evidence_retention_is_kind_blind_and_disclosed() {
+        let audit = src("src/audit/mod.rs");
+        let prune = audit
+            .split("pub fn prune_audit_retention")
+            .nth(1)
+            .expect("the retention prune must exist")
+            .split("pub fn ")
+            .next()
+            .expect("region")
+            .to_string();
+        // The DELETE itself is the law: it filters on ts alone, with no kind
+        // predicate — promotion rows age exactly like every other audit row.
+        // (The prune's own evidence row may name AuditKind; that is not a
+        // filter.)
+        assert!(
+            prune.contains("DELETE FROM audit_events WHERE ts < ?1"),
+            "the audit-retention prune is kind-blind: promotion rows age like every audit \
+             row, and the release row outlives the narration"
+        );
+        assert!(
+            !prune.contains("WHERE ts < ?1 AND kind"),
+            "a kind-filtered prune would be a new retention law — this pin holds the \
+             kind-blind posture so it cannot drift silently"
+        );
+    }
+
+    /// The house gate order is restated on the new surface: `run_domain` (or
+    /// the release→run→domain resolve) → `authorize` → pool → `authorize_role`
+    /// → the core, on every new route, in that order.
+    #[test]
+    fn delivery_release_surfaces_share_the_house_gate_order() {
+        let handlers = production("src/handlers/delivery.rs");
+        for handler in [
+            "post_delivery_release",
+            "post_delivery_release_approve",
+            "post_delivery_release_promote",
+            "post_delivery_due",
+            "get_delivery_releases",
+            "get_delivery_runs",
+            "get_delivery_run",
+            "get_delivery_run_steps",
+        ] {
+            let body = handler_body(&handlers, handler)
+                .unwrap_or_else(|| panic!("handler fn {handler} must exist"));
+            let authorize = body
+                .find("super::authorize")
+                .or_else(|| body.find("authorize("));
+            let pool = body
+                .find("resolve_domain_pool")
+                .or_else(|| body.find("pool"));
+            let role = body.find("authorize_role");
+            assert!(
+                authorize.is_some() && pool.is_some() && role.is_some(),
+                "{handler} carries the full gate order (authorize → pool → role)"
+            );
+            assert!(
+                authorize.unwrap() < pool.unwrap() && pool.unwrap() < role.unwrap(),
+                "{handler}'s gate order is authorize → pool → role, in that order"
+            );
+        }
+    }
+}
