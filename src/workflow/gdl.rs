@@ -81,18 +81,73 @@ and why it does or does not falsify the hypothesis\"}. If the evidence \
 does not contradict the hypothesis, say so — never invent a \
 contradiction.";
 
-/// The soft-handoff predicate (integer law): a case at or above the 80
-/// percent confidence line is in the soft-handoff band. Integer-only —
-/// no float comparison, no conversion through a float.
-pub(crate) const SOFT_HANDOFF_THRESHOLD_PCT: i64 = 80;
+/// The soft-handoff predicate: a case whose OWN verify passed is in the
+/// soft-handoff band — the handoff is offered while confidence is high, which
+/// is exactly when handing off without a recorded reason does the most harm.
+///
+/// This used to compare a 0-or-100 confidence value against a named 80
+/// threshold, but the only two reachable inputs were 100 (`verify.pass`) and 0,
+/// so the comparison reduced to `verify.pass` and the threshold discriminated
+/// nothing. A named threshold that cannot separate any two real cases is a
+/// documented control that is not a control, so the constant and the
+/// comparison are GONE and the law is stated for what it actually measures. The
+/// deleted name is named nowhere in this file on purpose: an absence guard that
+/// a comment can satisfy is not an absence guard. Manufacturing a real
+/// confidence signal is a product decision, and this round does not make one.
+pub(crate) fn soft_handoff_latch_fires(verify_pass: bool) -> bool {
+    verify_pass
+}
 
-pub(crate) fn soft_handoff(confidence_pct: i64) -> bool {
-    confidence_pct >= SOFT_HANDOFF_THRESHOLD_PCT
+/// The latch law, as ONE pure decision with a production caller.
+///
+/// `fires` is this evaluation; `prior_fired` is any earlier fired row on the
+/// run; `prior_justified` is an OPERATOR-recorded acceptance on one of those
+/// rows. The machine never supplies the last flag from its own data — a
+/// justification is a human accepting the handoff, and an agent that can
+/// justify its own soft handoff has no latch at all.
+///
+/// The only other implementation of this rule was the
+/// `SoftHandoffLatch` type, whose four call sites were ALL in `mod tests`. Two
+/// implementations of one law, one of them reachable only from tests, is the
+/// same shape as `attachment_errors`. The type is deleted; this is the
+/// single decision, and `record_soft_handoff_row` — a real production writer —
+/// is its caller.
+pub(crate) fn soft_handoff_latch_violation(
+    fires: bool,
+    prior_fired: bool,
+    prior_justified: bool,
+) -> bool {
+    fires && prior_fired && !prior_justified
 }
 
 /// The named violation: a fired soft-handoff without a recorded
 /// justification (the latch law).
 pub(crate) const SOFT_HANDOFF_VIOLATION: &str = "soft-handoff fired without justification";
+
+// ── the artifact collection caps (the bounds law) ─────────────────────────
+// A GDL artifact is an agent-authored body, and its collections land in the
+// run's own state row. Two of them were bounded; seventeen were not, while
+// the delivery loop bounds the same class of input (`MAX_REFS = 32`). An
+// unbounded collection on a shared table is unbounded consumption wearing a
+// document's clothes
+//
+// Named, private, `usize`, and rendered into the refusal — the same shape and
+// the same discipline as the delivery caps, so a reviewer reads the number
+// that refused rather than trusting a comparison to a literal in a message
+// that can drift away from it.
+const MAX_TELEMETRY_REFS: usize = 32;
+const MAX_SEARCH_HITS: usize = 16;
+const MAX_RULE_OUT_BASIS: usize = 16;
+const MAX_HYPOTHESES: usize = 16;
+const MAX_PLAN_STEPS: usize = 32;
+const MAX_TEST_LOG_ROWS: usize = 64;
+const MAX_REQUIRED_EVIDENCE: usize = 16;
+const MAX_REQUIRED_REPORT: usize = 16;
+/// The two bounds that already existed as BARE LITERALS, duplicated between
+/// the comparison and their own error text — a cap change meant two edits and
+/// the message could drift from the code it claimed to describe. Now one name.
+const MAX_DIAGNOSTIC_SEAMS: usize = 16;
+const MAX_SOURCES_PER_HYPOTHESIS: usize = 8;
 
 /// The pinned P-class SLA table: integer seconds from the Triage pass to
 /// the deadline. The literals are pinned by test and preregistered — a
@@ -130,40 +185,6 @@ pub(crate) fn advertised_sla(priority: &str, acuity: Option<&str>) -> Option<i64
         (Some(p), None) => Some(p),
         (None, Some(a)) => Some(a),
         (None, None) => None,
-    }
-}
-
-/// The once-per-case latch: the first fire records itself; a handoff
-/// after a fire without a recorded justification is the named violation.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct SoftHandoffLatch {
-    fired: bool,
-    #[serde(default)]
-    justification: Option<String>,
-}
-
-impl SoftHandoffLatch {
-    /// Evaluate a handoff against the latch. `Ok(true)` = the handoff
-    /// fires (and is recorded); `Err(violation)` = a handoff after a
-    /// fired latch with no justification — the named violation.
-    pub(crate) fn evaluate(
-        &mut self,
-        confidence_pct: i64,
-        justification: Option<&str>,
-    ) -> Result<bool, String> {
-        if !soft_handoff(confidence_pct) {
-            return Ok(false);
-        }
-        if self.fired {
-            match justification {
-                Some(j) if !j.trim().is_empty() => Ok(true),
-                _ => Err("soft-handoff fired without justification".into()),
-            }
-        } else {
-            self.fired = true;
-            self.justification = justification.map(str::to_string);
-            Ok(true)
-        }
     }
 }
 
@@ -395,6 +416,16 @@ pub(crate) fn red_flag_closes(rf: &RedFlagArtifact) -> bool {
 /// required — there is no bypass and no default-open posture.
 fn red_flag_gate(a: &RedFlagArtifact) -> Vec<String> {
     let mut errors = Vec::new();
+    if a.rule_out_basis.len() > MAX_RULE_OUT_BASIS {
+        errors.push(err(
+            "T12",
+            &format!(
+                "rule_out_basis carries {} entries — at most {MAX_RULE_OUT_BASIS} \
+                 may be declared (bounds law)",
+                a.rule_out_basis.len()
+            ),
+        ));
+    }
     if ruled_out_state(&a.ruled_out).is_none() {
         errors.push(err(
             "T12",
@@ -585,6 +616,21 @@ pub(crate) struct ActArtifact {
 pub(crate) struct VerifyArtifact {
     #[serde(default)]
     pub re_run: String,
+    /// The bar this verification APPLIED, restated from the plan .
+    ///
+    /// This field did not exist while the plan's `pass_condition` was
+    /// advertised to the model and stored — the declared bar was
+    /// unenforceable, so an agent could verify against no bar at all and still
+    /// close a case. It is deliberately a STRING and not a parsed threshold:
+    /// `">10%/h"` has no machine-checkable reading, and a gate that accepts
+    /// one as a boolean is a gate that cannot fail. Equality against the
+    /// planned string is the whole contract — the agent must verify against
+    /// the bar it committed to, and may not redefine success after the fact.
+    ///
+    /// A plan that declares no bar is refused at Plan instead; a threshold
+    /// EVALUATOR is a separate product decision this round does not make.
+    #[serde(default)]
+    pub pass_condition: String,
     #[serde(default)]
     pub pass: bool,
     #[serde(default)]
@@ -824,6 +870,16 @@ impl BackReferralContract {
     /// the report carries every required field, non-empty.
     pub(crate) fn release_errors(&self) -> Vec<String> {
         let mut errors = Vec::new();
+        if self.required_report.len() > MAX_REQUIRED_REPORT {
+            errors.push(err(
+                "B3",
+                &format!(
+                    "return contract requires {} fields in `required_report` — \
+                     at most {MAX_REQUIRED_REPORT} may be required (bounds law)",
+                    self.required_report.len()
+                ),
+            ));
+        }
         if self.status == "returned" {
             let report = self.report.as_ref().unwrap_or(&serde_json::Value::Null);
             for field in &self.required_report {
@@ -975,6 +1031,16 @@ fn err(law: &str, detail: &str) -> String {
 /// recorded, "none available" allowed (L3).
 fn intake_gate(a: &IntakeArtifact) -> Vec<String> {
     let mut errors = Vec::new();
+    if a.telemetry_refs.len() > MAX_TELEMETRY_REFS {
+        errors.push(err(
+            "L1",
+            &format!(
+                "telemetry_refs carries {} references — at most \
+                 {MAX_TELEMETRY_REFS} may be declared (bounds law)",
+                a.telemetry_refs.len()
+            ),
+        ));
+    }
     for (name, row) in [
         ("what", &a.is_not.what),
         ("where", &a.is_not.place),
@@ -1015,11 +1081,11 @@ fn intake_gate(a: &IntakeArtifact) -> Vec<String> {
              value, absence is not",
         ));
     }
-    if a.diagnostic_seams.len() > 16 {
+    if a.diagnostic_seams.len() > MAX_DIAGNOSTIC_SEAMS {
         errors.push(err(
             "L1",
             &format!(
-                "diagnostic_seams declares {} channels — at most 16 may be \
+                "diagnostic_seams declares {} channels — at most {MAX_DIAGNOSTIC_SEAMS} may be \
                  declared (bounds law)",
                 a.diagnostic_seams.len()
             ),
@@ -1048,6 +1114,16 @@ fn intake_gate(a: &IntakeArtifact) -> Vec<String> {
 /// required at Triage exit in EVERY case, no bypass, no default.
 fn triage_gate(a: &TriageArtifact) -> Vec<String> {
     let mut errors = Vec::new();
+    if a.search_hits.len() > MAX_SEARCH_HITS {
+        errors.push(err(
+            "A0",
+            &format!(
+                "search_hits carries {} hits — at most {MAX_SEARCH_HITS} may be \
+                 declared (bounds law)",
+                a.search_hits.len()
+            ),
+        ));
+    }
     if !matches!(a.priority.as_str(), "P1" | "P2" | "P3" | "P4") {
         errors.push(err(
             "A0",
@@ -1283,6 +1359,16 @@ fn kind_source(s: &str) -> Option<super::evidence::EvidenceKind> {
 /// claimed here (L7: one line = hypothesis, not root cause).
 fn hypothesize_gate(a: &HypothesizeArtifact) -> Vec<String> {
     let mut errors = Vec::new();
+    if a.hypotheses.len() > MAX_HYPOTHESES {
+        errors.push(err(
+            "A3",
+            &format!(
+                "the plan declares {} hypotheses — at most {MAX_HYPOTHESES} may \
+                 be carried (bounds law)",
+                a.hypotheses.len()
+            ),
+        ));
+    }
     if a.hypotheses.is_empty() {
         errors.push(err(
             "A3",
@@ -1307,7 +1393,7 @@ fn hypothesize_gate(a: &HypothesizeArtifact) -> Vec<String> {
             errors.push(err(
                 "L7",
                 &format!(
-                    "hypothesis[{i}] cites {} sources — at most 8 may be \
+                    "hypothesis[{i}] cites {} sources — at most {MAX_SOURCES_PER_HYPOTHESIS} may be \
                      cited (bounds law)",
                     h.sources.len()
                 ),
@@ -1336,6 +1422,26 @@ fn hypothesize_gate(a: &HypothesizeArtifact) -> Vec<String> {
 /// scenario (L6); the dead-end escalation is defined, never improvised.
 fn plan_gate(a: &PlanArtifact) -> Vec<String> {
     let mut errors = Vec::new();
+    if a.steps.len() > MAX_PLAN_STEPS {
+        errors.push(err(
+            "§10",
+            &format!(
+                "the plan declares {} steps — at most {MAX_PLAN_STEPS} may be \
+                 planned (bounds law)",
+                a.steps.len()
+            ),
+        ));
+    }
+    if a.dead_end.required_evidence.len() > MAX_REQUIRED_EVIDENCE {
+        errors.push(err(
+            "L8",
+            &format!(
+                "dead_end.required_evidence names {} items — at most \
+                 {MAX_REQUIRED_EVIDENCE} may be required (bounds law)",
+                a.dead_end.required_evidence.len()
+            ),
+        ));
+    }
     if a.steps.is_empty() {
         errors.push(err(
             "§10",
@@ -1368,6 +1474,24 @@ fn plan_gate(a: &PlanArtifact) -> Vec<String> {
             errors.push(err(
                 "A3",
                 &format!("step[{i}].expected empty — a test that cannot fail proves nothing"),
+            ));
+        }
+        // A step that fails has somewhere to GO. A failing step with no defined
+        // branch leaves the machine to improvise one, so the branch is
+        // validated: it names another step of THIS plan, never itself.
+        if let Some(next) = s.fail_action
+            && (next < 1 || next > a.steps.len() as i64 || next == s.order)
+        {
+            errors.push(err(
+                "§10",
+                &format!(
+                    "step[{i}].fail_action {next} is not a branch — it must name \
+                     another step of this {}-step plan (1..={}) and never its own \
+                     order {}",
+                    a.steps.len(),
+                    a.steps.len(),
+                    s.order
+                ),
             ));
         }
         if s.kind == "action" && s.invasiveness > 3 {
@@ -1406,6 +1530,14 @@ fn plan_gate(a: &PlanArtifact) -> Vec<String> {
              scenario, 'looks fine' is not evidence",
         ));
     }
+    if a.verify_step.pass_condition.trim().is_empty() {
+        errors.push(err(
+            "L6",
+            "verify_step.pass_condition empty — a plan that cannot state what \
+             'passed' means cannot be verified against one, and a verification \
+             with no declared bar is a test that cannot fail",
+        ));
+    }
     if a.dead_end.escalate_to.trim().is_empty() {
         errors.push(err(
             "L8",
@@ -1426,6 +1558,16 @@ fn plan_gate(a: &PlanArtifact) -> Vec<String> {
 /// and an evidence reference — unsupported evidence does not close.
 fn act_gate(a: &ActArtifact, case: &GdlCase) -> Vec<String> {
     let mut errors = Vec::new();
+    if a.rows.len() > MAX_TEST_LOG_ROWS {
+        errors.push(err(
+            "§4",
+            &format!(
+                "Act carries {} rows — at most {MAX_TEST_LOG_ROWS} may be \
+                 executed (bounds law)",
+                a.rows.len()
+            ),
+        ));
+    }
     if !a.complete || a.rows.is_empty() {
         errors.push(err(
             "§4",
@@ -1480,18 +1622,31 @@ fn act_gate(a: &ActArtifact, case: &GdlCase) -> Vec<String> {
                 _ => {}
             }
         }
+        // A4, widened. This matched only Pass|Fail|Done, so `Rejected`,
+        // `Experimental` and — the real hole — `Pending` closed a plan step
+        // with no outcome and no evidence. `Pending` is the serde `#[default]`,
+        // so an OMITTED verdict key was one, and the step-coverage map above
+        // keys on `order` alone: the machine read the step as executed because
+        // a row existed, not because anything was evaluated. An agent's own
+        // unevaluated record is not evidence that its step ran .
         for (i, r) in a.rows.iter().enumerate() {
-            if matches!(r.verdict, Verdict::Pass | Verdict::Fail | Verdict::Done)
-                && (r.actual.as_deref().is_none_or(|s| s.trim().is_empty())
-                    || r.evidence_ref
-                        .as_deref()
-                        .is_none_or(|s| s.trim().is_empty() || s.chars().count() > 128))
-            {
+            let unevidenced = r.actual.as_deref().is_none_or(|s| s.trim().is_empty())
+                || r.evidence_ref
+                    .as_deref()
+                    .is_none_or(|s| s.trim().is_empty() || s.chars().count() > 128);
+            if unevidenced {
+                let why = if r.verdict == Verdict::Pending {
+                    "a Pending row is an UNEVALUATED self-report: it closes a plan \
+                     step with no outcome and no evidence reference, and the \
+                     machine counts a step executed by the row's presence"
+                } else {
+                    "unsupported evidence never closes a step"
+                };
                 errors.push(err(
                     "A4",
                     &format!(
                         "row[{i}] verdict {:?} without its actual outcome and \
-                         evidence_ref — unsupported evidence never closes a step",
+                         evidence_ref — {why}",
                         r.verdict
                     ),
                 ));
@@ -1576,6 +1731,19 @@ fn verify_gate(a: &VerifyArtifact, case: &GdlCase) -> Vec<String> {
                 "re_run {:?} is not the planned failing scenario {:?} — \
                  verify under the conditions that failed",
                 a.re_run, spec.re_run
+            ),
+        ));
+    }
+    if a.pass_condition.trim() != spec.pass_condition.trim() {
+        errors.push(err(
+            "L6",
+            &format!(
+                "pass_condition {:?} is not the planned bar {:?} — the bar is \
+                 fixed at Plan. Restating it is verification; redefining it after \
+                 the fact is not, and this machine does NOT evaluate a \
+                 natural-language threshold like \">10%/h\": a gate that accepts \
+                 one as a boolean is a gate that cannot fail",
+                a.pass_condition, spec.pass_condition
             ),
         ));
     }
@@ -2016,7 +2184,9 @@ encounter is telehealth; the red-flag record is always required"
         }
         GdlPhase::Verify => {
             "Emit ONE JSON object: \
-{\"re_run\":\"the exact failing scenario from the plan\",\"pass\":bool,\"stability_window_min\":15,\"negative_check\":bool}"
+{\"re_run\":\"the exact failing scenario from the plan\",\
+\"pass_condition\":\"the plan's pass_condition, restated VERBATIM\",\
+\"pass\":bool,\"stability_window_min\":15,\"negative_check\":bool}"
         }
         GdlPhase::Handoff => {
             "Emit ONE JSON object: \
@@ -2568,16 +2738,20 @@ impl GdlDriver {
         owner: &str,
         case: &GdlCase,
     ) -> Result<(), LoopError> {
-        let confidence_pct = if case.verify.as_ref().is_some_and(|v| v.pass) {
-            100
-        } else {
-            0
-        };
-        let fires = soft_handoff(confidence_pct);
+        let verify_pass = case.verify.as_ref().is_some_and(|v| v.pass);
+        let fires = soft_handoff_latch_fires(verify_pass);
         let payload = serde_json::json!({
-            "confidence_pct": confidence_pct,
+            // What the predicate actually reads . The old
+            // `confidence_pct` key was a fabricated 0-or-100 the machine
+            // derived from `verify.pass`; naming it confidence invited a reader
+            // to treat a binary as a scale.
+            "verify_pass": verify_pass,
             "fires": fires,
-            "justification": null,
+            // The machine NEVER authors this. A justification is an operator
+            // accepting the handoff, and only an operator may write one — an
+            // agent that can justify its own soft handoff has no latch at all.
+            // The null is the honest value here, not a stub .
+            "justification": serde_json::Value::Null,
         })
         .to_string();
         let key = format!("run{run_id}:control:soft_handoff:{owner}");
@@ -2622,7 +2796,7 @@ impl GdlDriver {
             // the knowledge gap rides the SDK's gap rule (no coverage ->
             // propose a new article) as a recorded proposal, never an
             // auto-publish.
-            if fires && prior_fired && !prior_justified {
+            if soft_handoff_latch_violation(fires, prior_fired, prior_justified) {
                 super::audit_write(
                     tx.tx(),
                     run_id,
@@ -3811,6 +3985,40 @@ pub(crate) fn write_back_referral_row(
     Ok(())
 }
 
+/// The ONE `deadline_epoch` reader, failing TOWARD ESCALATION.
+///
+/// This value had TWO readers with OPPOSITE fallbacks — the release
+/// path used `unwrap_or_default()` (0 ⇒ every receipt instantly late) and the
+/// sweep used `unwrap_or(i64::MAX)` (⇒ a damaged contract never escalates).
+/// A missing or non-integer deadline is DAMAGED STATE, not a deadline: the
+/// first reader turned it into a false accusation of lateness, the second into
+/// an obligation dropped without a trace. Neither default is safe, so there is
+/// no default at all — the accessor refuses and every caller fails closed,
+/// matching the posture each already takes one line above for unparseable
+/// JSON and a missing contract key. A negative value refuses for the same
+/// reason: it is a corrupt number, not a deadline in the past, and letting it
+/// through would escalate every such contract on sight.
+///
+/// NON-CLAIM: a refusal here is a data-integrity failure about ONE stored row.
+/// It is not a finding about any person, vendor or organization, and it
+/// decides nothing about anyone's compliance. It says the row must be
+/// repaired by an operator.
+pub(crate) fn back_referral_deadline(value: &serde_json::Value) -> Result<i64, LoopError> {
+    match value["deadline_epoch"].as_i64() {
+        Some(deadline) if deadline >= 0 => Ok(deadline),
+        Some(_) => Err(checkpoint::persist_error(
+            "back-referral row carries a NEGATIVE deadline_epoch — damaged state, \
+             not a deadline in the past; the reader refuses rather than escalate \
+             every such contract on sight",
+        )),
+        None => Err(checkpoint::persist_error(
+            "back-referral row without a usable integer deadline_epoch — damaged \
+             state refuses fail-closed toward escalation; the machine never \
+             defaults a deadline it cannot read",
+        )),
+    }
+}
+
 /// The receiver's release: an OPERATOR outcome. The machine refuses
 /// without a decision reference (B4 — the same HITL law the handoff
 /// lifecycle holds), refuses a report that does not carry every required
@@ -3838,10 +4046,7 @@ pub(crate) fn write_back_referral_return(
             serde_json::from_str(&latest).map_err(checkpoint::persist_error)?;
         let contract: BackReferralContract =
             serde_json::from_value(value["contract"].clone()).map_err(checkpoint::persist_error)?;
-        (
-            value["deadline_epoch"].as_i64().unwrap_or_default(),
-            contract,
-        )
+        (back_referral_deadline(&value)?, contract)
     };
     contract.report = Some(report);
     contract.status = "returned".into();
@@ -3994,9 +4199,13 @@ pub(crate) fn escalate_overdue_return_contracts(
         let Some(value) = latest.get(group) else {
             continue;
         };
-        if value["status"].as_str().unwrap_or("") != "open"
-            || value["deadline_epoch"].as_i64().unwrap_or(i64::MAX) >= now
-        {
+        if value["status"].as_str().unwrap_or("") != "open" {
+            continue;
+        }
+        // One reader, one direction: a damaged deadline REFUSES the sweep
+        // rather than reading as "never overdue".
+        let deadline = back_referral_deadline(value)?;
+        if deadline >= now {
             continue;
         }
         let (run_id, key) = group;
@@ -4006,7 +4215,7 @@ pub(crate) fn escalate_overdue_return_contracts(
         let payload = serde_json::json!({
             "contract_key": key,
             "status": "escalated",
-            "deadline_epoch": value["deadline_epoch"],
+            "deadline_epoch": deadline,
             "justification": justification,
             // The contract rides forward so the operator's release path
             // (which reads the latest row) still holds the required
@@ -4521,7 +4730,7 @@ mod tests {
     const HYPOTHESIZE_JSON: &str = r#"{"hypotheses":[{"statement":"PERC battery dead","prediction":"racadm battery state reports Failed","sources":["actual:SEL event 0x42","test:racadm get storageservices.battery"],"confidence":0.7}]}"#;
     const PLAN_JSON: &str = r#"{"steps":[{"order":1,"kind":"check","skill_gate":"L1","description":"query battery state","command":"racadm get storageservices.battery","expected":"Ready","fail_action":2,"invasiveness":0,"justification":null},{"order":2,"kind":"action","skill_gate":"L2","description":"replace battery ring 3","command":"hw replace battery","expected":"battery Ready","fail_action":null,"invasiveness":2,"justification":null}],"verify_step":{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h"},"dead_end":{"escalate_to":"eng-storage","required_evidence":["TSR","test log"]}}"#;
     const ACT_JSON: &str = r#"{"rows":[{"order":1,"kind":"check","description":"query battery state","playbook_ref":"P-STORAGE-0104","variables":["battery state"],"expected":"Ready","actual":"Failed","verdict":"fail","evidence_ref":"TSR p.12","dtfvc":{"diagnose":"battery fault hypothesis","test":"racadm query","fix":null,"verify":"battery state readback matches Failed","capture":null},"invasiveness":0,"justification":null},{"order":2,"kind":"action","description":"replace battery ring 3","playbook_ref":"P-STORAGE-0104","variables":["battery"],"expected":"battery Ready","actual":"Ready","verdict":"pass","evidence_ref":"TSR p.13","dtfvc":{"diagnose":"battery fault confirmed by row 1","test":"racadm query post-replace","fix":"replaced battery ring 3","verify":"rebuild rate 14%/h","capture":"battery replacement row"},"invasiveness":2,"justification":null}],"complete":true}"#;
-    const VERIFY_JSON: &str = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass":true,"stability_window_min":15,"negative_check":true}"#;
+    const VERIFY_JSON: &str = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h","pass":true,"stability_window_min":15,"negative_check":true}"#;
     const RECHECK_JSON: &str =
         r#"{"contradicted":false,"reason":"no falsifier in the captured evidence"}"#;
     const HANDOFF_JSON: &str = r#"{"capture":{"resolution":"write-through during rebuild -> dead PERC battery -> replaced ring 3 -> verified 14%/h","bundle_hash":"h0"},"closure":{"decision":"dead PERC battery replaced; rebuild re-verified","communicated_to":["customer:acme"],"shared_decision":true,"warning_signs":["rebuild rate drops again","battery warning reappears in SEL"],"escalation_path":"reopen the ticket or call L2","follow_up":"re-verify rebuild rate within 48h","modality":{"telehealth":false},"closure_means":"portal_note"}}"#;
@@ -5081,31 +5290,31 @@ mod tests {
     /// The soft-handoff law, pure: fires at the integer threshold, exactly
     /// once per case, and a handoff after the fire without a recorded
     /// justification is the named violation.
+    /// The soft-handoff latch law, at the single seam PRODUCTION uses.
+    ///
+    /// This test used to drive the deleted `SoftHandoffLatch`
+    /// type — whose only callers were tests — and asserted a 79-vs-80 boundary
+    /// on a constant that could only ever be compared against 0 or 100. The
+    /// production law is now the pure `soft_handoff_latch_violation`, and the
+    /// end-to-end operator-justification path (a justification written onto a
+    /// real prior row) stays pinned by `justified_revisit_is_lawful_never_a_
+    /// violation` against actual SQL.
     #[test]
-    fn soft_handoff_fires_once_and_demands_justification() {
-        let mut latch = SoftHandoffLatch::default();
-        assert!(!soft_handoff(79), "79 is under the integer threshold");
-        assert!(soft_handoff(80), "80 is the threshold, integer-only");
-        assert!(matches!(latch.evaluate(100, None), Ok(true)), "first fire");
-        assert!(latch.fired);
-        // A justified handoff after the fire is legal.
-        assert!(
-            matches!(
-                latch.evaluate(100, Some("customer asked to defer; bundle attached")),
-                Ok(true)
-            ),
-            "a justified handoff after the fire is legal"
-        );
-        // An unjustified handoff after the fire is the named violation.
-        assert_eq!(
-            latch.evaluate(100, None),
-            Err("soft-handoff fired without justification".into()),
-        );
-        assert_eq!(
-            latch.evaluate(100, Some("   ")),
-            Err("soft-handoff fired without justification".into()),
-            "a blank justification is no justification"
-        );
+    fn soft_handoff_latch_is_one_decision_with_a_production_caller() {
+        // The predicate is unconditional on the case's OWN verify result.
+        assert!(soft_handoff_latch_fires(true));
+        assert!(!soft_handoff_latch_fires(false));
+        // The first fire records itself; it is never a violation.
+        assert!(!soft_handoff_latch_violation(true, false, false));
+        // A revisit on an already-fired run with no operator justification
+        // is the named violation.
+        assert!(soft_handoff_latch_violation(true, true, false));
+        // A revisit where no soft-handoff fired is not this law's violation.
+        assert!(!soft_handoff_latch_violation(false, true, false));
+        // Only an operator-recorded justification clears the latch. The
+        // machine supplies `prior_justified` from stored rows it did not
+        // author, never from its own escalation reason.
+        assert!(!soft_handoff_latch_violation(true, true, true));
     }
 
     /// C7a — sustained write volume: a pinned burst of case episodes keeps
@@ -6951,7 +7160,12 @@ mod tests {
         let declared = r#"{"is_not":{"what":{"is":"s","is_not":"n"},"where":{"is":"s","is_not":"n"},"when":{"is":"s","is_not":"n"},"extent":{"is":"s","is_not":"n"}},"telemetry_refs":["tsr://x"],"what_changed":"unknown","known_good":"none available","diagnostic_seams":["idrac"]}"#;
         let mut case = GdlCase::fresh("t");
         case.intake = Some(serde_json::from_str(declared).unwrap());
-        let plan_seam = r#"{"steps":[{"order":1,"kind":"check","skill_gate":"L1","description":"query","command":"racadm","expected":"Ready","seam":"idrac","fail_action":2,"invasiveness":0,"justification":null}],"verify_step":{"re_run":"the failing scenario","pass_condition":"ok"},"dead_end":{"escalate_to":"eng","required_evidence":["TSR"]}}"#;
+        // A ONE-step plan has no next step to branch to, so its single step
+        // declares the dead end (`fail_action: null`) and L8's escalation
+        // target carries the outcome. The fixture previously branched to step
+        // 2 of a 1-step plan — a branch to a step that cannot exist, which the
+        // `fail_action` validation now names .
+        let plan_seam = r#"{"steps":[{"order":1,"kind":"check","skill_gate":"L1","description":"query","command":"racadm","expected":"Ready","seam":"idrac","fail_action":null,"invasiveness":0,"justification":null}],"verify_step":{"re_run":"the failing scenario","pass_condition":"ok"},"dead_end":{"escalate_to":"eng","required_evidence":["TSR"]}}"#;
         let (gate, _) = parse_and_gate(GdlPhase::Plan, &case, plan_seam);
         assert!(
             matches!(gate, Gate::Pass),
@@ -7005,7 +7219,7 @@ mod tests {
         assert!(verify_gate(&a, &case).iter().any(|e| e.starts_with("A6")));
     }
 
-    // ── R42-SH ──────────────────────────────────────────────────────────
+    // ── the declared-vs-enforced gaps ────────────────────────────────────
     // The declared-vs-enforced gaps. Each pin below FAILS on the tree as it
     // stands; none of them weakens an existing law.
     //
@@ -7040,11 +7254,12 @@ mod tests {
             !declared.is_empty(),
             "the fixture declares a bar; a plan with NO bar is a different refusal"
         );
+        // NOTE: a raw string does NOT process `\`, so this shape is one line
+        // by design — a `\` line-continuation here would be a literal
+        // backslash in the JSON and the test would fail for the wrong reason.
         let shaped = |condition: &str| {
             format!(
-                r#"{{"re_run":"rebuild rate on VD 5 under the customer load",\
-                 "pass":true,"stability_window_min":15,"negative_check":true,\
-                 "pass_condition":{condition}}}"#
+                r#"{{"re_run":"rebuild rate on VD 5 under the customer load","pass":true,"stability_window_min":15,"negative_check":true,"pass_condition":{condition}}}"#
             )
         };
         // Restating the planned bar verbatim is verification — it must pass.
@@ -7074,7 +7289,9 @@ mod tests {
         let mut bare = plan.clone();
         bare.verify_step.pass_condition = String::new();
         assert!(
-            plan_gate(&bare).iter().any(|e| e.contains("pass_condition")),
+            plan_gate(&bare)
+                .iter()
+                .any(|e| e.contains("pass_condition")),
             "a plan with an empty pass_condition must be refused at Plan; errors: {:?}",
             plan_gate(&bare)
         );
@@ -7088,9 +7305,7 @@ mod tests {
     fn plan_fail_action_is_validated_or_absent() {
         let a = serde_json::from_str::<PlanArtifact>(PLAN_JSON).unwrap();
         assert!(plan_gate(&a).is_empty(), "the happy plan passes");
-        let names_the_branch = |errors: &[String]| {
-            errors.iter().any(|e| e.contains("fail_action"))
-        };
+        let names_the_branch = |errors: &[String]| errors.iter().any(|e| e.contains("fail_action"));
         // Out of range: the plan has 2 steps.
         let mut oob = a.clone();
         oob.steps[0].fail_action = Some(99);
@@ -7175,7 +7390,9 @@ mod tests {
             "an omitted verdict key is Pending — that is the exposure A4 must cover"
         );
         assert!(
-            act_gate(&omitted, &case).iter().any(|e| e.starts_with("A4")),
+            act_gate(&omitted, &case)
+                .iter()
+                .any(|e| e.starts_with("A4")),
             "a complete Act whose rows never recorded a verdict must not close; \
              errors: {:?}",
             act_gate(&omitted, &case)
@@ -7222,17 +7439,15 @@ mod tests {
     /// already take for unparseable JSON and a missing contract key.
     #[test]
     fn malformed_deadline_fails_closed_in_both_readers() {
-        let shaped = |raw: &str| {
-            serde_json::json!({ "contract_key": "k", "status": "open", "deadline_epoch": raw })
-        };
+        let shaped = |raw: serde_json::Value| serde_json::json!({ "contract_key": "k", "status": "open", "deadline_epoch": raw });
         // A real deadline reads through unchanged.
         assert_eq!(
-            back_referral_deadline(&shaped("1750000000")).unwrap(),
+            back_referral_deadline(&shaped(serde_json::json!(1_750_000_000))).unwrap(),
             1_750_000_000
         );
-        // Damaged: missing, null, non-integer, float, string, and negative
-        // all REFUSE. Never default — a defaulted deadline is a dropped
-        // obligation wearing a real-looking number.
+        // Damaged: null, non-integer, float, string and boolean all REFUSE.
+        // Never default — a defaulted deadline is a dropped obligation
+        // wearing a real-looking number.
         for raw in [
             serde_json::json!(null),
             serde_json::json!("1750000000"),
@@ -7240,7 +7455,7 @@ mod tests {
             serde_json::json!(true),
         ] {
             assert!(
-                back_referral_deadline(&shaped(&raw.to_string())).is_err(),
+                back_referral_deadline(&shaped(raw.clone())).is_err(),
                 "a {raw} deadline must refuse, not default — the reader's default \
                  direction is the whole defect"
             );
@@ -7250,7 +7465,7 @@ mod tests {
             "a contract row with no deadline_epoch must refuse"
         );
         assert!(
-            back_referral_deadline(&shaped("-1")).is_err(),
+            back_referral_deadline(&shaped(serde_json::json!(-1))).is_err(),
             "a negative deadline is damaged state, not a deadline in the past"
         );
     }
@@ -7267,7 +7482,9 @@ mod tests {
         let mut intake: IntakeArtifact = serde_json::from_str(INTAKE_JSON).unwrap();
         intake.telemetry_refs = many("tsr://node-");
         assert!(
-            intake_gate(&intake).iter().any(|e| e.contains("telemetry_refs")),
+            intake_gate(&intake)
+                .iter()
+                .any(|e| e.contains("telemetry_refs")),
             "an unbounded telemetry_refs list is unbounded consumption from an \
              agent-authored artifact; errors: {:?}",
             intake_gate(&intake)
@@ -7276,15 +7493,21 @@ mod tests {
         let mut triage: TriageArtifact = serde_json::from_str(TRIAGE_JSON).unwrap();
         triage.search_hits = many("P-STORAGE-");
         assert!(
-            triage_gate(&triage).iter().any(|e| e.contains("search_hits")),
+            triage_gate(&triage)
+                .iter()
+                .any(|e| e.contains("search_hits")),
             "errors: {:?}",
             triage_gate(&triage)
         );
         // RedFlagArtifact.rule_out_basis
-        let mut flags = serde_json::from_str::<TriageArtifact>(TRIAGE_JSON).unwrap().red_flag;
+        let mut flags = serde_json::from_str::<TriageArtifact>(TRIAGE_JSON)
+            .unwrap()
+            .red_flag;
         flags.rule_out_basis = many("test:racadm-");
         assert!(
-            red_flag_gate(&flags).iter().any(|e| e.contains("rule_out_basis")),
+            red_flag_gate(&flags)
+                .iter()
+                .any(|e| e.contains("rule_out_basis")),
             "errors: {:?}",
             red_flag_gate(&flags)
         );
@@ -7315,7 +7538,9 @@ mod tests {
         let case = {
             let mut c = GdlCase::fresh("t");
             c.intake = Some(serde_json::from_str(INTAKE_JSON).unwrap());
-            c.plan = serde_json::from_str::<PlanArtifact>(PLAN_JSON).unwrap().steps;
+            c.plan = serde_json::from_str::<PlanArtifact>(PLAN_JSON)
+                .unwrap()
+                .steps;
             c
         };
         let act = ActArtifact {
@@ -7333,7 +7558,9 @@ mod tests {
         let mut dead = serde_json::from_str::<PlanArtifact>(PLAN_JSON).unwrap();
         dead.dead_end.required_evidence = many("evidence-");
         assert!(
-            plan_gate(&dead).iter().any(|e| e.contains("required_evidence")),
+            plan_gate(&dead)
+                .iter()
+                .any(|e| e.contains("required_evidence")),
             "errors: {:?}",
             plan_gate(&dead)
         );
@@ -7344,7 +7571,10 @@ mod tests {
         contract.status = "returned".into();
         contract.required_report = many("report-");
         assert!(
-            contract.release_errors().iter().any(|e| e.contains("required_report")),
+            contract
+                .release_errors()
+                .iter()
+                .any(|e| e.contains("required_report")),
             "errors: {:?}",
             contract.release_errors()
         );
@@ -7352,7 +7582,7 @@ mod tests {
 
     #[test]
     fn failed_verify_hands_back_with_bundle_not_silent_retry() {
-        let fail = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass":false,"stability_window_min":15,"negative_check":true}"#;
+        let fail = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h","pass":false,"stability_window_min":15,"negative_check":true}"#;
         let f = fixture(vec![
             scripted_text(INTAKE_JSON),
             scripted_text(TRIAGE_JSON),
@@ -10102,7 +10332,7 @@ mod eval_run1 {
         let act = format!(
             r#"{{"rows":[{{"order":1,"kind":"check","description":"query {component} state","playbook_ref":"{playbook}","variables":["{component} state"],"expected":"healthy","actual":"degraded","verdict":"fail","evidence_ref":"TSR p.1","dtfvc":{{"diagnose":"{hypothesis}","test":"{command}","fix":null,"verify":"state readback matches degraded","capture":null}},"invasiveness":0,"justification":null}},{{"order":2,"kind":"action","description":"replace {component} part","playbook_ref":"{playbook}","variables":["{component} part"],"expected":"state healthy","actual":"state healthy","verdict":"pass","evidence_ref":"TSR p.2","dtfvc":{{"diagnose":"{hypothesis} confirmed","test":"{command} post-change","fix":"replaced part","verify":"latency normal","capture":"row"}},"invasiveness":2,"justification":null}}],"complete":true}}"#
         );
-        let verify = r#"{"re_run":"PLACEHOLDER","pass":true,"stability_window_min":15,"negative_check":true}"#
+        let verify = r#"{"re_run":"PLACEHOLDER","pass_condition":"latency normal","pass":true,"stability_window_min":15,"negative_check":true}"#
             .replace("PLACEHOLDER", &format!("the customer workload on {where_}"));
         let recheck = r#"{"contradicted":false,"reason":"no falsifier in the captured evidence"}"#;
         let handoff = format!(

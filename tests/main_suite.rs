@@ -6453,7 +6453,7 @@ Final paragraph after the rule.";
     /// string/comment-aware brace scan: a region starts at the code-state
     /// `#[cfg(test` and ends when the brace depth opened by its next `{`
     /// returns to zero.
-    fn strip_cfg_test_regions(src: &str) -> String {
+    pub(super) fn strip_cfg_test_regions(src: &str) -> String {
         #[derive(PartialEq, Clone, Copy)]
         enum St {
             Code,
@@ -8220,7 +8220,7 @@ Final paragraph after the rule.";
     /// classes could desync the scan — the same heuristic class the body
     /// extractor itself lives in; the guard is a regression lock, not a
     /// parser (its own HONEST SCOPE note).
-    fn strip_line_comments(src: &str) -> String {
+    pub(super) fn strip_line_comments(src: &str) -> String {
         let mut out = String::with_capacity(src.len());
         let mut it = src.chars().peekable();
         while let Some(c) = it.next() {
@@ -19497,6 +19497,92 @@ mod r41_replay {
             !production.contains(r#"stage: "order".into()"#),
             "`order` is a report label for a broken ordinal series; it must never be a STORED \
              stage value"
+        );
+    }
+}
+
+/// R42-SH — the wiring and repo-hygiene pins for the declared-vs-enforced
+/// round. They live outside the GDL service core because their subject is not
+/// the GDL module: two read files that are not modules at all, and one reads
+/// a constant the round DELETED. The placement law sends a pin to the file it
+/// wires.
+mod r42sh_artifact_integrity {
+    use super::tests::strip_cfg_test_regions;
+    use super::tests::strip_line_comments;
+
+    fn src(rel: &str) -> String {
+        std::fs::read_to_string(format!("{}/{rel}", env!("CARGO_MANIFEST_DIR")))
+            .unwrap_or_else(|e| panic!("read {rel}: {e}"))
+    }
+
+    /// The decorative 80% soft-handoff threshold is GONE, and the control it
+    /// stood for is real.
+    ///
+    /// Non-vacuity: an ABSENCE pin in this repo has failed twice — once by
+    /// matching a later function's body, once by matching a COMMENT that named
+    /// the very symbol it required to be absent. So absence is asserted TWICE,
+    /// the second time over the raw text with comments intact. A declaration
+    /// hidden in a string, a macro or a doc comment still trips the second
+    /// check, and a comment can never be mistaken for the thing it mentions.
+    #[test]
+    fn soft_handoff_threshold_is_not_decorative() {
+        let production = strip_cfg_test_regions(&src("src/workflow/gdl.rs"));
+        assert!(
+            !strip_line_comments(&production).contains("SOFT_HANDOFF_THRESHOLD_PCT"),
+            "the decorative 80% threshold must stay deleted: the only values it ever \
+             compared were 0 and 100, so `>= 80` reduced to `verify.pass`. A named \
+             number that separates no two real cases is a documented control that is \
+             not a control."
+        );
+        assert!(
+            !production.contains("SOFT_HANDOFF_THRESHOLD_PCT"),
+            "the threshold name must not survive ANYWHERE in gdl.rs's production region \
+             — not even in a comment, which is exactly how the last vacuous absence \
+             pin in this repo passed"
+        );
+        // The replacement is present in the PRODUCTION region, so the control
+        // did not simply vanish along with the constant.
+        assert!(
+            strip_line_comments(&production).contains("fn soft_handoff_latch_fires("),
+            "the soft-handoff predicate must be a production function, not a test-only one"
+        );
+    }
+
+    /// The two doc-vs-code gates that lived in-tree wired to no automated
+    /// door at all. A guard that exists and is never invoked is not a control.
+    ///
+    /// NON-VACUITY, learned the hard way: this pin first asserted a bare
+    /// substring, and it PASSED against a CI file whose real invocation had
+    /// been disabled — because a `command -v rg` step nearby carries an error
+    /// MESSAGE naming `scripts/env-truth.sh`. A mention in prose, a comment,
+    /// or a string inside an `echo` is not an invocation. So this matches a
+    /// step line that actually runs the script.
+    #[test]
+    fn release_gates_run_in_ci() {
+        let ci = src(".github/workflows/ci.yml");
+        for gate in ["scripts/docs-truth.sh", "scripts/env-truth.sh"] {
+            let invoked = ci
+                .lines()
+                .map(str::trim)
+                .any(|line| line.starts_with(&format!("bash {gate}")));
+            assert!(
+                invoked,
+                "a CI step must actually RUN `bash {gate}` — a mention of the \
+                 script in prose, a comment, or the text of an error message is \
+                 not an invocation, and a gate nobody runs rots into a vacuous pass"
+            );
+        }
+    }
+
+    /// The gates run `scripts/*.py` directly, so importing one creates a
+    /// bytecode cache. The repo must not be able to commit it.
+    #[test]
+    fn python_bytecode_caches_are_ignored() {
+        let ignore = src(".gitignore");
+        assert!(
+            ignore.lines().any(|l| l.trim() == "__pycache__/"),
+            ".gitignore must ignore __pycache__/ — the gates run scripts/*.py \
+             directly and the compiled cache is never source"
         );
     }
 }
