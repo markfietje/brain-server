@@ -402,16 +402,21 @@ async fn receive_delivery(
                     .into_response();
             }
         };
-        let secret_root = crate::config::DeliveryBindingsProfile::from_env()
+        // Absent config is a REFUSAL, not an empty scope: a binding whose
+        // secret root cannot be resolved is one this server cannot read, and
+        // treating it as "no root" would silently skip the check.
+        crate::config::DeliveryBindingsProfile::from_env()
             .ok()
             .flatten()
-            .map(|p| p.secret_root.to_string_lossy().to_string());
-        match secret_root {
-            Some(root) => {
-                crate::workflow::delivery::resolve_reconcile_target(&conn, target_kind, &root)
-            }
-            None => Err(crate::connector::delivery::BindingRefused::NotFound),
-        }
+            .and_then(|p| {
+                crate::workflow::delivery::resolve_reconcile_target(
+                    &conn,
+                    target_kind,
+                    &p.secret_root.to_string_lossy(),
+                )
+                .ok()
+            })
+            .ok_or(crate::connector::delivery::BindingRefused::NotFound)
     };
     let target = match target {
         Ok(t) => t,
