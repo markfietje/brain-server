@@ -34,6 +34,7 @@ pub(crate) mod decide;
 pub(crate) mod decision_eval;
 pub(crate) mod delivery;
 pub(crate) mod delivery_intents;
+pub(crate) mod delivery_read;
 pub(crate) mod driver;
 pub(crate) mod entitlement;
 
