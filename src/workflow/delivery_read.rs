@@ -622,10 +622,10 @@ pub(crate) fn delivery_outcomes(
     } else {
         let facts = commit_facts(conn, &run_ids)?;
         let mut samples = lead_time_samples(&releases, &facts);
-        match median(&mut samples) {
-            Some(minutes) => LeadTimeMetric::computed(minutes),
-            None => LeadTimeMetric::insufficient(InsufficiencyReason::NoVcsRevisionRecorded),
-        }
+        median(&mut samples).map_or_else(
+            || LeadTimeMetric::insufficient(InsufficiencyReason::NoVcsRevisionRecorded),
+            LeadTimeMetric::computed,
+        )
     };
     let governed_release_cadence = if window_empty {
         CadenceMetric::insufficient(InsufficiencyReason::WindowEmpty)
@@ -666,10 +666,10 @@ pub(crate) fn delivery_outcomes(
                     .map(|approved| (rel.deployed_at - approved) as f64 / 60.0)
             })
             .collect();
-        match mean(&samples) {
-            Some(minutes) => NativeElapsedMetric::computed(minutes),
-            None => NativeElapsedMetric::insufficient(InsufficiencyReason::WindowEmpty),
-        }
+        mean(&samples).map_or_else(
+            || NativeElapsedMetric::insufficient(InsufficiencyReason::WindowEmpty),
+            NativeElapsedMetric::computed,
+        )
     };
 
     // ── the baseline: the run's OWN history (the licensing law) ──────────
