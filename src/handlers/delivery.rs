@@ -493,6 +493,215 @@ pub async fn get_delivery_bindings(
     Ok(Json(response))
 }
 
+// ── the release family ──────────────────────────────────────────────────────
+//
+// The first route family whose writes LEAVE THE HOST. Three properties, all
+// deliberate:
+//
+// * The agent preset is refused EXPLICITLY, before any other work (the
+//   self-launch precedent: no probe oracle either). An agent holds `write:*`
+//   and `authorize_role` only restricts principals that hold roles at all —
+//   so without this refusal the role gate alone would admit an agent to the
+//   one write whose consequences reach another system.
+// * The domain is resolved BEFORE the scope gate and an absent release reads
+//   exactly like a foreign one (probe-blind 404).
+// * The approving principal is RECORDED from the authenticated caller, never
+//   asserted from the body: the approval columns are an artifact of a
+//   specific human act.
+
+/// The agent-class refusal. Runs before any domain read, so the refusal
+/// cannot be turned into an existence oracle either.
+fn refuse_agent(principal: &crate::auth::policy::Principal) -> Result<(), HandlerError> {
+    if principal.kind == crate::auth::policy::PrincipalKind::AgentLoopback {
+        return Err(HandlerError::forbidden(
+            crate::auth::Action::Write,
+            &principal.tenant,
+            "global",
+        ));
+    }
+    Ok(())
+}
+
+/// The release's run's domain, resolved before authorization so an absent
+/// release and a foreign one are the same 404. Returns the domain and the
+/// run id (the approve/promote audit rows tenant on the domain).
+async fn release_run_domain(
+    state: &Arc<AppState>,
+    release_id: i64,
+) -> Result<(String, i64), HandlerError> {
+    let pool = state.pool.clone();
+    tokio::task::spawn_blocking(move || -> Result<Option<(String, i64)>, String> {
+        let conn = pool.get().map_err(|e| format!("{e}"))?;
+        crate::workflow::releases::release_run_domain(&conn, release_id).map_err(|e| format!("{e}"))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(HandlerError::internal)?
+    .ok_or_else(|| HandlerError::not_found("delivery release not found"))
+}
+
+/// File a release: the kernel names everything that binds (the artifact
+/// digest from the run's own bytes, the binding from the run's own domain);
+/// the caller names only the run, the target kind, and the governed ref.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateReleaseBody {
+    pub run_id: i64,
+    pub target_kind: String,
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    pub environment: String,
+    #[serde(default)]
+    pub commit_sha: Option<String>,
+}
+
+pub async fn post_delivery_release(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Json(body): Json<CreateReleaseBody>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    if let Some(p) = &principal {
+        refuse_agent(p)?;
+    }
+    let domain = super::workflow::run_domain(&state, body.run_id).await?;
+    super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    super::authorize_role(&principal, &pool, "workflow")?;
+
+    let who = super::recall::principal_label(&principal);
+    let now = chrono::Utc::now().timestamp();
+    let created = tokio::task::spawn_blocking(move || {
+        let mut conn = pool.get().map_err(HandlerError::db_down)?;
+        crate::workflow::releases::create_release(
+            &mut conn,
+            &crate::workflow::releases::CreateRelease {
+                run_id: body.run_id,
+                target_kind: &body.target_kind,
+                ref_name: &body.ref_name,
+                environment: &body.environment,
+                commit_sha: body.commit_sha.as_deref(),
+                now,
+            },
+        )
+        .map_err(delivery_error)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))??;
+
+    let mut response =
+        serde_json::to_value(created).map_err(|error| HandlerError::internal(error.to_string()))?;
+    response["principal"] = serde_json::Value::String(who);
+    super::sanitize_value_strings(&mut response);
+    Ok(Json(response))
+}
+
+/// Record the approval. The kernel writes the three-way binding from its own
+/// stored facts: the content digest from the release row, the authority
+/// digest from the binding row as it is NOW, and the run's state revision as
+/// it is NOW. The window starts here — `approved_at` — because the gap
+/// between approve and promote is exactly what the expiry must bound.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ApproveReleaseBody {
+    #[serde(default)]
+    pub scope: Option<String>,
+    #[serde(default)]
+    pub ttl_secs: Option<i64>,
+}
+
+pub async fn post_delivery_release_approve(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Path(id): Path<i64>,
+    Json(body): Json<ApproveReleaseBody>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    if let Some(p) = &principal {
+        refuse_agent(p)?;
+    }
+    let (domain, _run_id) = release_run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    super::authorize_role(&principal, &pool, "workflow")?;
+
+    let who = super::recall::principal_label(&principal);
+    let now = chrono::Utc::now().timestamp();
+    let scope = body.scope.unwrap_or_else(|| "promote".to_string());
+    let approved = tokio::task::spawn_blocking(move || {
+        let mut conn = pool.get().map_err(HandlerError::db_down)?;
+        crate::workflow::releases::approve_release(
+            &mut conn,
+            &crate::workflow::releases::ApproveRelease {
+                release_id: id,
+                scope: &scope,
+                ttl_secs: body.ttl_secs,
+                principal: &who,
+                now,
+            },
+        )
+        .map_err(delivery_error)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))??;
+
+    let mut response = serde_json::to_value(approved)
+        .map_err(|error| HandlerError::internal(error.to_string()))?;
+    super::sanitize_value_strings(&mut response);
+    Ok(Json(response))
+}
+
+/// The promotion gate. A deny or an unanswered prompt changes nothing; a
+/// permitted promotion walks the crate's transition law inside one
+/// transaction, lands `promoted`, and mints the dispatch intents — the
+/// network is touched later, by the crank, never inside the transaction.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PromoteReleaseBody {
+    #[serde(default)]
+    pub confirm: Option<bool>,
+}
+
+pub async fn post_delivery_release_promote(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Path(id): Path<i64>,
+    Json(body): Json<PromoteReleaseBody>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    if let Some(p) = &principal {
+        refuse_agent(p)?;
+    }
+    let (domain, _run_id) = release_run_domain(&state, id).await?;
+    super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    super::authorize_role(&principal, &pool, "workflow")?;
+
+    let who = super::recall::principal_label(&principal);
+    let now = chrono::Utc::now().timestamp();
+    let confirm = body.confirm.unwrap_or(false);
+    let verdict = tokio::task::spawn_blocking(move || {
+        let mut conn = pool.get().map_err(HandlerError::db_down)?;
+        crate::workflow::releases::promote_release(
+            &mut conn,
+            &crate::workflow::releases::PromoteRelease {
+                release_id: id,
+                confirm,
+                actor: &who,
+                now,
+            },
+        )
+        .map_err(delivery_error)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))??;
+
+    let mut response =
+        serde_json::to_value(verdict).map_err(|error| HandlerError::internal(error.to_string()))?;
+    super::sanitize_value_strings(&mut response);
+    Ok(Json(response))
+}
+
 /// The typed error → HTTP mapping. Absence is 404 on every route, and a
 /// non-delivery run reads as absent rather than as a wrong-kind error, so the
 /// mapping never becomes an existence oracle.
@@ -535,6 +744,17 @@ fn delivery_error(error: DeliveryError) -> HandlerError {
         DeliveryError::ModelDigestMissing => {
             HandlerError::conflict("delivery_model_digest_missing")
         }
+        DeliveryError::ReleaseAbsent => HandlerError::not_found("delivery release not found"),
+        DeliveryError::ReleaseRefused { reason } => HandlerError::conflict_with(
+            "delivery_release_refused",
+            reason,
+            serde_json::json!({ "reason": reason }),
+        ),
+        DeliveryError::TierMismatch { state, chain } => HandlerError::conflict_with(
+            "delivery_tier_mismatch",
+            format!("the run's state claims {state}; the chain's signed predicate claims {chain}"),
+            serde_json::json!({ "state_tier": state, "chain_tier": chain }),
+        ),
         DeliveryError::Storage(detail) => HandlerError::internal(detail),
     }
 }

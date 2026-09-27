@@ -674,7 +674,7 @@ pub(crate) async fn metrics(
         // without it, "the crank has not run" and "the intent is gone" look
         // identical. A non-zero value is the expected steady state this round,
         // not an alarm.
-        out.push_str("# HELP brain_delivery_intents_pending Delivery intents minted and sitting `pending` with no reader, per domain. They are undrained BY DESIGN this release (the release act belongs to the promote gate, which does not exist yet) — a non-zero value is the expected steady state, and the gauge exists so a LOST intent is distinguishable from an un-promoted one. Twokeys: domains outside the scrape principal's read scope collapse into the summed `other` label.\n");
+        out.push_str("# HELP brain_delivery_intents_pending Delivery intents minted and sitting `pending`, per domain. Promotion mints them (promotion IS the outbox write) and the /due crank drains them through the pinned read-egress path, marking each delivered only on connector success — so a non-zero value reads as awaiting its crank, and the gauge exists so a LOST intent is distinguishable from an un-promoted one. Twokeys: domains outside the scrape principal's read scope collapse into the summed `other` label.\n");
         out.push_str("# TYPE brain_delivery_intents_pending gauge\n");
         // Rows carrying a delivery topic whose key is NOT a kernel mint. Any
         // non-zero value means something wrote the reserved root without going

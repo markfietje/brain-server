@@ -2585,6 +2585,7 @@ pub fn run_migration_with_store_dim(
             authority_digest  TEXT    NOT NULL,
             policy_digest     TEXT,
             capabilities_json TEXT    NOT NULL,
+            secret_file_name  TEXT    NOT NULL DEFAULT '',
             active            INTEGER NOT NULL DEFAULT 1,
             created_at        INTEGER NOT NULL,
             updated_at        INTEGER NOT NULL,
@@ -2593,6 +2594,31 @@ pub fn run_migration_with_store_dim(
         CREATE INDEX IF NOT EXISTS idx_delivery_bindings_kind
             ON delivery_bindings(target_kind, active);",
     )?;
+
+    // The resolver selects the secret's FILE NAME from this table — the
+    // digest covers (endpoint, target_ref, file name), so the credential SLOT
+    // a binding names is binding state, not a re-derivable property. The
+    // 1.32.17 batch shipped without the column (the resolver's first real
+    // caller arrived with the release round and caught it), so a database
+    // that already ran that batch gains it here; a fresh build gets it from
+    // the CREATE above. Same `pragma_table_info` pattern as every other
+    // additive column in this file.
+    {
+        let has_secret_file: bool = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('delivery_bindings') WHERE name='secret_file_name'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !has_secret_file {
+            db.execute(
+                "ALTER TABLE delivery_bindings ADD COLUMN secret_file_name TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
+    }
 
     // v1.32.18 "Releases": the governed release row — the machine's proposal
     // to move an artifact to an external authority, the human's approval

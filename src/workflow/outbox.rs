@@ -36,14 +36,16 @@ use rusqlite::{Connection, OptionalExtension, params};
 // single matcher and the
 // `reserved_topics_are_declared_in_one_place` pin guards the declaration site.
 //
-// `delivery/` is RESERVED AND UNDRAINED. The alert worker's universe is a
-// closed disjunction (`workflow/%` OR `case/%`) with no wildcard arm, so a
-// delivery intent is structurally outside it — no carve-out was added, and
-// adding one would make the exclusion a filter that can be edited rather than
-// a property of the query. Nothing in this round reads those rows: the release
-// act belongs to the promote gate, which does not exist yet. The pending count
-// is reported on `/metrics` so an intent that was lost and an intent that has
-// not yet been promoted stay distinguishable at the ops surface.
+// `delivery/` is RESERVED, and the ALERT WORKER still never drains it. The
+// alert worker's universe is a closed disjunction (`workflow/%` OR `case/%`)
+// with no wildcard arm, so a delivery intent is structurally outside it — no
+// carve-out was added, and adding one would make the exclusion a filter that
+// can be edited rather than a property of the query. The intent's OWN drain is
+// the /due crank, which re-verifies each row before any network contact and
+// marks it delivered only on connector success; the promote gate mints the
+// rows. The pending count is reported on `/metrics` so an intent that was
+// lost and an intent that has not yet been drained stay distinguishable at
+// the ops surface.
 pub const RESERVED_OUTBOX_TOPICS: &[&str] =
     &["channel/", "steering", "workflow/valet", "delivery/"];
 

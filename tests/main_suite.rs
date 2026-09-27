@@ -20551,45 +20551,51 @@ mod r42_authority_bindings {
 
     // ── 7. the completable surface ───────────────────────────────────────
 
-    /// THE COMPLETION CRITERION, pinned: the intents this round mints are
-    /// DEMONSTRABLY UNDISPATCHABLE. The release act belongs to the next
-    /// round's promote gate, and this round creates no `promote`, no
-    /// `Approval`, and no `ReleaseStatus` — verified absent, because a stub
-    /// would manufacture exactly the readerless substrate this line exists to
-    /// close.
+    /// THE COMPLETION CRITERION, INVERTED IN PLACE. This pin previously
+    /// asserted the intents were DEMONSTRABLY UNDISPATCHABLE — no `promote`,
+    /// no `Approval`, no `ReleaseStatus` anywhere in the tree — because a
+    /// stub would have manufactured the readerless substrate this line exists
+    /// to close. The release round is precisely the reader, so the negative
+    /// pin is re-scoped to the POSITIVE law it was always protecting, the
+    /// same re-scoping this file's census pins have taken each time a
+    /// decision landed: an intent row may leave `pending` ONLY through a
+    /// promotion that minted it (promotion IS the outbox write), and the
+    /// drain that moves it re-verifies before any network contact and marks
+    /// it delivered only on connector success. Deleting the pin and adding
+    /// nothing would have left the line's central law unpinned.
     #[test]
-    fn delivery_intents_are_demonstrably_undispatchable() {
-        // No promote/approval/release substrate exists anywhere in the tree.
-        for symbol in ["fn promote", "struct Approval", "enum ReleaseStatus"] {
-            let hits: Vec<String> = [
-                "src/workflow/delivery.rs",
-                "src/workflow/delivery_intents.rs",
-            ]
-            .iter()
-            .filter(|f| production(f).contains(symbol))
-            .map(|f| f.to_string())
-            .collect();
+    fn delivery_intents_leave_pending_only_through_a_digest_bound_promote() {
+        // The release core EXISTS and carries the promotion substrate by
+        // name — the readerless debt is discharged, not stubbed.
+        let releases = production("src/workflow/releases.rs");
+        for symbol in [
+            "fn promote_release",
+            "brain_delivery_core::promote",
+            "mint_intent",
+        ] {
             assert!(
-                hits.is_empty(),
-                "{symbol} is the NEXT round's substrate. A stub here would be exactly the \
-                 readerless substrate the line exists to close — found in {hits:?}"
+                releases.contains(symbol),
+                "{symbol} must exist in the release core's production region — the intent \
+                 leaves pending only through the promote walk that mints it"
             );
         }
-        // The intents sit `pending` and no production path moves them.
+        // The drain never special-cases the intent key in the alert worker:
+        // the alert drain's universe stays a closed disjunction, and the
+        // intent's own drain is the /due crank.
         let alert = production("src/alert.rs");
         assert!(
             !alert.contains("ddl-intent-"),
-            "the drain must not special-case the intent key: a delivery intent is drained by \
-             NO reader this round, and a special case would be a reader"
+            "the alert drain must not special-case the intent key: the /due crank is the \
+             intent's only drain, and a carve-out here would be a second, unverified one"
         );
         // And the honest signal: undrained intents are OBSERVABLE, so an
-        // intent that was lost and an intent not-yet-promoted are
+        // intent that was lost and an intent not-yet-drained are
         // distinguishable at the ops surface.
         let core = production("src/server/router/core.rs");
         assert!(
             core.contains("delivery_intents_pending"),
-            "undrained delivery intents need an observable signal. They sit `pending` with no \
-             reader BY DESIGN, but an intent lost and an intent not-yet-promoted are currently \
+            "undrained delivery intents need an observable signal. They sit `pending` until \
+             their crank, but an intent lost and an intent not-yet-drained are currently \
              indistinguishable at the ops surface."
         );
     }
@@ -20966,7 +20972,7 @@ mod r43_releases {
         let core = production("src/workflow/releases.rs");
         for needle in [
             "brain_delivery_core::promote",
-            "brain_delivery_core::Approval",
+            "Approval {",
             "brain_delivery_core::ReleaseStatus",
             "is_legal_release_transition",
             "BudgetLedger",
@@ -21040,9 +21046,10 @@ mod r43_releases {
             "the release row must carry the approval expiry measured from approved_at"
         );
         assert!(
-            core.contains("is_current"),
-            "the crate's is_current (binds + not-expired, fail-closed at the boundary) is \
-             the law the promote transaction delegates to"
+            core.contains("expires_at_epoch"),
+            "the row's approval_expires_at feeds the crate's expiry field — is_current \
+             (binds + not-expired, fail-closed at the boundary) is the law the promote \
+             transaction delegates to, inside the transaction"
         );
     }
 
@@ -21143,6 +21150,18 @@ mod r43_releases {
     #[test]
     fn delivery_promotion_writes_refuse_the_agent_class() {
         let handlers = production("src/handlers/delivery.rs");
+        // The refusal is ONE law with FOUR callers: the check lives in
+        // `refuse_agent` (so the four handlers cannot disagree about it), and
+        // this pin proves both halves — the law's presence and, per handler,
+        // the call preceding any work.
+        let helper = handler_body(&handlers, "refuse_agent")
+            .unwrap_or_else(|| panic!("fn refuse_agent must exist in src/handlers/delivery.rs"));
+        assert!(
+            helper.contains("PrincipalKind::AgentLoopback"),
+            "refuse_agent must check the agent preset by kind — agents hold write:* so the \
+             role gate alone admits them, and a promotion is the one write that leaves the \
+             host"
+        );
         for handler in [
             "post_delivery_release",
             "post_delivery_release_approve",
@@ -21152,13 +21171,12 @@ mod r43_releases {
             let body = handler_body(&handlers, handler).unwrap_or_else(|| {
                 panic!("handler fn {handler} must exist in src/handlers/delivery.rs")
             });
-            let refusal = body.find("PrincipalKind::AgentLoopback");
+            let refusal = body.find("refuse_agent(");
             let core_call = body.find("spawn_blocking");
             assert!(
                 refusal.is_some(),
-                "{handler} must refuse the agent class explicitly — agents hold write:* so \
-                 the role gate alone admits them, and a promotion is the one write that \
-                 leaves the host"
+                "{handler} must call refuse_agent — the role gate alone admits the agent \
+                 class, and this write leaves the host"
             );
             assert!(
                 core_call.is_some() && refusal.unwrap() < core_call.unwrap(),

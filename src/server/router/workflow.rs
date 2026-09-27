@@ -515,4 +515,22 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             "/workflow/delivery/bindings",
             get(handlers::delivery::get_delivery_bindings),
         )
+        // the release family: the governed write whose consequences reach
+        // another system. The agent preset is refused in the handlers (before
+        // any work), the domain is resolved before the scope gate, and the
+        // promotion itself touches no network — the transaction mints the
+        // durable intent rows, and the /due crank (a later registration)
+        // drains them through the pinned read-egress path.
+        .route(
+            "/workflow/delivery/releases",
+            post(handlers::delivery::post_delivery_release),
+        )
+        .route(
+            "/workflow/delivery/releases/{id}/approve",
+            post(handlers::delivery::post_delivery_release_approve),
+        )
+        .route(
+            "/workflow/delivery/releases/{id}/promote",
+            post(handlers::delivery::post_delivery_release_promote),
+        )
 }

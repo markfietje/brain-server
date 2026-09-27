@@ -307,6 +307,13 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     // the bindings read. The domain is a query parameter, so the row this
     // serves is domain-scoped rather than run-scoped.
     "/workflow/delivery/bindings",
+    // the release family: the governed write whose consequences reach another
+    // system. One path per move — file, approve, promote — so the audit trail
+    // names the act, and no route both approves and promotes in one request
+    // (the atomic approve-and-promote is exactly what makes replay possible).
+    "/workflow/delivery/releases",
+    "/workflow/delivery/releases/{id}/approve",
+    "/workflow/delivery/releases/{id}/promote",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -628,7 +635,13 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/decision-evals/{id}", "Admin"),
     // The delivery loop's run writes: Write on the run's own domain. The
     // `workflow`-role gate lives in the handler (the role store reads from the
-    // pool, so it cannot be a table row) — the agent class is refused there.
+    // pool, so it cannot be a table row). Stated precisely, because an
+    // earlier wording claimed a refusal that existed nowhere: the agent class
+    // is NOT refused on these run writes — `authorize_role` passes principals
+    // that hold no roles at all, so an agent preset holding `write:*` is
+    // admitted here. The promotion family below is different: its writes
+    // leave the host, and the agent class IS refused there — explicitly, in
+    // handlers/delivery.rs, before any work.
     ("/workflow/delivery/runs", "Write"),
     ("/workflow/delivery/runs/{id}/advance", "Write"),
     ("/workflow/delivery/runs/{id}/answer", "Write"),
@@ -646,4 +659,13 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     // privilege — the surface cannot mutate an authority, so it does not
     // demand Write.
     ("/workflow/delivery/bindings", "Read"),
+    // the release family: Write on the run's own domain, the workflow role
+    // checked in-handler, AND the agent-class refused in-handler (the one
+    // write family whose consequences reach another system). File, approve,
+    // and promote are separate requests by design — splitting approve from
+    // promote is what makes the three-way binding (content, authority,
+    // revision) re-verifiable at the moment of the act.
+    ("/workflow/delivery/releases", "Write"),
+    ("/workflow/delivery/releases/{id}/approve", "Write"),
+    ("/workflow/delivery/releases/{id}/promote", "Write"),
 ];

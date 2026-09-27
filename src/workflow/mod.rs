@@ -219,6 +219,7 @@ pub(crate) mod recall;
 pub(crate) mod reflection;
 pub(crate) mod registry;
 pub(crate) mod relay;
+pub(crate) mod releases;
 pub mod report;
 pub(crate) mod sandbox;
 pub(crate) mod scoreboard;

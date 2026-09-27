@@ -1,12 +1,11 @@
 //! Signed delivery intents: the kernel mint, and the read-side authenticity check.
 //!
 //! An intent is the machine's own record that it WANTS an external authority to
-//! do something. It is not a command, and nothing in this round can act on one:
-//! the release act belongs to the promote gate, which does not exist yet. That
-//! is a deliberate state, not an omission — the alternative (a stub release
-//! path) would manufacture exactly the readerless substrate this line exists to
-//! close. So the intents are minted, forge-checked, and left `pending` with an
-//! observable count, and the drain never selects them.
+//! do something. It is not a command, and nothing HERE acts on one: the mint
+//! files the record, the promote gate decides whether it may exist, and the
+//! /due crank drains it — each in its own place, so no single writer both
+//! decides and sends. The intents are minted, forge-checked, and left
+//! `pending` with an observable count until their release is promoted.
 //!
 //! Two independent fences, and it matters that they are independent:
 //!

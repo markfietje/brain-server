@@ -8178,6 +8178,150 @@ paths:
         "400": { description: domain is required }
         "401": { description: Not authenticated }
         "403": { description: Not authorized (Read on the domain plus the `workflow` role) }
+  /workflow/delivery/releases:
+    post:
+      summary: File a governed release (Write on the run's domain plus the `workflow` role; the agent preset is refused)
+      description: >
+        The machine's proposal to move ONE artifact toward ONE external
+        authority. The kernel names everything that binds: the artifact digest is
+        derived from the run's own typed-artifact bytes (never from a request
+        field), and the authority binding is resolved from the run's own domain
+        and the named target kind — a client-named binding id could name another
+        tenant's authority. The request names only the run, the target kind, the
+        governed ref, the OTel environment (the closed four-value
+        `deployment.environment.name` set), and, honestly optionally, the OTel
+        revision (`vcs.repository.ref.revision` is Release Candidate — cited by
+        name, never claimed stable).
+        The new release lands `proposed`. It is not an approval, not an
+        authority, and not a compliance finding: it is the row a human's
+        approval will later bind to.
+        The agent preset is refused before any work: agents hold `write:*`, the
+        role gate alone would admit them, and this is the write family whose
+        consequences reach another system.
+      operationId: createDeliveryRelease
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [run_id, target_kind, ref, environment]
+              properties:
+                run_id: { type: integer }
+                target_kind: { type: string, enum: [vcs, ci] }
+                ref: { type: string, maxLength: 200 }
+                environment: { type: string, enum: [development, test, staging, production] }
+                commit_sha: { type: string, maxLength: 128 }
+      responses:
+        "200":
+          description: The release, `proposed`
+        "400": { description: A value is outside its closed vocabulary or over its bound }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized, or the agent preset }
+        "404": { description: Delivery run not found (probe-blind) }
+        "409": { description: The release law refused (no artifact, binding unresolved) }
+  /workflow/delivery/releases/{id}/approve:
+    post:
+      summary: Record the approval (Write on the release's domain plus the `workflow` role; the agent preset is refused)
+      description: >
+        The approval is COLUMNS on the release row, and the binding is
+        THREE-WAY: the content digest as of the approval (kernel-written from
+        the release row, never client-asserted), the authority digest
+        recomputed from the binding row as it is now, and the run's state
+        revision as it is now. An approval that binds content but not the
+        target is replayable against a different external system; one that
+        binds both but not the revision is replayable across a later phase
+        pass. The expiry is measured from `approved_at` — the window that
+        matters is exactly the gap between approve and promote — and is
+        evaluated inside the promote transaction, fail-closed at the boundary.
+        The approving principal is recorded from the authenticated caller,
+        never asserted from the body. Approve and promote are separate
+        requests by design: today's atomic approve-and-promote shape is what
+        makes replay possible, and splitting them is what makes the binding
+        re-verifiable at the moment of the act.
+        An approval is an authorization ARTIFACT, not an identity record and
+        not a compliance finding.
+      operationId: approveDeliveryRelease
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                scope: { type: string, maxLength: 128, default: promote }
+                ttl_secs: { type: integer, description: Window from approved_at; capped, never clamped }
+      responses:
+        "200":
+          description: The approval, recorded
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized, or the agent preset }
+        "404": { description: Release not found (probe-blind) }
+        "409": { description: The approval law refused (not proposed, binding inactive, TTL out of bounds) }
+  /workflow/delivery/releases/{id}/promote:
+    post:
+      summary: The promotion gate (Write on the release's domain plus the `workflow` role; the agent preset is refused)
+      description: >
+        One transaction that re-verifies EVERYTHING before the pure gate reads
+        anything: the signature chain (offline verifier — a broken chain is a
+        typed refusal before the gate), the live digest re-derived from the
+        artifact bytes as they exist now, the authority (recomputed; drift is
+        a 409), the run's revision (unchanged since the approval), the
+        approver's principal (the kill-switch), and the tier (the run's state
+        and the chain's signed predicate must agree — a tier the run never
+        granted is the forgery this refuses). Then the crate's total gate
+        decides, deny-wins, first reason reported in push order.
+        The trace mode is carried and deliberately UNREAD — authority comes
+        from the tier, never from how a trace was produced.
+        A permitted promotion walks the crate's one-step-at-a-time transition
+        law inside the same transaction, lands `promoted`, records the
+        post-hoc budget draw (elapsed minutes and the one artifact moved —
+        `spent` moves only when a producer exists), and MINTS the dispatch
+        intents. Promotion IS the outbox write: nothing here touches the
+        network, and the intents wait for the /due crank. The ledger's belief
+        moves only when the inbound authority observation reconciles — the
+        crank never writes `verified_at`.
+        Budgets are enforced at PROMOTION TIME, inside the promote
+        transaction — not at a hostcall seam, which the delivery loop never
+        touches (the hostcall `Budget` is a 30 s wall clock with no
+        run/kind/spend). Every enforced budget kind needs explicit,
+        unexhausted headroom; `blast_radius` is never enforced (crate law).
+        `confirm` is the human disposition act on a `prompt` verdict; absent
+        is false, and nothing moves until the answer arrives.
+      operationId: promoteDeliveryRelease
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                confirm: { type: boolean, default: false }
+      responses:
+        "200":
+          description: >
+            The verdict, total over the gate's three answers: disposition
+            allowed (status promoted), prompt (awaiting confirm), or denied
+            (the crate's first reason in push order, no state change).
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized, or the agent preset }
+        "404": { description: Release not found (probe-blind) }
+        "409":
+          description: >
+            The release law refused — not approved, not promotable, authority
+            drift, approval stale (the run moved since the approval), approver
+            revoked, tier mismatch, or a chain that fails its signatures.
   /webhooks/delivery/{kind}:
     post:
       summary: An inbound AUTHORITY OBSERVATION (public; HMAC self-authenticating)

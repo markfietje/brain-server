@@ -70,6 +70,57 @@ const MAX_DIGEST_INPUT_CHARS: usize = 128;
 /// The subject name's bounded artifact suffix (A4). The name is signed, so its
 /// length is a property of the signature's domain, not a display choice.
 const MAX_SUBJECT_SUFFIX_CHARS: usize = 64;
+/// The release family's bounds. A governed ref is a name an operator will
+/// read in an audit row for as long as the release exists; a commit revision
+/// and an approval scope are caller text at this boundary. All three are
+/// bounded here, named so the refusal names them.
+pub(crate) const MAX_RELEASE_REF_CHARS: usize = 200;
+pub(crate) const MAX_COMMIT_SHA_CHARS: usize = 128;
+pub(crate) const MAX_APPROVAL_SCOPE_CHARS: usize = 128;
+
+/// The closed OTel environment vocabulary: the four STABLE well-known
+/// `deployment.environment.name` values. A non-listed value MAY be used per
+/// OTel; the closed CHECK is this repo's stricter choice, disclosed.
+pub(crate) const ENVIRONMENTS: &[&str] = &["development", "test", "staging", "production"];
+
+/// Bounded caller text with the invisible-character screen the release
+/// family applies: a control byte or an invisible character in a governed
+/// name is a different name than the operator typed.
+pub(crate) fn bounded_ref_input(
+    field: &'static str,
+    value: &str,
+    max: usize,
+) -> Result<(), DeliveryError> {
+    bounded_input(field, value, max)?;
+    if value
+        .chars()
+        .any(|c| c.is_control() || crate::strip_invisible::is_invisible(c))
+    {
+        return Err(DeliveryError::UnknownVocabulary {
+            field,
+            value: "control_or_invisible_character".to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// The closed environment vocabulary check.
+pub(crate) fn closed_environment(value: &str) -> Result<&'static str, DeliveryError> {
+    ENVIRONMENTS
+        .iter()
+        .copied()
+        .find(|e| *e == value)
+        .ok_or(DeliveryError::UnknownVocabulary {
+            field: "environment",
+            value: value.to_string(),
+        })
+}
+
+/// The storage boundary constructor, shared with the release core so its
+/// storage refusals read identically.
+pub(crate) fn storage_error(detail: impl std::fmt::Display) -> DeliveryError {
+    storage(detail)
+}
 
 /// The delivery loop's typed-artifact proposal kind. `proposals.kind` is free
 /// text with no CHECK and no global closed vocabulary, so a new kind is
@@ -77,7 +128,7 @@ const MAX_SUBJECT_SUFFIX_CHARS: usize = 64;
 /// NOT one of the nine kinds `POST /propose` accepts, because an executor
 /// artifact is not operator-authored knowledge and never becomes a knowledge
 /// row. It stays a proposal or it does not exist.
-const ARTIFACT_PROPOSAL_KIND: &str = "delivery/artifact";
+pub(crate) const ARTIFACT_PROPOSAL_KIND: &str = "delivery/artifact";
 
 /// The `ddl_*` session-log family — the delivery trace's narrative, exactly as
 /// the design owner describes it ("the `agent_session_events` `ddl_*`
@@ -219,6 +270,26 @@ pub(crate) enum DeliveryError {
     /// the model-citation law: the row resolves but carries no artifact digest, so nothing
     /// says which bytes acted. A name without its digest is not a citation.
     ModelDigestMissing,
+    /// The release is absent, or is not the caller's — the handler collapses
+    /// both into one probe-blind answer, the same collapse as `RunAbsent`.
+    ReleaseAbsent,
+    /// The release law refused, with its own closed reason vocabulary
+    /// (`no_artifact`, `not_proposed`, `not_approved`, `not_promotable`,
+    /// `illegal_transition`, `approval_missing`, `approval_ttl_out_of_bounds`,
+    /// `approver_revoked`, `authority_drift`, `binding_inactive`,
+    /// `binding_unresolved`, `ref_required`, plus the binding adapter's own
+    /// codes). The reason rides the wire as the conflict code's message.
+    ReleaseRefused {
+        reason: &'static str,
+    },
+    /// The run's own state and the chain's signed predicate disagree about
+    /// the autonomy tier. A trace claiming a tier the run never granted is
+    /// exactly the forgery the gate exists to refuse — and a run claiming a
+    /// tier the chain never signed is its mirror.
+    TierMismatch {
+        state: String,
+        chain: String,
+    },
     /// The storage boundary refused. The detail never reaches a caller
     /// verbatim; it exists so the failure is diagnosable.
     Storage(String),
@@ -250,6 +321,13 @@ impl std::fmt::Display for DeliveryError {
             Self::ModelNotPromoted => write!(f, "delivery_model_not_promoted"),
             Self::ModelRetired => write!(f, "delivery_model_retired"),
             Self::ModelDigestMissing => write!(f, "delivery_model_digest_missing"),
+            Self::ReleaseAbsent => write!(f, "delivery_release_not_found"),
+            Self::ReleaseRefused { reason } => {
+                write!(f, "delivery_release_refused:{reason}")
+            }
+            Self::TierMismatch { state, chain } => {
+                write!(f, "delivery_tier_mismatch:{state}:{chain}")
+            }
             Self::Storage(detail) => write!(f, "delivery_storage: {detail}"),
         }
     }
@@ -317,7 +395,7 @@ fn tier_wire_to_core(s: &str) -> Result<AutonomyTier, DeliveryError> {
 }
 
 /// The inverse: what goes in the column and on the wire.
-fn tier_core_to_wire(t: AutonomyTier) -> &'static str {
+pub(crate) fn tier_core_to_wire(t: AutonomyTier) -> &'static str {
     match t {
         AutonomyTier::Observe => "observe",
         AutonomyTier::Propose => "propose",
@@ -326,7 +404,7 @@ fn tier_core_to_wire(t: AutonomyTier) -> &'static str {
     }
 }
 
-fn closed_tier(value: &str) -> Result<AutonomyTier, DeliveryError> {
+pub(crate) fn closed_tier(value: &str) -> Result<AutonomyTier, DeliveryError> {
     tier_wire_to_core(value)
 }
 
@@ -552,7 +630,7 @@ pub(crate) fn delivery_audit(
 /// The delivery run head: (domain, kind, status, state_json, state_revision).
 /// A non-delivery row reads as absent rather than as a wrong-kind error, so a
 /// caller cannot probe for the existence of another kind's run.
-fn delivery_head(
+pub(crate) fn delivery_head(
     conn: &Connection,
     run_id: i64,
 ) -> Result<Option<(String, String, String, i64)>, DeliveryError> {
@@ -566,7 +644,7 @@ fn delivery_head(
     .map_err(storage)
 }
 
-fn decode_state(state_json: &str) -> Result<DeliveryState, DeliveryError> {
+pub(crate) fn decode_state(state_json: &str) -> Result<DeliveryState, DeliveryError> {
     serde_json::from_str(state_json).map_err(storage)
 }
 
@@ -880,6 +958,23 @@ pub(crate) struct Advanced {
     pub proposal_id: i64,
 }
 
+/// The run's admission policy, as its own trace rows recorded it. One read,
+/// inside the caller's transaction; `None` is the honest answer for a run
+/// admitted with no policy and is never defaulted.
+fn admission_policy_digest(
+    conn: &Connection,
+    run_id: i64,
+) -> Result<Option<String>, DeliveryError> {
+    conn.query_row(
+        "SELECT policy_digest FROM delivery_traces \
+          WHERE run_id = ?1 AND policy_digest IS NOT NULL ORDER BY seq ASC LIMIT 1",
+        params![run_id],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(storage)
+}
+
 pub(crate) fn advance(conn: &mut Connection, req: &Advance<'_>) -> Result<Advanced, DeliveryError> {
     if req.artifact_refs.len() > MAX_REFS {
         return Err(DeliveryError::TooMany {
@@ -1033,6 +1128,7 @@ pub(crate) fn advance(conn: &mut Connection, req: &Advance<'_>) -> Result<Advanc
     } else {
         brain_executor_core::artifact_hash(&format!("{PIPELINE_VERSION}:{}", proposed.as_str()))
     };
+    let admission_policy = admission_policy_digest(tx.tx(), req.run_id)?;
     let attestation_id = crate::workflow::attestations::append_link(
         tx.tx(),
         &crate::workflow::attestations::ChainLink {
@@ -1041,7 +1137,15 @@ pub(crate) fn advance(conn: &mut Connection, req: &Advance<'_>) -> Result<Advanc
             step_id,
             subject_name: subject_name(proposed.as_str(), req.artifact),
             subject_digest,
-            policy_digest: None,
+            // The policy the run was ADMITTED under, read from its own
+            // admission trace and carried into the SIGNED link — the field
+            // exists so the promotion gate can compare the chain's policy
+            // against the one in force, which is a comparison only the
+            // release round makes. A run admitted with no policy carries
+            // None here, and a promotion of such a run is refused
+            // (policy_mismatch): a chain made under no policy promotes under
+            // no policy, which is no promotion at all.
+            policy_digest: admission_policy,
             config_digest: citation.as_ref().map(|c| c.config_digest.clone()),
             model_ref: citation.as_ref().map(|c| c.key.clone()),
             model_digest: citation.as_ref().map(|c| c.artifact_digest.clone()),
@@ -1896,10 +2000,10 @@ pub(crate) fn reconcile_authority(
 
     // The MINT: the machine's own record that it now wants something done
     // about this observation. It is kernel-minted, forge-checked, and left
-    // `pending` — nothing in this round can release it, and the release act
-    // belongs to the promote gate that does not exist yet. A mismatch is
-    // exactly the case that needs a decision from someone with the contract in
-    // hand, so a MATCH mints nothing: there is nothing to want done.
+    // `pending` — the release act belongs to the promote gate, and the /due
+    // crank is the only drain. A mismatch is exactly the case that needs a
+    // decision from someone with the contract in hand, so a MATCH mints
+    // nothing: there is nothing to want done.
     let minted = if matches {
         None
     } else {
@@ -2051,12 +2155,14 @@ pub(crate) fn provision_bindings(
         );
         conn.execute(
             "INSERT INTO delivery_bindings(domain, target_kind, target_ref, endpoint, \
-             authority_digest, policy_digest, capabilities_json, active, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 1, ?7, ?7) \
+             authority_digest, policy_digest, capabilities_json, secret_file_name, active, \
+             created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, ?7, 1, ?8, ?8) \
              ON CONFLICT(domain, target_kind, target_ref) DO UPDATE SET \
                endpoint = excluded.endpoint, \
                authority_digest = excluded.authority_digest, \
                capabilities_json = excluded.capabilities_json, \
+               secret_file_name = excluded.secret_file_name, \
                updated_at = excluded.updated_at",
             params![
                 binding.domain,
@@ -2065,6 +2171,7 @@ pub(crate) fn provision_bindings(
                 binding.endpoint,
                 digest,
                 binding.capabilities_json,
+                binding.secret_file_name,
                 now,
             ],
         )
