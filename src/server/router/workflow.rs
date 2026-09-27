@@ -561,4 +561,8 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             "/workflow/delivery/runs/{id}/steps",
             get(handlers::delivery::get_delivery_run_steps),
         )
+        .route(
+            "/workflow/delivery/outcomes",
+            get(handlers::delivery::get_delivery_outcomes),
+        )
 }

@@ -323,6 +323,11 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     // handlers per method, and least privilege keeps every read Read.
     "/workflow/delivery/runs/{id}",
     "/workflow/delivery/runs/{id}/steps",
+    // the derived read model (the operate round). The domain is a required
+    // query parameter — the bindings shape: a read over the domain's own
+    // audited release rows, domain-scoped rather than run-scoped, and the
+    // window is bounded and validated in the core.
+    "/workflow/delivery/outcomes",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -687,4 +692,9 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/delivery/due", "Write"),
     ("/workflow/delivery/runs/{id}", "Read"),
     ("/workflow/delivery/runs/{id}/steps", "Read"),
+    // the derived read model: Read, on the QUERIED domain, with the workflow
+    // role checked in-handler (the bindings shape — domain-scoped, not
+    // run-scoped, so the agent cell really reaches it, and the matrix's
+    // ROLE_GATED_FOR_AGENT list says so).
+    ("/workflow/delivery/outcomes", "Read"),
 ];

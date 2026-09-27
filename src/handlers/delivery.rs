@@ -1045,6 +1045,63 @@ pub async fn get_delivery_run_steps(
     Ok(Json(response))
 }
 
+/// The derived delivery read model — the DO-named operate surface. The
+/// domain comes from the QUERY (there is no run to scope it to — the bindings
+/// shape), the window is optional and validated in the core (refused with a
+/// 400, never clamped), and the derivation is a pure read over the domain's
+/// own audited release rows and authority-fact findings, off the async
+/// runtime and behind the same gate order as every delivery read. Read on
+/// the queried domain + the `workflow` role; the read seam runs once on the
+/// assembled response.
+pub async fn get_delivery_outcomes(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = q
+        .get("domain")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .ok_or_else(|| HandlerError::bad_request("domain_required", "domain is required"))?
+        .to_string();
+    let window: Option<String> = q
+        .get("window")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|w| !w.is_empty())
+        .map(str::to_string);
+    super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, Some(&domain))?;
+    super::authorize_role(&principal, &pool, "workflow")?;
+
+    let now = chrono::Utc::now().timestamp();
+    let outcomes = tokio::task::spawn_blocking(move || {
+        let conn =
+            pool.get()
+                .map_err(|e| crate::workflow::delivery_read::OutcomesError::Storage {
+                    detail: format!("{e}"),
+                })?;
+        crate::workflow::delivery_read::delivery_outcomes(&conn, &domain, window.as_deref(), now)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))?
+    .map_err(|error| match error {
+        crate::workflow::delivery_read::OutcomesError::WindowBounds { detail } => {
+            HandlerError::bad_request("window_out_of_bounds", detail)
+        }
+        crate::workflow::delivery_read::OutcomesError::Storage { detail } => {
+            HandlerError::internal(detail)
+        }
+    })?;
+
+    let mut response = serde_json::to_value(outcomes)
+        .map_err(|error| HandlerError::internal(error.to_string()))?;
+    super::sanitize_value_strings(&mut response);
+    Ok(Json(response))
+}
+
 /// The typed error → HTTP mapping. Absence is 404 on every route, and a
 /// non-delivery run reads as absent rather than as a wrong-kind error, so the
 /// mapping never becomes an existence oracle.

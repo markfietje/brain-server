@@ -310,6 +310,14 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
                 "/workflow/delivery/releases?domain=global".to_string()
             }
             "/workflow/delivery/runs" => "/workflow/delivery/runs?domain=global".to_string(),
+            // Same required-query-param shape on the derived read model: it is
+            // domain-scoped (a release row resolves to one tenant), so carrying
+            // a real domain exercises the cross-tenant refusal instead of the
+            // param validation. `window` is OPTIONAL and bounded in the core,
+            // so no arm is needed for it.
+            "/workflow/delivery/outcomes" => {
+                "/workflow/delivery/outcomes?domain=global".to_string()
+            }
             _ => concrete,
         };
         let (method, body) = match *template {
@@ -437,6 +445,9 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
             "/workflow/delivery/releases/{id}/approve" => ("POST", r#"{"scope":"promote"}"#),
             "/workflow/delivery/releases/{id}/promote" => ("POST", r#"{"confirm":false}"#),
             "/workflow/delivery/due" => ("POST", r#"{"domain":"global"}"#),
+            // the derived read model drives the GET side explicitly (the
+            // prompt's law): no body, the window defaults in the core.
+            "/workflow/delivery/outcomes" => ("GET", ""),
             "/workflow/runs/{id}/back-referral/return" => (
                 "POST",
                 r#"{"contract_key":"m","report":{},"decision_ref":"m"}"#,
@@ -2366,6 +2377,12 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     // run-scoped, so it really is reached. Same `workflow` capability, same
     // reason: the role table has no agent-grantable `workflow` verb.
     "/workflow/delivery/bindings",
+    // The derived read model. Domain-scoped rather than run-scoped, so the
+    // agent cell really reaches it; same `workflow` capability, same reason
+    // as the bindings read: the role table has no agent-grantable `workflow`
+    // verb. NOT in PRE_GATE_404 — there is no id to resolve pre-gate; the
+    // domain gate answers first, exactly like the bindings read.
+    "/workflow/delivery/outcomes",
     // The κ bench: queue + capture demand the `calibrate` capability (the
     // agent preset carries read/write/reject only); the report carries
     // the DPO dual gate (the agent HAS roles, so the dual gate binds).

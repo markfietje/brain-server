@@ -18110,10 +18110,10 @@ mod r38_delivery {
                 "a delivery route path carrying `status` would be a status-write sibling: {line}"
             );
         }
-        // The registered routes, and exactly sixteen (thirteen paths; the two
-        // shared paths are registered once per method). The assertion is
+        // The registered routes, and exactly seventeen (fourteen paths; the
+        // two shared paths are registered once per method). The assertion is
         // deliberately widened rather than deleted each time a round lands a
-        // route, so a SEVENTEENTH still fails here.
+        // route, so an EIGHTEENTH still fails here.
         let registered: Vec<String> = router
             .match_indices("/workflow/delivery/")
             .map(|(i, _)| {
@@ -18141,6 +18141,7 @@ mod r38_delivery {
                 "/workflow/delivery/runs",
                 "/workflow/delivery/runs/{id}",
                 "/workflow/delivery/runs/{id}/steps",
+                "/workflow/delivery/outcomes",
             ],
             "the census is current, not inherited: eight writes (four run writes, three \
              release writes, the due crank) and eight reads, with the two shared paths \
@@ -18172,8 +18173,10 @@ mod r38_delivery {
     /// round completed the unassigned surface (three release writes, the
     /// crank, and four reads), so the census is re-scoped to the completed
     /// truth — the same re-scoping this file's table census takes each time a
-    /// decision lands. EIGHT writes and EIGHT reads, each dual-listed in the
-    /// guard tables (a shared path carries one row per action).
+    /// decision lands. The operate round adds the derived read model: a
+    /// NINTH read, derived rather than served, still taking no body. EIGHT
+    /// writes and NINE reads, each dual-listed in the guard tables (a shared
+    /// path carries one row per action).
     #[test]
     fn delivery_route_census_is_current() {
         let router = src("src/server/router/workflow.rs");
@@ -18218,9 +18221,10 @@ mod r38_delivery {
                 "/workflow/delivery/runs",
                 "/workflow/delivery/runs/{id}",
                 "/workflow/delivery/runs/{id}/steps",
+                "/workflow/delivery/outcomes",
             ],
-            "the eight reads are the current census — every one serves stored bytes or \
-             stored rows, takes no body (or a query), and is Read-scoped"
+            "the nine reads are the current census — every one serves stored bytes or \
+             derived stored rows, takes no body (or a query), and is Read-scoped"
         );
         // And the guard tables agree with the router, in both directions. A
         // shared path (GET and POST on one path) carries one OPENAPI row and
@@ -18241,6 +18245,7 @@ mod r38_delivery {
             "/workflow/delivery/due",
             "/workflow/delivery/runs/{id}",
             "/workflow/delivery/runs/{id}/steps",
+            "/workflow/delivery/outcomes",
         ] {
             let expected = if p == "/workflow/delivery/runs" || p == "/workflow/delivery/releases" {
                 3
@@ -18265,6 +18270,7 @@ mod r38_delivery {
             "/workflow/delivery/runs",
             "/workflow/delivery/runs/{id}",
             "/workflow/delivery/runs/{id}/steps",
+            "/workflow/delivery/outcomes",
         ] {
             assert!(
                 guards.contains(&format!("(\"{p}\", \"Read\")")),
@@ -21999,7 +22005,19 @@ mod r44_outcomes {
         let block = openapi_block(&spec, "/workflow/delivery/outcomes");
         let page = src("docs/api.md");
         let row = api_md_row(&page, "/workflow/delivery/outcomes");
-        for artifact in [(&core, "module"), (&block, "openapi"), (&row, "api.md")] {
+        // YAML folds and api.md wraps: match on whitespace-collapsed text
+        // (the r41 scan's normalization), so a line break cannot hide a law.
+        fn squashed(text: &str) -> String {
+            text.split_whitespace().collect::<Vec<_>>().join(" ")
+        }
+        let core_flat = squashed(&core);
+        let block_flat = squashed(&block);
+        let row_flat = squashed(&row);
+        for artifact in [
+            (&core_flat, "module"),
+            (&block_flat, "openapi"),
+            (&row_flat, "api.md"),
+        ] {
             let lower = artifact.0.to_lowercase();
             for banned in [
                 "elite",
@@ -22027,7 +22045,7 @@ mod r44_outcomes {
             "no operational-resilience claim",
         ] {
             assert!(
-                block.contains(required),
+                block_flat.contains(required),
                 "the route description must carry `{required}` verbatim — the naming and \
                  licensing laws ride the route description (E6/E7)"
             );

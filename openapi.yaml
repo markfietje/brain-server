@@ -8456,6 +8456,81 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized (Read on the run's domain plus the `workflow` role) }
         "404": { description: Delivery run not found (probe-blind) }
+  /workflow/delivery/outcomes:
+    get:
+      summary: The derived delivery read model (Read on the domain plus the `workflow` role)
+      description: >
+        The DO-named operate surface: a derived, read-time-only cluster over the
+        domain's own audited release rows and authority-fact findings.
+        Throughput and instability are a coupled cluster; change_fail_rate is
+        the control — its readings carry `role: "control"`, and the cluster
+        carries the recorded framing (leading indicators for organizational
+        performance; lagging for delivery practices) so no client can render a
+        bare throughput number as a performance verdict. There is one route
+        and one response object: no field decomposition lets a consumer target
+        throughput in isolation.
+        `domain` is a required query parameter and the surface is
+        domain-scoped, because a release row resolves to one tenant and an
+        unscoped resolve would be a cross-tenant leak. `window` is an optional
+        integer number of days, default 30, bounded 1..=366 and validated in
+        the core: a value outside the bound is `400 window_out_of_bounds`,
+        never a silent clamp. OWASP LLM10 (unbounded consumption) is the
+        relevant threat and the window bound is the control; there is no model
+        call, so no injection surface is added.
+        Every metric carries a typed state — `computed` with a value, or
+        `insufficient` with a closed reason (`window_empty`,
+        `no_vcs_revision_recorded`, `no_incident_facts`, `no_rework_signal`,
+        `insufficient_history`). An absent metric is never rendered `0`, and a
+        zero is never rendered absent. Where DORA (DevOps Research and
+        Assessment) names are used at all they carry `dora_name` +
+        `definition_match: proxy` + a one-line definition note; the native
+        measures (`approval_to_promotion_elapsed`, `governed_release_cadence`)
+        are named natively, and the native elapsed measure is never presented
+        as DORA change lead time. Metrics vocabulary only; no thresholds or
+        tables reproduced — no benchmark thresholds, tables, figures, or
+        performance bands appear anywhere, and the run's own history
+        (`own_baseline`) is the only baseline the response carries.
+        The change-fail rate is the count of the window's promoted releases
+        whose run carries a delivery authority contradiction (the closed
+        `delivery:%` source vocabulary narrowed by the typed confidence
+        column — the claim text is never read) over all of the window's
+        promoted releases; a contradiction on a run whose release is not
+        promoted in-window is out of the denominator.
+        Commit-anchored change lead time computes only when the release's
+        `commit_sha` joins to a recorded vcs commit-time fact. No production
+        writer records such a fact today, so the live branch is `insufficient`
+        (`no_vcs_revision_recorded`) — the honest answer, not an approximation;
+        the computed branch is implemented and unit-proven so the metric is
+        correct the day the facts exist.
+        This surface is transparency and auditability by design: a governed
+        operator reads derived facts over their own audited records. It makes
+        no automated decision about a person, so no AI Act high-risk duty is
+        triggered by this code. It carries no EU DORA obligation and makes no
+        operational-resilience claim. Nothing is persisted: the derivation is
+        a pure query, deterministic for (window, now), and it writes no
+        findings row, no counter, and no scalar anywhere.
+      operationId: getDeliveryOutcomes
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: domain
+          in: query
+          required: true
+          schema: { type: string }
+          description: The tenant whose derived outcomes to read. Scoped by the Read gate.
+        - name: window
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 366, default: 30 }
+          description: The window in days; validated in the core and refused outside the bound, never clamped.
+      responses:
+        "200":
+          description: The coupled cluster for the domain and window
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryOutcomesView" }
+        "400": { description: domain is required, or window is out of bounds }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Read on the domain plus the `workflow` role) }
   /webhooks/delivery/{kind}:
   /webhooks/delivery/{kind}:
     post:
@@ -9187,6 +9262,123 @@ components:
         intents_pending: { type: integer, format: int64, minimum: 0 }
         observed_pending: { type: integer, format: int64, minimum: 0 }
         untrusted_pending: { type: integer, format: int64, minimum: 0 }
+    DeliveryOutcomesView:
+      type: object
+      additionalProperties: false
+      required: [window_days, generated_at, domain, cluster, attribution]
+      description: >
+        The derived read model. Metrics vocabulary only; no thresholds or
+        tables reproduced. Every metric object carries `state` — `computed`
+        with a value, or `insufficient` with a closed `reason` — so an absent
+        metric is never rendered `0` and a zero is never rendered absent.
+      properties:
+        window_days: { type: integer, minimum: 1, maximum: 366 }
+        generated_at: { type: integer, format: int64, description: epoch seconds; the `now` the derivation is deterministic against }
+        domain: { type: string }
+        cluster:
+          type: object
+          additionalProperties: false
+          required: [note, framing, throughput, instability, native_measures, own_baseline]
+          properties:
+            note: { type: string }
+            framing: { type: string }
+            throughput:
+              type: object
+              additionalProperties: false
+              required: [change_lead_time, governed_release_cadence, failed_deployment_recovery_time, control]
+              properties:
+                change_lead_time: { $ref: "#/components/schemas/DeliveryLeadTimeMetric" }
+                governed_release_cadence: { $ref: "#/components/schemas/DeliveryCadenceMetric" }
+                failed_deployment_recovery_time:
+                  type: object
+                  additionalProperties: false
+                  required: [state, reason]
+                  properties:
+                    state: { type: string, enum: [insufficient] }
+                    reason: { type: string, enum: [no_incident_facts] }
+                control: { type: string, enum: [change_fail_rate] }
+            instability:
+              type: object
+              additionalProperties: false
+              required: [change_fail_rate, deployment_rework_rate]
+              properties:
+                change_fail_rate: { $ref: "#/components/schemas/DeliveryFailRateMetric" }
+                deployment_rework_rate:
+                  type: object
+                  additionalProperties: false
+                  required: [state, reason]
+                  properties:
+                    state: { type: string, enum: [insufficient] }
+                    reason: { type: string, enum: [no_rework_signal] }
+            native_measures:
+              type: object
+              additionalProperties: false
+              required: [approval_to_promotion_elapsed, note]
+              properties:
+                approval_to_promotion_elapsed:
+                  type: object
+                  additionalProperties: false
+                  required: [state]
+                  description: The NATIVE measure — never presented as DORA change lead time; it carries no dora_name.
+                  properties:
+                    state: { type: string, enum: [computed, insufficient] }
+                    value_minutes: { type: number }
+                    reason: { type: string, enum: [window_empty] }
+                note: { type: string }
+            own_baseline:
+              type: object
+              additionalProperties: false
+              required: [window_days, change_fail_rate, cadence_per_week]
+              description: The run's OWN history — the only baseline the model carries.
+              properties:
+                window_days: { type: integer, minimum: 1, maximum: 366 }
+                change_fail_rate: { $ref: "#/components/schemas/DeliveryFailRateMetric" }
+                cadence_per_week: { $ref: "#/components/schemas/DeliveryCadenceMetric" }
+        attribution:
+          type: object
+          additionalProperties: false
+          required: [programme, reference, license_note]
+          properties:
+            programme: { type: string }
+            reference: { type: string }
+            license_note: { type: string }
+    DeliveryLeadTimeMetric:
+      type: object
+      additionalProperties: false
+      required: [state, dora_name, definition_match, definition_note, anchor]
+      description: Commit-anchored change lead time; computed only when the release's commit_sha joins to a recorded vcs commit-time fact.
+      properties:
+        state: { type: string, enum: [computed, insufficient] }
+        value_minutes: { type: number }
+        percentile: { type: integer, enum: [50] }
+        dora_name: { type: string, enum: [change lead time] }
+        definition_match: { type: string, enum: [proxy] }
+        definition_note: { type: string }
+        anchor: { type: string }
+        reason: { type: string, enum: [window_empty, no_vcs_revision_recorded] }
+    DeliveryCadenceMetric:
+      type: object
+      additionalProperties: false
+      required: [state, dora_name, definition_match, definition_note]
+      properties:
+        state: { type: string, enum: [computed, insufficient] }
+        per_week: { type: number }
+        dora_name: { type: string, enum: [deployment frequency] }
+        definition_match: { type: string, enum: [proxy] }
+        definition_note: { type: string }
+        reason: { type: string, enum: [window_empty, insufficient_history] }
+    DeliveryFailRateMetric:
+      type: object
+      additionalProperties: false
+      required: [state, dora_name, definition_match, definition_note]
+      properties:
+        state: { type: string, enum: [computed, insufficient] }
+        ratio: { type: number }
+        role: { type: string, enum: [control] }
+        dora_name: { type: string, enum: [change failure rate] }
+        definition_match: { type: string, enum: [proxy] }
+        definition_note: { type: string }
+        reason: { type: string, enum: [window_empty, insufficient_history] }
     DecisionEvaluationRecord:
       type: object
       additionalProperties: false

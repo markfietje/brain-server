@@ -1,26 +1,26 @@
-//! The derived delivery read model — the DO-named operate surface (R44, the
+//! The derived delivery read model — the DO-named operate surface (the
 //! delivery line's closing round).
 //!
 //! A pure query core: it takes [`Connection`] + `(window, now)` and derives
 //! the coupled cluster read-time from `delivery_releases` joined to the
-//! authority-fact findings the R42 reconcile wrote. It is a QUERY, never a
-//! view (E1 — the repo has never used a view; a view has no `?window=` story
+//! authority-fact findings the authority reconcile wrote. It is a QUERY, never a
+//! view (the view law — the repo has never used a view; a view has no `?window=` story
 //! and drags migration-parity questions), and it persists nothing: no table,
 //! no stamp, no writer, no egress. Because nothing is persisted, any future
 //! definitional change costs zero migrations.
 //!
 //! The laws this module carries:
 //!
-//! - **The typed insufficiency contract (E2).** Every metric renders a
+//! - **The typed insufficiency contract.** Every metric renders a
 //!   [`MetricState`]: `computed` always carries a value; `insufficient` never
 //!   does and carries a closed [`InsufficiencyReason`]. An absent metric is
 //!   never rendered `0` and a zero is never rendered absent.
-//! - **The coupling law (E4).** Throughput and instability are ONE cluster in
+//! - **The coupling law.** Throughput and instability are ONE cluster in
 //!   ONE response object; `change_fail_rate` is labeled `role: "control"` on
 //!   the readings; no field decomposition lets a consumer target throughput in
 //!   isolation. The framing rides with the numbers so no client can render a
 //!   bare throughput scalar as a performance verdict.
-//! - **The naming law (E3).** The native measures are named
+//! - **The naming law.** The native measures are named
 //!   `approval_to_promotion_elapsed` and `governed_release_cadence`. Where
 //!   DORA (DevOps Research and Assessment) names are used at all, the reading
 //!   carries `dora_name` + `definition_match: "proxy"` + a one-line definition
@@ -49,10 +49,10 @@
 //!   LIVE branch is `insufficient` (`no_vcs_revision_recorded`) — the honest
 //!   answer; the computed branch is implemented and unit-proven so the metric
 //!   is correct the day the facts exist. No timestamp is ever approximated.
-//! - **The window (E5).** Days, integer, default 30, bounded `1..=366`,
+//! - **The window.** Days, integer, default 30, bounded `1..=366`,
 //!   validated HERE and refused — never silently clamped. The derivation is
 //!   deterministic for (window, now): the core reads no clock.
-//! - **The baseline (E6).** The run's OWN history is the only baseline: an
+//! - **The baseline.** The run's OWN history is the only baseline: an
 //!   `own_baseline` block over a fixed 90-day window of the same family, and
 //!   no benchmark threshold, table, figure, or performance band is reproduced
 //!   anywhere. Attribution is the whole of what crosses.
@@ -71,13 +71,13 @@ use serde::Serialize;
 
 use crate::workflow::delivery::RUN_KIND;
 
-/// The default window, in days (E5).
+/// The default window, in days (the window law).
 pub(crate) const DEFAULT_WINDOW_DAYS: i64 = 30;
-/// The window bound, in days (E5): refused outside `1..=MAX_WINDOW_DAYS`,
+/// The window bound, in days (the window law): refused outside `1..=MAX_WINDOW_DAYS`,
 /// never clamped.
 pub(crate) const MAX_WINDOW_DAYS: i64 = 366;
 /// The baseline window, in days: the run's own history, the only baseline the
-/// model may compare against (E6).
+/// model may compare against (the licensing law).
 pub(crate) const BASELINE_WINDOW_DAYS: i64 = 90;
 
 const CLUSTER_NOTE: &str =
@@ -120,7 +120,7 @@ impl std::fmt::Display for OutcomesError {
     }
 }
 
-fn storage(detail: impl std::fmt::Display) -> OutcomesError {
+fn read_storage(detail: impl std::fmt::Display) -> OutcomesError {
     OutcomesError::Storage {
         detail: detail.to_string(),
     }
@@ -132,7 +132,7 @@ fn bounds(detail: impl std::fmt::Display) -> OutcomesError {
     }
 }
 
-/// The typed per-metric state — the whole mechanism (E2).
+/// The typed per-metric state — the whole mechanism (the typed contract).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum MetricState {
@@ -140,7 +140,7 @@ pub(crate) enum MetricState {
     Insufficient,
 }
 
-/// The closed insufficiency vocabulary (E2). Carried verbatim on the wire.
+/// The closed insufficiency vocabulary (the typed contract). Carried verbatim on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(crate) enum InsufficiencyReason {
     #[serde(rename = "window_empty")]
@@ -313,7 +313,7 @@ impl FailRateMetric {
 }
 
 /// The native approval→promotion elapsed measure. NO DORA label of any kind —
-/// E3's hard edge: a native name is never dressed as a DORA metric.
+/// The naming law's hard edge: a native name is never dressed as a DORA metric.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct NativeElapsedMetric {
     state: MetricState,
@@ -381,7 +381,7 @@ pub(crate) struct NativeMeasures {
 }
 
 /// The run's own history over the fixed baseline window — the only baseline
-/// the model may compare against (E6). Same typed states: an empty baseline
+/// the model may compare against (the licensing law). Same typed states: an empty baseline
 /// is `insufficient_history`, never a bare number, never zero.
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct OwnBaseline {
@@ -435,7 +435,7 @@ struct CommitFact {
 }
 
 /// The window parse-and-bound law: days, integer, default 30, bounded
-/// `1..=366`, refused — never clamped (E5).
+/// `1..=366`, refused — never clamped (the window law).
 fn parse_window(window: Option<&str>) -> Result<i64, OutcomesError> {
     let Some(raw) = window else {
         return Ok(DEFAULT_WINDOW_DAYS);
@@ -472,7 +472,7 @@ fn window_releases(
                AND rel.deployed_at > ?3 AND rel.deployed_at <= ?4 \
              ORDER BY rel.id",
         )
-        .map_err(storage)?;
+        .map_err(read_storage)?;
     let rows = stmt
         .query_map(params![RUN_KIND, domain, from, to], |row| {
             Ok(WindowRelease {
@@ -482,9 +482,9 @@ fn window_releases(
                 commit_sha: row.get(3)?,
             })
         })
-        .map_err(storage)?
+        .map_err(read_storage)?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(storage)?;
+        .map_err(read_storage)?;
     Ok(rows)
 }
 
@@ -501,12 +501,12 @@ fn mismatched_runs(conn: &Connection, run_ids: &[i64]) -> Result<HashSet<i64>, O
         "SELECT DISTINCT run_id FROM findings \
          WHERE source LIKE 'delivery:%' AND confidence = 0.0 AND run_id IN ({placeholders})"
     );
-    let mut stmt = conn.prepare(&sql).map_err(storage)?;
+    let mut stmt = conn.prepare(&sql).map_err(read_storage)?;
     let rows = stmt
         .query_map(params_from_iter(run_ids.iter()), |row| row.get::<_, i64>(0))
-        .map_err(storage)?
+        .map_err(read_storage)?
         .collect::<Result<HashSet<_>, _>>()
-        .map_err(storage)?;
+        .map_err(read_storage)?;
     Ok(rows)
 }
 
@@ -522,14 +522,14 @@ fn commit_facts(conn: &Connection, run_ids: &[i64]) -> Result<Vec<CommitFact>, O
          WHERE source = 'delivery:vcs' AND confidence = 1.0 AND run_id IN ({placeholders}) \
          ORDER BY id"
     );
-    let mut stmt = conn.prepare(&sql).map_err(storage)?;
+    let mut stmt = conn.prepare(&sql).map_err(read_storage)?;
     let rows = stmt
         .query_map(params_from_iter(run_ids.iter()), |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
         })
-        .map_err(storage)?
+        .map_err(read_storage)?
         .collect::<Result<Vec<_>, _>>()
-        .map_err(storage)?;
+        .map_err(read_storage)?;
     Ok(rows
         .into_iter()
         .filter_map(|(run_id, evidence)| {
@@ -649,13 +649,13 @@ pub(crate) fn delivery_outcomes(
     };
 
     // The two-authority (vcs, ci) surface carries no incident or rework
-    // facts, and declaring that honestly is correct (E2) — always.
+    // facts, and declaring that honestly is correct (the typed contract) — always.
     let failed_deployment_recovery_time =
         UnsupportedMetric::insufficient(InsufficiencyReason::NoIncidentFacts);
     let deployment_rework_rate =
         UnsupportedMetric::insufficient(InsufficiencyReason::NoReworkSignal);
 
-    // ── the native measure (E3's hard edge) ────────────────────────────────
+    // ── the native measure (the naming law's hard edge) ───────────────────
     let approval_to_promotion_elapsed = if window_empty {
         NativeElapsedMetric::insufficient(InsufficiencyReason::WindowEmpty)
     } else {
@@ -672,7 +672,7 @@ pub(crate) fn delivery_outcomes(
         }
     };
 
-    // ── the baseline: the run's OWN history (E6) ───────────────────────────
+    // ── the baseline: the run's OWN history (the licensing law) ──────────
     let baseline_releases =
         window_releases(conn, domain, now - BASELINE_WINDOW_DAYS * 86_400, now)?;
     let baseline_empty = baseline_releases.is_empty();
