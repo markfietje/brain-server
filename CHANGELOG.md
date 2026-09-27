@@ -72,11 +72,31 @@ been run, it is marked **pending** rather than asserted.
   refused, and nothing proved a foreign run was probe-blind. The three reads are
   now in the class matrix, in the role-gated list, and in the probe-blind list,
   and a seeded test opens a real run and proves the agent class is refused 403 on
-  each read while the operator clears all six delivery routes — a 403-for-everybody
-  is not a gate. Revocation is proven to be **not write-scoped**: a revoked
-  identity dies at the middleware on the read surfaces too. The keyless-host
-  `409 delivery_attestation_refused` is now proven at an HTTP hop, not only at the
-  core, with the posture armed rather than assumed.
+  each of the six — the four writes and the three reads — while the operator is
+  **not** refused on any of them. (The test asserts the operator is never 403'd,
+  which is the gate property; it does not assert every route returns 200, because
+  two of the writes legitimately return 409 once the phase pass has moved the
+  revision.) A 403-for-everybody is not a gate. Revocation is proven to be **not
+  write-scoped**: a revoked identity dies at the middleware on the read surfaces
+  too. The keyless-host `409 delivery_attestation_refused` is now proven at an
+  HTTP hop, not only at the core, with the posture armed rather than assumed.
+- **The delivery read surfaces no longer answer for a run that is not a delivery
+  run.** `GET .../replay-verify` and `GET .../trace` queried `delivery_traces`
+  directly and did not check the run's kind, while every write path resolves its
+  run through the kind-filtered head. Because `workflow_runs` is shared with the
+  GDL, account, and valet engines, a principal with `Read` on a domain could pass
+  a non-delivery run id and receive a structurally-valid delivery payload —
+  answering `200` where every write answers `404`, which is the existence oracle
+  the module's probe-blind law exists to prevent. Both reads now resolve the
+  kind-filtered head first, so a foreign-kind run and a missing one are one
+  answer.
+- **The trace appendix no longer serves the agent loop's conversation log.** The
+  `ddl_*` narrative appendix read from the shared `agent_session_events` table
+  with only the `control:*` family excluded, so it could return `user`,
+  `assistant`, and `tool_result` rows — the model transcript — to any principal
+  with `Read` on the run's domain. The read now filters positively to the
+  `ddl_*` family, so the appendix is the delivery narrative it is documented to
+  be.
 - **A phase pass now refuses to proceed without a usable operator key.** An
   absent key and a refused one are different causes of the same refusal, and
   neither ever degrades into an unsigned link. On a host with no operator key,

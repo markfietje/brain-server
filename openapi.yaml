@@ -8754,7 +8754,6 @@ components:
       required: [run_id, window, rows, attestation_root, event_log, generated_at]
       description: >
         The run's stored rows in ORDINAL order, the attestation chain head READ
-        runs in ORDINAL order, the attestation chain head READ
         from storage (`null` before the first link — never a fabricated address),
         and the same bounded, self-disclosing narrative appendix the replay
         verdict carries. It rides the same read function and the same window
