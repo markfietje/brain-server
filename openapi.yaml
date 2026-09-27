@@ -8322,6 +8322,51 @@ paths:
             The release law refused — not approved, not promotable, authority
             drift, approval stale (the run moved since the approval), approver
             revoked, tier mismatch, or a chain that fails its signatures.
+  /workflow/delivery/due:
+    post:
+      summary: The /due crank (Write on the body's domain plus the `workflow` role; the agent preset is refused)
+      description: >
+        The valet precedent, transplanted: request-scoped (no daemon, no
+        scheduler — the cron recipe IS the scheduler), a bounded batch that
+        DRAINS (never wedges), `remaining` reported AND audited, and a hard
+        in-handler batch cap — no route-level rate limiter exists, so the cap
+        is the only thing between a crank and an egress storm.
+        The body's `domain` is the scope, checked immediately after authz.
+        Three phases, and the middle one holds NO database connection:
+        (1) select and RE-VERIFY each pending kernel-authentic intent whose
+        release is `promoted` — authenticity, the release's status, the
+        approval's currency against the LIVE artifact digest, the approver's
+        principal, and the chain's verification — all re-run here even though
+        the promote checked them too, because the world moves between the
+        mint and the drain; (2) dispatch each verified intent through the R42
+        pinned read-egress path (the only egress the tree has — exact-host
+        refused, bearer read at the call and never stored); (3) mark each
+        succeeded row delivered through the guarded `pending → delivered`
+        update, where a concurrent drain is a receipt and not a second
+        effect.
+        The ledger's BELIEF moves only when the inbound authority observation
+        reconciles — the crank NEVER writes `verified_at`. A crash between a
+        mark and anything else replays a durable row, never a double-release,
+        because promotion IS the outbox write and the dispatch is a read.
+      operationId: runDeliveryDueCrank
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [domain]
+              properties:
+                domain: { type: string }
+                now: { type: integer, description: Evaluate "now" at this unix-seconds timestamp (testing/replay) }
+      responses:
+        "200":
+          description: The drain report — `{ok, domain, batch_cap, drained, refused, failed, remaining}`
+        "400": { description: domain is required }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized, or the agent preset }
+        "409": { description: The delivery authority is not configured }
   /webhooks/delivery/{kind}:
     post:
       summary: An inbound AUTHORITY OBSERVATION (public; HMAC self-authenticating)

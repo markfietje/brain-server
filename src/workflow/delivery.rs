@@ -23,8 +23,8 @@
 #![deny(unsafe_code)]
 
 use brain_delivery_core::{
-    AutonomyTier, Phase, StageDiff, StageDigest, StageMismatch, is_legal_phase_transition,
-    terminal_phase, trace_mode_for_tier,
+    AutonomyTier, Phase, ReleaseStatus, StageDiff, StageDigest, StageMismatch,
+    is_legal_phase_transition, is_legal_release_transition, terminal_phase, trace_mode_for_tier,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -2034,6 +2034,42 @@ pub(crate) fn reconcile_authority(
         )
     };
 
+    // The RECONCILE-ONLY LAW: the ledger's belief about a PROMOTED release
+    // moves only here — when the authority's own inbound observation
+    // reconciles. A mismatch is not a reconciliation, so a contradiction
+    // moves nothing. The crank never writes this column.
+    let mut verified_release: Option<i64> = None;
+    if matches {
+        let head: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM delivery_releases \
+                  WHERE run_id = ?1 AND status = ?2 ORDER BY id DESC LIMIT 1",
+                params![run_id, ReleaseStatus::Promoted.as_str()],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(storage)?;
+        if let Some(release_id) = head {
+            let from = ReleaseStatus::Promoted;
+            let to = ReleaseStatus::Verified;
+            if !is_legal_release_transition(from, to) {
+                return Err(DeliveryError::ReleaseRefused {
+                    reason: "illegal_transition",
+                });
+            }
+            let moved = conn
+                .execute(
+                    "UPDATE delivery_releases SET status = ?2, verified_at = COALESCE(verified_at, ?3), \
+                     updated_at = ?3 WHERE id = ?1 AND status = ?4",
+                    params![release_id, to.as_str(), now, from.as_str()],
+                )
+                .map_err(storage)?;
+            if moved > 0 {
+                verified_release = Some(release_id);
+            }
+        }
+    }
+
     // The audit row rides the SAME transaction as the evidence. Audit-last, as
     // the rest of this module does it.
     delivery_audit(
@@ -2043,12 +2079,15 @@ pub(crate) fn reconcile_authority(
         AuditStatus::Ok,
         &format!(
             "authority observation reconciled: kind={} matches={} findings={} contradictions={} \
-             intent_minted={}",
+             intent_minted={} release_verified={}",
             observed.target_kind,
             matches,
             outcome.findings.len(),
             outcome.contradictions.len(),
-            minted.is_some()
+            minted.is_some(),
+            verified_release
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "none".into()),
         ),
     )?;
 
@@ -2057,6 +2096,7 @@ pub(crate) fn reconcile_authority(
         findings: outcome.findings,
         contradictions: outcome.contradictions,
         intent_minted: minted.is_some(),
+        verified_release,
     })
 }
 
@@ -2069,8 +2109,12 @@ pub(crate) struct ReconcileOutcome {
     pub findings: Vec<i64>,
     pub contradictions: Vec<(i64, i64)>,
     /// Whether a plan intent was minted. True only on a mismatch, and the
-    /// intent is `pending` and undispatchable regardless.
+    /// intent is `pending` until its crank regardless.
     pub intent_minted: bool,
+    /// The release whose `verified_at` this observation recorded, if any.
+    /// Set only on a MATCH against a `promoted` release — the one path the
+    /// ledger's belief may take.
+    pub verified_release: Option<i64>,
 }
 
 /// The inbound observation, parsed from a verified webhook body. Every field is

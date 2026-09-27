@@ -702,6 +702,203 @@ pub async fn post_delivery_release_promote(
     Ok(Json(response))
 }
 
+/// The /due crank: the valet precedent, transplanted. Request-scoped (no
+/// daemon, no scheduler — the cron recipe IS the scheduler), a bounded batch
+/// that DRAINS, `remaining` reported AND audited, and a HARD in-handler batch
+/// cap — no route-level limiter exists, so the cap is the egress storm's only
+/// gate.
+///
+/// The body's domain is the scope: checked immediately after authz, before
+/// any pool work, the same admission shape the run-create route uses.
+///
+/// THREE phases, and the middle one holds NO database connection. Phase 1
+/// selects and re-verifies (read-only). Phase 2 dispatches each verified
+/// intent through the R42 pinned read-egress path — the only egress the tree
+/// has — with no pooled connection held, so a slow or hanging authority
+/// cannot occupy the pool. Phase 3 marks each succeeded row delivered
+/// through the guarded update (a concurrent drain is a receipt) and reports
+/// the remainder. The ledger's BELIEF moves only when the inbound authority
+/// observation reconciles; the crank never writes `verified_at`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DueBody {
+    pub domain: String,
+    #[serde(default)]
+    pub now: Option<i64>,
+}
+
+pub async fn post_delivery_due(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    body: Option<Json<DueBody>>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    use crate::workflow::releases::{self, DueIntent};
+
+    let principal = principal.0;
+    if let Some(p) = &principal {
+        refuse_agent(p)?;
+    }
+    let Json(body) =
+        body.ok_or_else(|| HandlerError::bad_request("domain_required", "domain is required"))?;
+    let domain = body.domain.trim().to_string();
+    if domain.is_empty() {
+        return Err(HandlerError::bad_request(
+            "domain_required",
+            "domain is required",
+        ));
+    }
+    super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, None)?;
+    super::authorize_role(&principal, &pool, "workflow")?;
+
+    let now = body.now.unwrap_or_else(|| chrono::Utc::now().timestamp());
+    let who = super::recall::principal_label(&principal);
+    // Absent config is a REFUSAL, not an empty scope: a crank whose secret
+    // root cannot be resolved is one that cannot dispatch, and treating that
+    // as "nothing due" would silently skip real work.
+    let secret_root = crate::config::DeliveryBindingsProfile::from_env()
+        .ok()
+        .flatten()
+        .map(|p| p.secret_root)
+        .ok_or_else(|| HandlerError::conflict("delivery_authority_not_configured"))?;
+
+    // Phase 1 — select + verify, one blocking hop, no network.
+    type Phase1 = Result<(Vec<DueIntent>, Vec<(i64, String)>), HandlerError>;
+    let verify_pool = pool.clone();
+    let verify_domain = domain.clone();
+    let (batch, refusals) = tokio::task::spawn_blocking(move || -> Phase1 {
+        let conn = verify_pool.get().map_err(HandlerError::db_down)?;
+        let batch = releases::select_due_batch(&conn, &verify_domain).map_err(delivery_error)?;
+        let mut verified = Vec::new();
+        let mut refusals = Vec::new();
+        for item in batch {
+            match releases::verify_due_intent(&conn, &item, now) {
+                Ok(()) => verified.push(item),
+                Err(e) => refusals.push((item.outbox_id, e.to_string())),
+            }
+        }
+        Ok((verified, refusals))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))??;
+
+    // Phase 2 — the network, connection-free. The pinned egress path is the
+    // R42 adapter family: exact-host-refused, bearer read at the call, never
+    // stored. The binding is re-resolved and cross-checked against the
+    // release's own binding id — drift between the release and the live
+    // binding configuration is a failure, not a dispatch.
+    let mut drained = 0usize;
+    let mut failed = 0usize;
+    for item in batch {
+        let resolve_pool = pool.clone();
+        let resolve_domain = domain.clone();
+        let resolve_kind = item.target_kind.clone();
+        let resolved = tokio::task::spawn_blocking(
+            move || -> Result<crate::connector::delivery::Binding, String> {
+                let conn = resolve_pool.get().map_err(|e| format!("{e}"))?;
+                crate::connector::delivery::resolve_binding(&conn, &resolve_domain, &resolve_kind)
+                    .map_err(|e| e.to_string())
+            },
+        )
+        .await
+        .map_err(|e| HandlerError::internal(format!("{e}")))?;
+        let binding = match resolved {
+            Ok(b) if b.id == item.binding_id => b,
+            Ok(_) => {
+                failed += 1;
+                continue;
+            }
+            Err(_) => {
+                failed += 1;
+                continue;
+            }
+        };
+        // The one network call, with no connection held. Both adapters'
+        // facts are reduced to the same outcome that matters here: contact
+        // succeeded (and what the authority said, for the response).
+        let contacted: Result<(String, String), crate::connector::delivery::BindingRefused> =
+            match binding.target_kind.as_str() {
+                "vcs" => crate::connector::delivery::vcs::fetch_vcs_facts(&binding, &secret_root)
+                    .await
+                    .map(|f| (f.target_ref, f.combined_status)),
+                "ci" => crate::connector::delivery::ci::fetch_ci_facts(&binding, &secret_root)
+                    .await
+                    .map(|f| (f.target_ref, f.conclusion)),
+                _ => Err(crate::connector::delivery::BindingRefused::NotAdapted),
+            };
+        match contacted {
+            Ok(_) => {
+                // Phase 3, per item — the guarded marking.
+                let mark_pool = pool.clone();
+                let mark_domain = domain.clone();
+                let mark_item = item.clone();
+                let marked = tokio::task::spawn_blocking(move || {
+                    let mut conn = mark_pool.get().map_err(HandlerError::db_down)?;
+                    releases::mark_intent_delivered(&mut conn, &mark_item, &mark_domain, now)
+                        .map_err(delivery_error)
+                })
+                .await
+                .map_err(|e| HandlerError::internal(format!("{e}")))??;
+                if marked {
+                    drained += 1;
+                } else {
+                    // A concurrent drain won: a receipt, not a failure.
+                }
+            }
+            Err(_) => {
+                failed += 1;
+            }
+        }
+    }
+    let refused = refusals.len();
+
+    // The remainder: reported AND audited — a bounded batch that does not say
+    // what it left behind is a silent short drain.
+    let remaining_pool = pool.clone();
+    let remaining_domain = domain.clone();
+    let remaining = tokio::task::spawn_blocking(move || -> Result<i64, HandlerError> {
+        let conn = remaining_pool.get().map_err(HandlerError::db_down)?;
+        releases::count_due(&conn, &remaining_domain).map_err(delivery_error)
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))??;
+    if remaining > 0 {
+        let actor = who.clone();
+        let remaining_detail = format!(
+            "delivery due crank drained the capped batch ({drained} drained, {refused}              re-verify refusals, {failed} dispatch failures); {remaining} intent(s) remain —              re-run the crank"
+        );
+        let audit_domain = domain.clone();
+        let audit_pool = pool.clone();
+        tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
+            let conn = audit_pool.get().map_err(HandlerError::db_down)?;
+            crate::audit::record_tenant(
+                &conn,
+                crate::audit::AuditKind::Workflow,
+                &actor,
+                "delivery/due",
+                crate::audit::AuditStatus::Ok,
+                &remaining_detail,
+                &audit_domain,
+            );
+            Ok(())
+        })
+        .await
+        .map_err(|e| HandlerError::internal(format!("{e}")))??;
+    }
+
+    let mut response = serde_json::json!({
+        "ok": true,
+        "domain": domain,
+        "batch_cap": releases::MAX_DUE_INTENTS,
+        "drained": drained,
+        "refused": refused,
+        "failed": failed,
+        "remaining": remaining,
+    });
+    super::sanitize_value_strings(&mut response);
+    Ok(Json(response))
+}
+
 /// The typed error → HTTP mapping. Absence is 404 on every route, and a
 /// non-delivery run reads as absent rather than as a wrong-kind error, so the
 /// mapping never becomes an existence oracle.

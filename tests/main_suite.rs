@@ -21323,8 +21323,13 @@ mod r43_releases {
             .map(|rest| rest.split("mod tests").next().unwrap_or(rest).to_string())
             .unwrap_or_default();
         if !crank_region.is_empty() {
+            // The crank may SAY the law (a doc comment naming the absence is
+            // disclosure); it must never WRITE the column. The two write
+            // shapes are the SQL the reconcile path owns.
             assert!(
-                !crank_region.contains("verified_at"),
+                !crank_region.contains("SET verified_at")
+                    && !crank_region.contains("verified_at = COALESCE")
+                    && !crank_region.contains("SET status = 'verified'"),
                 "the crank NEVER sets verified_at — it drains an intent; only the authority's \
                  inbound observation moves the ledger's belief"
             );

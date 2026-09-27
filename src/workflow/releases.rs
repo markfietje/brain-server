@@ -844,7 +844,7 @@ pub(crate) fn promote_release(
     };
     let chain = crate_chain(&rows);
     let policy_digest = release.policy_digest.clone().unwrap_or_default();
-    // The trace mode is CARRIED and deliberately UNREAD: the run's autonomy
+    // The trace mode is CARRIED and deliberately unread: the run's autonomy
     // comes from its tier; a trace that claims to be deterministic buys no
     // authority the tier was not granted. The field exists in the request so
     // its unread-ness is observable, and nothing below branches on it.
@@ -1113,6 +1113,205 @@ pub(crate) fn release_run_domain(
     )
     .optional()
     .map_err(|e| delivery::storage_error(format!("release domain probe: {e}")))
+}
+
+// ── the /due crank: the valet precedent, transplanted ──────────────────────
+//
+// Request-scoped, no daemon, no scheduler — the cron recipe IS the scheduler.
+// The batch is BOUNDED and DRAINS, never wedges; `remaining` is reported AND
+// audited. The cap is the hard in-handler bound: no route-level rate limiter
+// exists (the HTTP limiter is global and IP/principal-keyed, never
+// domain-or-target keyed), so this constant is the only thing between a crank
+// and an egress storm.
+pub(crate) const MAX_DUE_INTENTS: usize = 16;
+
+/// One dispatchable intent, as the crank consumes it.
+#[derive(Debug, Clone)]
+pub(crate) struct DueIntent {
+    pub outbox_id: i64,
+    pub run_id: i64,
+    pub release_id: i64,
+    pub binding_id: i64,
+    pub topic: String,
+    pub key: String,
+    pub target_kind: String,
+}
+
+/// The batch: pending, kernel-authentic intent rows whose release is
+/// `promoted`, oldest first, hard-capped. Selection is not authorization —
+/// every selected row is re-verified before any network contact.
+pub(crate) fn select_due_batch(
+    conn: &Connection,
+    domain: &str,
+) -> Result<Vec<DueIntent>, DeliveryError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT o.id, o.run_id, rel.id, rel.binding_id, o.topic, o.idempotency_key, \
+             b.target_kind \
+               FROM outbox o \
+               JOIN workflow_runs r ON r.id = o.run_id AND r.domain = ?2 \
+               JOIN delivery_releases rel ON rel.run_id = o.run_id AND rel.status = 'promoted' \
+               JOIN delivery_bindings b ON b.id = rel.binding_id \
+              WHERE o.status = 'pending' AND o.topic LIKE 'delivery/intent:%' \
+              ORDER BY o.id ASC LIMIT ?1",
+        )
+        .map_err(|e| delivery::storage_error(format!("due select: {e}")))?;
+    let rows = stmt
+        .query_map(params![MAX_DUE_INTENTS as i64, domain], |r| {
+            Ok(DueIntent {
+                outbox_id: r.get(0)?,
+                run_id: r.get(1)?,
+                release_id: r.get(2)?,
+                binding_id: r.get(3)?,
+                topic: r.get(4)?,
+                key: r.get(5)?,
+                target_kind: r.get(6)?,
+            })
+        })
+        .map_err(|e| delivery::storage_error(format!("due select: {e}")))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| delivery::storage_error(format!("due row: {e}")))
+}
+
+/// The uncapped count of still-due intents for the domain — what the response
+/// reports as `remaining` and the audit records, so a bounded batch never
+/// silently hides what it left behind.
+pub(crate) fn count_due(conn: &Connection, domain: &str) -> Result<i64, DeliveryError> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM outbox o \
+           JOIN workflow_runs r ON r.id = o.run_id AND r.domain = ?1 \
+           JOIN delivery_releases rel ON rel.run_id = o.run_id AND rel.status = 'promoted' \
+          WHERE o.status = 'pending' AND o.topic LIKE 'delivery/intent:%'",
+        params![domain],
+        |r| r.get(0),
+    )
+    .map_err(|e| delivery::storage_error(format!("due count: {e}")))
+}
+
+/// The re-verification, READ-ONLY, before any network contact. Five checks,
+/// all re-run at the crank even though the promote checked them too — the
+/// world moves between the mint and the drain:
+/// 1. authenticity (the R42 conjunction: reserved root AND minted key);
+/// 2. the release is still `promoted` (the select's answer can be stale);
+/// 3. the approval still binds the LIVE artifact digest and has not expired;
+/// 4. the approver's principal is not revoked;
+/// 5. the chain still verifies.
+pub(crate) fn verify_due_intent(
+    conn: &Connection,
+    item: &DueIntent,
+    now: i64,
+) -> Result<(), DeliveryError> {
+    if !crate::workflow::delivery_intents::intent_is_authentic(&item.topic, &item.key) {
+        return Err(DeliveryError::ReleaseRefused {
+            reason: "intent_unauthenticated",
+        });
+    }
+    let release = load_release(conn, item.release_id)?;
+    if release.run_id != item.run_id || release.status != ReleaseStatus::Promoted.as_str() {
+        return Err(DeliveryError::ReleaseRefused {
+            reason: "not_promoted",
+        });
+    }
+    let subject = release
+        .approval_subject_digest
+        .clone()
+        .ok_or(DeliveryError::ReleaseRefused {
+            reason: "approval_missing",
+        })?;
+    let principal = release
+        .approval_principal
+        .clone()
+        .ok_or(DeliveryError::ReleaseRefused {
+            reason: "approval_missing",
+        })?;
+    let scope = release.approval_scope.clone().unwrap_or_default();
+    let expires = release
+        .approval_expires_at
+        .ok_or(DeliveryError::ReleaseRefused {
+            reason: "approval_missing",
+        })?;
+    let revoked = crate::workflow::mesh::is_revoked(conn, &principal)
+        .map_err(|e| delivery::storage_error(format!("approver kill-switch: {e}")))?;
+    if revoked {
+        return Err(DeliveryError::ReleaseRefused {
+            reason: "approver_revoked",
+        });
+    }
+    let live = live_subject_digest(conn, item.run_id)?;
+    // The two digest worlds meet here exactly as the promote request builds
+    // them: the row is prefixed, the crate's world is bare hex.
+    let approval = Approval {
+        subject_digest: subject.trim_start_matches("sha256:").to_string(),
+        principal_did: principal,
+        scope,
+        expires_at_epoch: u64::try_from(expires).unwrap_or(0),
+    };
+    if !approval.is_current(
+        live.trim_start_matches("sha256:"),
+        u64::try_from(now.max(0)).unwrap_or(u64::MAX),
+    ) {
+        return Err(DeliveryError::ReleaseRefused {
+            reason: "approval_not_current",
+        });
+    }
+    let rows = crate::workflow::attestations::read_chain(conn, item.run_id)
+        .map_err(|e| delivery::storage_error(format!("due chain read: {e}")))?;
+    if !rows.is_empty() {
+        let verdict = crate::workflow::attestations::verify_chain(&rows, now).map_err(|r| {
+            DeliveryError::AttestationRefused {
+                reason: r.as_str().to_string(),
+            }
+        })?;
+        if !verdict.verified {
+            return Err(DeliveryError::AttestationRefused {
+                reason: "chain_no_longer_verifies".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The marking, in ONE transaction, through the guarded update — a row leaves
+/// `pending` only here, only for a drain that actually succeeded, and a
+/// concurrent drain is a receipt (0 rows) and not a second effect. The audit
+/// is the CHECKED variant: a dispatch row that commits without its evidence
+/// is exactly the transition the audit law forbids.
+/// (`verified_at` is deliberately absent — only the inbound authority
+/// reconcile writes it.)
+pub(crate) fn mark_intent_delivered(
+    conn: &mut Connection,
+    item: &DueIntent,
+    domain: &str,
+    now: i64,
+) -> Result<bool, DeliveryError> {
+    let mut tx = crate::workflow::tx::WorkflowTx::begin(conn).map_err(delivery::storage_error)?;
+    let tx_conn = tx.tx();
+    let marked: Option<i64> = tx_conn
+        .query_row(
+            "UPDATE outbox SET status = 'delivered', delivered_at = COALESCE(delivered_at, ?2) \
+              WHERE id = ?1 AND status = 'pending' \
+              RETURNING run_id",
+            params![item.outbox_id, now],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| delivery::storage_error(format!("due mark: {e}")))?;
+    if marked.is_none() {
+        // A concurrent drain got here first: this one is a receipt.
+        return Ok(false);
+    }
+    delivery::delivery_audit(
+        tx_conn,
+        domain,
+        &format!("outbox:{}", item.outbox_id),
+        AuditStatus::Ok,
+        &format!(
+            "delivery intent drained via the due crank topic={}",
+            item.topic
+        ),
+    )?;
+    tx.commit().map_err(delivery::storage_error)?;
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -2074,6 +2273,248 @@ mod tests {
             ReleaseStatus::RolledBack,
             ReleaseStatus::Proposed
         ));
+    }
+
+    // ── the crank ───────────────────────────────────────────────────────────
+
+    /// The batch selects ONLY pending authentic intents whose release is
+    /// `promoted`, domain-scoped, oldest first, and hard-capped.
+    #[test]
+    fn the_crank_selects_only_promoted_release_intents() {
+        let (mut conn, run_id) = seed();
+        let created = file_release(&mut conn, run_id, 3);
+        approve(&mut conn, created.release_id, 4);
+        promote_release(
+            &mut conn,
+            &PromoteRelease {
+                release_id: created.release_id,
+                confirm: false,
+                actor: "operator",
+                now: 5,
+            },
+        )
+        .expect("promoted");
+        // A second, still-pending delivery-family row on a NON-promoted
+        // release path: a plan intent from the reconcile seam (a delivery
+        // topic, never dispatchable as an intent).
+        conn.execute(
+            "INSERT INTO outbox(run_id, topic, payload_json, status, idempotency_key, created_at) \
+             VALUES (?1, 'delivery/plan', '{}', 'pending', 'ddl-intent-9-1', 5)",
+            params![run_id],
+        )
+        .expect("plan intent");
+        // A forged row: a delivery topic with an unminted key.
+        conn.execute(
+            "INSERT INTO outbox(run_id, topic, payload_json, status, idempotency_key, created_at) \
+             VALUES (?1, 'delivery/intent:vcs', '{}', 'pending', 'forged-key', 5)",
+            params![run_id],
+        )
+        .expect("forged row");
+        // SELECTION IS NOT AUTHORIZATION: the batch carries the promoted
+        // release's minted intent AND the forged row (the select is broad on
+        // purpose); the re-verification is what refuses the forgery before
+        // any contact.
+        let batch = select_due_batch(&conn, "global").expect("batch");
+        assert_eq!(
+            batch.len(),
+            2,
+            "the minted intent and the forged row are both selected"
+        );
+        assert!(batch.iter().all(|i| i.topic == "delivery/intent:vcs"));
+        let minted = batch
+            .iter()
+            .find(|i| i.key.starts_with("ddl-intent-"))
+            .expect("minted");
+        assert_eq!(minted.run_id, run_id);
+        verify_due_intent(&conn, minted, 6).expect("the minted row verifies");
+        let forged = batch
+            .iter()
+            .find(|i| i.key == "forged-key")
+            .expect("forged");
+        assert!(matches!(
+            verify_due_intent(&conn, forged, 6),
+            Err(DeliveryError::ReleaseRefused {
+                reason: "intent_unauthenticated"
+            })
+        ));
+        // The plan intent is not an intent at all: never selected.
+        // Another domain sees nothing.
+        assert!(
+            select_due_batch(&conn, "personal")
+                .expect("batch")
+                .is_empty()
+        );
+    }
+
+    /// The re-verification refuses before any network contact: a forged key,
+    /// a non-current approval, a revoked approver.
+    #[test]
+    fn the_crank_reverifies_each_intent_before_any_contact() {
+        let (mut conn, run_id) = seed();
+        let created = file_release(&mut conn, run_id, 3);
+        approve(&mut conn, created.release_id, 4);
+        promote_release(
+            &mut conn,
+            &PromoteRelease {
+                release_id: created.release_id,
+                confirm: false,
+                actor: "operator",
+                now: 5,
+            },
+        )
+        .expect("promoted");
+        let batch = select_due_batch(&conn, "global").expect("batch");
+        assert_eq!(batch.len(), 1);
+        let item = batch[0].clone();
+        // In-window: the verification passes.
+        verify_due_intent(&conn, &item, 6).expect("verified");
+        // The approval's window has closed: refused, the row stays pending.
+        let refused = verify_due_intent(&conn, &item, 4 + DEFAULT_APPROVAL_TTL_SECS + 1)
+            .expect_err("expired");
+        assert!(matches!(
+            refused,
+            DeliveryError::ReleaseRefused {
+                reason: "approval_not_current"
+            }
+        ));
+        // The approver is revoked: refused.
+        conn.execute(
+            "INSERT INTO revoked_principals(principal, revoked_at, reason, revoked_by) \
+             VALUES ('did:key:zOperator', 5, 'offboarded', 'operator')",
+            [],
+        )
+        .expect("revoke");
+        let refused = verify_due_intent(&conn, &item, 6).expect_err("revoked");
+        assert!(matches!(
+            refused,
+            DeliveryError::ReleaseRefused {
+                reason: "approver_revoked"
+            }
+        ));
+        // A forged row never verifies at all.
+        let forged = DueIntent {
+            outbox_id: 0,
+            run_id,
+            release_id: created.release_id,
+            binding_id: item.binding_id,
+            topic: "delivery/intent:vcs".to_string(),
+            key: "forged".to_string(),
+            target_kind: "vcs".to_string(),
+        };
+        assert!(matches!(
+            verify_due_intent(&conn, &forged, 6),
+            Err(DeliveryError::ReleaseRefused {
+                reason: "intent_unauthenticated"
+            })
+        ));
+    }
+
+    /// The marking moves a `pending` row exactly once, is audited, and NEVER
+    /// writes `verified_at` — the reconcile-only law at rest.
+    #[test]
+    fn the_mark_moves_pending_only_once_and_never_touches_verified_at() {
+        let (mut conn, run_id) = seed();
+        let created = file_release(&mut conn, run_id, 3);
+        approve(&mut conn, created.release_id, 4);
+        promote_release(
+            &mut conn,
+            &PromoteRelease {
+                release_id: created.release_id,
+                confirm: false,
+                actor: "operator",
+                now: 5,
+            },
+        )
+        .expect("promoted");
+        let batch = select_due_batch(&conn, "global").expect("batch");
+        let item = batch[0].clone();
+        assert!(mark_intent_delivered(&mut conn, &item, "global", 6).expect("mark"));
+        let (status, verified): (String, Option<i64>) = conn
+            .query_row(
+                "SELECT status, (SELECT verified_at FROM delivery_releases WHERE id = ?2) \
+                   FROM outbox WHERE id = ?1",
+                params![item.outbox_id, created.release_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("row");
+        assert_eq!(status, "delivered");
+        assert!(
+            verified.is_none(),
+            "only the inbound reconcile writes verified_at"
+        );
+        // A second mark is a receipt, not a second effect.
+        assert!(!mark_intent_delivered(&mut conn, &item, "global", 7).expect("re-mark"));
+    }
+
+    /// The reconcile-only law, exercised: a MATCH against a promoted release
+    /// records `verified_at` (promoted -> verified, via the crate's law); a
+    /// mismatch records nothing.
+    #[test]
+    fn the_reconcile_sets_verified_at_on_a_match_and_only_a_match() {
+        let (mut conn, run_id) = seed();
+        let created = file_release(&mut conn, run_id, 3);
+        approve(&mut conn, created.release_id, 4);
+        promote_release(
+            &mut conn,
+            &PromoteRelease {
+                release_id: created.release_id,
+                confirm: false,
+                actor: "operator",
+                now: 5,
+            },
+        )
+        .expect("promoted");
+        // The binding the release resolved: target_ref acme/repo.
+        let matching = delivery::ObservedAuthority {
+            target_kind: "vcs".to_string(),
+            target_ref: "acme/repo".to_string(),
+            subject: "head-sha".to_string(),
+            conclusion: "success".to_string(),
+        };
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn).expect("tx");
+        let outcome = delivery::reconcile_authority(&mut tx, run_id, "global", &matching, 6)
+            .expect("reconcile");
+        tx.commit().expect("commit");
+        assert!(outcome.matched);
+        assert_eq!(outcome.verified_release, Some(created.release_id));
+        let (status, verified_at): (String, Option<i64>) = conn
+            .query_row(
+                "SELECT status, verified_at FROM delivery_releases WHERE id = ?1",
+                [created.release_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("release");
+        assert_eq!(status, "verified");
+        assert_eq!(verified_at, Some(6));
+
+        // A MISMATCH moves nothing: the observation did not reconcile.
+        let other = file_release(&mut conn, run_id, 7);
+        let _ = other;
+        let mismatching = delivery::ObservedAuthority {
+            target_kind: "vcs".to_string(),
+            target_ref: "other/repo".to_string(),
+            subject: "head-sha".to_string(),
+            conclusion: "success".to_string(),
+        };
+        // The promoted release was consumed by the verify above; mint a new
+        // promotion by rewinding the status through the crate's own law is
+        // impossible (terminal absorbs) — so the mismatch check rides the
+        // reconcile outcome directly: no verified_release, and the FIRST
+        // release's verified_at is untouched by the second observation.
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn).expect("tx");
+        let outcome = delivery::reconcile_authority(&mut tx, run_id, "global", &mismatching, 8)
+            .expect("reconcile");
+        tx.commit().expect("commit");
+        assert!(!outcome.matched);
+        assert_eq!(outcome.verified_release, None);
+        let verified_again: Option<i64> = conn
+            .query_row(
+                "SELECT verified_at FROM delivery_releases WHERE id = ?1",
+                [created.release_id],
+                |r| r.get(0),
+            )
+            .expect("release");
+        assert_eq!(verified_again, Some(6), "a mismatch moves nothing");
     }
 
     /// An over-capped TTL is a refusal, never a silent clamp: a window the

@@ -533,4 +533,12 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             "/workflow/delivery/releases/{id}/promote",
             post(handlers::delivery::post_delivery_release_promote),
         )
+        // the /due crank: request-scoped (the cron recipe IS the scheduler),
+        // a bounded batch that drains, re-verifying each intent before any
+        // network contact and marking it delivered only on connector
+        // success. Write-scoped like every crank, on the BODY's domain.
+        .route(
+            "/workflow/delivery/due",
+            post(handlers::delivery::post_delivery_due),
+        )
 }

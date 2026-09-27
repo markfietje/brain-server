@@ -314,6 +314,10 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/workflow/delivery/releases",
     "/workflow/delivery/releases/{id}/approve",
     "/workflow/delivery/releases/{id}/promote",
+    // the /due crank. Write, like the valet crank it transplants: it moves
+    // durable rows and drives egress, and it is scoped to the BODY's domain
+    // (it has no run id to be probe-blind with).
+    "/workflow/delivery/due",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -640,8 +644,8 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     // is NOT refused on these run writes — `authorize_role` passes principals
     // that hold no roles at all, so an agent preset holding `write:*` is
     // admitted here. The promotion family below is different: its writes
-    // leave the host, and the agent class IS refused there — explicitly, in
-    // handlers/delivery.rs, before any work.
+    // leave the host, and the agent class is refused in handlers/delivery.rs
+    // — explicitly, before any work.
     ("/workflow/delivery/runs", "Write"),
     ("/workflow/delivery/runs/{id}/advance", "Write"),
     ("/workflow/delivery/runs/{id}/answer", "Write"),
@@ -668,4 +672,5 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/delivery/releases", "Write"),
     ("/workflow/delivery/releases/{id}/approve", "Write"),
     ("/workflow/delivery/releases/{id}/promote", "Write"),
+    ("/workflow/delivery/due", "Write"),
 ];
