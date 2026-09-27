@@ -133,6 +133,12 @@ const PARITY_TABLES: &[&str] = &[
     // every external authority it was configured with, and would say so
     // nowhere.
     "delivery_bindings",
+    // the governed release rows. Row-count parity proves a rehearsal copied
+    // the release lifecycle — a rehearsal that came back with zero releases
+    // would produce a server that has forgotten every approval it ever
+    // recorded, which is precisely the state the approval binding exists to
+    // make impossible.
+    "delivery_releases",
 ];
 
 /// Size of the random vec0 spot-check. ponytail: 50 is a heuristic — the formal

@@ -223,6 +223,13 @@ pub const SCHEMA_VERSION_V1_32_16: &str = "1.32.16";
 /// tenant — which is why `domain` is a column and not decoration, and why a
 /// `target_kind` with no adapter stays in the CHECK but consumer-less.
 pub const SCHEMA_VERSION_V1_32_17: &str = "1.32.17";
+/// v1.32.18 "Releases": the governed release row — the machine's proposal to
+/// move an artifact to an external authority, the human's approval record as
+/// COLUMNS on the row (no sixth table), and the lifecycle the promotion gate
+/// walks one legal transition at a time. The status vocabulary is the pure
+/// crate's nine `ReleaseStatus` values, which do not fit `delivery_traces`'s
+/// trace-vocabulary CHECK — release state lives here and nowhere else.
+pub const SCHEMA_VERSION_V1_32_18: &str = "1.32.18";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
@@ -244,7 +251,7 @@ pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 /// Security posture: a source DB stamped NEWER than this is refused loudly
 /// ([`refuse_newer_schema`]) — migrating *down* would silently drop columns
 /// the newer release added, i.e. data loss dressed as a migration.
-pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_17;
+pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_18;
 
 /// Numeric dotted-version compare (std-only, no semver dependency).
 /// Non-numeric components are skipped (the `schema_ge` precedent in the
@@ -691,10 +698,11 @@ mod tests {
         // The probe sits ABOVE the ceiling by construction: when the delivery
         // round moved the ceiling to 1.32.15, this literal became equal to it
         // and the assertion failed until it moved again. the attestation round moved the ceiling
-        // to 1.32.16, so the probe moved to 1.32.17, and the bindings round moved the
-        // ceiling to 1.32.17, so the probe moved to 1.32.18. A probe pinned AT the
+        // to 1.32.16, so the probe moved to 1.32.17, the bindings round moved the
+        // ceiling to 1.32.17, so the probe moved to 1.32.18, and the release round moved the
+        // ceiling to 1.32.18, so the probe moved to 1.32.19. A probe pinned AT the
         // ceiling silently tests `Equal`, not `Greater`.
-        assert!(is_newer_than_known(Some("1.32.18")));
+        assert!(is_newer_than_known(Some("1.32.19")));
         assert!(!is_newer_than_known(Some("1.32.9")));
         assert!(!is_newer_than_known(Some("1.28.9")));
     }

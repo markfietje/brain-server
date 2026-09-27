@@ -2594,9 +2594,72 @@ pub fn run_migration_with_store_dim(
             ON delivery_bindings(target_kind, active);",
     )?;
 
+    // v1.32.18 "Releases": the governed release row — the machine's proposal
+    // to move an artifact to an external authority, the human's approval
+    // record, and the lifecycle the promotion gate walks. Three properties,
+    // all load-bearing:
+    //
+    // * The status CHECK carries the crate's nine `ReleaseStatus` wire names.
+    //   A release status does NOT fit `delivery_traces.status` (that CHECK is
+    //   the trace's own six-value vocabulary), so release state lives HERE
+    //   and nowhere else. Widening the trace CHECK to absorb release
+    //   vocabulary would be a schema decision this line has not made.
+    // * The approval is COLUMNS on the release row, not a sixth table: the
+    //   row IS the approval artifact and the hash-chained audit rows are its
+    //   history. The binding is THREE-WAY — content digest
+    //   (`approval_subject_digest`), authority digest
+    //   (`approval_authority_digest`), and the run's state revision at
+    //   approval (`approval_state_revision`) — because an approval that binds
+    //   content but not the target is replayable against a different
+    //   external system, and one that binds both but not the revision is
+    //   replayable across a later phase pass.
+    // * `commit_sha` + `environment` are the OTel revision/environment facts
+    //   (`vcs.repository.ref.revision` is Release Candidate — cited by name,
+    //   never claimed stable; the four environment values are the Stable
+    //   `deployment.environment.name` set; the closed CHECK is our stricter
+    //   choice, disclosed).
+    //
+    // `verified_at` is written ONLY by the inbound authority reconcile path;
+    // the crank never sets it. No FK, house style.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS delivery_releases(
+            id                        INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id                    INTEGER NOT NULL,
+            binding_id                INTEGER NOT NULL,
+            ref                       TEXT    NOT NULL,
+            commit_sha                TEXT,
+            environment               TEXT    NOT NULL
+                                          CHECK (environment IN
+                                                 ('development','test','staging','production')),
+            artifact_digest           TEXT    NOT NULL,
+            policy_digest             TEXT,
+            approval_subject_digest   TEXT,
+            approval_principal        TEXT,
+            approval_scope            TEXT,
+            approval_authority_digest TEXT,
+            approval_state_revision   INTEGER,
+            approval_expires_at       INTEGER,
+            approved_at               INTEGER,
+            status                    TEXT    NOT NULL
+                                          CHECK (status IN
+                                                 ('proposed','approved','building','attested',
+                                                  'staged','promoted','verified','rolled_back',
+                                                  'failed')),
+            created_at                INTEGER NOT NULL,
+            updated_at                INTEGER NOT NULL,
+            deployed_at               INTEGER,
+            verified_at               INTEGER,
+            rolled_back_at            INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_delivery_releases_run
+            ON delivery_releases(run_id);
+        CREATE INDEX IF NOT EXISTS idx_delivery_releases_status
+            ON delivery_releases(status);",
+    )?;
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.17')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.17';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.18')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.18';",
         [],
     )?;
 

@@ -3579,6 +3579,9 @@ Final paragraph after the rule.";
             // v1.32.17 "Bindings": the per-tenant authority bindings. The
             // standing authority to read one external system for one domain.
             "delivery_bindings",
+            // v1.32.18 "Releases": the governed release row — the approval
+            // columns ride on it, so the row IS the approval artifact.
+            "delivery_releases",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -17962,12 +17965,12 @@ mod r38_delivery {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_17),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_18),
             "the migration literal and the ceiling const must agree on the current stamp"
         );
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.17",
+            "1.32.18",
             "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
              this binary cannot migrate"
         );
@@ -18661,12 +18664,12 @@ mod r40_attestations {
         // round; what moves is the ceiling, and it moves for both.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_17),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_18),
             "the ceiling const and the migration literal must move together"
         );
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.17",
+            "1.32.18",
             "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
              this binary cannot migrate"
         );
@@ -19425,18 +19428,19 @@ mod r41_replay {
             brain_server::migration::run_migration(&mut db, 512).expect("migration");
             db
         };
-        // The four tables shipped SO FAR, and no fifth. The line's plan names
-        // five tables across four stamps (1.32.15–1.32.18); four have
-        // shipped, and a fifth `delivery_%` table appearing here is a new
+        // The five tables shipped SO FAR, and no sixth. The line's plan names
+        // five tables across four stamps (1.32.15–1.32.18); five have
+        // shipped, and a sixth `delivery_%` table appearing here is a new
         // decision someone made without recording it.
         //
         // THIS CENSUS IS CURRENT, NOT INHERITED. It previously asserted three
         // tables and the attestation stamp, as a NEGATIVE test: "the replay
-        // round adds no table and no stamp". The bindings round is precisely
-        // the fourth table, and the pin's own message said so — a fourth table
-        // appearing here is a new decision. This commit IS that decision, so
-        // the pin is re-scoped to the new truth rather than deleted: the
-        // census's job is to make the next table a recorded one.
+        // round adds no table and no stamp". The bindings round was the
+        // fourth table and the release round the fifth, and the pin's own
+        // message said so each time — a table appearing here is a new
+        // decision. Those commits WERE those decisions, so the pin is
+        // re-scoped to the new truth rather than deleted: the census's job is
+        // to make the next table a recorded one.
         let delivery_tables: Vec<String> = {
             let mut stmt = db
                 .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'delivery_%' ORDER BY name")
@@ -19452,20 +19456,21 @@ mod r41_replay {
                 "delivery_attestations",
                 "delivery_bindings",
                 "delivery_budgets",
+                "delivery_releases",
                 "delivery_traces",
             ],
-            "the bindings round is the fourth `delivery_%` table and says so in its stamp; a \
-             FIFTH is a new decision ({delivery_tables:?})"
+            "the release round is the fifth `delivery_%` table and says so in its stamp; a \
+             SIXTH is a new decision ({delivery_tables:?})"
         );
         // The stamp moved, and moved with the table.
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.17",
-            "the bindings round is a schema round: the stamp moves with the table that earns it"
+            "1.32.18",
+            "the release round is a schema round: the stamp moves with the table that earns it"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_17),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_18),
         );
         // ...and the parity table the migration rehearsal walks carries the new
         // table: a rehearsal that came back with zero bindings would produce a
@@ -19832,12 +19837,13 @@ mod r42_authority_bindings {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.17",
-            "the bindings round is a schema round: the stamp moves off the attestation stamp"
+            "1.32.18",
+            "the bindings stamp pin moves with the release round's stamp: each schema round \
+             re-pins the CURRENT stamp, so a stale ceiling fails loudly here"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some("1.32.17"),
+            Some("1.32.18"),
             "what the migration stamps must be what the ceiling declares"
         );
     }
@@ -20700,8 +20706,8 @@ mod r42_authority_bindings {
             .find("CREATE TABLE IF NOT EXISTS delivery_bindings")
             .expect("the table DDL must exist in the migration's production region");
         let stamp_at = migration
-            .find("'schema_version', '1.32.17'")
-            .expect("the stamp must move to the binding stamp");
+            .find("'schema_version', '1.32.18'")
+            .expect("the stamp must move to the current schema round's stamp");
         assert!(
             ddl_at < stamp_at,
             "the DDL is written before the stamp that claims it exists"
@@ -20709,7 +20715,7 @@ mod r42_authority_bindings {
         // The stamp's two arms stay in lockstep — the lockstep pin derives both
         // sides, and a half-edited stamp makes `refuse-newer` lie.
         assert!(
-            migration.contains("DO UPDATE SET value = '1.32.17'"),
+            migration.contains("DO UPDATE SET value = '1.32.18'"),
             "both arms of the schema_version upsert must move together"
         );
         // Rehearsal parity: the new table is walked by the migration rehearsal,
