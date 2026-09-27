@@ -74,6 +74,37 @@ jobs:
         # badge to carry its `not selfcheck-verified` disclaimer so a count
         # that cannot be proven here is never presented as proven.
         run: bash scripts/badges.sh --selfcheck
+      - name: docs-truth + env-truth gates
+        # Two doc-vs-code gates that lived in-tree and were wired to no
+        # automated door at all — the same defect class as the badge drift
+        # above: a guard that exists and is never invoked is not a control.
+        #
+        # docs-truth.sh is the three-way SOURCE (src/server/router) vs
+        # CONTRACT (openapi.yaml) vs DOCS (docs/api.md) check. HIGH fails,
+        # LOW rows print. Pure python3 stdlib over checked-in files — no
+        # build, no network, no scratch state.
+        #
+        # env-truth.sh --selfcheck is the checker's OWN red proof: it builds a
+        # clean AND a hostile throwaway fixture tree and requires both
+        # outcomes, so the gate cannot rot into a vacuous pass.
+        #
+        # HONEST CEILING — this step is the checker-verifies-itself door, NOT
+        # the repo-is-clean door. The bare `env-truth.sh` run is deliberately
+        # NOT here: its rule 2 requires a forward Loop tracking row in
+        # ROADMAP.md, and ROADMAP.md is gitignored (internal/pre-release, never
+        # committed), so on a fresh checkout the lookup matches nothing and
+        # BRAIN_REDACT_PII + BRAIN_TENANT_KEY_FILE fail closed with "missing:
+        # forward Loop tracking row in ROADMAP.md". Verified 2026-09-27 by
+        # setting the file aside locally. Promote the real run only after
+        # ROADMAP.md is tracked, or rule 2 is narrowed to a tracked owner.
+        #
+        # `rg` is a hard dependency of env-truth.sh and its lookups swallow a
+        # missing binary with `|| true`, so a runner without it would fail with
+        # a confusing ERR spew instead of a named cause. Check it first.
+        run: |
+          command -v rg >/dev/null || { echo "::error::ripgrep (rg) is required by scripts/env-truth.sh"; exit 1; }
+          bash scripts/docs-truth.sh
+          bash scripts/env-truth.sh --selfcheck
 
   engine-crates:
     # The engine-crate workspace node must stay decoupled from the server:

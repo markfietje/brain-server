@@ -1181,11 +1181,12 @@ brain status
 - The `brain` CLI is built from this repo's `Cargo.toml` (`[[bin]] name = "brain"`), **not** from openclaw.
 
 **Customer-domain assets live in a private repo (2026-08-19)**
-- The case-classification work is **not** part of brain-server: plan, Dell ISG
-  taxonomy, routing matrix, playbooks, spine builder + outputs moved to the
-  **private** `markfietje/brain-dell-bpo` (local checkout `~/Sites/brain-dell-bpo`;
-  never commit customer-domain content here — `.gitignore` covers `spine/` +
-  the two spine scripts defensively).
+- The case-classification work is **not** part of brain-server: plan, customer
+  taxonomy, routing matrix, playbooks, spine builder + outputs moved to a
+  **private** repo (not named here — this file is published to the public
+  portfolio, and naming the customer is a confidentiality problem
+  independent of the assets themselves). Never commit customer-domain content
+  here — `.gitignore` covers `spine/` + the two spine scripts defensively.
 - This repo stays the vendor-agnostic product: graph-default-on recall, the
   feature-gated `src/classify` engine (when built), proposals/suggest/audit.
   The taxonomy is *data the engine consumes*, owned by the private repo.
@@ -1195,7 +1196,8 @@ brain status
   mapping, port specs, rubric pin, diagnostics loop, compliance mapping) are
   **MemorySteward LLC IP** and live in the **private** repo `brain-steward-ip`
   (local checkout `~/Sites/brain-steward-ip`). Never commit them here —
-  `.gitignore` defends the names defensively (same pattern as brain-dell-bpo).
+  `.gitignore` defends the names defensively (same pattern as the
+  customer-domain repo).
   The public repo ships the substrate only; the engine crates (`brain-engine-sdk`
   5,887 top-level + `host/`/`pure/` lines, 8,352 total / 127 tests at v1.28.23,
   plus the five `*-core` engines) are PUBLIC, REAL code — measured 2026-09-15.

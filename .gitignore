@@ -13,6 +13,11 @@ dist/
 *.log
 .npm/
 
+# Python bytecode caches — scripts/*.py are run directly by the gates
+# (docs-truth.sh, smoke-switchboard.py); the compiled cache is never source
+__pycache__/
+*.py[cod]
+
 # SQLite runtime (never commit live DBs)
 *.db
 *.db-wal
@@ -47,7 +52,6 @@ brain-server.pid
 
 # Internal / pre-release documents (not shipped with source)
 /research/
-/AGENTS.md
 /IMPLEMENTATION_PLAN_*.md
 /IMPLEMENTATION_ROADMAP_*.md
 /PLUGIN_INTEGRATION.md
@@ -74,9 +78,12 @@ marketing/
 /book/
 docs/DOC_ACCURACY_AUDIT_PROMPT.md
 
-# Customer-domain assets moved to the PRIVATE repo markfietje/brain-dell-bpo
-# (case-classification plan, Dell ISG taxonomy, spine builder + outputs).
-# Ignore defensively so accidental regeneration/mirroring never lands here:
+# Customer-domain assets moved to a PRIVATE repo (2026-08-19) — case-
+# classification plan, customer taxonomy, spine builder + outputs. The repo
+# name is deliberately NOT named here or in AGENTS.md: this file is public, and
+# naming the customer in a public portfolio is a confidentiality problem
+# independent of the assets themselves. Ignore defensively so accidental
+# regeneration/mirroring never lands here:
 /spine/
 /scripts/build_spine.py
 /scripts/seed_spine.sh
@@ -105,3 +112,12 @@ audit-chain.key
 
 # plugin-sync baseline (scripts/sync-plugin.sh) — local drift-guard state, never commit
 /.plugin-sync-baseline
+
+# AGENTS.md is deliberately NOT ignored. It is tracked and published (added
+# 64abca7; the same blob is in both origin/main and public/main), and public
+# source cites it as its authority (src/workflow/channels.rs:19,
+# src/workflow/delivery.rs:4151, client/src/main.rs:23) — so it is
+# load-bearing, not hidden. An earlier `/AGENTS.md` rule here was INERT:
+# .gitignore never applies to an already-tracked file, so it asserted a
+# protection the repo did not have. Re-adding the rule would recreate the
+# same false control.
