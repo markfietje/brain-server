@@ -74,6 +74,12 @@ fn validate_contract_key(raw: &str) -> Result<String, HandlerError> {
             "contract_key must not contain control or invisible characters",
         ));
     }
+    // `%` and `_` are deliberately ALLOWED here. An earlier pass banned them as
+    // SQL LIKE metacharacters, which was wrong: the server's own key format
+    // is `run{id}:back_referral:{owner}` and therefore contains an underscore,
+    // so the ban refused every honest key. The wildcard is neutralized at the
+    // QUERY instead, with an `ESCAPE` clause and an escaped pattern — which
+    // keeps the key free-text for the caller while making the match literal.
     Ok(trimmed.to_string())
 }
 
@@ -289,6 +295,28 @@ mod tests {
         assert_eq!(err.inner.code, "contract_key_required");
         let err = validate_contract_key("k\u{202E}").expect_err("invisible refuses");
         assert_eq!(err.inner.code, "contract_key_required");
+    }
+
+    /// The read seam on `GET /workflow/runs/{id}/state`. GDL is the principal
+    /// writer of model- and operator-authored prose into `state_json` and
+    /// applies no write-time screening, so an un-seamed read of that column
+    /// hands stored text to the console exactly as stored. Every sibling that
+    /// reads the same column (`get_run`, `list_steps`, `get_run_context`,
+    /// `get_handoff`) seams it; this one did not.
+    #[test]
+    fn run_state_read_is_seamed_like_its_siblings() {
+        let production = include_str!("workflow.rs");
+        let needle = "fn get_run_state(";
+        let start = production
+            .find(needle)
+            .expect("`get_run_state` must be locatable in handlers/workflow.rs");
+        let rest = &production[start..];
+        let brace = rest.find('{').expect("a body");
+        assert!(
+            rest[brace..].contains("sanitize_read"),
+            "`get_run_state` emits stored GDL prose and must ride the read seam — its \
+             siblings already do for the same column"
+        );
     }
 
     /// The machinery's refusals surface named — never a silent drop, never a

@@ -1093,6 +1093,15 @@ pub async fn get_run_state(
     .map_err(HandlerError::internal)?;
     let (state_json, revision) =
         row.ok_or_else(|| HandlerError::not_found("workflow run not found"))?;
+    // The read seam, as `get_run` already applies to this SAME column. GDL is
+    // the principal writer of rich model- and operator-authored text into
+    // `state_json` — the ticket, hypothesis statements, the capture
+    // resolution, the closure decision, the red flag's worst case — and GDL
+    // applies no write-time screening, so this column is exactly the stored
+    // text the seam exists for. Every sibling that reads `state_json`
+    // (`get_run`, `list_steps`, `get_run_context`, `get_handoff`) seams it;
+    // this one did not, so a GDL case's prose reached the console un-shaped.
+    let state_json = crate::gate::sanitize_read(&state_json, false, &principal);
     Ok(Json(
         serde_json::json!({"state_json": state_json, "revision": revision}),
     ))

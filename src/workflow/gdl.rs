@@ -360,8 +360,25 @@ pub(crate) fn ruled_out_state(v: &serde_json::Value) -> Option<RuledOutState> {
 }
 
 /// An open red-flag locks the loop escalate-first (the monotonic law).
+/// Whether the red flag still OWNS the case — the single authority every
+/// reader must go through.
+///
+/// This used to read `!matches!(ruled_out_state(...), Some(Yes))`, which
+/// consulted `ruled_out` and **ignored `rule_out_basis` entirely**. Combined
+/// with T13 — which rejected only an *entirely blank* basis, despite its own
+/// error text saying "verify-class evidence required" — a model could close a
+/// red flag with free prose ("checked the SEL, looks clean") and get an
+/// outcome indistinguishable from a real verify-class citation. T10, the
+/// escalate-first lock, reads this function, so a `self_care` case with an
+/// unverified red flag resolved WITHOUT escalating.
+///
+/// The fix is to make [`red_flag_closes`] the only definition of "closed", so
+/// the open/closed pair is total and mutually exclusive: a record is open
+/// unless it satisfies BOTH the true rule-out AND a verify-class basis. Free
+/// text now keeps the flag OPEN, which is what the neighbouring docstring has
+/// always claimed.
 pub(crate) fn red_flag_is_open(rf: &RedFlagArtifact) -> bool {
-    !matches!(ruled_out_state(&rf.ruled_out), Some(RuledOutState::Yes))
+    !red_flag_closes(rf)
 }
 
 /// A NEW record closes a flag only with a `true` rule-out AND at least
@@ -386,7 +403,7 @@ fn red_flag_gate(a: &RedFlagArtifact) -> Vec<String> {
         ));
     }
     if ruled_out_state(&a.ruled_out) == Some(RuledOutState::Yes)
-        && a.rule_out_basis.iter().all(|b| b.trim().is_empty())
+        && !a.rule_out_basis.iter().any(|b| kind_source(b).is_some())
     {
         errors.push(err(
             "T13",
@@ -753,6 +770,18 @@ pub(crate) fn default_return_window(priority: &str) -> i64 {
     sla_seconds(priority).map_or(86_400, |p| p.min(86_400))
 }
 
+/// The back-referral return window's ceiling, in seconds (30 days).
+///
+/// `BackReferralContract.return_deadline_sla` is MODEL-AUTHORED and was
+/// previously unbounded. It reached `now + window` unchecked, and this crate
+/// builds with `overflow-checks = true` and `panic = "abort"` — so a model
+/// emitting `i64::MAX` did not wrap and was not a contained error: it was a
+/// fail-stop of the ENTIRE server process, reachable from a Handoff artifact.
+/// The bound lives in the gate (the semantic limit) and `checked_add` is the
+/// arithmetic backstop under it (the fail-closed floor). Both are required:
+/// the gate names the policy, the checked add makes the policy un-bypassable.
+const MAX_RETURN_WINDOW_SECS: i64 = 30 * 86_400;
+
 impl BackReferralContract {
     /// The attachment posture (B1 covers absence; this covers an
     /// empty-bodied contract): both ends, the question, and the report
@@ -768,6 +797,22 @@ impl BackReferralContract {
                 "B2",
                 "return contract missing referrer, receiver, clinical question, \
                  or required report",
+            ));
+        }
+        // The return window is MODEL-AUTHORED and feeds `now + window`. An
+        // unbounded value is not a near-miss: this crate builds with
+        // `overflow-checks = true` and `panic = "abort"`, so it was a
+        // fail-stop of the whole process. The window is also semantically a
+        // return window, so a value outside a day..thirty-days is nonsense
+        // whatever the arithmetic does — zero would make every contract
+        // instantly overdue, and a negative one the same.
+        if let Some(window) = self.return_deadline_sla
+            && !(86_400..=MAX_RETURN_WINDOW_SECS).contains(&window)
+        {
+            errors.push(err(
+                "B2w",
+                "return_deadline_sla must be 1..=30 days in seconds — an \
+                 unbounded or non-positive window is refused, not clamped",
             ));
         }
         errors
@@ -3685,11 +3730,19 @@ pub(crate) fn write_back_referral_row(
     let window = contract
         .return_deadline_sla
         .unwrap_or_else(|| default_return_window(priority));
+    // Fail-closed arithmetic backstop under the gate's bound. `checked_add`
+    // rather than `+`: with `overflow-checks = true` and `panic = "abort"` a
+    // plain `+` here would kill the whole process on a model-supplied value,
+    // and `saturating_add` would silently invent a deadline in the past.
+    // Neither is acceptable, so an unrepresentable deadline is a named refusal.
+    let deadline_epoch = now.checked_add(window).ok_or_else(|| {
+        checkpoint::persist_error("back-referral return window overflows the epoch")
+    })?;
     let key = format!("run{run_id}:back_referral:{owner}");
     let payload = serde_json::json!({
         "contract_key": key,
         "status": if contract.status.is_empty() { "open" } else { contract.status.as_str() },
-        "deadline_epoch": now + window,
+        "deadline_epoch": deadline_epoch,
         "contract": contract,
     })
     .to_string();
@@ -3784,15 +3837,26 @@ fn latest_back_referral_row(
     contract_key: &str,
 ) -> Result<Option<String>, LoopError> {
     use rusqlite::OptionalExtension;
+    // `LIKE ... ESCAPE` so the key is matched LITERALLY. Without the ESCAPE
+    // clause `%` and `_` in the caller's key are LIVE WILDCARDS — and the
+    // server's own key format contains an underscore (`back_referral`), so a
+    // blanket ban in `validate_contract_key` was rejected as the fix: it would
+    // refuse every honest key. With `%` as a caller key the lookup matched
+    // EVERY back-referral row on the run, and the release path then marked the
+    // WRONG contract returned while stamping the audit row with the caller's
+    // key — leaving the real contract `open` and still escalatable.
+    let pattern = format!(
+        "%\"{}\"%",
+        contract_key
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
     tx.query_row(
         "SELECT payload_json FROM agent_session_events \
-         WHERE run_id = ?1 AND kind = ?2 AND payload_json LIKE ?3 \
+         WHERE run_id = ?1 AND kind = ?2 AND payload_json LIKE ?3 ESCAPE '\\' \
          ORDER BY seq DESC LIMIT 1",
-        rusqlite::params![
-            run_id,
-            BACK_REFERRAL_ROW_KIND,
-            format!("%\"{contract_key}\"%")
-        ],
+        rusqlite::params![run_id, BACK_REFERRAL_ROW_KIND, pattern],
         |r| r.get::<_, String>(0),
     )
     .optional()
@@ -8187,6 +8251,221 @@ mod tests {
                 "lock posture for {care:?}: {errors:?}"
             );
         }
+    }
+
+    /// C1. A red flag closed by FREE TEXT kept the escalate-first lock from
+    /// firing, so a `self_care` case with an unverified red flag resolved
+    /// without escalating. `red_flag_is_open` consulted `ruled_out` and
+    /// ignored `rule_out_basis`; T13 rejected only an entirely blank basis,
+    /// despite its own error text saying "verify-class evidence required".
+    ///
+    /// The property is TOTAL: a record is open unless it satisfies BOTH the
+    /// true rule-out AND a verify-class basis. Free text now keeps it open.
+    #[test]
+    fn red_flag_free_text_rule_out_keeps_the_escalate_lock_fired() {
+        let base = RedFlagArtifact {
+            worst_case: "irreversible data loss".into(),
+            ruled_out: serde_json::Value::Bool(true),
+            rule_out_basis: vec!["checked the SEL, looks clean".into()],
+            first_would_miss_impact: "data destroyed".into(),
+        };
+
+        // The pair is total and mutually exclusive: free text is OPEN.
+        assert!(
+            !red_flag_closes(&base),
+            "a free-text basis is not a verify-class citation, so the flag is not closed"
+        );
+        assert!(
+            red_flag_is_open(&base),
+            "free text must keep the flag OPEN — this is what the neighbouring docstring \
+             always claimed, and what T10's escalate-first lock depends on"
+        );
+
+        // And the consequence: T10 must fire for a self-care case carrying one.
+        let self_care = TriageArtifact {
+            priority: "P2".into(),
+            stabilized: true,
+            search_hits: vec![],
+            verdict: "accept".into(),
+            acuity_band: Some("YELLOW".into()),
+            esi_level: Some(3),
+            resource_estimate: None,
+            care_setting: Some("self_care".into()),
+            modality_adequacy: None,
+            confirmed_matches: None,
+            red_flag: base.clone(),
+        };
+        let free_text_rules: Vec<String> = triage_gate(&self_care);
+        assert!(
+            free_text_rules.iter().any(|r| r.starts_with("T10")),
+            "an open red flag must lock the loop escalate-first; free text produced none of \
+             these: {free_text_rules:?}"
+        );
+
+        // The legit close is unchanged: a real basis closes it and T10 goes quiet.
+        let cited = RedFlagArtifact {
+            rule_out_basis: vec!["test:somelog".into()],
+            ..base
+        };
+        assert!(
+            red_flag_closes(&cited),
+            "a kind-prefixed basis IS a citation"
+        );
+        assert!(!red_flag_is_open(&cited), "and a cited rule-out is closed");
+        let cited_rules = triage_gate(&TriageArtifact {
+            red_flag: cited,
+            ..self_care
+        });
+        assert!(
+            !cited_rules.iter().any(|r| r.starts_with("T10")),
+            "a properly cited rule-out is not an open flag, so the lock stays quiet: \
+             {cited_rules:?}"
+        );
+    }
+
+    /// T13 must enforce the rule its own message states. It previously
+    /// rejected only an ENTIRELY BLANK basis, so any non-blank free text
+    /// passed with no error at all.
+    #[test]
+    fn t13_requires_a_verify_class_basis_not_merely_a_non_blank_one() {
+        let a = RedFlagArtifact {
+            worst_case: "irreversible data loss".into(),
+            ruled_out: serde_json::Value::Bool(true),
+            rule_out_basis: vec!["looked fine to me".into()],
+            first_would_miss_impact: "data destroyed".into(),
+        };
+        let errors = red_flag_gate(&a);
+        assert!(
+            errors.iter().any(|e| e.starts_with("T13")),
+            "a free-text basis must raise T13 — the rule's own message says verify-class \
+             evidence is required: {errors:?}"
+        );
+
+        let cited = RedFlagArtifact {
+            rule_out_basis: vec!["test:ok".into()],
+            ..a
+        };
+        assert!(
+            !red_flag_gate(&cited).iter().any(|e| e.starts_with("T13")),
+            "a kind-prefixed basis satisfies T13"
+        );
+    }
+
+    /// D1. A model-authored `return_deadline_sla` reached `now + window`
+    /// unchecked, and the crate builds with `overflow-checks = true` and
+    /// `panic = "abort"` — so `i64::MAX` was a fail-stop of the WHOLE server,
+    /// not a contained error and not a wrap.
+    ///
+    /// Two layers, both pinned: the gate refuses an out-of-policy window, and
+    /// the arithmetic is `checked_add` so the policy is un-bypassable.
+    #[test]
+    fn back_referral_return_window_is_bounded_and_cannot_overflow_the_epoch() {
+        let base = BackReferralContract {
+            referrer: "dr".into(),
+            receiver: "pc".into(),
+            clinical_question: "what changed".into(),
+            required_report: vec!["resolution".into()],
+            status: "open".into(),
+            return_deadline_sla: None,
+            report: None,
+        };
+        assert!(
+            base.attachment_errors().is_empty(),
+            "the baseline contract is complete: {:?}",
+            base.attachment_errors()
+        );
+
+        // The gate: absurd and non-positive windows are refused, not clamped.
+        for bad in [i64::MAX, 0, -1, 86_399, MAX_RETURN_WINDOW_SECS + 1] {
+            let c = BackReferralContract {
+                return_deadline_sla: Some(bad),
+                ..base.clone()
+            };
+            assert!(
+                c.attachment_errors().iter().any(|e| e.starts_with("B2w")),
+                "a {bad}-second return window must be refused by the gate"
+            );
+        }
+        for good in [86_400, MAX_RETURN_WINDOW_SECS] {
+            let c = BackReferralContract {
+                return_deadline_sla: Some(good),
+                ..base.clone()
+            };
+            assert!(
+                c.attachment_errors().is_empty(),
+                "a {good}-second window is in policy: {:?}",
+                c.attachment_errors()
+            );
+        }
+
+        // The arithmetic backstop, independent of the gate. This is the layer
+        // that turns a process kill into a named refusal.
+        let now = 1_700_000_000_i64;
+        assert!(
+            now.checked_add(i64::MAX).is_none(),
+            "the premise: i64::MAX does overflow a realistic epoch"
+        );
+        assert_eq!(
+            now.checked_add(MAX_RETURN_WINDOW_SECS).map(|d| d > now),
+            Some(true),
+            "an in-policy window always yields a future deadline"
+        );
+    }
+
+    /// D2. The back-referral lookup matched the caller's key with `LIKE` and
+    /// no `ESCAPE`, so `%` and `_` were LIVE WILDCARDS. A key of `%` matched
+    /// every back-referral row on the run, and the release path then marked
+    /// the WRONG contract returned while stamping the audit row with the
+    /// caller's key — leaving the real contract `open` and still escalatable.
+    ///
+    /// Pinned against real SQLite, and deliberately NOT fixed by banning the
+    /// characters in `validate_contract_key`: the server's own key format is
+    /// `run{id}:back_referral:{owner}`, which contains an underscore, so that
+    /// ban would refuse every honest key. The escape clause is the right layer.
+    #[test]
+    fn back_referral_lookup_matches_the_key_literally() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().expect("in-memory");
+        crate::migration::run_migration(&mut conn, 1).expect("migrate");
+        conn.execute_batch(
+            "INSERT INTO agent_session_events(run_id, seq, idempotency_key, kind, payload_json, created_at)
+             VALUES (1, 1, 'k1', 'back_referral', '{\"contract_key\":\"run1:back_referral:alice\"}', 1),
+                    (1, 2, 'k2', 'back_referral', '{\"contract_key\":\"run1:back_referral:bob\"}', 2);",
+        )
+        .expect("two back-referral rows");
+
+        let hit = |key: &str| -> Option<String> {
+            // The PRODUCTION lookup, in a real transaction — not a
+            // re-implementation. A copy of the query in the test proves
+            // nothing about the query that ships, which is the mistake an
+            // earlier draft of this pin made.
+            let tx = conn.unchecked_transaction().expect("tx");
+            let out = latest_back_referral_row(&tx, 1, key).ok().flatten();
+            tx.rollback().ok();
+            out
+        };
+
+        assert!(
+            hit("run1:back_referral:alice").is_some(),
+            "an honest key resolves"
+        );
+        assert!(
+            hit("%").is_none(),
+            "`%` must match NOTHING — without the ESCAPE it matched every row and the release \
+             path released the wrong contract"
+        );
+        assert!(
+            hit("run1:back_referral:ali_e").is_none(),
+            "`_` is a literal here, not a single-character wildcard: it must not resolve alice"
+        );
+        assert!(
+            hit("run1:back_referral:bob").is_some(),
+            "the second honest key resolves"
+        );
+        assert!(
+            hit("run1:back_referral:carol").is_none(),
+            "an absent key is absent"
+        );
     }
 
     #[test]
