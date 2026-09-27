@@ -311,9 +311,11 @@ crate is **pure and total**: no clock, no store, no network, no provider, so it
 decides without a running host and deny always wins.
 
 It now has its first caller. The server consumes the crate and persists what it
-decides: two tables — `delivery_traces`, content-addressed `trc_<32 hex>` over
-each row's facts *and* its ordinal, and `delivery_budgets` under a composite
-`(run_id, kind)` key — at schema `1.32.15`, behind four `POST` routes
+decides: **three** tables — `delivery_traces`, content-addressed `trc_<32 hex>`
+over each row's facts *and* its ordinal; `delivery_budgets` under a composite
+`(run_id, kind)` key; and `delivery_attestations`, the twelve-column signed
+chain added at schema `1.32.16` (the stamp is **`1.32.16`**, not `1.32.15` —
+`1.32.15` created the first two) — behind four `POST` routes
 (`/workflow/delivery/runs`, `/runs/{id}/advance`, `/runs/{id}/answer`, and
 `/runs/{id}/gates`). What is stored is now read back by three `GET` routes:
 `/runs/{id}/attestations` serves the signed chain, `/runs/{id}/replay-verify`

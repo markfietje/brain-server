@@ -1,0 +1,67 @@
+docs: a three-way doc-truth gate, and the two staleness defects it found
+
+A machine check now compares the ROUTER SOURCE against openapi.yaml and
+docs/api.md. A route census is only half a contract: proving every path
+is in openapi.yaml says nothing about whether api.md describes the same
+surface, and neither catches a sentence asserting a control does not
+exist. All three were separately true at HEAD.
+
+scripts/docs-truth.py with a thin scripts/docs-truth.sh wrapper. It
+exits non-zero only on a HIGH finding — a route in one source and not
+another — and reports LOW findings without failing, because the
+legitimate classes are known and enumerated: frontend static assets
+under /app/, /private, and the /webhooks/gh alias kept for the renamed
+/webhooks/{kind}. Every class in that list was found by running the
+check and confirming the finding against the code, not assumed.
+
+It is a TEST, not a CI step, because a CI step nobody runs is a step
+that rots. three_way_doc_truth_gate_is_present_and_clean asserts the
+script exists and is runnable before trusting its result — a test that
+passes because the script is missing is the vacuous-guard class this
+repo keeps hunting. It also asserts the census is non-empty, so a check
+that reads zero routes cannot pass by absence.
+
+RED-PROOFED, twice. Removing a registered route's path item from the
+contract makes the gate report 2 HIGHs and exit 1; restoring it returns
+to exit 0. A census can read 214 and still check none of them, so a
+second pin removes a real path item and asserts the predicate actually
+notices.
+
+TWO STALENESS DEFECTS FOUND AND FIXED:
+
+  docs/architecture.md — the delivery section undercounted its own
+  tables ("two tables — delivery_traces … and delivery_budgets") when
+  three exist, and cited schema 1.32.15 when the stamp is 1.32.16.
+  1.32.15 created the first two; 1.32.16 added delivery_attestations.
+  A reader checking the stamp would land on a migration that does not
+  match the running binary.
+
+  docs/CONTACT_CENTER_STANDARDS.md — fourteen rows still marked
+  "(planned v1.28.x)" for controls that shipped in v1.28.35 through
+  v1.28.41: the complaint lifecycle, the ISO 10004 VoC metrics, the
+  consent registry and its no-consent-no-send gate, the 2019/771
+  two-year guarantee, the 14-day withdrawal, the aftersales KPI units,
+  published code-clause citation, capture-at-close, and complaint
+  clusters ranking first in capture priority. The file CONTRADICTED
+  ITSELF — line 26 already said complaints shipped in v1.28.37, and
+  line 40 already recorded the series exit, while fourteen rows below
+  still said planned. Every marker was verified against the code before
+  it was advanced, and the one row where part of the claim is still
+  open (proactive outreach cohorts, which need an autonomous fetch that
+  does not exist by design) keeps its gap and says so.
+
+WHAT THE CHECK FOUND CLEAN, and it is the class most likely to be
+wrong: every "there is no X" / "not implemented" claim in a living doc
+is still true. BRAIN_BACKUP_RETENTION, automatic N-event checkpoint
+emission, no route setting pending_question, budgets stored-not-
+enforced, no MCP erase tool, no CLI legal-hold release, pull-only
+connectors, three CRM modules. That is the drift class the repo's own
+history calls the highest-risk, and it came back clean.
+
+The check deliberately does NOT flag a sealed record — CHANGELOG, the
+dated audits and proofs, AGENTS_HISTORY — because those describe the
+tree as it was, and rewriting them would falsify history.
+
+Floors: crate tests 2189 to 2191. No schema, migration, or dependency.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

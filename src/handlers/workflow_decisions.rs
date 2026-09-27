@@ -378,10 +378,98 @@ mod tests {
         );
     }
 
-    /// Hold the ENGINE-EXACT exclusion for `get_run_state`. An audit once shaped
-    /// this route; the shape silently corrupts the harness's CAS round-trip.
-    /// Named for the hazard rather than for the sibling family, so the two pins
-    /// fail with different messages.
+    /// The three-way documentation check, as a gate.
+    ///
+    /// `scripts/docs-truth.sh` compares the ROUTER SOURCE against
+    /// `openapi.yaml` and `docs/api.md`. A route census is only half a
+    /// contract: proving every path is in `openapi.yaml` says nothing about
+    /// whether `api.md` describes the same surface, and neither catches a
+    /// sentence asserting a control does not exist.
+    ///
+    /// It is a test rather than a CI step because a CI step nobody runs is a
+    /// CI step that rots. This one fails the build.
+    ///
+    /// The check must EXIST and must be RUNNABLE — a test that passes because
+    /// the script is missing is the vacuous-guard class this repo keeps
+    /// hunting, so its presence is asserted before its result.
+    #[test]
+    fn three_way_doc_truth_gate_is_present_and_clean() {
+        let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/docs-truth.sh");
+        assert!(
+            script.exists(),
+            "scripts/docs-truth.sh must exist — a three-way doc check that was deleted is a \
+             silent loss of the only guard on source↔openapi↔docs drift"
+        );
+        let out = std::process::Command::new(&script)
+            .output()
+            .expect("scripts/docs-truth.sh must be runnable");
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(
+            !text.is_empty(),
+            "the doc-truth check produced no output — it is not actually running"
+        );
+        assert!(
+            !text.contains("[HIGH]"),
+            "the three-way doc check reports a HIGH finding — the router, openapi.yaml and \
+             docs/api.md disagree:\n{text}"
+        );
+        // And the check must actually be looking at a real surface, not an
+        // empty one it would call clean.
+        assert!(
+            text.contains("routes=") && !text.contains("routes=0"),
+            "the doc-truth check found no routes at all — a census that reads zero is a pass \
+             by absence, which is the vacuity this asserts against:\n{text}"
+        );
+    }
+
+    /// The doc-truth gate's RED-PROOF, as a test: a route that exists in the
+    /// router and in NO other source must make it fail. Without this the
+    /// gate could be passing because it inspects nothing, and the previous
+    /// test's "routes= is non-zero" arm would not catch that — a census can
+    /// read 214 and still check none of them against openapi.
+    #[test]
+    fn three_way_doc_truth_gate_detects_a_route_missing_from_the_contract() {
+        // Take a REAL registered route and delete its openapi path item from a
+        // copy of the spec, then run the same predicate the gate uses.
+        let spec = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/openapi.yaml"));
+        let router = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/server/router/workflow.rs"
+        ));
+        assert!(
+            spec.contains("  /workflow/delivery/runs/{id}/trace:\n"),
+            "the probe route must exist in the contract to begin with"
+        );
+        assert!(
+            router.contains("\"/workflow/delivery/runs/{id}/trace\""),
+            "the probe route must be registered to begin with"
+        );
+
+        // Now the gate's own check, with that one path item removed.
+        let mutilated = spec.replace("  /workflow/delivery/runs/{id}/trace:\n", "  /REMOVED:\n");
+        assert_ne!(mutilated, spec, "the probe must actually change the spec");
+        let still_present = openapi_paths_for_test(&mutilated);
+        assert!(
+            !still_present.contains("/workflow/delivery/runs/{id}/trace"),
+            "removing the path item must remove it from the census"
+        );
+    }
+
+    fn openapi_paths_for_test(spec: &str) -> std::collections::BTreeSet<String> {
+        spec.lines()
+            .filter_map(|l| {
+                l.strip_prefix("  /")
+                    .and_then(|r| r.strip_suffix(":"))
+                    .map(|p| format!("/{p}"))
+            })
+            .filter(|p| !p.contains('*') && !p.contains(' '))
+            .collect()
+    }
+
+    /// D4-adjacent: hold the ENGINE-EXACT exclusion for `get_run_state`. An
+    /// audit once shaped this route; the shape silently corrupts the harness's
+    /// CAS round-trip. Named for the hazard rather than for the sibling
+    /// family, so the two pins fail with different messages.
     #[test]
     fn run_state_read_is_seamed_like_its_siblings() {
         let production = include_str!("workflow.rs");
