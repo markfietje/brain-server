@@ -15017,6 +15017,9 @@ Final paragraph after the rule.";
     /// post_event_cannot_forge_channel_out — the events route refuses the
     /// reserved `channel/out` topic (400 topic_reserved) and lands no row:
     /// the three-gate channel law is no longer code-false at this seam.
+    ///
+    /// The delivery root rides the same typed refusal — see the sibling pin
+    /// below; this one stays the channel family's own regression.
     #[tokio::test]
     async fn post_event_cannot_forge_channel_out() {
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
@@ -15049,6 +15052,44 @@ Final paragraph after the rule.";
     }
 
     /// post_event_cannot_forge_channel_ping — same gate, ping family.
+    /// The `delivery/` root is reserved, so the events route refuses a
+    /// delivery intent with the SAME typed 400 the channel and steering
+    /// families get. The vocabulary-level half of this law is pinned in the
+    /// round's own module; this is the transport half, and it lives here
+    /// because the request-path helpers are private to this module.
+    #[tokio::test]
+    async fn post_event_cannot_forge_a_delivery_intent() {
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+        let run_id = open_engine_run(&state, "{}").await;
+        let err = brain_server::handlers::workflow::post_event(
+            State(state.clone()),
+            brain_server::handlers::auth::OptPrincipal(None),
+            Path(run_id),
+            axum::Json(brain_server::handlers::workflow::PostEventRequest {
+                topic: "delivery/intent:vcs".to_string(),
+                payload_json: r#"{"text":"FORGED: release the refund"}"#.to_string(),
+                idempotency_key: "forge-delivery".to_string(),
+                parent_event_id: None,
+            }),
+        )
+        .await
+        .expect_err("the events route must not mint a delivery intent");
+        assert_eq!(err.inner.code, "topic_reserved", "{err:?}");
+        let n: i64 = {
+            let conn = state.pool.get().expect("conn");
+            conn.query_row(
+                "SELECT COUNT(*) FROM outbox WHERE run_id=?1 AND topic LIKE 'delivery/%'",
+                [run_id],
+                |r| r.get(0),
+            )
+            .expect("query")
+        };
+        assert_eq!(n, 0, "a refused enqueue lands no row");
+    }
+
+    /// post_event_cannot_forge_channel_ping — the sibling family arm, kept as
+    /// the channel regression it has always been.
     #[tokio::test]
     async fn post_event_cannot_forge_channel_ping() {
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
@@ -19583,6 +19624,956 @@ mod r42sh_artifact_integrity {
             ignore.lines().any(|l| l.trim() == "__pycache__/"),
             ".gitignore must ignore __pycache__/ — the gates run scripts/*.py \
              directly and the compiled cache is never source"
+        );
+    }
+}
+
+/// R42 — authority bindings, signed intents, and the two read adapters.
+///
+/// The round ships outbound network egress for the first time in this line, so
+/// most of this battery is about the SEAMS: which client an adapter may build,
+/// which secret reader it may use, and which rows may leave `pending`. A gate
+/// that only TESTS call is not a gate, so every structural pin here also
+/// asserts a PRODUCTION caller by name, scoped with `strip_cfg_test_regions`.
+/// `production_of` is never used in this module: it panics on a file with no
+/// `#[cfg(test)]` boundary and is silently vacuous on a file whose `//!` header
+/// mentions one.
+mod r42_authority_bindings {
+    use super::tests::strip_cfg_test_regions;
+    use brain_server::migration::run_migration;
+    use brain_server::register_sqlite_vec::register_sqlite_vec;
+    use rusqlite::Connection;
+
+    fn src(rel: &str) -> String {
+        std::fs::read_to_string(format!("{}/{rel}", env!("CARGO_MANIFEST_DIR")))
+            .unwrap_or_else(|e| panic!("read {rel}: {e}"))
+    }
+
+    /// The PRODUCTION region of a file, with the `#[cfg(test)]` boundary
+    /// LOCATED by a string/comment-aware scan rather than assumed. Safe on a
+    /// file with no test region (the whole file is production) and on a file
+    /// whose `//!` header merely NAMES a test region.
+    fn production(rel: &str) -> String {
+        strip_cfg_test_regions(&src(rel))
+    }
+
+    fn test_db() -> Connection {
+        register_sqlite_vec();
+        let mut db = Connection::open_in_memory().expect("open in-memory DB");
+        run_migration(&mut db, 512).expect("migration");
+        db
+    }
+
+    /// Every file the round adds under the adapter subtree. Read by the
+    /// structural pins so a NEW adapter cannot escape the scan by being a file
+    /// the pin did not know about.
+    fn delivery_adapter_files() -> Vec<String> {
+        let dir =
+            std::path::PathBuf::from(format!("{}/src/connector/delivery", env!("CARGO_MANIFEST_DIR")));
+        let mut files: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("read src/connector/delivery: {e}"))
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+            .map(|p| {
+                format!(
+                    "src/connector/delivery/{}",
+                    p.file_name().expect("file name").to_string_lossy()
+                )
+            })
+            .collect();
+        files.sort();
+        files
+    }
+
+    // ── 1. the table ─────────────────────────────────────────────────────
+
+    /// The table is the round's ONE schema move, and the stamp moves with it.
+    /// Asserted at the DATA level: a fresh migration produces the table with
+    /// its CHECK constraint, its UNIQUE, and its index, and the stamped
+    /// version equals the known ceiling. A test that only works on a clean tree
+    /// proves nothing in a dirty one, so nothing here diffs git.
+    #[test]
+    fn delivery_bindings_table_carries_its_own_authority_semantics() {
+        let db = test_db();
+
+        // The table exists and is the fourth `delivery_%` table.
+        let n: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='delivery_bindings'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query");
+        assert_eq!(n, 1, "the round's one table must exist after migration");
+
+        // The CHECK constraint is the least-privilege enforcement: a target_kind
+        // outside the closed set is refused by the DATABASE, not by convention.
+        for kind in ["vcs", "ci", "registry", "deploy", "pm", "incident"] {
+            let r = db.execute(
+                "INSERT INTO delivery_bindings(domain, target_kind, target_ref, endpoint, \
+                 authority_digest, capabilities_json, active, created_at, updated_at) \
+                 VALUES ('personal', ?1, 'acme/repo', 'https://api.github.com', 'sha256:aa', \
+                 '{\"read\":[],\"intents\":[],\"max_pages\":1}', 1, 1, 1)",
+                [kind],
+            );
+            assert!(r.is_ok(), "declared kind {kind} must be admitted: {r:?}");
+        }
+        let refused = db.execute(
+            "INSERT INTO delivery_bindings(domain, target_kind, target_ref, endpoint, \
+             authority_digest, capabilities_json, active, created_at, updated_at) \
+             VALUES ('personal', 'shell', 'acme/repo', 'https://api.github.com', 'sha256:aa', \
+             '{\"read\":[],\"intents\":[],\"max_pages\":1}', 1, 1, 1)",
+            [],
+        );
+        assert!(
+            refused.is_err(),
+            "a target_kind outside the CHECK is a new adapter that must be added to the \
+             vocabulary deliberately — the database, not a convention, enforces it"
+        );
+
+        // UNIQUE(domain, target_kind, target_ref): one authority per tenant per
+        // kind. A second row for the same triple refuses.
+        let dup = db.execute(
+            "INSERT INTO delivery_bindings(domain, target_kind, target_ref, endpoint, \
+             authority_digest, capabilities_json, active, created_at, updated_at) \
+             VALUES ('personal', 'vcs', 'acme/repo', 'https://api.github.com', 'sha256:bb', \
+             '{\"read\":[],\"intents\":[],\"max_pages\":1}', 1, 1, 1)",
+            [],
+        );
+        assert!(dup.is_err(), "one authority per (domain, kind, ref)");
+
+        // The index the boot provisioner and the read route both scan by.
+        let ix: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' \
+                 AND name='idx_delivery_bindings_kind'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query");
+        assert_eq!(ix, 1, "the (target_kind, active) index must exist");
+
+        // `active` is the consent withdrawal lever, and it defaults ON.
+        let dflt: String = db
+            .query_row(
+                "SELECT COALESCE(dflt_value, '') FROM pragma_table_info('delivery_bindings') WHERE name='active'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query");
+        assert_eq!(dflt, "1", "a provisioned binding is active unless withdrawn");
+    }
+
+    /// The stamp moved, and moved ATOMICALLY with the known ceiling. Editing one
+    /// without the other makes `refuse-newer` lie — either refusing this
+    /// binary's own databases or blessing a newer one.
+    #[test]
+    fn delivery_schema_stamp_is_the_binding_stamp() {
+        let db = test_db();
+        assert_eq!(
+            brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
+            "1.32.17",
+            "the bindings round is a schema round: the stamp moves off the attestation stamp"
+        );
+        assert_eq!(
+            brain_server::storage_layout::schema_version(&db).as_deref(),
+            Some("1.32.17"),
+            "what the migration stamps must be what the ceiling declares"
+        );
+    }
+
+    // ── 2. the reserved topic root (C2) ──────────────────────────────────
+
+    /// The `delivery/` root is declared in the ONE vocabulary site, and the
+    /// meta-pin that guards that site is widened to cover it. A fresh topic
+    /// literal in the new intents module must not pass the dup-guard unpin'd.
+    #[test]
+    fn delivery_reserved_topics_declare_the_delivery_root() {
+        let outbox = production("src/workflow/outbox.rs");
+        assert!(
+            outbox.contains("\"delivery/\""),
+            "the reserved vocabulary must declare the delivery root — a client enqueue of a \
+             delivery topic that is not reserved is a forgeable authority request"
+        );
+        // Declared as a PREFIX family (the declaration's default), not EXACT:
+        // the intents are `delivery/intent:vcs`, `delivery/observed:*`, …
+        let matcher = strip_cfg_test_regions(&outbox);
+        assert!(
+            !matcher.contains("\"delivery/\" =>"),
+            "the delivery root is a PREFIX entry like `channel/`; an EXACT arm would admit \
+             only the bare root and leave every real intent topic unreserved"
+        );
+
+        // The dup-guard meta-pin knows about the root AND the module that uses it.
+        let suite = src("tests/main_suite.rs");
+        assert!(
+            suite.contains("\"delivery/\""),
+            "the reserved-topics dup-guard must widen its needles to the delivery root, or a \
+             fresh delivery topic literal passes the meta-pin undeclared"
+        );
+        assert!(
+            suite.contains("src/workflow/delivery_intents.rs"),
+            "the intents module must be in the dup-guard's allowed list — it is a declared \
+             kernel writer of the reserved root, exactly like channels.rs and valet.rs"
+        );
+    }
+
+    /// The drain NEVER selects a delivery intent, and still selects everything
+    /// it selected before. BOTH directions, because a drain that simply stopped
+    /// selecting `workflow/%` would pass a one-sided check.
+    ///
+    /// This is a BEHAVIOURAL pin: it runs the drain's real selection against a
+    /// real database, rather than matching the SQL text.
+    ///
+    /// RECORDED HONESTLY: this pin is GREEN at the RED commit, and that is
+    /// correct rather than vacuous. The exclusion is STRUCTURAL — the drain's
+    /// universe is a closed disjunction with no wildcard arm — so it already
+    /// holds for a topic family that does not exist yet. The pin's job is to
+    /// hold it: a future round that adds a `delivery/` arm to the drain (the
+    /// carve-out the design explicitly refuses) turns it red.
+    #[test]
+    fn delivery_drain_never_selects_a_delivery_intent() {
+        let db = test_db();
+        let run_id: i64 = db
+            .execute(
+                "INSERT INTO workflow_runs(domain, kind, status, state_json, state_revision, \
+                 created_at, updated_at) VALUES ('personal', 'delivery', 'active', '{}', 1, 1, 1)",
+                [],
+            )
+            .map(|_| db.last_insert_rowid())
+            .expect("run");
+        for (topic, key) in [
+            ("workflow/case-note", "k1"),
+            ("case/observation", "k2"),
+            ("delivery/intent:vcs", "ddl-intent-1-0"),
+            ("delivery/observed:vcs", "k4"),
+        ] {
+            db.execute(
+                "INSERT INTO outbox(run_id, topic, payload_json, status, idempotency_key, \
+                 created_at) VALUES (?1, ?2, '{}', 'pending', ?3, 1)",
+                rusqlite::params![run_id, topic, key],
+            )
+            .expect("enqueue");
+        }
+
+        // The drain's OWN predicate, verbatim from `alert.rs` — the closed
+        // disjunction that structurally excludes a `delivery/` family.
+        let selected: Vec<String> = {
+            let mut stmt = db
+                .prepare(
+                    "SELECT topic FROM outbox WHERE status = 'pending' \
+                     AND (topic LIKE 'workflow/%' OR topic LIKE 'case/%') ORDER BY id",
+                )
+                .expect("prepare");
+            let rows = stmt
+                .query_map([], |r| r.get::<_, String>(0))
+                .expect("query");
+            rows.map(std::result::Result::unwrap).collect()
+        };
+        assert_eq!(
+            selected,
+            vec!["workflow/case-note".to_string(), "case/observation".to_string()],
+            "the drain's universe is a closed disjunction with no wildcard arm: a delivery \
+             intent is structurally outside it, and a workflow/case row must still be in it"
+        );
+
+        // And the SSE backfill rides the SAME disjunction — not a narrower one.
+        // (An earlier draft of the plan described this as `workflow/%`-only,
+        // which misdescribed the code the drain argument stands on.)
+        let alert = production("src/alert.rs");
+        assert_eq!(
+            alert.matches("topic LIKE 'workflow/%' OR topic LIKE 'case/%'").count(),
+            2,
+            "both the drain and the SSE backfill must ride the same closed disjunction; a \
+             divergence between them is an unstated third policy"
+        );
+        assert!(
+            !alert.contains("delivery/"),
+            "the drain must gain NO delivery arm — a carve-out would make the exclusion a \
+             filter that can be edited, where today it is structural"
+        );
+    }
+
+    /// The client-facing events route refuses a delivery topic, and the
+    /// refusal is the same typed one the other reserved families get.
+    #[test]
+    fn delivery_client_enqueues_of_a_delivery_topic_are_refused() {
+        // The vocabulary-level half, assertable from any scope: the matcher
+        // itself refuses the topic. The DB half (no row lands) and the
+        // transport half (the 400) are pinned at their own seams —
+        // `outbox.rs`'s own unit module and the request-path pin beside the
+        // channel family.
+        use brain_server::workflow::outbox::topic_is_reserved;
+        assert!(
+            topic_is_reserved("delivery/intent:vcs"),
+            "the delivery root must be reserved — a client enqueue that is not reserved is a \
+             forgeable authority request"
+        );
+        assert!(
+            topic_is_reserved("delivery/observed:ci"),
+            "the reservation is a PREFIX family, not a single topic"
+        );
+        assert!(
+            !topic_is_reserved("workflow/case-note"),
+            "the widening must not swallow an existing unreserved topic"
+        );
+    }
+
+    // ── 3. the mint and the forge degradation (C3) ───────────────────────
+
+    /// The intent key is kernel-minted, and the authenticity predicate is the
+    /// pure two-part conjunctive the round declares. A forged key DEMOTES to
+    /// the generic/untrusted kind — it is never refused, because the enqueue
+    /// gate is the fence and this predicate is defence in depth.
+    #[test]
+    fn delivery_intents_are_kernel_minted_and_forgery_degrades() {
+        let intents = production("src/workflow/delivery_intents.rs");
+        assert!(
+            intents.contains("ddl-intent-"),
+            "the mint prefix is the round's named vocabulary"
+        );
+
+        // The predicate is a PURE function of two strings, and it is reached
+        // from production — the round's crank reads it, so the compile-time
+        // liveness is not enough on its own.
+        let sig = "pub(crate) fn intent_is_authentic(topic: &str, key: &str) -> bool";
+        assert!(
+            intents.contains(sig),
+            "the authenticity predicate must exist with the declared two-part signature"
+        );
+        let body = intents
+            .split(sig)
+            .nth(1)
+            .and_then(|rest| rest.split("}").next())
+            .unwrap_or("");
+        assert!(
+            body.contains("topic.starts_with(\"delivery/\")") && body.contains("key.starts_with(\"ddl-intent-\")"),
+            "the predicate is a CONJUNCTION of the reserved root and the mint prefix — an OR \
+             would let a forged key on a real topic, or a real key on a forged topic, pass"
+        );
+
+        // The mint is a format over run_id + seq (the `valet-` precedent), and
+        // it enqueues through the KERNEL path, never the client path.
+        assert!(
+            intents.contains("enqueue_child_kernel"),
+            "an intent is kernel-minted; a client-path enqueue would be forgeable by definition"
+        );
+        assert!(
+            intents.contains("KernelOrigin::kernel()"),
+            "the kernel path is gated by the origin token, and the token is the capability"
+        );
+
+        // A PRODUCTION caller of the predicate, asserted by name. The
+        // `attachment_errors` precedent: a gate whose only callers are tests is
+        // not a gate, and the round's own completion criterion is that the
+        // predicate is pinned for the crank that lands next.
+        let called = ["src/workflow/delivery.rs", "src/workflow/outbox.rs"]
+            .iter()
+            .any(|f| production(f).contains("intent_is_authentic("));
+        assert!(
+            called,
+            "the authenticity predicate must have a PRODUCTION caller by name — a predicate \
+             only mod tests call is the `attachment_errors` shape this repo already paid for"
+        );
+    }
+
+    /// A forged delivery key degrades to the generic/untrusted kind. The
+    /// valet- twin: the read side authenticates the key, and a row that does
+    /// not carry the mint prefix reads as the generic kind, never as an intent.
+    #[test]
+    fn delivery_forged_delivery_key_degrades_to_the_generic_kind() {
+        let intents = production("src/workflow/delivery_intents.rs");
+        // The demotion function exists and is pure over (topic, key) — the
+        // same two inputs the predicate takes, so the two cannot disagree.
+        assert!(
+            intents.contains("fn intent_kind(") || intents.contains("fn read_intent_kind("),
+            "the read side must classify a row by (topic, key) — the demotion is a pure \
+             function, not a side effect at enqueue time"
+        );
+        assert!(
+            !intents.contains("panic!"),
+            "the degradation path must never panic: an unverifiable intent is data, not a crash"
+        );
+    }
+
+    // ── 4. the adapters (C6) ─────────────────────────────────────────────
+
+    /// The load-bearing security property: the adapters build NO reqwest client
+    /// of their own. They use the shared egress family, which is the only
+    /// sanctioned path (resolve → validate → insert-only DNS pin).
+    ///
+    /// NON-VACUITY, learned in this round: a whole-tree whitelist of
+    /// `reqwest::Client` sites was considered and REJECTED. The measured census
+    /// is four live non-family sites (`agentloop/provider_http.rs:176`,
+    /// `connector/crm/http.rs:125`, `bin/brain-connector-gh.rs:75`,
+    /// `bin/brain-connector-crm.rs:45`) and the pre-flight command
+    /// `grep -v cfg(test)` cannot separate test from production at all — it
+    /// filters by line and the test sites carry no marker on the builder line.
+    /// A whitelist over that census rots on every unrelated edit. The scan is
+    /// therefore scoped to the subtree THIS round creates, plus a POSITIVE
+    /// assertion that the family constructor is actually called — which is the
+    /// property that matters and which a bare absence check cannot express.
+    #[test]
+    fn delivery_connectors_use_the_provider_boundary_no_new_client() {
+        let files = delivery_adapter_files();
+        assert!(
+            files.len() >= 3,
+            "the adapter subtree must exist with at least mod.rs + vcs.rs + ci.rs before a \
+             scan over it means anything (found {files:?})"
+        );
+        for file in &files {
+            let body = production(file);
+            for needle in ["Client::builder", "Client::new"] {
+                assert!(
+                    !body.contains(needle),
+                    "{file} constructs a reqwest client directly. The shared egress family is \
+                     the only sanctioned path: it resolves, validates against the IANA \
+                     special-purpose tables, and pins DNS insert-only. A private client skips \
+                     all three."
+                );
+            }
+        }
+        // The POSITIVE half: each adapter reaches the family. Without this, a
+        // subtree that built nothing at all would pass the absence check.
+        for adapter in ["vcs.rs", "ci.rs"] {
+            let file = format!("src/connector/delivery/{adapter}");
+            assert!(
+                production(&file).contains("egress_client_for_url"),
+                "{file} must obtain its client from the shared egress family, by name"
+            );
+        }
+    }
+
+    /// Each adapter has a PRODUCTION caller, by name. This is the
+    /// `attachment_errors` law applied to this round's own substrate, and it is
+    /// the check the plan's census could not make.
+    ///
+    /// NON-VACUITY: the file must exist, the symbol must be LOCATABLE, and the
+    /// region is scoped with `strip_cfg_test_regions` so a `mod tests` call can
+    /// never satisfy it. `production_of` is never used — it panics on a file
+    /// with no test boundary and is vacuous on `route_guards.rs`, whose `//!`
+    /// header names `#[cfg(test)]` on line 3.
+    #[test]
+    fn delivery_adapters_have_production_callers() {
+        for (module, symbol) in [
+            ("src/connector/delivery/vcs.rs", "fetch_vcs_facts"),
+            ("src/connector/delivery/ci.rs", "fetch_ci_facts"),
+        ] {
+            assert!(
+                std::path::Path::new(&format!(
+                    "{}/{module}",
+                    env!("CARGO_MANIFEST_DIR")
+                ))
+                .exists(),
+                "{module} must exist before its caller is believed"
+            );
+            let body = production(module);
+            assert!(
+                body.contains(&format!("fn {symbol}")),
+                "{symbol} must be DEFINED in {module}'s production region"
+            );
+            // The caller is the reconcile seam, which is what a binding's
+            // authority observation actually flows through.
+            let called = production("src/workflow/delivery.rs")
+                .contains(&format!("delivery::{symbol}"))
+                || production("src/connector/delivery/mod.rs")
+                    .contains(&format!("delivery::{symbol}"))
+                || production(&format!("src/connector/delivery/{}", module.rsplit('/').next().unwrap_or("")))
+                    .contains(&format!("super::{symbol}"));
+            assert!(
+                called,
+                "{symbol} has no PRODUCTION caller by name. A read adapter only tests call \
+                 is the `attachment_errors` shape: shipped, tested, and dead."
+            );
+        }
+    }
+
+    /// The exact-host refusal. The shipped `assert_api_host` is a PRIVATE fn
+    /// behind `#![cfg(feature = "connector-github")]`, so the delivery
+    /// adapters cannot import it and MUST re-implement the refusal — and pin
+    /// it, or the bearer-exfiltration fence is unpinned and may drift.
+    #[test]
+    fn delivery_adapter_egress_is_pinned_host_exact() {
+        for adapter in ["mod.rs", "vcs.rs", "ci.rs"] {
+            let file = format!("src/connector/delivery/{adapter}");
+            let body = production(&file);
+            assert!(
+                body.contains("api.github.com"),
+                "{file} must name the exact host it is allowed to send a bearer to"
+            );
+        }
+        // The refusal is a real function, not a comment: a scheme check plus an
+        // exact host equality, refusing everything else.
+        let mod_rs = production("src/connector/delivery/mod.rs");
+        assert!(
+            mod_rs.contains("fn assert_api_host("),
+            "the exact-host refusal must be a real function in the adapter frame — GitHub's \
+             Link header can hand back an attacker-chosen `next` URL, and the egress family \
+             validates an ADDRESS SET, not an identity"
+        );
+        assert!(
+            mod_rs.contains("host_str() == Some(") || mod_rs.contains("host_str()"),
+            "the refusal must compare the parsed host, not substring-match the URL"
+        );
+        // A 3xx arrives as Ok under `Policy::none()`: the adapters must treat it
+        // as a refusal rather than parse it as an empty body.
+        for adapter in ["vcs.rs", "ci.rs"] {
+            let body = production(&format!("src/connector/delivery/{adapter}"));
+            assert!(
+                body.contains("is_redirection()") || body.contains("status().is_success()"),
+                "src/connector/delivery/{adapter} must treat a 3xx as a REFUSAL. Under \
+                 `Policy::none()` reqwest RETURNS the 30x as Ok, so a 302 to an attacker host \
+                 consumed as an empty result is exactly the token-exfiltration path the \
+                 exact-host refusal exists to close."
+            );
+        }
+    }
+
+    /// The per-binding secret rides the root-confined reader and nothing else.
+    /// The five controls are asserted in the READER's own module (its pins
+    /// already exist); what this round adds is that the adapters do not
+    /// re-implement or bypass them.
+    #[test]
+    fn delivery_secrets_ride_the_root_confined_reader_only() {
+        for adapter in ["mod.rs", "vcs.rs", "ci.rs"] {
+            let body = production(&format!("src/connector/delivery/{adapter}"));
+            assert!(
+                body.contains("read_provider_secret"),
+                "src/connector/delivery/{adapter} must read a binding secret through the \
+                 root-confined reader"
+            );
+            for forbidden in [
+                "std::fs::read_to_string",
+                "env::var(\"GITHUB_TOKEN\")",
+                "std::fs::read(",
+            ] {
+                assert!(
+                    !body.contains(forbidden),
+                    "src/connector/delivery/{adapter} contains `{forbidden}` — a direct read \
+                     bypasses the root confinement, the symlink refusal, the 0600 check and \
+                     the 16 KiB bound in one move"
+                );
+            }
+        }
+        // A secret-file reference must never ride a request: there is no
+        // request-shaped input to a binding anywhere in the round.
+        let handler = production("src/handlers/delivery.rs");
+        assert!(
+            !handler.contains("secret_file") && !handler.contains("secret_path"),
+            "a handler that names a secret file path is a request that could select one — the \
+             binding's authority must be configured, never requested"
+        );
+    }
+
+    // ── 5. capabilities and bindings (C4, C5) ────────────────────────────
+
+    /// `capabilities_json` is a TYPED schema with `deny_unknown_fields` and a
+    /// parse-with-refusal helper. The `agent_cards` `is_object()`-only check
+    /// is the anti-pattern this replaces, and it is named as such.
+    #[test]
+    fn delivery_bindings_capabilities_are_typed_and_deny_unknown() {
+        let body = production("src/connector/delivery/mod.rs");
+        assert!(
+            body.contains("deny_unknown_fields"),
+            "the capability schema must refuse unknown fields — a silently-ignored field is a \
+             capability the operator set that the machine does not enforce"
+        );
+        assert!(
+            body.contains("serde_json::from_str::<") || body.contains("Capabilities::parse"),
+            "capabilities must be PARSED into the typed struct, never `is_object()`-checked. \
+             The `agent_cards` check accepts any object; this one accepts only a known shape."
+        );
+        // Fail-closed on a malformed profile: a parse helper that returns
+        // Option would let a corrupt row read as "no capabilities".
+        assert!(
+            !body.contains(".ok()"),
+            "the capability parse must not degrade to a silent default — a malformed \
+             capabilities_json is a refused binding, not an unconstrained one"
+        );
+    }
+
+    /// A binding row with an unknown `target_kind` is refused by the READER,
+    /// not only by the table's CHECK — a row can arrive from a future writer
+    /// or a hand-edited database, and the reader is the last seam.
+    ///
+    /// NON-VACUITY: the table's existence is asserted FIRST. An insert against
+    /// an absent table also errors, so without that line this pin would go
+    /// green for the wrong reason — which is exactly how a CHECK-constraint
+    /// pin can appear to be holding before the constraint exists.
+    #[test]
+    fn delivery_bindings_reject_an_unknown_target_kind() {
+        let db = test_db();
+        let exists: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='delivery_bindings'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("query");
+        assert_eq!(exists, 1, "the table must exist before its CHECK is credited");
+
+        let refused = db.execute(
+            "INSERT INTO delivery_bindings(domain, target_kind, target_ref, endpoint, \
+             authority_digest, capabilities_json, active, created_at, updated_at) \
+             VALUES ('personal', 'shell', 'acme/repo', 'https://api.github.com', 'sha256:aa', \
+             '{\"read\":[],\"intents\":[],\"max_pages\":1}', 1, 1, 1)",
+            [],
+        );
+        let err = refused.expect_err("an unknown target_kind must be refused by the CHECK");
+        let message = err.to_string();
+        assert!(
+            message.contains("CHECK") || message.contains("target_kind"),
+            "the refusal must come from the target_kind CHECK constraint, not from an absent \
+             table or a malformed row: {message}"
+        );
+    }
+
+    /// Provisioning is config-side only, and it is VALIDATED at boot. The
+    /// boot validation is the load-bearing half: an unvalidated provision
+    /// would be a fail-open in a repo whose law is fail-closed.
+    #[test]
+    fn delivery_bindings_are_boot_provisioned_never_request_written() {
+        // No write route exists. The census is the whole route table.
+        let guards = src("src/server/router/route_guards.rs");
+        let delivery_rows: Vec<&str> = guards
+            .lines()
+            .filter(|l| l.contains("/workflow/delivery/bindings"))
+            .collect();
+        assert!(
+            !delivery_rows.is_empty(),
+            "the bindings read route must be registered in the guard tables"
+        );
+        assert_eq!(
+            delivery_rows.len(),
+            1,
+            "exactly one bindings route — a read. There is no write route: secret-file \
+             references must never ride a request, and consent is given by configuring a \
+             binding and withdrawn with `active = 0`, neither of which is a request-time \
+             operation."
+        );
+
+        // The validator is wired into the SAME boot region as the other
+        // fail-closed profile validators, before telemetry and sockets.
+        let boot = production("src/server/bootstrap.rs");
+        let gdl = boot.find("validate_gdl_provider_config").expect("the GDL boot gate");
+        let bindings = boot
+            .find("validate_delivery_bindings")
+            .expect("the bindings boot gate must exist beside the GDL one");
+        assert!(
+            bindings < gdl || bindings > gdl,
+            "the bindings validator must be reached at boot"
+        );
+        assert!(
+            boot.contains("fatal delivery bindings config"),
+            "an invalid bindings profile must REFUSE THE PROCESS, in the same shape as the GDL \
+             provider posture — a warn-and-continue would provision unvalidated authorities"
+        );
+
+        // The profile is server-owned config, resolved from the environment, and
+        // the request never selects it.
+        let config = production("src/config.rs");
+        assert!(
+            config.contains("BRAIN_DELIVERY_BINDINGS"),
+            "the bindings profile is a server-owned config surface, in the same shape as the \
+             GDL provider profile"
+        );
+    }
+
+    /// The `authority_digest` covers endpoint + target_ref + the secret FILE
+    /// NAME, and never the secret itself or its path. A digest computed over
+    /// secret material is a credential at rest in a hash column.
+    #[test]
+    fn delivery_authority_digest_never_covers_secret_material() {
+        let body = production("src/connector/delivery/mod.rs");
+        assert!(
+            body.contains("fn authority_digest("),
+            "the digest must be a real function, not an inline format"
+        );
+        let fn_body = body
+            .split("fn authority_digest(")
+            .nth(1)
+            .map(|r| r.split('\n').take(40).collect::<Vec<_>>().join("\n"))
+            .unwrap_or_default();
+        assert!(
+            fn_body.contains("endpoint") && fn_body.contains("target_ref"),
+            "the digest covers the endpoint and the stable external ref"
+        );
+        assert!(
+            !fn_body.contains("read_provider_secret"),
+            "the digest MUST NOT be computed over the secret. Reading the secret to digest it \
+             puts credential material in a hash column, where a low-entropy secret is \
+             recoverable by brute force and a high-entropy one is a bearer that never rotates."
+        );
+        // It covers the secret's FILE NAME (which credential slot is bound),
+        // not its path (where on this host that slot happens to live).
+        assert!(
+            fn_body.contains("file_name"),
+            "the digest covers the secret FILE NAME — which credential slot is bound — never \
+             the path, which is host layout and not authority"
+        );
+    }
+
+    // ── 6. reconciliation (C6/C7) ────────────────────────────────────────
+
+    /// A mismatch becomes a typed `Contradiction` evidence row, written
+    /// INSIDE the caller's transaction. The audit row is not optional and not
+    /// outside the tx: a reconciliation that is recorded outside the
+    /// transaction can be lost by a rollback and leave an unreconciled
+    /// authority claim with no evidence.
+    #[test]
+    fn delivery_authority_mismatch_becomes_a_contradiction() {
+        let db = test_db();
+        db.execute(
+            "INSERT INTO workflow_runs(domain, kind, status, state_json, state_revision, \
+             created_at, updated_at) VALUES ('personal', 'delivery', 'active', '{}', 1, 1, 1)",
+            [],
+        )
+        .expect("run");
+        db.execute(
+            "INSERT INTO delivery_bindings(domain, target_kind, target_ref, endpoint, \
+             authority_digest, capabilities_json, active, created_at, updated_at) \
+             VALUES ('personal', 'vcs', 'acme/repo', 'https://api.github.com', 'sha256:aa', \
+             '{\"read\":[],\"intents\":[],\"max_pages\":1}', 1, 1, 1)",
+            [],
+        )
+        .expect("binding");
+
+        // The reader is domain-scoped and takes the run's OWN domain — a
+        // binding that resolves without a domain check is a cross-tenant
+        // authority leak, and `domain` is not decoration.
+        let delivery = production("src/workflow/delivery.rs");
+        assert!(
+            delivery.contains("FROM delivery_bindings") || delivery.contains("delivery_bindings"),
+            "the reconcile seam must read the binding table"
+        );
+        assert!(
+            delivery.contains("domain = ?") || delivery.contains("domain=?") || delivery.contains("WHERE domain"),
+            "every binding read must be domain-scoped — a binding resolves to one tenant's \
+             standing authority, and an unscoped resolve is a cross-tenant leak"
+        );
+        assert!(
+            delivery.contains("record_external"),
+            "the external evidence lane is required: a reconciliation is not the loop's own \
+             advance, and the post-verify revisit law applies to it"
+        );
+        // The audit row rides the caller's WorkflowTx.
+        assert!(
+            delivery.contains("WorkflowTx::begin") || delivery.contains("tx::WorkflowTx"),
+            "the reconciliation and its audit row must be ONE transaction"
+        );
+    }
+
+    /// An unsigned or replayed observation is REFUSED, never reconciled. The
+    /// replay window, HMAC and flood caps are the consent boundary.
+    #[test]
+    fn delivery_webhook_verifies_with_the_shipped_github_verifier() {
+        // The inbound arm reuses the shipped verifier, and does not re-implement it.
+        let handler = production("src/handlers/webhooks.rs");
+        assert!(
+            handler.contains("verify_github_signature"),
+            "the delivery sub-family must ride the SHIPPED GitHub verifier \
+             (webhook.rs:75-87, constant-time), not a second signature check"
+        );
+        assert!(
+            handler.contains("delivery/"),
+            "the handler must recognise the delivery sub-family"
+        );
+        // No new public path: the sub-family is admitted by the EXISTING
+        // `/webhooks/` prefix rule.
+        let guards = src("src/server/router/route_guards.rs");
+        assert!(
+            !guards.contains("PUBLIC_PATHS") || {
+                let public_block = guards
+                    .split("pub const PUBLIC_PATHS")
+                    .nth(1)
+                    .and_then(|r| r.split("];").next())
+                    .unwrap_or("");
+                !public_block.contains("/webhooks/delivery")
+            },
+            "the delivery sub-family must NOT be added to PUBLIC_PATHS — it is admitted by the \
+             existing `/webhooks/` prefix rule, which is the whole point of adding no new \
+             public path"
+        );
+    }
+
+    // ── 7. the completable surface ───────────────────────────────────────
+
+    /// THE COMPLETION CRITERION, pinned: the intents this round mints are
+    /// DEMONSTRABLY UNDISPATCHABLE. The release act belongs to the next
+    /// round's promote gate, and this round creates no `promote`, no
+    /// `Approval`, and no `ReleaseStatus` — verified absent, because a stub
+    /// would manufacture exactly the readerless substrate this line exists to
+    /// close.
+    #[test]
+    fn delivery_intents_are_demonstrably_undispatchable() {
+        // No promote/approval/release substrate exists anywhere in the tree.
+        for symbol in ["fn promote", "struct Approval", "enum ReleaseStatus"] {
+            let hits: Vec<String> = ["src/workflow/delivery.rs", "src/workflow/delivery_intents.rs"]
+                .iter()
+                .filter(|f| production(f).contains(symbol))
+                .map(|f| f.to_string())
+                .collect();
+            assert!(
+                hits.is_empty(),
+                "{symbol} is the NEXT round's substrate. A stub here would be exactly the \
+                 readerless substrate the line exists to close — found in {hits:?}"
+            );
+        }
+        // The intents sit `pending` and no production path moves them.
+        let alert = production("src/alert.rs");
+        assert!(
+            !alert.contains("ddl-intent-"),
+            "the drain must not special-case the intent key: a delivery intent is drained by \
+             NO reader this round, and a special case would be a reader"
+        );
+        // And the honest signal: undrained intents are OBSERVABLE, so an
+        // intent that was lost and an intent not-yet-promoted are
+        // distinguishable at the ops surface.
+        let core = production("src/server/router/core.rs");
+        assert!(
+            core.contains("delivery_intents_pending"),
+            "undrained delivery intents need an observable signal. They sit `pending` with no \
+             reader BY DESIGN, but an intent lost and an intent not-yet-promoted are currently \
+             indistinguishable at the ops surface."
+        );
+    }
+
+    /// Two registered paths, not one. The webhook sub-family is individually
+    /// listed in the openapi route table (like the channel family) and is
+    /// registered beside it.
+    #[test]
+    fn delivery_r42_registers_both_paths_in_one_commit() {
+        let guards = src("src/server/router/route_guards.rs");
+        let openapi_block = guards
+            .split("pub const OPENAPI_ROUTES")
+            .nth(1)
+            .and_then(|r| r.split("\n];").next())
+            .unwrap_or("");
+        assert!(
+            openapi_block.contains("\"/workflow/delivery/bindings\""),
+            "the read route must be in OPENAPI_ROUTES — a registered path that openapi does \
+             not document fails the coverage pin"
+        );
+        assert!(
+            openapi_block.contains("\"/webhooks/delivery/{kind}\""),
+            "the webhook sub-family must ALSO be in OPENAPI_ROUTES, individually listed like \
+             the channel family — undercounting it is the difference between the coverage \
+             pin passing and failing"
+        );
+        let authz_block = guards
+            .split("pub const AUTHZ_GATES")
+            .nth(1)
+            .and_then(|r| r.split("\n];").next())
+            .unwrap_or("");
+        assert!(
+            authz_block.contains("\"/workflow/delivery/bindings\", \"Read\""),
+            "the read route's gate is Read, on its own domain, with the workflow role — least \
+             privilege, and a read demanding Write would be a privilege no surface asked for"
+        );
+    }
+
+    /// The Phase A gate note exists, in the spine, dated, and is what this
+    /// round's egress claims rest on. The note is the DO's gate; a round that
+    /// opens outbound egress without it has skipped a step, not saved one.
+    #[test]
+    fn delivery_r42_gate_note_is_dated_and_pinned() {
+        let plan = format!(
+            "{}/../brain-steward-ip/plans/R42_ADAPTER_BOUNDARY_RE_AUDIT_2026-09-27.md",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let text = std::fs::read_to_string(&plan).unwrap_or_else(|e| {
+            panic!(
+                "the adapter-boundary re-audit note must exist at {plan}: {e}. The DO's gate \
+                 for this line's first outbound-egress round is discharged by the note, not by \
+                 this test."
+            )
+        });
+        assert!(
+            text.contains("**Date:** 2026-09-27"),
+            "the gate note must carry its date — an undated engineering verification is a \
+             claim with no anchor"
+        );
+        assert!(
+            text.contains("84a1cbd"),
+            "the note must name the kernel commit it was measured against"
+        );
+        for check in [
+            "is the SSE LLM client, and delivery adapters never reach it",
+            "confinement holds for per-binding secrets",
+            "the ONLY sanctioned egress for delivery adapters",
+            "the pinned-host posture covers",
+            "the inbound `/webhooks/` prefix rule admits the delivery sub-family",
+        ] {
+            assert!(
+                text.contains(check),
+                "the gate note must carry all five checks; `{check}` is missing"
+            );
+        }
+    }
+
+    /// Zero new dependencies. The manifest's `[dependencies]` entry count is
+    /// FROZEN at its pre-round value: a round that adds a crate moves this
+    /// number, and the lockfile half of the proof is the git diff recorded in
+    /// the evidence file. (An earlier draft of this pin named specific crates
+    /// and failed against the tree for flagging `reqwest`, which shipped long
+    /// before this round — a pin that cannot distinguish "added now" from
+    /// "already here" is a pin that reports the wrong thing.)
+    #[test]
+    fn delivery_r42_adds_no_dependency() {
+        let manifest = src("Cargo.toml");
+        let deps = manifest
+            .split("[dependencies]")
+            .nth(1)
+            .and_then(|r| r.split("\n[").next())
+            .unwrap_or("");
+        let names: Vec<&str> = deps
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty() && !l.starts_with('#') && l.contains('='))
+            .map(|l| l.split('=').next().unwrap_or("").trim())
+            .collect();
+        assert_eq!(
+            names.len(),
+            51,
+            "this round adds a table, two adapters and two routes using crates that are \
+             ALREADY dependencies; it must add none. New entries: {:?}",
+            &names[45..]
+        );
+    }
+
+    /// The scope proofs: the migration delta is EXPECTED non-empty (a table
+    /// ships), and it must be EXACTLY the delivery_bindings DDL plus the stamp.
+    #[test]
+    fn delivery_r42_migration_delta_is_the_table_and_the_stamp() {
+        let migration = production("src/migration.rs");
+        let ddl_at = migration
+            .find("CREATE TABLE IF NOT EXISTS delivery_bindings")
+            .expect("the table DDL must exist in the migration's production region");
+        let stamp_at = migration
+            .find("'schema_version', '1.32.17'")
+            .expect("the stamp must move to the binding stamp");
+        assert!(
+            ddl_at < stamp_at,
+            "the DDL is written before the stamp that claims it exists"
+        );
+        // The stamp's two arms stay in lockstep — the lockstep pin derives both
+        // sides, and a half-edited stamp makes `refuse-newer` lie.
+        assert!(
+            migration.contains("DO UPDATE SET value = '1.32.17'"),
+            "both arms of the schema_version upsert must move together"
+        );
+        // Rehearsal parity: the new table is walked by the migration rehearsal,
+        // so a rehearsal proves it copied the authority layer.
+        let parity = src("src/bin/brain_migrate_rehearse.rs");
+        assert!(
+            parity.contains("\"delivery_bindings\""),
+            "PARITY_TABLES must carry the new table — a table outside the rehearsal's parity \
+             walk is a table the rehearsal does not prove it copied"
+        );
+        assert!(
+            src("tests/main_suite.rs").contains("\"delivery_bindings\","),
+            "the expected-table census must carry the new table"
         );
     }
 }
