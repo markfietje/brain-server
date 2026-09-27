@@ -1582,31 +1582,22 @@ pub(crate) fn delivery_runs_list(
     after_id: Option<i64>,
 ) -> Result<Vec<RunListView>, DeliveryError> {
     let limit = limit.clamp(1, MAX_RUN_LIST) as i64;
-    let rows = match after_id {
-        Some(before) => conn
-            .prepare(
-                "SELECT id, status, state_json, state_revision, created_at, updated_at \
-                   FROM workflow_runs WHERE kind = ?1 AND domain = ?2 AND id > ?3 \
-                  ORDER BY id ASC LIMIT ?4",
+    // One statement for both shapes: `id > 0` admits every row, so an absent
+    // cursor is `unwrap_or(0)` and the SQL never branches.
+    let rows = conn
+        .prepare(
+            "SELECT id, status, state_json, state_revision, created_at, updated_at \
+               FROM workflow_runs WHERE kind = ?1 AND domain = ?2 AND id > ?3 \
+              ORDER BY id ASC LIMIT ?4",
+        )
+        .and_then(|mut s| {
+            s.query_map(
+                params![RUN_KIND, domain, after_id.unwrap_or(0), limit],
+                run_list_view,
             )
-            .and_then(|mut s| {
-                s.query_map(params![RUN_KIND, domain, before, limit], |r| {
-                    run_list_view(r)
-                })
-                .and_then(|it| it.collect())
-            }),
-        None => conn
-            .prepare(
-                "SELECT id, status, state_json, state_revision, created_at, updated_at \
-                   FROM workflow_runs WHERE kind = ?1 AND domain = ?2 \
-                  ORDER BY id ASC LIMIT ?3",
-            )
-            .and_then(|mut s| {
-                s.query_map(params![RUN_KIND, domain, limit], run_list_view)
-                    .and_then(|it| it.collect())
-            }),
-    }
-    .map_err(storage)?;
+            .and_then(|it| it.collect())
+        })
+        .map_err(storage)?;
     Ok(rows)
 }
 

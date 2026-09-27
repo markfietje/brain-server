@@ -773,10 +773,11 @@ pub async fn post_delivery_due(
         let mut verified = Vec::new();
         let mut refusals = Vec::new();
         for item in batch {
-            match releases::verify_due_intent(&conn, &item, now) {
-                Ok(()) => verified.push(item),
-                Err(e) => refusals.push((item.outbox_id, e.to_string())),
+            if let Err(e) = releases::verify_due_intent(&conn, &item, now) {
+                refusals.push((item.outbox_id, e.to_string()));
+                continue;
             }
+            verified.push(item);
         }
         Ok((verified, refusals))
     })

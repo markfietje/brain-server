@@ -360,10 +360,7 @@ mod tests {
         let state_body: String = state_region
             .lines()
             .take(70)
-            .map(|l| match l.find("//") {
-                Some(i) => &l[..i],
-                None => l,
-            })
+            .map(|l| l.find("//").map_or(l, |i| &l[..i]))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
@@ -479,10 +476,7 @@ mod tests {
             .expect("`get_run_state` must exist")
             .lines()
             .take(70)
-            .map(|l| match l.find("//") {
-                Some(i) => &l[..i],
-                None => l,
-            })
+            .map(|l| l.find("//").map_or(l, |i| &l[..i]))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(
