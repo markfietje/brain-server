@@ -8617,10 +8617,18 @@ components:
               output_digest_differs,
               order_not_contiguous,
             ]
+        # `type: object` is REQUIRED here, not decoration. The OpenAPI 3.0.x
+        # spec (§4.7.24.2) states that `nullable` "only takes effect if `type` is
+        # explicitly defined within the same Schema Object" — an `allOf` + `$ref`
+        # with no `type` is undefined behavior, and §3.9 says relying on it is
+        # NOT RECOMMENDED. Naming the type is what makes the nullability
+        # actually hold.
         recorded:
+          type: object
           allOf: [{ $ref: "#/components/schemas/DeliveryStageDigest" }]
           nullable: true
         rederived:
+          type: object
           allOf: [{ $ref: "#/components/schemas/DeliveryStageDigest" }]
           nullable: true
     DeliveryEventRow:

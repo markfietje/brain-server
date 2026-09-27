@@ -1471,7 +1471,8 @@ pub(crate) struct TraceListing {
 /// panicked on.
 const LEGAL_STAGES: [&str; 4] = ["run", "phase", "gate", "answer"];
 
-/// Read the run's trace rows in ORDINAL order, bounded by [`MAX_TRACE_ROWS`].
+/// Read the run's trace rows in ORDINAL order, bounded by [`MAX_TRACE_ROWS`],
+/// together with the DISCLOSED window.
 ///
 /// `ORDER BY seq` is served by `idx_delivery_traces_seq (run_id, seq)`, the
 /// UNIQUE index the attestation round created. (The `(run_id, created_at)`
@@ -1484,11 +1485,18 @@ const LEGAL_STAGES: [&str; 4] = ["run", "phase", "gate", "answer"];
 /// exactly `cap` rows is not truncated, and a run of `cap + 1` is. Reading
 /// `cap` and inferring truncation from the length would report a full window
 /// as truncated.
+///
+/// The flag is computed from the SAME read rather than by re-querying. An
+/// earlier shape re-ran a `SELECT COUNT(*)` to learn whether the overflow row
+/// existed, which cost a second index scan on exactly the full-window path
+/// and, worse, re-derived the fact from a SECOND snapshot — the one field a
+/// reader consults to decide whether the window is the whole run, decided by a
+/// read taken after the rows it describes.
 pub(crate) fn read_run_traces(
     conn: &Connection,
     run_id: i64,
     cap: usize,
-) -> Result<Vec<TraceRow>, DeliveryError> {
+) -> Result<(Vec<TraceRow>, WindowRead), DeliveryError> {
     // The run must be a DELIVERY run. Every write path resolves its head
     // through `delivery_head`, which filters `kind = 'delivery'` and answers a
     // foreign run as absent; a read that skipped the filter would serve a
@@ -1529,7 +1537,18 @@ pub(crate) fn read_run_traces(
         .map_err(storage)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(storage)?;
-    Ok(rows.into_iter().take(cap).collect())
+    // The overflow row was fetched precisely so this can be answered from the
+    // read itself.
+    let truncated = rows.len() > cap;
+    let rows: Vec<TraceRow> = rows.into_iter().take(cap).collect();
+    Ok((
+        rows.clone(),
+        WindowRead {
+            rows: rows.len(),
+            cap,
+            truncated,
+        },
+    ))
 }
 
 /// B2, the projection law: one stored row becomes the pair of stage digests
@@ -1622,40 +1641,6 @@ fn order_diff(expected: i64, actual: i64) -> StageDiff {
     }
 }
 
-/// The shared, truncated window both surfaces report.
-///
-/// This existed as the SAME twelve lines pasted into `replay_verify` and
-/// `trace_listing` — and the round's own headline claim was that the two
-/// surfaces cannot disagree. Duplicating the one field a reader consults to
-/// decide whether the window IS the whole run is the exact failure that claim
-/// was meant to foreclose. One function, two callers.
-///
-/// `rows_len` is what `read_run_traces` returned. The overflow row was already
-/// discarded there, so truncation is a FACT and not an inference: the read was
-/// `LIMIT cap + 1`, and this asks whether that extra row existed.
-fn trace_window(
-    conn: &Connection,
-    run_id: i64,
-    rows_len: usize,
-) -> Result<WindowRead, DeliveryError> {
-    let truncated = rows_len == MAX_TRACE_ROWS && {
-        let more: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM (SELECT 1 FROM delivery_traces WHERE run_id = ?1 \
-                 ORDER BY seq LIMIT ?2)",
-                params![run_id, MAX_TRACE_ROWS as i64 + 1],
-                |r| r.get(0),
-            )
-            .map_err(storage)?;
-        more as usize > MAX_TRACE_ROWS
-    };
-    Ok(WindowRead {
-        rows: rows_len,
-        cap: MAX_TRACE_ROWS,
-        truncated,
-    })
-}
-
 /// Assemble the replay verdict over the run's stored trace rows.
 ///
 /// `compare_replay` does the comparison; this function's own work is the read,
@@ -1667,8 +1652,7 @@ pub(crate) fn replay_verify(
     run_id: i64,
     now: i64,
 ) -> Result<ReplayReport, DeliveryError> {
-    let rows = read_run_traces(conn, run_id, MAX_TRACE_ROWS)?;
-    let window = trace_window(conn, run_id, rows.len())?;
+    let (rows, window) = read_run_traces(conn, run_id, MAX_TRACE_ROWS)?;
 
     // The order fold. The stage digests are projected in the SAME order, so the
     // positional comparison lines up with the stored series by construction —
@@ -1717,8 +1701,7 @@ pub(crate) fn trace_listing(
     run_id: i64,
     now: i64,
 ) -> Result<TraceListing, DeliveryError> {
-    let rows = read_run_traces(conn, run_id, MAX_TRACE_ROWS)?;
-    let window = trace_window(conn, run_id, rows.len())?;
+    let (rows, window) = read_run_traces(conn, run_id, MAX_TRACE_ROWS)?;
     // The head is READ, not recomputed, so the two surfaces apply the same
     // logic to it.
     let attestation_root =
