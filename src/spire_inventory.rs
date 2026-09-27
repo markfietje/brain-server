@@ -43,7 +43,8 @@ const MAIN_RS_LINES_MAX: usize = 300;
 /// Floor —
 /// the wire's registrations may not silently disappear; the authz matrix +
 /// route-coverage table pin their correctness.
-const ROUTER_SITES_FLOOR: usize = 247;
+/// 247 → 248 at the operate round: the derived read model's one GET.
+const ROUTER_SITES_FLOOR: usize = 248;
 /// `#[test]` occurrences across `src/` + `tests/` (lib + bins + the
 /// integration suites). Floor — never decreases. 1,185 src-only at the
 /// Scaffold freeze; the Capstone move relocated main.rs's region into
@@ -129,18 +130,26 @@ const ROUTER_SITES_FLOOR: usize = 247;
 /// 1,531 → 1,533: corrupt-state and closed/foreign-run admission regressions.
 /// 1,533 → 1,568: durable identity/ownership and GDL checkpoint pins.
 /// Walk measures 1,569; the preserved structural-eval draft remains excluded.
-const CRATE_TEST_FLOOR: usize = 2_276;
+/// 1,568 → 2,276 across the delivery line's build-out (each round walked
+/// and re-measured at its close; the release round landed at 2,276).
+/// 2,276 → 2,301 at the operate round (walk-measured): the derived read
+/// model's ten unit behavior tests over seeded release/evidence rows, and
+/// the closing round's fifteen battery pins (the fourteen §5 names plus the
+/// house gate-order restatement).
+const CRATE_TEST_FLOOR: usize = 2_301;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows (security.txt + the
 /// scoreboard/calibration/mount trio). Rows join only with the wire change
 ///   that earns them, in the same commit.
-const OPENAPI_ROUTE_ROWS_FLOOR: usize = 207;
+/// 207 → 208 at the operate round: the derived read model's route row.
+const OPENAPI_ROUTE_ROWS_FLOOR: usize = 208;
 /// Route-authz table rows (`route_guards::AUTHZ_GATES`) — 141 gates at
 /// extraction (v1.28.54), 147 at the Wardline gate, 152 when Blackout's
 /// reverse-direction guard closed the table debt (`/stats` + the trio +
 ///   security.txt's public marker row).
-const AUTHZ_TABLE_ROWS_FLOOR: usize = 192;
+/// 192 → 193 at the operate round: the derived read model's Read gate.
+const AUTHZ_TABLE_ROWS_FLOOR: usize = 193;
 
 fn count_needle(hay: &str, needle: &str) -> usize {
     hay.matches(needle).count()

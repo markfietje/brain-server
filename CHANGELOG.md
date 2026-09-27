@@ -17,6 +17,83 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [Unreleased] — 2026-09-28 — "Operate": the derived delivery read model, and the delivery line's close
+
+### Release notes
+
+**Improvements**
+- `GET /workflow/delivery/outcomes?domain=&window=` serves the derived delivery
+  read model: throughput and instability as ONE coupled cluster over the
+  domain's own audited release rows and authority-fact findings, computed
+  read-time only — no table, no schema stamp, no writer, no egress. The
+  window is days, default 30, bounded 1..=366 and validated in the core
+  (out of bounds is a `400`, never a silent clamp); the derivation is
+  deterministic for (window, now). Every metric carries a typed state —
+  `computed` with a value, or `insufficient` with a closed reason — so an
+  absent metric is never rendered `0` and a zero is never rendered absent.
+- Where DORA (DevOps Research and Assessment) names are used at all, the
+  readings carry `dora_name` + `definition_match: proxy` + a one-line
+  definition note; the native measures (`approval_to_promotion_elapsed`,
+  `governed_release_cadence`) are named natively and never presented as DORA
+  change lead time. Metrics vocabulary only; no thresholds, tables, figures,
+  or performance bands are reproduced anywhere, and the run's OWN history
+  (`own_baseline`, a fixed 90-day window) is the only baseline the response
+  carries.
+
+### Engineering record
+
+- The line's closing round: the delivery line R37→R44 is complete — the pure
+  crate → the run substrate → the engine wiring → the attestation chain →
+  replay-verify → the authority bindings + connectors → releases + promote +
+  the /due crank → the derived read model. Every zero-consumer substrate the
+  line shipped now holds its reader.
+- **The change-fail filter law:** the signal is the authority contradiction
+  the reconcile writes — a `findings` row with the CLOSED source vocabulary
+  (`source LIKE 'delivery:%'`) narrowed by the typed confidence column (`0.0`
+  is the mismatch arm; the match arm writes `1.0`). The claim text is never
+  read: `findings.claim` is free text, and matching it would be a forged
+  metric. The measured substrate stores the evidence kind as a claim prefix
+  only (no kind column, and the `contradictions` table carries no source or
+  kind at all), so the typed confidence column is the structured
+  discriminator within the closed family. The denominator is the window's
+  promoted releases (`deployed_at` in-window); a contradiction on a run whose
+  release is not promoted in-window is out of the denominator.
+- **The change-lead-time honesty branch:** commit-anchored change lead time
+  computes only when the release's `commit_sha` joins to a recorded vcs
+  commit-time fact (a typed-evidence row whose machine-written evidence slot
+  carries `commit_time=`, bound to the revision when both name one). No
+  production writer records such a fact today — the adapters fetch facts at
+  call time and persist only claims — so the LIVE branch is
+  `insufficient` (`no_vcs_revision_recorded`), the honest answer; the
+  computed branch is implemented and unit-proven over a seeded fact, so the
+  metric is correct the day the facts exist. No timestamp is approximated.
+- **Always-honest metrics:** `failed_deployment_recovery_time` and
+  `deployment_rework_rate` declare `insufficient` with their reasons always —
+  the two-authority (vcs, ci) surface carries no incident or rework facts.
+- The baseline renders the same typed metric objects as the cluster (an empty
+  baseline is `insufficient_history`, never a bare number): the plan's
+  illustrative JSON shows the populated happy path with bare numbers, which
+  cannot express insufficiency; the typed contract governs.
+- **Floors re-measured, never inherited:** router routes 247→248, crate tests
+  2276→2301, coverage rows 207→208, authz rows 192→193. The route census
+  widened to nine reads (the registration census to seventeen) in the same
+  commit as the route.
+- The authz matrix drives the outcomes route through all seven principal
+  classes with the required-domain arm; the route is listed in
+  `ROLE_GATED_FOR_AGENT` (domain-scoped, so the agent cell really reaches it)
+  and deliberately NOT in `PRE_GATE_404` — there is no id to resolve; the
+  domain gate answers first.
+- Observed while wiring (pre-existing at the round's open, disclosed, not
+  fixed here): `openapi.yaml` carries a duplicated `/webhooks/delivery/{kind}:`
+  path key (landed with the release round's openapi edit). Harmless to the
+  string-based gates, but it is a real defect in that file for a future
+  correction to remove.
+- Honest ceilings: the metrics are first-moment statistics over a moving
+  ledger — nothing is persisted, so a historical rate changes when the
+  authority facts arrive late; the change-fail signal is only as complete as
+  the inbound observations (a pipeline that never reconciles looks perfectly
+  compliant); the baseline window is fixed at 90 days by design.
+
 ## [Unreleased] — 2026-09-28 — "Releases": the governed release, the approval binding, and the /due crank
 
 ### Release notes
