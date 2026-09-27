@@ -1093,15 +1093,20 @@ pub async fn get_run_state(
     .map_err(HandlerError::internal)?;
     let (state_json, revision) =
         row.ok_or_else(|| HandlerError::not_found("workflow run not found"))?;
-    // The read seam, as `get_run` already applies to this SAME column. GDL is
-    // the principal writer of rich model- and operator-authored text into
-    // `state_json` — the ticket, hypothesis statements, the capture
-    // resolution, the closure decision, the red flag's worst case — and GDL
-    // applies no write-time screening, so this column is exactly the stored
-    // text the seam exists for. Every sibling that reads `state_json`
-    // (`get_run`, `list_steps`, `get_run_context`, `get_handoff`) seams it;
-    // this one did not, so a GDL case's prose reached the console un-shaped.
-    let state_json = crate::gate::sanitize_read(&state_json, false, &principal);
+    // Deliberately NOT shaped — see this handler's docstring. An audit flagged
+    // this route as an outlier because its human siblings shape the same
+    // column, and added the seam here. That was WRONG, and the docstring
+    // above says why: this is the ENGINE-exact view, and the steward-harness
+    // reads it and CAS-writes it back at the same revision. Shaping the read
+    // would make the harness persist shaped bytes over the stored ones — a
+    // silent, unrecorded state mutation on every engine turn.
+    //
+    // The real gap was never this route. It is that the read-seam SITE TABLE
+    // has no workflow-family rows, so the human views of this same column
+    // (get_run, list_steps, get_run_context, get_handoff) are all unpinned and
+    // a future edit could drop one of THEIR seams with nothing to catch it.
+    // That is what `workflow_read_family_rides_the_read_seam` now holds, in
+    // `handlers::workflow_decisions`'s test module.
     Ok(Json(
         serde_json::json!({"state_json": state_json, "revision": revision}),
     ))

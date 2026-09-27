@@ -297,25 +297,111 @@ mod tests {
         assert_eq!(err.inner.code, "contract_key_required");
     }
 
-    /// The read seam on `GET /workflow/runs/{id}/state`. GDL is the principal
-    /// writer of model- and operator-authored prose into `state_json` and
-    /// applies no write-time screening, so an un-seamed read of that column
-    /// hands stored text to the console exactly as stored. Every sibling that
-    /// reads the same column (`get_run`, `list_steps`, `get_run_context`,
-    /// `get_handoff`) seams it; this one did not.
+    /// The read seam, by the two facts that actually matter.
+    ///
+    /// There is no reusable body-extractor here: the house `handler_body` lives
+    /// in the `tests/` crate and cannot be reached from a unit test, and every
+    /// local re-implementation tried (to end-of-file, brace-balanced from the
+    /// signature, terminated at a line-initial `}`) mis-slices a real handler —
+    /// `get_run` has a multi-line generic signature, `list_steps` has a closure
+    /// with its own braces, and `get_run` is a prefix of both `get_run_state`
+    /// and `get_run_context`. Rather than ship a weaker copy of a guard this
+    /// repo already keeps finding vacuous, this asserts the SEAM CALL SITE:
+    /// an exact, unambiguous line that must exist, and one that must not.
+    ///
+    /// The excluded route is the reason. An audit flagged `get_run_state` as an
+    /// outlier and shaped it; that was a regression, because the route is the
+    /// ENGINE-EXACT view and the steward-harness CAS-writes what it reads, so a
+    /// shaped read is a silent state mutation on every engine turn. Its own
+    /// docstring, `docs/api.md`, the CHANGELOG and the security audit all
+    /// record the exclusion. These pins hold it.
+    #[test]
+    fn workflow_read_family_rides_the_read_seam() {
+        let workflow = include_str!("workflow.rs");
+        let lineage = include_str!("workflow_lineage.rs");
+
+        // POSITIVE: each human view shapes stored run state at its emission.
+        for (src, call, who) in [
+            (
+                workflow,
+                "row.state_json = crate::gate::sanitize_read(",
+                "get_run",
+            ),
+            (
+                workflow,
+                "serde_json::Value::String(crate::gate::sanitize_read(&raw, false, &principal))",
+                "list_steps",
+            ),
+            (
+                lineage,
+                "crate::gate::sanitize_read(",
+                "get_run_context / get_handoff",
+            ),
+        ] {
+            assert!(
+                src.contains(call),
+                "{who} emits stored run state and must shape it at the emission boundary — \
+                 the read-seam site table has no workflow rows, so nothing caught a dropped seam"
+            );
+        }
+
+        // NEGATIVE: the engine-exact view must not. Bounded to a fixed line
+        // count from the signature — a sentinel line was tried and no such
+        // line exists, so `take_while` ran to end-of-file and matched a later
+        // function's seam.
+        let state_region = workflow
+            .split("pub async fn get_run_state(")
+            .nth(1)
+            .expect("`get_run_state` must exist in handlers/workflow.rs");
+        // Comments are stripped: the explanatory comment above the emission
+        // necessarily names the symbol this assert requires to be ABSENT —
+        // that is the nature of documenting a deliberate omission, and the
+        // reason a raw substring scan of this region is worthless.
+        let state_body: String = state_region
+            .lines()
+            .take(70)
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !state_body.contains("sanitize_"),
+            "`get_run_state` is the ENGINE-EXACT view and must stay un-shaped: the harness \
+             CAS-writes what it reads, so a shaped read is a silent state mutation"
+        );
+        assert!(
+            state_body.contains("\"state_json\""),
+            "the exclusion region must still be the real one — this pin is slicing the wrong \
+             span, which would make the assert above vacuous"
+        );
+    }
+
+    /// Hold the ENGINE-EXACT exclusion for `get_run_state`. An audit once shaped
+    /// this route; the shape silently corrupts the harness's CAS round-trip.
+    /// Named for the hazard rather than for the sibling family, so the two pins
+    /// fail with different messages.
     #[test]
     fn run_state_read_is_seamed_like_its_siblings() {
         let production = include_str!("workflow.rs");
-        let needle = "fn get_run_state(";
-        let start = production
-            .find(needle)
-            .expect("`get_run_state` must be locatable in handlers/workflow.rs");
-        let rest = &production[start..];
-        let brace = rest.find('{').expect("a body");
+        let region: String = production
+            .split("pub async fn get_run_state(")
+            .nth(1)
+            .expect("`get_run_state` must exist")
+            .lines()
+            .take(70)
+            .map(|l| match l.find("//") {
+                Some(i) => &l[..i],
+                None => l,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
-            rest[brace..].contains("sanitize_read"),
-            "`get_run_state` emits stored GDL prose and must ride the read seam — its \
-             siblings already do for the same column"
+            !region.contains("sanitize_"),
+            "`get_run_state` is the ENGINE-EXACT view (see its docstring) — it must NOT be \
+             shaped. An audit shaped it once and the harness would have persisted shaped bytes \
+             over stored ones on every engine turn."
         );
     }
 

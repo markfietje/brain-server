@@ -777,9 +777,12 @@ pub(crate) fn default_return_window(priority: &str) -> i64 {
 /// builds with `overflow-checks = true` and `panic = "abort"` — so a model
 /// emitting `i64::MAX` did not wrap and was not a contained error: it was a
 /// fail-stop of the ENTIRE server process, reachable from a Handoff artifact.
-/// The bound lives in the gate (the semantic limit) and `checked_add` is the
-/// arithmetic backstop under it (the fail-closed floor). Both are required:
-/// the gate names the policy, the checked add makes the policy un-bypassable.
+///
+/// Two layers, and BOTH are load-bearing now. `checked_add` at the addition
+/// site is the arithmetic backstop that cannot be bypassed. This ceiling is the
+/// semantic bound that names the policy, and it is enforced by
+/// [`BackReferralContract::attachment_errors`] — which is called from the two
+/// production writers, not only from tests.
 const MAX_RETURN_WINDOW_SECS: i64 = 30 * 86_400;
 
 impl BackReferralContract {
@@ -799,20 +802,19 @@ impl BackReferralContract {
                  or required report",
             ));
         }
-        // The return window is MODEL-AUTHORED and feeds `now + window`. An
-        // unbounded value is not a near-miss: this crate builds with
-        // `overflow-checks = true` and `panic = "abort"`, so it was a
-        // fail-stop of the whole process. The window is also semantically a
-        // return window, so a value outside a day..thirty-days is nonsense
-        // whatever the arithmetic does — zero would make every contract
-        // instantly overdue, and a negative one the same.
+        // The return window is MODEL-AUTHORED and feeds `now + window`. The
+        // floor is 1 second and the ceiling is 30 days: the P-class SLAs in
+        // `sla_seconds` run from one hour (P1) to seven days (P4), and
+        // `default_return_window` hands those out, so a floor of a day would
+        // refuse the repo's own canonical P1/P2 windows. The rule is
+        // "positive and finite", not "at least a day".
         if let Some(window) = self.return_deadline_sla
-            && !(86_400..=MAX_RETURN_WINDOW_SECS).contains(&window)
+            && !(1..=MAX_RETURN_WINDOW_SECS).contains(&window)
         {
             errors.push(err(
                 "B2w",
-                "return_deadline_sla must be 1..=30 days in seconds — an \
-                 unbounded or non-positive window is refused, not clamped",
+                "return_deadline_sla must be 1..=2592000 seconds — a non-positive \
+                 or unbounded window is refused, not clamped",
             ));
         }
         errors
@@ -1229,7 +1231,12 @@ fn redflag_catalog_errors_in(
     };
     let ticket_lower = ticket.to_lowercase();
     let worst_lower = rf.worst_case.to_lowercase();
-    let has_basis = rf.rule_out_basis.iter().any(|b| !b.trim().is_empty());
+    // T7's basis check now uses the SAME definition as T13 and
+    // `red_flag_is_open` — a verify-class citation — rather than a third,
+    // looser one ("any non-blank string"). Three definitions of "has a basis"
+    // in one file is how the free-text closure reached production: this one
+    // would have accepted the same prose T13 now refuses.
+    let has_basis = rf.rule_out_basis.iter().any(|b| kind_source(b).is_some());
     for entry in &table.entries {
         let matched = entry
             .keywords
@@ -2971,6 +2978,20 @@ impl GdlDriver {
                     .as_ref()
                     .map(|t| t.priority.as_str())
                     .unwrap_or("");
+                // The contract's own record law, enforced HERE. It was
+                // declared and advertised and called from tests only, so a
+                // model-authored contract reached storage unvalidated — which
+                // is why the return-window bound was inert and only the
+                // `checked_add` backstop stood between a model and a
+                // process-kill. A contract that does not satisfy its own
+                // completeness law does not get written.
+                let problems = contract.attachment_errors();
+                if !problems.is_empty() {
+                    return Err(checkpoint::persist_error(format!(
+                        "back-referral contract incomplete at handoff: {}",
+                        problems.join("; ")
+                    )));
+                }
                 write_back_referral_row(tx.tx(), run_id, &owner, contract, priority, now)?;
             }
 
@@ -3008,6 +3029,15 @@ impl GdlDriver {
             let mut tx =
                 super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
             let now = chrono::Utc::now().timestamp();
+            // Same completeness law as the handoff writer above, for the same
+            // reason: a gate nothing calls is not a gate.
+            let problems = contract.attachment_errors();
+            if !problems.is_empty() {
+                return Err(checkpoint::persist_error(format!(
+                    "back-referral contract incomplete: {}",
+                    problems.join("; ")
+                )));
+            }
             write_back_referral_row(tx.tx(), run_id, &owner, &contract, &priority, now)?;
             tx.commit().map_err(checkpoint::persist_error)?;
             Ok::<_, LoopError>(())
@@ -3274,9 +3304,31 @@ impl GdlDriver {
                                 .as_ref()
                                 .map(|t| red_flag_is_open(&t.red_flag))
                                 .unwrap_or(false);
-                            let closed_by_new_record =
+                            // The closing record is now held to the SAME record
+                            // law as the triage one. It is the sole authority
+                            // that can release the escalate-first lock, and it
+                            // previously passed through with no gate at all —
+                            // `handoff_gate` checks only `capture.resolution`
+                            // — so a close could carry an empty worst case and
+                            // no impact statement. T8 (worst case named), T12
+                            // (vocabulary), T13 (a verify-class basis) and T14
+                            // (impact) all apply to the record that closes the
+                            // lock, exactly as they apply to the one that
+                            // raises it.
+                            let mut closed_by_new_record =
                                 h.red_flag.as_ref().is_some_and(red_flag_closes);
-                            if flag_open && !closed_by_new_record {
+                            if closed_by_new_record {
+                                let closing_problems =
+                                    red_flag_gate(h.red_flag.as_ref().expect("present"));
+                                if !closing_problems.is_empty() {
+                                    // A close that fails the record law does
+                                    // NOT close the flag. The lock holds, and
+                                    // the reasons are reported with it.
+                                    closed_by_new_record = false;
+                                    gate = Gate::Fail(closing_problems);
+                                }
+                            }
+                            if gate == Gate::Pass && flag_open && !closed_by_new_record {
                                 gate = Gate::Fail(vec![err(
                                     "T10",
                                     "an open red-flag locks the loop \
@@ -3837,14 +3889,21 @@ fn latest_back_referral_row(
     contract_key: &str,
 ) -> Result<Option<String>, LoopError> {
     use rusqlite::OptionalExtension;
-    // `LIKE ... ESCAPE` so the key is matched LITERALLY. Without the ESCAPE
-    // clause `%` and `_` in the caller's key are LIVE WILDCARDS — and the
-    // server's own key format contains an underscore (`back_referral`), so a
-    // blanket ban in `validate_contract_key` was rejected as the fix: it would
-    // refuse every honest key. With `%` as a caller key the lookup matched
-    // EVERY back-referral row on the run, and the release path then marked the
-    // WRONG contract returned while stamping the audit row with the caller's
-    // key — leaving the real contract `open` and still escalatable.
+    // The key is matched as a JSON FIELD, not as a substring of the whole
+    // payload. The `ESCAPE` clause stops `%` and `_` being wildcards, but a
+    // substring match over `payload_json` is still wrong in a second way: the
+    // payload also carries `status`, `deadline_epoch`, and a `contract` object
+    // with `referrer`, `receiver`, `clinical_question` and `required_report`.
+    // So a caller key of `open` — or `finding`, or any fragment of the clinical
+    // prose — matched the row, and the release path then marked THAT contract
+    // returned while stamping the audit row with the caller's key, leaving the
+    // real contract `open` and still escalatable.
+    //
+    // `json_extract` is the correct predicate: it compares the FIELD. JSON1 is
+    // already in production SQL in this crate, so this adds no dependency.
+    //
+    // `LIKE` is retained (with ESCAPE) only because the pattern still delimits
+    // the field for older rows; the equality below is the authority.
     let pattern = format!(
         "%\"{}\"%",
         contract_key
@@ -3855,8 +3914,9 @@ fn latest_back_referral_row(
     tx.query_row(
         "SELECT payload_json FROM agent_session_events \
          WHERE run_id = ?1 AND kind = ?2 AND payload_json LIKE ?3 ESCAPE '\\' \
+           AND json_extract(payload_json, '$.contract_key') = ?4 \
          ORDER BY seq DESC LIMIT 1",
-        rusqlite::params![run_id, BACK_REFERRAL_ROW_KIND, pattern],
+        rusqlite::params![run_id, BACK_REFERRAL_ROW_KIND, pattern, contract_key],
         |r| r.get::<_, String>(0),
     )
     .optional()
@@ -8376,7 +8436,11 @@ mod tests {
         );
 
         // The gate: absurd and non-positive windows are refused, not clamped.
-        for bad in [i64::MAX, 0, -1, 86_399, MAX_RETURN_WINDOW_SECS + 1] {
+        // The floor is 1 second, NOT a day — `sla_seconds` runs P1=1h to
+        // P4=7d and `default_return_window` hands those out, so a day-floor
+        // would refuse the repo's own canonical P1/P2 windows. That mistake
+        // was made and caught by this test.
+        for bad in [i64::MAX, 0, -1, -86_400, MAX_RETURN_WINDOW_SECS + 1] {
             let c = BackReferralContract {
                 return_deadline_sla: Some(bad),
                 ..base.clone()
@@ -8386,7 +8450,9 @@ mod tests {
                 "a {bad}-second return window must be refused by the gate"
             );
         }
-        for good in [86_400, MAX_RETURN_WINDOW_SECS] {
+        // In-policy spans the P-class vocabulary: P1 one hour, P4 seven days,
+        // ceiling thirty.
+        for good in [1, 3_600, 14_400, 86_400, 604_800, MAX_RETURN_WINDOW_SECS] {
             let c = BackReferralContract {
                 return_deadline_sla: Some(good),
                 ..base.clone()
@@ -8527,7 +8593,13 @@ mod tests {
     #[test]
     fn catalog_match_without_rule_out_is_named_failure() {
         // The shipped health catalog: a ticket matching a must-miss
-        // keyword must name the worst case OR carry a rule-out basis.
+        // keyword must name the worst case OR carry a VERIFY-CLASS basis.
+        //
+        // "a basis" is now the same definition T13 and `red_flag_is_open` use
+        // — a kind-prefixed citation — not "any non-blank string". Three
+        // definitions in one file is how the free-text closure reached
+        // production, so the fixture below uses a real citation where it means
+        // "has a basis".
         let ticket = "customer reports fever and confusion since this morning";
         let silent = redflag_catalog_errors(
             "health",
@@ -8550,7 +8622,7 @@ mod tests {
             ticket,
             &rf_from(serde_json::json!({
                 "worst_case": "sepsis until proven otherwise", "ruled_out": false,
-                "rule_out_basis": [], "first_would_miss_impact": "x",
+                "rule_out_basis": ["test:cbc"], "first_would_miss_impact": "x",
             })),
         );
         assert!(named.is_empty(), "{named:?}");
@@ -8559,7 +8631,7 @@ mod tests {
             ticket,
             &rf_from(serde_json::json!({
                 "worst_case": "a battery fault", "ruled_out": false,
-                "rule_out_basis": ["pending lactate at the facility"],
+                "rule_out_basis": ["test:lactate"],
                 "first_would_miss_impact": "x",
             })),
         );
