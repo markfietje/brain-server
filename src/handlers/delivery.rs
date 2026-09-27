@@ -712,13 +712,14 @@ pub async fn post_delivery_release_promote(
 /// any pool work, the same admission shape the run-create route uses.
 ///
 /// THREE phases, and the middle one holds NO database connection. Phase 1
-/// selects and re-verifies (read-only). Phase 2 dispatches each verified
+/// gathers and re-verifies (read-only). Phase 2 dispatches each verified
 /// intent through the R42 pinned read-egress path — the only egress the tree
 /// has — with no pooled connection held, so a slow or hanging authority
 /// cannot occupy the pool. Phase 3 marks each succeeded row delivered
-/// through the guarded update (a concurrent drain is a receipt) and reports
-/// the remainder. The ledger's BELIEF moves only when the inbound authority
-/// observation reconciles; the crank never writes `verified_at`.
+/// through the guarded pending->delivered write (a concurrent drain is a
+/// receipt) and reports the remainder. The ledger's BELIEF moves only when
+/// the inbound authority observation reconciles; the crank never writes
+/// `verified_at`.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DueBody {
@@ -762,7 +763,7 @@ pub async fn post_delivery_due(
         .map(|p| p.secret_root)
         .ok_or_else(|| HandlerError::conflict("delivery_authority_not_configured"))?;
 
-    // Phase 1 — select + verify, one blocking hop, no network.
+    // Phase 1 — gather + verify, one blocking hop, no network.
     type Phase1 = Result<(Vec<DueIntent>, Vec<(i64, String)>), HandlerError>;
     let verify_pool = pool.clone();
     let verify_domain = domain.clone();

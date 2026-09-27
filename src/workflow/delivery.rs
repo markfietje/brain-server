@@ -1372,9 +1372,9 @@ pub(crate) fn gates(conn: &mut Connection, req: &Gates<'_>) -> Result<GateVerdic
     let unknown_vocab = proposed.is_none() && req.to_phase.is_some();
 
     let mut tx = crate::workflow::tx::WorkflowTx::begin(conn).map_err(storage)?;
-    let (domain, _status, state_json, _revision) =
+    let (domain, _status, state_json, revision) =
         delivery_head(tx.tx(), req.run_id)?.ok_or(DeliveryError::RunAbsent)?;
-    let state = decode_state(&state_json)?;
+    let mut state = decode_state(&state_json)?;
     let current = closed("phase", &state.phase)?;
     let tier = closed_tier(&state.tier)?;
 
@@ -1383,6 +1383,46 @@ pub(crate) fn gates(conn: &mut Connection, req: &Gates<'_>) -> Result<GateVerdic
         // Deny wins: a closed-vocabulary failure is a denial, not a prompt.
         disposition = Disposition::Deny;
         reason = Some(DenyReason::ClosedVocabulary);
+    }
+
+    // The PROMPT-TIME QUESTION, and it is the one deliberate change to "a
+    // disposition mutates nothing": on a prompt the gate writes the bounded,
+    // screened question `/answer` consumes, through the CAS, in THIS
+    // transaction — so the AskHuman seam is exercisable by route for the
+    // first time. A second prompt while a question is pending is the typed
+    // `QuestionPending` refusal: the operator answers before the gate asks
+    // again. An allow and a deny still write nothing but the trace row.
+    if disposition == Disposition::Prompt {
+        if state.pending_question.is_some() {
+            return Err(DeliveryError::QuestionPending);
+        }
+        let question = format!(
+            "delivery gate: advance {} -> {}? answer to proceed",
+            current.as_str(),
+            proposed.map(|p| p.as_str()).unwrap_or("an unknown phase"),
+        );
+        bounded_input("pending_question", &question, MAX_ANSWER_CHARS)?;
+        let screened = crate::screen::screen(&question, &format!("run:{}", req.run_id));
+        if screened != crate::screen::ScreenResult::Clean {
+            // The question is kernel-authored from closed-vocabulary parts,
+            // so reaching this needs the screen's law to have changed; the
+            // refusal is honest either way — a question that cannot pass the
+            // screen is a question the operator never sees.
+            return Err(storage("pending question refused by the content screen"));
+        }
+        state.pending_question = Some(question);
+        state::cas_update(
+            tx.tx(),
+            req.run_id,
+            revision,
+            &encode_state(&state)?,
+            STATUS_ACTIVE,
+            req.now,
+        )
+        .map_err(|e| match e {
+            state::CasError::Stale { actual_revision } => DeliveryError::Stale { actual_revision },
+            other => storage(other),
+        })?;
     }
 
     let mut row = TraceRow {
@@ -2714,7 +2754,12 @@ mod tests {
     }
 
     /// The gate is a DISPOSITION. It writes its trace and its audit and moves
-    /// nothing else: the run's revision, status, and phase are untouched.
+    /// nothing else — with ONE deliberate, named exception: on a PROMPT the
+    /// gate now writes the pending question the `/answer` route consumes
+    /// (through the CAS, revision and all), because human judgment needs a
+    /// seam to arrive through. An allow and a deny still mutate nothing: the
+    /// run's revision, status, and phase are untouched, asserted here on an
+    /// allowing run.
     #[test]
     fn delivery_gate_is_a_disposition_and_mutates_nothing() {
         let mut conn = seed();
@@ -2782,6 +2827,56 @@ mod tests {
             "an observe tier asks; it does not advance"
         );
         assert_eq!(ask.deny_reason, None);
+        // The prompt LEFT a question: the run's state now carries it, the
+        // revision moved, and a SECOND prompt is the typed refusal — the
+        // operator answers before the gate asks again.
+        let (_, _, state_json_after, revision_after) = delivery_head(&conn, run.run_id)
+            .expect("head")
+            .expect("run");
+        let after = decode_state(&state_json_after).expect("state");
+        assert!(
+            after.pending_question.is_some(),
+            "the prompt sets the question /answer consumes"
+        );
+        assert_eq!(
+            revision_after, 1,
+            "the question moves the revision — it is a real write"
+        );
+        // A legal, still-prompting move: the refusal is the PENDING QUESTION,
+        // not the phase law.
+        let again = gates(
+            &mut conn,
+            &Gates {
+                run_id: run.run_id,
+                to_phase: Some("design"),
+                actor: "tester",
+                now: 6,
+            },
+        );
+        assert!(
+            matches!(again, Err(DeliveryError::QuestionPending)),
+            "a second prompt while a question is pending is the typed refusal: {again:?}"
+        );
+        // And /answer consumes it: the question clears and the revision moves.
+        answer(
+            &mut conn,
+            &Answer {
+                run_id: run.run_id,
+                expected_revision: revision_after,
+                answer: "proceed",
+                actor: "operator",
+                now: 7,
+            },
+        )
+        .expect("the answer lands");
+        let (_, _, cleared_json, _) = delivery_head(&conn, run.run_id)
+            .expect("head")
+            .expect("run");
+        let cleared = decode_state(&cleared_json).expect("state");
+        assert!(
+            cleared.pending_question.is_none(),
+            "the answer consumes the question"
+        );
 
         let skip = gates(
             &mut conn,
