@@ -130,6 +130,12 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
         // verified webhook ingestion. The handler only verifies
         // the HMAC + enqueues; the drain worker (spawned in main) does the rest.
         .route("/webhooks/{kind}", post(handlers::webhooks::receive))
+        // the delivery observation sub-family. Same public prefix rule, same
+        // HMAC/replay/flood pipeline, no second signature check.
+        .route(
+            "/webhooks/delivery/{kind}",
+            post(handlers::webhooks::receive),
+        )
         .route(
             "/webhooks/channel/{kind}",
             post(handlers::channel_webhook::receive_channel),
@@ -501,5 +507,12 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
         .route(
             "/workflow/delivery/runs/{id}/trace",
             get(handlers::delivery::get_delivery_trace),
+        )
+        // the authority bindings read. Read-only by design: a binding is
+        // configured at boot and withdrawn with `active = 0`, so a request can
+        // never create or widen an external authority.
+        .route(
+            "/workflow/delivery/bindings",
+            get(handlers::delivery::get_delivery_bindings),
         )
 }

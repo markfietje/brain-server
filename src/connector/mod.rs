@@ -46,6 +46,7 @@
 
 pub mod auth;
 pub mod crm;
+pub mod delivery;
 #[cfg(feature = "connector-github")]
 pub mod github;
 pub mod kind;

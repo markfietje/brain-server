@@ -1285,6 +1285,36 @@ pub async fn post_event(
     super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     crate::handlers::authorize_role(&principal, &pool, "workflow")?;
+    // The RESERVED check runs BEFORE the charset check, and the order is the
+    // point: a reserved topic is refused as RESERVED whatever its shape, so a
+    // caller cannot learn (or avoid) the reserved vocabulary by choosing
+    // characters outside the accepted set. The delivery family spells topics
+    // like `delivery/intent:vcs`, which the charset below would reject as
+    // `topic_invalid` — a truthful but useless answer, since the real refusal
+    // is that only a kernel writer may mint it.
+    //
+    // The audit row is written HERE rather than left to the enqueue's refusal
+    // arm below. A reserved topic now never reaches that arm, so an early
+    // return that skipped the audit would make a forged authority request
+    // leave NO record — the opposite of what the refusal is for.
+    if crate::workflow::outbox::topic_is_reserved(&body.topic) {
+        let actor = super::recall::principal_label(&principal);
+        if let Ok(conn) = pool.get() {
+            crate::audit::record_tenant(
+                &conn,
+                crate::audit::AuditKind::Workflow,
+                &actor,
+                &format!("run:{id}"),
+                crate::audit::AuditStatus::Denied,
+                &format!("outbox_reserved_refused topic={}", body.topic),
+                &domain,
+            );
+        }
+        return Err(HandlerError::bad_request(
+            "topic_reserved",
+            "topic is kernel-only vocabulary",
+        ));
+    }
     let topic_ok = !body.topic.is_empty()
         && body.topic.len() <= 64
         && body

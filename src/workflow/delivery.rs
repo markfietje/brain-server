@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::audit::{AuditKind, AuditStatus};
+use crate::connector::delivery::BindingRefused;
 use crate::workflow::session_log::SessionEventRow;
 use crate::workflow::state;
 
@@ -1816,6 +1817,414 @@ fn mismatch_name(m: StageMismatch) -> &'static str {
         StageMismatch::InputDigestDiffers => "input_digest_differs",
         StageMismatch::OutputDigestDiffers => "output_digest_differs",
     }
+}
+
+/// The reconcile seam, and the round's ONE new write here.
+///
+/// An inbound authority observation is reconciled against the binding's own
+/// expectation. A mismatch becomes a typed `Contradiction` evidence row
+/// through the EXTERNAL evidence lane, INSIDE the caller's `WorkflowTx`,
+/// together with its audit row — a reconciliation recorded outside the
+/// transaction can be lost by a rollback and leave an unreconciled authority
+/// claim with no evidence at all.
+///
+/// What a match does is deliberately almost nothing: it writes the observation
+/// and its audit row. It does not advance a phase, does not mark anything
+/// approved, and does not resolve a contradiction. Whether an external system's
+/// data may be read, retained, or re-published is a question for a human with
+/// the contract in hand; this seam records the disagreement and stops.
+pub(crate) fn reconcile_authority(
+    tx: &mut super::tx::WorkflowTx<'_>,
+    run_id: i64,
+    domain: &str,
+    observed: &ObservedAuthority,
+    now: i64,
+) -> Result<ReconcileOutcome, DeliveryError> {
+    let conn = tx.tx();
+    // Domain-scoped resolution. The domain comes from the RUN's own row, not
+    // from the observation: an external payload that chose which tenant's
+    // authority to read would be a cross-tenant authority leak.
+    let run_domain: String = conn
+        .query_row(
+            "SELECT domain FROM workflow_runs WHERE id = ?1 AND kind = ?2",
+            params![run_id, RUN_KIND],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(storage)?
+        .ok_or(DeliveryError::RunAbsent)?;
+    if run_domain != domain {
+        // A cross-domain reconciliation is a probe-blind refusal: the caller
+        // learns nothing about whether the run or the binding exists.
+        return Err(DeliveryError::RunAbsent);
+    }
+
+    let binding = crate::connector::delivery::resolve_binding(conn, domain, &observed.target_kind)
+        .map_err(|e| storage(format!("delivery binding refused: {e}")))?;
+
+    let matches = observed.target_ref == binding.target_ref;
+    let claim = format!(
+        "authority {} {} for {}",
+        observed.target_kind, observed.conclusion, observed.subject
+    );
+    let evidence = format!("authority_digest={}", binding.authority_digest);
+
+    // ONE batch, ONE lane, ONE transaction. The kind is the mismatch's own:
+    // a disagreement is `contradiction`, and a corroboration is `actual` — the
+    // ledger records what the authority said either way, and lets the reducer
+    // surface a conflict when there is one.
+    let kind = if matches {
+        crate::workflow::evidence::EvidenceKind::Actual
+    } else {
+        crate::workflow::evidence::EvidenceKind::Contradiction
+    };
+    let batch = [crate::workflow::evidence::TypedEvidence {
+        kind,
+        claim: claim.clone(),
+        evidence,
+        source: format!("delivery:{}", observed.target_kind),
+        confidence: if matches { 1.0 } else { 0.0 },
+        ts: now,
+    }];
+    let outcome = crate::workflow::evidence::record_external(
+        conn,
+        run_id,
+        &batch,
+        Some("delivery authority reconciliation"),
+    )
+    .map_err(|e| storage(format!("delivery evidence refused: {e:?}")))?;
+
+    // The MINT: the machine's own record that it now wants something done
+    // about this observation. It is kernel-minted, forge-checked, and left
+    // `pending` — nothing in this round can release it, and the release act
+    // belongs to the promote gate that does not exist yet. A mismatch is
+    // exactly the case that needs a decision from someone with the contract in
+    // hand, so a MATCH mints nothing: there is nothing to want done.
+    let minted = if matches {
+        None
+    } else {
+        let seq: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(id), 0) FROM outbox WHERE run_id = ?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .map_err(storage)?;
+        let payload = serde_json::json!({
+            "binding_id": binding.id,
+            "target_kind": observed.target_kind,
+            "authority_digest": binding.authority_digest,
+            "requires": "human decision on the external authority mismatch",
+        })
+        .to_string();
+        Some(
+            crate::workflow::delivery_intents::mint_intent(
+                conn,
+                run_id,
+                seq,
+                "delivery/plan",
+                &payload,
+                now,
+            )
+            .map_err(|e| storage(e.to_string()))?,
+        )
+    };
+
+    // The audit row rides the SAME transaction as the evidence. Audit-last, as
+    // the rest of this module does it.
+    delivery_audit(
+        conn,
+        domain,
+        &format!("delivery-reconcile:{run_id}"),
+        AuditStatus::Ok,
+        &format!(
+            "authority observation reconciled: kind={} matches={} findings={} contradictions={} \
+             intent_minted={}",
+            observed.target_kind,
+            matches,
+            outcome.findings.len(),
+            outcome.contradictions.len(),
+            minted.is_some()
+        ),
+    )?;
+
+    Ok(ReconcileOutcome {
+        matched: matches,
+        findings: outcome.findings,
+        contradictions: outcome.contradictions,
+        intent_minted: minted.is_some(),
+    })
+}
+
+/// What the caller learns from a reconciliation. It is a REPORT, never an
+/// effect: no phase moved, nothing was approved, and the outcome says which of
+/// those things happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReconcileOutcome {
+    pub matched: bool,
+    pub findings: Vec<i64>,
+    pub contradictions: Vec<(i64, i64)>,
+    /// Whether a plan intent was minted. True only on a mismatch, and the
+    /// intent is `pending` and undispatchable regardless.
+    pub intent_minted: bool,
+}
+
+/// The inbound observation, parsed from a verified webhook body. Every field is
+/// UNTRUSTED: it came from an external system, and the handler has verified
+/// only that the bytes are authentic, not that they are true.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ObservedAuthority {
+    /// Which authority is speaking. Checked against the binding's kind.
+    pub target_kind: String,
+    /// The stable external ref the authority claims to be. Compared against the
+    /// binding's own — a mismatch is the contradiction this seam exists to
+    /// surface.
+    pub target_ref: String,
+    /// What the authority says happened. Bounded and never trusted ahead of
+    /// reconciliation.
+    pub subject: String,
+    /// Its own conclusion, in the adapter's closed set.
+    pub conclusion: String,
+}
+
+/// The bounded observation parser. An over-long or empty field is a REFUSAL,
+/// not a truncated value — a truncated identifier is a different authority.
+const MAX_OBSERVED_FIELD: usize = 200;
+
+impl ObservedAuthority {
+    /// Parse with refusal, from an already-verified body. The bounds are the
+    /// adapter's, not the handler's, so a second caller cannot skip them.
+    pub(crate) fn parse(
+        target_kind: &str,
+        target_ref: &str,
+        subject: &str,
+        conclusion: &str,
+    ) -> Result<Self, DeliveryError> {
+        for value in [target_ref, subject, conclusion] {
+            if value.is_empty() || value.chars().count() > MAX_OBSERVED_FIELD {
+                return Err(DeliveryError::TooLong {
+                    field: "observation",
+                    max: MAX_OBSERVED_FIELD,
+                });
+            }
+        }
+        if !crate::connector::delivery::TARGET_KINDS.contains(&target_kind) {
+            return Err(DeliveryError::UnknownVocabulary {
+                field: "target_kind",
+                value: target_kind.to_string(),
+            });
+        }
+        Ok(Self {
+            target_kind: target_kind.to_string(),
+            target_ref: target_ref.to_string(),
+            subject: subject.to_string(),
+            conclusion: conclusion.to_string(),
+        })
+    }
+}
+
+/// Provision the boot-validated bindings, idempotently, in ONE audited
+/// transaction.
+///
+/// Boot-side only, and that is the whole point: a binding is a standing
+/// authority over an external system, and a request must never be able to
+/// create or widen one. There is no write route for this table, and a binding
+/// is withdrawn by setting `active = 0` — an operator action, not a
+/// request-time one.
+///
+/// The upsert is idempotent on `UNIQUE(domain, target_kind, target_ref)`, so a
+/// restart re-provisions without churning rows. The audit row rides the SAME
+/// transaction as the upsert: a provision that committed without its evidence
+/// would leave authorities configured and unexplained, which is precisely the
+/// state an operator cannot audit.
+pub(crate) fn provision_bindings(
+    conn: &Connection,
+    profile: &crate::config::DeliveryBindingsProfile,
+    now: i64,
+) -> Result<usize, DeliveryError> {
+    let mut written = 0usize;
+    for binding in &profile.bindings {
+        let digest = crate::connector::delivery::authority_digest(
+            &binding.endpoint,
+            &binding.target_ref,
+            &binding.secret_file_name,
+        );
+        conn.execute(
+            "INSERT INTO delivery_bindings(domain, target_kind, target_ref, endpoint, \
+             authority_digest, policy_digest, capabilities_json, active, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, 1, ?7, ?7) \
+             ON CONFLICT(domain, target_kind, target_ref) DO UPDATE SET \
+               endpoint = excluded.endpoint, \
+               authority_digest = excluded.authority_digest, \
+               capabilities_json = excluded.capabilities_json, \
+               updated_at = excluded.updated_at",
+            params![
+                binding.domain,
+                binding.target_kind,
+                binding.target_ref,
+                binding.endpoint,
+                digest,
+                binding.capabilities_json,
+                now,
+            ],
+        )
+        .map_err(storage)?;
+        written += 1;
+    }
+    // One audit row for the provision batch, inside the caller's transaction.
+    delivery_audit(
+        conn,
+        "delivery",
+        "delivery-bindings:provision",
+        AuditStatus::Ok,
+        &format!("provisioned {written} authority binding(s) from validated config"),
+    )?;
+    Ok(written)
+}
+
+/// The reconcile seam's OUTER half: the only production caller of the two read
+/// adapters, and the one place an external observation is fetched.
+///
+/// The order is load-bearing and it is the reason this is a function rather
+/// than an inline block:
+///
+/// 1. resolve the binding INSIDE the run's own domain (a blocking hop, no
+///    network);
+/// 2. fetch the authority's current facts — the ONLY network call, and it
+///    runs with no database connection held, so a slow or hanging authority
+///    cannot occupy the pool;
+/// 3. reconcile in one transaction (a blocking hop, no network).
+///
+/// An observation is never trusted ahead of step 3: step 2 exists precisely so
+/// that what the ledger believes came from the authority rather than from the
+/// body of a webhook.
+pub(crate) async fn observe_authority(
+    pool: &crate::Pool,
+    run_id: i64,
+    domain: &str,
+    target_kind: &str,
+    secret_root: &std::path::Path,
+) -> Result<ObservedAuthority, BindingRefused> {
+    let domain = domain.to_string();
+    let kind = target_kind.to_string();
+    let pool_clone = pool.clone();
+    let binding = {
+        let pool = pool.clone();
+        let domain = domain.clone();
+        let kind = kind.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = pool.get().map_err(|_| BindingRefused::Store)?;
+            crate::connector::delivery::resolve_binding(&conn, &domain, &kind)
+        })
+        .await
+        .map_err(|_| BindingRefused::Store)?
+    }?;
+
+    let observed = match binding.target_kind.as_str() {
+        "vcs" => {
+            let facts =
+                crate::connector::delivery::vcs::fetch_vcs_facts(&binding, secret_root).await?;
+            ObservedAuthority {
+                target_kind: "vcs".to_string(),
+                target_ref: facts.target_ref,
+                subject: facts.head_sha.unwrap_or_else(|| "unknown".to_string()),
+                conclusion: facts.combined_status,
+            }
+        }
+        "ci" => {
+            let facts =
+                crate::connector::delivery::ci::fetch_ci_facts(&binding, secret_root).await?;
+            ObservedAuthority {
+                target_kind: "ci".to_string(),
+                target_ref: facts.target_ref,
+                subject: facts.run_id.unwrap_or_else(|| "unknown".to_string()),
+                conclusion: facts.conclusion,
+            }
+        }
+        _ => return Err(BindingRefused::NotAdapted),
+    };
+    // Step 3: reconcile in ONE transaction, with no network held open. The
+    // domain and the run both ride in, so a mismatch between them is caught
+    // by the reconcile itself rather than trusted on the way here. Everything
+    // crossing into the closure is OWNED: a `spawn_blocking` future must be
+    // 'static, and borrowing the pool reference here would not be.
+    let reconcile_domain = domain.to_string();
+    let reconcile_observed = observed.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut conn = pool_clone.get().map_err(|_| BindingRefused::Store)?;
+        let mut tx =
+            crate::workflow::tx::WorkflowTx::begin(&mut conn).map_err(|_| BindingRefused::Store)?;
+        reconcile_authority(
+            &mut tx,
+            run_id,
+            &reconcile_domain,
+            &reconcile_observed,
+            chrono::Utc::now().timestamp(),
+        )
+        .map_err(|_| BindingRefused::Store)?;
+        tx.commit().map_err(|_| BindingRefused::Store)
+    })
+    .await
+    .map_err(|_| BindingRefused::Store)??;
+    Ok(observed)
+}
+
+/// The reconcile target, resolved from configuration and never from the request.
+pub(crate) struct ReconcileTarget {
+    pub(crate) run_id: i64,
+    pub(crate) domain: String,
+    pub(crate) secret_root: String,
+}
+
+/// Resolve what an inbound observation reconciles AGAINST.
+///
+/// The run is the most RECENT active delivery run in the binding's own domain.
+/// That is a real choice with a real ceiling: an observation that arrives while
+/// no run is open is REFUSED rather than attached to an arbitrary run, because
+/// binding an authority observation to the wrong run is exactly the kind of
+/// confident, wrong record this loop exists to prevent. The disclosed ceiling
+/// is that a domain running two concurrent delivery runs reconciles both of
+/// their observations to the newest; nothing in the inbound payload
+/// distinguishes them, and inventing a discriminator would be a request naming
+/// which run to believe.
+///
+/// The SQL lives HERE, in the service core, not in the handler: the handler
+/// resolves config and calls this, and the run lookup is a store read like any
+/// other.
+pub(crate) fn resolve_reconcile_target(
+    conn: &Connection,
+    target_kind: &str,
+    secret_root: &str,
+) -> Result<ReconcileTarget, BindingRefused> {
+    let Some(profile) = crate::config::DeliveryBindingsProfile::from_env()
+        .ok()
+        .flatten()
+    else {
+        return Err(BindingRefused::NotFound);
+    };
+    let domain = profile
+        .bindings
+        .iter()
+        .find(|b| b.target_kind == target_kind)
+        .map(|b| b.domain.clone())
+        .ok_or(BindingRefused::NotFound)?;
+    let run_id = conn
+        .query_row(
+            "SELECT id FROM workflow_runs WHERE kind = 'delivery' AND domain = ?1 \
+               AND status = 'active' ORDER BY id DESC LIMIT 1",
+            params![&domain],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(|_| BindingRefused::Store)?
+        // No open run is a REFUSAL, never a zero: a run id of 0 would name no
+        // run while reading as one.
+        .ok_or(BindingRefused::NotFound)?;
+    Ok(ReconcileTarget {
+        run_id,
+        domain,
+        secret_root: secret_root.to_string(),
+    })
 }
 
 #[cfg(test)]

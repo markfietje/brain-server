@@ -20,19 +20,32 @@ use rusqlite::{Connection, OptionalExtension, params};
 // RESERVED: only kernel paths may enqueue these. `channel/*` re-verifies
 // consent + reply-window + approved-proposal inside `enqueue_out`; `steering`
 // carries the approve role gate + screen + 4000-char bound in `post_steering`;
-// `workflow/valet*` is minted only by the valet crank. The events route is
-// AGENT-facing and may not forge any of them — before this gate existed it
-// could, which made the three-gate channel law code-false at this seam.
+// `workflow/valet*` is minted only by the valet crank; `delivery/*` is minted
+// only by the intent minter, and its key carries a `ddl-intent-` prefix the
+// read side authenticates. The events route is AGENT-facing and may not forge
+// any of them — before this gate existed it could, which made the three-gate
+// channel law code-false at this seam.
 //
 // (ponytail: not a general ACL — a closed vocabulary, extend only with a
 // kernel writer that owns the gate.)
 //
-// Per-entry semantics: `channel/` and `workflow/valet` are PREFIX families
-// (`channel/out`, `workflow/valet-due`); `steering` is EXACT — the steering
-// inbox read spells that literal. New entries default to PREFIX (the stricter
-// side); [`topic_is_reserved`] is the single matcher and the
+// Per-entry semantics: `channel/`, `workflow/valet` and `delivery/` are PREFIX
+// families (`channel/out`, `workflow/valet-due`, `delivery/intent:vcs`);
+// `steering` is EXACT — the steering inbox read spells that literal. New
+// entries default to PREFIX (the stricter side); [`topic_is_reserved`] is the
+// single matcher and the
 // `reserved_topics_are_declared_in_one_place` pin guards the declaration site.
-pub const RESERVED_OUTBOX_TOPICS: &[&str] = &["channel/", "steering", "workflow/valet"];
+//
+// `delivery/` is RESERVED AND UNDRAINED. The alert worker's universe is a
+// closed disjunction (`workflow/%` OR `case/%`) with no wildcard arm, so a
+// delivery intent is structurally outside it — no carve-out was added, and
+// adding one would make the exclusion a filter that can be edited rather than
+// a property of the query. Nothing in this round reads those rows: the release
+// act belongs to the promote gate, which does not exist yet. The pending count
+// is reported on `/metrics` so an intent that was lost and an intent that has
+// not yet been promoted stay distinguishable at the ops surface.
+pub const RESERVED_OUTBOX_TOPICS: &[&str] =
+    &["channel/", "steering", "workflow/valet", "delivery/"];
 
 /// True when a topic carries kernel-only vocabulary. The ONE matcher over
 /// [`RESERVED_OUTBOX_TOPICS`] — both the enqueue gate and the handler's
@@ -43,7 +56,8 @@ pub fn topic_is_reserved(topic: &str) -> bool {
         .any(|reserved| match *reserved {
             // the one declared EXACT entry
             "steering" => topic == *reserved,
-            // everything else — today `channel/`, `workflow/valet` — is a PREFIX
+            // everything else — today `channel/`, `workflow/valet`, `delivery/`
+            // — is a PREFIX
             prefix => topic.starts_with(prefix),
         })
 }

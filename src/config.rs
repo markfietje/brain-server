@@ -118,7 +118,153 @@ pub fn alert_webhook_secret() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// The one server-owned provider profile used by the GDL launch boundary.
+/// The server-owned delivery-bindings profile. Like the provider profile
+/// above, this is complete-or-absent and resolved server-side: a request never
+/// selects an endpoint, a secret path, or a target. Consent to an external
+/// authority is GIVEN by configuring a binding here and WITHDRAWN by setting
+/// `active = 0` on it — never by a request-time operation, because a request
+/// must never be able to create or widen an authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeliveryBindingsProfile {
+    /// The directory per-binding secret FILE NAMEs resolve against. Absolute,
+    /// and root-confined by the reader every time it is used.
+    pub secret_root: std::path::PathBuf,
+    /// One descriptor per binding the operator configured.
+    pub bindings: Vec<DeliveryBindingProfile>,
+}
+
+/// One configured binding, before it becomes a row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeliveryBindingProfile {
+    pub domain: String,
+    pub target_kind: String,
+    pub target_ref: String,
+    /// The endpoint. Validated to the exact host by the frame — an operator
+    /// typo must not become a bearer sent somewhere else.
+    pub endpoint: String,
+    /// The secret's FILE NAME beneath `secret_root`. Never a path: a
+    /// configured absolute path would defeat the root confinement.
+    pub secret_file_name: String,
+    /// The raw capabilities JSON, parsed with refusal by the frame.
+    pub capabilities_json: String,
+}
+
+impl DeliveryBindingsProfile {
+    /// Resolve from the environment. Absent configuration is `None` (no
+    /// bindings, the default posture); a PARTIAL profile is an error, because
+    /// a half-configured authority is a fail-open waiting to happen.
+    pub(crate) fn from_env() -> Result<Option<Self>, String> {
+        let raw = match std::env::var("BRAIN_DELIVERY_BINDINGS") {
+            Ok(value) if !value.trim().is_empty() => value,
+            _ => return Ok(None),
+        };
+        // Bounded: configuration is not a place to smuggle an unbounded
+        // document past a 16 KiB file read.
+        if raw.len() > 64 * 1024 {
+            return Err("delivery bindings profile is too large".to_string());
+        }
+        if raw.chars().any(char::is_control) {
+            return Err("delivery bindings profile is invalid".to_string());
+        }
+        let bindings: Vec<serde_json::Value> = serde_json::from_str(&raw)
+            .map_err(|_| "delivery bindings profile is invalid".to_string())?;
+        let Some(root) = std::env::var_os("BRAIN_DELIVERY_BINDINGS_SECRET_ROOT") else {
+            return Err("delivery bindings secret root is required".to_string());
+        };
+        let secret_root = std::path::PathBuf::from(root);
+        if !secret_root.is_absolute() {
+            return Err("delivery bindings secret root must be absolute".to_string());
+        }
+        if bindings.is_empty() {
+            return Err("delivery bindings profile declares no bindings".to_string());
+        }
+        let mut parsed = Vec::with_capacity(bindings.len());
+        for entry in bindings {
+            parsed.push(parse_binding_entry(&entry)?);
+        }
+        Ok(Some(Self {
+            secret_root,
+            bindings: parsed,
+        }))
+    }
+}
+
+/// One entry's field extraction, with every bound named. The error strings
+/// carry no configured VALUE — an operator's target ref and secret file name
+/// must not ride a boot log.
+fn parse_binding_entry(entry: &serde_json::Value) -> Result<DeliveryBindingProfile, String> {
+    let object = entry
+        .as_object()
+        .ok_or_else(|| "delivery bindings profile is invalid".to_string())?;
+    let field = |name: &str| -> Result<String, String> {
+        object
+            .get(name)
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|v| !v.is_empty() && !v.chars().any(char::is_control))
+            .map(str::to_string)
+            .ok_or_else(|| "delivery bindings profile is incomplete".to_string())
+    };
+    let domain = field("domain")?;
+    let target_kind = field("target_kind")?;
+    let target_ref = field("target_ref")?;
+    let endpoint = field("endpoint")?;
+    let secret_file_name = field("secret_file_name")?;
+    // The secret's FILE NAME, never a path. A separator here would let a
+    // configured value escape the root the reader confines it to.
+    if secret_file_name.contains('/') || secret_file_name.contains('\\') {
+        return Err("delivery bindings secret must be a file name".to_string());
+    }
+    if domain.chars().count() > 100 || target_ref.chars().count() > 200 {
+        return Err("delivery bindings profile is invalid".to_string());
+    }
+    let capabilities_json = object
+        .get("capabilities")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+        // A missing capabilities block is the read-only default, not a
+        // wildcard: the frame's default grants reads and no intents.
+        .unwrap_or_else(|| {
+            serde_json::to_string(&crate::connector::delivery::Capabilities::default_read_only())
+                .unwrap_or_else(|_| "{}".to_string())
+        });
+    Ok(DeliveryBindingProfile {
+        domain,
+        target_kind,
+        target_ref,
+        endpoint,
+        secret_file_name,
+        capabilities_json,
+    })
+}
+
+/// Validate the bindings profile at boot. This is LOAD-BEARING and sits beside
+/// the provider-posture gate for the same reason: the bindings are the
+/// machine's standing authority over an external system, and provisioning them
+/// unvalidated would be a fail-open in a repo whose law is fail-closed.
+///
+/// Returns the resolved profile so boot provisions from the SAME value it
+/// validated — validating one thing and storing another is how a config gate
+/// stops meaning anything.
+pub(crate) fn validate_delivery_bindings() -> Result<Option<DeliveryBindingsProfile>, String> {
+    let profile = DeliveryBindingsProfile::from_env()
+        .map_err(|_| "delivery bindings configuration is invalid or incomplete".to_string())?;
+    let Some(profile) = profile else {
+        return Ok(None);
+    };
+    for binding in &profile.bindings {
+        crate::connector::delivery::Capabilities::parse(&binding.capabilities_json)
+            .map_err(|_| "delivery bindings configuration is invalid".to_string())?;
+        crate::connector::delivery::assert_api_host(&binding.endpoint)
+            .map_err(|_| "delivery bindings configuration is invalid".to_string())?;
+        if !crate::connector::delivery::TARGET_KINDS.contains(&binding.target_kind.as_str()) {
+            return Err("delivery bindings configuration is invalid".to_string());
+        }
+    }
+    Ok(Some(profile))
+}
+
+/// The server-owned provider profile used by the GDL launch boundary.
 /// None means the operator has not configured the surface; a partial profile
 /// is a configuration error. The request never selects any of these values.
 #[derive(Clone)]

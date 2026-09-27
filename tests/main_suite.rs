@@ -3576,6 +3576,9 @@ Final paragraph after the rule.";
             // v1.32.16 "Attestations": the per-run signed chain. One writer
             // (the phase pass), twelve columns, and no disposition column.
             "delivery_attestations",
+            // v1.32.17 "Bindings": the per-tenant authority bindings. The
+            // standing authority to read one external system for one domain.
+            "delivery_bindings",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -15358,14 +15361,27 @@ Final paragraph after the rule.";
             "\"channel/ping\"",
             "\"steering\"",
             "\"workflow/valet",
+            // The delivery topic shapes the minter accepts. The bare root
+            // `\"delivery/` is NOT a needle: `delivery.rs` spells an unrelated
+            // PROPOSAL kind (`delivery/artifact`) which is a different
+            // vocabulary that happens to share a prefix, and a needle broad
+            // enough to catch it would force this file into the allowed list
+            // and stop policing the topics that actually matter.
+            "\"delivery/intent:",
+            "\"delivery/observed:",
+            "\"delivery/plan\"",
         ];
         // The declaration site (RESERVED_OUTBOX_TOPICS + topic_is_reserved),
         // the channel topic consts + their SQL reads, the valet topic const,
-        // and alert.rs's read-side kind mapping. Nothing else.
+        // the intent minter's topic vocabulary and the reconcile seam that
+        // mints `delivery/plan`, and alert.rs's read-side kind mapping.
+        // Nothing else.
         let allowed = [
             "src/workflow/outbox.rs",
             "src/workflow/channels.rs",
             "src/workflow/valet.rs",
+            "src/workflow/delivery_intents.rs",
+            "src/workflow/delivery.rs",
             "src/alert.rs",
         ];
         let src = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -17935,17 +17951,23 @@ mod r38_delivery {
     /// The stamp moves as one atomic unit: the migration writes it AND the
     /// const names it, and the guard that ties them is exercised by the
     /// sibling `latest_stamp_matches_migration` pin.
+    /// delivery_schema_stamp_is_the_r40_stamp — the delivery loop's stamp pin.
+    ///
+    /// The stamp has moved twice since this pin was written; it now pins the
+    /// BINDINGS stamp, which is the current ceiling. The law is unchanged and
+    /// the name carries the round: whatever the current stamp is, it must be
+    /// the one the ceiling declares and the one the migration writes.
     #[test]
     fn delivery_schema_stamp_is_the_r40_stamp() {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_16),
-            "the attestation round stamps 1.32.16; both the migration literal and the const must agree"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_17),
+            "the migration literal and the ceiling const must agree on the current stamp"
         );
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.16",
+            "1.32.17",
             "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
              this binary cannot migrate"
         );
@@ -18085,10 +18107,12 @@ mod r38_delivery {
                 "a delivery route path carrying `status` would be a status-write sibling: {line}"
             );
         }
-        // The registered routes, and exactly seven. an earlier round shipped four
-        // writes and no read; the attestation round added the FIFTH, and this round
-        // adds TWO more reads. The assertion is deliberately widened rather than
-        // deleted, so an EIGHTH still fails here.
+        // The registered routes, and exactly eight. an earlier round shipped
+        // four writes and no read; the attestation round added the FIFTH, the
+        // replay round TWO more reads, and the bindings round the EIGHTH — a
+        // domain-scoped read that is not run-scoped. The assertion is
+        // deliberately widened rather than deleted, so a NINTH still fails
+        // here.
         let registered: Vec<String> = router
             .match_indices("/workflow/delivery/")
             .map(|(i, _)| {
@@ -18107,9 +18131,11 @@ mod r38_delivery {
                 "/workflow/delivery/runs/{id}/attestations",
                 "/workflow/delivery/runs/{id}/replay-verify",
                 "/workflow/delivery/runs/{id}/trace",
+                "/workflow/delivery/bindings",
             ],
-            "four writes plus THREE reads (the attestation chain, the replay verdict, the raw \
-             trace). A fourth is a new decision, not a free addition."
+            "four writes plus FOUR reads (the attestation chain, the replay verdict, the raw \
+             trace, and the domain-scoped bindings list). A fifth is a new decision, not a free \
+             addition."
         );
         // The status the core CAN write is a closed set, and only ever through
         // cas_update.
@@ -18170,6 +18196,10 @@ mod r38_delivery {
                 "/workflow/delivery/runs/{id}/attestations",
                 "/workflow/delivery/runs/{id}/replay-verify",
                 "/workflow/delivery/runs/{id}/trace",
+                // The bindings read is domain-scoped rather than run-scoped, so
+                // it has no `{id}` — it is listed by its own name. It serves
+                // STORED rows and takes no body, which is why GET is correct.
+                "/workflow/delivery/bindings",
             ],
             "exactly THREE reads: the attestation chain, the replay verdict, and the raw trace. \
              All three re-derive or serve from STORED BYTES and take no body, which is why GET is \
@@ -18627,14 +18657,16 @@ mod r40_attestations {
     #[test]
     fn attestation_schema_stamp_is_the_attestation_stamp() {
         let db = test_db();
+        // The attestation chain's OWN columns are unchanged by the bindings
+        // round; what moves is the ceiling, and it moves for both.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_16),
-            "the attestation round stamps 1.32.16; both the migration literal and the const must agree"
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_17),
+            "the ceiling const and the migration literal must move together"
         );
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.16",
+            "1.32.17",
             "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
              this binary cannot migrate"
         );
@@ -19378,6 +19410,13 @@ mod r41_replay {
     /// This is asserted at the DATA level rather than by diffing git, because a
     /// test that only works on a clean tree proves nothing in a dirty one. The
     /// git diff is the other half and is recorded in the evidence file.
+    /// The census this pin enforces is the CURRENT one: four `delivery_%`
+    /// tables, and the stamp the fourth of them earns. It began as a negative
+    /// assertion — "the replay round adds no table and no stamp" — and became
+    /// a positive one when the bindings round shipped the fourth table. Both
+    /// forms enforce the same law: a table appearing in this list is a
+    /// decision that was recorded, and one that is not here is a decision that
+    /// was not.
     #[test]
     fn delivery_r41_adds_no_table_and_no_stamp() {
         let db = {
@@ -19386,10 +19425,18 @@ mod r41_replay {
             brain_server::migration::run_migration(&mut db, 512).expect("migration");
             db
         };
-        // The three tables shipped SO FAR, and no fourth. The line's plan names
-        // five tables across four stamps (1.32.15–1.32.18); only three have
-        // shipped, and this round adds none — so a fourth `delivery_%` table
-        // appearing here is a new decision someone made without recording it.
+        // The four tables shipped SO FAR, and no fifth. The line's plan names
+        // five tables across four stamps (1.32.15–1.32.18); four have
+        // shipped, and a fifth `delivery_%` table appearing here is a new
+        // decision someone made without recording it.
+        //
+        // THIS CENSUS IS CURRENT, NOT INHERITED. It previously asserted three
+        // tables and the attestation stamp, as a NEGATIVE test: "the replay
+        // round adds no table and no stamp". The bindings round is precisely
+        // the fourth table, and the pin's own message said so — a fourth table
+        // appearing here is a new decision. This commit IS that decision, so
+        // the pin is re-scoped to the new truth rather than deleted: the
+        // census's job is to make the next table a recorded one.
         let delivery_tables: Vec<String> = {
             let mut stmt = db
                 .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'delivery_%' ORDER BY name")
@@ -19403,28 +19450,35 @@ mod r41_replay {
             delivery_tables,
             vec![
                 "delivery_attestations",
+                "delivery_bindings",
                 "delivery_budgets",
                 "delivery_traces",
             ],
-            "the replay round adds a read surface over tables that already existed — a fourth \
-             `delivery_%` table is a new decision ({delivery_tables:?})"
+            "the bindings round is the fourth `delivery_%` table and says so in its stamp; a \
+             FIFTH is a new decision ({delivery_tables:?})"
         );
-        // The stamp did not move.
+        // The stamp moved, and moved with the table.
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.16",
-            "R41 is not a schema round: the stamp stays where the attestation round left it"
+            "1.32.17",
+            "the bindings round is a schema round: the stamp moves with the table that earns it"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_16),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_17),
         );
-        // ...and the parity table the migration rehearsal walks is unchanged:
-        // R41 ships no table, so it has no row there.
+        // ...and the parity table the migration rehearsal walks carries the new
+        // table: a rehearsal that came back with zero bindings would produce a
+        // server that had silently lost every authority it was configured with.
         let parity = src("src/bin/brain_migrate_rehearse.rs");
         assert!(
+            parity.contains("\"delivery_bindings\""),
+            "PARITY_TABLES must carry the bindings row — a standing authority is evidence the \
+             rehearsal has to prove it copied"
+        );
+        assert!(
             !parity.contains("delivery_replay"),
-            "PARITY_TABLES must carry no R41 row — the round adds no table to rehearse"
+            "PARITY_TABLES must carry no replay row — that round added no table to rehearse"
         );
     }
 
@@ -19668,8 +19722,10 @@ mod r42_authority_bindings {
     /// structural pins so a NEW adapter cannot escape the scan by being a file
     /// the pin did not know about.
     fn delivery_adapter_files() -> Vec<String> {
-        let dir =
-            std::path::PathBuf::from(format!("{}/src/connector/delivery", env!("CARGO_MANIFEST_DIR")));
+        let dir = std::path::PathBuf::from(format!(
+            "{}/src/connector/delivery",
+            env!("CARGO_MANIFEST_DIR")
+        ));
         let mut files: Vec<String> = std::fs::read_dir(&dir)
             .unwrap_or_else(|e| panic!("read src/connector/delivery: {e}"))
             .flatten()
@@ -19762,7 +19818,10 @@ mod r42_authority_bindings {
                 |r| r.get(0),
             )
             .expect("query");
-        assert_eq!(dflt, "1", "a provisioned binding is active unless withdrawn");
+        assert_eq!(
+            dflt, "1",
+            "a provisioned binding is active unless withdrawn"
+        );
     }
 
     /// The stamp moved, and moved ATOMICALLY with the known ceiling. Editing one
@@ -19873,7 +19932,10 @@ mod r42_authority_bindings {
         };
         assert_eq!(
             selected,
-            vec!["workflow/case-note".to_string(), "case/observation".to_string()],
+            vec![
+                "workflow/case-note".to_string(),
+                "case/observation".to_string()
+            ],
             "the drain's universe is a closed disjunction with no wildcard arm: a delivery \
              intent is structurally outside it, and a workflow/case row must still be in it"
         );
@@ -19883,7 +19945,9 @@ mod r42_authority_bindings {
         // which misdescribed the code the drain argument stands on.)
         let alert = production("src/alert.rs");
         assert_eq!(
-            alert.matches("topic LIKE 'workflow/%' OR topic LIKE 'case/%'").count(),
+            alert
+                .matches("topic LIKE 'workflow/%' OR topic LIKE 'case/%'")
+                .count(),
             2,
             "both the drain and the SSE backfill must ride the same closed disjunction; a \
              divergence between them is an unstated third policy"
@@ -19942,13 +20006,25 @@ mod r42_authority_bindings {
             intents.contains(sig),
             "the authenticity predicate must exist with the declared two-part signature"
         );
+        // The predicate reads the two declared constants rather than
+        // re-spelling the literals, so the mint and the check cannot drift
+        // apart. The pins below therefore assert the CONSTANTS' values and
+        // then the conjunction that joins them.
+        assert!(
+            intents.contains("pub(crate) const DELIVERY_ROOT: &str = \"delivery/\";"),
+            "the reserved root the predicate reads must be the declared vocabulary"
+        );
+        assert!(
+            intents.contains("pub(crate) const INTENT_KEY_PREFIX: &str = \"ddl-intent-\";"),
+            "the mint prefix the predicate reads must be the declared vocabulary"
+        );
         let body = intents
             .split(sig)
             .nth(1)
             .and_then(|rest| rest.split("}").next())
             .unwrap_or("");
         assert!(
-            body.contains("topic.starts_with(\"delivery/\")") && body.contains("key.starts_with(\"ddl-intent-\")"),
+            body.contains("topic.starts_with(DELIVERY_ROOT) && key.starts_with(INTENT_KEY_PREFIX)"),
             "the predicate is a CONJUNCTION of the reserved root and the mint prefix — an OR \
              would let a forged key on a real topic, or a real key on a forged topic, pass"
         );
@@ -19964,17 +20040,27 @@ mod r42_authority_bindings {
             "the kernel path is gated by the origin token, and the token is the capability"
         );
 
-        // A PRODUCTION caller of the predicate, asserted by name. The
+        // The PRODUCTION caller of the classifier, asserted by name. The
         // `attachment_errors` precedent: a gate whose only callers are tests is
-        // not a gate, and the round's own completion criterion is that the
-        // predicate is pinned for the crank that lands next.
-        let called = ["src/workflow/delivery.rs", "src/workflow/outbox.rs"]
-            .iter()
-            .any(|f| production(f).contains("intent_is_authentic("));
+        // not a gate. The classifier is the read side's entry point — it is
+        // what `/metrics` and the bindings read use to tell a minted intent
+        // from a forged one — so THAT is what must have a production caller.
+        // A predicate nothing reads is a predicate nothing enforces.
+        let read_side = [
+            "src/connector/delivery/mod.rs",
+            "src/workflow/delivery.rs",
+            "src/workflow/outbox.rs",
+        ]
+        .iter()
+        .any(|f| {
+            let body = production(f);
+            body.contains("intent_kind(") || body.contains("intent_is_authentic(")
+        });
         assert!(
-            called,
-            "the authenticity predicate must have a PRODUCTION caller by name — a predicate \
-             only mod tests call is the `attachment_errors` shape this repo already paid for"
+            read_side,
+            "the authenticity predicate and its demotion classifier must have a PRODUCTION \
+             caller by name — a predicate only mod tests call is the `attachment_errors` \
+             shape this repo already paid for"
         );
     }
 
@@ -20056,16 +20142,20 @@ mod r42_authority_bindings {
     /// header names `#[cfg(test)]` on line 3.
     #[test]
     fn delivery_adapters_have_production_callers() {
-        for (module, symbol) in [
-            ("src/connector/delivery/vcs.rs", "fetch_vcs_facts"),
-            ("src/connector/delivery/ci.rs", "fetch_ci_facts"),
+        for (module, symbol, call) in [
+            (
+                "src/connector/delivery/vcs.rs",
+                "fetch_vcs_facts",
+                "vcs::fetch_vcs_facts",
+            ),
+            (
+                "src/connector/delivery/ci.rs",
+                "fetch_ci_facts",
+                "ci::fetch_ci_facts",
+            ),
         ] {
             assert!(
-                std::path::Path::new(&format!(
-                    "{}/{module}",
-                    env!("CARGO_MANIFEST_DIR")
-                ))
-                .exists(),
+                std::path::Path::new(&format!("{}/{module}", env!("CARGO_MANIFEST_DIR"))).exists(),
                 "{module} must exist before its caller is believed"
             );
             let body = production(module);
@@ -20073,18 +20163,14 @@ mod r42_authority_bindings {
                 body.contains(&format!("fn {symbol}")),
                 "{symbol} must be DEFINED in {module}'s production region"
             );
-            // The caller is the reconcile seam, which is what a binding's
-            // authority observation actually flows through.
-            let called = production("src/workflow/delivery.rs")
-                .contains(&format!("delivery::{symbol}"))
-                || production("src/connector/delivery/mod.rs")
-                    .contains(&format!("delivery::{symbol}"))
-                || production(&format!("src/connector/delivery/{}", module.rsplit('/').next().unwrap_or("")))
-                    .contains(&format!("super::{symbol}"));
+            // ...and named at a production call site.
+            let called = ["src/workflow/delivery.rs", "src/connector/delivery/mod.rs"]
+                .iter()
+                .any(|f| production(f).contains(call));
             assert!(
                 called,
-                "{symbol} has no PRODUCTION caller by name. A read adapter only tests call \
-                 is the `attachment_errors` shape: shipped, tested, and dead."
+                "{symbol} has no PRODUCTION caller by name. A read adapter only tests call is \
+                 the `attachment_errors` shape: shipped, tested, and dead."
             );
         }
     }
@@ -20095,12 +20181,21 @@ mod r42_authority_bindings {
     /// it, or the bearer-exfiltration fence is unpinned and may drift.
     #[test]
     fn delivery_adapter_egress_is_pinned_host_exact() {
-        for adapter in ["mod.rs", "vcs.rs", "ci.rs"] {
-            let file = format!("src/connector/delivery/{adapter}");
-            let body = production(&file);
+        // The frame holds the constant; each adapter reaches the refusal by
+        // calling it. Asserting the literal in every file would only prove the
+        // string was copied, not that the check runs.
+        assert!(
+            production("src/connector/delivery/mod.rs").contains("GITHUB_API_HOST"),
+            "the exact host must be a declared constant in the adapter frame"
+        );
+        for adapter in ["vcs.rs", "ci.rs"] {
+            let body = production(&format!("src/connector/delivery/{adapter}"));
             assert!(
-                body.contains("api.github.com"),
-                "{file} must name the exact host it is allowed to send a bearer to"
+                body.contains("assert_api_host("),
+                "src/connector/delivery/{adapter} must call the exact-host refusal on the URL \
+                 it is about to fetch. The shared egress family validates an ADDRESS SET, not \
+                 an identity: only this check stops a `Link`-header `next` URL from taking \
+                 the bearer to another host."
             );
         }
         // The refusal is a real function, not a comment: a scheme check plus an
@@ -20139,9 +20234,10 @@ mod r42_authority_bindings {
         for adapter in ["mod.rs", "vcs.rs", "ci.rs"] {
             let body = production(&format!("src/connector/delivery/{adapter}"));
             assert!(
-                body.contains("read_provider_secret"),
-                "src/connector/delivery/{adapter} must read a binding secret through the \
-                 root-confined reader"
+                body.contains("read_provider_secret") || body.contains("bearer_for"),
+                "src/connector/delivery/{adapter} must reach a binding's bearer through the \
+                 root-confined reader — directly, or through the frame's `bearer_for`, which \
+                 is the only other caller of that reader in this subtree"
             );
             for forbidden in [
                 "std::fs::read_to_string",
@@ -20184,12 +20280,31 @@ mod r42_authority_bindings {
             "capabilities must be PARSED into the typed struct, never `is_object()`-checked. \
              The `agent_cards` check accepts any object; this one accepts only a known shape."
         );
-        // Fail-closed on a malformed profile: a parse helper that returns
-        // Option would let a corrupt row read as "no capabilities".
+        // Fail-closed on a malformed profile. Scoped to the RESOLVE path,
+        // which is the one that decides whether a binding may be read at all:
+        // the list projection deliberately renders an unparseable block as an
+        // explicit marker, and crediting the whole module for that would make
+        // this pin complain about the honest half.
+        let resolve = body
+            .split("pub(crate) fn resolve_binding(")
+            .nth(1)
+            .map(|r| r.split("\n}").next().unwrap_or_default())
+            .unwrap_or_default();
         assert!(
-            !body.contains(".ok()"),
-            "the capability parse must not degrade to a silent default — a malformed \
+            !resolve.contains(".ok()"),
+            "the RESOLVE path must not degrade to a silent default — a malformed \
              capabilities_json is a refused binding, not an unconstrained one"
+        );
+        assert!(
+            resolve.contains("Capabilities::parse(&caps)?"),
+            "the resolve path must propagate a parse refusal, not swallow it"
+        );
+        // And the list projection must never INVENT a default for a block it
+        // could not read — it names the failure instead.
+        assert!(
+            body.contains("\"unparseable\""),
+            "the list projection must render an unparseable capabilities block as a named \
+             marker; a default there would read as 'unconstrained'"
         );
     }
 
@@ -20211,7 +20326,10 @@ mod r42_authority_bindings {
                 |r| r.get(0),
             )
             .expect("query");
-        assert_eq!(exists, 1, "the table must exist before its CHECK is credited");
+        assert_eq!(
+            exists, 1,
+            "the table must exist before its CHECK is credited"
+        );
 
         let refused = db.execute(
             "INSERT INTO delivery_bindings(domain, target_kind, target_ref, endpoint, \
@@ -20234,35 +20352,54 @@ mod r42_authority_bindings {
     /// would be a fail-open in a repo whose law is fail-closed.
     #[test]
     fn delivery_bindings_are_boot_provisioned_never_request_written() {
-        // No write route exists. The census is the whole route table.
-        let guards = src("src/server/router/route_guards.rs");
-        let delivery_rows: Vec<&str> = guards
-            .lines()
-            .filter(|l| l.contains("/workflow/delivery/bindings"))
-            .collect();
-        assert!(
-            !delivery_rows.is_empty(),
-            "the bindings read route must be registered in the guard tables"
-        );
+        // No write route exists. The census is the ROUTER, not the guard
+        // tables — a path named in both tables is still one route, and
+        // counting table rows would count it twice.
+        let router = production("src/server/router/workflow.rs");
+        let registrations = router.matches("\"/workflow/delivery/bindings\"").count();
         assert_eq!(
-            delivery_rows.len(),
-            1,
-            "exactly one bindings route — a read. There is no write route: secret-file \
-             references must never ride a request, and consent is given by configuring a \
-             binding and withdrawn with `active = 0`, neither of which is a request-time \
-             operation."
+            registrations, 1,
+            "exactly one bindings route registration, and it is a GET. There is no write \
+             route: a secret-file reference must never ride a request, and consent is given \
+             by configuring a binding and withdrawn with `active = 0`, neither of which is \
+             a request-time operation."
+        );
+        let at = router
+            .find("\"/workflow/delivery/bindings\"")
+            .expect("the route must be registered");
+        let window: String = router[at..(at + 200).min(router.len())].to_string();
+        assert!(
+            window.contains("get("),
+            "the bindings route must be a READ. A route that could mutate an authority \
+             would let a request widen it."
+        );
+        // ...and it appears in the guard tables, or the coverage and authz
+        // pins do not see it at all.
+        let guards = src("src/server/router/route_guards.rs");
+        assert!(
+            guards.contains("\"/workflow/delivery/bindings\""),
+            "the bindings read route must be registered in the guard tables"
         );
 
         // The validator is wired into the SAME boot region as the other
-        // fail-closed profile validators, before telemetry and sockets.
+        // fail-closed profile validators, BEFORE any database exists — so an
+        // invalid profile refuses the process rather than provisioning an
+        // unvalidated authority into a live store.
         let boot = production("src/server/bootstrap.rs");
-        let gdl = boot.find("validate_gdl_provider_config").expect("the GDL boot gate");
         let bindings = boot
             .find("validate_delivery_bindings")
             .expect("the bindings boot gate must exist beside the GDL one");
+        // ...and BEFORE the database is touched. The anchor is the migration
+        // CALL, spelled with its paren: the `use` line at the top of the file
+        // also contains `run_migration`, and anchoring there would compare
+        // against an import rather than against the point a database exists.
+        let migration = boot
+            .find("run_migration_with_store_dim(")
+            .expect("boot must migrate, which is the first point a database exists");
         assert!(
-            bindings < gdl || bindings > gdl,
-            "the bindings validator must be reached at boot"
+            bindings < migration,
+            "the bindings validator must run BEFORE the database is touched, so an invalid \
+             profile refuses the process rather than provisioning an unvalidated authority"
         );
         assert!(
             boot.contains("fatal delivery bindings config"),
@@ -20344,18 +20481,27 @@ mod r42_authority_bindings {
         // authority leak, and `domain` is not decoration.
         let delivery = production("src/workflow/delivery.rs");
         assert!(
-            delivery.contains("FROM delivery_bindings") || delivery.contains("delivery_bindings"),
-            "the reconcile seam must read the binding table"
-        );
-        assert!(
-            delivery.contains("domain = ?") || delivery.contains("domain=?") || delivery.contains("WHERE domain"),
-            "every binding read must be domain-scoped — a binding resolves to one tenant's \
-             standing authority, and an unscoped resolve is a cross-tenant leak"
-        );
-        assert!(
             delivery.contains("record_external"),
             "the external evidence lane is required: a reconciliation is not the loop's own \
              advance, and the post-verify revisit law applies to it"
+        );
+        // The domain-scoped READ is the resolve call, and the resolve call
+        // lives in the adapter frame — so the pin reads it there rather than
+        // crediting this file for a WHERE clause it does not contain.
+        let frame = production("src/connector/delivery/mod.rs");
+        assert!(
+            frame.contains("FROM delivery_bindings") && frame.contains("WHERE domain = ?1"),
+            "the binding read must be domain-scoped — a binding resolves to one tenant's \
+             standing authority, and an unscoped resolve is a cross-tenant leak"
+        );
+        // ...and the domain it resolves with comes from the RUN's own row, not
+        // from the observation. That is the second half of the same law: an
+        // external payload must not be able to choose which tenant's authority
+        // to read.
+        assert!(
+            delivery.contains("SELECT domain FROM workflow_runs"),
+            "the reconcile must read the domain from the run's OWN row; taking it from the \
+             observation would let an external payload select a tenant"
         );
         // The audit row rides the caller's WorkflowTx.
         assert!(
@@ -20409,11 +20555,14 @@ mod r42_authority_bindings {
     fn delivery_intents_are_demonstrably_undispatchable() {
         // No promote/approval/release substrate exists anywhere in the tree.
         for symbol in ["fn promote", "struct Approval", "enum ReleaseStatus"] {
-            let hits: Vec<String> = ["src/workflow/delivery.rs", "src/workflow/delivery_intents.rs"]
-                .iter()
-                .filter(|f| production(f).contains(symbol))
-                .map(|f| f.to_string())
-                .collect();
+            let hits: Vec<String> = [
+                "src/workflow/delivery.rs",
+                "src/workflow/delivery_intents.rs",
+            ]
+            .iter()
+            .filter(|f| production(f).contains(symbol))
+            .map(|f| f.to_string())
+            .collect();
             assert!(
                 hits.is_empty(),
                 "{symbol} is the NEXT round's substrate. A stub here would be exactly the \

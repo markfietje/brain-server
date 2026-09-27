@@ -127,6 +127,12 @@ const PARITY_TABLES: &[&str] = &[
     // row-count parity is what proves a rehearsal copied the evidence layer
     // and not only the run tables.
     "delivery_attestations",
+    // the per-tenant authority bindings. Row-count parity proves a rehearsal
+    // copied the standing authorities, not only the run tables — a rehearsal
+    // that came back with zero bindings would produce a server that has lost
+    // every external authority it was configured with, and would say so
+    // nowhere.
+    "delivery_bindings",
 ];
 
 /// Size of the random vec0 spot-check. ponytail: 50 is a heuristic — the formal

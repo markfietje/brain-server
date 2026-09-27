@@ -345,6 +345,15 @@ pub fn bootstrap() -> Result<BootOutcome> {
     config::validate_gdl_provider_config()
         .map_err(|e| anyhow::anyhow!("fatal GDL provider config: {e}"))?;
 
+    // ── fail-closed delivery-bindings posture ───────────
+    // The SAME region and the SAME law as the provider gate above, because the
+    // bindings are the machine's standing authority over an external system:
+    // provisioning them unvalidated would be a fail-open in a repo whose law is
+    // fail-closed. The validator returns the profile it validated so boot
+    // provisions from the SAME value it checked.
+    let delivery_bindings = config::validate_delivery_bindings()
+        .map_err(|e| anyhow::anyhow!("fatal delivery bindings config: {e}"))?;
+
     // ── fail-closed write posture ─────────────────────
     // An unknown BRAIN_WRITE_POSTURE value refuses startup rather than
     // silently degrading to `open` (the Seatbelt posture).
@@ -655,6 +664,33 @@ pub fn bootstrap() -> Result<BootOutcome> {
         model.store_dim(),
     )?;
     info!("Migration complete (embedding_dim = {})", model.store_dim());
+
+    // ── provision the validated authority bindings ──────────────────────
+    // AFTER the migration (the table must exist) and from the profile boot
+    // ALREADY VALIDATED, in one audited transaction per database. A binding
+    // provisioned outside a transaction could commit without its evidence and
+    // leave an authority configured and unexplained.
+    if let Some(profile) = delivery_bindings.as_ref() {
+        let mut conn = pool.get().context("delivery binding provisioning failed")?;
+        // ONE explicit transaction: every upsert and the audit row that
+        // explains them commit together or roll back together. A provisioning
+        // that committed authorities without their evidence would leave an
+        // operator with authorities they cannot account for.
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn)
+            .context("delivery binding provisioning transaction failed")?;
+        crate::workflow::delivery::provision_bindings(
+            tx.tx(),
+            profile,
+            chrono::Utc::now().timestamp(),
+        )
+        .map_err(|e| anyhow::anyhow!("fatal delivery binding provisioning: {e}"))?;
+        tx.commit()
+            .context("delivery binding provisioning commit failed")?;
+        info!(
+            "delivery bindings: {} authority binding(s) provisioned",
+            profile.bindings.len()
+        );
+    }
 
     // ── offline --re-audit + fresh-DB bootstrap ────────────────────
     // The re-anchor runs INSTEAD of serving (writes must be quiesced — an

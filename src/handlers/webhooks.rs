@@ -91,6 +91,18 @@ pub async fn receive(
         return receive_kb_feedback(&state, &headers, &body).await;
     }
 
+    // The delivery sub-family: an inbound AUTHORITY OBSERVATION. It rides
+    // the same public `/webhooks/` prefix rule (no new public path) and the
+    // same HMAC/replay/flood pipeline, and it adds NO second signature check —
+    // the shipped GitHub verifier below is the only one.
+    //
+    // The prefix comes from the DECLARED vocabulary, not a literal here: the
+    // reserved-root string is owned by `outbox.rs` and the dup-guard fails any
+    // second spelling of it.
+    if kind.starts_with(crate::workflow::delivery_intents::DELIVERY_ROOT) {
+        return receive_delivery(&state, &kind, &headers, &body).await;
+    }
+
     // The Valet Signal kind is ALWAYS HMAC-gated (Standard
     // Webhooks) and synchronously processed — the relay is a first-party,
     // local, tokenless edge.
@@ -215,6 +227,235 @@ pub async fn receive(
         }
         Err(e) => e.into_response(),
     }
+}
+
+/// The delivery sub-family arm. `POST /webhooks/delivery/{kind}`.
+///
+/// The HMAC is the shipped GitHub verifier over the RAW body, and the replay
+/// window, delivery-id idempotency, and flood cap are the SAME queue the
+/// sibling families use — a second signature check or a second queue would be
+/// a second consent boundary, and this seam has exactly one.
+async fn receive_delivery(
+    state: &Arc<AppState>,
+    kind: &str,
+    headers: &HeaderMap,
+    body: &Bytes,
+) -> Response {
+    // Only the kinds the adapters actually model. An unmodelled kind is
+    // refused by NAME rather than accepted and stored: a delivery observation
+    // nothing can reconcile is an unreconcilable authority claim.
+    let target_kind = match kind.strip_prefix(crate::workflow::delivery_intents::DELIVERY_ROOT) {
+        Some("github") => "vcs",
+        Some("actions") => "ci",
+        _ => {
+            return HandlerError::bad_request(
+                "unsupported_kind",
+                "kind is outside the delivery observation vocabulary",
+            )
+            .into_response();
+        }
+    };
+
+    let sig = match headers
+        .get("x-hub-signature-256")
+        .and_then(|h| h.to_str().ok())
+    {
+        Some(s) => s.to_string(),
+        None => return HandlerError::unauthorized("missing x-hub-signature-256").into_response(),
+    };
+    let Some(secret) = load_webhook_secret() else {
+        warn!("delivery webhook: no github connector configured");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            axum::Json(json!({ "error": "no connector configured" })),
+        )
+            .into_response();
+    };
+    if !WebhookQueue::verify_github_signature(&secret, body, &sig) {
+        // The refusal is AUDITED: a forged authority observation is an attempt
+        // to move the ledger's belief, and it leaves a record.
+        deny(state, kind, "bad signature");
+        return HandlerError::unauthorized("signature verification failed").into_response();
+    }
+    let delivery_id = headers
+        .get("x-github-delivery")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    if delivery_id.is_empty() {
+        return HandlerError::bad_request("webhook_bad_request", "missing x-github-delivery")
+            .into_response();
+    }
+
+    // Parse with refusal, INSIDE the landing transaction's caller. Every field
+    // is untrusted: the signature proves the bytes came from the configured
+    // sender, not that their contents are true.
+    let observed: serde_json::Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => {
+            return HandlerError::bad_request("webhook_bad_request", "body is not JSON")
+                .into_response();
+        }
+    };
+    let repository = observed
+        .get("repository")
+        .and_then(|r| r.get("full_name"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let subject = observed
+        .get("after")
+        .or_else(|| observed.get("run_id"))
+        .map(|v| match v {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .unwrap_or_default();
+    let conclusion = observed
+        .get("conclusion")
+        .or_else(|| observed.get("state"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+
+    let parsed = match crate::workflow::delivery::ObservedAuthority::parse(
+        target_kind,
+        &repository,
+        &subject,
+        &conclusion,
+    ) {
+        Ok(p) => p,
+        Err(_) => {
+            return HandlerError::bad_request("webhook_bad_request", "observation is malformed")
+                .into_response();
+        }
+    };
+
+    // Land it in the SAME bounded queue as every other verified webhook. The
+    // replay window, the UNIQUE(delivery_hash) idempotency, and the flood cap
+    // are therefore the consent boundary this observation actually passes
+    // through, rather than properties it re-implements.
+    let received_at = headers
+        .get(axum::http::header::DATE)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| chrono::DateTime::parse_from_rfc2822(s).ok())
+        .and_then(|dt| {
+            if dt.timestamp() < 0 {
+                return None;
+            }
+            let secs = dt.timestamp() as u64;
+            let nanos = dt.timestamp_subsec_nanos();
+            Some(std::time::UNIX_EPOCH + std::time::Duration::new(secs, nanos))
+        });
+    let queue = WebhookQueue::new(Arc::new(state.pool.clone()));
+    let landed = match queue.enqueue_ts(kind, "delivery", &delivery_id, body, received_at) {
+        Ok(EnqueueOutcome::Enqueued) => true,
+        // A duplicate is a REPLAY and replays are idempotent: the observation
+        // was already reconciled on the first delivery, and reconciling it
+        // twice would mint a second plan intent for one mismatch.
+        Ok(EnqueueOutcome::Duplicate) => false,
+        Ok(EnqueueOutcome::Full) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({ "error": "queue_full" })),
+            )
+                .into_response();
+        }
+        Ok(EnqueueOutcome::Rejected) => {
+            deny(state, kind, "timestamp check failed");
+            return HandlerError::unauthorized("timestamp check failed").into_response();
+        }
+        Err(e) => return e.into_response(),
+    };
+    if !landed {
+        return (StatusCode::OK, axum::Json(json!({ "status": "duplicate" }))).into_response();
+    }
+    if let Ok(conn) = state.pool.get() {
+        crate::audit::record(
+            &conn,
+            crate::audit::AuditKind::Webhook,
+            kind,
+            &delivery_id,
+            crate::audit::AuditStatus::Ok,
+            &parsed.conclusion,
+        );
+    }
+
+    // The observation is landed, and it is ALREADY reconciled. The webhook only
+    // says what the sender CLAIMS; what the ledger believes comes from the
+    // authority itself, read through the shared egress family at this seam. The
+    // response reports the RECONCILED verdict, so a client that read 200 here
+    // has learned whether the world agrees with the body it just sent.
+    //
+    // The run, the domain, and the secret root are all resolved SERVER-SIDE
+    // from the configured binding and the boot-validated config. None of them
+    // rides the request: a body that claimed a different tenant would be
+    // ignored, which is the entire point of a domain-scoped authority.
+    let target = {
+        let conn = match state.pool.get() {
+            Ok(c) => c,
+            Err(_) => {
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    axum::Json(json!({ "error": "authority_not_configured" })),
+                )
+                    .into_response();
+            }
+        };
+        let secret_root = crate::config::DeliveryBindingsProfile::from_env()
+            .ok()
+            .flatten()
+            .map(|p| p.secret_root.to_string_lossy().to_string());
+        match secret_root {
+            Some(root) => {
+                crate::workflow::delivery::resolve_reconcile_target(&conn, target_kind, &root)
+            }
+            None => Err(crate::connector::delivery::BindingRefused::NotFound),
+        }
+    };
+    let target = match target {
+        Ok(t) => t,
+        Err(_) => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(json!({ "error": "authority_not_configured" })),
+            )
+                .into_response();
+        }
+    };
+    if let Err(e) = crate::workflow::delivery::observe_authority(
+        &state.pool,
+        target.run_id,
+        &target.domain,
+        target_kind,
+        std::path::Path::new(&target.secret_root),
+    )
+    .await
+    {
+        // A refusal is a STABLE CODE and is audited. It never names a host, a
+        // path, a secret, or a response body — the type that produced it
+        // cannot carry any of them.
+        if let Ok(conn) = state.pool.get() {
+            crate::audit::record(
+                &conn,
+                crate::audit::AuditKind::Webhook,
+                kind,
+                &delivery_id,
+                crate::audit::AuditStatus::Denied,
+                &e.to_string(),
+            );
+        }
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            axum::Json(json!({ "error": "authority_observation_unavailable" })),
+        )
+            .into_response();
+    }
+    (
+        StatusCode::OK,
+        axum::Json(json!({ "status": "reconciled" })),
+    )
+        .into_response()
 }
 
 /// Standard Webhooks path — requires the spec header

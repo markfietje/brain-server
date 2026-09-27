@@ -8132,6 +8132,93 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized (Read on the run's domain plus the `workflow` role) }
         "404": { description: Delivery run not found (probe-blind) }
+  /workflow/delivery/bindings:
+    get:
+      summary: The authority bindings configured for a domain (Read plus the `workflow` role)
+      description: >
+        The standing authorities this machine holds to read external systems on
+        behalf of ONE domain. `domain` is a query parameter and is required; the
+        surface is domain-scoped because a binding resolves to one tenant's
+        authority and an unscoped resolve would be a cross-tenant leak.
+        A binding names an endpoint, a stable external ref (`owner/repo`), and an
+        `authority_digest` covering the endpoint, the ref, and the secret's FILE
+        NAME. The digest never covers the secret and never its path: a digest over
+        secret material is a credential at rest in a hash column. No field in this
+        response reveals where a credential lives.
+        `capabilities` is the operator's declared read/intent surface, parsed with
+        `deny_unknown_fields` — an unknown field or an unknown capability is a
+        REFUSED binding, not an ignored one. A block this server cannot parse
+        renders as the literal `"unparseable"` rather than as a default that would
+        read as unconstrained.
+        The pending-intent counters are the ops signal that a delivery intent
+        which is merely not-yet-promoted is distinguishable from one that was
+        lost, and from a FORGED row carrying a delivery topic whose key is not a
+        kernel mint. `untrusted_pending` should be zero; a non-zero value means
+        something wrote the reserved topic root without the minter.
+        There is deliberately NO write route. Consent to an external authority is
+        given by configuring a binding at boot and withdrawn by setting
+        `active = 0` — never by a request, because a request must never be able to
+        create or widen an authority.
+        Serving this list grants no authority, approves nothing, and makes no
+        compliance finding. Authorship is not authority.
+      operationId: listDeliveryBindings
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: domain
+          in: query
+          required: true
+          schema: { type: string }
+          description: The tenant whose bindings to read. Scoped by the Read gate.
+      responses:
+        "200":
+          description: The domain's bindings and its pending-intent census
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DeliveryBindingsView" }
+        "400": { description: domain is required }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Read on the domain plus the `workflow` role) }
+  /webhooks/delivery/{kind}:
+    post:
+      summary: An inbound AUTHORITY OBSERVATION (public; HMAC self-authenticating)
+      description: >
+        The delivery observation sub-family. It is admitted by the EXISTING public
+        `/webhooks/` prefix rule and adds no new public path: it authenticates with
+        the shipped GitHub HMAC verifier over the raw body and lands in the same
+        bounded queue as every other verified webhook, so the replay window, the
+        delivery-id idempotency, and the flood cap are the consent boundary it
+        actually passes through rather than properties it re-implements.
+        The observation is NEVER trusted ahead of reconciliation. A verified body
+        says only that these bytes came from the configured sender; what the ledger
+        believes comes from the authority itself, read through the shared egress
+        family, and a mismatch is recorded as typed evidence for a human to decide.
+        The 200 reports the RECONCILED verdict, not the claim.
+        The run, the domain, and the secret root are resolved SERVER-SIDE from the
+        configured binding. None of them rides the request: a body claiming a
+        different tenant is ignored, which is the point of a domain-scoped
+        authority. An observation arriving with no open run in that domain is
+        refused rather than attached to an arbitrary one.
+        The signature shows the holder of the configured secret sent these bytes.
+        It says nothing about whether their contents are true.
+      operationId: receiveDeliveryObservation
+      parameters:
+        - name: kind
+          in: path
+          required: true
+          schema: { type: string, enum: [github, actions] }
+          description: >-
+            `github` reconciles a `vcs` binding; `actions` reconciles a `ci`
+            one. A kind outside this vocabulary is refused by name.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        "200": { description: Enqueued and reconciled, or a duplicate replay }
+        "400": { description: Malformed body, missing delivery id, or unknown kind }
+        "401": { description: Signature verification failed }
+        "503": { description: Queue full, or the authority could not be observed }
   /workflow/model-registry:
     get:
       summary: List registered model identities (Admin plus DPO role; audited)
@@ -8771,6 +8858,56 @@ components:
         attestation_root: { type: string, nullable: true }
         event_log: { $ref: "#/components/schemas/DeliveryEventLog" }
         generated_at: { type: integer, format: int64 }
+    DeliveryBinding:
+      type: object
+      additionalProperties: false
+      required: [id, domain, target_kind, target_ref, endpoint, authority_digest, capabilities, active, updated_at]
+      description: >
+        One standing authority. `authority_digest` covers the endpoint, the stable
+        external ref, and the secret's FILE NAME — never the secret and never its
+        path. No field here reveals where a credential lives.
+      properties:
+        id: { type: integer, format: int64, minimum: 1 }
+        domain: { type: string }
+        target_kind:
+          type: string
+          enum: [vcs, ci, registry, deploy, pm, incident]
+          description: >-
+            `registry`, `deploy`, `pm` and `incident` are declared and
+            CONSUMER-LESS: they have no adapter, and a binding of one of those
+            kinds is never read. They stay in the vocabulary so adding one is a
+            deliberate act with code behind it.
+        target_ref: { type: string, maxLength: 200 }
+        endpoint: { type: string, maxLength: 2048 }
+        authority_digest: { type: string, pattern: "^sha256:[0-9a-f]{64}$" }
+        capabilities:
+          type: string
+          description: >-
+            The operator's declared surface, serialized. It parses with
+            `deny_unknown_fields`; a block this server cannot parse renders as the
+            literal `"unparseable"` rather than as a default that would read as
+            unconstrained.
+        active: { type: integer, enum: [0, 1] }
+        updated_at: { type: integer, format: int64 }
+    DeliveryBindingsView:
+      type: object
+      additionalProperties: false
+      required: [bindings, intents_pending, observed_pending, untrusted_pending]
+      description: >
+        The domain's bindings plus the pending-intent census. `intents_pending`
+        and `observed_pending` are EXPECTED to be non-zero in normal operation:
+        the intents are undrained by design and the release act belongs to a gate
+        that does not exist yet. They exist so a lost intent is distinguishable
+        from an un-promoted one. `untrusted_pending` should be zero — a non-zero
+        value means something wrote the reserved topic root without the minter.
+      properties:
+        bindings:
+          type: array
+          maxItems: 64
+          items: { $ref: "#/components/schemas/DeliveryBinding" }
+        intents_pending: { type: integer, format: int64, minimum: 0 }
+        observed_pending: { type: integer, format: int64, minimum: 0 }
+        untrusted_pending: { type: integer, format: int64, minimum: 0 }
     DecisionEvaluationRecord:
       type: object
       additionalProperties: false

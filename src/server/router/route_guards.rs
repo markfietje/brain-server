@@ -141,6 +141,10 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/webhooks/channel/{kind}/drain/ack",
     // Herald (the bridge-relayed operator console; same seam)
     "/webhooks/channel/{kind}/console",
+    // the delivery authority-observation sub-family. Public by the SAME
+    // `/webhooks/` prefix rule as its siblings — it adds no new public path,
+    // and it authenticates with the same shipped GitHub HMAC verifier.
+    "/webhooks/delivery/{kind}",
     "/audit",
     "/audit/verify",
     "/metrics",
@@ -300,6 +304,9 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     // no body — the verdict re-derives from storage and the listing serves it.
     "/workflow/delivery/runs/{id}/replay-verify",
     "/workflow/delivery/runs/{id}/trace",
+    // the bindings read. The domain is a query parameter, so the row this
+    // serves is domain-scoped rather than run-scoped.
+    "/workflow/delivery/bindings",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -634,4 +641,9 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     // asked for.
     ("/workflow/delivery/runs/{id}/replay-verify", "Read"),
     ("/workflow/delivery/runs/{id}/trace", "Read"),
+    // the bindings read: Read, on the QUERIED domain, with the workflow role
+    // checked in-handler (the role store reads from the pool). Least
+    // privilege — the surface cannot mutate an authority, so it does not
+    // demand Write.
+    ("/workflow/delivery/bindings", "Read"),
 ];

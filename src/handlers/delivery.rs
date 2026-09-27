@@ -421,6 +421,78 @@ pub async fn get_delivery_trace(
     Ok(Json(response))
 }
 
+/// The read route's body. There is NO write route for bindings, and that
+/// absence is the design: a secret-file reference must never ride a request,
+/// and consent to an external authority is given by configuring a binding and
+/// withdrawn with `active = 0` — neither a request-time operation.
+#[derive(Debug, serde::Serialize)]
+pub struct BindingsView {
+    pub bindings: Vec<serde_json::Value>,
+    /// The pending census, split by what the read side makes of each row. They
+    /// sit `pending` with no reader BY DESIGN, and reporting the split is what
+    /// keeps a lost intent, an un-promoted one, and a FORGED one
+    /// distinguishable.
+    pub intents_pending: i64,
+    pub observed_pending: i64,
+    /// Delivery-family rows whose key is not a kernel mint.
+    pub untrusted_pending: i64,
+}
+
+/// Read the delivery bindings configured for a domain.
+///
+/// Gate order matches the other delivery reads: the domain comes from the
+/// QUERY (there is no run to scope it to), `authorize` Read on that domain,
+/// then the `workflow` role. It is a GET because it serves stored rows and
+/// takes no body — and because a body is where a caller would try to name an
+/// endpoint or a secret path.
+pub async fn get_delivery_bindings(
+    State(state): State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<serde_json::Value>, HandlerError> {
+    let principal = principal.0;
+    let domain = q
+        .get("domain")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .ok_or_else(|| HandlerError::bad_request("domain_required", "domain is required"))?
+        .to_string();
+    super::authorize(&principal, crate::auth::Action::Read, "", &domain)?;
+    let pool = super::resolve_domain_pool(&state.registry, Some(&domain))?;
+    super::authorize_role(&principal, &pool, "workflow")?;
+
+    let rows = tokio::task::spawn_blocking(move || {
+        let conn = pool.get().map_err(HandlerError::db_down)?;
+        let bindings = crate::connector::delivery::list_bindings(&conn, &domain)
+            .map_err(|e| HandlerError::conflict(e.to_string()))?;
+        let pending = crate::connector::delivery::pending_intent_census(&conn, &domain)
+            .map_err(|e| HandlerError::conflict(e.to_string()))?;
+        Ok::<_, HandlerError>((bindings, pending))
+    })
+    .await
+    .map_err(|e| HandlerError::internal(format!("{e}")))??;
+
+    let (bindings, census) = rows;
+    // The read seam is unconditional. `list_bindings` already omits the secret
+    // file name, so there is nothing sensitive here to strip — but the seam
+    // applies anyway, because "there is nothing sensitive today" is a property
+    // a later column could change and the seam would then be the thing that
+    // catches it.
+    let mut response = serde_json::to_value(BindingsView {
+        bindings: bindings
+            .into_iter()
+            .map(|b| serde_json::to_value(b).unwrap_or(serde_json::Value::Null))
+            .collect(),
+        intents_pending: census.intents,
+        observed_pending: census.observed,
+        untrusted_pending: census.untrusted,
+    })
+    .map_err(|error| HandlerError::internal(error.to_string()))?;
+    super::sanitize_value_strings(&mut response);
+    Ok(Json(response))
+}
+
 /// The typed error → HTTP mapping. Absence is 404 on every route, and a
 /// non-delivery run reads as absent rather than as a wrong-kind error, so the
 /// mapping never becomes an existence oracle.

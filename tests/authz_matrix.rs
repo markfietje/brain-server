@@ -292,6 +292,16 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
             "/graph/relations" => "/graph/relations?from=matrix".to_string(),
             // the trace path is a numeric id in the wire type
             "/recall/{trace_id}/trace" => "/recall/1/trace".to_string(),
+            // `domain` is a required query param here too: the surface is
+            // domain-scoped because a binding is one tenant's standing
+            // authority, and the extractor refuses an absent one. Carrying a
+            // real domain is what makes this row exercise the CROSS-TENANT
+            // refusal (a team-b principal asking for another tenant) instead
+            // of the param validation. `global` is the one name every
+            // principal in this fixture's scope set admits.
+            "/workflow/delivery/bindings" => {
+                "/workflow/delivery/bindings?domain=global".to_string()
+            }
             _ => concrete,
         };
         let (method, body) = match *template {
@@ -2328,6 +2338,12 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/accounts/{id}/pipeline",
     "/accounts/{id}/requests",
     "/accounts/{id}/requests/{run_id}/link",
+    // The authority-bindings read. The sibling delivery reads are NOT listed
+    // here because they pre-gate 404 on an absent run, so the agent cell never
+    // reaches their role gate; this one is domain-scoped rather than
+    // run-scoped, so it really is reached. Same `workflow` capability, same
+    // reason: the role table has no agent-grantable `workflow` verb.
+    "/workflow/delivery/bindings",
     // The κ bench: queue + capture demand the `calibrate` capability (the
     // agent preset carries read/write/reject only); the report carries
     // the DPO dual gate (the agent HAS roles, so the dual gate binds).

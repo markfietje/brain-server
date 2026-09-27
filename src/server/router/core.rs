@@ -666,6 +666,64 @@ pub(crate) async fn metrics(
                 "brain_wal_pages_pending{{domain=\"other\"}} {pending}\n"
             ));
         }
+        // Delivery intents that sit `pending` with no reader. They are
+        // UNDRAINED BY DESIGN: the release act belongs to the promote gate,
+        // which does not exist yet, and the alert drain's universe is a closed
+        // disjunction with no `delivery/` arm. The gauge is what keeps a LOST
+        // intent and an UN-PROMOTED one distinguishable at the ops surface —
+        // without it, "the crank has not run" and "the intent is gone" look
+        // identical. A non-zero value is the expected steady state this round,
+        // not an alarm.
+        out.push_str("# HELP brain_delivery_intents_pending Delivery intents minted and sitting `pending` with no reader, per domain. They are undrained BY DESIGN this release (the release act belongs to the promote gate, which does not exist yet) — a non-zero value is the expected steady state, and the gauge exists so a LOST intent is distinguishable from an un-promoted one. Twokeys: domains outside the scrape principal's read scope collapse into the summed `other` label.\n");
+        out.push_str("# TYPE brain_delivery_intents_pending gauge\n");
+        // Rows carrying a delivery topic whose key is NOT a kernel mint. Any
+        // non-zero value means something wrote the reserved root without going
+        // through the minter, and it is the one counter here that means
+        // something is wrong.
+        out.push_str("# HELP brain_delivery_untrusted_rows_pending Delivery-family outbox rows sitting `pending` whose key is NOT a kernel mint, per domain. Unlike the intent gauge, a non-zero value is NOT expected: it means the reserved root was written without the minter. Twokeys: out-of-scope domains collapse into the summed `other` label.\n");
+        out.push_str("# TYPE brain_delivery_untrusted_rows_pending gauge\n");
+        let mut other_intents: Option<i64> = None;
+        let mut other_untrusted: Option<i64> = None;
+        let delivery_targets = crate::handlers::domain_pools(&s.registry, &s.pool);
+        for (domain, maybe_pool) in delivery_targets {
+            // A domain with no open pool is ABSENT from the gauge, never
+            // reported as zero: zero means "counted, and there are none".
+            let Some(domain_pool) = maybe_pool else { continue };
+            let Ok(domain_conn) = domain_pool.get() else {
+                continue;
+            };
+            // Twokeys: an out-of-scope domain collapses into the summed
+            // `other` label rather than rendering its own series, so the gauge
+            // cannot become a cross-tenant read.
+            let label = scoped_domain_label(&principal, &domain);
+            let Ok(census) = crate::connector::delivery::pending_intent_census(&domain_conn, &domain)
+            else {
+                continue;
+            };
+            if label == "other" {
+                *other_intents.get_or_insert(0) += census.intents + census.observed;
+                *other_untrusted.get_or_insert(0) += census.untrusted;
+                continue;
+            }
+            out.push_str(&format!(
+                "brain_delivery_intents_pending{{domain=\"{label}\"}} {}\n",
+                census.intents + census.observed
+            ));
+            out.push_str(&format!(
+                "brain_delivery_untrusted_rows_pending{{domain=\"{label}\"}} {}\n",
+                census.untrusted
+            ));
+        }
+        if let Some(pending) = other_intents {
+            out.push_str(&format!(
+                "brain_delivery_intents_pending{{domain=\"other\"}} {pending}\n"
+            ));
+        }
+        if let Some(untrusted) = other_untrusted {
+            out.push_str(&format!(
+                "brain_delivery_untrusted_rows_pending{{domain=\"other\"}} {untrusted}\n"
+            ));
+        }
         // Headroom: lock-wait bucket-quantiles. Only CONTENDED acquisitions
         // are recorded (try_lock fast path costs nothing), so 0 means "no
         // contention observed", never "gauge wired off". The values are

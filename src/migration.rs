@@ -2550,9 +2550,53 @@ pub fn run_migration_with_store_dim(
         )?;
     }
 
+    // v1.32.17 "Bindings": the machine's STANDING authority to read one
+    // external system on behalf of one tenant. A binding is not a
+    // credential store and not a destination — it is a SCOPED permission,
+    // and `domain` is a load-bearing column rather than decoration: a binding
+    // that resolved without a domain check would be a cross-tenant
+    // authority leak.
+    //
+    // `target_kind` carries a closed CHECK, and the enforcement is the
+    // DATABASE's rather than a convention's: `registry`/`deploy`/`pm`/
+    // `incident` are declared and CONSUMER-LESS (no adapter reads them) so
+    // that adding one is a deliberate act with an adapter behind it, never a
+    // vocabulary that grows by accident.
+    //
+    // `authority_digest` covers the endpoint, the stable external ref, and
+    // the secret's FILE NAME — never the secret and never its path. A digest
+    // computed over secret material is a credential at rest in a hash column:
+    // a low-entropy secret is recoverable by brute force, and a high-entropy
+    // one is a bearer that can never be rotated without rewriting history.
+    //
+    // `active` is the consent lever. Consent is GIVEN by configuring a
+    // binding and WITHDRAWN by setting it to 0; neither is a request-time
+    // operation, because a request must never be able to create or widen an
+    // authority. There is no write route for this table.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS delivery_bindings(
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            domain            TEXT    NOT NULL,
+            target_kind       TEXT    NOT NULL
+                                  CHECK (target_kind IN
+                                         ('vcs','ci','registry','deploy','pm','incident')),
+            target_ref        TEXT    NOT NULL,
+            endpoint          TEXT    NOT NULL,
+            authority_digest  TEXT    NOT NULL,
+            policy_digest     TEXT,
+            capabilities_json TEXT    NOT NULL,
+            active            INTEGER NOT NULL DEFAULT 1,
+            created_at        INTEGER NOT NULL,
+            updated_at        INTEGER NOT NULL,
+            UNIQUE(domain, target_kind, target_ref)
+        );
+        CREATE INDEX IF NOT EXISTS idx_delivery_bindings_kind
+            ON delivery_bindings(target_kind, active);",
+    )?;
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.16')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.16';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.17')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.17';",
         [],
     )?;
 

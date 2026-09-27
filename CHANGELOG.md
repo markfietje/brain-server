@@ -17,6 +17,76 @@ Honesty note: retrieval-quality claims below describe *what the code does*, not
 measured parity against external engines (e.g. QMD). Where a benchmark has not
 been run, it is marked **pending** rather than asserted.
 
+## [Unreleased] — 2026-09-27 — "Bindings": the machine's standing authority to read an external system
+
+### Release notes
+
+**Improvements**
+- `GET /workflow/delivery/bindings?domain=…` lists the external authorities a
+  domain is configured to read, with the operator's declared capability surface
+  and a pending-intent census. Read on the domain plus the `workflow` role.
+- Two read-only adapters (`vcs` for repository commits/statuses, `ci` for GitHub
+  Actions runs) read authority facts through the existing pinned egress family.
+- Signed delivery intents are minted with a kernel-only key and are
+  **demonstrably undispatchable** — the release act belongs to the promote gate,
+  which does not exist yet.
+- `/metrics` gains `brain_delivery_intents_pending` and
+  `brain_delivery_untrusted_rows_pending`, per domain.
+
+**Security fixes**
+- The exact-host refusal (`https://api.github.com` only) is re-implemented for
+  the new adapters and pinned, because the shipped GitHub connector's copy is
+  private behind a feature gate. A 3xx is refused rather than parsed — under
+  `redirect::Policy::none()` reqwest returns it as a success.
+- Per-binding secrets ride the existing root-confined reader (symlink-refused,
+  0600, 16 KiB, no path text in any error). The `authority_digest` covers the
+  endpoint, the target ref, and the secret's FILE NAME — never the secret and
+  never its path.
+- `delivery_bindings` is domain-scoped end to end, and the `target_kind` CHECK
+  is enforced by the database. There is **no write route**: consent is given by
+  configuring a binding at boot and withdrawn with `active = 0`.
+- Boot refuses an invalid bindings profile in the same region as the existing
+  provider gate, so an authority is never provisioned unvalidated.
+
+**Bug fixes**
+- A reserved outbox topic is now refused as `topic_reserved` *before* the topic
+  charset is checked, so a forged reserved topic is answered with the refusal
+  that actually applies rather than a misleading `topic_invalid`. Its `denied`
+  audit row is written on that path, so a refused reserved enqueue leaves the
+  same record it always did.
+
+**None** for these categories is not claimed anywhere: this entry asserts what
+the code does, not a conformance, certification, or compliance finding.
+
+### Engineering record
+
+Schema `1.32.16` → **`1.32.17`** (the line's first outbound-egress round).
+New table `delivery_bindings`; `PARITY_TABLES` and the expected-table census
+moved with it in the same commit. The crate version is unchanged and nothing is
+pushed or tagged.
+
+The negative census pin that asserted "no fourth `delivery_%` table" is
+**re-scoped, not deleted**: this round IS the fourth table, so the pin now
+asserts the current census and still fails on a fifth.
+
+**Honest ceilings.**
+- Intents are minted and left `pending` with no reader. A non-zero intent gauge
+  is the expected steady state, not an alarm.
+- `registry`/`deploy`/`pm`/`incident` are declared in the CHECK and are
+  **consumer-less** — no adapter reads them.
+- The reconcile binds an observation to the most recent active delivery run in
+  the binding's domain; a domain with two concurrent runs reconciles both to the
+  newest, because nothing in an inbound payload distinguishes them.
+- The adapters read ONE page. The page ceiling is enforced against the response,
+  and following a `Link` `next` URL is a future round's work.
+- **NOT DSSE.** The project envelope convention, which verifies against no DSSE
+  verifier. **Authorship is not authority**: a valid signature says the holder of
+  the key signed, and nothing about whether the act was permitted. Whether an
+  external system's data may be read, retained, or re-published is a question
+  for a human with the contract in hand — a mismatch becomes typed evidence and
+  a human decides. No AI Act, CRA, GDPR, DORA, or HIPAA conclusion is drawn
+  from any of this.
+
 ## [Unreleased] — 2026-09-26 — "Ledger": the delivery loop can prove what it did, offline
 
 > **UNRELEASED — deliberately.** The SCHEMA stamp moved to `1.32.16` (a release
