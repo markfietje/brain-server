@@ -45,7 +45,10 @@ const MAIN_RS_LINES_MAX: usize = 300;
 /// route-coverage table pin their correctness.
 /// 247 → 248 at the operate round: the derived read model's one GET.
 /// 248 → 249 at the RBAC round: the `/ops/authz/explain` registration.
-const ROUTER_SITES_FLOOR: usize = 249;
+/// 249 → 255 at the create-loop round: six claim-loop registrations (the schema
+/// route, the proposal, the screen read, the gate, the promotion act, and the
+/// gated listing on the shared base path).
+const ROUTER_SITES_FLOOR: usize = 255;
 /// `#[test]` occurrences across `src/` + `tests/` (lib + bins + the
 /// integration suites). Floor — never decreases. 1,185 src-only at the
 /// Scaffold freeze; the Capstone move relocated main.rs's region into
@@ -143,7 +146,12 @@ const ROUTER_SITES_FLOOR: usize = 249;
 /// `tests/r47_rbac_pins.rs`. Set to the walk-measured truth rather than to the
 /// "real tests" count, because this constant is compared against the walk and a
 /// lower number would silently weaken the guard instead of failing loudly.
-const CRATE_TEST_FLOOR: usize = 2_376;
+/// 2_376 → 2_470 (walk-measured) at the create-loop round: the five phase
+/// cores' own behavioural pins, the round's integration battery, and the fence
+/// proofs. Set to the walk-measured truth rather than to a hand-count, because
+/// this constant is compared against the walk and a lower number would silently
+/// weaken the guard instead of failing loudly.
+const CRATE_TEST_FLOOR: usize = 2_470;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows, 208 at the operate round.
@@ -152,14 +160,20 @@ const CRATE_TEST_FLOOR: usize = 2_376;
 /// history; the RBAC round corrected only the two mangled continuation lines below it,
 /// which had lost their text.
 /// 208 → 209 at the RBAC round: the `/ops/authz/explain` route row.
-const OPENAPI_ROUTE_ROWS_FLOOR: usize = 209;
+/// 209 → 214 at the create-loop round: FIVE rows for SIX surfaces, because the
+/// base path carries both the proposal POST and the gated listing GET and this
+/// table is path-keyed. Measured after the wire change, not predicted.
+const OPENAPI_ROUTE_ROWS_FLOOR: usize = 214;
 /// Route-authz table rows (`route_guards::AUTHZ_GATES`) — 141 gates at
 /// extraction (v1.28.54), 147 at the Wardline gate, 152 when Blackout's
 /// reverse-direction guard closed the table debt, 193 at the operate round.
 /// The leading "141" is the EXTRACTION figure and is kept as history; the RBAC round
 /// corrected the two mangled continuation lines below it.
 /// 193 → 194 at the RBAC round: the `/ops/authz/explain` Admin gate.
-const AUTHZ_TABLE_ROWS_FLOOR: usize = 194;
+/// 194 → 200 at the create-loop round: the six claim-loop gates, where the base
+/// path carries a Read row first and its Write row last, so one path holds two
+/// rows and six surfaces cost six rows.
+const AUTHZ_TABLE_ROWS_FLOOR: usize = 200;
 
 fn count_needle(hay: &str, needle: &str) -> usize {
     hay.matches(needle).count()

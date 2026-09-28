@@ -64,6 +64,7 @@
 pub mod art30;
 #[cfg(feature = "compliance-pack")]
 pub mod compliance;
+pub mod create;
 pub mod domains_admin;
 pub mod dsar;
 pub mod forget;

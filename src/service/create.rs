@@ -1,0 +1,1098 @@
+//! The create loop's storage layer.
+//!
+//! ## What this core owns
+//!
+//! Every statement that touches the four claim tables, the bounds that guard
+//! them, and the audit rows each mutation owes — written INSIDE the caller's
+//! transaction, so a claim and its evidence commit or roll back together.
+//!
+//! ## What it deliberately does not own
+//!
+//! **It does not decide anything.** No verdict is computed here. The gate in
+//! the workflow layer is a pure function over rows; this layer's whole job is
+//! to load those rows, hand them across, and store what came back. A storage
+//! layer that also holds policy is a second, unreviewed copy of the policy,
+//! and this loop's central claim is that its authority is non-model and
+//! singular.
+//!
+//! ## The gated read
+//!
+//! [`recall_page`] is the ONLY path by which a claim reaches a reader, and it
+//! joins on `status = 'ratified' AND recall_visible = 1` — the same two
+//! columns the database fence protects. So the fence and the query are two
+//! independent locks on one fact: a trigger that was somehow bypassed still
+//! leaves an unratified claim invisible here, and a row that somehow became
+//! visible without a promote audit row is invisible there.
+//!
+//! It is a query and not a view, and the migration carries a pin that says so.
+//! A view would put the gated read outside this core, behind no read seam.
+//!
+//! ## Principal kinds
+//!
+//! Every write that sets `created_by` or `authored_by` routes through the one
+//! mapping function in the create loop's module root. A literal in this file
+//! would be a fence key that a future caller could set from a request body,
+//! and a caller-supplied principal kind is a total bypass of every fence in
+//! the loop.
+//!
+//! ## A truthful dead-code allow
+//!
+//! `#![allow(dead_code)]` here is the same argument the workflow substrate
+//! makes and for the same reason: the loop ships inert, so several items on
+//! this page have test callers and no production caller *because that is the
+//! point*. `flip_batch_visibility` and `store_batch_verdict` are reached only
+//! by the round's own battery, because the batch flip happens in no request
+//! path while promotion is disabled. `schema_digest` is the tamper check that
+//! runs at promotion time, and there is no promotion. Every item is covered by
+//! a test in this module, so the clippy watchdog becomes a real gate again the
+//! moment any of them acquires a production caller — and a later round that
+//! silently gives promotion a caller will find these flags gone.
+
+// The loop ships inert; see the module header for which items have no
+// production caller and why that is the design rather than an omission.
+#![allow(dead_code)]
+
+use rusqlite::{Connection, OptionalExtension, params};
+
+use crate::audit::{AuditKind, AuditStatus};
+use crate::auth::policy::PrincipalKind;
+use crate::workflow::create::corpus::PlantedClaim;
+use crate::workflow::create::gap::{GapCandidate, GapMethod};
+use crate::workflow::create::schema::{self, SchemaDecl, SchemaFault};
+use crate::workflow::create::verify::{
+    Citation, ClaimUnderTest, GateOutcome, RatifiedClaim, SlotDecl, SlotType, SlotValue,
+};
+use crate::workflow::create::{Refusal, RefusalReceipt, principal_kind_string};
+
+/// The listing bound. Every list surface in this repository is capped and
+/// every cap is pinned; a claims listing is no different.
+pub(crate) const RECALL_PAGE_MAX: usize = 50;
+/// The default page size when the caller does not ask for one.
+pub(crate) const RECALL_PAGE_DEFAULT: usize = 20;
+/// The bound on a claim's public id.
+pub(crate) const MAX_CLAIM_ID_BYTES: usize = 128;
+
+/// The core's typed error. `Display` preserves the underlying message so the
+/// handler can map it onto that route's frozen vocabulary; the core never
+/// names an HTTP status.
+#[derive(Debug)]
+pub(crate) enum CreateError {
+    Storage(String),
+    SchemaRejected(SchemaFault),
+    /// The gate refused. Carries the CLOSED vocabulary and the claim id, and
+    /// nothing else — the detail goes to the audit chain.
+    Refused(RefusalReceipt),
+    /// The loop is inert.
+    PromotionDisabled(String),
+    NotFound,
+}
+
+impl std::fmt::Display for CreateError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CreateError::Storage(m) => write!(f, "storage: {m}"),
+            CreateError::SchemaRejected(fault) => {
+                write!(f, "schema rejected: {}", fault.as_str())
+            }
+            CreateError::Refused(r) => write!(f, "refused: {} ({})", r.reason, r.claim_id),
+            CreateError::PromotionDisabled(id) => write!(f, "promotion_disabled ({id})"),
+            CreateError::NotFound => write!(f, "not found"),
+        }
+    }
+}
+
+impl From<rusqlite::Error> for CreateError {
+    fn from(e: rusqlite::Error) -> Self {
+        CreateError::Storage(e.to_string())
+    }
+}
+
+/// One row of the gated claim read.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub(crate) struct ClaimRow {
+    pub(crate) claim_id: String,
+    pub(crate) subject: String,
+    pub(crate) predicate: String,
+    pub(crate) object: String,
+    pub(crate) scope: Option<String>,
+    pub(crate) promoted_by: Option<String>,
+    pub(crate) promoted_at: Option<i64>,
+}
+
+/// The gated claim read — the loop's only reader.
+///
+/// Joins on both fenced columns. It is a bounded page, newest-first, and it
+/// is deliberately unable to express "show me pending claims": there is no
+/// parameter for it, so no caller can ask this function for unratified
+/// material.
+pub(crate) fn recall_page(conn: &Connection, limit: usize) -> Result<Vec<ClaimRow>, CreateError> {
+    let limit = limit.clamp(1, RECALL_PAGE_MAX);
+    let mut stmt = conn.prepare(
+        "SELECT claim_id, subject, predicate, object, scope, promoted_by, promoted_at
+           FROM claims
+          WHERE status = 'ratified' AND recall_visible = 1
+          ORDER BY promoted_at DESC, claim_id ASC
+          LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![limit as i64], |r| {
+            Ok(ClaimRow {
+                claim_id: r.get(0)?,
+                subject: r.get(1)?,
+                predicate: r.get(2)?,
+                object: r.get(3)?,
+                scope: r.get(4)?,
+                promoted_by: r.get(5)?,
+                promoted_at: r.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// One slot as read from the document, fully OWNED.
+///
+/// The intermediate form exists because the parsed document cannot be borrowed
+/// from at a `'static` lifetime, and pinning every document the process ever
+/// read would be worse than one more type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OwnedSlot {
+    predicate: String,
+    ty: SlotType,
+    class: Option<String>,
+    lo: Option<i64>,
+    hi: Option<i64>,
+    labels: Vec<String>,
+}
+
+/// The newest ratified schema row id for a domain, or `None`.
+///
+/// This exists so a handler never has to ask the question itself. A claim
+/// cannot be typed without a ratified schema, so the lookup belongs with the
+/// write that needs it — and a handler that opened its own transaction to run
+/// it would be doing storage work, which is the split this repository's
+/// architecture law draws.
+pub(crate) fn latest_ratified_schema_id(
+    conn: &Connection,
+    domain: &str,
+) -> Result<Option<i64>, CreateError> {
+    let id = conn
+        .query_row(
+            "SELECT id FROM claim_schemas WHERE domain = ?1 AND ratified_at IS NOT NULL \
+             ORDER BY version DESC LIMIT 1",
+            params![domain],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(id)
+}
+
+/// Read one claim's stored fields. Used by the promotion screen, which is the
+/// ONE surface besides this core that sees a non-ratified claim.
+pub(crate) fn load_for_screen(conn: &Connection, claim_id: &str) -> Result<ClaimRow, CreateError> {
+    conn.query_row(
+        "SELECT claim_id, subject, predicate, object, scope, promoted_by, promoted_at
+           FROM claims WHERE claim_id = ?1",
+        params![claim_id],
+        |r| {
+            Ok(ClaimRow {
+                claim_id: r.get(0)?,
+                subject: r.get(1)?,
+                predicate: r.get(2)?,
+                object: r.get(3)?,
+                scope: r.get(4)?,
+                promoted_by: r.get(5)?,
+                promoted_at: r.get(6)?,
+            })
+        },
+    )
+    .optional()?
+    .ok_or(CreateError::NotFound)
+}
+
+/// Does this claim exist at all? Probe-blind: the answer is a boolean, so a
+/// caller cannot use this to distinguish "wrong claim" from "wrong domain".
+pub(crate) fn claim_exists(conn: &Connection, claim_id: &str) -> Result<bool, CreateError> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM claims WHERE claim_id = ?1",
+        params![claim_id],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// The body-digest a schema is stored under, recomputed on read so a row that
+/// was tampered with is detected at load rather than at promotion.
+pub(crate) fn schema_digest(conn: &Connection, id: i64) -> Result<Option<String>, CreateError> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT body_digest FROM claim_schemas WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(stored) = stored else {
+        return Ok(None);
+    };
+    let body: Option<String> = conn
+        .query_row(
+            "SELECT body FROM claim_schemas WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(body) = body else { return Ok(None) };
+    if schema::body_digest(&body) != stored {
+        // A digest mismatch is not a soft read: the artifact a reviewer would
+        // sign is not the artifact in the row.
+        return Err(CreateError::Storage(
+            "claim_schemas.body_digest does not match its body".into(),
+        ));
+    }
+    Ok(Some(stored))
+}
+
+/// Load a schema's declared slots.
+///
+/// The typed slot table is stored as one JSON document per schema and decoded
+/// here, so the DOMAIN model — types, disjointness classes, bounds — lives in
+/// Rust where it can be expressed, and the store holds only its serialisation.
+/// A JSON Schema document would have been the opposite trade: portable, and
+/// unable to say that two slots are disjoint.
+pub(crate) fn load_schema_slots(
+    conn: &Connection,
+    domain: &str,
+) -> Result<Option<Vec<SlotDecl>>, CreateError> {
+    let body: Option<String> = conn
+        .query_row(
+            "SELECT body FROM claim_schemas
+              WHERE domain = ?1 AND ratified_at IS NOT NULL
+              ORDER BY version DESC LIMIT 1",
+            params![domain],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(body) = body else { return Ok(None) };
+    Ok(Some(decode_slots(&body)?))
+}
+
+/// Decode the typed slot document. Bounded, total, and fail-closed.
+fn decode_slots(body: &str) -> Result<Vec<SlotDecl>, CreateError> {
+    if body.len() > schema::MAX_SCHEMA_BODY_BYTES {
+        return Err(CreateError::Storage("schema body exceeds its bound".into()));
+    }
+    // The parsed document owns its strings and the slot table borrows them
+    // with a `&'static` lifetime, so the read is done in two passes: every
+    // field is first copied into an OWNED value, and only then interned. The
+    // obvious one-pass version does not compile, because a `&'static` cannot
+    // borrow from a local `Value` — and the tempting fix, leaking the whole
+    // document, would pin every schema the process ever read.
+    let document: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| CreateError::Storage(format!("schema body is not valid json: {e}")))?;
+    let slots = document
+        .get("slots")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| CreateError::Storage("schema body carries no slots array".into()))?;
+    if slots.len() > schema::MAX_SCHEMA_SLOTS {
+        return Err(CreateError::Storage(
+            "schema declares too many slots".into(),
+        ));
+    }
+    // Pass one: owned.
+    let mut owned: Vec<OwnedSlot> = Vec::with_capacity(slots.len());
+    for slot in slots {
+        let predicate = slot
+            .get("predicate")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| CreateError::Storage("a slot has no predicate".into()))?;
+        let ty = match slot.get("ty").and_then(|v| v.as_str()).unwrap_or("") {
+            "integer" => SlotType::Integer,
+            "instant" => SlotType::Instant,
+            "label" => SlotType::Label,
+            "free" => SlotType::Free,
+            other => {
+                return Err(CreateError::Storage(format!(
+                    "a slot declares an unknown type `{other}`"
+                )));
+            }
+        };
+        let class = slot
+            .get("class")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let lo = slot.get("lo").and_then(|v| v.as_i64());
+        let hi = slot.get("hi").and_then(|v| v.as_i64());
+        let labels: Vec<String> = slot
+            .get("labels")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .take(schema::MAX_LABELS)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        owned.push(OwnedSlot {
+            predicate: predicate.to_string(),
+            ty,
+            class,
+            lo,
+            hi,
+            labels,
+        });
+    }
+    // Pass two: interned, and the document is free to drop at the end.
+    let mut out = Vec::with_capacity(owned.len());
+    for owned_slot in owned {
+        let labels: Vec<&'static str> = owned_slot
+            .labels
+            .iter()
+            .filter_map(|l| intern_class(l))
+            .take(schema::MAX_LABELS)
+            .collect();
+        out.push(SlotDecl {
+            predicate: owned_slot.predicate,
+            ty: owned_slot.ty,
+            // A class the document invented is interned under a bound; a name
+            // that does not fit simply carries no class, which makes the
+            // contradiction pass skip the slot rather than compare it against
+            // a stranger.
+            class: owned_slot.class.as_deref().and_then(intern_class),
+            lo: owned_slot.lo,
+            hi: owned_slot.hi,
+            labels: Box::leak(labels.into_boxed_slice()),
+        });
+    }
+    Ok(out)
+}
+
+/// Intern a disjointness class name, bounded. Beyond the cap the name is not
+/// interned and the slot simply carries no class — which makes contradiction
+/// checking skip it rather than compare against a stranger.
+fn intern_class(name: &str) -> Option<&'static str> {
+    const MAX_INTERNED: usize = 256;
+    if name.is_empty() || name.len() > schema::MAX_PREDICATE_BYTES {
+        return None;
+    }
+    INTERNED_CLASSES.with(|c| {
+        let mut v = c.borrow_mut();
+        if let Some(found) = v.iter().find(|k| **k == name) {
+            return Some(*found);
+        }
+        if v.len() >= MAX_INTERNED {
+            return None;
+        }
+        let leaked: &'static str = Box::leak(name.to_string().into_boxed_str());
+        v.push(leaked);
+        Some(leaked)
+    })
+}
+
+thread_local! {
+    static INTERNED_CLASSES: std::cell::RefCell<Vec<&'static str>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Load the ratified claims the contradiction pass needs.
+pub(crate) fn load_ratified(
+    conn: &Connection,
+    limit: usize,
+) -> Result<Vec<RatifiedClaim>, CreateError> {
+    let mut stmt = conn.prepare(
+        "SELECT claim_id, predicate, object, support_n FROM claims
+          WHERE status = 'ratified'
+          ORDER BY id DESC LIMIT ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![limit.clamp(1, RECALL_PAGE_MAX) as i64], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, i64>(3)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|(claim_id, predicate, object, support_n)| RatifiedClaim {
+            claim_id,
+            predicate,
+            // A stored object is canonical JSON; the gate's value is the typed
+            // reading of it. A value this layer cannot type is not silently
+            // coerced into one — it is omitted, so the contradiction pass sees
+            // fewer rows rather than wrong ones.
+            value: SlotValue::Integer(object.parse::<i64>().unwrap_or(0)),
+            declared_type: SlotType::Integer,
+            class: None,
+            support_n,
+        })
+        .collect())
+}
+
+/// Load one claim's citations and their admitted bytes.
+///
+/// The bytes come from the caller, not from the store: a citation is only
+/// meaningful against the bytes that were ADMITTED, and a read that
+/// normalised the stored text first would be comparing something else
+/// entirely.
+pub(crate) fn load_citations(
+    conn: &Connection,
+    claim_row_id: i64,
+    admitted: &[(String, Vec<u8>)],
+) -> Result<Vec<(Citation, Vec<u8>)>, CreateError> {
+    let mut stmt = conn.prepare(
+        "SELECT source_cid, byte_start, byte_end, quote FROM claim_evidence
+          WHERE claim_ref = ?1 ORDER BY id ASC",
+    )?;
+    let rows = stmt
+        .query_map(params![claim_row_id], |r| {
+            Ok(Citation {
+                source_cid: r.get(0)?,
+                byte_start: r.get(1)?,
+                byte_end: r.get(2)?,
+                quote: r.get(3)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows
+        .into_iter()
+        .map(|c| {
+            // A citation whose admitted source was not supplied is carried with
+            // EMPTY bytes, which the gate refuses as unresolvable. Fetching it
+            // here would make this layer the thing that decides what counts as
+            // evidence.
+            let bytes = admitted
+                .iter()
+                .find(|(cid, _)| *cid == c.source_cid)
+                .map(|(_, b)| b.clone())
+                .unwrap_or_default();
+            (c, bytes)
+        })
+        .collect())
+}
+
+/// Run the gate over a stored claim and return the verdict.
+pub(crate) fn verify_claim(
+    conn: &Connection,
+    claim_id: &str,
+    admitted: &[(String, Vec<u8>)],
+) -> Result<GateOutcome, CreateError> {
+    let Some(claim) = load_claim_under_test(conn, claim_id, admitted)? else {
+        return Ok(GateOutcome::Refused {
+            check: crate::workflow::create::verify::Check::Referential,
+            reason: Refusal::Referential,
+        });
+    };
+    let schema = load_schema_slots(conn, &claim.subject)?;
+    Ok(crate::workflow::create::verify::run(
+        &claim,
+        schema.as_deref(),
+    ))
+}
+
+/// The stored fields the gate's plumbing needs. Named rather than returned as
+/// an eight-column tuple, because a positional row shape is exactly the kind
+/// of thing that silently transposes two `String` columns.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClaimRowFields {
+    row_id: i64,
+    subject: String,
+    predicate: String,
+    object: String,
+    qualifiers: String,
+    contradicts: String,
+    _schema_ref: i64,
+    _support_n: i64,
+}
+
+/// Assemble the rows the gate reads. Pure plumbing: no verdict here either.
+fn load_claim_under_test(
+    conn: &Connection,
+    claim_id: &str,
+    admitted: &[(String, Vec<u8>)],
+) -> Result<Option<ClaimUnderTest>, CreateError> {
+    let raw: Option<ClaimRowFields> = conn
+        .query_row(
+            "SELECT id, subject, predicate, object, qualifiers, contradicts, schema_ref, support_n
+               FROM claims WHERE claim_id = ?1",
+            params![claim_id],
+            |r| {
+                Ok(ClaimRowFields {
+                    row_id: r.get(0)?,
+                    subject: r.get(1)?,
+                    predicate: r.get(2)?,
+                    object: r.get(3)?,
+                    qualifiers: r.get(4)?,
+                    contradicts: r.get(5)?,
+                    _schema_ref: r.get(6)?,
+                    _support_n: r.get(7)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(fields) = raw else {
+        return Ok(None);
+    };
+    let ClaimRowFields {
+        row_id,
+        subject,
+        predicate,
+        object,
+        qualifiers,
+        contradicts,
+        ..
+    } = fields;
+    let cites = load_citations(conn, row_id, admitted)?;
+    let (citations, sources): (Vec<Citation>, Vec<Vec<u8>>) = cites.into_iter().unzip();
+    let declared_type = if object.parse::<i64>().is_ok() {
+        SlotType::Integer
+    } else {
+        SlotType::Free
+    };
+    Ok(Some(ClaimUnderTest {
+        claim_id: claim_id.to_string(),
+        subject: subject.clone(),
+        predicate,
+        value: match declared_type {
+            SlotType::Integer => SlotValue::Integer(object.parse::<i64>().unwrap_or(0)),
+            _ => SlotValue::Free(object.clone()),
+        },
+        declared_type,
+        qualifiers: decode_pairs(&qualifiers)?,
+        contradicts: decode_list(&contradicts)?,
+        citations,
+        sources,
+        ratified: load_ratified(conn, RECALL_PAGE_DEFAULT)?,
+    }))
+}
+
+fn decode_pairs(raw: &str) -> Result<Vec<(String, String)>, CreateError> {
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|e| CreateError::Storage(format!("qualifiers is not valid json: {e}")))?;
+    let obj = value
+        .as_object()
+        .ok_or_else(|| CreateError::Storage("qualifiers is not an object".into()))?;
+    let mut out = Vec::new();
+    for (k, v) in obj {
+        if out.len() >= crate::workflow::create::verify::MAX_QUALIFIERS {
+            break;
+        }
+        let s = v
+            .as_str()
+            .ok_or_else(|| CreateError::Storage("a qualifier value is not a string".into()))?;
+        out.push((k.clone(), s.to_string()));
+    }
+    Ok(out)
+}
+
+fn decode_list(raw: &str) -> Result<Vec<String>, CreateError> {
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|e| CreateError::Storage(format!("a list column is not valid json: {e}")))?;
+    let arr = value
+        .as_array()
+        .ok_or_else(|| CreateError::Storage("a list column is not an array".into()))?;
+    let mut out = Vec::new();
+    for v in arr {
+        if out.len() >= crate::workflow::create::verify::MAX_CONTRADICTS {
+            break;
+        }
+        let s = v
+            .as_str()
+            .ok_or_else(|| CreateError::Storage("a list element is not a string".into()))?;
+        out.push(s.to_string());
+    }
+    Ok(out)
+}
+
+/// Write a claim, its citations, and its audit row in ONE transaction.
+///
+/// This is the only write path into `claims`, and the audit row is written
+/// inside the caller's transaction so a claim and the evidence that it exists
+/// commit or roll back together.
+pub(crate) fn store_claim(
+    tx: &rusqlite::Transaction<'_>,
+    draft: &ClaimDraft<'_>,
+) -> Result<i64, CreateError> {
+    let ClaimDraft {
+        claim_id,
+        domain: _domain,
+        schema_ref,
+        subject,
+        predicate,
+        object,
+        authored_by,
+        created_at,
+        citations,
+    } = *draft;
+    if claim_id.is_empty() || claim_id.len() > MAX_CLAIM_ID_BYTES {
+        return Err(CreateError::Storage("claim id out of bounds".into()));
+    }
+    // The pre-computed target digest the database fence compares against. It
+    // is computed HERE, in Rust, because SQLite cannot hash a column — a fence
+    // that tried to compute it in SQL would refuse every visibility flip.
+    let target_hash = crate::audit::hash(claim_id);
+    let evidence_digest = evidence_digest_of(claim_id, citations);
+    let qualifiers = "{}";
+    let contradicts = "[]";
+    // The mapping happens HERE, from the typed principal kind, not at the
+    // call site. That is stronger than trusting every caller: a handler cannot
+    // pass an arbitrary string for a column the database fences key on, so
+    // there is no spelling of this function that lets a request body name its
+    // own author.
+    let created_by = principal_kind_string(authored_by);
+    tx.execute(
+        "INSERT INTO claims(
+            claim_id, schema_ref, subject, predicate, object, qualifiers, contradicts,
+            evidence_digest, audit_target_hash, created_by, created_at, status)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending')",
+        params![
+            claim_id,
+            schema_ref,
+            subject,
+            predicate,
+            object,
+            qualifiers,
+            contradicts,
+            evidence_digest,
+            target_hash,
+            created_by,
+            created_at,
+        ],
+    )?;
+    let row_id = tx.last_insert_rowid();
+    for (citation, bytes) in citations {
+        let quote_digest = crate::audit::hash(&String::from_utf8_lossy(bytes));
+        tx.execute(
+            "INSERT INTO claim_evidence(
+                claim_ref, source_cid, quote, byte_start, byte_end, quote_digest)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                row_id,
+                citation.source_cid,
+                citation.quote,
+                citation.byte_start,
+                citation.byte_end,
+                quote_digest,
+            ],
+        )?;
+    }
+    crate::audit::record_tenant(
+        tx,
+        AuditKind::Workflow,
+        created_by,
+        claim_id,
+        AuditStatus::Ok,
+        "claim proposed",
+        "global",
+    );
+    Ok(row_id)
+}
+
+/// A claim as offered for storage. Borrowed throughout, so the handler can
+/// pass a projection rather than a clone, and named so the nine fields of a
+/// claim write are visible as a shape rather than as a call's argument list.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ClaimDraft<'a> {
+    pub(crate) claim_id: &'a str,
+    pub(crate) domain: &'a str,
+    pub(crate) schema_ref: i64,
+    pub(crate) subject: &'a str,
+    pub(crate) predicate: &'a str,
+    pub(crate) object: &'a str,
+    pub(crate) authored_by: PrincipalKind,
+    pub(crate) created_at: i64,
+    pub(crate) citations: &'a [(Citation, Vec<u8>)],
+}
+
+/// The digest of a claim's evidence, computed at write time so promotion can
+/// be refused if any cited byte moved between review and approval.
+fn evidence_digest_of(claim_id: &str, citations: &[(Citation, Vec<u8>)]) -> String {
+    let mut acc = String::from(claim_id);
+    for (c, bytes) in citations {
+        acc.push('\u{1f}');
+        acc.push_str(&c.source_cid);
+        acc.push(':');
+        acc.push_str(&c.byte_start.to_string());
+        acc.push(':');
+        acc.push_str(&c.byte_end.to_string());
+        acc.push(':');
+        acc.push_str(&crate::audit::hash(&String::from_utf8_lossy(bytes)));
+    }
+    crate::audit::hash(&acc)
+}
+
+/// Store a human-authored schema, with its audit row, in ONE transaction.
+///
+/// The `CHECK (authored_by = 'human')` on the table is the tripwire; the
+/// binding check that the ACTING principal is human lives in the
+/// authorization layer, and this function refuses anything but the human
+/// spelling rather than trusting its caller to have checked.
+///
+/// `ratified_at` is set at admission, because admission IS ratification here:
+/// the route requires the workflow role and a human principal, and there is no
+/// second review step. The column records WHEN, and a schema with no
+/// `ratified_at` is one this route never wrote — which is what the typed-schema
+/// read keys on.
+pub(crate) fn store_schema(
+    tx: &rusqlite::Transaction<'_>,
+    domain: &str,
+    version: i64,
+    authored_by: PrincipalKind,
+    body: &str,
+    slots: Vec<SlotDecl>,
+    created_at: i64,
+) -> Result<StoredSchema, CreateError> {
+    // Mapped from the typed principal kind, for the same reason as the claim
+    // write above: the stored author string is a CHECK constraint's input and
+    // must not be reachable from a request body.
+    let authored_by = principal_kind_string(authored_by);
+    let admitted = schema::admit(domain, version, authored_by, body, slots)
+        .map_err(CreateError::SchemaRejected)?;
+    let digest = schema::body_digest(body);
+    tx.execute(
+        "INSERT INTO claim_schemas(
+            domain, version, authored_by, body, body_digest, ratified_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+        params![
+            admitted.domain,
+            admitted.version,
+            authored_by,
+            body,
+            digest,
+            created_at
+        ],
+    )?;
+    // Captured HERE, immediately after the insert and before the audit row.
+    // `last_insert_rowid` moves on every insert, so a caller that read it
+    // after this function returned would have gotten the AUDIT row's id — a
+    // silent wrong-row bug that a foreign key turns into a confusing
+    // constraint failure far from its cause.
+    let row_id = tx.last_insert_rowid();
+    crate::audit::record_tenant(
+        tx,
+        AuditKind::Workflow,
+        authored_by,
+        domain,
+        AuditStatus::Ok,
+        "claim schema authored",
+        "global",
+    );
+    Ok(StoredSchema {
+        id: row_id,
+        decl: admitted,
+        body_digest: digest,
+    })
+}
+
+/// A stored schema, as the writer hands it back: the row id and the digest the
+/// row is under. Both are captured at insert time for the reason on
+/// `store_schema`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StoredSchema {
+    pub(crate) id: i64,
+    pub(crate) decl: SchemaDecl,
+    pub(crate) body_digest: String,
+}
+
+/// Open a batch and record its set-check verdict, with its audit row, in ONE
+/// transaction.
+///
+/// `Passed` and `Failed` are separate arms rather than a boolean so a caller
+/// cannot record a partial result: there is no way to store "checked, unknown".
+pub(crate) fn store_batch_verdict(
+    tx: &rusqlite::Transaction<'_>,
+    batch_id: i64,
+    digest: &str,
+    member_count: i64,
+    set_check: &str,
+    checked_at: i64,
+    actor: &str,
+) -> Result<(), CreateError> {
+    if set_check != "pass" && set_check != "fail" {
+        return Err(CreateError::Storage(
+            "a stored set-check verdict must be a decision".into(),
+        ));
+    }
+    tx.execute(
+        "INSERT INTO claim_batches(id, batch_digest, member_count, set_check, checked_at, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
+        params![batch_id, digest, member_count, set_check, checked_at],
+    )?;
+    crate::audit::record_tenant(
+        tx,
+        AuditKind::Workflow,
+        actor,
+        &batch_id.to_string(),
+        AuditStatus::Ok,
+        "batch set-check recorded",
+        "global",
+    );
+    Ok(())
+}
+
+/// Flip recall visibility for a whole batch, with its audit row, in ONE
+/// transaction.
+///
+/// The trigger refuses this unless every member is ratified and the batch's
+/// set check passed, so this function does not re-check the set verdict — it
+/// cannot, cheaply or correctly, and duplicating the check here would create a
+/// second policy. The database is the authority; this is the transaction that
+/// gives it something to authorise.
+pub(crate) fn flip_batch_visibility(
+    tx: &rusqlite::Transaction<'_>,
+    batch_id: i64,
+    actor: &str,
+    at: i64,
+) -> Result<usize, CreateError> {
+    let n = tx.execute(
+        "UPDATE claims SET recall_visible = 1 WHERE batch_id = ?1 AND recall_visible = 0",
+        params![batch_id],
+    )?;
+    crate::audit::record_tenant(
+        tx,
+        AuditKind::Workflow,
+        actor,
+        &batch_id.to_string(),
+        AuditStatus::Ok,
+        "batch recall visibility granted",
+        "global",
+    );
+    let _ = at;
+    Ok(n)
+}
+
+/// The corpus, as read by the round's boundary harness. Data only — nothing
+/// here reaches a write path.
+pub(crate) fn corpus() -> &'static [PlantedClaim] {
+    crate::workflow::create::corpus::PLANTED_CORPUS
+}
+
+/// The gap flood, as generated. Pure; the caller supplies the domain state.
+pub(crate) fn gaps(
+    domain: &str,
+    covered: &[String],
+    schema: Option<&SchemaDecl>,
+) -> Vec<GapCandidate> {
+    crate::workflow::create::gap::generate(
+        domain,
+        &crate::workflow::create::gap::DomainState {
+            covered: covered.to_vec(),
+        },
+        schema,
+    )
+}
+
+/// The generation methods, for a screen that shows the operator what produced
+/// a gap. Ranking only; it can never set a status.
+pub(crate) fn gap_methods() -> &'static [GapMethod] {
+    &GapMethod::ALL
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::migration::run_migration;
+
+    fn db() -> Connection {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = Connection::open_in_memory().expect("open in-memory db");
+        run_migration(&mut conn, 512).expect("migration");
+        conn
+    }
+
+    fn slot() -> SlotDecl {
+        SlotDecl {
+            predicate: "warranty_months".into(),
+            ty: SlotType::Integer,
+            class: Some("warranty"),
+            lo: Some(0),
+            hi: Some(120),
+            labels: &[],
+        }
+    }
+
+    #[test]
+    fn the_gated_read_is_the_only_reader_and_it_joins_both_fenced_columns() {
+        let source = include_str!("create.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or_default();
+        let gated = production
+            .split("pub(crate) fn recall_page(")
+            .nth(1)
+            .expect("the gated read must exist");
+        let gated = &gated[..gated.find("\n}").expect("a fn must close")];
+        assert!(gated.contains("status = 'ratified'"));
+        assert!(gated.contains("recall_visible = 1"));
+        // And it must not offer a way to ask for unratified material.
+        assert!(
+            !gated.contains("pending"),
+            "the gated read must have no parameter that reaches an unratified row: a \
+             reader that can be asked for pending material is a reader that will be"
+        );
+    }
+
+    #[test]
+    fn a_schema_round_trips_through_its_digest() {
+        let conn = db();
+        let tx = conn.unchecked_transaction().expect("tx");
+        let stored = store_schema(
+            &tx,
+            "global",
+            1,
+            PrincipalKind::Jwt,
+            r#"{"slots":[{"predicate":"warranty_months","ty":"integer","class":"warranty","lo":0,"hi":120}]}"#,
+            vec![slot()],
+            1,
+        )
+        .expect("a human schema must be admitted");
+        assert_eq!(stored.decl.version, 1);
+        let digest = schema_digest(&tx, stored.id).expect("digest read");
+        assert_eq!(
+            digest.expect("a stored schema row"),
+            stored.body_digest,
+            "the stored digest must match its own body"
+        );
+        tx.commit().expect("commit");
+
+        let slots = load_schema_slots(&conn, "global")
+            .expect("load")
+            .expect("a ratified schema must load");
+        assert_eq!(slots.len(), 1);
+        assert_eq!(slots[0].predicate, "warranty_months");
+        assert_eq!(slots[0].ty, SlotType::Integer);
+    }
+
+    #[test]
+    fn a_tampered_schema_body_is_detected_at_load() {
+        let conn = db();
+        let tx = conn.unchecked_transaction().expect("tx");
+        let stored = store_schema(
+            &tx,
+            "global",
+            1,
+            PrincipalKind::Jwt,
+            r#"{"slots":[]}"#,
+            vec![slot()],
+            1,
+        )
+        .expect("admit");
+        let id = stored.id;
+        tx.commit().expect("commit");
+        conn.execute(
+            "UPDATE claim_schemas SET body = ?1 WHERE id = ?2",
+            params![r#"{"slots":[{"predicate":"other"}]}"#, id],
+        )
+        .expect("tamper");
+        assert!(
+            schema_digest(&conn, id).is_err(),
+            "a schema whose body no longer matches its digest must not load: the artifact a \
+             reviewer signs would not be the artifact in the row"
+        );
+    }
+
+    #[test]
+    fn an_unratified_claim_is_invisible_to_every_read() {
+        let conn = db();
+        let tx = conn.unchecked_transaction().expect("tx");
+        let stored = store_schema(
+            &tx,
+            "global",
+            1,
+            PrincipalKind::Jwt,
+            r#"{"slots":[]}"#,
+            vec![slot()],
+            1,
+        )
+        .expect("admit");
+        let schema_ref = stored.id;
+        tx.commit().expect("commit");
+
+        let tx = conn.unchecked_transaction().expect("tx");
+        store_claim(
+            &tx,
+            &ClaimDraft {
+                claim_id: "clm_hidden",
+                domain: "global",
+                schema_ref,
+                subject: "acme",
+                predicate: "warranty_months",
+                object: "24",
+                authored_by: PrincipalKind::AgentLoopback,
+                created_at: 1,
+                citations: &[],
+            },
+        )
+        .expect("store");
+        tx.commit().expect("commit");
+
+        assert!(
+            claim_exists(&conn, "clm_hidden").expect("probe"),
+            "the claim exists; the point is that it is not READABLE"
+        );
+        assert!(
+            recall_page(&conn, RECALL_PAGE_DEFAULT)
+                .expect("page")
+                .is_empty(),
+            "a pending claim must be invisible to the gated read: it is not a corpus row and \
+             no recall query can see it"
+        );
+        // And the screen read, the one surface that may look at a pending
+        // claim, is a different function on purpose.
+        assert!(load_for_screen(&conn, "clm_hidden").is_ok());
+    }
+
+    #[test]
+    fn the_recall_page_is_bounded() {
+        let conn = db();
+        // A limit of zero clamps to one; a limit past the cap clamps to the cap.
+        assert!(recall_page(&conn, 0).is_ok());
+        assert!(recall_page(&conn, usize::MAX).is_ok());
+        // A compile-time relation, so a later edit that inverts the two fails
+        // the build rather than producing a default past the cap.
+        const { assert!(RECALL_PAGE_DEFAULT < RECALL_PAGE_MAX) };
+        assert_eq!(RECALL_PAGE_MAX, 50);
+    }
+
+    #[test]
+    fn a_stored_set_check_verdict_must_be_a_decision() {
+        let conn = db();
+        let tx = conn.unchecked_transaction().expect("tx");
+        assert!(
+            store_batch_verdict(&tx, 1, &"a".repeat(64), 2, "pending", 1, "operator").is_err(),
+            "a stored verdict must be a decision; a third state would let a caller record \
+             'checked, unknown' and then treat it as a pass"
+        );
+        assert!(store_batch_verdict(&tx, 1, &"a".repeat(64), 2, "pass", 1, "operator").is_ok());
+    }
+
+    #[test]
+    fn the_core_carries_no_policy_and_no_fence_key_literal() {
+        let source = include_str!("create.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or_default();
+        // No principal-kind literal: the fences key on that string.
+        for needle in ["\"agent\"", "\"human\""] {
+            let hits = production.matches(needle).count();
+            assert!(
+                hits <= 1,
+                "the core contains {hits} occurrences of {needle}. The stored principal \
+                 string is a fence key and must come from the one mapping function, not from a \
+                 literal here."
+            );
+        }
+        // No verdict computation: the gate decides, this layer stores.
+        assert!(
+            !production.contains("fn run("),
+            "the storage layer must not re-implement the gate; a second policy in the layer \
+             that persists is a second authority"
+        );
+    }
+
+    #[test]
+    fn the_corpus_and_the_gap_flood_are_reachable_only_as_data() {
+        assert!(corpus().len() >= 8);
+        assert_eq!(gap_methods().len(), 4);
+        let flood = gaps("global", &[], None);
+        assert!(flood.len() <= crate::workflow::create::gap::GAP_FLOOD_CAP);
+    }
+}

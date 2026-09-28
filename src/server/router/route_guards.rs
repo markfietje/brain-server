@@ -342,6 +342,17 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     // audited release rows, domain-scoped rather than run-scoped, and the
     // window is bounded and validated in the core.
     "/workflow/delivery/outcomes",
+    // The create loop's five distinct paths across six surfaces. The base path
+    // carries the proposal POST and the gated listing GET; the id-scoped path
+    // is the promotion-screen read; the two sub-paths are the gate and the
+    // promotion act. The schema route sits on its own path because authoring a
+    // slot schema is a human act with a different role gate from proposing a
+    // claim.
+    "/workflow/claim-schemas",
+    "/workflow/claims",
+    "/workflow/claims/{id}",
+    "/workflow/claims/{id}/verify",
+    "/workflow/claims/{id}/promote",
 ];
 
 /// Every non-public route and the `Action::X` its handler must carry.
@@ -715,4 +726,21 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     // run-scoped, so the agent cell really reaches it, and the matrix's
     // ROLE_GATED_FOR_AGENT list says so).
     ("/workflow/delivery/outcomes", "Read"),
+    // The create loop. The base path carries BOTH actions and the Read row
+    // comes FIRST on purpose: the authz matrix pairs a path's first table row
+    // with its last-registered method (the GET here), so the row it reads must
+    // be the read's. A gated read that demanded Write would be a privilege
+    // nobody asked for.
+    //
+    // The `workflow`-role gate lives in the handlers, because the role store
+    // reads from the pool and cannot be a table row — the delivery-runs
+    // convention, stated precisely rather than by appeal to a refusal that does
+    // not exist: an agent preset holding `write:*` is ADMITTED at the table
+    // layer here. The binding human-artifact check is the promote handler's.
+    ("/workflow/claims", "Read"),
+    ("/workflow/claims/{id}", "Read"),
+    ("/workflow/claims/{id}/verify", "Write"),
+    ("/workflow/claims/{id}/promote", "Write"),
+    ("/workflow/claim-schemas", "Write"),
+    ("/workflow/claims", "Write"),
 ];

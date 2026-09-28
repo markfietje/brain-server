@@ -571,4 +571,28 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             "/workflow/delivery/outcomes",
             get(handlers::delivery::get_delivery_outcomes),
         )
+        // The create loop's six surfaces. The proposal POST registers FIRST and
+        // the gated listing GET LAST, so the authz source-scan resolves the
+        // shared base path to the listing — the existing decision-run and
+        // decision-eval convention, for the same reason.
+        //
+        // The schema route is deliberately on its own path rather than under
+        // the collection: authoring the slot schema is a human act with a
+        // different role gate from proposing a claim, and merging them would
+        // have made one authz row describe two postures.
+        .route(
+            "/workflow/claim-schemas",
+            post(handlers::claims::post_claim_schema),
+        )
+        .route("/workflow/claims", post(handlers::claims::post_claim))
+        .route("/workflow/claims/{id}", get(handlers::claims::get_claim))
+        .route(
+            "/workflow/claims/{id}/verify",
+            post(handlers::claims::post_claim_verify),
+        )
+        .route(
+            "/workflow/claims/{id}/promote",
+            post(handlers::claims::post_claim_promote),
+        )
+        .route("/workflow/claims", get(handlers::claims::get_claims))
 }

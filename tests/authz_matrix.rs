@@ -2401,6 +2401,24 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/workflow/decision-runs/{id}/replay-diff",
     "/workflow/decision-evals",
     "/workflow/decision-evals/{id}",
+    // The create loop. The reads are in this list because the agent class
+    // must be exercised against them, not because the agent is refused: the
+    // agent HAS a read scope and the gate read carries no role requirement.
+    // Listing it is what makes the matrix assert the agent can read a gated
+    // claim — and therefore that the gated read returns the agent only what
+    // every reader gets.
+    //
+    // The four writes demand the `workflow` role on top of the scope gate, so
+    // the agent class IS refused 403 on them: its own preset holds
+    // can:["read","write","reject"] and that set does not include `workflow`.
+    // The schema route is in this list for the sharper reason that it is the
+    // human-artifact act — the row an agent must never reach even if a future
+    // preset handed it the capability.
+    "/workflow/claims",
+    "/workflow/claims/{id}",
+    "/workflow/claims/{id}/verify",
+    "/workflow/claims/{id}/promote",
+    "/workflow/claim-schemas",
     // The operator decision surfaces: both handlers demand the `workflow`
     // role (the HITL law's gate shape) on top of the Write scope, so the
     // agent class is refused 403 exactly like the offer route.

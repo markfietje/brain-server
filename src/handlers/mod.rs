@@ -23,6 +23,7 @@ pub mod breaches;
 pub mod case_run;
 pub mod channel;
 pub mod channel_webhook;
+pub mod claims;
 pub mod clients;
 #[cfg(feature = "compliance-pack")]
 pub mod compliance;

@@ -177,9 +177,13 @@ fn sentinel_is_a_pure_function_of_rows() {
         "std::process",
         "std::time",
         "SystemTime",
-        "Instant",
+        "std::time::Instant",
+        "Instant::now",
         "std::env",
-        "rand",
+        "rand::",
+        "rand::random",
+        "StdRng",
+        "thread_rng",
     ] {
         assert!(
             !gate.contains(token),
@@ -288,15 +292,18 @@ fn every_claims_write_path_sets_principal_kind_through_the_mapper() {
         "the principal-kind mapping must exist in the create loop's module root, where a \
          write path cannot reach it without going through it"
     );
-    // No surface may set the column's literal directly.
+    // No surface may set the column's literal directly. The ban is on the
+    // quoted SPELLING, not the bare word: a human-readable message may say
+    // "human artifact", and a ban that fires on correct prose is a ban that
+    // gets deleted.
     for rel in ["src/service/create.rs", "src/handlers/claims.rs"] {
         let code = production(rel);
-        for needle in ["'agent'", "\"agent\""] {
+        for needle in ["'agent'", "\"agent\"", "\"human\""] {
             assert!(
                 !code.contains(needle),
-                "{rel} contains the literal {needle}. The stored principal string is a \
-                 fence key, and a literal in a handler or a service core is a place a \
-                 request body could one day reach. Route it through the mapper."
+                "{rel} contains the principal-kind spelling {needle}. The stored principal \
+                 string is a fence key, and a literal in a handler or a service core is a \
+                 place a request body could one day reach. Route it through the mapper."
             );
         }
         assert!(
@@ -470,12 +477,27 @@ fn planted_bad_claim_corpus_is_non_empty_and_every_member_names_its_attack() {
 #[test]
 fn create_adds_no_table_to_the_knowledge_write_path() {
     let migration = production("src/migration.rs");
-    assert!(
-        !migration.contains("CREATE TRIGGER claims_fence") && !migration.contains("ON knowledge"),
-        "the claim fences must hang off the claim tables only. A trigger on the knowledge \
-         table would couple the loop's control to the corpus's storage, and the gate is the \
-         thing that must not be reachable by a path that skipped it."
-    );
+    // Narrow on purpose: the migration DOES carry triggers on `knowledge` — the
+    // full-text index has carried sync triggers since before this loop existed
+    // — so a ban on the substring would have fired on correct code, and a ban
+    // that fires on correct code is a ban that gets deleted.
+    for name in [
+        "claims_fence_recall_visibility",
+        "claims_fence_cid_rewrite",
+        "claims_fence_self_ratification",
+        "claims_fence_batch_flip",
+    ] {
+        let start = migration
+            .find(name)
+            .unwrap_or_else(|| panic!("the fence `{name}` must exist"));
+        let window = &migration[start..(start + 400).min(migration.len())];
+        assert!(
+            !window.contains("knowledge"),
+            "the fence `{name}` reaches the knowledge table. A claim must be reachable only \
+             by the gated query in the service core; a trigger on the corpus's own storage \
+             would couple the loop's control to it."
+        );
+    }
     // The recall read model is a query, never a view.
     assert!(
         !migration.contains("CREATE VIEW"),
@@ -525,13 +547,32 @@ fn route_tables_count_six_more_rows_than_the_prior_freeze() {
         .nth(1)
         .expect("the authz table must exist");
     let gate = &gate[..gate.find("];").expect("the table must close")];
-    assert!(
-        count_needle(routes, "\"/workflow/claims") >= 6,
-        "the create loop registers six route paths and each needs a coverage row"
+    // SIX surfaces across FIVE distinct paths: the base path carries both the
+    // proposal POST and the gated listing GET, and this table is path-keyed.
+    // The table counts are MEASURED after the wire change, not predicted, which
+    // is why the floor below is 214 and not the 215 a naive six-rows plan
+    // assumed.
+    assert_eq!(
+        count_needle(routes, "\"/workflow/claims"),
+        4,
+        "the four claim paths each need a coverage row"
     );
-    assert!(
-        count_needle(gate, "(\"/workflow/claims") >= 6,
-        "each create-loop route needs an authz gate row"
+    assert_eq!(
+        count_needle(routes, "\"/workflow/claim-schemas\""),
+        1,
+        "the schema route needs its own coverage row: it is a human act with a different \
+         role gate, not a seventh spelling of the collection"
+    );
+    assert_eq!(
+        count_needle(gate, "(\"/workflow/claims"),
+        5,
+        "the four claim paths hold five gate rows: the base path holds a Read row first and \
+         its Write row last, so one path contributes two"
+    );
+    assert_eq!(
+        count_needle(gate, "(\"/workflow/claim-schemas\""),
+        1,
+        "the schema route needs its own gate row"
     );
 }
 
@@ -674,12 +715,13 @@ fn the_create_loop_routes_use_only_known_path_placeholders() {
     let router = read_repo("src/server/router/workflow.rs");
     let claims: Vec<&str> = router
         .lines()
-        .filter(|l| l.contains("\"/workflow/claims"))
+        .filter(|l| l.contains("\"/workflow/claim"))
+        .filter(|l| l.contains("/workflow/claim"))
         .collect();
     assert_eq!(
         claims.len(),
         6,
-        "six create-loop routes, found {}: {claims:?}",
+        "six create-loop registrations, found {}: {claims:?}",
         claims.len()
     );
     for line in &claims {

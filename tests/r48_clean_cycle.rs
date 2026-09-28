@@ -405,8 +405,20 @@ fn r48_adds_no_table_no_stamp_no_dependency() {
 /// marker R48 was never going to add.)
 #[test]
 fn r48_the_route_tables_are_unchanged() {
-    const OPEN_ROUTES: usize = 209;
-    const OPEN_GATES: usize = 194;
+    // This pin froze the tables at R48's close and was an exact `assert_eq!`.
+    // It is RETIRED by the round that adds routes, deliberately and with the
+    // numbers recorded rather than deleted: the create loop adds six surfaces
+    // across five distinct paths, so the coverage table grew by five and the
+    // authz table by six.
+    //
+    // A pin that says "still exactly N" cannot survive a round that is allowed
+    // to add routes, and a round that quietly edited the constant instead would
+    // have turned R48's scope proof into a rubber stamp. The successor is the
+    // create-loop suite's `route_tables_count_six_more_rows_than_the_prior_freeze`,
+    // which states the same property positively and cannot be satisfied by
+    // deleting rows.
+    const OPEN_ROUTES: usize = 214;
+    const OPEN_GATES: usize = 200;
 
     let guards = read_repo("src/server/router/route_guards.rs");
     let between = |start: &str| -> String {
