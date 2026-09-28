@@ -16,6 +16,17 @@
 //! enforced at the RESPONSE BOUNDARY and not by convention: the diagnostic is
 //! written to the audit row and simply never copied into the reply.
 //!
+//! ## Who may read this family
+//!
+//! Every surface here — reads included — additionally requires the `workflow`
+//! role, so the whole claim family is closed to the agent principal. The reads
+//! are gated on purpose rather than by convention: the screen read shows a
+//! claim that has NOT been ratified yet, and a model that can read the review
+//! surface can learn what the human is about to look at. The gated list read
+//! carries only ratified, visible material, but keeping the posture uniform
+//! across the family means a future surface added here inherits the stricter of
+//! the two by default rather than the looser.
+//!
 //! ## The principal kind
 //!
 //! No handler writes a stored principal-kind string. It is produced by the one
@@ -99,18 +110,6 @@ fn parse_claim_id(raw: &str) -> Result<String, HandlerError> {
     Ok(raw.to_string())
 }
 
-fn validate_limit(limit: Option<usize>) -> Result<usize, HandlerError> {
-    let limit = limit.unwrap_or(RECALL_PAGE_DEFAULT);
-    if (1..=RECALL_PAGE_MAX).contains(&limit) {
-        Ok(limit)
-    } else {
-        Err(HandlerError::bad_request(
-            "claim_limit_out_of_bounds",
-            format!("limit must land inside 1..={RECALL_PAGE_MAX}"),
-        ))
-    }
-}
-
 #[derive(Deserialize)]
 pub(crate) struct ClaimQuery {
     pub limit: Option<usize>,
@@ -186,9 +185,14 @@ pub(crate) async fn post_claim_schema(
     let now = chrono::Utc::now().timestamp();
     let stored = tokio::task::spawn_blocking(move || {
         let mut connection = pool.get().map_err(HandlerError::db_down)?;
-        let tx = connection.transaction().map_err(db_err)?;
+        // `WorkflowTx::begin` is the house's write seam: BEGIN IMMEDIATE, and
+        // a drop that rolls the write AND its audit row back together. A raw
+        // deferred transaction here would have let two writers interleave
+        // between the read and the insert, which is the exact class the write
+        // -discipline ratchet exists to keep out of the handler layer.
+        let mut wtx = crate::workflow::tx::WorkflowTx::begin(&mut connection).map_err(db_err)?;
         let stored = create::store_schema(
-            &tx,
+            wtx.tx(),
             &body.domain,
             body.version,
             kind,
@@ -197,7 +201,7 @@ pub(crate) async fn post_claim_schema(
             now,
         )
         .map_err(create_error)?;
-        tx.commit().map_err(db_err)?;
+        wtx.commit().map_err(db_err)?;
         Ok::<_, HandlerError>(stored)
     })
     .await
@@ -245,8 +249,9 @@ pub(crate) async fn post_claim(
             ));
         };
         let object = body.object.to_string();
+        let mut wtx = crate::workflow::tx::WorkflowTx::begin(&mut connection).map_err(db_err)?;
         create::store_claim(
-            &connection.transaction().map_err(db_err)?,
+            wtx.tx(),
             &create::ClaimDraft {
                 claim_id: &body.claim_id,
                 domain: &body.domain,
@@ -260,6 +265,7 @@ pub(crate) async fn post_claim(
             },
         )
         .map_err(create_error)?;
+        wtx.commit().map_err(db_err)?;
         crate::audit::record_tenant(
             &connection,
             crate::audit::AuditKind::Workflow,
@@ -292,7 +298,13 @@ pub(crate) async fn get_claims(
     let principal = principal.0;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     super::authorize(&principal, crate::auth::Action::Read, "", "global")?;
-    let limit = validate_limit(query.limit)?;
+    super::authorize_role(&principal, &pool, "workflow")?;
+    let limit = super::bounded_limit(
+        query.limit,
+        RECALL_PAGE_DEFAULT,
+        RECALL_PAGE_MAX,
+        "claim_limit_out_of_bounds",
+    )?;
     let actor = actor_label(&principal);
     let rows = tokio::task::spawn_blocking(move || {
         let connection = pool.get().map_err(HandlerError::db_down)?;
@@ -329,6 +341,7 @@ pub(crate) async fn get_claim(
     let principal = principal.0;
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     super::authorize(&principal, crate::auth::Action::Read, "", "global")?;
+    super::authorize_role(&principal, &pool, "workflow")?;
     let claim_id = parse_claim_id(&claim_id)?;
     let actor = actor_label(&principal);
     let row = tokio::task::spawn_blocking(move || {

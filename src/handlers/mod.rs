@@ -687,6 +687,29 @@ impl HandlerError {
 // Domain resolution helpers
 // ---------------------------------------------------------------------------
 
+/// Bound a list surface's `limit` query parameter.
+///
+/// One shape for the whole handler layer, because the rule is one rule: a
+/// limit outside its bounds is a `400` naming the bound, never a silent clamp
+/// and never an unbounded read. Each caller supplies its own default, maximum
+/// and vocabulary, because those are per-surface facts — a shared bound would
+/// be a shared guess.
+pub(crate) fn bounded_limit(
+    limit: Option<usize>,
+    default: usize,
+    max: usize,
+    code: &'static str,
+) -> Result<usize, HandlerError> {
+    let limit = limit.unwrap_or(default);
+    if (1..=max).contains(&limit) {
+        return Ok(limit);
+    }
+    Err(HandlerError::bad_request(
+        code,
+        format!("limit must land inside 1..={max}"),
+    ))
+}
+
 /// Resolve a domain name to its connection pool via the registry.
 /// Defaults to `"global"` when `domain` is `None` or empty. Unknown domains
 /// return a `400` whose `details` carries the list of known domains (per the

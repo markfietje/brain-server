@@ -884,14 +884,29 @@ fn r46_round_adds_no_route_no_table_and_no_schema_stamp() {
 /// file is for.
 #[test]
 fn r46_the_create_loop_boundary_is_now_owned_by_its_own_suite() {
+    // Asserted on the DEFINITION, not on the name. This pin's own doc comment
+    // and these assertions both name the retired pin, so a substring ban would
+    // fire on the very text that documents the retirement — the first version
+    // of this pin did exactly that, which is a pin that can never be green.
     let retired = read_repo("tests/r46_evidence_pins.rs");
+    let still_defined = retired
+        .lines()
+        .filter(|l| l.trim_start().starts_with("fn "))
+        .any(|l| l.contains("r46_create_rs_does_not_exist_yet"));
     assert!(
-        !retired.contains("fn r46_create_rs_does_not_exist_yet"),
+        !still_defined,
         "the absence pin is retired; keeping a second copy of it would leave a pin that \
          can never fail again, which is worse than no pin"
     );
+    // The census must not still count it. Compared against the census BLOCK
+    // only, for the same reason.
+    let census = retired
+        .split("const EXPECTED_PINS")
+        .nth(1)
+        .and_then(|rest| rest.split("];").next())
+        .expect("the pin census must exist");
     assert!(
-        !retired.contains("\"r46_create_rs_does_not_exist_yet\","),
+        !census.contains("r46_create_rs_does_not_exist_yet"),
         "the retired pin's name must leave the pin census too, or the census counts a pin \
          that no longer exists"
     );

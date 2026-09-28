@@ -259,12 +259,27 @@ fn claims_fence_trigger_sql_parses_and_every_column_exists() {
 /// trigger that tried would be a predicate that can never be satisfied.
 #[test]
 fn claims_fence_witness_check_compares_a_stored_hash_not_a_computed_one() {
+    // The window runs to the NEXT trigger's CREATE, not to the first `END;`.
+    // The first version of this pin truncated there — and the first `END;` in
+    // a trigger body is the terminator of a `SELECT CASE` arm, several lines
+    // ABOVE the predicate the pin exists to guard. It was green against a
+    // computed hash because it could not see one: a pin that reads a window
+    // too short to contain its subject is worse than no pin, because it reads
+    // as protection.
     let migration = production("src/migration.rs");
     let body = migration
         .split("claims_fence_recall_visibility")
         .nth(1)
         .expect("the visibility fence must exist");
-    let body = &body[..body.find("END;").expect("a fence body must end")];
+    let body = match body.find("CREATE TRIGGER") {
+        Some(next) => &body[..next],
+        None => body,
+    };
+    assert!(
+        body.contains("a.target_hash"),
+        "the witness check must compare the audit row's stored target digest; a body that \
+         never mentions it is not a witness check at all"
+    );
     assert!(
         body.contains("audit_target_hash"),
         "the witness check must compare the claim's pre-computed target digest against \
@@ -462,6 +477,26 @@ fn planted_bad_claim_corpus_is_non_empty_and_every_member_names_its_attack() {
         members >= 8,
         "the planted corpus holds {members} members; a corpus that shrinks to zero would \
          make every corpus pin vacuously green forever, and the floor is up-only"
+    );
+    // The floor is READ from the module, not restated here. The first version
+    // of this pin asserted a member count and a floor in two places, and a
+    // floor raised in one and not the other is a floor nobody is holding.
+    let declared = corpus
+        .split("CORPUS_FLOOR: usize = ")
+        .nth(1)
+        .and_then(|rest| rest.split(';').next())
+        .and_then(|n| n.trim().parse::<usize>().ok())
+        .expect("the corpus must declare a membership floor as a parseable literal");
+    assert!(
+        members >= declared,
+        "the planted corpus holds {members} members, below its OWN declared floor of \
+         {declared}"
+    );
+    assert!(
+        declared >= 12,
+        "the corpus floor is {declared}; the round shipped twelve planted classes and the \
+         floor is up-only, so a floor below what this round actually landed is a lowered \
+         floor wearing a floor's name"
     );
     let attacks = count_needle(&corpus, "attack:");
     assert_eq!(

@@ -29,18 +29,6 @@ pub struct CorpusQuery {
     pub partition: Option<String>,
 }
 
-fn validate_limit(limit: Option<usize>) -> Result<usize, HandlerError> {
-    let limit = limit.unwrap_or(100);
-    if (1..=500).contains(&limit) {
-        return Ok(limit);
-    }
-    Err(HandlerError::internal_with(
-        "reflection_limit_out_of_bounds",
-        "limit must land inside 1..=500 — the corpus page is bounded",
-        StatusCode::BAD_REQUEST,
-    ))
-}
-
 fn validate_partition(
     raw: Option<&str>,
 ) -> Result<Option<crate::workflow::reflection::Partition>, HandlerError> {
@@ -71,7 +59,7 @@ pub async fn get_reflection_corpus(
     let pool = super::resolve_domain_pool(&state.registry, None)?;
     super::authorize(&principal, crate::auth::Action::Admin, "", "global")?;
     crate::handlers::breaches::require_dpo_role(&principal, &pool)?;
-    let limit = validate_limit(q.limit)?;
+    let limit = super::bounded_limit(q.limit, 100, 500, "reflection_limit_out_of_bounds")?;
     let partition = validate_partition(q.partition.as_deref())?;
     let since = q.since;
     let who = principal
@@ -131,13 +119,16 @@ mod tests {
     /// counts statements in this file, assertions included).
     #[test]
     fn corpus_limit_bounds_are_pinned() {
-        assert!(validate_limit(None).is_ok());
-        assert_eq!(validate_limit(None).unwrap(), 100);
-        assert!(validate_limit(Some(1)).is_ok());
-        assert!(validate_limit(Some(500)).is_ok());
-        assert!(validate_limit(Some(0)).is_err());
-        assert!(validate_limit(Some(501)).is_err());
-        assert!(validate_limit(Some(100_000)).is_err());
+        let bounded = |limit: Option<usize>| {
+            crate::handlers::bounded_limit(limit, 100, 500, "reflection_limit_out_of_bounds")
+        };
+        assert!(bounded(None).is_ok());
+        assert_eq!(bounded(None).unwrap(), 100);
+        assert!(bounded(Some(1)).is_ok());
+        assert!(bounded(Some(500)).is_ok());
+        assert!(bounded(Some(0)).is_err());
+        assert!(bounded(Some(501)).is_err());
+        assert!(bounded(Some(100_000)).is_err());
     }
 
     #[test]

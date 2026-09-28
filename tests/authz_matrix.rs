@@ -564,6 +564,13 @@ const LAYOUT_CONDITIONAL: &[&str] = &["/consolidate/propose"];
 /// (the mount body must be a valid bridge bundle; the gate itself is
 /// admin + audited).
 const PRE_GATE_400: &[&str] = &["/workflow/plugins/mount"];
+/// Rows whose TYPED body is deserialized by the extractor before the handler
+/// body runs, so a request whose body does not match the type is rejected
+/// before authorization is reached. The rejection is 422 from the extractor,
+/// not 400 from the handler — which is why this is its own row rather than an
+/// addition to the 400 list. The gate still runs for every well-formed body,
+/// and the denied cell is asserted against both codes.
+const PRE_GATE_BODY_REJECT: &[&str] = &["/workflow/claim-schemas", "/workflow/claims"];
 /// Rows whose handler resolves the row FIRST and authorizes second: a
 /// nonexistent id answers 404 before the gate — the gate still runs for
 /// existing rows; the matrix accepts the pre-gate 404 in denied cells.
@@ -798,6 +805,12 @@ async fn authz_matrix_rows_x_classes_through_composed_app() {
                     st,
                     StatusCode::BAD_REQUEST,
                     "{method} {template} ({label}) pre-gate 400s on an invalid bundle"
+                );
+            } else if PRE_GATE_BODY_REJECT.contains(&template) {
+                assert!(
+                    st == StatusCode::UNPROCESSABLE_ENTITY || st == StatusCode::FORBIDDEN,
+                    "{method} {template} ({label}) must 422 on a body the typed extractor \
+                     rejects, or 403 once the body parses, got {st}"
                 );
             } else if PRE_GATE_404.contains(&template) {
                 assert!(
@@ -2401,19 +2414,17 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/workflow/decision-runs/{id}/replay-diff",
     "/workflow/decision-evals",
     "/workflow/decision-evals/{id}",
-    // The create loop. The reads are in this list because the agent class
-    // must be exercised against them, not because the agent is refused: the
-    // agent HAS a read scope and the gate read carries no role requirement.
-    // Listing it is what makes the matrix assert the agent can read a gated
-    // claim — and therefore that the gated read returns the agent only what
-    // every reader gets.
+    // The create loop, all five paths. Every surface here demands the
+    // `workflow` role on top of the scope gate, so the agent class is refused
+    // 403 on all of them: its own preset holds can:["read","write","reject"],
+    // and that set does not include `workflow`.
     //
-    // The four writes demand the `workflow` role on top of the scope gate, so
-    // the agent class IS refused 403 on them: its own preset holds
-    // can:["read","write","reject"] and that set does not include `workflow`.
-    // The schema route is in this list for the sharper reason that it is the
-    // human-artifact act — the row an agent must never reach even if a future
-    // preset handed it the capability.
+    // The reads are listed for a real reason rather than for coverage. The
+    // screen read shows a claim that has NOT been ratified yet, and a model
+    // that can read the review surface can learn what the human is about to
+    // look at — which is a leak of the review process itself. The schema route
+    // is the human-artifact act: the row an agent must never reach even if a
+    // future preset handed it the capability.
     "/workflow/claims",
     "/workflow/claims/{id}",
     "/workflow/claims/{id}/verify",
@@ -2518,6 +2529,12 @@ async fn authz_matrix_agent_loopback_class() {
                 st,
                 StatusCode::BAD_REQUEST,
                 "{method} {template} (agent) pre-gate 400s"
+            );
+        } else if PRE_GATE_BODY_REJECT.contains(&template) {
+            assert!(
+                st == StatusCode::UNPROCESSABLE_ENTITY || st == StatusCode::FORBIDDEN,
+                "{method} {template} (agent) must 422 on a body the typed extractor rejects, \
+                 or 403 once it parses, got {st}"
             );
         } else if PRE_GATE_404.contains(&template) {
             assert!(
