@@ -4,6 +4,35 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## Unreleased — R45-0 "Correction"
+
+### Release notes
+
+**Security fixes**
+
+- The audit chain's mechanism is now described accurately wherever it is
+  published. We previously described it as an Ed25519-signed hash-chained audit;
+  that was two layers described as one. The chain is a **keyed HMAC-SHA256 hash
+  chain** — `chain_link` is SHA-256 over five pipe-delimited fields in the
+  legacy epoch, and HMAC-SHA256 over eight length-prefixed fields once keyed.
+  Ed25519 signs *other* artifacts — standby manifests, parcels, provenance marks
+  — at the boundaries; the audit chain is never signed per row.
+  The signing key for the chain is not stored with the record, so an attacker
+  with database access who rewrites history still cannot forge a valid chain.
+  This round changes what we SAY; no verdict, key, epoch, check, or audit row
+  changes (the chain module is byte-untouched and pinned as such).
+
+### Engineering record
+
+- Two preregistered measurements: the real audit-append rate (the "crypto is a
+  small share of append cost" figure was an estimate from primitive costs and is
+  now retired in favour of a measured rate), and a false-positive-rate
+  benchmark over a 500+ row benign corpus with a one-sided Clopper-Pearson upper
+  bound at 95%, reported per surface and never blended.
+- New `brain bench audit-append` subcommand (bench-gated, off by default).
+- Zero new dependency edges; the Clopper-Pearson bound is hand-rolled from
+  `f64::ln_gamma` and the regularized incomplete beta.
+
 Release-notes convention (v1.21.0+): every section splits into `### Release
 notes` (written for USERS — **Bug fixes** / **Improvements** /
 **Security fixes**, marked "None" when a category is empty) followed by
