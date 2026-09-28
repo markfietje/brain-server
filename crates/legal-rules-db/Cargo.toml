@@ -4,7 +4,7 @@ version = "1.28.7"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "The (jurisdiction, date, amount) -> then-in-force legal-rule resolver for the Steward rulebook vertical; filled in 1.27.36 (IMPLEMENTATION_PLAN_v1.27.36_Rulebook.md). Empty scaffold until then."
+description = "The (jurisdiction, date, amount) -> then-in-force legal-rule resolver for the Steward rulebook vertical. Rule and Rate records with applicable_rule, apply_rate and ApplyError over a seeded table; store and tests in db.rs. Populated since v1.27.36 (IMPLEMENTATION_PLAN_v1.27.36_Rulebook.md) — the prior \"empty scaffold until then\" description was stale and was corrected 2026-09-28."
 publish = false
 
 [dependencies]
