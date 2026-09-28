@@ -4,7 +4,7 @@ version = "1.28.7"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Versioned frozen gold packs for scorer calibration: agreed human truth the scorer is measured against, never auto-published."
+description = "Versioned frozen gold packs: agreed human truth the scorer and the GDL case machine are measured against, never auto-published. Two packs — a qc_report for scorer calibration, and five GDL cases (skipped_verify, intake_is_is_not, handoff_incomplete, repeater_3_30d, stale_knowledge). Carries CaseStep/CaseArtifacts/GoldCase and a kappa gate in integer ten-thousandths (KAPPA_GATE_UNITS = 7000, kappa 0.70) surfaced by kappa_gate_failures. Consumed by the scoreboard, the steward-harness gold test and the eval suite. Description corrected 2026-09-28: it previously named scorer calibration only, omitting the GDL case pack and the kappa gate."
 publish = false
 
 [dependencies]
