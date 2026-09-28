@@ -41,13 +41,13 @@ const BOUNDARY_KIND: &str = "tampered_recomputed_cid";
 const MISMATCHED_BY_DESIGN: &[&str] = &["wrong_cid", "tampered_original_cid"];
 
 fn corpus_path() -> PathBuf {
-    match std::env::var("R46_CORPUS") {
-        Ok(p) => PathBuf::from(p),
-        Err(_) => PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+    let default = || {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
-            .join(DEFAULT_CORPUS),
-    }
+            .join(DEFAULT_CORPUS)
+    };
+    std::env::var("R46_CORPUS").map_or_else(|_| default(), PathBuf::from)
 }
 
 /// A minimal field extractor for the corpus's own JSONL shape.

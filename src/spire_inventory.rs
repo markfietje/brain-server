@@ -137,16 +137,17 @@ const ROUTER_SITES_FLOOR: usize = 248;
 /// the closing round's fifteen battery pins (the fourteen §5 names plus the
 /// house gate-order restatement).
 ///
-/// 2,301 → 2,342 (walk-measured). The resolver crate's sixteen kernel-side
+/// 2,301 → 2,343 (walk-measured). The resolver crate's sixteen kernel-side
 /// scope/supply-chain pins, against a 21-hit needle delta: the other five are
 /// the literal test-attribute occurrences inside that file's own census
 /// PARSER and its doc comments, which this substring-counting needle counts.
 /// This very comment was once written naming the literal and moved the walk
-/// by one, which is the whole point of recording it. The floor is set to the
-/// walk-measured truth rather than to the "real tests" count, because this
-/// constant is compared against the walk and a lower number would silently
-/// weaken the guard instead of failing loudly.
-const CRATE_TEST_FLOOR: usize = 2_342;
+/// by one, which is the whole point of recording it. The 2,343rd is the
+/// watchdog scan-path pin that closed the unscanned-`crates` gap. The floor is
+/// set to the walk-measured truth rather than to the "real tests" count,
+/// because this constant is compared against the walk and a lower number would
+/// silently weaken the guard instead of failing loudly.
+const CRATE_TEST_FLOOR: usize = 2_343;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows (security.txt + the

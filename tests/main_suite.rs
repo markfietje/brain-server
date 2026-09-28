@@ -19717,6 +19717,83 @@ mod r42sh_artifact_integrity {
         }
     }
 
+    /// The lipstyk watchdog's scan list, and the fact that the local script and
+    /// the CI job name the SAME trees.
+    ///
+    /// The gap this closes was invisible in the worst way. The list was a
+    /// literal repeated three times inside `scripts/lipstyk-gate.sh` and a
+    /// fourth time in the CI workflow, so adding a code tree meant editing four
+    /// strings — and forgetting one did not FAIL, it simply stopped scanning
+    /// that tree. A round that added a whole crate under `crates/` looked
+    /// exactly like a round that added no linted code at all. lipstyk is
+    /// PATH-based and does not care that `crates/` is a separate cargo
+    /// workspace node; the exclusion was the script's, not the tool's.
+    ///
+    /// The fix is structural rather than editorial: the script derives all of
+    /// its uses from ONE variable, and this pin holds that variable equal to
+    /// the CI invocation's path list.
+    #[test]
+    fn lipstyk_gate_scan_paths_match_the_ci_watchdog() {
+        let script = src("scripts/lipstyk-gate.sh");
+
+        // (a) ONE definition. The four code trees must all be in it.
+        let scan_paths_line = script
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("SCAN_PATHS="))
+            .expect("scripts/lipstyk-gate.sh must define SCAN_PATHS");
+        let scan_paths: Vec<String> = scan_paths_line
+            .trim_start_matches("SCAN_PATHS=")
+            .trim_matches('"')
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        for tree in ["src", "client", "plugin", "crates"] {
+            assert!(
+                scan_paths.iter().any(|p| p == tree),
+                "`{tree}` must be in the watchdog's scan list, found {scan_paths:?} — \
+                 an unscanned code tree is a tree where a new diagnostic passes silently"
+            );
+        }
+
+        // (b) the variable is USED, not defined and then bypassed. A hard-coded
+        //     copy anywhere is a second list that will drift.
+        let uses = script.matches("$SCAN_PATHS").count();
+        assert!(
+            uses >= 3,
+            "SCAN_PATHS is referenced {uses} times; the intent-to-add, the vacuity \
+             check, and the lipstyk invocation must ALL derive from it, or a \
+             hard-coded copy is what is actually being scanned"
+        );
+
+        // (c) CI names the same trees. Match the RUN line, not a mention — the
+        //     lesson recorded on `release_gates_run_in_ci` above.
+        let ci = src(".github/workflows/ci.yml");
+        let invocation = ci
+            .lines()
+            .map(str::trim)
+            .find(|l| l.starts_with("lipstyk --diff") && l.contains("--exclude-tests"))
+            .unwrap_or_else(|| {
+                panic!(
+                    "no CI step RUNS the lipstyk watchdog — a mention in prose is not \
+                         an invocation, and a gate nobody runs rots into a vacuous pass"
+                )
+            });
+        let ci_paths: Vec<String> = invocation
+            .split("--exclude-tests")
+            .nth(1)
+            .expect("the invocation must pass --exclude-tests")
+            .split_whitespace()
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            scan_paths, ci_paths,
+            "the local gate and the CI watchdog must scan the SAME trees. A tree in one \
+             and absent from the other is scanned on exactly one of the two surfaces, \
+             which is the failure this pin exists to close."
+        );
+    }
+
     /// The gates run `scripts/*.py` directly, so importing one creates a
     /// bytecode cache. The repo must not be able to commit it.
     #[test]

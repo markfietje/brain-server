@@ -604,7 +604,7 @@ mod tests {
     #[test]
     fn r46_any_single_flipped_byte_changes_the_cid() {
         let base = cid_v1(SOURCE);
-        for i in 0..SOURCE.len() {
+        for (i, _) in SOURCE.iter().enumerate() {
             for bit in [0x01u8, 0x80u8] {
                 let mut flipped = SOURCE.to_vec();
                 flipped[i] ^= bit;
