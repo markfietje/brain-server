@@ -1058,6 +1058,196 @@ fn r45_0_blueprint_loop_count_agrees_with_the_authoritative_plan() {
     );
 }
 
+// ── no verdict path reaches "supported" without the hash comparison ─────────
+//
+// This is the machine form of a KILL condition. A gate that can be turned off,
+// bypassed, or satisfied by a normalisation step is not a gate; it is
+// decoration that reads as a gate. R45-0's correction holds the *claim* to one
+// shape and this holds the *verifier* to it.
+
+/// `/verify` shipped as a span verifier that case-folds both sides, trims the
+/// claim, and answers `decision: "supported"`. R46 supersedes it, and this pin
+/// makes the supersession structural rather than a matter of intent: the
+/// normalizing matcher may not remain the thing that produces a support verdict.
+///
+/// The bypass predicate: does `window` compute a support DECISION from a
+/// normalising comparison?
+///
+/// **Window-scoped, not line-scoped, and that is a correction of my own first
+/// attempt.** The predicate was written line-by-line and the red-proof caught
+/// it immediately: the shipped `/verify` splits the decision across three lines
+/// — `let supported = !ranges.is_empty();` on one, then `decision: if
+/// supported { "supported" }` on the next — so a line-scoped check sees a
+/// normaliser on one line and a decision on another and passes a real bypass.
+/// A guard that walks line-by-line through code it has not read is the same
+/// mistake as a detector that greps a paragraph it has not read. The window
+/// closes the gap; the proof below pins the case that motivated it.
+fn decision_line_is_bypassed(low: &str) -> bool {
+    let computes_decision =
+        low.contains("decision") && (low.contains("supported") || low.contains("is_empty()"));
+    let normalizes = low.contains("to_lowercase")
+        || low.contains("to_ascii_lowercase")
+        || low.contains(".trim()");
+    computes_decision && normalizes
+}
+
+/// Apply [`decision_line_is_bypassed`] over a sliding window, so a decision and
+/// its normaliser may sit on adjacent lines and still be caught.
+fn bypassed_line_index(lines: &[&str]) -> Option<usize> {
+    const WINDOW: usize = 6;
+    for (i, _line) in lines.iter().enumerate() {
+        let start = i.saturating_sub(WINDOW);
+        let end = (i + 1).min(lines.len());
+        let joined = lines[start..end]
+            .iter()
+            .map(|l| l.to_lowercase())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if decision_line_is_bypassed(&joined) {
+            return Some(i + 1);
+        }
+    }
+    None
+}
+
+#[test]
+fn r45_0_no_normalizing_verifier_answers_supported() {
+    const HANDLER: &str = "src/handlers/verify.rs";
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(HANDLER);
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("cannot read {HANDLER}: {e}"));
+    let lines: Vec<&str> = text.lines().collect();
+
+    if let Some(line) = bypassed_line_index(&lines) {
+        panic!(
+            "{HANDLER}:{} — a `decision` is computed from a normalising comparison. \
+             Case-folding or trimming before the decision is a lossy function an \
+             attacker can tune against, and it is how a verdict path becomes reachable \
+             WITHOUT the exact check. The lexical match may be reported as `advisory`, \
+             never as a support verdict. (Checked over a 6-line window: the decision and \
+             its normaliser need not share a line.)",
+            line
+        );
+    }
+}
+
+/// RED-PROOF for the bypass guard above.
+///
+/// The failure this guards is invisible by construction: a verdict computed from
+/// a normalising comparison still returns `supported`, still passes an HTTP 200,
+/// and still looks like a gate. Only a source-level check catches it, and a
+/// source-level check that has never been shown to catch a synthetic bypass is
+/// indistinguishable from a comment. This drives the same predicate against
+/// three shapes — the shipped-bypass shape, the shape R46 must produce, and a
+/// case-folded variant that looks different but is the same defect.
+#[test]
+fn r45_0_bypass_guard_catches_a_planted_normalizing_verdict() {
+    // MUST fire: the shape `/verify` shipped in — normaliser on one line, the
+    // decision computed from it on the NEXT. This is the case that caught the
+    // line-scoped first attempt at this guard.
+    let shipped_shape = r#"
+        let hay = content.to_lowercase();
+        let ranges = verify_claim(&hay, &claim);
+        let supported = !ranges.is_empty();
+        Ok(Json(VerifyResponse {
+            supported,
+            decision: if supported { "supported" } else { "unsupported_claim" },
+        }))
+    "#;
+    let lines: Vec<&str> = shipped_shape.lines().collect();
+    assert!(
+        bypassed_line_index(&lines).is_some(),
+        "RED-PROOF FAILED: the guard did not flag the EXACT shape `/verify` ships, where \
+         the normaliser and the decision sit on different lines. A line-scoped guard reads \
+         that file as clean, which is the whole failure this pin exists to prevent."
+    );
+
+    // MUST fire: the single-line shape.
+    let one_line =
+        r#"    decision: if content.to_lowercase().contains(&c) { "supported" } else { "no" },"#;
+    assert!(
+        decision_line_is_bypassed(&one_line.to_lowercase()),
+        "the guard missed a single-line normalising verdict"
+    );
+
+    // MUST fire: a trimmed comparison, the other common normaliser.
+    let trimmed =
+        r#"    decision: if content.trim() == claim.trim() { "supported" } else { "no" },"#;
+    assert!(
+        decision_line_is_bypassed(&trimmed.to_lowercase()),
+        "the guard missed a whitespace-trimmed comparison — trimming is a normaliser too"
+    );
+
+    // MUST NOT fire: the shape R46 produces. An exact, hash-based decision
+    // mentions `supported` and is free of any normaliser.
+    let exact =
+        r#"        decision: if resolved_by_digest { "supported" } else { "unresolved_source" },"#;
+    assert!(
+        !decision_line_is_bypassed(&exact.to_lowercase()),
+        "the guard FALSELY flagged an exact, hash-based verdict — the supersession this \
+         round is chartered to make must not be blocked by its own gate"
+    );
+
+    // MUST NOT fire: the advisory shape R46 permits — a lexical match that is
+    // explicitly labelled advisory and is not a decision.
+    let advisory =
+        r#"    let advisory_match = content.to_lowercase().contains(&claim.to_lowercase());"#;
+    assert!(
+        !decision_line_is_bypassed(&advisory.to_lowercase()),
+        "the guard flagged an ADVISORY lexical signal, which R46 explicitly permits. \
+         Over-blocking here would forbid the supersession rather than enforce it."
+    );
+}
+
+/// The exactness requirement, stated as an executable predicate: an evidence
+/// check must compare hashes, not text. This is deliberately a *source* check
+/// rather than a behavioural one — the property is about which comparison the
+/// code performs, and a behavioural test could be satisfied by a route that
+/// happens to agree on the corpus.
+///
+/// **State today: the module does not exist yet.** R46 has not landed, so this
+/// pin asserts the *absence* of an exact resolver and turns GREEN when one
+/// lands. That inversion is deliberate: a placeholder that passes vacuously
+/// looks like coverage, and a placeholder that fails looks like a broken build.
+/// Instead it fails loudly in the one direction that matters — a resolver that
+/// exists WITHOUT a hash comparison — and says so in the message when the
+/// module is simply not there yet.
+#[test]
+fn r45_0_evidence_resolution_compares_hashes() {
+    let kernel = Path::new(env!("CARGO_MANIFEST_DIR"));
+
+    // Where an exact resolver may live. R46's plan names
+    // `crates/brain-evidence-core`; `src/evidence.rs` is the in-crate fallback.
+    let candidates = ["crates/brain-evidence-core/src/lib.rs", "src/evidence.rs"];
+
+    let mut found_any = false;
+    for rel in candidates {
+        let path = kernel.join(rel);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        found_any = true;
+        let low = text.to_lowercase();
+        assert!(
+            low.contains("sha256") || low.contains("blake3") || low.contains("hash"),
+            "{rel} must resolve evidence by comparing a DIGEST. A quote that 'looks like' \
+             it is in range, or a normalised match, is not resolution — it is a guess with \
+             a boolean."
+        );
+    }
+
+    if !found_any {
+        // Not an error, but never silent: the round that lands the resolver
+        // must extend this pin rather than leave it vacuous.
+        eprintln!(
+            "note: no evidence-resolution module at any known path — R46 has not landed. \
+             `r45_0_evidence_resolution_compares_hashes` covers nothing until it does; add \
+             the path here when it lands so it becomes a real gate."
+        );
+    }
+}
+
 /// RED-PROOF for the two completeness pins above.
 ///
 /// A completeness guard is the easiest kind of pin to write vacuously: assert
