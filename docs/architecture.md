@@ -12,14 +12,18 @@ egress exists and is pinned at the boundary: validated webhook/alert sends,
 the agent-loop provider HTTP client, OIDC/JWKS fetch, and the CRM connectors
 (all behind the SSRF-hardened egress policy — see Governance layer).
 
-## How memory moves — three nested loops
+## How memory moves — four stages and a return path
 
-Troubleshooting here is not one process but **three loops turning at
-different speeds**, converging on what ISO 10002, the KCS Solve loop, ITIL,
-and COPC each describe separately:
+Troubleshooting here is not one process but **four stages turning at different
+speeds plus the path that closes them**, converging on what ISO 10002, the
+KCS Solve loop, ITIL, and COPC each describe separately:
 
 ```mermaid
 flowchart LR
+    subgraph L0["CREATE (per gap — minutes)"]
+        direction LR
+        Z1["gap or capture<br/>from a case"] --> Z2["hypothesise +<br/>validate"] --> Z3["proposal<br/>to the gate"]
+    end
     subgraph L1["LOOP 1 · SOLVE (per case — minutes)"]
         direction LR
         A1["case opens"] --> A2["agentic crank:<br/>recall · reason · checkpoint"] --> A3["AskHuman when stuck"] --> A4["resolved + evidence"]
@@ -30,13 +34,34 @@ flowchart LR
     subgraph L3["LOOP 3 · DEFLECT (per corpus — weeks)"]
         C1["published knowledge serves<br/>customers AND agents first"] --> C2["fewer repeat contacts"] --> C3["feedback + hot topics<br/>flag the gaps"] --> C1
     end
-    A4 -- "capture" --> B1
+    subgraph LRET["OPERATE — the RETURN PATH, not a stage in the sequence"]
+        direction LR
+        D1["outcomes attributed to<br/>specific knowledge"] --> D2["improvements feed back<br/>into Evolve and Create"]
+    end
+    A4 -- "capture" --> Z1
+    Z3 --> B1
     B4 --> C1
     C3 -.->|"gaps flag operator review; new cases arrive via connectors"| A1
+    C3 --> D1
+    B4 --> D1
+    D2 -.->|"Operate → Evolve"| B2
+    D2 -.->|"Operate → Create"| Z1
 ```
 
-Loop 1 never skips its human gate; Loop 2 exists only because Loop 1 left
-evidence worth keeping; Loop 3 is why the knowledge base pays rent. Hot topics
+> **Amended 2026-09-28.** This page previously carried **three** loops and named none
+> of them `Create` or `Operate`, while `PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md` §5.3 and
+> `docs/blueprint/02-SYSTEM_ARCHITECTURE.md` both describe four knowledge stages plus a
+> return path. **Operate is the return path, not a stage walked through in sequence** —
+> attributing outcomes to specific knowledge is what sends the ring back round.
+>
+> **Two different things are called Operate.** The knowledge `Operate` here (the return
+> path) and `Deliver`'s `D5 Operate` below (phase 5 of the software lifecycle) are
+> distinct. They share a name and nothing else.
+
+Create takes what a case captures and what a gap flags, hypothesises and validates it,
+and hands a proposal to the gate. Loop 1 never skips its human gate; Loop 2 exists only
+because Loop 1 left evidence worth keeping; Loop 3 is why the knowledge base pays rent.
+The return path is why a system that only grows knowledge can also *correct* it. Hot topics
 and feedback flag gaps for operator review — new cases arrive via the CRM /
 channel / webhook connectors (plus in-loop `reask` / back-referral returns),
 never by automatic hot-topic→case creation. The rest of this page zooms into
@@ -300,8 +325,12 @@ flowchart LR
     D1["D1 Scope<br/>intake → goal → done-criteria"] --> D2["D2 Design<br/>plan → decision → policy"]
     D2 --> D3["D3 Verify<br/>implement → test → QA → critic"]
     D3 --> D4["D4 Release<br/>build → attest → approve → promote"]
-    D4 --> D5["D5 Operate<br/>observe → attribute → improve"]
+    D4 --> D5["D5 Operate (SOFTWARE)<br/>observe → attribute → improve"]
 ```
+
+> **D5 `Operate` here is the *software* lifecycle's phase 5** — observe, attribute,
+> improve the **delivered artifact**. It is **not** the knowledge `Operate` in the ring
+> above, which attributes outcomes to *knowledge*. Same name, different axis.
 
 **Its state today: a ratified decision core, and its first persistence.** The
 decision law ships as `crates/brain-delivery-core` — the closed autonomy-tier
