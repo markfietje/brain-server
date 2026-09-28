@@ -8577,7 +8577,6 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized (Read on the domain plus the `workflow` role) }
   /webhooks/delivery/{kind}:
-  /webhooks/delivery/{kind}:
     post:
       summary: An inbound AUTHORITY OBSERVATION (public; HMAC self-authenticating)
       description: >
