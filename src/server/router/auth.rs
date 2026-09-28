@@ -2,6 +2,12 @@
 //! bearer gate, and the UMP capability-token fallback. Layered by
 //! `app()` in `super` — JWT first, then opaque, with the rate limiter
 //! OUTSIDE both (the 429-before-authN posture is pinned, not prose).
+//!
+//! this round 's `rbac_middleware` lives here rather than in `crate::authz` because
+//! this is the protocol-adapter layer: `crate::authz` is pinned transport-free
+//! (`forbid(unsafe_code)` plus a pin that bans `axum::`/`tower::` in it), and a
+//! tower middleware's signature is three axum types by definition. The pure
+//! oracle it calls is in `crate::authz::policy`.
 
 use axum::{
     Json,
@@ -17,10 +23,149 @@ use std::sync::Arc;
 use crate::Pool;
 use crate::audit;
 use crate::auth::{self, AccessTokenExp, TokenStore};
+use crate::authz::{self, DenyReason, Verdict};
 use crate::config;
 use crate::handlers;
 use crate::http_limit::RateLimiter;
 use crate::server::bootstrap::ct_eq;
+
+/// The this round RBAC middleware state: the database path, for the denial audit
+/// row.
+///
+/// Deliberately small, and deliberately NOT a pool. The oracle is pure, so the
+/// middleware performs no role-store read and therefore has no way to inherit a
+/// store's unavailability — which is why the plan's `role_store_unreadable`
+/// reason does not appear in this layer's vocabulary. The handlers'
+/// `authorize_role` remains the only role-store reader, and it still maps a
+/// store error to a 500 rather than to a pass. the fail-closed rule's "a deployment cannot turn
+/// RBAC off" means there is no knob here to turn it off with.
+#[derive(Clone)]
+pub struct RbacMiddlewareState {
+    pub db_path: PathBuf,
+}
+
+/// this round 's RBAC evaluation middleware.
+///
+/// **What it enforces** (the full, honest list): a matched, non-public route
+/// with no row in the shared gate table is refused as `route_ungated` — this is
+/// the round's reason for existing, because coverage stops being a claim about
+/// a test and becomes a property of the running server; the agent principal
+/// class is refused on Admin rows by class; and a capability in the frozen
+/// deny-only class is a permanent refusal.
+///
+/// **What it does NOT enforce, and why:** the per-route capability and the
+/// scope action stay with the handler's own `authorize` / `authorize_role`
+/// (the defence-in-depth rule's inner gate). The capability cannot move here — the KCS publish gate
+/// is conditional on a request BODY field inside a route carrying two other
+/// gates, and a middleware keyed on `(MatchedPath, Method)` cannot see a body.
+/// The action axis already agrees with the handlers by construction, since the
+/// authz matrix pins every table row to the `authorize()` literal its handler
+/// actually calls.
+///
+/// **The one fail-open-shaped branch, and it is a DEFERRAL not a pass.** Three
+/// states hand the request on without this layer ruling: a public path (the
+/// authentication layer exempted it), a CORS preflight, and a declared
+/// exemption with no table row by design. And with no `Principal` in
+/// extensions the verdict is `Defer(NoPrincipal)` and the request proceeds.
+/// That last one is the opaque OPERATOR path: the middleware above admits that
+/// token with `next.run(req)` and never inserts a `Principal`
+/// (`auth_middleware`), and `tests/authz_matrix.rs::single_token_legacy_-
+/// posture_unchanged` pins that it keeps reaching Admin routes. Treating it as
+/// a denial would fail KILL 1 on the first run. Authentication has already
+/// ruled by the time this layer runs; re-deciding it is the second-opinion
+/// surface the closed-oracle decision exists to prevent.
+///
+/// **`MatchedPath`, never `req.uri().path()`.** The matched PATTERN is
+/// server-owned; the raw URI is attacker-controlled and must never select a
+/// gate. `OriginalUri` exists for the raw form.
+pub async fn rbac_middleware(
+    State(s): State<RbacMiddlewareState>,
+    req: Request<Body>,
+    next: Next,
+) -> Response {
+    let method = req.method().as_str().to_string();
+    // The matched route pattern — server-owned. Never `req.uri().path()`,
+    // which is attacker-controlled and must never select a gate.
+    let route = req
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .map(|m| m.as_str().to_string())
+        .unwrap_or_default();
+
+    // ONE public-path decision, the same one both auth middlewares make. It
+    // must run BEFORE the gate lookup: public paths are EXEMPT from
+    // AUTHZ_GATES by the reverse-direction guard, so a naive lookup would
+    // resolve `/health` to "no row" and refuse the load balancer's own probe.
+    let is_preflight = req.method() == axum::http::Method::OPTIONS;
+    if is_preflight || crate::server::router::route_guards::is_public_path(&route) {
+        return next.run(req).await;
+    }
+    // The declared exemptions are neither public nor gated BY DESIGN — the
+    // verified bearer is their gate (the Drawbridge carve-out), or they are
+    // registered only under a cargo feature. This check is what keeps the
+    // `route_ungated` deny from firing on `/health/db`; without it the first
+    // cut of this middleware moved `health_db_admin_full_read_reduced` from
+    // 200 to 403, which is KILL 1.
+    if authz::is_presentation_gated(&route) {
+        return next.run(req).await;
+    }
+    // `route_layer` runs only on matched requests; an empty pattern here would
+    // mean the layer was composed somewhere it should not have been.
+    if route.is_empty() {
+        return next.run(req).await;
+    }
+
+    let principal = req.extensions().get::<auth::Principal>();
+    let verdict = authz::gate_for(&route).map_or(Verdict::Deny(DenyReason::RouteUngated), |gate| {
+        authz::decide_gate_verdict(principal, &gate, &method)
+    });
+
+    if verdict.is_deny() {
+        let reason = verdict.as_str().to_string();
+        // The subject is hashed through the existing mask (GDPR personal-data
+        // class). With no principal there is no subject to name, and inventing
+        // one would be a worse lie than saying so.
+        let actor = principal.map_or_else(
+            || "no_principal".to_string(),
+            |p| handlers::mask_sub(&p.sub),
+        );
+        let target = format!("{method} {route}");
+        // One hash-chained row per denial. A denial writes no business row, so
+        // there is no caller's transaction to share and the row stands alone —
+        // which is disclosed rather than hidden. The row carries the closed
+        // reason, the method, the route pattern, the hashed subject and the
+        // tenant, and NEVER what another principal could have done.
+        let db_path = s.db_path.clone();
+        let detail = reason.clone();
+        let tenant = principal.map_or_else(|| "global".to_string(), |p| p.tenant.clone());
+        // Best-effort, exactly like the auth-failure audit beside it: a
+        // failure to record must not convert a 403 into a 500, and the audit
+        // chain is not a precondition for refusing a request. The `let _ =`
+        // is on the JoinHandle (the house `audit_auth_failure` shape), never on
+        // a write.
+        let _ = tokio::task::spawn_blocking(move || {
+            if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                audit::record_tenant(
+                    &conn,
+                    audit::AuditKind::Auth,
+                    &actor,
+                    &target,
+                    audit::AuditStatus::Denied,
+                    &detail,
+                    &tenant,
+                );
+            }
+        })
+        .await;
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": reason, "code": reason })),
+        )
+            .into_response();
+    }
+
+    next.run(req).await
+}
 
 /// Auth middleware. When
 /// `AUTH_TOKEN`/`AUTH_TOKEN_FILE` is set, every non-public route requires a

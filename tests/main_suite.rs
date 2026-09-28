@@ -6766,7 +6766,12 @@ Final paragraph after the rule.";
         use brain_server::server::router::route_guards::{AUTHZ_GATES, OPENAPI_ROUTES};
         // Declared exemptions (path, why): the tables are the API surface's
         // contract; these are registered routes that are deliberately not
-        // API rows.
+        // API rows. R47 MOVED this list to production
+        // (`brain_server::authz::gates::PRESENTATION_GATED`) because the RBAC
+        // middleware has to see it: the first cut denied every non-public
+        // route with no table row, which refused `/health/db` and moved
+        // `health_db_admin_full_read_reduced` from 200 to 403. One declaration,
+        // two consumers — the same rule the gate table itself follows.
         const ALLOWLIST: &[(&str, &str)] = &[
             // The SPA seat: public static assets behind the /app prefix rule
             // (and the root redirect). Not API surface — openapi.yaml does
@@ -6789,34 +6794,27 @@ Final paragraph after the rule.";
                 "/app/sw-register.js",
                 "public static SPA seat (service worker)",
             ),
-            // The compliance pack: registered only under the feature flag, so
-            // table rows would be vacuous in default builds — the handlers
-            // carry their own gates (verified at the same audit that closed
-            // the table debt).
-            ("/audit/export", "feature-gated: compliance-pack"),
-            (
-                "/compliance/evaluation-record",
-                "feature-gated: compliance-pack",
-            ),
-            ("/compliance/inventory", "feature-gated: compliance-pack"),
-            ("/ropa", "feature-gated: compliance-pack"),
-            ("/ropa/{id}", "feature-gated: compliance-pack"),
-            // Presentation-gated only: the middleware's verified bearer IS
-            // the gate (the Drawbridge carve-out); the handlers carry no
-            // authorize() literal by design — /health/db is the documented
-            // carve-out, /auth/logout revokes the presented token (a public
-            // logout could revoke nothing) and 401s without a principal.
-            (
-                "/health/db",
-                "middleware-presentation-gated (the Drawbridge carve-out)",
-            ),
-            (
-                "/auth/logout",
-                "middleware-presentation-gated (logout revokes the bearer)",
-            ),
         ];
-        let allowlisted: std::collections::HashSet<&str> =
-            ALLOWLIST.iter().map(|(p, _)| *p).collect();
+        // R47: the seven non-public, ungated-by-design routes now live in
+        // production, and this test reads THAT list rather than a second copy.
+        for (path, why) in brain_server::authz::gates::PRESENTATION_GATED {
+            assert!(
+                !ALLOWLIST.iter().any(|(p, _)| p == path),
+                "{path} is declared in the production exemption list; it must not \
+                 also sit in this test-local one — two copies of an exemption list \
+                 is the drift E3 exists to prevent"
+            );
+            let _ = why;
+        }
+        let allowlisted: std::collections::HashSet<&str> = ALLOWLIST
+            .iter()
+            .map(|(p, _)| *p)
+            .chain(
+                brain_server::authz::gates::PRESENTATION_GATED
+                    .iter()
+                    .map(|(p, _)| *p),
+            )
+            .collect();
         let openapi: std::collections::HashSet<&str> = OPENAPI_ROUTES.iter().copied().collect();
         let authz: std::collections::HashSet<&str> = AUTHZ_GATES.iter().map(|(p, _)| *p).collect();
         let mut failures = Vec::new();

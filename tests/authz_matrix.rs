@@ -2335,9 +2335,12 @@ async fn probe_blind_404_on_foreign_run() {
 /// roles, so the empty-roles skip never fires) — those speak the denied
 /// vocabulary. Admin rows 403 outright.
 const ROLE_GATED_FOR_AGENT: &[&str] = &[
-    // the `workflow` capability (19 gate sites; the role table has no
-    // agent-grantable `workflow` verb — validate() restricts `can` to
-    // CAN_ACTIONS, which does not name it)
+    // the `workflow` capability (19 gate sites). R47 CORRECTION: the reason
+    // the agent is refused here is NOT that `workflow` is ungrantable —
+    // CAN_ACTIONS does name it and the `workflow-operator` preset holds it
+    // (the old comment here said otherwise, and was wrong). The agent is
+    // refused because its own preset role holds can:["read","write","reject"],
+    // which does not include `workflow`. Same verdict, correct reason.
     "/workflow/runs",
     "/workflow/runs/{id}",
     "/workflow/runs/{id}/state",

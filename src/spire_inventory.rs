@@ -44,7 +44,8 @@ const MAIN_RS_LINES_MAX: usize = 300;
 /// the wire's registrations may not silently disappear; the authz matrix +
 /// route-coverage table pin their correctness.
 /// 247 → 248 at the operate round: the derived read model's one GET.
-const ROUTER_SITES_FLOOR: usize = 248;
+/// 248 → 249 at the RBAC round: the `/ops/authz/explain` registration.
+const ROUTER_SITES_FLOOR: usize = 249;
 /// `#[test]` occurrences across `src/` + `tests/` (lib + bins + the
 /// integration suites). Floor — never decreases. 1,185 src-only at the
 /// Scaffold freeze; the Capstone move relocated main.rs's region into
@@ -137,30 +138,28 @@ const ROUTER_SITES_FLOOR: usize = 248;
 /// the closing round's fifteen battery pins (the fourteen §5 names plus the
 /// house gate-order restatement).
 ///
-/// 2,301 → 2,343 (walk-measured). The resolver crate's sixteen kernel-side
-/// scope/supply-chain pins, against a 21-hit needle delta: the other five are
-/// the literal test-attribute occurrences inside that file's own census
-/// PARSER and its doc comments, which this substring-counting needle counts.
-/// This very comment was once written naming the literal and moved the walk
-/// by one, which is the whole point of recording it. The 2,343rd is the
-/// watchdog scan-path pin that closed the unscanned-`crates` gap. The floor is
-/// set to the walk-measured truth rather than to the "real tests" count,
-/// because this constant is compared against the walk and a lower number would
-/// silently weaken the guard instead of failing loudly.
-const CRATE_TEST_FLOOR: usize = 2_343;
+/// 2,343 → 2,376 (walk-measured) at the RBAC round: the oracle's behavioural pins, the
+/// gate-declaration pins, and the twenty-four structural pins in
+/// `tests/r47_rbac_pins.rs`. Set to the walk-measured truth rather than to the
+/// "real tests" count, because this constant is compared against the walk and a
+/// lower number would silently weaken the guard instead of failing loudly.
+const CRATE_TEST_FLOOR: usize = 2_376;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
-/// reverse-direction guard found the missing rows (security.txt + the
-/// scoreboard/calibration/mount trio). Rows join only with the wire change
-///   that earns them, in the same commit.
-/// 207 → 208 at the operate round: the derived read model's route row.
-const OPENAPI_ROUTE_ROWS_FLOOR: usize = 208;
+/// reverse-direction guard found the missing rows, 208 at the operate round.
+/// Rows join only with the wire change that earns them, in the same commit.
+/// The leading "151" is the EXTRACTION figure and is deliberately kept as
+/// history; the RBAC round corrected only the two mangled continuation lines below it,
+/// which had lost their text.
+/// 208 → 209 at the RBAC round: the `/ops/authz/explain` route row.
+const OPENAPI_ROUTE_ROWS_FLOOR: usize = 209;
 /// Route-authz table rows (`route_guards::AUTHZ_GATES`) — 141 gates at
 /// extraction (v1.28.54), 147 at the Wardline gate, 152 when Blackout's
-/// reverse-direction guard closed the table debt (`/stats` + the trio +
-///   security.txt's public marker row).
-/// 192 → 193 at the operate round: the derived read model's Read gate.
-const AUTHZ_TABLE_ROWS_FLOOR: usize = 193;
+/// reverse-direction guard closed the table debt, 193 at the operate round.
+/// The leading "141" is the EXTRACTION figure and is kept as history; the RBAC round
+/// corrected the two mangled continuation lines below it.
+/// 193 → 194 at the RBAC round: the `/ops/authz/explain` Admin gate.
+const AUTHZ_TABLE_ROWS_FLOOR: usize = 194;
 
 fn count_needle(hay: &str, needle: &str) -> usize {
     hay.matches(needle).count()

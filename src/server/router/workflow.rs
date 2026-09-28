@@ -470,6 +470,12 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
         // reads; fatigue alerts the scheduling human, never reassigns.
         .route("/ops/workload", get(handlers::workload::get_ops_workload))
         .route("/ops/coverage", get(handlers::workload::get_ops_coverage))
+        // the RBAC round: the RBAC introspection surface. Admin-on-global, reason-only,
+        // and scoped to the CALLER'S OWN principal — it never answers "what
+        // would this other role get", which is the reconnaissance tool the no-oracle rule
+        // refuses. Registered beside the other /ops reads because it describes
+        // the deployment's gate table.
+        .route("/ops/authz/explain", get(handlers::auth::get_authz_explain))
         // The delivery loop's four run writes, plus the attestation round's first read. Write on
         // the run's own domain plus the `workflow` role; the gate evaluation is
         // a disposition and mutates nothing. The read is Read-scoped, is

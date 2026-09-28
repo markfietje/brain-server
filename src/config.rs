@@ -464,6 +464,35 @@ pub fn egress_allow_private() -> Result<bool, String> {
     }
 }
 
+/// this round : the deny posture for a principal whose `roles` claim is EMPTY.
+///
+/// **The default is `pass`, and that is load-bearing.** A principal with no
+/// roles is byte-identical to pre-this round behaviour, and two shipped pins in
+/// `tests/authz_matrix.rs` require the single-token operator to keep reaching
+/// Admin routes. Flipping the default would be a breaking release dressed as a
+/// security fix. An operator who has minted roles at their IdP and wants "a
+/// token with no roles now gets nothing" sets `deny`; a deployment cannot get
+/// there by accident, because an unknown value refuses the boot rather than
+/// degrading (the `BRAIN_WRITE_POSTURE` / `BRAIN_EGRESS_ALLOW_PRIVATE` pattern).
+pub fn rbac_roleless_posture() -> Result<&'static str, String> {
+    match std::env::var("BRAIN_RBAC_ROLELESS_POSTURE")
+        .unwrap_or_default()
+        .as_str()
+    {
+        "" | "pass" => Ok("pass"),
+        "deny" => Ok("deny"),
+        other => Err(format!(
+            "BRAIN_RBAC_ROLELESS_POSTURE='{other}' is invalid; must be pass or deny"
+        )),
+    }
+}
+
+/// Boot-time validation for the this round posture. Unknown values refuse startup
+/// rather than silently degrading to the permissive default.
+pub fn validate_rbac_roleless_posture() -> Result<(), String> {
+    rbac_roleless_posture().map(|_| ())
+}
+
 /// Refuses boot when set but no token resolves: with `BRAIN_REQUIRE_AUTH=1`
 /// an unauthenticated start is a misconfiguration, not a posture.
 pub fn require_auth() -> Result<bool, String> {

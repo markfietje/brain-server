@@ -143,6 +143,11 @@ pub mod agentloop;
 pub mod alert;
 pub mod anchor;
 pub mod auth;
+/// the RBAC round's closed RBAC oracle: a pure `(Principal?, Gate, Method) -> Verdict`
+/// over a frozen vocabulary, plus the shared gate declaration the runtime and
+/// the authz coverage pin both read. Transport-free by construction; the
+/// middleware that runs it is a protocol adapter in `server::router::auth`.
+pub mod authz;
 pub mod breach;
 pub mod chunker;
 pub mod concurrency;

@@ -219,6 +219,30 @@ pub fn app(state: Arc<AppState>) -> Router {
         StdDuration::from_secs(30),
     ))
     .layer(CatchPanicLayer::new())
+    // the RBAC evaluation middleware.
+    //
+    // PLACEMENT, and this is the part that is easy to get exactly wrong:
+    // `.layer()`/`.route_layer()` apply BOTTOM-TO-TOP, so a LATER source line
+    // runs EARLIER at request time. To run AFTER authentication, this call
+    // must sit at a source line STRICTLY BETWEEN the CatchPanic layer and the
+    // opaque-auth layer — i.e. ABOVE `auth_middleware` in source. The first
+    // draft of this round put it below the JWT layer, which made it OUTER to
+    // authentication: it would have run before any `Principal` existed and
+    // decided on every request without one.
+    // `r47_the_rbac_layer_sits_between_auth_and_the_handler_layers` pins this
+    // ordering by LINE NUMBER, not by comment, and it caught exactly that.
+    //
+    // `route_layer`, not `layer`: a bare `.layer()` also wraps UNMATCHED
+    // paths, which would convert this repo's probe-blind 404s into 403s across
+    // the whole surface — an unreviewed wire-contract change. Both forms apply
+    // only to routes registered SO FAR, and the last `.merge()` above is well
+    // before this point, so every registered route is covered.
+    .route_layer(middleware::from_fn_with_state(
+        auth::RbacMiddlewareState {
+            db_path: state.db_path.clone(),
+        },
+        auth::rbac_middleware,
+    ))
     .layer(SetSensitiveHeadersLayer::new([
         axum::http::header::AUTHORIZATION,
         axum::http::header::COOKIE,

@@ -8,7 +8,18 @@
 //! `authz_gates_cover_every_non_public_route` source-scans each handler for
 //! its gate). Row counts are floored in `spire_inventory`; rows are added or
 //! removed only in the same commit as the route/wire change that earns it.
-//! Test-only data: the module is compiled nowhere outside test builds.
+//!
+//! **This module is PRODUCTION code, and the line that said otherwise is
+//! gone.** It used to close with "Test-only data: the module is compiled
+//! nowhere outside test builds" — which contradicted lines 13-15 of this very
+//! file ("Both auth middlewares consume it through `is_public_path`") and was
+//! false: `server/router/mod.rs` declares the module `pub` with no `cfg(test)`
+//! gate, `server/router/auth.rs` calls `is_public_path` from both middlewares,
+//! and `spire_inventory.rs` reads both tables from a non-test path. this round removed
+//! the sentence and added `r47_route_guards_no_longer_claims_to_be_test_only`,
+//! because a comment that lies about WHERE CODE IS COMPILED is a wire-adjacent
+//! defect, not a style note — and it is exactly what stopped a reviewer from
+//! noticing that the RBAC middleware could read this table at all.
 
 /// The ONE public-path list. Both auth middlewares consume it through
 /// [`is_public_path`] — there is no second copy to drift (the old
@@ -213,6 +224,9 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/kcs/articles/{id}/approve",
     "/kcs/articles/{id}/publish",
     "/kcs/articles/{id}/preview",
+    // the RBAC introspection surface. Admin-on-global, reason-only, and
+    // scoped to the caller's own principal.
+    "/ops/authz/explain",
     "/kcs/translate",
     "/ops/shifts",
     "/ops/crew",
@@ -527,6 +541,10 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     // sanitized public render path.
     ("/kcs/articles/{id}/publish", "Write"),
     ("/kcs/articles/{id}/preview", "Read"),
+    // the RBAC introspection route. Admin-on-global — it describes the
+    // deployment's gate table, exactly the posture `health_db_admin_full_read_
+    // reduced` uses for `/health/db`.
+    ("/ops/authz/explain", "Admin"),
     // Watchbill: the ring view is a Read; declaring a shift is pure
     // operator configuration → Admin (an agent-class principal must
     // not re-anchor the follow-the-sun queue). GET and POST share the

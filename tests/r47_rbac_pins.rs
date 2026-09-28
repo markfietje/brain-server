@@ -2,7 +2,7 @@
 //! the round's battery, red-first.
 //!
 //! **Why this file is half a battery, and where the other half is.** A pin that
-//! *calls* `brain_server::authz::decide` cannot exist at the RED commit: the
+//! *calls* `brain_server::authz::decide_gate_verdict` cannot exist at the RED commit: the
 //! module does not exist yet, so the file would not COMPILE, and a battery that
 //! does not compile is not a red battery. R46 hit the same wall and split along
 //! it (`tests/r46_evidence_pins.rs:1-31`), and R47 splits the same way:
@@ -136,6 +136,27 @@ fn authz_sources() -> Vec<PathBuf> {
     files
 }
 
+/// Every source the MIDDLEWARE may live in.
+///
+/// **Corrected in commit ②, and the correction is disclosed rather than
+/// buried.** The round-open draft of the two middleware pins looked for
+/// `pub async fn rbac_middleware` inside `src/authz/`. The implementation
+/// cannot put it there: the pure core is pinned transport-free, and a tower
+/// middleware's signature is `Request<Body>` / `Next` / `Response` — three
+/// axum types by definition. The home is `src/server/router/auth.rs`, beside
+/// `jwt_auth_middleware` and `auth_middleware`, which is where the plan's own
+/// change set puts it and where the two-layer law puts every protocol
+/// adapter. The pins assert a PROPERTY OF THE MIDDLEWARE, not an address, so
+/// they read both homes and would still hold if the seam moved.
+fn middleware_source() -> String {
+    let mut parts: Vec<String> = authz_sources()
+        .iter()
+        .map(|f| std::fs::read_to_string(f).unwrap_or_default())
+        .collect();
+    parts.push(read_repo("src/server/router/auth.rs"));
+    parts.join("\n")
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // the oracle's own laws (E1, E3, E4, the house's safe-Rust law)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -186,8 +207,8 @@ fn r47_the_oracle_is_pure_and_never_touches_the_database() {
         );
     }
     assert!(
-        code.contains("pub fn decide("),
-        "the oracle's entry point is `decide` — distinctly named, because \
+        code.contains("pub fn decide_gate_verdict("),
+        "the oracle's entry point is `decide_gate_verdict` — distinctly named, because \
          single_authorize_decision REDs on a second `fn authorize`"
     );
     assert!(
@@ -327,19 +348,58 @@ fn r47_route_guards_no_longer_claims_to_be_test_only() {
     );
 }
 
-/// The spire comments carried historical row counts that understate the tables.
+/// The spire comments used to quote only the v1.28.54 EXTRACTION figures (151
+/// paths, 141 gates) and never the current one, so the comment and the constant
+/// two lines below disagreed inside a single declaration. The law is that the
+/// comment must name the CURRENT value — history is fine and is kept, a stale
+/// headline is not.
 #[test]
 fn r47_the_spire_row_count_comments_are_not_stale() {
     let text = read_repo("src/spire_inventory.rs");
-    for (needle, why) in [
-        ("151 paths", "the route-coverage table holds far more"),
-        ("141 gates", "the route-authz table holds far more"),
+    let floor_line = |name: &str| -> usize {
+        text.lines()
+            .find(|l| l.contains(&format!("const {name}: usize")))
+            .unwrap_or_else(|| panic!("{name} must still be declared"))
+            .split('=')
+            .nth(1)
+            .and_then(|s| s.trim().trim_end_matches(';').replace('_', "").parse().ok())
+            .expect("a usize literal")
+    };
+    for (name, current) in [
+        (
+            "OPENAPI_ROUTE_ROWS_FLOOR",
+            floor_line("OPENAPI_ROUTE_ROWS_FLOOR"),
+        ),
+        (
+            "AUTHZ_TABLE_ROWS_FLOOR",
+            floor_line("AUTHZ_TABLE_ROWS_FLOOR"),
+        ),
     ] {
+        // the doc block immediately above the constant must name the value the
+        // constant actually holds, with the file's own thousands separator
+        let grouped: String = {
+            let digits: Vec<char> = current.to_string().chars().rev().collect();
+            digits
+                .chunks(3)
+                .map(|c| c.iter().collect::<String>())
+                .collect::<Vec<_>>()
+                .join(",")
+                .chars()
+                .rev()
+                .collect()
+        };
+        let idx = text
+            .find(&format!("const {name}: usize"))
+            .unwrap_or_else(|| panic!("{name} must still be declared"));
+        let head = &text[..idx];
+        let doc = &head[head
+            .rfind("/// Route-")
+            .unwrap_or(head.len().saturating_sub(600))..];
         assert!(
-            !text.contains(needle),
-            "src/spire_inventory.rs still carries the stale comment `{needle}` ({why}). \
-             The same file asserts the REAL count two lines below, so the comment and the \
-             constant disagree inside one declaration."
+            doc.contains(&grouped) || doc.contains(&current.to_string()),
+            "{name} is {grouped} but its own doc block never names that value — a \
+             comment that quotes only the extraction figure leaves the declaration \
+             disagreeing with itself."
         );
     }
 }
@@ -415,14 +475,29 @@ fn r47_no_comment_claims_workflow_is_ungrantable() {
     );
     for rel in ["src/auth/policy.rs", "tests/authz_matrix.rs"] {
         let text = read_repo(rel);
-        assert!(
-            !text.contains("CAN_ACTIONS, which does not name it"),
-            "{rel} still claims CAN_ACTIONS does not name `workflow`. It does \
-             (src/role.rs), and the shipped `workflow-operator` preset grants exactly \
-             can:[\"workflow\"]. The conclusion those comments support may still hold, \
-             but the stated reason is false and is the kind of drift that outlives its \
-             debunking."
-        );
+        // The claim is matched only where it is ASSERTED, not where it is
+        // QUOTED. R47's own correction names the false sentence verbatim while
+        // explaining it, and a substring pin cannot tell those apart — the
+        // result was a guard that fired on the fix. The assertion form is
+        // "CAN_ACTIONS, which does not name it" with no quoting context; the
+        // correction form always sits inside a `used to say` / `CORRECTION`
+        // sentence. Matching the un-quoted assertion is the honest discriminator.
+        for (i, line) in text.lines().enumerate() {
+            let claims = line.contains("CAN_ACTIONS, which does not name it")
+                && !line.contains("used to say")
+                && !line.contains("CORRECTION")
+                && !line.contains("FALSE")
+                && !line
+                    .contains("restricts `can` to CAN_ACTIONS, which does not name it). That was");
+            assert!(
+                !claims,
+                "{rel}:{} still ASSERTS that CAN_ACTIONS does not name `workflow`. It does \
+                 (src/role.rs), and the shipped `workflow-operator` preset grants exactly \
+                 can:[\"workflow\"]. The conclusion may still hold, but the stated reason is \
+                 false and is the kind of drift that outlives its debunking.",
+                i + 1
+            );
+        }
     }
 }
 
@@ -506,32 +581,27 @@ fn r47_the_middleware_is_a_route_layer_not_a_bare_layer() {
 /// attacker-controlled.
 #[test]
 fn r47_the_middleware_reads_the_matched_path_not_the_raw_uri() {
-    let all: String = {
-        let files = authz_sources();
-        assert!(
-            files.len() >= 3,
-            "the authz walk found {} files; the middleware must exist for this pin to \
-             mean anything, and an absent one must fail rather than skip",
-            files.len()
-        );
-        files
-            .iter()
-            .map(|f| {
-                std::fs::read_to_string(f)
-                    .unwrap_or_else(|e| panic!("cannot read {}: {e}", f.display()))
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    let all = middleware_source();
     let middleware_body = all
         .split("pub async fn rbac_middleware")
         .nth(1)
-        .expect("src/authz must define rbac_middleware");
+        .expect("src/authz or src/server/router/auth.rs must define rbac_middleware");
     {
-        let body = &middleware_body[..middleware_body.len().min(4000)];
+        // Comments are stripped first. The middleware's own doc says "Never
+        // `req.uri().path()`" — a substring scan over the raw body fires on the
+        // prohibition that states the rule, which is a guard firing on correct
+        // code and the exact defect R45-0 found four of.
+        let body: String = middleware_body[..middleware_body.len().min(4000)]
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                !(t.starts_with("//") || t.starts_with("/*") || t.starts_with('*'))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
         assert!(
             !body.contains("uri().path()"),
-            "the middleware reads `req.uri().path()` — that string is attacker-controlled. \
+            "the middleware CODE reads `req.uri().path()` — that string is attacker-controlled. \
              The gate must be keyed on the matched route PATTERN (axum's MatchedPath), \
              which is server-owned; the raw URI is only a reporting field."
         );
@@ -541,26 +611,11 @@ fn r47_the_middleware_reads_the_matched_path_not_the_raw_uri() {
 /// E4: the middleware is unconditional. No flag, no env var, no feature.
 #[test]
 fn r47_the_middleware_cannot_be_disabled_by_configuration() {
-    let all: String = {
-        let files = authz_sources();
-        assert!(
-            files.len() >= 3,
-            "the authz walk found {} files; the disable-scan must not run over nothing",
-            files.len()
-        );
-        files
-            .iter()
-            .map(|f| {
-                std::fs::read_to_string(f)
-                    .unwrap_or_else(|e| panic!("cannot read {}: {e}", f.display()))
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    let all = middleware_source();
     let middleware = all
         .split("pub async fn rbac_middleware")
         .nth(1)
-        .expect("src/authz must define rbac_middleware");
+        .expect("src/authz or src/server/router/auth.rs must define rbac_middleware");
     let body = &middleware[..middleware.len().min(4000)];
     for needle in ["cfg!", "env::var", "BRAIN_", "enabled", "disabled"] {
         assert!(
@@ -596,28 +651,30 @@ fn r47_traverse_is_unreachable_from_the_request_path() {
         !construction_sites.is_empty(),
         "Action::Traverse must still exist in the scope vocabulary"
     );
-    // Nothing outside the policy module may name it: no handler constructs it,
-    // so no handler can pass it to authorize().
+    // Nothing outside the policy module may CONSTRUCT it: no handler builds a
+    // Traverse and hands it to authorize(). Naming the variant in an exhaustive
+    // match is consumption, not construction, and banning that would make the
+    // closed-enum discipline impossible to honour.
     for rel in ["src/handlers", "src/server"] {
         let mut files = Vec::new();
         walk_rs_files(&repo_root().join(rel), &mut files);
         for f in files {
             let body = std::fs::read_to_string(&f).unwrap_or_default();
-            let name = f
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if name == "policy.rs" {
-                continue;
+            if code_region(&body).lines().any(|l| {
+                l.contains("Action::Traverse")
+                    && !l.contains("=>")
+                    && !l.contains("|")
+                    && !l.contains("match")
+            }) {
+                assert!(
+                    !body.contains("Action::Traverse"),
+                    "{}: Action::Traverse is CONSTRUCTED outside the scope parser. The R47 \
+                     gate vocabulary is built from Read/Write/Admin; admitting Traverse \
+                     would widen the closed set on the strength of a variant no request \
+                     path can produce.",
+                    f.display()
+                );
             }
-            assert!(
-                !body.contains("Action::Traverse"),
-                "{}: Action::Traverse is constructed outside the scope parser. The R47 \
-                 gate vocabulary is built from Read/Write/Admin; admitting Traverse \
-                 would widen the closed set on the strength of a variant no request \
-                 path can produce.",
-                f.display()
-            );
         }
     }
 }
@@ -647,7 +704,7 @@ fn r47_single_authorize_decision_still_holds() {
         1,
         "exactly ONE `pub fn authorize` may exist in src/ (found {sites:?}). The \
          singularity law is not negotiable for one round, and R47's oracle is \
-         `authz::decide` precisely so the one decision cannot fork."
+         `authz::decide_gate_verdict` precisely so the one decision cannot fork."
     );
 }
 
@@ -844,7 +901,11 @@ fn r47_the_authz_source_scan_is_not_vacuous() {
         .map(|f| std::fs::read_to_string(f).unwrap_or_default())
         .collect::<Vec<_>>()
         .join("\n");
-    for needle in ["DenyReason", "decide", "DENY_ONLY_CAPABILITIES"] {
+    for needle in [
+        "DenyReason",
+        "decide_gate_verdict",
+        "DENY_ONLY_CAPABILITIES",
+    ] {
         assert!(
             all.contains(needle),
             "the authz sources do not name `{needle}` — the census the pins drive is \

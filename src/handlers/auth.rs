@@ -14,7 +14,7 @@
 //! token is the credential). `/auth/revoke` requires admin auth.
 
 use axum::Json;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
@@ -479,6 +479,26 @@ impl AuthHandlerError {
             message: msg.to_string(),
         }
     }
+
+    /// a rejected introspection query. The code is the machine-readable
+    /// reason; the message is fixed so the body never echoes caller input.
+    pub fn bad_request_code(code: &'static str) -> Self {
+        AuthHandlerError {
+            status: StatusCode::BAD_REQUEST,
+            code,
+            message: code.to_string(),
+        }
+    }
+
+    /// probe-blind. A route with no gate row is a 404 with no detail —
+    /// this surface must not become an oracle for which paths exist.
+    pub fn not_found() -> Self {
+        AuthHandlerError {
+            status: StatusCode::NOT_FOUND,
+            code: "not_found",
+            message: "not found".to_string(),
+        }
+    }
 }
 
 impl IntoResponse for AuthHandlerError {
@@ -685,5 +705,123 @@ mod tests {
             !payload["jti"].as_str().unwrap().is_empty(),
             "minted refresh token carries a jti"
         );
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// this round  — the introspection route
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// `GET /ops/authz/explain?route=&method=`.
+///
+/// **Admin-on-global, reason-only, and never a capability oracle.** The route
+/// answers for the CALLER'S OWN principal and nothing else. There is
+/// deliberately no `?roles=` parameter: given a set of roles, "which gates would
+/// these clear" is the single most useful reconnaissance tool an attacker has,
+/// and refusing it is the deliberate cost that removes it. The refusal makes
+/// support tickets slower; the asymmetry is the point.
+///
+/// **Probe-blind.** A route with no row in the gate table is a 404, exactly
+/// like the repo's other id-scoped routes: this surface must not become an
+/// oracle for which paths exist.
+///
+/// The response is shaped through the read seam like every other emitted text
+/// field. The values it returns are server-owned (a table row and a closed
+/// reason), so the seam here is discipline rather than defence.
+#[derive(Debug, Deserialize)]
+pub struct AuthzExplainQuery {
+    /// The route PATTERN to explain, e.g. `/workflow/runs/{id}`.
+    ///
+    /// **Optional in the schema, validated in the handler, on purpose.** A
+    /// REQUIRED query parameter fails during extractor deserialization, which
+    /// runs BEFORE the handler body — so a caller with no `route=` would have
+    /// received a 400 without the Admin gate ever being consulted. That inverts
+    /// the house order (`authorize` first, then validate) and turns this
+    /// surface into a probe: an unauthorized caller learns the route exists
+    /// from the difference between its 400 and a real answer. Making the
+    /// field optional moves the refusal behind the gate, where it belongs.
+    #[serde(default)]
+    pub route: Option<String>,
+    /// The HTTP method. Optional; the gate table is not method-keyed.
+    #[serde(default)]
+    pub method: Option<String>,
+    /// Refused by construction. Present in the schema so the refusal is a
+    /// documented 400 rather than a silently-ignored query string.
+    #[serde(default)]
+    pub roles: Option<String>,
+}
+
+pub async fn get_authz_explain(
+    _state: State<Arc<AppState>>,
+    principal: OptPrincipal,
+    Query(q): Query<AuthzExplainQuery>,
+) -> Result<Json<serde_json::Value>, AuthHandlerError> {
+    // Admin on global, through the EXISTING `authorize` seam — never a new
+    // gate. This route describes the deployment's gate table.
+    super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")
+        .map_err(|e| AuthHandlerError::forbidden(e.inner.message))?;
+
+    // the no-oracle rule's no-oracle law, enforced at the surface rather than by omission.
+    if q.roles.is_some() {
+        return Err(AuthHandlerError::bad_request_code(
+            "authz_explain_role_set_refused",
+        ));
+    }
+    // Bounds law: the route parameter is bounded before it can be echoed.
+    let Some(requested) = q.route.as_deref() else {
+        return Err(AuthHandlerError::bad_request_code(
+            "authz_explain_route_required",
+        ));
+    };
+    let route = crate::strip_invisible::strip_control_chars(requested);
+    if route.is_empty() || route.len() > 512 {
+        return Err(AuthHandlerError::bad_request_code(
+            "authz_explain_route_invalid",
+        ));
+    }
+    let method = q.method.as_deref().unwrap_or("GET").to_uppercase();
+    if method.len() > 16 {
+        return Err(AuthHandlerError::bad_request_code(
+            "authz_explain_method_invalid",
+        ));
+    }
+
+    // Probe-blind: no row means this route does not exist as far as this
+    // surface is concerned. An EXEMPT route has no row either, and is equally
+    // not explained.
+    let Some(gate) = crate::authz::gate_for(&route) else {
+        return Err(AuthHandlerError::not_found());
+    };
+
+    let verdict = crate::authz::decide_gate_verdict(principal.0.as_ref(), &gate, &method);
+    let body = serde_json::json!({
+        "route": route,
+        "method": method,
+        "required_action": required_action_name(gate.required_action),
+        "verdict": match verdict {
+            crate::authz::Verdict::Allow => "allow",
+            crate::authz::Verdict::Defer(_) => "defer",
+            crate::authz::Verdict::Deny(_) => "deny",
+        },
+        "reason": verdict.as_str(),
+        // the posture rule: the role-less posture is echoed here, because "why did my token
+        // with no roles get through" is the question this route exists for.
+        "roleless_posture": crate::config::rbac_roleless_posture(),
+    });
+    let shaped = crate::gate::sanitize_read(
+        &serde_json::to_string(&body).unwrap_or_default(),
+        false,
+        &principal.0,
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&shaped).unwrap_or(body);
+    Ok(Json(parsed))
+}
+
+fn required_action_name(action: crate::auth::Action) -> &'static str {
+    match action {
+        crate::auth::Action::Read => "Read",
+        crate::auth::Action::Write => "Write",
+        crate::auth::Action::Admin => "Admin",
+        crate::auth::Action::Traverse => "Traverse",
     }
 }

@@ -360,6 +360,17 @@ pub fn bootstrap() -> Result<BootOutcome> {
     if let Err(e) = config::validate_write_posture() {
         return Err(anyhow::anyhow!("fatal write posture: {e}"));
     }
+    // ── fail-closed RBAC role-less posture (the RBAC round) ───────
+    // An unknown BRAIN_RBAC_ROLELESS_POSTURE value refuses startup rather
+    // than silently degrading to the permissive `pass` default. The middleware
+    // itself is NOT behind a flag and has no such knob: this env var selects
+    // only how a token with NO roles is treated, and it is printed at boot so
+    // the operator can see which posture the process is running.
+    {
+        let posture = config::rbac_roleless_posture()
+            .map_err(|e| anyhow::anyhow!("fatal rbac role-less posture: {e}"))?;
+        tracing::info!(roleless_posture = posture, "R47 RBAC role-less posture");
+    }
     crate::service::review::approval_quorum()
         .map_err(|e| anyhow::anyhow!("fatal quorum config: {e}"))?;
 

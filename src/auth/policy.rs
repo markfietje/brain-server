@@ -111,10 +111,19 @@ impl Principal {
     ///
     /// ponytail (plan non-goals): one agent identity, not per-agent
     /// identities; fine-grained agent tokens wait for a real second
-    /// consumer. The workflow-engine capability (`workflow`) is NOT
-    /// grantable to any preset role (`role::validate` restricts `can` to
-    /// CAN_ACTIONS, which does not name it) — engine surfaces stay
-    /// operator-side; that is the documented Twokeys ceiling.
+    /// consumer.
+    ///
+    /// this round CORRECTION: this doc used to say the workflow-engine capability
+    /// (`workflow`) was NOT grantable to any preset role, because the
+    /// `can` allowlist is restricted to CAN_ACTIONS and — the old text
+    /// claimed — does not list that verb. That was FALSE: CAN_ACTIONS names
+    /// `workflow` (`src/role.rs`) and the shipped `workflow-operator` preset
+    /// grants exactly `can:["workflow"]`. The agent is nonetheless refused on
+    /// the workflow surfaces, but for the correct and much more boring reason:
+    /// the agent's own preset role (`agent`) holds
+    /// `can:["read","write","reject"]`, which does not include it. Engine
+    /// surfaces stay operator-side; the ceiling is the agent ROLE, not the
+    /// verb. `r47_no_comment_claims_workflow_is_ungrantable` holds it.
     pub fn agent_loopback() -> Self {
         Principal {
             sub: AGENT_LOOPBACK_SUB.to_string(),

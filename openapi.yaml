@@ -6465,6 +6465,51 @@ paths:
                       type: object
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
+  /ops/authz/explain:
+    get:
+      summary: Explain this caller's own RBAC verdict for a route (Admin on global; audited)
+      description: >
+        R47: the operator-facing half of the RBAC round. Returns the gate row
+        for a route PATTERN, the required action, and the verdict for the
+        CALLER'S OWN principal with a closed reason. Deliberately never answers
+        "what would another role get": given a role set, "which gates would
+        these clear" is the reconnaissance tool this surface refuses to be.
+        A route with no gate row answers a probe-blind 404. Role-less posture
+        (BRAIN_RBAC_ROLELESS_POSTURE) is echoed on every response.
+      operationId: explainAuthzVerdict
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: route
+          in: query
+          required: true
+          description: The route PATTERN, e.g. /workflow/runs/{id}
+          schema: { type: string, maxLength: 512 }
+        - name: method
+          in: query
+          required: false
+          description: The HTTP method (the gate table is not method-keyed)
+          schema: { type: string, maxLength: 16, default: GET }
+      responses:
+        "200":
+          description: The caller's own verdict for this route
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  route: { type: string }
+                  method: { type: string }
+                  required_action: { type: string, enum: [Read, Write, Admin] }
+                  verdict: { type: string, enum: [allow, defer, deny] }
+                  reason: { type: string }
+                  roleless_posture: { type: string, enum: [pass, deny] }
+        "400":
+          description: >
+            authz_explain_role_set_refused (a role-set query is refused by
+            design), authz_explain_route_invalid, authz_explain_method_invalid
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Admin on global) }
+        "404": { description: No gate row for that route (probe-blind) }
   /workflow/runs/{id}/delegations:
     post:
       summary: Delegate a task to a named agent on this run (Write on domain)

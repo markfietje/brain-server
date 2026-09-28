@@ -4,6 +4,80 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## Unreleased — R47 "Ledgerhead"
+
+### Release notes
+
+**Security fixes**
+
+- **The route gate table is now a runtime policy, not a test fixture.** A new
+  `authz` module ships a closed, deterministic, pure `(Principal?, Gate, Method)
+  -> Verdict` oracle (`Allow` / `Defer(reason)` / `Deny(reason)`) and a
+  `route_layer` middleware that runs it on every matched, non-exempt route. The
+  concrete win is coverage: a matched, non-public route with no row in the
+  `AUTHZ_GATES` table is now refused (`route_ungated`) by the running server,
+  where before it was only a test assertion. The middleware is unconditional —
+  no flag, no env var, no feature — and is applied as a `route_layer` so
+  unmatched paths keep their probe-blind 404s.
+- Every refusal writes one hash-chained `audit_events` row carrying the closed
+  reason, the method, the matched route pattern, the `mask_sub`-hashed subject
+  and the tenant. The row never records what another principal could have done.
+- `GET /ops/authz/explain?route=&method=` (Admin on global) returns the caller's
+  OWN verdict and reason. It deliberately refuses a `?roles=` set
+  (`400 authz_explain_role_set_refused`) — it will never answer "what would
+  another role get" — and answers a probe-blind 404 for an ungated route. The
+  Admin gate is consulted before any query validation, so the surface is not a
+  probe.
+- `BRAIN_RBAC_ROLELESS_POSTURE` (`pass` | `deny`, default `pass`) selects how a
+  principal with an EMPTY `roles` claim is treated. Unknown values refuse boot;
+  the resolved value is printed at boot and echoed on `explain`. The middleware
+  itself has no off switch.
+
+**Corrections to the record (found and measured, not assumed)**
+
+- `CAN_ACTIONS` **does** name `workflow`, and the shipped `workflow-operator`
+  preset grants exactly `can:["workflow"]`. Two in-tree comments claimed
+  otherwise; both are corrected. The agent remains refused on the workflow
+  surfaces — for the correct reason: the agent's own preset role holds
+  `can:["read","write","reject"]`.
+- The `route_guards` module doc claimed the module was "compiled nowhere outside
+  test builds". It is production data and always has been (`pub` at
+  `server/router/mod.rs`, consumed by both auth middlewares). The claim is
+  removed, because a comment that lies about where code is compiled is a
+  wire-adjacent defect.
+- **A live authorization defect, found and NOT fixed by this round:** the KCS
+  publish gate calls `authorize_role(.., "publish")`, but `publish` is not in
+  `CAN_ACTIONS` and `role::validate` rejects it, so **no role row can hold it**.
+  KCS article publication is therefore impossible for every role-bearing
+  principal, including the `admin` preset; only role-less JWT principals and
+  the unconfigured superuser can publish. The fix is minting `publish` into
+  `CAN_ACTIONS`, which this round's frozen-vocabulary rule forbids. The
+  capability is declared in a named `DENY_ONLY_CAPABILITIES` class and the
+  premise is pinned so it cannot drift silently.
+
+**Disclosed non-claims**
+
+- The middleware enforces the ROUTE COVERAGE property, the deny-only capability
+  class, and the public/exempt deferrals. It does **not** enforce the per-route
+  role CAPABILITY or the scope ACTION: the capability cannot move to a
+  (path, method) layer because the publish gate is conditional on a request body
+  field, and the action already agrees with the handlers by construction. The
+  handlers' own `authorize` / `authorize_role` remain the inner gate.
+- The agent principal class is refused by the handlers, not by this middleware:
+  measured against the authz matrix, `/reindex` is an `Admin` row yet the agent
+  receives a 200 soft-deny, so the agent's per-route posture is not derivable
+  from the action column and reproducing it here would be a second source of
+  truth.
+- This is not an ACL engine and not tenant isolation. `tenant_id` is
+  audit-scoping and DSAR partitioning; no row-level isolation exists.
+
+**Wire**
+
+- One additive route: `GET /ops/authz/explain`. `openapi.yaml` +
+  `OPENAPI_ROUTES` + `AUTHZ_GATES` + all four spire floors move in one commit.
+  No new table, no schema stamp, no migration, no new dependency edge
+  (root `[dependencies]` still exactly 51; `Cargo.lock` byte-identical).
+
 ## Unreleased — R45-0 "Correction"
 
 ### Release notes
