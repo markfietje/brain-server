@@ -89,6 +89,15 @@ otel = [
 # the storage-agnostic WorkflowHost seam). The server is the first host adapter;
 # engines compile against this crate, never against brain-server.
 brain-engine-sdk = { path = "crates/brain-engine-sdk", features = ["harness-kernel"] }
+# The create loop's evidence resolver: a byte-range citation becomes a verdict
+# by hashing the admitted bytes, with a fixed precedence and no I/O, no clock
+# and no model. Workspace-internal, so this is a PATH edge — it adds no registry
+# source and no checksum to the lockfile, and `cargo audit` over the root
+# lockfile sees exactly what it saw before. It is called by the create loop's
+# gate and by nothing else; the gate consumes the verdict and never re-derives
+# the arithmetic, because two implementations of "is this citation real" is one
+# more than a repository should have.
+brain-evidence-core = { path = "crates/brain-evidence-core" }
 # The curated legal vocabulary (the read-only law-version DB the /legal
 # surface reads); workspace-internal, gains nothing new to the lock.
 legal-rules-db = { path = "crates/legal-rules-db" }

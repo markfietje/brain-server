@@ -742,8 +742,8 @@ fn r47_rbac_adds_no_table_no_stamp_no_dependency() {
         .collect();
     assert_eq!(
         names.len(),
-        51,
-        "the dependency count is frozen at 51 — the oracle is a const table and pure \
+        52,
+        "the dependency count is 52 — the oracle is a const table and pure, needing no crate \
          functions and needs no new crate (found {}: {names:?})",
         names.len()
     );

@@ -20824,7 +20824,7 @@ mod r42_authority_bindings {
             .collect();
         assert_eq!(
             names.len(),
-            51,
+            52,
             "this round adds a table, two adapters and two routes using crates that are \
              ALREADY dependencies; it must add none. New entries: {:?}",
             &names[45..]
@@ -21575,7 +21575,8 @@ mod r43_releases {
 
     // ── 7. the standing guards, restated for the new surface ────────────────
 
-    /// Zero new dependencies — the crate count stays frozen at 51; the
+    /// Zero new dependencies — the crate count is 51 registry crates plus the one
+    /// workspace path edge; the
     /// lockfile half of the proof is the git diff in the evidence file.
     #[test]
     fn delivery_r43_adds_no_dependency() {
@@ -21594,8 +21595,8 @@ mod r43_releases {
             .collect();
         assert_eq!(
             names.len(),
-            51,
-            "the dependency count is frozen at 51 — the release round needs no new crate \
+            52,
+            "the dependency count is 52 — the release round needs no new crate beyond the one workspace path edge \
              (found {names:?})"
         );
     }
@@ -22187,8 +22188,8 @@ mod r44_outcomes {
             .collect();
         assert_eq!(
             names.len(),
-            51,
-            "the dependency count is frozen at 51 — the read model needs no new crate \
+            52,
+            "the dependency count is 52 — the read model needs no new crate beyond the one workspace path edge \
              (found {names:?})"
         );
         // The completeness half: the guard must not pass on an empty round.

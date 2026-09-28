@@ -387,8 +387,8 @@ fn r48_adds_no_table_no_stamp_no_dependency() {
         .collect();
     assert_eq!(
         names.len(),
-        51,
-        "the dependency count is frozen at 51 — R48 adds no crate (found {}: {names:?})",
+        52,
+        "the dependency count is 52 — R48 adds no crate (found {}: {names:?})",
         names.len()
     );
     // the round's completeness half: the guard must not pass on an empty round

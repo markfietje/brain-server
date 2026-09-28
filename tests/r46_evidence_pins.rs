@@ -314,7 +314,7 @@ const EXPECTED_PINS: &[&str] = &[
     "r46_resolution_is_deterministic_across_runs",
     "r46_resolution_does_not_depend_on_any_clock_or_environment",
     "r46_no_audit_row_is_emitted_and_no_key_is_minted",
-    "r46_create_rs_does_not_exist_yet",
+    "r46_the_create_loop_boundary_is_now_owned_by_its_own_suite",
     "r46_round_adds_no_route_no_table_and_no_schema_stamp",
     "r46_resolver_crate_contains_no_unsafe",
     "r46_crate_test_floor_is_never_lowered",
@@ -735,19 +735,46 @@ fn r46_no_audit_row_is_emitted_and_no_key_is_minted() {
 /// NO `source` line and NO `checksum` line; a new external edge always
 /// introduces at least one block WITH a registry `source`.** Path members carry
 /// neither, and `sha2` is already present, so the diff must add zero of both.
+///
+/// AMENDED by the round that is the crate's first kernel consumer. The pin
+/// originally read "the root manifest must not mention the crate" and said in
+/// its own message that the create-loop round is the one that would add the
+/// edge, naming the exact consequence — the direct-dependency count 51 -> 52
+/// and three shipped release pins. It was a correct statement about a state
+/// that has now changed, so it is amended rather than deleted: the law it
+/// protected (zero new REGISTRY edges) is unchanged and still checked here and
+/// in the create-loop round's own pin; only the "no consumer yet" clause goes.
 #[test]
 fn r46_dependency_delta_is_exactly_nothing_and_the_workspace_crate() {
-    // (a) the kernel does NOT depend on the crate — this is the machine-enforced
-    //     form of the execution prompt's OPEN QUESTION 1, and it is what keeps
-    //     the three frozen `names.len() == 51` release pins green.
+    // (a) the root manifest may now carry the crate — but ONLY as a workspace
+    //     path edge, and only because a consumer exists. A registry edge, or a
+    //     path edge with no caller, is still refused.
     let root_manifest = read_repo("Cargo.toml");
+    let mentions = root_manifest
+        .lines()
+        .filter(|l| l.contains("brain-evidence-core") && !l.trim_start().starts_with('#'))
+        .count();
+    assert_eq!(
+        mentions, 1,
+        "the root manifest may carry the evidence core on exactly one line — the \\
+         workspace path dependency its gate calls. Zero lines means the gate \\
+         re-implemented it; two means a second, unreviewed edge."
+    );
+    let dep_line = root_manifest
+        .lines()
+        .find(|l| l.contains("brain-evidence-core") && !l.trim_start().starts_with('#'))
+        .expect("the path dependency line");
     assert!(
-        !root_manifest.contains("brain-evidence-core"),
-        "the root manifest must not mention the crate: R46 has no kernel consumer \
-         (R50 is the first), and a path-dependency added for no current consumer is \
-         exactly the speculative wiring the plan forbids. It would also move the \
-         frozen direct-dependency count 51 -> 52 and turn three SHIPPED release \
-         pins red."
+        dep_line.contains("path ="),
+        "the evidence-core edge must be a WORKSPACE PATH edge: {dep_line}. A registry \\
+         dependency would be a new external edge, which is the one thing this \\
+         repository's dependency law forbids."
+    );
+    assert!(
+        !root_manifest.contains("jsonschema") && !root_manifest.contains("schemars"),
+        "the schema layer is typed Rust plus SQL CHECK constraints, never a JSON-Schema \\
+         validator: a schema document is a syntax contract, and this repository's law is \\
+         that the schema is expressed in types that can also express disjointness."
     );
 
     // (b) the crates workspace lists it, exactly once, as a member
@@ -783,21 +810,39 @@ fn r46_dependency_delta_is_exactly_nothing_and_the_workspace_crate() {
 /// "R46 produces no table, no route, no schema stamp, and no migration." The
 /// positive structural form: the crate appears on none of the surfaces that
 /// would carry one.
+///
+/// AMENDED for the same reason as the dependency pin above. The crate now HAS a
+/// kernel consumer, and that consumer's whole design is that it never reaches
+/// durable state: the loop ships with its promote path disabled. So the scan
+/// gains the surfaces where a consumer would have leaked one, and the ban
+/// becomes the stronger claim it should always have been — not "the crate is
+/// unwired" (which a consumer now contradicts) but "the crate is wired to
+/// NOTHING that can persist a claim".
 #[test]
 fn r46_round_adds_no_route_no_table_and_no_schema_stamp() {
     for surface in [
         "openapi.yaml",
         "src/server/router/route_guards.rs",
         "src/storage_layout.rs",
-        "src/migration.rs",
     ] {
         let text = read_repo(surface);
         assert!(
             !text.contains("brain-evidence-core") && !text.contains("brain_evidence"),
-            "{surface} names the R46 crate — a route, a table, or a schema stamp would \
-             name it there. R46's wire consequence is nil and that is worth pinning."
+            "{surface} names the evidence core — a wire or schema surface naming it means \
+             the verifier is reachable from the durable layer, and the verifier is a READ \
+             check over admitted bytes. It belongs in the gate, never in the record layer."
         );
     }
+    // The migration names `claim_evidence` — the create loop's own table — and
+    // that is now legal: the table stores the citation, the crate resolves it.
+    // What must stay absent is the CRATE at the durable layer.
+    let migration = read_repo("src/migration.rs");
+    assert!(
+        !migration.contains("brain-evidence-core") && !migration.contains("brain_evidence"),
+        "the migration must not reference the evidence crate: schema DDL resolves nothing, \
+         and a trigger that called out to a hash implementation would put a \\
+         non-determinism source inside the database fence."
+    );
     // The route census PARSES route keys rather than substringing the document.
     // The first version of this pin searched for `/evidence` in the whole file and
     // went RED on two lines of correct English — "Identity/evidence only" and
@@ -828,14 +873,34 @@ fn r46_round_adds_no_route_no_table_and_no_schema_stamp() {
 /// §3: "R46 does NOT create `src/workflow/create.rs`. Verified ABSENT at §0 and
 /// MUST be absent at R46's close." RED by creating the file; the pin's green
 /// state is its absence.
+///
+/// **RETIRED BY THE ROUND THAT OWNS THE FILE — deliberately, not silently.** The
+/// pin's own message named the round that would remove it ("creating it is
+/// R50's work"), so its retirement was anticipated when it was written. It is
+/// replaced, not dropped, by the inverted pin in the create-loop suite: the
+/// module exists AND it is a pure gate with no durable write of its own. A
+/// boundary pin whose only content is "the file is not here" has no meaning
+/// once the file is here; the pin that matters is the one that says what the
+/// file is for.
 #[test]
-fn r46_create_rs_does_not_exist_yet() {
-    let path = repo_root().join("src/workflow/create.rs");
+fn r46_the_create_loop_boundary_is_now_owned_by_its_own_suite() {
+    let retired = read_repo("tests/r46_evidence_pins.rs");
     assert!(
-        !path.exists(),
-        "{} exists — creating it is R50's work. R46 ships a verifier, not a Create \
-         loop, and this pin holds the boundary.",
-        path.display()
+        !retired.contains("fn r46_create_rs_does_not_exist_yet"),
+        "the absence pin is retired; keeping a second copy of it would leave a pin that \
+         can never fail again, which is worse than no pin"
+    );
+    assert!(
+        !retired.contains("\"r46_create_rs_does_not_exist_yet\","),
+        "the retired pin's name must leave the pin census too, or the census counts a pin \
+         that no longer exists"
+    );
+    let owner = read_repo("tests/r50_create.rs");
+    assert!(
+        owner.contains("create_evidence_resolution_is_r46_owned_and_not_reimplemented"),
+        "the boundary this pin used to hold is now asserted, positively, by the round that \
+         owns the file: the module consumes the verifier and does not re-derive its \
+         arithmetic"
     );
 }
 

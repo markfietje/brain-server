@@ -354,6 +354,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-evidence-core"
+version = "1.29.0"
+dependencies = [
+ "sha2 0.11.0",
+]
+
+[[package]]
 name = "brain-executor-core"
 version = "1.27.29"
 dependencies = [
@@ -378,6 +385,7 @@ dependencies = [
  "brain-consensus-core",
  "brain-delivery-core",
  "brain-engine-sdk",
+ "brain-evidence-core",
  "brain-executor-core",
  "bs58",
  "chrono",
