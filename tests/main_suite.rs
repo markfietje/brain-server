@@ -7051,6 +7051,10 @@ Final paragraph after the rule.";
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/model_registry.rs"
                             )),
+                            "claims" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/claims.rs"
+                            )),
                             "wizard" => include_str!(concat!(
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/wizard.rs"

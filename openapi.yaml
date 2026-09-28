@@ -8776,6 +8776,273 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized (Admin on global) }
         "409": { description: model_already_registered }
+  /workflow/claim-schemas:
+    post:
+      summary: Author a claim schema (Write on global plus the `workflow` role; human principal only)
+      description: >
+        A claim schema is a HUMAN artifact. Only a human principal may author
+        one, and a self-authored schema is refused at admission rather than
+        warned about. The reason is measured rather than assumed: an agent
+        writing its own specification gains nothing over an unaided baseline,
+        and the reported failure mode is faithfulness — it constrains part of
+        the problem and frees the rest, which an author who cannot tell the
+        difference is not positioned to review.
+        The stored `authored_by` string is mapped from the TYPED principal
+        kind inside the service core, so no request body can name its own
+        author. The table's CHECK on that column is a tripwire on the write
+        path, not an identity proof — a CHECK reads a column, never the live
+        session — and the binding check that the acting principal is human
+        lives in this route's role gate.
+        The budget consequence is real and is not hidden: one human artifact
+        per domain, recurring forever.
+      operationId: createClaimSchema
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [domain, version, body]
+              properties:
+                domain: { type: string, minLength: 1, maxLength: 128 }
+                version: { type: integer, minimum: 1 }
+                body:
+                  type: string
+                  maxLength: 8192
+                  description: >
+                    The typed slot document. JSON Schema is deliberately NOT
+                    used: a schema document is a syntax contract, and the
+                    contradiction arithmetic needs a disjointness CLASS, which
+                    a JSON Schema can express only as a comment.
+      responses:
+        "201":
+          description: Schema authored and ratified at admission
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [domain, version, body_digest, authored_by, authored]
+                properties:
+                  domain: { type: string }
+                  version: { type: integer }
+                  body_digest: { type: string, pattern: "^[0-9a-f]{64}$" }
+                  authored_by: { type: string, enum: [human] }
+                  authored: { type: boolean }
+        "400": { description: claim_incomplete | body_too_large | empty_schema | too_many_slots | malformed_predicate | malformed_bounds | malformed_labels | malformed_version | not_human_authored }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Write on global plus `workflow`, and a human principal) }
+  /workflow/claims:
+    post:
+      summary: Propose a claim (Write on global plus the `workflow` role; audited)
+      description: >
+        A claim is a TYPED tuple — domain, subject, predicate, value — against
+        a ratified schema. A free-text proposal cannot mint one, which is the
+        defect this loop exists for. Every typed slot must be filled: a slot
+        that defaulted its way to ratified would be the same failure in a
+        narrower column.
+        The claim lands `pending`, invisible to every recall surface. The
+        stored principal kind is derived from the caller's typed principal, so
+        the `created_by` fence column cannot be asserted by a request body.
+      operationId: createClaim
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [claim_id, domain, subject, predicate, object]
+              properties:
+                claim_id: { type: string, minLength: 1, maxLength: 128, pattern: "^[A-Za-z0-9_.-]+$" }
+                domain: { type: string, minLength: 1, maxLength: 128 }
+                subject: { type: string, minLength: 1, maxLength: 128 }
+                predicate: { type: string, minLength: 1, maxLength: 128 }
+                object: { description: The typed slot value }
+      responses:
+        "201":
+          description: Claim recorded as pending
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [claim_id, status, created_by]
+                properties:
+                  claim_id: { type: string }
+                  status: { type: string, enum: [pending] }
+                  created_by: { type: string, enum: [human, agent] }
+        "400": { description: claim_incomplete | claim_id_invalid | no_schema }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Write on global plus `workflow`) }
+    get:
+      summary: The gated claim read (Read on global; audited)
+      description: >
+        The loop's ONLY reader. It joins on `status = 'ratified' AND
+        recall_visible = 1` — the same two columns the database fence
+        protects — so a trigger that was somehow bypassed still leaves an
+        unratified claim invisible here, and a row that somehow became visible
+        without a promote audit row is invisible there.
+        The surface has no parameter that could reach unratified material, so
+        it cannot be asked for any. Bounded, newest-first, every emitted text
+        field through the read seam.
+      operationId: listRecallableClaims
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        "200":
+          description: The recallable claims, bounded
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [claims, limit]
+                properties:
+                  limit: { type: integer }
+                  claims:
+                    type: array
+                    items:
+                      type: object
+                      required: [claim_id, subject, predicate, object]
+                      properties:
+                        claim_id: { type: string }
+                        subject: { type: string }
+                        predicate: { type: string }
+                        object: { type: string }
+                        scope: { type: string, nullable: true }
+                        promoted_by: { type: string, nullable: true }
+                        promoted_at: { type: integer, nullable: true }
+        "400": { description: claim_limit_out_of_bounds }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Read on global) }
+  /workflow/claims/{id}:
+    get:
+      summary: Read one claim for the promotion screen (Read on global; audited)
+      description: >
+        The ONE surface besides the service core that may see a claim that is
+        not yet ratified, which is why it is a separate operation rather than a
+        flag on the gated read. Authorization precedes the lookup, so an
+        absent id is probe-blind.
+      operationId: getClaimForPromotion
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        "200":
+          description: The claim row
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [claim_id, subject, predicate, object]
+                properties:
+                  claim_id: { type: string }
+                  subject: { type: string }
+                  predicate: { type: string }
+                  object: { type: string }
+                  scope: { type: string, nullable: true }
+                  promoted_by: { type: string, nullable: true }
+                  promoted_at: { type: integer, nullable: true }
+        "400": { description: claim_id_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Read on global) }
+        "404": { description: claim not found }
+  /workflow/claims/{id}/verify:
+    post:
+      summary: Run the gate over a claim (Write on global plus the `workflow` role; audited)
+      description: >
+        The gate is six deterministic checks in a fixed order, each a pure
+        function over rows: shape, bounds, referential, citation
+        resolvability, contradiction, and premise discipline. No model, no
+        score, no threshold, no tie-break by judgement — and that is the
+        design, because if any gate authority derived from model judgement
+        then more proposals would make the gate strictly worse.
+        Citation resolution is delegated to the byte-range evidence resolver
+        over ADMITTED bytes, never over a live substring match.
+        The response carries the verdict and a CLOSED refusal code. It never
+        carries the failing byte offset, the adjacent text, or which evidence
+        item was at fault: a location hint handed back to a generator turns
+        the gate into an oracle it can be searched against. The detailed
+        diagnostic goes to the audit chain and the promotion screen only.
+      operationId: verifyClaim
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        "200":
+          description: The gate verdict
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [claim_id, verdict]
+                properties:
+                  claim_id: { type: string }
+                  verdict: { type: string, enum: [pass, refused, unavailable] }
+                  reason:
+                    type: string
+                    description: >
+                      A CLOSED vocabulary, and never an index: schema_mismatch,
+                      out_of_bounds, referential, evidence_unresolvable,
+                      contradicts_ratified, premise_dependent,
+                      insufficient_support, no_schema. A code carrying a digit
+                      would be an index into the proposer's own evidence.
+                    enum: [schema_mismatch, out_of_bounds, referential, evidence_unresolvable, contradicts_ratified, premise_dependent, insufficient_support, no_schema]
+                  check: { type: string, description: Which check was reached, on an unavailable verdict }
+        "400": { description: claim_id_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Write on global plus `workflow`) }
+  /workflow/claims/{id}/promote:
+    post:
+      summary: Promote a claim — DISABLED, returns a typed refusal in every configuration
+      description: >
+        THE LOOP SHIPS INERT. This route exists, is authorized, is audited, and
+        returns `promotion_disabled` in every configuration, for every actor,
+        whether or not a token was presented.
+        A deterministic gate's honesty is a MEASURED property, not an
+        architectural one. The one relevant published datapoint reads zero
+        failures in benchmark and one in a hundred and forty-six out of
+        benchmark, and nobody has published a long-run figure. Promotion
+        therefore stays disabled until a published out-of-sample figure exists
+        and has a NAMED OWNER. The switch is a compile-time constant with no
+        environment variable and no flag behind it.
+        The attempt is audited whether or not it succeeds: a promotion path
+        that only records its successes is one whose refusals are invisible,
+        and an invisible refusal rate is a gate that has already lost.
+      operationId: promoteClaim
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 128 }
+      responses:
+        "200":
+          description: The typed disabled refusal
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [claim_id, status, reason, note]
+                properties:
+                  claim_id: { type: string }
+                  status: { type: string, enum: [refused] }
+                  reason: { type: string, enum: [promotion_disabled] }
+                  note: { type: string }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (Write on global plus `workflow`) }
+        "404": { description: claim not found }
 components:
   securitySchemes:
     bearerAuth:
@@ -8868,7 +9135,6 @@ components:
         the route handler `post_delivery_advance`, which calls
         `workflow::delivery::advance` and serializes its return value — the
         `pub(crate) struct Advanced` at `src/workflow/delivery.rs:868`.
-
         The Rust and spec names deliberately differ, and this is a house
         convention rather than a one-off: the wire vocabulary is namespaced
         (`DeliveryRunCreated`, `DeliveryRunAdvanced`, `DeliveryRunAnswered`,
@@ -8878,7 +9144,6 @@ components:
         divergence exists across the spec (`MemorySearchResult`,
         `DsarExport`), so renaming either side would be a repo-wide convention
         change, not a correction — deliberately not done unilaterally.
-
         The pairing is machine-checked, not asserted: see
         `delivery_advance_wire_schema_matches_the_handler` in
         `src/docs_truth.rs`, which pins the key set AND this route-to-type
@@ -10413,4 +10678,3 @@ components:
         team: { type: string, description: Team id or `*` }
         domain: { type: string, description: Domain id or `*` }
       required: [action, team, domain]
-

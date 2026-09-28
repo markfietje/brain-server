@@ -25,6 +25,7 @@
 # Reference
 
 - [API reference](api.md)
+- [The create loop](create-loop.md)
 - [API contract](API_CONTRACT.md)
 - [Features](features.md)
 - [Use cases](use-cases.md)

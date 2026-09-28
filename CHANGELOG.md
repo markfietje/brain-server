@@ -4,6 +4,92 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## Unreleased — R50 "Create"
+
+### Release notes
+
+**The first loop that authors knowledge — shipped inert.**
+
+Five phase cores, a typed claim record, a four-trigger database fence, and six
+routes. **No claim reaches durable state.** The promotion route exists, is
+authorized, is audited, and returns `promotion_disabled` in every configuration
+for every actor. The switch is a compile-time constant with no environment
+variable and no flag behind it, because the decision to enable promotion
+belongs to a named owner against a published measurement, not to a runtime
+preference.
+
+**Added**
+
+- **`claim_schemas`** — a human-authored slot schema. Only a human principal may
+  write one and a self-authored schema is refused at *admission*, not warned
+  about. The stored author string is mapped from the typed principal kind inside
+  the service core, so no request body can name its own author.
+- **`claims`** — a typed tuple against a ratified schema, so a free-text
+  proposal cannot mint one. Carries a pre-computed digest of its own public id,
+  because SQLite cannot hash a column and the fence needs a real predicate.
+- **`claim_evidence`** — byte-range citations, resolved over *admitted* bytes by
+  the workspace evidence crate and never by a live substring match.
+- **`claim_batches`** — the set-level verdict that withholds a whole ratified
+  batch's recall visibility.
+- **The gate** (`src/workflow/create/verify.rs`) — six deterministic checks in a
+  fixed order, each a pure function over rows: shape, bounds, referential,
+  citation resolvability, contradiction, premise discipline. No model, no
+  score, no threshold, no judgement tie-break. Repairs additionally require an
+  independent-support floor, because the agent that notices an error fixes it
+  wrongly more often than it fixes it right.
+- **The corpus** — twelve planted adversarial claims as compiled data, each
+  naming its attack class and the control that stops it. Two of the twelve
+  target *cleanup* of what already landed rather than admission, because the
+  residue operators leave behind is a separate failure surface and a corpus
+  that only tested entry would have called itself complete.
+- **Six routes** — `/workflow/claim-schemas`, `/workflow/claims` (POST and the
+  gated GET), `/workflow/claims/{id}`, `.../verify`, `.../promote`.
+- **`docs/create-loop.md`** — the operator record, including the four things the
+  loop does *not* claim.
+
+**The four non-claims, stated in the docs in those words**
+
+1. The out-of-sample false-promotion rate is **not yet measured**. No long-run
+   figure has been published for a deterministic gate by anyone.
+2. The promotion route is **disabled**, in every configuration.
+3. Gap generation has **no reliable published detection method** — the loop
+   generates rather than detects because the techniques that exist are unsafe
+   as detectors.
+4. The set-level control has **no published prior art** and is a declared
+   approximation: it catches declared predicate interactions and not arbitrary
+   semantic composition.
+
+**The database fence, and its stated ceiling**
+
+Recall visibility is protected by four `BEFORE UPDATE` triggers in the schema,
+not by an application guard — a guard sits behind the same API the model talks
+to, so a socially-engineered write walks past it. The fence keys on
+application-set strings, so it defends a compromised **model path** and **not
+host compromise**: that is the same boundary this repository already draws for
+the audit chain, where the signing key and the verification pin share the host.
+
+**Schema**
+
+- Additive only, stamp `1.32.19`: four new tables. No column dropped, no table
+  rebuilt — a rebuild is the one operation that can lose rows under a crash. The
+  gated read model is a query, never a view, and a standing pin keeps it that
+  way.
+
+**Dependencies**
+
+- **One new WORKSPACE PATH edge** — the workspace evidence crate, which the
+  gate calls and does not reimplement. Zero new *registry* edges: the lockfile
+  block carries neither a `source` nor a `checksum`, so `cargo audit` over the
+  root lockfile sees exactly what it saw before. This edge was previously
+  forbidden by a shipped pin whose own message named this round as the one to
+  add it; the pin is amended rather than deleted, and a registry edge is still
+  refused. `jsonschema` and `schemars` remain declined: the schema is typed
+  Rust plus SQL `CHECK` constraints, because a JSON Schema document is a syntax
+  contract and cannot express the disjointness the contradiction arithmetic
+  depends on.
+
+---
+
 ## Unreleased — R48 "Cleancycle"
 
 ### Release notes

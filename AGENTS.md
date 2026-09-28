@@ -1,6 +1,26 @@
 # Agent Execution Log — brain-server
 
-> Current release: **v1.28.92 "Ledger"** (2026-09-22) — the governed loop's
+> Current release (unreleased): **R50 "Create"** — the first loop that *authors*
+> knowledge, shipped **INERT**. Five phase cores, a typed claim record, and a
+> four-trigger database fence. **No claim reaches durable state**: the promotion
+> route returns `promotion_disabled` in every configuration for every actor,
+> behind a compile-time constant with no env var and no flag. Four non-claims
+> are stated in `docs/create-loop.md` in those words — the out-of-sample
+> false-promotion rate is **not yet measured**; the promote route is
+> **disabled**; gap generation has **no reliable published detection method**;
+> the set-level control has **no published prior art** and is a declared
+> approximation over declared predicate interactions. The fence keys on
+> application-set strings, so it defends a compromised **model path**, not host
+> compromise — the boundary the audit chain already draws. Schema `1.32.19`,
+> additive only, four tables, no rebuild; the gated read is a query, never a
+> view. One new **workspace path edge** (the evidence crate the gate calls and
+> does not reimplement); **zero new registry edges**, so `cargo audit` over the
+> root lockfile is unaffected. The R46 pin that forbade the kernel edge is
+> **amended, not deleted**, and still refuses a registry edge. If a later round
+> quietly gives promotion a production caller, that is a broken invariant — say
+> so in the evidence file, do not quietly enable it.
+
+> Predecessor: **v1.28.92 "Ledger"** (2026-09-22) — the governed loop's
 > record layers. Theme: the 1.32.x line stamped through 1.32.7 "Diagnostic
 > Closure", with two preregistered record layers riding the loop's own rows
 > additively (no new table, no migration) and the System-1 decide modules
