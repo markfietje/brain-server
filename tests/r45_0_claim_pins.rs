@@ -19,6 +19,14 @@
 //!
 //! RED-first: the artifact pins below FAIL until the correction lands. The
 //! exact RED text is recorded in the round evidence.
+//!
+//! **The completeness pin** (`r45_0_blueprint_names_all_six_loops`) is a
+//! different kind of guard. The correction pins above enforce that a document
+//! does not say something FALSE. This one enforces that a document titled
+//! "complete" is not MISSING its architecture: the health blueprint shipped for
+//! weeks with no loop content at all while the six-loop plan sat beside it
+//! marked AGREED. A false claim and an absent one fail the same way — silently,
+//! in a document a reader trusts.
 
 use std::path::{Path, PathBuf};
 
@@ -927,6 +935,205 @@ fn r45_0_claim_detector_catches_a_planted_overstatement() {
          Ed25519 signs the chain is the same overstatement wearing a hat. The real-mechanism \
          escape must not become amnesty."
     );
+}
+
+// ── the blueprint carries the agreed architecture (completeness) ────────────
+
+/// The six loops, as named by the authoritative plan
+/// `plans/PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md` (Status: AGREED).
+const SIX_LOOPS: &[&str] = &["Create", "Solve", "Evolve", "Deflect", "Operate", "Deliver"];
+
+/// The health blueprint is titled "System Architecture (**complete**)". It shipped
+/// with no loop content at all — no section, no diagram, not a single loop name —
+/// while the plan that defines the architecture sat beside it marked AGREED.
+///
+/// A document that claims completeness and omits the architecture is the same
+/// failure as one that claims a false mechanism: a reader trusts the title. This
+/// pin asserts the loops are PRESENT, so a later round cannot quietly drop them
+/// the way this one did.
+#[test]
+fn r45_0_blueprint_names_all_six_loops() {
+    const BLUEPRINT: &str = "docs/blueprint/02-SYSTEM_ARCHITECTURE.md";
+    let text = read_spine(BLUEPRINT);
+
+    // The loops section exists and is findable, not merely mentioned in passing.
+    assert!(
+        text.contains("## 2.2 The six loops"),
+        "{BLUEPRINT} must carry a loops section (§2.2). It is titled \"System Architecture \
+         (complete)\" and the six-loop plan beside it is marked AGREED — \"this is the \
+         architecture\". A complete system architecture that omits the architecture is \
+         the same defect as one that misdescribes it."
+    );
+
+    // Every loop named, as its own heading or table row.
+    let mut missing: Vec<&str> = Vec::new();
+    for loop_name in SIX_LOOPS {
+        let named = text.contains(&format!("**{loop_name}**"))
+            || text.contains(&format!("### {loop_name}"))
+            || text.contains(&format!("{loop_name} ──▶"))
+            || text.contains(&format!("{loop_name} (software"));
+        if !named {
+            missing.push(loop_name);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "{BLUEPRINT} omits loop(s) {missing:?}. All six must appear: \
+         Create, Solve, Evolve, Deflect, Operate, Deliver. The authoritative source is \
+         plans/PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md — the blueprint summarises it and \
+         must not diverge."
+    );
+
+    // The knowledge chain appears in order, so the flow is legible, not just
+    // six disconnected words.
+    assert!(
+        text.contains("Create → Solve → Evolve → Deflect → Operate")
+            || text.contains("Create ──▶ Solve ──▶ Evolve ──▶ Deflect ──▶ Operate"),
+        "{BLUEPRINT} must show the five knowledge loops in order \
+         (Create → Solve → Evolve → Deflect → Operate), not merely list them."
+    );
+
+    // Deliver is the SOFTWARE loop and is not part of that chain — dropping it
+    // into the sequence is a different misstatement, so require the distinction.
+    assert!(
+        text.contains("Software") || text.contains("software"),
+        "{BLUEPRINT} must record that Deliver is the software lifecycle, distinct from \
+         the five knowledge loops. The authoritative plan splits them 5 + 1."
+    );
+}
+
+/// The blueprint's summary and the authoritative plan must agree on the loop
+/// COUNT and the 5+1 split. A summary that quietly drops a loop, or reclassifies
+/// Deliver as a knowledge loop, is the drift this guards against.
+#[test]
+fn r45_0_blueprint_loop_count_agrees_with_the_authoritative_plan() {
+    const BLUEPRINT: &str = "docs/blueprint/02-SYSTEM_ARCHITECTURE.md";
+    const PLAN: &str = "plans/PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md";
+
+    let blueprint = read_spine(BLUEPRINT);
+    let plan = read_spine(PLAN);
+
+    // The plan is the normative source; if it ever stops being AGREED, this pin
+    // should be re-pointed rather than silently passing. Matched on the word
+    // rather than the exact line, so markdown emphasis does not make the guard
+    // silently vacuous — a guard that stops matching is worse than no guard,
+    // because it looks like coverage.
+    assert!(
+        plan.contains("AGREED"),
+        "the authoritative six-loop plan no longer reads AGREED — re-point this pin at \
+         whatever superseded it rather than letting the blueprint drift unchecked."
+    );
+
+    // Both must call out the 5 + 1 split.
+    for (name, text) in [("blueprint", &blueprint), ("plan", &plan)] {
+        assert!(
+            text.contains("5 knowledge loops")
+                || text.contains("5 + 1")
+                || text.contains("five knowledge loops"),
+            "the {name} must record the 5 knowledge + 1 software split, matching the \
+             authoritative plan. The loops are not six interchangeable peers."
+        );
+        assert!(
+            text.contains("1 software loop")
+                || text.contains("Software")
+                || text.contains("software"),
+            "the {name} must record that Deliver is the software lifecycle, distinct from \
+             the five knowledge loops. The authoritative plan splits them 5 + 1."
+        );
+    }
+
+    // Every loop in the plan must be named in the blueprint — the reverse
+    // direction is not required (the blueprint may summarise), but nothing in the
+    // plan may be absent from the blueprint.
+    let mut missing: Vec<&str> = Vec::new();
+    for loop_name in SIX_LOOPS {
+        if !blueprint.contains(loop_name) {
+            missing.push(loop_name);
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "the blueprint is missing loop(s) {missing:?} that the AGREED plan defines. \
+         The blueprint summarises the plan; it does not get to have a smaller set."
+    );
+}
+
+/// RED-PROOF for the two completeness pins above.
+///
+/// A completeness guard is the easiest kind of pin to write vacuously: assert
+/// something about a file, get a green run, and enforce nothing. These two
+/// checks feed the SAME predicates a document missing every loop would fail, and
+/// require them to fire.
+///
+/// The failure this guards is a real one, not hypothetical: the blueprint shipped
+/// for weeks titled "System Architecture (complete)" with no loop content at
+/// all. A guard written for it must be shown to catch it.
+#[test]
+fn r45_0_blueprint_completeness_pins_are_non_vacuous() {
+    /// The predicate `r45_0_blueprint_names_all_six_loops` applies, factored out
+    /// so the red-proof and the real pin cannot drift apart.
+    fn all_six_loops_named(text: &str) -> Result<(), Vec<&'static str>> {
+        let mut missing = Vec::new();
+        for loop_name in SIX_LOOPS {
+            let named = text.contains(&format!("**{loop_name}**"))
+                || text.contains(&format!("### {loop_name}"))
+                || text.contains(&format!("{loop_name} ──▶"))
+                || text.contains(&format!("{loop_name} (software"));
+            if !named {
+                missing.push(*loop_name);
+            }
+        }
+        if missing.is_empty() {
+            Ok(())
+        } else {
+            Err(missing)
+        }
+    }
+
+    // The state that actually shipped: a complete-looking architecture document
+    // with zero loop content. This MUST fail, or the pin does not guard anything.
+    let no_loops = "\
+# 02 — System Architecture (complete)
+
+## 2.1 One picture
+
+```
+HUMAN (operator / clinician / auditor)
+  ▼
+KERNEL (public MIT brain-server)
+  Axum · Tokio · rusqlite · sqlite-vec
+```
+
+## 2.2 Kernel surfaces (what modules call — no new kernel code)
+
+* `POST /ingest` → screened write.
+";
+    let err = all_six_loops_named(no_loops)
+        .expect_err("the pre-fix blueprint had NO loop content and MUST fail the pin");
+    assert_eq!(
+        err.len(),
+        SIX_LOOPS.len(),
+        "every one of the six loops was missing from the shipped blueprint; the pin must \
+         report all of them, not just the first"
+    );
+
+    // The fixed document passes.
+    let fixed = read_spine("docs/blueprint/02-SYSTEM_ARCHITECTURE.md");
+    assert!(
+        all_six_loops_named(&fixed).is_ok(),
+        "the corrected blueprint must satisfy the same predicate the red-proof drives"
+    );
+
+    // And a document that names five of six still fails — a partial summary is
+    // exactly the drift a reviewer would not notice.
+    let five_of_six = "\
+## 2.2 The six loops
+**Create** **Solve** **Evolve** **Deflect** **Operate**
+Create → Solve → Evolve → Deflect → Operate
+";
+    let err = all_six_loops_named(five_of_six)
+        .expect_err("a summary dropping Deliver must fail — five of six is still incomplete");
+    assert_eq!(err, vec!["Deliver"], "only Deliver should be missing");
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
