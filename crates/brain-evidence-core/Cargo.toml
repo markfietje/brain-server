@@ -1,0 +1,28 @@
+[package]
+name = "brain-evidence-core"
+version = "1.29.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The byte-range evidence resolver: does a claim's cited span resolve to exactly these bytes? Pure, total, and I/O-free; no clock, no store, no network, no model."
+publish = false
+
+[dependencies]
+# R46's entire supply-chain claim is this one line.
+#
+# The crates workspace ALREADY locks `sha2 0.11.0` (brain-delivery-core,
+# brain-consensus-core, brain-executor-core, brain-interview-core all declare
+# it), so naming it here adds ZERO new `[[package]]` entries to
+# `crates/Cargo.lock` — provable by diffing the lockfile and finding no added
+# `source = "registry+..."` line and no added `checksum =` line.
+#
+# The plan disagrees with itself about the primitive: E1 and §3 say BLAKE3,
+# while §0.3 and the execution prompt both specify `sha256`. BLAKE3 is ABSENT
+# from `crates/Cargo.lock` entirely, so using it would add four new external
+# packages (`blake3`, `arrayref`, `arrayvec`, `constant_time_eq`) to a
+# workspace whose defining property is that it has none — and the zero-new-edge
+# law is a SHIPPED release property of this repo, which outranks a primitive
+# choice. §0.3 wins; E1's primitive is recorded as a deviation in the round
+# evidence, together with its cost (an R46 CID is `sha256:`-prefixed and is NOT
+# interchangeable with the kernel's `blake3:`-prefixed `content_hash_string`).
+sha2 = "0.11"

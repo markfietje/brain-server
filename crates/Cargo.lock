@@ -66,6 +66,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-evidence-core"
+version = "1.29.0"
+dependencies = [
+ "sha2",
+]
+
+[[package]]
 name = "brain-executor-core"
 version = "1.27.29"
 dependencies = [

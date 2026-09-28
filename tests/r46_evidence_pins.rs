@@ -546,21 +546,43 @@ fn r46_cid_uses_the_locked_hash_and_the_house_base32_and_adds_no_hash_implementa
          its own primitive choice"
     );
 
-    // (b) no hand-rolled primitive smuggled into the crate's CODE region
-    let lib = read_crate("src/lib.rs");
-    let code = code_region(&lib);
-    for needle in ["const K:", "rotate_right", "wrapping_add(", "0x6a09e667"] {
-        assert!(
-            !code.contains(needle),
-            "the resolver must not carry its own hash implementation (`{needle}`): \
-             E4 declines adding a hash, and a hand-rolled primitive in the trust \
-             path of a provenance verifier inverts the risk calculus"
-        );
+    // (b) no hand-rolled primitive smuggled into the crate's CODE regions.
+    //     Scanned across EVERY module, not just lib.rs — the base32 alphabet
+    //     lives in cid.rs, and a scan of one file would miss it.
+    let files = crate_sources();
+    assert!(
+        files.len() >= 2,
+        "the crate's src/ walk found {} files",
+        files.len()
+    );
+    for file in &files {
+        let text = std::fs::read_to_string(file)
+            .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
+        let code = code_region(&text);
+        for needle in ["const K:", "rotate_right", "wrapping_add(", "0x6a09e667"] {
+            assert!(
+                !code.contains(needle),
+                "{}: the resolver must not carry its own hash implementation \
+                 (`{needle}`): E4 declines adding a hash, and a hand-rolled \
+                 primitive in the trust path of a provenance verifier inverts the \
+                 risk calculus",
+                file.display()
+            );
+        }
     }
 
     // (c) the base32 encoding is the house's — RFC 4648, no padding, lowercase
+    let joined: String = files
+        .iter()
+        .map(|f| {
+            std::fs::read_to_string(f)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", f.display()))
+        })
+        .map(|t| code_region(&t))
+        .collect::<Vec<_>>()
+        .join("\n");
     assert!(
-        code.contains("abcdefghijklmnopqrstuvwxyz234567"),
+        joined.contains("abcdefghijklmnopqrstuvwxyz234567"),
         "the CID encodes over the kernel's alphabet (src/ump_integrity.rs:23) — \
          RFC 4648, no padding, LOWERCASE. A second alphabet would make R46 CIDs \
          incomparable with every content hash the tree already stores."
@@ -590,7 +612,7 @@ fn r46_documented_boundary_is_present_in_the_module_doc_comment() {
          what it does not (E7); the table is long because the honest rows are the \
          ones that are easy to leave out"
     );
-    for marker in ["does not", "not what it proves", "no model"] {
+    for marker in ["does not", "no model", "not a proof"] {
         assert!(
             header.contains(marker),
             "the boundary header must carry the marker `{marker}` — a table of \
@@ -710,21 +732,25 @@ fn r46_dependency_delta_is_exactly_nothing_and_the_workspace_crate() {
         "the crates workspace must list brain-evidence-core as a member exactly once"
     );
 
-    // (c) the crate's lockfile block carries no source and no checksum
+    // (c) the crate's lockfile block carries no source and no checksum.
+    //     The block is bounded by the surrounding `[[package]]` headers —
+    //     splitting on the NAME and scanning forward runs into the NEXT
+    //     package, which does carry a registry source, and the first version
+    //     of this pin failed for exactly that reason.
     let lock = read_repo("crates/Cargo.lock");
     let block = lock
-        .split("name = \"brain-evidence-core\"")
-        .nth(1)
-        .map(|rest| {
-            let head = rest.find('[').map_or(0, |i| i + 1);
-            &rest[head..]
-        })
-        .expect("crates/Cargo.lock must carry a block for the new member");
+        .split("[[package]]")
+        .find(|b| b.contains("name = \"brain-evidence-core\""))
+        .expect("crates/Cargo.lock must carry a [[package]] block for the new member");
+    assert!(
+        block.contains("\"sha2\""),
+        "the member's block must name its dependency: {block}"
+    );
     assert!(
         !block.contains("source =") && !block.contains("checksum ="),
         "a workspace member's lockfile block carries no `source` and no `checksum` — \
          the presence of either would mean a NEW EXTERNAL EDGE, which is the one \
-         thing this round's dependency claim forbids"
+         thing this round's dependency claim forbids. Block was: {block}"
     );
 }
 
