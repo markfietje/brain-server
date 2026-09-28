@@ -794,20 +794,15 @@ pub async fn get_authz_explain(
     };
 
     let verdict = crate::authz::decide_gate_verdict(principal.0.as_ref(), &gate, &method);
-    let body = serde_json::json!({
-        "route": route,
-        "method": method,
-        "required_action": required_action_name(gate.required_action),
-        "verdict": match verdict {
-            crate::authz::Verdict::Allow => "allow",
-            crate::authz::Verdict::Defer(_) => "defer",
-            crate::authz::Verdict::Deny(_) => "deny",
-        },
-        "reason": verdict.as_str(),
-        // the posture rule: the role-less posture is echoed here, because "why did my token
-        // with no roles get through" is the question this route exists for.
-        "roleless_posture": crate::config::rbac_roleless_posture(),
-    });
+    // Resolve the posture to its INNER value. Serializing the `Result` directly
+    // emitted `{"Ok":"pass"}` where openapi.yaml declares a plain
+    // `roleless_posture: string` — a wire contract that did not match the wire.
+    // Found by RUNNING the route on the demo box, not by a test: nothing
+    // asserted the response shape. The error arm is unreachable in practice
+    // (boot validation refuses an unknown value), but it must not be silently
+    // serialized either — it becomes a 500 naming the cause.
+    let posture = crate::config::rbac_roleless_posture().map_err(AuthHandlerError::internal_msg)?;
+    let body = explain_body(&route, &method, &gate, verdict, posture);
     let shaped = crate::gate::sanitize_read(
         &serde_json::to_string(&body).unwrap_or_default(),
         false,
@@ -817,11 +812,143 @@ pub async fn get_authz_explain(
     Ok(Json(parsed))
 }
 
+/// The response body — PURE, and extracted so the regression pin exercises the
+/// real builder rather than a literal it constructs itself.
+///
+/// **Why the extraction matters, and this is the lesson of the first attempt at
+/// this pin.** The bug was that the handler serialized a `Result` into
+/// `roleless_posture`, emitting `{"Ok":"pass"}` where the contract declares a
+/// string. A first pin at the handler asserted against a hand-built
+/// `json!({...})` literal — and **passed with the bug reverted**, because it
+/// tested its own literal, not the code. A guard that cannot fail is worse
+/// than no guard, so the code under test is now a function the pin CALLS.
+fn explain_body(
+    route: &str,
+    method: &str,
+    gate: &crate::authz::Gate,
+    verdict: crate::authz::Verdict,
+    posture: &str,
+) -> serde_json::Value {
+    serde_json::json!({
+        "route": route,
+        "method": method,
+        "required_action": required_action_name(gate.required_action),
+        "verdict": match verdict {
+            crate::authz::Verdict::Allow => "allow",
+            crate::authz::Verdict::Defer(_) => "defer",
+            crate::authz::Verdict::Deny(_) => "deny",
+        },
+        "reason": verdict.as_str(),
+        "roleless_posture": posture,
+    })
+}
+
 fn required_action_name(action: crate::auth::Action) -> &'static str {
     match action {
         crate::auth::Action::Read => "Read",
         crate::auth::Action::Write => "Write",
         crate::auth::Action::Admin => "Admin",
         crate::auth::Action::Traverse => "Traverse",
+    }
+}
+
+#[cfg(test)]
+mod r47_tests {
+    use super::*;
+
+    /// E7's no-oracle law is enforced at the SURFACE, not by omission: the
+    /// `roles` field is parseable precisely so its refusal is a documented 400
+    /// rather than a silently-ignored query string.
+    #[test]
+    fn r47_explain_refuses_a_role_set_query() {
+        let q: AuthzExplainQuery =
+            serde_json::from_value(serde_json::json!({"route": "/stats", "roles": "dpo,admin"}))
+                .expect("deserialise");
+        assert!(
+            q.roles.is_some(),
+            "a `roles` parameter must be PARSEABLE so its refusal is a documented 400"
+        );
+    }
+
+    /// `route` is OPTIONAL in the schema so the Admin gate is consulted before
+    /// any validation. A required query param fails at the extractor — before
+    /// the handler body — which would hand an unauthorized caller a 400 that
+    /// proves the route exists.
+    #[test]
+    fn r47_explain_route_is_optional_in_the_schema_so_the_gate_runs_first() {
+        let empty: AuthzExplainQuery = serde_json::from_value(serde_json::json!({})).expect("des");
+        assert_eq!(
+            empty.route, None,
+            "route must be optional so the Admin gate is consulted first"
+        );
+    }
+
+    /// THE REGRESSION PIN for a bug found by RUNNING the route on a demo box,
+    /// not by a test: the handler serialized `config::rbac_roleless_posture()`
+    /// (a `Result`) directly, emitting `{"Ok":"pass"}` where openapi.yaml
+    /// declares `roleless_posture: {type: string, enum: [pass, deny]}`.
+    ///
+    /// **A wire contract that did not match the wire.** This pin calls the
+    /// REAL builder. The first attempt at it asserted against a hand-built
+    /// `json!` literal and **passed with the bug reverted** — a guard that
+    /// cannot fail. Extracting `explain_body` is what makes this one real.
+    #[test]
+    fn r47_explain_roleless_posture_is_a_plain_string_not_a_serialized_result() {
+        let gate = crate::authz::Gate::public("/stats");
+        let body = explain_body(
+            "/stats",
+            "GET",
+            &gate,
+            crate::authz::Verdict::Defer(crate::authz::DeferReason::PublicPath),
+            "pass",
+        );
+        assert!(
+            body["roleless_posture"].is_string(),
+            "roleless_posture must serialize as a string; got {body}"
+        );
+        assert!(
+            !body["roleless_posture"].is_object(),
+            "a serialized Result is an OBJECT — that was the defect; got {body}"
+        );
+        assert_eq!(body["roleless_posture"], "pass");
+        // every emitted field is a scalar, never a nested enum wrapper
+        for (k, v) in body.as_object().expect("object").iter() {
+            assert!(
+                !v.is_object() && !v.is_array(),
+                "field `{k}` serialized as a nested structure: {v} — the wire \
+                 contract declares flat scalars"
+            );
+        }
+        // and the contract it must match
+        let spec = read_repo_spec();
+        assert!(
+            spec.contains("roleless_posture: { type: string, enum: [pass, deny] }"),
+            "the contract declares a plain string with a closed 2-value enum"
+        );
+        let posture = crate::config::rbac_roleless_posture().unwrap_or("unset");
+        assert!(
+            ["pass", "deny"].contains(&posture),
+            "the echoed posture must be a member of the closed set, got {posture}"
+        );
+    }
+
+    /// The action names the route echoes are a closed set.
+    #[test]
+    fn r47_required_action_names_are_closed() {
+        let mut names: Vec<&str> = [
+            required_action_name(crate::auth::Action::Read),
+            required_action_name(crate::auth::Action::Write),
+            required_action_name(crate::auth::Action::Admin),
+            required_action_name(crate::auth::Action::Traverse),
+        ]
+        .to_vec();
+        names.sort();
+        assert_eq!(names, ["Admin", "Read", "Traverse", "Write"]);
+    }
+
+    /// The openapi spec, read from the crate root.
+    fn read_repo_spec() -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("openapi.yaml");
+        std::fs::read_to_string(path).expect("openapi.yaml must be readable")
     }
 }
