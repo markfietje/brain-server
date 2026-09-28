@@ -321,6 +321,14 @@ const CHANGELOG_WINDOW_START: &str = "R45-0";
 /// Banned verbatim strings. Each is an exact sentence we have published that
 /// overstates the mechanism. Precise beats clever: a reviewer can grep any of
 /// these in one keystroke and understand instantly what the pin forbids.
+///
+/// **Quoted occurrences are permitted.** The correction must be able to NAME
+/// the old claim in order to record what it was — the governing spec's
+/// "We have written | What is true" table, and the R45-0 plan's note that its
+/// own §0 header used to read "5 production sites". A pin that forbade the
+/// string everywhere would forbid the correction from documenting the error it
+/// is fixing. So a hit counts only when the sentence is NOT inside quotation
+/// marks and is not part of a `> ` correction blockquote.
 const BANNED_CLAIMS: &[(&str, &str)] = &[
     (
         "plans/PLAIN_LANGUAGE_PRODUCT_OVERVIEW.md",
@@ -434,18 +442,46 @@ fn r45_0_no_external_artifact_claims_ed25519_over_the_chain() {
 /// The exact overstatements we shipped, banned verbatim. Redundant with the
 /// detector on purpose: the detector could be widened later; this list is the
 /// record of what was actually wrong.
+/// Is this occurrence a QUOTATION of the old claim (permitted) rather than a
+/// live assertion of it (forbidden)?
+///
+/// Two forms are recognised, and both are load-bearing:
+/// * the string appears inside `"…"` on the line — the "We have written | What
+///   is true" correction table, or prose saying the claim *used to* read X;
+/// * the line is part of a `> ` blockquote — the superseded-estimate note, which
+///   quotes the retired throughput sentence in order to retire it.
+fn is_quoting_claim(line: &str, needle: &str) -> bool {
+    let Some(start) = line.find(needle) else {
+        return false;
+    };
+    let before = &line[..start];
+    let after = &line[start + needle.len()..];
+    // A blockquote: the correction notes are `> ` prefixed.
+    if before.trim_start().starts_with('>') {
+        return true;
+    }
+    // An open quote before the phrase and a close quote after it.
+    let opened = before.matches('"').count() % 2 == 1;
+    let closed = after.matches('"').count() % 2 == 1;
+    opened && closed
+}
+
 #[test]
 fn r45_0_banned_overstated_sentences_are_gone() {
     let mut found: Vec<String> = Vec::new();
     for (rel, needle) in BANNED_CLAIMS {
         let text = read_spine(rel);
-        if text.contains(needle) {
-            found.push(format!("{rel}: {needle:?}"));
+        for (i, line) in text.lines().enumerate() {
+            if line.contains(needle) && !is_quoting_claim(line, needle) {
+                found.push(format!("{rel}:{}: {needle:?}", i + 1));
+            }
         }
     }
     assert!(
         found.is_empty(),
-        "these exact overstated sentences are still published:\n{}",
+        "these exact overstated sentences are still published as live claims:\n{}\n\
+         (A QUOTATION of the old claim is permitted — and required — so the correction \
+         can record what it fixed. Only unquoted assertions fail.)",
         found.join("\n")
     );
 }
