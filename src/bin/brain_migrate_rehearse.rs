@@ -139,6 +139,25 @@ const PARITY_TABLES: &[&str] = &[
     // recorded, which is precisely the state the approval binding exists to
     // make impossible.
     "delivery_releases",
+    // the human-authored slot schemas. Row-count parity proves a rehearsal
+    // copied the standing authority that decides what shape a claim may take
+    // — a follower that came back with zero schemas would silently refuse
+    // every claim in the loop, and the refusal would read as "no gaps found".
+    "claim_schemas",
+    // the collusion batches. Row-count parity proves a rehearsal copied the
+    // set-level verdicts — a follower that lost them would re-decide every
+    // batch from scratch on restore, which is precisely the re-litigation the
+    // withheld-visibility control exists to prevent.
+    "claim_batches",
+    // the claims themselves. Row-count parity proves a rehearsal copied the
+    // authored-knowledge layer; a zero here is indistinguishable, in the
+    // verify report, from a loop that has never run.
+    "claims",
+    // the byte-range evidence rows. Row-count parity is what proves a
+    // rehearsal copied the citations and not only the claims: claims whose
+    // evidence did not travel are indistinguishable from claims that were
+    // never verified, and the loop's central gate is that evidence.
+    "claim_evidence",
 ];
 
 /// Size of the random vec0 spot-check. ponytail: 50 is a heuristic — the formal

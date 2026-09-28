@@ -3582,6 +3582,16 @@ Final paragraph after the rule.";
             // v1.32.18 "Releases": the governed release row — the approval
             // columns ride on it, so the row IS the approval artifact.
             "delivery_releases",
+            // v1.32.19: the create loop's four tables. The slot schema is the
+            // human artifact (its CHECK refuses any non-human author); the
+            // batch is the set-level verdict; the claim is the authored
+            // knowledge; the evidence is the byte-range citation the gate
+            // resolves. The gated read model is a query, so there is no view
+            // here and none may be added.
+            "claim_schemas",
+            "claim_batches",
+            "claims",
+            "claim_evidence",
         ];
         let missing: Vec<String> = expected_tables
             .iter()
@@ -17963,12 +17973,12 @@ mod r38_delivery {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_18),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_19),
             "the migration literal and the ceiling const must agree on the current stamp"
         );
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.18",
+            "1.32.19",
             "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
              this binary cannot migrate"
         );
@@ -18705,12 +18715,12 @@ mod r40_attestations {
         // round; what moves is the ceiling, and it moves for both.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_18),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_19),
             "the ceiling const and the migration literal must move together"
         );
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.18",
+            "1.32.19",
             "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
              this binary cannot migrate"
         );
@@ -19506,12 +19516,12 @@ mod r41_replay {
         // The stamp moved, and moved with the table.
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.18",
+            "1.32.19",
             "the release round is a schema round: the stamp moves with the table that earns it"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_18),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_19),
         );
         // ...and the parity table the migration rehearsal walks carries the new
         // table: a rehearsal that came back with zero bindings would produce a
@@ -19955,13 +19965,13 @@ mod r42_authority_bindings {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.18",
+            "1.32.19",
             "the bindings stamp pin moves with the release round's stamp: each schema round \
              re-pins the CURRENT stamp, so a stale ceiling fails loudly here"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some("1.32.18"),
+            Some("1.32.19"),
             "what the migration stamps must be what the ceiling declares"
         );
     }
@@ -20830,7 +20840,7 @@ mod r42_authority_bindings {
             .find("CREATE TABLE IF NOT EXISTS delivery_bindings")
             .expect("the table DDL must exist in the migration's production region");
         let stamp_at = migration
-            .find("'schema_version', '1.32.18'")
+            .find("'schema_version', '1.32.19'")
             .expect("the stamp must move to the current schema round's stamp");
         assert!(
             ddl_at < stamp_at,
@@ -20839,7 +20849,7 @@ mod r42_authority_bindings {
         // The stamp's two arms stay in lockstep — the lockstep pin derives both
         // sides, and a half-edited stamp makes `refuse-newer` lie.
         assert!(
-            migration.contains("DO UPDATE SET value = '1.32.18'"),
+            migration.contains("DO UPDATE SET value = '1.32.19'"),
             "both arms of the schema_version upsert must move together"
         );
         // Rehearsal parity: the new table is walked by the migration rehearsal,
@@ -21060,21 +21070,21 @@ mod r43_releases {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.18",
+            "1.32.19",
             "the release round is a schema round: the stamp moves with the table that earns it"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some("1.32.18"),
+            Some("1.32.19"),
         );
         let migration = src("src/migration.rs");
         assert!(
-            migration.contains("DO UPDATE SET value = '1.32.18'"),
+            migration.contains("DO UPDATE SET value = '1.32.19'"),
             "both arms of the schema_version upsert must move together"
         );
         let layout = src("src/storage_layout.rs");
         assert!(
-            layout.contains("is_newer_than_known(Some(\"1.32.19\"))"),
+            layout.contains("is_newer_than_known(Some(\"1.32.20\"))"),
             "the probe must move one ABOVE the new ceiling, or it silently tests Equal"
         );
     }
@@ -22132,10 +22142,13 @@ mod r44_outcomes {
 
     /// The round ships a route and a query core and NOTHING ELSE: no table
     /// (`delivery_outcomes` is withdrawn — never created), no stamp (the
-    /// schema stays `1.32.18`), no dependency (the manifest count stays 51),
-    /// no view, and no migration-surface edit — while the round's own change
-    /// set (the module, the route, the docs) is present, so the guard cannot
-    /// pass on an incomplete round.
+    /// schema stays at the stamp the round it names declared), no dependency
+    /// (the manifest count is the round's own floor), no view, and no
+    /// migration-surface edit — while the round's own change set (the module,
+    /// the route, the docs) is present, so the guard cannot pass on an
+    /// incomplete round. The stamp assertion names the CURRENT ceiling and
+    /// moves with it: a historical per-round stamp would have made this pin
+    /// green for a tree whose ceiling was four rounds ahead.
     #[test]
     fn delivery_r44_adds_no_table_no_stamp_no_dependency() {
         let migration = src("src/migration.rs");
@@ -22150,8 +22163,8 @@ mod r44_outcomes {
         );
         let layout = src("src/storage_layout.rs");
         assert!(
-            layout.contains("pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_18;")
-                && layout.contains("\"1.32.18\""),
+            layout.contains("pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_19;")
+                && layout.contains("\"1.32.19\""),
             "the schema stamp is untouched: R44 ships no stamp"
         );
         let rehearse = src("src/bin/brain_migrate_rehearse.rs");

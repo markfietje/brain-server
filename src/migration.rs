@@ -2726,9 +2726,90 @@ pub fn run_migration_with_store_dim(
             ON delivery_releases(status);",
     )?;
 
+    // The create loop's four tables. Additive only — nothing is dropped and
+    // nothing is rebuilt, because a rebuild is the one operation that can lose
+    // rows under a crash. The gated read model is a query in a service core,
+    // never a view.
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS claim_schemas (
+            id           INTEGER PRIMARY KEY,
+            domain       TEXT NOT NULL,
+            version      INTEGER NOT NULL,
+            authored_by  TEXT NOT NULL,
+            body         TEXT NOT NULL,
+            body_digest  TEXT NOT NULL,
+            ratified_at  INTEGER,
+            created_at   INTEGER NOT NULL,
+            CHECK (authored_by = 'human'),
+            CHECK (length(body_digest) = 64)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_claim_schemas_domain_version
+            ON claim_schemas(domain, version);
+
+        CREATE TABLE IF NOT EXISTS claim_batches (
+            id            INTEGER PRIMARY KEY,
+            batch_digest  TEXT NOT NULL,
+            member_count  INTEGER NOT NULL,
+            set_check     TEXT NOT NULL DEFAULT 'pending',
+            checked_at    INTEGER,
+            created_at    INTEGER NOT NULL,
+            CHECK (set_check IN ('pending','pass','fail')),
+            CHECK (member_count >= 0),
+            CHECK (length(batch_digest) = 64)
+        );
+
+        CREATE TABLE IF NOT EXISTS claims (
+            id                  INTEGER PRIMARY KEY,
+            claim_id            TEXT NOT NULL UNIQUE,
+            schema_ref          INTEGER NOT NULL REFERENCES claim_schemas(id),
+            subject             TEXT NOT NULL,
+            predicate           TEXT NOT NULL,
+            object              TEXT NOT NULL,
+            qualifiers          TEXT NOT NULL DEFAULT '[]',
+            valid_from          INTEGER,
+            valid_to            INTEGER,
+            status              TEXT NOT NULL DEFAULT 'pending',
+            support_n           INTEGER NOT NULL DEFAULT 0,
+            scope               TEXT,
+            contradicts         TEXT NOT NULL DEFAULT '[]',
+            batch_id            INTEGER REFERENCES claim_batches(id),
+            recall_visible      INTEGER NOT NULL DEFAULT 0,
+            evidence_digest     TEXT NOT NULL,
+            audit_digest        TEXT,
+            audit_target_hash   TEXT NOT NULL,
+            created_by          TEXT NOT NULL,
+            created_at          INTEGER NOT NULL,
+            promoted_by         TEXT,
+            promoted_at         INTEGER,
+            CHECK (status IN ('pending','verify_failed','ratified','rejected',
+                              'evidence_broken','superseded')),
+            CHECK (recall_visible IN (0,1)),
+            CHECK (created_by IN ('agent','human')),
+            CHECK (length(audit_target_hash) = 64),
+            CHECK (promoted_at IS NULL OR status = 'ratified')
+        );
+        CREATE INDEX IF NOT EXISTS idx_claims_status ON claims(status);
+        CREATE INDEX IF NOT EXISTS idx_claims_batch  ON claims(batch_id);
+        CREATE INDEX IF NOT EXISTS idx_claims_pred   ON claims(subject, predicate);
+
+        CREATE TABLE IF NOT EXISTS claim_evidence (
+            id          INTEGER PRIMARY KEY,
+            claim_ref   INTEGER NOT NULL REFERENCES claims(id) ON DELETE CASCADE,
+            source_cid  TEXT NOT NULL,
+            quote       TEXT NOT NULL,
+            byte_start  INTEGER NOT NULL,
+            byte_end    INTEGER NOT NULL,
+            quote_digest TEXT NOT NULL,
+            CHECK (byte_end > byte_start),
+            CHECK (byte_start >= 0),
+            CHECK (length(quote_digest) = 64)
+        );
+        CREATE INDEX IF NOT EXISTS idx_claim_evidence_claim ON claim_evidence(claim_ref);",
+    )?;
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.18')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.18';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.19')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.19';",
         [],
     )?;
 
