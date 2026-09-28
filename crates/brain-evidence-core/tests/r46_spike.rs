@@ -156,6 +156,9 @@ fn r46_spike_resolve_and_discrimination_rates() {
     let mut cid_checked = 0usize;
     let mut cid_disagreed: Vec<String> = Vec::new();
     let mut histogram: BTreeMap<String, usize> = BTreeMap::new();
+    // kind x actual-cause, so the evidence file can show WHAT each planted
+    // defect produced rather than only that the totals line up.
+    let mut by_kind: BTreeMap<(String, String), usize> = BTreeMap::new();
     let mut mislabelled: Vec<String> = Vec::new();
 
     for (i, line) in raw.lines().enumerate() {
@@ -232,6 +235,9 @@ fn r46_spike_resolve_and_discrimination_rates() {
             }
         }
         *histogram.entry(cause.clone()).or_insert(0) += 1;
+        *by_kind
+            .entry((row.kind.clone(), cause.clone()))
+            .or_insert(0) += 1;
     }
 
     let pct = |n: usize, d: usize| -> f64 {
@@ -265,6 +271,23 @@ fn r46_spike_resolve_and_discrimination_rates() {
     println!("  {cid_agree}/{cid_checked} corpus CIDs reproduce exactly");
     for d in &cid_disagreed {
         println!("  DISAGREEMENT {d}");
+    }
+    println!("--- PER-KIND OUTCOME ---");
+    let mut kinds: Vec<String> = by_kind.keys().map(|(k, _)| k.clone()).collect();
+    kinds.sort();
+    kinds.dedup();
+    for kind in &kinds {
+        let cells: Vec<String> = by_kind
+            .iter()
+            .filter(|((k, _), _)| k == kind)
+            .map(|((_, cause), n)| format!("{cause}={n}"))
+            .collect();
+        let total: usize = by_kind
+            .iter()
+            .filter(|((k, _), _)| k == kind)
+            .map(|(_, n)| n)
+            .sum();
+        println!("  {kind:26} n={total:<4} {}", cells.join("  "));
     }
     println!("--- FAILURE HISTOGRAM BY CAUSE ---");
     for (cause, n) in &histogram {
