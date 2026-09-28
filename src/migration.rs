@@ -2807,6 +2807,111 @@ pub fn run_migration_with_store_dim(
         CREATE INDEX IF NOT EXISTS idx_claim_evidence_claim ON claim_evidence(claim_ref);",
     )?;
 
+    // The write fence. Four triggers, and they are the reason an application
+    // guard is not enough here: a guard sits behind the same API the model
+    // talks to, so a socially-engineered write walks straight past it. In the
+    // database, it does not.
+    //
+    // The stated limit, which is the control's ceiling and not a caveat: each
+    // trigger keys on a string the APPLICATION set (the principal kind, the
+    // pre-computed target digest). It therefore defends a compromised model
+    // path. It does not defend an adversary already holding the database file
+    // — that is host compromise, the same boundary this repository already
+    // draws for the audit chain, where the key and the pin share the host.
+    //
+    // No hashing happens in SQL: SQLite has no hash function and this tree
+    // registers none. The witness check compares two stored columns instead.
+    // The visibility fence. A claim reaches recall only by a transition from
+    // invisible to visible, and only when three things hold: the claim is
+    // itself ratified, its batch has passed the set-level check, and a
+    // ratified promote row sits in the audit chain behind it — kind
+    // `workflow`, because the promote event is a governed-workflow write and
+    // is discriminated by its target digest, which is unique per claim by
+    // construction. Ratification is part of the predicate rather than a
+    // separate lock: a trigger that accepted a pending row would be a fence
+    // whose own message ("a ratified promote audit row") was not what it
+    // actually checked. The read query joins on the same two columns, so the
+    // fence and the query are two independent locks on one fact rather than
+    // one lock and one hope.
+    //
+    // Both visibility fences hang off the SAME column, and SQLite does not
+    // specify the order in which same-column BEFORE UPDATE triggers fire. So
+    // neither may assume it runs first, and each is pinned to be provable on
+    // its own: one by withholding the batch, the other by passing the batch.
+    db.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS claims_fence_recall_visibility
+        BEFORE UPDATE OF recall_visible ON claims
+        FOR EACH ROW WHEN NEW.recall_visible = 1 AND OLD.recall_visible = 0
+        BEGIN
+            SELECT CASE WHEN NEW.audit_target_hash IS NULL THEN RAISE(ABORT,
+                'claims: recall_visible requires a pre-computed audit target hash') END;
+            SELECT CASE WHEN NEW.status <> 'ratified' THEN RAISE(ABORT,
+                'claims: recall_visible requires a ratified claim') END;
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM audit_events a
+                WHERE a.kind = 'workflow'
+                  AND a.status = 'ok'
+                  AND a.target_hash = NEW.audit_target_hash
+            ) THEN RAISE(ABORT,
+                'claims: recall_visible requires a ratified promote audit row') END;
+        END;",
+    )?;
+
+    // Reject-on-CID-rewrite. Once a claim is ratified its evidence pointer is
+    // frozen, so a consolidation pass that rewrites the underlying source
+    // cannot re-point the citation at text that says something else. The
+    // honest consequence is the other half of the property: a genuine
+    // consolidation mints a NEW content id, the stored reference then fails to
+    // resolve, and the claim degrades loudly and leaves recall.
+    // Anti-laundering becomes a property of the data rather than a rule
+    // someone can forget.
+    db.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS claims_fence_cid_rewrite
+        BEFORE UPDATE OF source_cid ON claim_evidence
+        FOR EACH ROW WHEN OLD.claim_ref IN (SELECT id FROM claims WHERE status = 'ratified')
+        BEGIN
+            SELECT RAISE(ABORT,
+                'claims: source_cid is immutable once ratified (a rewrite must mint a new content id)');
+        END;",
+    )?;
+
+    // Self-ratification refused. A status move into `ratified` must carry WHO
+    // promoted it and WHEN. The creating writer is the party this fence exists
+    // to stop: a claim that could stamp its own ratification columns would
+    // never meet a human.
+    db.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS claims_fence_self_ratification
+        BEFORE UPDATE OF status ON claims
+        FOR EACH ROW WHEN NEW.status = 'ratified'
+        BEGIN
+            SELECT CASE WHEN NEW.promoted_by IS NULL OR NEW.promoted_at IS NULL
+                THEN RAISE(ABORT,
+                    'claims: self-ratification refused - promoted_by and promoted_at are required') END;
+            SELECT CASE WHEN NEW.created_by = 'agent' AND NEW.audit_digest IS NULL
+                THEN RAISE(ABORT,
+                    'claims: an agent-authored claim must carry the promote audit digest') END;
+        END;",
+    )?;
+
+    // The batch fence. Visibility may not be granted to a member of a batch
+    // whose set-level check has not passed. Individually benign memories are
+    // jointly harmful and per-item review is structurally blind to that; this
+    // is the only place in the round where the unit of judgement is the batch
+    // rather than the claim.
+    db.execute_batch(
+        "CREATE TRIGGER IF NOT EXISTS claims_fence_batch_flip
+        BEFORE UPDATE OF recall_visible ON claims
+        FOR EACH ROW WHEN NEW.recall_visible = 1
+        BEGIN
+            SELECT CASE WHEN NEW.batch_id IS NULL
+                THEN RAISE(ABORT, 'claims: recall_visible requires a batch assignment') END;
+            SELECT CASE WHEN NOT EXISTS (
+                SELECT 1 FROM claim_batches b
+                WHERE b.id = NEW.batch_id AND b.set_check = 'pass'
+            ) THEN RAISE(ABORT, 'claims: the batch set-check has not passed') END;
+        END;",
+    )?;
+
     db.execute(
         "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.19')
          ON CONFLICT(key) DO UPDATE SET value = '1.32.19';",
