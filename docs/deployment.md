@@ -700,6 +700,46 @@ Why each change (see `MEMORY_STACK_REPORT_2026-09-09.md` §1):
 | `autoRecallTopK` / `recallMaxChars` | `3` / `1000` | `5` / `2500` | Raise the ceiling slightly for pilot context depth; still bounded per turn |
 | `tools.fs.workspaceOnly` | `false` + `alsoAllow ["*"]` | `true` + explicit allowlist | Maximally permissive is personal-only |
 
+### Linux appliance install (the clean cycle)
+
+For a single-host deployment — a government office, a back office — that is
+**turned off at the end of the day and back on in the morning**:
+
+```sh
+sudo ./deploy/install.sh                       # binaries, unit, service user
+sudo systemctl start brain-server
+/usr/local/bin/brain-clean-cycle-check         # the morning check
+```
+
+`install.sh` **refuses to overwrite an existing store** and prints the upgrade
+sequence instead. `uninstall.sh` removes the service and **never the data**; if
+you intend to remove the data, it tells you to run `brain shred` first and then
+delete it by hand.
+
+The full runbook — the evening stop, the morning check, the storage rules, the
+backup rules and the off-site approval — is **[`clean-cycle.md`](clean-cycle.md)**.
+Read it before the first production copy.
+
+### One-shot backup shipping
+
+`brain standby start` is an **infinite loop** and cannot be run by a scheduler.
+For a timer, a CronJob, or a monthly ritual:
+
+```sh
+brain standby ship --to /path/to/follower [--passphrase-file PATH] [--db PATH]
+```
+
+It runs **exactly one** ship cycle and exits with its status, producing the same
+encrypted base, WAL chunk and **signed manifest** the shipper produces, which
+`brain standby promote-check` then verifies.
+
+### Deployment reference architecture
+
+The shape a larger deployment takes — two hosts on **separate circuits**, a
+per-node battery, a cold standby, and an off-site vault — is recorded, with its
+unmeasured parts labelled as such, in
+**[`deployment-reference-architecture.md`](deployment-reference-architecture.md)**.
+
 ### Pilot caveats (honest ceilings)
 
 - **Residency panel today shows DB file + `BRAIN_REGION` stamp, not per-tenant key isolation** — per-tenant keys (SQLCipher + KMS, `BRAIN_TENANT_KEY_FILE` per tenant) ship in v3.7 (Q1 2027). See `COMPLIANCE.md` §10.3 / `THREAT_MODEL.md`.

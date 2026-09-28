@@ -302,7 +302,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
         name: "standby",
         json: false,
         run: cmd_standby,
-        usage: "brain standby start --to <dir> [--interval-secs 30] [--passphrase-file PATH]\n  brain standby status [--to <dir>]\n  brain standby promote-check --from <dir> [--passphrase-file PATH] [--expected-signer DID]\n                 (warm standby: encrypted base + WAL chunks + a rehearsed\n                  promote — operator-run, never a server daemon; NO hot failover)",
+        usage: "brain standby ship --to <dir> [--passphrase-file PATH] [--db PATH]\n  brain standby start --to <dir> [--interval-secs 30] [--passphrase-file PATH]\n  brain standby status [--to <dir>]\n  brain standby promote-check --from <dir> [--passphrase-file PATH] [--expected-signer DID]\n                 (warm standby: encrypted base + WAL chunks + a rehearsed\n                  promote — operator-run, never a server daemon; NO hot failover.\n                  `ship` runs exactly ONE cycle and exits, which is what a timer\n                  or a CronJob needs; `start` loops forever)",
     },
     Subcommand {
         name: "anchor",
@@ -3699,17 +3699,20 @@ fn brain_server_reachable() -> bool {
 /// `brain standby <start|status|promote-check>`
 fn cmd_standby(args: &[String]) -> Result<(), String> {
     if args.is_empty() {
-        return Err("usage: brain standby <start|status|promote-check> — try \
-             'brain standby start --to <dir>'"
-            .to_string());
+        return Err(
+            "usage: brain standby <ship|start|status|promote-check> — try \
+             'brain standby ship --to <dir>'"
+                .to_string(),
+        );
     }
     match args[0].as_str() {
+        "ship" => cmd_standby_ship(&args[1..]),
         "start" => cmd_standby_start(&args[1..]),
         "status" => cmd_standby_status(&args[1..]),
         "promote-check" => cmd_standby_promote_check(&args[1..]),
         other => Err(format!(
             "unknown 'brain standby' subcommand: '{other}' \
-             (try start, status or promote-check)"
+             (try ship, start, status or promote-check)"
         )),
     }
 }
@@ -3720,6 +3723,44 @@ fn standby_dir_flag(flags: &FlagMap, key: &str) -> PathBuf {
         .and_then(|o| o.clone())
         .map(PathBuf::from)
         .unwrap_or_else(brain_server::standby::default_standby_dir)
+}
+
+/// `brain standby ship` — run EXACTLY ONE ship cycle and exit with its status.
+///
+/// Why this exists, and it is not a convenience: `standby start` is an
+/// INFINITE loop (it returns only after three consecutive failures), so
+/// nothing scheduled can run it. A CronJob, a systemd timer, or an operator's
+/// monthly ritual would hang until something killed it — and a job that is
+/// killed cannot report whether the ship succeeded.
+///
+/// This verb reuses `ship_cycle` verbatim, so the artifact, the signature and
+/// the refusal on a missing operator key are exactly what the shipper
+/// produces. It is the same function, called once.
+fn cmd_standby_ship(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    if !positionals.is_empty() {
+        return Err(
+            "usage: brain standby ship --to <dir> [--passphrase-file PATH] [--db PATH]".to_string(),
+        );
+    }
+    let dir = standby_dir_flag(&flags, "to");
+    let pass = resolve_passphrase(&flags)?;
+    let db = flags
+        .get("db")
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_db_path);
+    // Resume numbering from the verified manifest (or the highest chunk on
+    // disk), so a torn cycle cannot reset the counter and collide chunk names.
+    let cycle = brain_server::standby::resume_cycle(&dir) + 1;
+    println!("standby ship: {} → {}", db.display(), dir.display());
+    match brain_server::standby::ship_cycle(&db, &dir, &pass, 30, cycle) {
+        Ok(_) => {
+            println!("ship cycle {cycle} ok");
+            Ok(())
+        }
+        Err(e) => Err(format!("ship cycle {cycle} FAILED: {e}")),
+    }
 }
 
 fn cmd_standby_start(args: &[String]) -> Result<(), String> {

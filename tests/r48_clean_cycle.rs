@@ -53,11 +53,24 @@ fn exists(rel: &str) -> bool {
     repo_root().join(rel).exists()
 }
 
-/// The production region: everything before the first test module. Scoping is the
-/// point — a scan that reads a module's own honest prose and fires on it is
-/// worse than no guard (the R46 lesson, verbatim).
+/// The production region: everything before the first test module.
+///
+/// **Scoped to LINE-LEADING attributes on purpose.** An earlier draft split on
+/// the bare substring, and a COMMENT in this very file that quoted a test
+/// attribute silently truncated the region to nothing — which turned two pins
+/// green-to-red for the wrong reason. The same trap is waiting for any source
+/// file whose prose mentions a test attribute, so the boundary is matched where
+/// it actually lives: at the start of a line.
 fn production_region(src: &str) -> &str {
-    src.split_once("#[cfg(test)]").map_or(src, |(head, _)| head)
+    let mut cut = src.len();
+    for (i, line) in src.split_inclusive('\n').enumerate() {
+        let _ = i;
+        if line.trim_start().starts_with("#[cfg(test)]") {
+            cut = line.as_ptr() as usize - src.as_ptr() as usize;
+            break;
+        }
+    }
+    &src[..cut]
 }
 
 /// Production minus `//`, `///` and `//!` lines.
@@ -81,6 +94,27 @@ fn walk_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
         if p.is_dir() {
             walk_rs_files(&p, out);
         } else if p.extension().is_some_and(|e| e == "rs") {
+            out.push(p);
+        }
+    }
+}
+
+/// Walk ALL files, not just `.rs`.
+///
+/// Separate from `walk_rs_files` because the round's artifacts are a `.service`
+/// file and three `.sh` scripts — and the first draft of the non-vacuity pin
+/// used the Rust walker over `deploy/`, found **zero files**, and the pin
+/// reported it correctly. That is the self-pin working: the census it drives
+/// was reading nothing.
+fn walk_all_files(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            walk_all_files(&p, out);
+        } else {
             out.push(p);
         }
     }
@@ -485,10 +519,12 @@ fn r48_single_authorize_decision_still_holds() {
 #[test]
 fn r48_the_battery_scan_is_not_vacuous() {
     let mut files = Vec::new();
-    walk_rs_files(&repo_root().join("deploy"), &mut files);
+    walk_all_files(&repo_root().join("deploy"), &mut files);
     assert!(
         !files.is_empty(),
-        "the deploy/ walk found no files; a guard that scans nothing must not smile"
+        "the deploy/ walk found no files; a guard that scans nothing must not smile. \
+         NOTE the walker must be the ALL-FILES one: a .rs-only walker finds nothing \
+         in a tree made of a .service file and shell scripts."
     );
     let total: usize = files
         .iter()
@@ -501,7 +537,7 @@ fn r48_the_battery_scan_is_not_vacuous() {
 
     // IN-BAND red-proof: the same walker over a non-existent dir must be empty.
     let mut empty: Vec<PathBuf> = Vec::new();
-    walk_rs_files(&repo_root().join("deploy/definitely-not-here"), &mut empty);
+    walk_all_files(&repo_root().join("deploy/definitely-not-here"), &mut empty);
     assert!(
         empty.is_empty(),
         "the red-proof walk must find nothing; if it finds files the walker's join is wrong"

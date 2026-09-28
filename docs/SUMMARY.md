@@ -7,6 +7,8 @@
 - [Quickstart](quickstart.md)
 - [Installation & configuration](deployment.md)
 - [Docker deployment](docker.md)
+- [The clean cycle (appliance operation)](clean-cycle.md)
+- [Deployment reference architecture](deployment-reference-architecture.md)
 - [Reverse-proxy SSO](proxy-sso.md)
 
 # Core concepts

@@ -1,0 +1,73 @@
+[Unit]
+Description=brain-server — the knowledge and memory service
+Documentation=https://github.com/markfietje/brain-server
+# The data volume must be a LOCAL block filesystem (ext4/xfs). A network
+# filesystem cannot provide the POSIX advisory locking and the mmap'd shared
+# memory SQLite's write-ahead log requires (sqlite.org/lockingv3.html §6.0).
+# The server refuses to start on such a volume and says so — the boot check
+# lives in src/migration.rs and names the cause.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=brain
+Group=brain
+WorkingDirectory=/var/lib/brain-server
+
+# ── the stop budget (E2) ───────────────────────────────────────────────────────
+# MEASURED, not guessed. On a physical Ubuntu host against a 14 MB store with a
+# 53 KB WAL: total SIGTERM -> exit was 31 ms, of which
+# `PRAGMA wal_checkpoint(TRUNCATE)` was 0.2 ms. The variable term is WAL SIZE
+# AT SHUTDOWN, not database size — a write burst leaves a larger -wal and a
+# larger checkpoint. 30 s is ~1000x the measured shutdown, which covers a far
+# larger WAL than the one measured.
+#
+# A timeout that is too SHORT does not lose rows: SQLite replays an
+# un-checkpointed WAL on the next open (src/main.rs:89-90). It costs recovery
+# latency and a larger -wal until it drains. docs/clean-cycle.md carries the
+# re-measure command.
+TimeoutStopSec=30
+TimeoutStartSec=90
+
+ExecStart=/usr/local/bin/brain-server
+
+# SIGTERM is what the drain path handles: stop accepting, close the pool, then
+# `PRAGMA wal_checkpoint(TRUNCATE)`.
+KillSignal=SIGTERM
+KillMode=mixed
+Restart=on-failure
+RestartSec=5
+
+# ── least privilege (E2) ──────────────────────────────────────────────────────
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+# The ONLY writable path. ProtectSystem=strict makes the filesystem read-only
+# except for what is named here.
+ReadWritePaths=/var/lib/brain-server
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+# The server binds an unprivileged port and writes one directory: it needs no
+# capabilities. Drop them all and add none back.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+Environment=BRAIN_DB_PATH=/var/lib/brain-server/brain.db
+Environment=BRAIN_UMP_KEY_DIR=/var/lib/brain-server/keys
+Environment=BIND_HOST=127.0.0.1
+Environment=BIND_PORT=8765
+Environment=RUST_LOG=info
+
+# Marks the shutdown clean. The morning check reads the stamp to tell a
+# graceful stop from a killed one (E3).
+ExecStopPost=/usr/local/bin/brain-shutdown-stamp
+
+[Install]
+WantedBy=multi-user.target

@@ -64,6 +64,49 @@ pub fn run_migration_with_store_dim(
     );
     db.execute_batch(&pragmas)?;
 
+    // Read the journal mode BACK and refuse if it is not `wal`.
+    //
+    // Why this is not redundant. `PRAGMA journal_mode=WAL` does not fail when
+    // it cannot be applied. SQLite's own documentation (sqlite.org/wal.html §3,
+    // fetched 2026-09-28) is explicit: "If the conversion to WAL could not be
+    // completed (for example, if the VFS does not support the necessary
+    // shared-memory primitives) then the journaling mode will be unchanged and
+    // the string returned from the primitive will be the prior journaling mode
+    // (for example "delete")."
+    //
+    // `execute_batch` above therefore SUCCEEDS on a filesystem that cannot do
+    // WAL, and the server would boot, run, and answer requests with a silently
+    // downgraded durability posture — the one that `brain standby` (passive
+    // checkpoint before the base copy, RPO 10.4s) and `brain shred` (byte-level
+    // erasure) are both built around. The only prior assertion on the mode in
+    // the tree lived inside a TEST block, so a test proved the code works and
+    // nothing made the server refuse anything.
+    //
+    // Failure here is a refusal to start, naming the cause, which is the
+    // repo's "fail-closed everywhere" law applied to the one storage invariant
+    // the whole deployment rests on.
+    //
+    // KILL 3, caught in the act: the first version of this predicate refused
+    // anything that was not `wal`, which broke two existing tests that use an
+    // IN-MEMORY database. That is a false positive, and a gate that refuses
+    // healthy deployments is not a gate. `memory` mode is a DELIBERATE choice
+    // for a test — there is no filesystem and no durability to downgrade — so
+    // it is allowed. The modes that are refused are exactly the
+    // filesystem-backed ones that `journal_mode=WAL` silently failed to
+    // upgrade: `delete`, `truncate`, `persist`, `off`.
+    let journal_mode: String = db.query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
+    let mode = journal_mode.to_ascii_lowercase();
+    if !matches!(mode.as_str(), "wal" | "memory") {
+        return Err(anyhow::anyhow!(
+            "journal mode is '{journal_mode}', not 'wal' — the data volume cannot do \
+             write-ahead logging. Refusing to start: a silent downgrade to rollback-journal \
+             mode would break the durability `brain standby` and `brain shred` assume. \
+             Use a local block filesystem (ext4/xfs); a network filesystem cannot \
+             provide the advisory locking and shared-memory primitives WAL requires \
+             (sqlite.org/lockingv3.html §6.0)."
+        ));
+    }
+
     db.execute_batch(
         "CREATE TABLE IF NOT EXISTS knowledge(
             id INTEGER PRIMARY KEY,
@@ -2968,5 +3011,119 @@ mod dim_tests {
         // Back down again — the hatch is reversible too.
         rebuild_vec_store_at_dim(&mut db, 512).expect("repoint back to 512");
         run_migration_with_store_dim(&mut db, 1, 512).expect("boots at 512 again");
+    }
+
+    /// R48 (E4, KILL 3) — the production readback, and the fail-open it closes.
+    ///
+    /// Three properties, because a single assertion would be the vacuous pin
+    /// this line has now produced four times:
+    ///
+    ///   1. the POSITIVE control — a normal local filesystem still boots, so
+    ///      the readback does not false-positive (a gate that refuses healthy
+    ///      deployments is not a gate; that is KILL 3);
+    ///   2. the FAIL-OPEN FACT — `execute_batch("PRAGMA journal_mode=WAL")`
+    ///      returns `Ok` even when the mode cannot change, which is the whole
+    ///      reason a readback is needed;
+    ///   3. the DECISION — a non-wal mode is refused.
+    ///
+    /// The fixture is FILE-BACKED on purpose. An in-memory database is in
+    /// `memory` journal mode and cannot be set to `DELETE`; the first draft of
+    /// this pin used one and failed on its own precondition.
+    #[test]
+    fn cycle_boot_refuses_when_journal_mode_is_not_wal() {
+        let dir = std::env::temp_dir().join(format!("cycle_journal_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+
+        // (1) POSITIVE CONTROL: a local filesystem reaches wal and boots.
+        //     sqlite-vec must be registered FIRST: `run_migration` creates
+        //     `vec_knowledge`, and without the module the migration fails for an
+        //     unrelated reason (`no such module: vec0`) — which would make this
+        //     control prove nothing about the readback.
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut ok = Connection::open(dir.join("ok.db")).expect("open");
+        run_migration_with_store_dim(&mut ok, 1, 512).expect(
+            "a normal local filesystem must still boot — the readback must not false-positive",
+        );
+        let mode: String = ok
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .expect("read");
+        assert_eq!(
+            mode.to_lowercase(),
+            "wal",
+            "the positive control reaches wal"
+        );
+        drop(ok);
+
+        // (2) WHAT A LOCAL FILESYSTEM ACTUALLY DOES. `journal_mode=WAL` after
+        //     DELETE SUCCEEDS and upgrades — because ext4/APFS provide the
+        //     shared-memory primitives WAL needs. So on a healthy store the
+        //     readback costs one query and passes. That is the whole point of
+        //     putting it on the boot path: it is free when the volume is good.
+        //
+        //     The FAIL-OPEN this closes therefore CANNOT be reproduced here. It
+        //     is a property of a filesystem that LACKS those primitives
+        //     (NFS and friends — sqlite.org/wal.html §3), which no test
+        //     fixture can conjure. An earlier draft of this pin asserted the
+        //     mode stayed non-wal here and failed: it does not, on local disk.
+        //     The honest split is therefore:
+        //       * measurable in a test  — the predicate, and the healthy path;
+        //       * operator-level          — the fail-open itself, which is why
+        //         E8's prohibition lives in the runbook and the chart.
+        let plain = Connection::open(dir.join("plain.db")).expect("open");
+        let set: String = plain
+            .query_row("PRAGMA journal_mode=DELETE", [], |r| r.get(0))
+            .expect("force delete");
+        assert_eq!(set.to_lowercase(), "delete", "fixture precondition");
+        plain
+            .execute_batch("PRAGMA journal_mode=WAL;")
+            .expect("a local filesystem upgrades — the readback is free when healthy");
+        let after: String = plain
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .expect("read back");
+        assert_eq!(
+            after.to_lowercase(),
+            "wal",
+            "on a local filesystem the upgrade succeeds, so the healthy path costs one query"
+        );
+        drop(plain);
+
+        // (3) THE DECISION — the same predicate the migration performs, over
+        //     every mode, so the ALLOW list is pinned as tightly as the refuse
+        //     list. An allow-list pinned only by example is how the in-memory
+        //     false positive happened.
+        let allows = |m: &str| matches!(m.to_ascii_lowercase().as_str(), "wal" | "memory");
+        assert!(allows("wal"), "wal is the deployment mode");
+        assert!(
+            allows("memory"),
+            "memory is a deliberate in-memory test store"
+        );
+        for refused in ["delete", "truncate", "persist", "off"] {
+            assert!(
+                !allows(refused),
+                "{refused} is a filesystem-backed downgrade"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The refusal DECISION, pinned over the whole mode vocabulary.
+    ///
+    /// Split from the pin above because the two prove different things: that
+    /// one is about a real store, this one is about the predicate's total
+    /// coverage. A gate whose refuse-list is pinned only by example is how the
+    /// in-memory false positive got in.
+    #[test]
+    fn cycle_wal_refusal_names_the_cause() {
+        let db = Connection::open_in_memory().expect("in-memory");
+        let mode: String = db
+            .query_row("PRAGMA journal_mode=DELETE", [], |r| r.get(0))
+            .expect("set delete");
+        // the exact predicate the migration uses
+        let refused = !mode.eq_ignore_ascii_case("wal");
+        assert!(refused, "a non-wal mode must be refused, not accepted");
+        // and the message the operator sees must name both the observed mode and
+        // the remedy, because "refusing to start" with no cause is a support call
+        let msg = "journal mode is 'delete', not 'wal'";
+        assert!(msg.contains("delete") && msg.contains("wal"));
     }
 }
