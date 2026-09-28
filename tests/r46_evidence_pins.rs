@@ -150,10 +150,25 @@ fn walk_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Every `.rs` file in the crate, production regions included.
+/// Every `.rs` file in the crate, production regions included — `src/` only.
 fn crate_sources() -> Vec<PathBuf> {
     let mut files = Vec::new();
     walk_rs_files(&crate_path("src"), &mut files);
+    files
+}
+
+/// Every `.rs` file in the WHOLE crate — `src/` and `tests/` alike.
+///
+/// The distinction matters and both halves are deliberate. The SOURCE pins
+/// scan `crate_sources()` (src/ only): a measurement harness in `tests/` reads
+/// files and prints, which the purity law forbids in production code, so
+/// scanning it for `std::fs` would be a guard firing on correct code. The
+/// CENSUS scans the whole crate, because `CRATE_TEST_FLOOR`'s needle walks the
+/// kernel's `src/` + `tests/` and never reaches `crates/` at all — a census
+/// reading only `src/` would report a suite whose `tests/` half it never sees.
+fn crate_all_sources() -> Vec<PathBuf> {
+    let mut files = crate_sources();
+    walk_rs_files(&crate_path("tests"), &mut files);
     files
 }
 
@@ -215,7 +230,7 @@ fn test_fn_names(src: &str) -> BTreeSet<String> {
 /// file names at `tests/r45_0_claim_pins.rs:1105-1109`.
 fn battery_census() -> BTreeSet<String> {
     let mut names = test_fn_names(&read_repo("tests/r46_evidence_pins.rs"));
-    for f in crate_sources() {
+    for f in crate_all_sources() {
         let text = std::fs::read_to_string(&f)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", f.display()));
         names.extend(test_fn_names(&text));
@@ -247,6 +262,17 @@ fn census_diff(expected: &[&str], actual: &BTreeSet<String>) -> Result<(), Strin
     }
     Err(format!("missing: {missing:?}; unexpected: {unexpected:?}"))
 }
+
+/// The round's MEASUREMENT HARNESS — reported in the census, but deliberately
+/// NOT part of the battery contract.
+///
+/// The spike is a measurement, not a pin: it prints a number and asserts one
+/// thing (the KILL-3 rate is zero). A low resolve rate is a FINDING to report,
+/// not a test failure, so folding it into `EXPECTED_PINS` would imply the
+/// battery requires a particular number. It is listed here instead so the
+/// census still cannot miss it — "a guard that silently stops covering looks
+/// exactly like coverage".
+const MEASUREMENT_HARNESS: &[&str] = &["r46_spike_resolve_and_discrimination_rates"];
 
 /// Every pin R46 must ship, across both homes.
 ///
@@ -887,25 +913,31 @@ fn r46_crate_test_floor_is_never_lowered() {
 #[test]
 fn r46_pin_suite_is_non_vacuous_and_fails_when_pins_are_removed() {
     let census = battery_census();
+    let expected: Vec<&str> = EXPECTED_PINS
+        .iter()
+        .copied()
+        .chain(MEASUREMENT_HARNESS.iter().copied())
+        .collect();
 
     // (a) the real state must satisfy the same predicate
-    census_diff(EXPECTED_PINS, &census)
+    census_diff(&expected, &census)
         .unwrap_or_else(|e| panic!("the R46 battery and its contract disagree — {e}"));
 
     // (b) anti-vacuous floor: a census that can pass on nothing must fail here
     assert!(
-        census.len() >= EXPECTED_PINS.len(),
+        census.len() >= expected.len(),
         "the battery census found {} test names against a contract of {} — the scan \
          is reading nothing",
         census.len(),
-        EXPECTED_PINS.len()
+        expected.len()
     );
     assert!(
-        census.len() == EXPECTED_PINS.len(),
-        "the battery must be EXACTLY the contract's {} pins; an unlisted extra is \
-         either an undocumented addition or a renamed pin that left its old name \
-         behind",
-        EXPECTED_PINS.len()
+        census.len() == expected.len(),
+        "the battery must be EXACTLY the contract's {} pins plus the {} named \
+         measurement harness; an unlisted extra is either an undocumented addition \
+         or a renamed pin that left its old name behind",
+        EXPECTED_PINS.len(),
+        MEASUREMENT_HARNESS.len()
     );
 
     // (c) THE RED-PROOF, in band: the same predicate driven on a suite with
@@ -925,7 +957,7 @@ fn r46_pin_suite_is_non_vacuous_and_fails_when_pins_are_removed() {
         }
         t
     };
-    let err = match census_diff(EXPECTED_PINS, &thinned) {
+    let err = match census_diff(&expected, &thinned) {
         Ok(()) => panic!(
             "a suite missing three pins MUST fail its own census — it passed, so the \
              census cannot detect deletion and the real assertion above is decorative"
