@@ -179,7 +179,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 opentelemetry = { version = "0.32.0", default-features = false, features = ["trace"], optional = true }
 opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["trace"], optional = true }
 opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"], optional = true }
-tracing-opentelemetry = { version = "0.33.0", default-features = false, optional = true }
+tracing-opentelemetry = { version = "0.34.0", default-features = false, optional = true }
 
 
 # JWT/JWS verification + signing (v1.2.0 "AuthN"). Required on the server
