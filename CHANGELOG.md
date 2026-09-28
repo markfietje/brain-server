@@ -4,6 +4,63 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## Unreleased — R48 "Cleancycle"
+
+### Release notes
+
+**Security fixes**
+
+- **The server now refuses to start on a volume that cannot do write-ahead
+  logging.** `PRAGMA journal_mode=WAL` does **not** fail when it cannot be
+  applied — SQLite returns the prior mode and the statement succeeds — and the
+  pragma was issued inside an `execute_batch` that reports success in exactly
+  that case. The only assertion on the mode in the whole tree lived inside a
+  test module, so a test proved the code worked and nothing made the *server*
+  refuse anything. A site on a network filesystem would have booted, run, and
+  **silently downgraded the durability that `brain standby` and `brain shred`
+  are both built around.** The boot now reads the mode back and refuses,
+  naming the cause and the remedy.
+- **New Linux install path**, hardened to match the measured Compose posture:
+  a `systemd` unit (`NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict`
+  with one `ReadWritePaths`, all capabilities dropped and none added back),
+  `install.sh` that **refuses to overwrite an existing store**, `uninstall.sh`
+  that **never removes the data**, and a morning `clean-cycle-check.sh`.
+- **The morning check verifies before serving** — `integrity_check`, the audit
+  chain, and whether the last shutdown was clean — so a killed process is
+  reported at 08:00 rather than discovered three weeks later.
+- **The stop is surgical.** A `pkill -f '<db path>'` matches **nothing**,
+  because `BRAIN_DB_PATH` lives in the environment and not in argv; the
+  reference install shipped exactly that bug and reported a clean stop while
+  the process kept running. `install.sh` matches an absolute binary path.
+- **`brain standby ship`** runs **exactly one** cycle and exits with its status.
+  `standby start` is an infinite loop that returns only after three
+  consecutive failures, so nothing scheduled could run it.
+
+**Corrections to the record**
+
+- Both published baseline timings were **artifacts of the measuring scripts**:
+  a "12.1 s" stop was a fixed `sleep 12` in the measuring script, and a
+  "1,056 ms" boot came from a `sleep 1` poll loop. Re-measured: **31–65 ms**
+  stop, **344–349 ms** boot, and a `wal_checkpoint(TRUNCATE)` of **0.2 ms** on a
+  14 MB store. The state fingerprint was byte-identical throughout; only the
+  timings were wrong.
+- The severity beneath them was also wrong: a truncated shutdown checkpoint
+  does **not** lose rows (SQLite replays the WAL on the next open). It costs
+  recovery latency and WAL growth.
+
+**Disclosed non-claims**
+
+- The clean-cycle drill proves the **clean** path. A power cut is a different
+  event, covered today only by the clean-shutdown stamp. Nothing pulled a plug.
+- The `systemd` unit was never started under `systemd` on the drill host.
+- **Split-brain protection is deferred** — the lease is designed, not built.
+  Do not run two active instances.
+- No Helm chart. The earlier one used a primitive Kubernetes' own docs
+  document as a failure mode; the corrected shape is recorded in
+  `docs/deployment-reference-architecture.md`.
+- **No compliance claim.** The runbooks state what the code does and what
+  RA 10173 says; scope is for an assessor and, in the Philippines, for counsel.
+
 ## Unreleased — R47 "Ledgerhead"
 
 ### Release notes
