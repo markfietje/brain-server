@@ -431,12 +431,19 @@ fn percentile(sorted: &[Duration], p: f64) -> Duration {
 //   * NO server, NO port, NO live DB. An in-memory SQLite, a temp dir for the
 //     chain key, and nothing else.
 
-/// The `audit_events` DDL, copied from the shipped migration
-/// (`src/migration.rs:628-649` + the v1.1.0 additive ALTERs).
+/// The `audit_events` DDL at its CURRENT shipped shape: the v1.0 base table plus
+/// the v1.1.0 additive columns (`tenant_id`, `prev_hash`).
+///
+/// Both additive columns are REQUIRED, not decorative. `record_tenant_checked`
+/// reads the previous row with
+/// `SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash …`
+/// and maps it into `ChainRowFull`, so a DDL missing `status` or `prev_hash`
+/// fails the very first append with `AuditWriteError::Tip`. An earlier draft of
+/// this harness copied only the v1.0 base table and produced exactly that.
 ///
 /// `ts` carries its DEFAULT because the append path omits `ts` from the INSERT
-/// and reads it back as a String — omit the default and every append fails
-/// with `AuditWriteError::Timestamp`.
+/// and reads it back as a String — omit the default and every append fails with
+/// `AuditWriteError::Timestamp`.
 const AUDIT_EVENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS audit_events(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts TEXT DEFAULT CURRENT_TIMESTAMP,
@@ -444,7 +451,9 @@ const AUDIT_EVENTS_DDL: &str = "CREATE TABLE IF NOT EXISTS audit_events(
     actor TEXT,
     target_hash TEXT,
     status TEXT,
-    detail_hash TEXT
+    detail_hash TEXT,
+    tenant_id TEXT NOT NULL DEFAULT 'global',
+    prev_hash TEXT
 );
 CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT);";
 
