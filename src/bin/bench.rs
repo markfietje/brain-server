@@ -406,12 +406,12 @@ fn percentile(sorted: &[Duration], p: f64) -> Duration {
     sorted[idx.min(sorted.len() - 1)]
 }
 
-// ── R45-0: the audit-append throughput harness ──────────────────────────────
+// ── the audit-append throughput harness ─────────────────────────────────────
 //
-// The governing spec's §0 carried a throughput ESTIMATE ("crypto is 0.3–1.5% of
+// The governing spec carried a throughput ESTIMATE ("crypto is a small share of
 // an audit append's cost") derived from third-party primitive microbenchmarks
-// plus a generic commit-latency assumption. E5 retires that estimate in favour
-// of a MEASURED rate. This is the harness that produces the measurement.
+// plus a generic commit-latency assumption. This harness replaces it with a
+// number measured on the machine that runs it.
 //
 // Design constraints (house law, all machine-checked elsewhere):
 //   * NO raw deferred-transaction construction. `write_discipline` scans
@@ -431,15 +431,15 @@ fn percentile(sorted: &[Duration], p: f64) -> Duration {
 //   * NO server, NO port, NO live DB. An in-memory SQLite, a temp dir for the
 //     chain key, and nothing else.
 
-/// The `audit_events` DDL at its CURRENT shipped shape: the v1.0 base table plus
-/// the v1.1.0 additive columns (`tenant_id`, `prev_hash`).
+/// The `audit_events` DDL at its CURRENT shipped shape: the base table plus the
+/// later additive columns (`tenant_id`, `prev_hash`).
 ///
 /// Both additive columns are REQUIRED, not decorative. `record_tenant_checked`
 /// reads the previous row with
 /// `SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash …`
 /// and maps it into `ChainRowFull`, so a DDL missing `status` or `prev_hash`
 /// fails the very first append with `AuditWriteError::Tip`. An earlier draft of
-/// this harness copied only the v1.0 base table and produced exactly that.
+/// this harness copied only the original base table and produced exactly that.
 ///
 /// `ts` carries its DEFAULT because the append path omits `ts` from the INSERT
 /// and reads it back as a String — omit the default and every append fails with
@@ -607,9 +607,8 @@ fn main() {
         // a browsable file the operator fills with `{query, relevant_ids}` →
         // `bench eval`.
         Some("scaffold") => run_scaffold(args.get(2).map(String::as_str)),
-        // R45-0: measure the real audit-append rate, retiring the §0 estimate.
+        // Measure the real audit-append rate, retiring the §0 estimate.
         Some("audit-append") => run_audit_append(),
-        // R45-0: the preregistered FPR benchmark over the benign corpus.
         Some("fpr") => run_fpr(),
         _ => run(),
     };
@@ -619,7 +618,7 @@ fn main() {
     }
 }
 
-// ── R45-0 subcommand bodies ────────────────────────────────────────────────
+// ── subcommand bodies ──────────────────────────────────────────────────────
 
 /// How many rows to append. `BENCH_AUDIT_APPEND_N`; the plan's sweep is
 /// 1k / 10k / 100k. A non-numeric or zero value is an error, not a silent
@@ -641,8 +640,7 @@ fn audit_append_n() -> Result<usize, String> {
 }
 
 /// `brain bench audit-append` — measure rows/sec, p50/p99, and the
-/// crypto-vs-total split at n. This is the E5 measurement: it replaces the
-/// retired §0 estimate with a number measured on this machine.
+/// crypto-vs-total split at n.
 ///
 /// The split is measured, not derived: the same rows are appended twice, once
 /// through the LEGACY epoch (SHA-256 link, no key) and once through the KEYED
@@ -827,15 +825,16 @@ fn set_mode_600(path: &std::path::Path) -> Result<(), String> {
 
 /// `brain bench fpr` — the preregistered false-positive-rate benchmark.
 ///
-/// Three surfaces, reported SEPARATELY and never blended (E4):
+/// Three surfaces, reported SEPARATELY and never blended: the deterministic
+/// screen, the salience length window, and the review deferral surface.
 ///   1. the deterministic screen (`src/screen.rs`),
 ///   2. the salience length window (`src/gate.rs`, 24–3000),
-///   3. the review deferral surface (amended prereg: screen + salience +
-///      conflict-scan, novelty excluded — `insert_proposal` is `pub(crate)`
-///      and E8 forbids widening the API surface this round).
+/// 3. the review deferral surface (amended prereg: screen + salience +
+///    conflict-scan, novelty excluded — `insert_proposal` is `pub(crate)`
+///    and this round forbids widening the API surface).
 ///
 /// The corpus is read from BRAIN_FPR_CORPUS (a JSONL file in the PRIVATE
-/// spine). The kernel tree never contains a corpus row (E3).
+/// spine). The kernel tree never contains a corpus row.
 fn run_fpr() -> Result<(), String> {
     use brain_server::gate;
     use brain_server::linker;
@@ -952,6 +951,32 @@ fn run_fpr() -> Result<(), String> {
     println!("Surface 3 (the review deferral path) is measured compositionally under the amended");
     println!("prereg and is reported in the evidence file; `insert_proposal` is `pub(crate)` and");
     println!("E8 forbids widening it this round.");
+
+    // Out-of-benchmark rows are reported IN FULL, individually — never folded
+    // into the headline denominator. `BRAIN_FPR_VERBOSE=1` prints each flagged
+    // row's id, its length, and a short excerpt so a human can judge whether it
+    // is a genuine false positive or a true catch. The corpus is private; this
+    // prints to the operator's terminal and nothing is persisted.
+    if std::env::var("BRAIN_FPR_VERBOSE").as_deref() == Ok("1") {
+        println!();
+        println!("### Flagged rows, in full (E7)");
+        println!();
+        for (idx, (title, content)) in rows.iter().enumerate() {
+            if screen::screen(content, title) == ScreenResult::Clean {
+                continue;
+            }
+            let flat = content.split_whitespace().collect::<Vec<_>>().join(" ");
+            let excerpt: String = flat.chars().take(110).collect();
+            // Report the corpus line number (1-based) so the row is locatable
+            // in the corpus file without echoing the document itself.
+            println!(
+                "- corpus line {} · {} chars · `{}`",
+                idx + 1,
+                content.chars().count(),
+                excerpt
+            );
+        }
+    }
     Ok(())
 }
 
