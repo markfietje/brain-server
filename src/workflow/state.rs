@@ -241,9 +241,9 @@ pub(crate) fn open_run(
     now: i64,
 ) -> rusqlite::Result<i64> {
     conn.execute(
-        "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at)
-         VALUES (?1, ?2, ?3, 0, 'active', ?4, ?4)",
-        params![domain, kind, state_json, now],
+        "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at, knowledge_version)
+         VALUES (?1, ?2, ?3, 0, 'active', ?4, ?4, ?5)",
+        params![domain, kind, state_json, now, crate::config::KNOWLEDGE_VERSION],
     )?;
     Ok(conn.last_insert_rowid())
 }

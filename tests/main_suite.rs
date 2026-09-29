@@ -22167,10 +22167,17 @@ mod r44_outcomes {
             "the repo has never used a view; the read model is a query (E1)"
         );
         let layout = src("src/storage_layout.rs");
+        // R51 moved the stamp: the additive `knowledge_version` column on
+        // workflow_runs. R44's claim ("R44 ships no stamp") was true when written and
+        // is now history — the lockstep property is what carries forward, so the pin
+        // tracks the CURRENT stamp rather than asserting the R44-era literal forever.
         assert!(
-            layout.contains("pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_19;")
-                && layout.contains("\"1.32.19\""),
-            "the schema stamp is untouched: R44 ships no stamp"
+            layout.contains("pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_20;")
+                && layout.contains("\"1.32.20\""),
+            "the schema stamp is the lockstep triple: LATEST_KNOWN_SCHEMA must name the \
+             newest SCHEMA_VERSION_* const and that const must carry the same literal. R44 \
+             shipped no stamp; R51 moved it to 1.32.20 for the additive knowledge_version \
+             column."
         );
         let rehearse = src("src/bin/brain_migrate_rehearse.rs");
         assert!(

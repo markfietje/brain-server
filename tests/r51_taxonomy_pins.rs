@@ -66,8 +66,7 @@ fn read_spine(rel: &str) -> String {
 
 fn read_kernel(rel: &str) -> String {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(rel);
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("{} must exist: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{} must exist: {e}", path.display()))
 }
 
 fn read_fixture(rel: &str) -> String {
@@ -192,7 +191,7 @@ fn r51_all_three_documents_enumerate_the_same_six_loops() {
     ];
 
     for (doc, set) in &sets {
-        expect_all_six(*doc, doc, set);
+        expect_all_six(doc, doc, set);
     }
 
     // Set EQUALITY, not just completeness. A document that invents a seventh loop is
@@ -292,7 +291,10 @@ fn draws_operate_as_fifth_chain_box(text: &str) -> bool {
             return false;
         }
         // after the arrow, allow box noise, then require Operate
-        let after = &arrow[ARROWS.iter().find(|a| arrow.starts_with(**a)).map_or(0, |a| a.len())..];
+        let after = &arrow[ARROWS
+            .iter()
+            .find(|a| arrow.starts_with(**a))
+            .map_or(0, |a| a.len())..];
         let after = after.trim_start_matches(|c: char| BOX_NOISE.contains(&c));
         after.starts_with("Operate")
     })

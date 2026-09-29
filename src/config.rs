@@ -29,6 +29,20 @@ pub const MAX_SUGGEST_K: u32 = 20;
 pub const MAX_SUGGEST_EXCLUDE: usize = 100;
 pub const DEFAULT_SUGGEST_K: u32 = 5;
 
+/// The knowledge version a newly opened case is recorded against (R51).
+///
+/// An integer monotonic counter, not a timestamp: ordering is then total and
+/// comparison is a single integer.
+///
+/// **CEILING, stated rather than hidden: there is no Evolve bump site yet, so this
+/// value is CONSTANT.** It records which knowledge version a case opened against. It
+/// does NOT by itself prevent mixed-basis reasoning — a case reopened after an Evolve
+/// publication re-enters Solve against a moved base, and this column is what makes
+/// that visible. The delta OFFER is where prevention lives; delta semantics are
+/// R53/R57 work. A sentinel `0` is deliberately not used: `NULL` means "predates
+/// tracking", and `0` would falsely date every legacy row to version zero.
+pub const KNOWLEDGE_VERSION: i64 = 1;
+
 /// Evidence quality: bounded snippet window (chars) and the redaction cap
 /// on `explain` payloads so they can never leak unbounded source text.
 pub const MAX_SNIPPET_CHARS: usize = 240;

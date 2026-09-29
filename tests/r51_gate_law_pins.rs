@@ -158,7 +158,8 @@ fn detector_b_item_spans(lines: &[String]) -> Vec<(usize, usize)> {
         }
         let start = i + 1;
         let mut is_test = false;
-        while i < lines.len() && (lines[i].trim_start().starts_with("#[") || lines[i].trim().is_empty())
+        while i < lines.len()
+            && (lines[i].trim_start().starts_with("#[") || lines[i].trim().is_empty())
         {
             if is_cfg_test(&lines[i]) {
                 is_test = true;
@@ -216,8 +217,8 @@ fn derive_production_sites() -> BTreeSet<Site> {
     let mut files: Vec<String> = Vec::new();
     while let Some(dir) = stack.pop() {
         let p = crate_root().join(&dir);
-        let entries = std::fs::read_dir(&p)
-            .unwrap_or_else(|e| panic!("{} must exist: {e}", p.display()));
+        let entries =
+            std::fs::read_dir(&p).unwrap_or_else(|e| panic!("{} must exist: {e}", p.display()));
         for e in entries.flatten() {
             let path = e.path();
             let rel = path
@@ -246,7 +247,10 @@ fn derive_production_sites() -> BTreeSet<Site> {
             let in_b = b.iter().any(|(s, e)| ln >= *s && ln <= *e);
             // production only if BOTH detectors agree
             if !in_a && !in_b {
-                production.insert(Site { file: rel.clone(), line: ln });
+                production.insert(Site {
+                    file: rel.clone(),
+                    line: ln,
+                });
             }
         }
     }
@@ -328,7 +332,11 @@ fn r51_gdl_engine_site_is_bound_to_new_with_proficiency() {
         .take(site_line - 1)
         .enumerate()
         .rev()
-        .find(|(_, l)| l.trim_start().starts_with("fn ") || l.trim_start().starts_with("pub(crate) fn ") || l.trim_start().starts_with("pub fn "))
+        .find(|(_, l)| {
+            l.trim_start().starts_with("fn ")
+                || l.trim_start().starts_with("pub(crate) fn ")
+                || l.trim_start().starts_with("pub fn ")
+        })
         .map(|(i, l)| (i + 1, l.trim().to_string()));
 
     let (decl_line, decl) = enclosing.expect("the site must live inside some fn");
@@ -410,8 +418,7 @@ fn r51_delegate_call_sites_are_the_gdl_recheck_seam() {
     let mut files: Vec<String> = Vec::new();
     while let Some(dir) = stack.pop() {
         let p = crate_root().join(&dir);
-        let entries =
-            std::fs::read_dir(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        let entries = std::fs::read_dir(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()));
         for e in entries.flatten() {
             let path = e.path();
             let rel = path
@@ -445,10 +452,15 @@ fn r51_delegate_call_sites_are_the_gdl_recheck_seam() {
                 continue;
             }
             // inside the file's `mod tests` / a #[cfg(test)] item
-            if a.is_some_and(|(s, e)| ln >= s && ln <= e) || b.iter().any(|(s, e)| ln >= *s && ln <= *e) {
+            if a.is_some_and(|(s, e)| ln >= s && ln <= e)
+                || b.iter().any(|(s, e)| ln >= *s && ln <= *e)
+            {
                 continue;
             }
-            call_sites.push(Site { file: rel.clone(), line: ln });
+            call_sites.push(Site {
+                file: rel.clone(),
+                line: ln,
+            });
         }
     }
     // A production-SOURCE call site outside the chain is only tolerable if it is
@@ -538,9 +550,7 @@ fn r51_spawn_outcome_reaches_parse_and_gate_bounded_by_phase_attempts() {
     );
     let dispose_sites = gdl
         .iter()
-        .enumerate()
-        .filter(|(_, l)| l.contains("parse_and_gate(") && !l.contains("fn parse_and_gate("))
-        .map(|(i, _)| i + 1)
+        .filter(|l| l.contains("parse_and_gate(") && !l.contains("fn parse_and_gate("))
         .count();
     assert!(
         dispose_sites >= 2,
@@ -551,14 +561,13 @@ fn r51_spawn_outcome_reaches_parse_and_gate_bounded_by_phase_attempts() {
 
     // The bound: exhausting phase attempts ROUTES the case, it never resolves it.
     assert!(
-        gdl.iter().any(|l| l.contains("MAX_PHASE_ATTEMPTS: u32 = 3")),
+        gdl.iter()
+            .any(|l| l.contains("MAX_PHASE_ATTEMPTS: u32 = 3")),
         "`MAX_PHASE_ATTEMPTS = 3` must exist — the gate's bound is part of the law."
     );
     let attempt_sites = gdl
         .iter()
-        .enumerate()
-        .filter(|(_, l)| l.contains("attempt >= MAX_PHASE_ATTEMPTS"))
-        .map(|(i, _)| i + 1)
+        .filter(|l| l.contains("attempt >= MAX_PHASE_ATTEMPTS"))
         .count();
     assert!(
         attempt_sites >= 2,

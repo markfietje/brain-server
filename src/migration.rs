@@ -2337,6 +2337,33 @@ pub fn run_migration_with_store_dim(
         db.execute_batch("ALTER TABLE agent_cards ADD COLUMN signing_epoch INTEGER;")?;
     }
 
+    // ── R51 "Taxonomy closure": the knowledge-version axis on the case record ──
+    // The ring is not idempotent under time: Solve is per-case/minutes, Evolve is
+    // per-pattern/days, Deflect is per-corpus/weeks. A case can therefore be open
+    // while Evolve publishes a supersession UNDERNEATH it, and a reopened case
+    // (`reask`, back-referral) re-enters Solve against a MOVED knowledge base —
+    // silently mixing evidence from two versions.
+    //
+    // Additive only, no rebuild. `NULL` = the row predates tracking; a sentinel 0
+    // would falsely date every legacy row to version zero. An INTEGER monotonic
+    // counter, not a timestamp, so ordering is total and comparison is one integer.
+    //
+    // CEILING (stated, not hidden): there is NO Evolve bump site yet, so the value
+    // written today is CONSTANT. It records which version a case opened against; it
+    // does not by itself prevent mixed-basis reasoning — the delta offer is where
+    // prevention lives, and delta semantics are R53/R57 work.
+    let has_kv: bool = db
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('workflow_runs') WHERE name='knowledge_version'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .map(|n| n > 0)
+        .unwrap_or(false);
+    if !has_kv {
+        db.execute_batch("ALTER TABLE workflow_runs ADD COLUMN knowledge_version INTEGER;")?;
+    }
+
     // ── the Loop line: the agent-session event log ──────────────────────
     // Append-only, one row per session event, per-run monotonic seq,
     // exactly-once by idempotency key. The audit chain stores hashes, not
@@ -2913,8 +2940,8 @@ pub fn run_migration_with_store_dim(
     )?;
 
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.19')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.19';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.20')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.20';",
         [],
     )?;
 

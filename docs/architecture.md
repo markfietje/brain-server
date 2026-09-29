@@ -14,6 +14,72 @@ the agent-loop provider HTTP client, OIDC/JWKS fetch, and the CRM connectors
 
 ## How memory moves — four stages and a return path
 
+> **SOURCE OF TRUTH, verified 2026-09-29 against `6007e62` + the R51 pins.**
+> Read this before trusting any diagram, count, or roadmap statement — including the
+> ones in this file. Three corrections are folded in here; each was checked against the
+> source, not against a prior document.
+
+### The taxonomy, stated once
+
+> **Four stages in a ring — Create → Solve → Evolve → Deflect. Operate is the return
+> path that closes it. Deliver is a separate software lifecycle on a different axis.
+> Six names; not six peers; and not five stages either.**
+
+Three clauses, each load-bearing:
+
+1. **"Six loops" is a count of names, not a taxonomy.** Three of the six were accreted
+   to fill a gap someone noticed (plan §6): KCS v6 gave three (Solve, Evolve, Deflect);
+   Deliver was added because knowledge needs software; Operate because knowledge needs
+   feedback; Create because knowledge does not simply appear. It is a **history**, and a
+   history read as a flat list of six peers is what produced every diagram error below.
+2. **Operate is the return path, not a fifth stage.** A stage is either walked through,
+   or it is the thing that closes the walk. Operate is the latter. Calling it "4+2" does
+   not fix this — that is still a count, and the two documents disagreeing about whether
+   Operate is a stage or a feedback layer is exactly the ambiguity that produced the
+   chain-of-five in the first place.
+3. **Deliver is a different axis, not a sixth stage.** The four stages turn over
+   *memory*; Deliver turns over *artifacts*. This is a dated operator decision
+   (**D0, 2026-09-26**), recorded in this file's delivery-loop section.
+
+### The two `Operate`s — the collision that broke these documents
+
+| | What it operates on | Where |
+|---|---|---|
+| **knowledge `Operate`** | outcomes attributed to *knowledge* | the ring's return path |
+| **delivery `D5 Operate`** | the *delivered artifact* | phase 5 of the software lifecycle |
+
+Same name, different axis. Invisible until both appear in one diagram — which is why
+the software phase is labelled `D5 Operate (SOFTWARE)` in this file.
+
+### Build status, as of `6007e62` — measured, not estimated
+
+**The ring is drawn complete in the diagrams below, but only two links have
+substance, and the return path has nothing.** Stating this is the point; a reader who
+believes all four stages are equally built will mis-plan every round after this one.
+
+| Loop | Where it lives (measured) | Status |
+|---|---|---|
+| **Create** | `src/workflow/create.rs` (239) + `src/workflow/create/` — 6 modules, 2,299 ln · six routes under `/workflow/claim-*` | **Built and wired; promotion INERT** — `promotion_disabled` in every configuration (`create/promote.rs:70`) |
+| **Solve** | `src/workflow/gdl.rs` (11,104) + `gdl_checkpoint.rs` (825) + `gdl_eval.rs` (1,191) + `src/agentloop/run_loop.rs` (4,561) · entry `src/handlers/case_run.rs:224` | **Most built** — the agentic crank, checkpointed and digest-gated |
+| **Evolve** | `src/gate.rs` (1,902) + `src/handlers/gate.rs` (3,089) + `src/service/gate.rs` (716) = 5,707 · `src/workflow/kcs.rs` (1,501) | **Built and wired** — the human approval gate |
+| **Deflect** | `src/workflow/kcs.rs` (1,501) + `src/workflow/scoreboard.rs` (1,097) = 2,598 | **Metrics and evidence only** — measures reuse/deflection; the least built of the four stages |
+| **Operate** | **no module anywhere** — `src/workflow/` contains no `deflect` and no `operate` | **A design statement, not code.** The edges `Operate → Evolve` and `Operate → Create` — the ones that make this a cycle rather than a line — do not exist in code |
+| **Deliver** | `crates/brain-delivery-core` (2,136) + `src/workflow/delivery.rs` | **Built and wired** |
+
+**The honest consequence:** `Solve` and `Evolve` are substantial; `Deflect` is
+measurement; `Create` is built but its promotion path is disabled by design; and
+`Operate` is prose. The round that makes `Operate → Evolve` / `Operate → Create` real is
+**R57** (the falsification scheduler) — the edges that make the ring a ring.
+
+> **Correction to a prior claim, recorded because it was wrong.** An earlier draft of
+> this section placed the gate at `src/workflow/gate.rs` (1,902) and sized the Create
+> loop at 2,538 lines. Measured truth: the 1,902-line module is `src/gate.rs` (crate
+> root, not under `workflow/`), and `create/` totals **2,299** lines across 6 modules
+> plus the 239-line `create.rs` parent. A stale number in an architecture document is
+> the same defect class as a stale diagram.
+
+---
+
 Troubleshooting here is not one process but **four stages turning at different
 speeds plus the path that closes them**, converging on what ISO 10002, the
 KCS Solve loop, ITIL, and COPC each describe separately:

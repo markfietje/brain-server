@@ -234,7 +234,14 @@ pub const SCHEMA_VERSION_V1_32_18: &str = "1.32.18";
 /// its byte-range evidence, and the collusion batch. Additive only — no column
 /// is dropped and no table is rebuilt, because a rebuild is the one operation
 /// that can lose rows under a crash. The read model is a query, never a view.
+///
+/// Retained as a historical record: the R50 suite pins against it.
 pub const SCHEMA_VERSION_V1_32_19: &str = "1.32.19";
+/// R51's `knowledge_version` axis on the case record: the ring is not idempotent
+/// under time, so a case records which knowledge version it opened against. ONE
+/// additive column on `workflow_runs`, `NULL` = predates tracking — no table is
+/// dropped and none is rebuilt.
+pub const SCHEMA_VERSION_V1_32_20: &str = "1.32.20";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
@@ -256,7 +263,7 @@ pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 /// Security posture: a source DB stamped NEWER than this is refused loudly
 /// ([`refuse_newer_schema`]) — migrating *down* would silently drop columns
 /// the newer release added, i.e. data loss dressed as a migration.
-pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_19;
+pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_20;
 
 /// Numeric dotted-version compare (std-only, no semver dependency).
 /// Non-numeric components are skipped (the `schema_ge` precedent in the
@@ -703,13 +710,15 @@ mod tests {
         // The probe sits ABOVE the ceiling by construction: when the delivery
         // round moved the ceiling to 1.32.15, this literal became equal to it
         // and the assertion failed until it moved again. the attestation round moved the ceiling
+        // the attestation round moved the ceiling
         // to 1.32.16, so the probe moved to 1.32.17, the bindings round moved the
         // ceiling to 1.32.17, so the probe moved to 1.32.18, the release round moved the
-        // ceiling to 1.32.18, so the probe moved to 1.32.19, and the create-loop round
-        // moved the ceiling to 1.32.19, so the probe moved to 1.32.20. A probe pinned AT the
+        // ceiling to 1.32.18, so the probe moved to 1.32.19, the create-loop round
+        // moved the ceiling to 1.32.19, so the probe moved to 1.32.20, and the taxonomy
+        // round moved the ceiling to 1.32.20, so the probe moved to 1.32.21. A probe pinned AT the
         // ceiling silently tests `Equal`, not `Greater`.
-        assert!(is_newer_than_known(Some("1.32.20")));
-        assert!(!is_newer_than_known(Some("1.32.19")));
+        assert!(is_newer_than_known(Some("1.32.21")));
+        assert!(!is_newer_than_known(Some("1.32.20")));
         assert!(!is_newer_than_known(Some("1.32.9")));
         assert!(!is_newer_than_known(Some("1.28.9")));
     }
