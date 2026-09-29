@@ -140,8 +140,11 @@ gate in front of it.
 ```mermaid
 flowchart TD
     subgraph CUST["CUSTOMER JOURNEY"]
+        direction TB
         C1["Customer has a problem"] --> C2["Opens ticket<br/>CRM · WhatsApp · portal"]
-        C10["Resolved fast —<br/>or self-served instantly"] --> C11["Happier · no repeat contact"]
+        C3["Answer arrives — with the<br/>sources that back it"]
+        C10["Resolved fast —<br/>or self-served instantly"] --> C11["Happier ·<br/>fewer repeat contacts"]
+        C2 --> C3
     end
 
     subgraph EDGE["GOVERNED EDGES — bridge processes holding zero brain tokens"]
@@ -196,9 +199,18 @@ flowchart TD
     G1 --> H2
 
     K1 -- "serves the next customer" --> R1["RECALL WITH PROVENANCE<br/>approved knowledge only"]
+    R1 --> C3
     R1 --> C10
     K1 -.->|deflection measured on the scoreboard| C11
+    C11 -.->|"the same problem,<br/>answered without a human"| R1
 ```
+
+**The journey closes, and that is the whole design.** The customer at the left
+gets an answer at the right, but the path back to the next customer runs through
+**`K1` — the published, human-approved knowledge** — not through the loop that
+happened to solve this one case. A case that was never approved into memory
+resolves that customer and teaches the next one nothing. The dotted edge is the
+part that compounds: the same problem, self-served, is `Deflect` working.
 
 #### The record layers on top (1.28.92)
 
@@ -463,28 +475,129 @@ is a substitute for their own record.
 
 ---
 
+## What the roadmap adds — and what it deliberately does not
+
+**No planned round changes the shape of this page.** R52 through R64 deepen what
+is here; they do not add a box, move an arrow, or redefine a stage. That is a
+design constraint, not an accident: the four stages and the return path are the
+vocabulary every later round is *written in*, so a round that redefined the shape
+would invalidate the fourteen that followed.
+
+What changes is **how much of each stage is real** — and where the human sits in
+it.
+
+| Stage | Depth today | What the roadmap adds | Human's role after |
+|---|---|---|---|
+| **Create** | six routes, **promotion inert** | R60 extracts the core; R54 attaches a disproof condition | approves every claim — the gate never opens itself |
+| **Solve** | the most built stage | R52 makes the harness honest about what it decided; R53 sets a joint eval objective; R53a instruments decision classes | answers judgment calls; never decides whether an answer is *stored* |
+| **Evolve** | gate and publication built | R61 builds the core around **earned** autonomy — tiers that only widen when measurement has earned it | holds the widen decision; a tier can never widen itself |
+| **Deflect** | measurement only | R56 measures; R57 scores; R62 builds the core | reviews what the scoreboard says is not working |
+| **Operate** | **design only — no code** | R55 binds skills to models; R58b binds them to gates | approves every binding; this is the last stage to close |
+| **Deliver** | core + persistence + reads | R58 adds release gates; R63 enforces token binding | the promote gate is a human or a pre-earned tier, never the model |
+
+Three of these are worth naming because they are the ones that could be mistaken
+for plans to hand the machine more authority than it has:
+
+- **R55's "earned autonomy" is earned by measurement, not by the model's opinion
+  of its own competence.** A tier widens when a falsification condition is
+  satisfied; the model proposing the work has no vote.
+- **R52 and R64 are about the harness being *truthful*** — a harness that
+  overstates what it decided is a correctness bug, not a style issue. Neither
+  grants the loop any new authority.
+- **R63 closes a live security finding** (a token valid for the wrong
+  application). It removes authority that should never have existed; it adds
+  none.
+
+**The through-line.** Every round in the programme either (a) makes an existing
+decision verifiable, or (b) builds the next stage's core. None of them moves a
+decision from a human to a model. If a future round ever proposes that, it is
+outside this plan and should be argued on its own merits rather than smuggled in
+as an increment.
+
+The sequencing, the dependencies, and the failure mode if the tail is cut are in
+`EXECUTION_ORDER_R51_R64_2026-09-28.md`. Per-round detail lives in each
+`IMPL_R*_…` plan.
+
 ## What’s inside the process
 
 Same process, same SQLite — the loops above are the *control story*,
 not a separate service:
 
+```mermaid
+flowchart TB
+    CLI["HTTP clients<br/>agent plugin · brain CLI · MCP · Dioxus client"]
+
+    subgraph PROC["brain-server — one process, one SQLite file"]
+        direction TB
+        H["Handlers (Axum)<br/>parse · authorize · spawn_blocking"]
+        R["Recall engine<br/>vector + BM25 → RRF k=60 → rerank"]
+        E["Static embeddings<br/>model2vec — in-process"]
+        DB[("SQLite (WAL)<br/>vec0 · FTS5 · knowledge graph")]
+        A["Audit log<br/>hash-chained"]
+    end
+
+    CLI -->|"bearer token"| H
+    H -->|"auth + AuthZ<br/>capability scoped"| R
+    R --> DB
+    R --> E
+    E -->|"vector written and read<br/>in the same process"| DB
+    H -->|"every mutation,<br/>inside the same tx"| A
+    A --> DB
+    DB -.->|"read back on the<br/>next request"| H
 ```
-                    ┌───────────────────────────────────────────────┐
-                    │              brain-server (one process)        │
-  HTTP clients ───▶ │                                               │
-  (agent plugin,   │   ┌──────────┐   ┌───────────┐   ┌──────────┐  │
-   brain CLI, MCP, │   │  Handlers│──▶│  Recall   │──▶│ SQLite   │  │
-   Dioxus client)  │   │  (Axum)  │   │  Engine   │   │ (WAL)    │  │
-                    │   └────┬─────┘   └─────┬─────┘   │  vec0    │  │
-                    │        │ auth/AuthZ    │         │  FTS5    │  │
-                    │        ▼               ▼         │  KG      │  │
-                    │   ┌──────────┐   ┌───────────┐   └──────────┘  │
-                    │   │ Audit log│   │ Static    │                 │
-                    │   │ (hash    │   │ embeddings │                 │
-                    │   │  chain)  │   │ (model2vec)│                 │
-                    │   └──────────┘   └───────────┘                 │
-                    └───────────────────────────────────────────────┘
-```
+
+The loops described above are the *control story* over these five boxes, not
+separate services. There is no second process, no message bus, and no cache tier:
+a request enters the handlers, crosses the seam into a domain core, and lands in
+the one database file. The audit row and the mutation it describes commit or roll
+back together — there is no window in which one exists without the other.
+
+### Who may decide what
+
+Three tiers, and the boundary between them is a **capability the agent's token
+does not hold** — not a prompt, not a model instruction, and not a check the
+model can talk its way past.
+
+| | Agent (the loop) | Operator (the human) | The runtime |
+|---|---|---|---|
+| **May decide** | how to investigate; which recall to run; when it is stuck | whether a proposal becomes memory; quarantine disposition; whether knowledge is wrong | whether a write is admitted at all; which capabilities exist |
+| **May not decide** | whether its own output is stored; whether a claim is true; whether a proposal is promoted | — | what the model *meant*; whether an artifact is good |
+| **Enforced by** | `can:["read","write","reject"]` on the `agent` preset role | approve/promote requires the `workflow` role, held only by an operator token | `BRAIN_WRITE_POSTURE`, the authz matrix, and the two-principal split |
+
+**The three hard human-approval points.** These are not configurable and no posture
+disables them:
+
+1. **Nothing enters memory without a human.** Under `BRAIN_WRITE_POSTURE=review`
+   the agent-facing write surfaces emit a digest-bound *proposal*; an operator
+   disposes of it. The agent role has `reject` but never `approve` or `promote`,
+   so it cannot dispose of its own work.
+2. **Quarantined content never auto-admits.** A screened write that trips the
+   blocklist lands in quarantine and waits for a person.
+3. **Delivery promotion is gated by an autonomy tier, not by confidence.** The
+   arbiter reads the run's granted tier and never the trace's *claimed*
+   determinism; the two narrowest tiers propose and never promote.
+
+**What the model may be asked to decide**, and what it may not:
+
+| Decision | Model may propose | Runtime decides | Human must approve |
+|---|---|---|---|
+| Which articles to recall | ✅ | — | — |
+| How to investigate a case | ✅ | — | — |
+| Whether it is stuck | ✅ (asks) | — | answers the question |
+| A draft article's content | ✅ | screen + fence | ✅ before it is memory |
+| Whether knowledge is *true* | — | — | ✅ — never the model's call |
+| Whether a published claim is now *wrong* | — | — | ✅ — and today this is a person noticing, not a system |
+| Whether a run may promote | — | autonomy tier | ✅ above the narrowest tiers |
+
+The last two rows are the honest limit: **the system can be proposed to, screened,
+and gated, but it cannot decide that it was wrong.** That gap is the whole reason
+`Operate` exists as a design and not yet as code.
+
+## The write posture, stated precisely. `BRAIN_WRITE_POSTURE` is `open` by
+default (back-compatibility: write surfaces insert directly) or `review`, which
+routes the agent-facing writes through the proposal pipeline. An unrecognised
+value **refuses to boot** rather than silently degrading to `open` — a posture
+that fails open is not a posture.
 
 ### The layering law
 
