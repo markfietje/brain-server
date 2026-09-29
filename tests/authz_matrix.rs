@@ -2673,6 +2673,57 @@ async fn admin_scrape_exposes_the_azp_rejection_counter() {
     );
 }
 
+/// R53a — the decision-class family is actually ON THE WIRE, not merely
+/// defined. The values are pinned in `tests/r53a_decision_class_pins.rs` and
+/// behaviourally in `src/agentloop/subagents.rs`; this pins the SCRAPE side,
+/// which is a separate link in the chain and can be lost silently — a counter
+/// that increments but is never exported is invisible to every operator
+/// watching a dashboard.
+///
+/// It also pins the property `D53a.3` asks for: a value for every DECLARED
+/// class, including the ones that have never fired in this process. A dashboard
+/// must never have to distinguish "nothing happened" from "not instrumented".
+#[tokio::test]
+async fn admin_scrape_exposes_the_decision_class_family() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "m2-r53a",
+        "user:m2r53a",
+        "team-a",
+        &["admin:*/*"],
+        &["admin", "matrix-role"],
+    );
+    let (st, body) = send_body(&srv, Some(&admin), "/metrics", "GET", "").await;
+    assert_eq!(st, StatusCode::OK);
+    for name in [
+        "brain_model_calls_total",
+        "brain_model_tokens_total",
+        "brain_model_incomplete_total",
+    ] {
+        assert!(
+            body.contains(&format!("# TYPE {name} counter")),
+            "{name} must be exported as a counter: {body}"
+        );
+    }
+    for class in brain_server::decision_class::DecisionClass::ALL {
+        let row = format!("brain_model_calls_total{{class=\"{}\"}}", class.as_str());
+        assert!(
+            body.contains(&row),
+            "the declared class {} emitted no row — every declared class must be \
+             visible even at zero: {body}",
+            class.as_str()
+        );
+    }
+    // The family carries a class label and nothing else. A `domain` label here
+    // would be a fourth cardinality to scope, and the first one an operator
+    // could mine for tenant shape.
+    assert!(
+        !body.contains("brain_model_calls_total{class=\"open_generate\","),
+        "the decision-class family must carry exactly one label: {body}"
+    );
+}
+
 /// Pure pin over the scoping rule at the unit seam (shim-mode /metrics can
 /// only ever enumerate `global`, which every /metrics reader is gated to
 /// read — the cross-tenant collapse is witnessable where the rule lives).

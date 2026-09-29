@@ -148,10 +148,18 @@ const ROUTER_SITES_FLOOR: usize = 255;
 /// lower number would silently weaken the guard instead of failing loudly.
 /// 2_376 → 2_470 (walk-measured) at the create-loop round: the five phase
 /// cores' own behavioural pins, the round's integration battery, and the fence
-/// proofs. Set to the walk-measured truth rather than to a hand-count, because
-/// this constant is compared against the walk and a lower number would silently
-/// weaken the guard instead of failing loudly.
-const CRATE_TEST_FLOOR: usize = 2_470;
+/// proofs. 2_470 → 2_544 (walk-measured) at the decision-class round: the class
+/// census and its 4 module pins, the 2 budget-attribution pins, the 10
+/// cross-cutting structural pins in `tests/r53a_decision_class_pins.rs`, and the
+/// `/metrics` wire pin. The behavioural content-independence pin is a
+/// `#[tokio::test]`, which this needle does NOT count, so the floor is set from
+/// the walk rather than from a hand-count of everything the round added — a
+/// lower number would silently weaken the guard instead of failing loudly.
+///
+/// Recorded as the measured value, not as a delta: the walk this constant is
+/// compared against also spans the uncommitted decision-record work sitting in
+/// the tree, so a "before" figure would not be a clean baseline.
+const CRATE_TEST_FLOOR: usize = 2_544;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows, 208 at the operate round.

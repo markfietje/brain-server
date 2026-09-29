@@ -50,13 +50,24 @@ const REGISTER: &[(&str, &str, &str)] = &[
     ),
     (
         "src/agentloop/subagents.rs",
-        "639",
+        "656",
         "The production child-loop spawn inside `delegate_owned_budgeted`. Inside the \
          law by its DATA PATH: constructed with filtered tools (`spec.allowed_tools`), a \
          narrowed env (`narrowed_env`), an explicit budget (`Some(spec.token_budget)`, \
          not the `None` uncapped default), a turn cap and a `child:<name>:` prefix; its \
          `SubagentOutcome::Completed { summary }` is consumed at gdl.rs:2694 and \
-         disposed by `parse_and_gate`.",
+         disposed by `parse_and_gate`. \
+         \
+         AMENDED 2026-09-29 (R53a), line 639 → 656, and nothing else. The shift is \
+         purely additive documentation and a required `class` argument on \
+         `ExchangeBudget::record`, both ABOVE this site in the file: R53a added the \
+         `record`/`mark_incomplete` doc comments (+23 lines) and the `use \
+         crate::decision_class::DecisionClass;` import (+1). No statement, no \
+         expression, no data path and no control-flow edge at the construction site \
+         changed — the census below re-derives from source on every run and reported \
+         exactly one site before and exactly one after, at the same construction. \
+         The register was NOT weakened: a new site would still fail this pin, and \
+         this amendment records a moved line, not an added one.",
     ),
 ];
 

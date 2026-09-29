@@ -190,6 +190,14 @@ static CLASSIFIER: LazyLock<Option<Arc<dyn InjectionScorer>>> = LazyLock::new(bu
     )
 )]
 pub fn screen(content: &str, title: &str) -> ScreenResult {
+    // R53a: the ONE seam every ingest write path routes through, so this is
+    // where the `Classify` surface is counted. Note what is NOT here: nothing
+    // in this function, or in anything it calls, reads `content` to choose a
+    // MODEL — content selects the verdict below, and the classifier itself is
+    // the process-wide `CLASSIFIER` `LazyLock` copied at `Screen::from_config`.
+    // That separation is the property `decision_class` documents and the
+    // content-independence pins assert.
+    crate::decision_class::note_call(crate::decision_class::DecisionClass::Classify);
     let r = Screen::from_config().screen(content, title);
     #[cfg(feature = "otel")]
     {

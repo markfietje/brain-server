@@ -86,17 +86,22 @@ pub fn fuzz_hypothesis_status(sources: Vec<String>) -> String {
 /// arbitrary ceiling saturate, never overflow, and fail closed.
 #[doc(hidden)]
 pub fn fuzz_budget_predicate(limit: u64, spends: Vec<(u64, u64)>) -> String {
-    use crate::agentloop::provider::Usage;
     let ceiling = (limit > 0).then_some(limit);
     let budget = crate::agentloop::subagents::ExchangeBudget::new(ceiling);
     let mut verdicts = Vec::with_capacity(spends.len());
     for (input, output) in spends {
         let guard = budget.fresh_exchange(ceiling);
         let exchange_budget = guard.budget();
-        exchange_budget.record(Usage {
-            input_tokens: input,
-            output_tokens: output,
-        });
+        exchange_budget.record(
+            crate::agentloop::provider::Usage {
+                input_tokens: input,
+                output_tokens: output,
+            },
+            // The fuzz seam spends against the same ledger the LLM stream does,
+            // so it names that stream's class. Declared here rather than
+            // defaulted, for the same reason: `record` takes no implicit class.
+            crate::decision_class::DecisionClass::OpenGenerate,
+        );
         verdicts.push(exchange_budget.exhausted());
     }
     serde_json::json!({ "exhausted": verdicts }).to_string()

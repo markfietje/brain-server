@@ -30,6 +30,7 @@ use crate::Pool;
 use crate::agentloop::hooks::LoopHooks;
 use crate::agentloop::provider::{LlmProvider, ProviderError, Usage};
 use crate::agentloop::run_loop::{ExchangeReceipt, LoopConfig, LoopDriver, LoopError, RunOutcome};
+use crate::decision_class::DecisionClass;
 use crate::workflow::host::SqliteWorkflowHost;
 
 /// Typed accounting refusal — measured usage is the only success; these are
@@ -220,7 +221,13 @@ impl ExchangeBudget {
     /// the shared authority accounting-incomplete and close the dispatch
     /// permit so waiters wake into a typed refusal — never an invented
     /// zero or MAX.
-    pub(crate) fn mark_incomplete(&self) {
+    ///
+    /// `class` names the surface that could not account for itself, so the
+    /// unknown spend is attributable. A surface whose spend silently vanished
+    /// is the failure this exists to make visible; an unattributed one would be
+    /// the same failure wearing a denominator.
+    pub(crate) fn mark_incomplete(&self, class: DecisionClass) {
+        crate::decision_class::note_incomplete(class);
         let close = |budget: &ExchangeBudget| {
             if let Ok(mut state) = budget.state.lock() {
                 state.incomplete = true;
@@ -287,7 +294,17 @@ impl ExchangeBudget {
             .is_some_and(|authority| !authority.live())
     }
 
-    pub(crate) fn record(&self, usage: Usage) {
+    /// Record observed spend for one completed call.
+    ///
+    /// `class` is **required**, not defaulted: the plan's `R53a.1` asks for an
+    /// unclassified site to be a hard error rather than a default, and a required
+    /// parameter is the strongest form of that — a caller cannot record spend
+    /// without saying which model surface incurred it. The class also rides the
+    /// per-class telemetry, folded here in the same `saturating_add` that moves
+    /// the enforced total, so the attributed series and the budget are one path
+    /// and one number rather than two meters that can drift apart.
+    pub(crate) fn record(&self, usage: Usage, class: DecisionClass) {
+        crate::decision_class::note_tokens(class, usage.input_tokens, usage.output_tokens);
         self.record_reserved(usage, 0);
     }
 
@@ -761,6 +778,13 @@ async fn change_claim(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The class every synthetic spend below is recorded under. The production
+    /// seam declares its own adjacent to the provider call; these fixtures have
+    /// no call site, so they name it once rather than at twelve record sites —
+    /// and the parameter stays REQUIRED on `record`, so an unclassified spend is
+    /// still a compile error rather than a defaulted one.
+    const CLASS: DecisionClass = DecisionClass::OpenGenerate;
     use crate::agentloop::provider::{ChatMessage, DelegationOutcome, ToolResultStatus};
     use crate::agentloop::provider::{
         LoopbackProvider, Usage, scripted_text, scripted_text_then_tool,
@@ -819,10 +843,13 @@ mod tests {
             !child.budget.exhausted(),
             "the child's own reservation must remain usable"
         );
-        parent.record(Usage {
-            input_tokens: 60,
-            output_tokens: 40,
-        });
+        parent.record(
+            Usage {
+                input_tokens: 60,
+                output_tokens: 40,
+            },
+            CLASS,
+        );
         assert_eq!(parent.usage().total(), 100);
         assert_eq!(child.budget.usage(), Usage::default());
         assert!(
@@ -836,10 +863,13 @@ mod tests {
         let parent = ExchangeBudget::new(Some(100));
         let mut child = parent.reserve_child(80).unwrap();
         let surviving = child.budget.clone();
-        surviving.record(Usage {
-            input_tokens: 7,
-            output_tokens: 3,
-        });
+        surviving.record(
+            Usage {
+                input_tokens: 7,
+                output_tokens: 3,
+            },
+            CLASS,
+        );
         child.release();
         child.release();
         assert_eq!(parent.state.lock().unwrap().reserved, 0);
@@ -873,7 +903,7 @@ mod tests {
             input_tokens: 7,
             output_tokens: 3,
         };
-        budget.record(observed);
+        budget.record(observed, CLASS);
         let state = Arc::clone(&budget.state);
         assert!(
             std::thread::spawn(move || {
@@ -960,10 +990,13 @@ mod tests {
             )
             .await
             .unwrap();
-            parent.record(Usage {
-                input_tokens: 6,
-                output_tokens: 0,
-            });
+            parent.record(
+                Usage {
+                    input_tokens: 6,
+                    output_tokens: 0,
+                },
+                CLASS,
+            );
             let before = parent.usage();
             assert_eq!(before.total(), 20);
             assert_eq!(parent.state.lock().unwrap().reserved, 0);
@@ -1007,19 +1040,25 @@ mod tests {
     #[test]
     fn r4_child_reservation_accounts_actual_and_releases_once() {
         let parent = ExchangeBudget::new(Some(100));
-        parent.record(Usage {
-            input_tokens: 10,
-            output_tokens: 0,
-        });
+        parent.record(
+            Usage {
+                input_tokens: 10,
+                output_tokens: 0,
+            },
+            CLASS,
+        );
         let mut child = parent.reserve_child(80).unwrap();
         assert_eq!(child.budget.limit, Some(80));
         let sibling = parent.reserve_child(80).unwrap();
         assert_eq!(sibling.budget.limit, Some(10));
         assert!(parent.exhausted());
-        child.budget.record(Usage {
-            input_tokens: 12,
-            output_tokens: 8,
-        });
+        child.budget.record(
+            Usage {
+                input_tokens: 12,
+                output_tokens: 8,
+            },
+            CLASS,
+        );
         assert_eq!(parent.usage().total(), 30);
         child.release();
         child.release();
@@ -1036,10 +1075,13 @@ mod tests {
         let parent = ExchangeBudget::new(Some(20));
         {
             let child = parent.reserve_child(15).unwrap();
-            child.budget.record(Usage {
-                input_tokens: 12,
-                output_tokens: 18,
-            });
+            child.budget.record(
+                Usage {
+                    input_tokens: 12,
+                    output_tokens: 18,
+                },
+                CLASS,
+            );
             assert!(child.budget.exhausted());
             assert_eq!(parent.usage().total(), 30);
         }
@@ -1052,14 +1094,20 @@ mod tests {
     fn r4_usage_saturates_and_uncapped_parent_observes_children() {
         let parent = ExchangeBudget::new(None);
         let child = parent.reserve_child(100).unwrap();
-        child.budget.record(Usage {
-            input_tokens: u64::MAX,
-            output_tokens: u64::MAX,
-        });
-        child.budget.record(Usage {
-            input_tokens: 1,
-            output_tokens: 1,
-        });
+        child.budget.record(
+            Usage {
+                input_tokens: u64::MAX,
+                output_tokens: u64::MAX,
+            },
+            CLASS,
+        );
+        child.budget.record(
+            Usage {
+                input_tokens: 1,
+                output_tokens: 1,
+            },
+            CLASS,
+        );
         assert_eq!(
             parent.usage(),
             Usage {
@@ -1100,10 +1148,13 @@ mod tests {
             .unwrap();
         assert_eq!(parent.usage().total(), 14);
         assert_eq!(parent.state.lock().unwrap().reserved, 0);
-        parent.record(Usage {
-            input_tokens: 86,
-            output_tokens: 0,
-        });
+        parent.record(
+            Usage {
+                input_tokens: 86,
+                output_tokens: 0,
+            },
+            CLASS,
+        );
         assert!(parent.exhausted());
         let retry = runtime
             .block_on(delegate_owned_budgeted(
@@ -1453,10 +1504,13 @@ mod tests {
         assert!(child.budget.exhausted(), "released authority refuses");
         // ...but the admitted call's subsequently received usage still
         // debits every applicable aggregate — never refunded, never lost.
-        admitted.budget.record(Usage {
-            input_tokens: 9,
-            output_tokens: 6,
-        });
+        admitted.budget.record(
+            Usage {
+                input_tokens: 9,
+                output_tokens: 6,
+            },
+            CLASS,
+        );
         drop(admitted);
         assert_eq!(parent.usage().total(), 15);
         assert_eq!(parent.state.lock().unwrap().in_flight, 0);
@@ -2622,5 +2676,111 @@ mod tests {
             .unwrap();
         let payload: serde_json::Value = serde_json::from_str(&tool_event.payload_json).unwrap();
         assert_eq!(payload["ok"], serde_json::json!(false));
+    }
+
+    // ── R53a — the attribution half of `P53a.2` ────────────────────────────
+
+    /// The per-class token delta for one class across a measurement window:
+    /// now minus then. Split out so the race note below sits next to the one
+    /// place a delta is computed.
+    fn token_delta(
+        before: &[crate::decision_class::ClassObservation],
+        class: DecisionClass,
+    ) -> u64 {
+        let was = before
+            .iter()
+            .find(|r| r.class == class)
+            .expect("the census emits every declared class")
+            .tokens;
+        let now = crate::decision_class::observations()
+            .into_iter()
+            .find(|r| r.class == class)
+            .expect("the census is stable across a scrape")
+            .tokens;
+        now.saturating_sub(was)
+    }
+
+    /// R53a · `P53a.2` — **a recorded spend is attributed to the class that
+    /// incurred it, and naming the class does not move the enforced total.**
+    ///
+    /// Two properties in one test, because the interesting failure is the one
+    /// where attribution is added *and* enforcement drifts: a per-class ledger
+    /// that quietly stopped summing to the budget would leave the hard stop
+    /// defending a smaller number than the spend.
+    ///
+    /// Race note: these counters are process statics shared with every sibling
+    /// test in this binary (the `crate::audit::BUSY_HITS` precedent), so the
+    /// assertions are `>=` on the side a concurrent test can inflate. Separation
+    /// is still falsifiable: had the two records landed in ONE bucket, the
+    /// `Classify` arm would have moved by zero and this fails.
+    #[test]
+    fn r53a_recorded_spend_is_attributed_to_its_class_and_the_total_is_unchanged() {
+        let before = crate::decision_class::observations();
+        let budget = ExchangeBudget::new(None);
+        budget.record(
+            Usage {
+                input_tokens: 4,
+                output_tokens: 3,
+            },
+            DecisionClass::OpenGenerate,
+        );
+        budget.record(
+            Usage {
+                input_tokens: 1,
+                output_tokens: 0,
+            },
+            DecisionClass::Classify,
+        );
+
+        // The enforced total is the SUM, byte-for-byte what it was before the
+        // class argument existed. Attribution is additive; it is not a
+        // re-accounting.
+        assert_eq!(
+            budget.usage().total(),
+            8,
+            "naming a class must not change what the budget enforces"
+        );
+
+        assert!(
+            token_delta(&before, DecisionClass::OpenGenerate) >= 7,
+            "the OpenGenerate spend did not land in the OpenGenerate series"
+        );
+        assert!(
+            token_delta(&before, DecisionClass::Classify) >= 1,
+            "the Classify spend did not land in the Classify series — the two classes \
+             share one bucket, so per-class attribution is not per-class at all"
+        );
+    }
+
+    /// R53a · `D53a.5` — **the hard stop still fires.** The round added a
+    /// required class argument to `record`; this proves the ceiling it feeds is
+    /// the same ceiling that used to stop the call.
+    ///
+    /// The pre-round tree already pins this at the delegate seam
+    /// (`r4_child_parent_ceiling_limits_new_calls` → `BudgetExceeded`), so this
+    /// is NOT a new claim about the ceiling — it is a regression lock on the
+    /// ledger the round edited, stated at the `admit()` arm itself.
+    #[test]
+    fn r53a_the_hard_stop_still_fires_past_the_ceiling() {
+        let budget = ExchangeBudget::new(Some(10));
+        assert!(
+            budget.admit().is_ok(),
+            "under the ceiling, dispatch is admitted"
+        );
+        // Drive recorded spend past the ceiling.
+        budget.record(
+            Usage {
+                input_tokens: 8,
+                output_tokens: 5,
+            },
+            DecisionClass::OpenGenerate,
+        );
+        assert_eq!(budget.usage().total(), 13, "the spend is recorded in full");
+        assert!(
+            matches!(budget.admit(), Err(AccountingRefusal::Exhausted)),
+            "a ceiling that is not a hard stop is a suggestion: dispatch past the ceiling \
+             must REFUSE, not continue"
+        );
+        assert!(budget.exhausted(), "the budget reports itself exhausted");
     }
 }

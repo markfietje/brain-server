@@ -771,6 +771,41 @@ pub(crate) async fn metrics(
             "brain_jwt_azp_rejected_total {}\n",
             crate::auth::jwt::azp_rejections()
         ));
+        // R53a: the per-model-class family. Every DECLARED class emits a row,
+        // including the ones currently at zero — a dashboard must never have to
+        // distinguish "nothing happened" from "not instrumented".
+        //
+        // Data minimisation, by construction rather than by scrubbing: the label
+        // is `DecisionClass::as_str()`, a total function of a FIELDLESS enum, so
+        // it cannot carry a model id, a prompt fragment, a content hash, a user
+        // id, a tenant, or a domain. There is no domain label to scope, so
+        // `scoped_domain_label`'s collapse rule does not apply here — and no new
+        // cardinality is introduced for a reader to enumerate.
+        //
+        // Process-local since process start: a restart zeroes all three, and
+        // nothing persists them. This is a rate-and-composition gauge, not a
+        // spend ledger and not a spend ceiling.
+        out.push_str("# HELP brain_model_calls_total Model-surface operations observed since process start, by the closed decision class. The class is a property of the CALL SITE (the LLM provider stream, the injection screen, the embedder), never of the call's content — the label is a total function of a fieldless enum, so it carries no prompt, model id, user, or domain. The `encode` class counts TEXTS submitted to the embedder, not batches. Process-local: a restart zeroes it. Monotonic.\n");
+        out.push_str("# TYPE brain_model_calls_total counter\n");
+        out.push_str("# HELP brain_model_tokens_total Provider-reported tokens (input + output) folded at the same observation seam that updates the exchange budget's enforced total, by decision class. `classify` and `encode` are always 0: neither surface reports token usage, and this tree deliberately does not substitute a proxy — see the `brain_model_calls_total` help. Process-local. Monotonic.\n");
+        out.push_str("# TYPE brain_model_tokens_total counter\n");
+        out.push_str("# HELP brain_model_incomplete_total Calls that started and ended without a MessageEnd, so their spend is UNKNOWN rather than zero, by decision class. A rising series is a positive statement that spend is going unaccounted — it is not a health signal, and a reader dividing by the call count must exclude these.\n");
+        out.push_str("# TYPE brain_model_incomplete_total counter\n");
+        for row in crate::decision_class::observations() {
+            let class = row.class.as_str();
+            out.push_str(&format!(
+                "brain_model_calls_total{{class=\"{class}\"}} {}\n",
+                row.calls
+            ));
+            out.push_str(&format!(
+                "brain_model_tokens_total{{class=\"{class}\"}} {}\n",
+                row.tokens
+            ));
+            out.push_str(&format!(
+                "brain_model_incomplete_total{{class=\"{class}\"}} {}\n",
+                row.incomplete
+            ));
+        }
         out
     })
     .await

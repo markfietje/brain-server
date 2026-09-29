@@ -44,6 +44,7 @@ use crate::agentloop::provider::{
     LlmProvider, ProviderError, ProviderRequest, StreamEvent, ToolCall, Usage,
 };
 use crate::agentloop::subagents::{ExchangeBudget, ExchangeGuard};
+use crate::decision_class::DecisionClass;
 use crate::workflow::host::SqliteWorkflowHost;
 use crate::workflow::session_log;
 use crate::workflow::tx::WorkflowTx;
@@ -1285,6 +1286,16 @@ impl LoopDriver {
         init: impl FnOnce() -> T,
         mut step: impl FnMut(StreamEvent, &mut T) -> Result<(), LoopError>,
     ) -> Result<Streamed<T>, LoopError> {
+        // R53a: the class is declared HERE, adjacent to the provider call —
+        // the same seam the content-independence pin targets, so the counter
+        // and the guard read off one place and cannot drift apart.
+        //
+        // It is a local `const`, not a parameter: the class is a property of the
+        // CALL SITE, never of the request. `ProviderRequest` carries no class
+        // and no model field, so nothing a caller puts in the request — content
+        // included — can move it. That is the whole "content may steer cost,
+        // never safety" rule, and it is structural here rather than enforced.
+        const CLASS: DecisionClass = DecisionClass::OpenGenerate;
         // (2) Wait for the single root-owned permit, cancellation-aware.
         let permit = match budget.acquire_dispatch(cancel).await {
             Ok(Some(permit)) => permit,
@@ -1309,7 +1320,10 @@ impl LoopDriver {
             drop(permit);
             return Ok(Streamed::Canceled);
         }
-        // (5) The synchronous provider seam itself.
+        // (5) The synchronous provider seam itself. A call is observed here,
+        // where the provider is actually invoked — not at admission, which can
+        // be refused and therefore names no work.
+        crate::decision_class::note_call(CLASS);
         let mut rx = match self.provider.stream(request) {
             Ok(rx) => rx,
             Err(e) => {
@@ -1324,7 +1338,7 @@ impl LoopDriver {
                 biased;
                 _ = cancel.cancelled() => {
                     // Started, no MessageEnd: spend unknown.
-                    budget.mark_incomplete();
+                    budget.mark_incomplete(CLASS);
                     break Ok(None);
                 }
                 ev = rx.recv() => ev,
@@ -1332,14 +1346,16 @@ impl LoopDriver {
             let Some(event) = event else {
                 // Channel closed without MessageEnd: broken provider
                 // contract — spend unknown, never an empty turn.
-                budget.mark_incomplete();
+                budget.mark_incomplete(CLASS);
                 break Err(LoopError::Provider(ProviderError::Malformed));
             };
             match event {
                 Ok(StreamEvent::MessageEnd { stop_reason, usage }) => {
                     // Recorded ONCE, before any validation/shaping/
-                    // persistence of the accumulated turn.
-                    budget.record(usage);
+                    // persistence of the accumulated turn. The class rides the
+                    // record, so the attributed per-class series is folded at
+                    // the same observation that moves the enforced total.
+                    budget.record(usage, CLASS);
                     // Fold the end into the accumulator (turn usage). A fold
                     // error cannot unrecord it: receipt of the end is fact.
                     if let Err(e) = step(StreamEvent::MessageEnd { stop_reason, usage }, &mut acc) {
@@ -1351,12 +1367,12 @@ impl LoopDriver {
                     if let Err(e) = step(other, &mut acc) {
                         // The call started; without MessageEnd its spend is
                         // unknown — fail loud AND refuse further dispatch.
-                        budget.mark_incomplete();
+                        budget.mark_incomplete(CLASS);
                         break Err(e);
                     }
                 }
                 Err(e) => {
-                    budget.mark_incomplete();
+                    budget.mark_incomplete(CLASS);
                     break Err(LoopError::Provider(e));
                 }
             }

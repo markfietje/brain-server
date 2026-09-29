@@ -153,6 +153,11 @@ pub mod chunker;
 pub mod concurrency;
 pub mod config;
 pub mod consolidate;
+/// the closed classification of every model surface in the tree, plus the
+/// per-class telemetry the classification buys. R53a: the property it pins
+/// (model selection is not a function of content) held before this module and
+/// is now machine-checked. Transport-free, `AppState`-free, std-only.
+pub mod decision_class;
 pub mod domain_registry;
 pub mod domain_router;
 pub mod gate;

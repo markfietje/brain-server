@@ -158,7 +158,20 @@ impl Drop for SatGuard<'_> {
 }
 
 /// Char-boundary-safe head truncation to [`MAX_EMBED_CHARS`].
+///
+/// R53a: also the `Encode` surface's single counting seam. Every backend
+/// funnels its texts through here before handing them to a model (the static
+/// backend at `:214`, bge-m3's multi-output at `:303`, gte at `:383`), so this
+/// is where one counter covers all of them. It counts TEXTS, not batches:
+/// embed cost scales with texts, and a per-text denominator is the one an
+/// operator can compare against a document count.
+///
+/// The truncation is unconditional and reads only the input's own length — the
+/// embed budget is a property of the *input size*, not a routing decision, and
+/// nothing here or upstream of it selects a model from content. The embedder
+/// itself is chosen once at boot from the retrieval profile.
 pub(crate) fn embed_input(text: &str) -> &str {
+    crate::decision_class::note_call(crate::decision_class::DecisionClass::Encode);
     text.char_indices()
         .nth(MAX_EMBED_CHARS)
         .map_or(text, |(i, _)| &text[..i])
