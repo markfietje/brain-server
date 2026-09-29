@@ -8,9 +8,12 @@
 //! HERE, never in the SDK — the ABI rule holds.
 //!
 //! Loop law: the crank is request-scoped and HUMAN-CRANKED (no background
-//! worker); steering drains are advisory inputs to the next decision, never
-//! autonomous action; a gate rejection becomes a finding row, never a silent
-//! skip; budgets bound every turn (`MAX_STEPS_PER_TURN`, ceiling 1000).
+//! worker); steering drains are recorded in `state.steering_log[]` as a LOG
+//! that no decision reads (`decide` consults only `status`,
+//! `pending_question`, `next_step`, and `next_state`) — a gate rejection
+//! becomes a finding row, never a silent skip; budgets bound every turn
+//! (`MAX_STEPS_PER_TURN`, ceiling 1000) and crossing 80% of the turn's step
+//! budget is a REAL STOP (`StoppedAt::BudgetWarn`), not a flag.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]

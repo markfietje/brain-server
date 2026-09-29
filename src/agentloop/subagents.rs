@@ -2277,6 +2277,76 @@ mod tests {
         );
     }
 
+    /// R52 `I52.6` (RE-SCOPED: prove, do not build). The plan of record asked
+    /// for a new artifact path; both halves already exist. The child writes
+    /// its assistant turn under an exact idempotency key, and
+    /// `LoopDriver::receipt` reads it back through `session_log::exact` to
+    /// rebuild `final_text`. This pin asserts the readback is EXACT and
+    /// UNTRUNCATED for a body far longer than any plausible excerpt, so
+    /// "the child's transcript is recoverable by key" stops being prose.
+    ///
+    /// The body is ~8 KB — well under `PAYLOAD_CAP_BYTES` (64 KiB), which
+    /// REFUSES rather than truncates. There is no character cap on the
+    /// summary anywhere; this is what proves it rather than asserting it.
+    ///
+    /// A correction to the plan, measured while writing the pin: the plan
+    /// assumed "the receipt has" the `assistant_key`. It does NOT.
+    /// `ExchangeReceipt` is `{outcome, final_text, exchange_id}` and the key
+    /// is consumed inside `receipt` to fetch the text, then dropped. The
+    /// lookup is real; the handle does not cross the `delegate` boundary.
+    #[test]
+    fn child_transcript_reads_back_by_key_verbatim_and_untruncated() {
+        let d = deleg();
+        let body = format!("scouted: {}", "child-visible-body ".repeat(400));
+        let provider = LoopbackProvider::new("loopback", vec![scripted_text(body.as_str())]);
+        let outcome = rt()
+            .block_on(delegate(
+                &d.pool,
+                &d.host,
+                &d.env,
+                &[brain_engine_sdk::env::create_read_tool()],
+                provider,
+                1,
+                &spec("scout", &["read"], 1_000),
+                &CancellationToken::new(),
+            ))
+            .unwrap();
+        let SubagentOutcome::Completed { summary, .. } = outcome else {
+            panic!("expected a completed child, got {outcome:?}");
+        };
+        assert_eq!(summary, body, "the surfaced summary is the child's text");
+
+        let conn = rusqlite::Connection::open(d.tmp.path()).unwrap();
+        // The key the child turn was written under — read from the durable
+        // row, not recomposed from the key-format string.
+        let key: String = conn
+            .query_row(
+                "SELECT idempotency_key FROM agent_session_events
+                 WHERE run_id = 1 AND kind = 'child:scout:assistant'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the child assistant row exists");
+        // The exact-key read the receipt path uses.
+        let row = session_log::exact(&conn, 1, &key)
+            .unwrap()
+            .expect("exact-key read finds the row");
+        let payload: serde_json::Value = serde_json::from_str(&row.payload_json).unwrap();
+        assert_eq!(
+            payload["text"].as_str(),
+            Some(body.as_str()),
+            "the child transcript reads back VERBATIM — no truncation, no summary"
+        );
+        // And the projection row carries the same body, untruncated.
+        let events = session_log::replay(&conn, 1, session_log::REPLAY_CAP).unwrap();
+        let projection = events
+            .iter()
+            .find(|e| e.kind == "subagent_result")
+            .expect("the subagent_result projection row exists");
+        let projected: serde_json::Value = serde_json::from_str(&projection.payload_json).unwrap();
+        assert_eq!(projected["summary"].as_str(), Some(body.as_str()));
+    }
+
     #[test]
     fn child_write_is_denied_when_the_caps_subtract_it() {
         let d = deleg();

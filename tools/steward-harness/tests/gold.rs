@@ -163,7 +163,7 @@ async fn crank_stops_at_askhuman_and_resumes_after_answer() {
 }
 
 #[tokio::test]
-async fn budget_stops_at_max_steps_and_warns_at_80pct() {
+async fn budget_warn_stops_at_80pct_and_resumes_with_a_larger_budget() {
     let host = Arc::new(InMemHost::new());
     // A long queue: far more steps than the tiny budget allows.
     let queue: Vec<Value> = (0..50)
@@ -175,12 +175,28 @@ async fn budget_stops_at_max_steps_and_warns_at_80pct() {
     );
     let h = host.clone() as Arc<dyn WorkflowHost>;
     let report = engine::crank(h, 3, 5).await.unwrap();
-    assert_eq!(report.steps_executed, 5);
-    assert_eq!(report.stopped_at, StoppedAt::Budget);
+    // R52 (P52.4): this test previously asserted `steps_executed == 5` and
+    // `StoppedAt::Budget` — i.e. it passed BECAUSE the crank ignored the 80%
+    // threshold and ran on to budget exhaustion. `StoppedAt::BudgetWarn` is
+    // now a real stop, so the turn ends at the threshold (4 >= 5*4/5) with
+    // 45 queued steps still admissible.
+    assert_eq!(
+        report.stopped_at,
+        StoppedAt::BudgetWarn,
+        "crossing 80% of the budget stops the turn"
+    );
+    assert_eq!(
+        report.steps_executed, 4,
+        "stopped at the threshold, not at 5"
+    );
     assert!(
         report.warn_threshold_fired,
-        "5/5 >= the 80% threshold of max=5"
+        "4/5 >= the 80% threshold of max=5"
     );
+    // The stop is resumable: a re-armed crank finishes the deferred work.
+    let h = host.clone() as Arc<dyn WorkflowHost>;
+    let resumed = engine::crank(h, 3, 100).await.unwrap();
+    assert_eq!(resumed.stopped_at, StoppedAt::Done);
 }
 
 #[tokio::test]

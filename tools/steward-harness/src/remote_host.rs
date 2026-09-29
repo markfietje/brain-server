@@ -239,7 +239,7 @@ impl WorkflowHost for RemoteWorkflowHost {
 }
 
 impl SteeringReader for RemoteWorkflowHost {
-    fn read_steering(&self, run_id: i64) -> Result<Vec<String>, HostError> {
+    fn read_steering_log(&self, run_id: i64) -> Result<Vec<String>, HostError> {
         let path = format!("/workflow/runs/{run_id}/steering");
         let fut = self.call("GET", &path, None);
         let (status, v) = tokio_block(fut)?;

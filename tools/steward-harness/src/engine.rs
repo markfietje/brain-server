@@ -3,8 +3,9 @@
 //! Every durable effect goes through the host seam (CAS persist + outbox
 //! event), so a crash between any two effects replays exactly once by
 //! idempotency key (`run-{id}-evt-{n}`). A gate rejection becomes a finding
-//! row in state — never a silent skip. Budgets bound every turn; the 80%
-//! iteration threshold surfaces as `warn_threshold_fired`.
+//! row in state — never a silent skip. Budgets bound every turn; crossing 80%
+//! of the turn's step budget is a REAL STOP ([`StoppedAt::BudgetWarn`]),
+//! checkpointed at the step boundary and resumable with a larger budget.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -34,6 +35,14 @@ pub enum StoppedAt {
     Stale {
         actual_revision: i64,
     },
+    /// The 80% iteration threshold fired. A REAL STOP, not a flag: the crank
+    /// checkpoints the boundary and hands the run back, so the caller re-arms
+    /// with a larger budget and the lineage cursor continues from the
+    /// emitted checkpoint. Before R52 the flag was OR-ed into
+    /// `warn_threshold_fired` and the turn ran on to budget exhaustion
+    /// (`engine.rs:359` fell through to `cas_persist` at `:361`) — the
+    /// warning was real and the response to it was nil.
+    BudgetWarn,
 }
 
 impl StoppedAt {
@@ -44,6 +53,7 @@ impl StoppedAt {
             StoppedAt::Budget => "budget",
             StoppedAt::Cancelled => "cancelled",
             StoppedAt::Stale { .. } => "stale",
+            StoppedAt::BudgetWarn => "budget_warn",
         }
     }
 }
@@ -59,6 +69,27 @@ pub struct CrankReport {
     /// consumers ignore unknown keys). The audit chain is the durable count —
     /// this is the cheap aggregate the report carries.
     pub hostcalls: BTreeMap<String, u64>,
+    /// The turn's DECLARED-constraint census: how many of the five keys the
+    /// gate waterfall reads (`evidence_refs`, `required_evidence`, `mutations`,
+    /// `supporting_lines`, `needs_approval`) were actually PRESENT on the
+    /// queue items this crank executed.
+    ///
+    /// Presence is the test, not the resolved value: `mutations` defaults to
+    /// `1` when absent, and a step that declares nothing must stay
+    /// distinguishable from one that declares `mutations: 1`.
+    pub gates_declared: u32,
+    /// How many gate closures the waterfall actually pushed. A `declared` of
+    /// 0 with an `evaluated` above 0 is precisely the vacuous case — gates
+    /// ran, and every one of them passed on nothing.
+    pub gates_evaluated: u32,
+    /// `gates_declared == 0`: this turn passed its gates without a single
+    /// declared constraint. REPORTED, not a stop — for a replayed run that is
+    /// the documented posture (`engine.rs` "replaying recorded steps is
+    /// evidence replay under gates those steps declared"), and a hard stop
+    /// here would refuse the entire gold corpus, whose steps declare zero
+    /// constraints by construction. Making the number visible is the honest
+    /// half; making it fatal is a capability decision R52 declines.
+    pub gates_vacuous: bool,
 }
 
 #[derive(Debug)]
@@ -86,11 +117,17 @@ impl From<HostError> for HarnessError {
     }
 }
 
-/// Advisory steering reads at the step boundary. A separate opt-in trait —
-/// the storage ABI stays untouched (the SDK is never modified for transport
-/// or inbox concerns).
+/// Steering LOG reads at the step boundary. A separate opt-in trait — the
+/// storage ABI stays untouched (the SDK is never modified for transport or
+/// inbox concerns).
+///
+/// **A log, not a binding channel.** Drained messages are recorded into
+/// `state.steering_log[]` and nothing reads them back: `brain_engine_sdk::decide`
+/// consults only `status`, `pending_question`, `next_step`, and `next_state`.
+/// The name says so, because the previous one (`read_steering`, state key
+/// `steering`) implied an influence the code never had.
 pub trait SteeringReader: Send + Sync {
-    fn read_steering(&self, run_id: i64) -> Result<Vec<String>, HostError>;
+    fn read_steering_log(&self, run_id: i64) -> Result<Vec<String>, HostError>;
 }
 
 /// Resolve the turn budget: `BRAIN_MAX_STEPS` env -> default 24, ceiling 1000
@@ -118,10 +155,11 @@ pub async fn crank(
     crank_full(host, None, None, None, run_id, max_steps, 0).await
 }
 
-/// `crank` with an optional advisory steering source drained at each step
-/// boundary. Steering never redirects the loop autonomously — drained
-/// messages land in `state.steering[]` as advisories for the next decision.
-/// `checkpoint_every` = 0 falls back to [`resolve_checkpoint_every`] default.
+/// `crank` with an optional steering LOG source drained at each step
+/// boundary. Steering is recorded as data and never redirects the loop:
+/// drained messages are appended to `state.steering_log[]`, which no
+/// decision reads. `checkpoint_every` = 0 falls back to
+/// [`resolve_checkpoint_every`] default.
 pub async fn crank_with_steering(
     host: Arc<dyn WorkflowHost>,
     reader: Option<Arc<dyn SteeringReader>>,
@@ -174,6 +212,10 @@ pub async fn crank_full(
     let mut warned = false;
     let mut kernel = RunState::new(max_steps);
     let mut hostcalls: BTreeMap<String, u64> = BTreeMap::new();
+    // The turn's gate census, accumulated across every step this crank
+    // executed. `gates_vacuous` is computed from these in `report`.
+    let mut gates_declared: u32 = 0;
+    let mut gates_evaluated: u32 = 0;
     // Events emitted since the last checkpoint — the cadence counter.
     let mut events_since_ckpt: u32 = 0;
     // Lineage cursor: the id of the last emitted event, threaded
@@ -227,13 +269,22 @@ pub async fn crank_full(
                 StoppedAt::Cancelled,
                 warned,
                 hostcalls,
+                gates_declared,
+                gates_evaluated,
             ));
         }
 
         // Budget check BEFORE executing another step.
         if steps_executed >= max_steps {
             warned |= should_warn_at_iteration_threshold(steps_executed, max_steps);
-            return Ok(report(steps_executed, StoppedAt::Budget, warned, hostcalls));
+            return Ok(report(
+                steps_executed,
+                StoppedAt::Budget,
+                warned,
+                hostcalls,
+                gates_declared,
+                gates_evaluated,
+            ));
         }
 
         match brain_engine_sdk::decide(&st) {
@@ -253,7 +304,14 @@ pub async fn crank_full(
                         &mut last_event,
                     )?;
                 }
-                return Ok(report(steps_executed, StoppedAt::Done, warned, hostcalls));
+                return Ok(report(
+                    steps_executed,
+                    StoppedAt::Done,
+                    warned,
+                    hostcalls,
+                    gates_declared,
+                    gates_evaluated,
+                ));
             }
             Decision::AskHuman { question } => {
                 // An AskHuman pause is a natural checkpoint
@@ -280,6 +338,8 @@ pub async fn crank_full(
                     StoppedAt::AskHuman { question },
                     warned,
                     hostcalls,
+                    gates_declared,
+                    gates_evaluated,
                 ));
             }
             Decision::Advance { next_state } => {
@@ -301,19 +361,21 @@ pub async fn crank_full(
                             },
                             warned,
                             hostcalls,
+                            gates_declared,
+                            gates_evaluated,
                         ));
                     }
                 }
             }
             Decision::RunStep { step } => {
-                // Advisory steering drains at the boundary; recorded as data.
+                // Steering LOG drains at the boundary; recorded as data only.
                 if let Some(r) = &reader
-                    && let Ok(msgs) = r.read_steering(run_id)
+                    && let Ok(msgs) = r.read_steering_log(run_id)
                     && !msgs.is_empty()
                     && let Some(obj) = st.as_object_mut()
                 {
                     let entry = obj
-                        .entry("steering".to_string())
+                        .entry("steering_log".to_string())
                         .or_insert_with(|| Value::Array(vec![]));
                     if let Some(arr) = entry.as_array_mut() {
                         arr.extend(msgs.iter().map(|m| Value::String(m.clone())));
@@ -328,8 +390,12 @@ pub async fn crank_full(
 
                 // Gate waterfall over DECLARED constraints. Undeclared
                 // constraints pass vacuously — replaying recorded steps is
-                // evidence replay under gates those steps declared.
-                let rejection = run_step_gates(item.as_ref(), has_answerer);
+                // evidence replay under gates those steps declared. The
+                // census rides along so that vacuity is REPORTED, not silent.
+                let gate_outcome = run_step_gates(item.as_ref(), has_answerer);
+                let rejection = gate_outcome.rejection.as_deref();
+                gates_declared += gate_outcome.declared;
+                gates_evaluated += gate_outcome.evaluated;
 
                 // Kernel bookkeeping honors the same budget law.
                 kernel
@@ -347,7 +413,7 @@ pub async fn crank_full(
                         HarnessError::Host(HostError::Internal("step budget exhausted".to_string()))
                     })?;
 
-                record_step_in_state(&mut st, item.as_ref(), rejection.as_deref());
+                record_step_in_state(&mut st, item.as_ref(), rejection);
                 // Queue empty -> clear the routing keys IN THE PERSISTED
                 // state so the next decide reaches Done naturally.
                 if queue_remaining(&st) == 0
@@ -356,7 +422,17 @@ pub async fn crank_full(
                     obj.remove("next_step");
                     obj.remove("queue");
                 }
-                warned |= should_warn_at_iteration_threshold(kernel.step_count, max_steps);
+                // The 80% threshold, computed BEFORE the CAS so the decision
+                // is made on the same `kernel.step_count` the twin records.
+                //
+                // R52: this used to OR the flag and fall straight through to
+                // `cas_persist`, so the crank ran on to budget exhaustion and
+                // reported the warning only after it had stopped for a
+                // different reason. It is now a real stop, taken AFTER the
+                // twin below completes — a stop that landed mid-twin would
+                // leave the recorded step without its event.
+                let warn_fires = should_warn_at_iteration_threshold(kernel.step_count, max_steps);
+                warned |= warn_fires;
 
                 match cas_persist(&*host, run_id, rev, &st) {
                     Ok(()) => {}
@@ -368,6 +444,8 @@ pub async fn crank_full(
                             },
                             warned,
                             hostcalls,
+                            gates_declared,
+                            gates_evaluated,
                         ));
                     }
                 }
@@ -398,6 +476,33 @@ pub async fn crank_full(
                 if events_since_ckpt >= cadence {
                     checkpoint!(st, format!("n-{ordinal}"));
                 }
+                // The threshold stop, taken at the step BOUNDARY: the CAS
+                // twin and its event have both landed, so the recorded step
+                // is never orphaned. The checkpoint is emitted DIRECTLY
+                // rather than through the `checkpoint!` macro: on this path
+                // the lineage cursor and the cadence counter die with the
+                // return, and threading them would be a write nobody reads
+                // (the compiler says so, and it is right).
+                if warn_fires {
+                    emit(
+                        &*host,
+                        &effects,
+                        &mut hostcalls,
+                        run_id,
+                        "workflow/checkpoint",
+                        &st.to_string(),
+                        &format!("run-{run_id}-ckpt-warn-{ordinal}"),
+                        last_event,
+                    )?;
+                    return Ok(report(
+                        steps_executed,
+                        StoppedAt::BudgetWarn,
+                        warned,
+                        hostcalls,
+                        gates_declared,
+                        gates_evaluated,
+                    ));
+                }
             }
         }
     }
@@ -408,12 +513,17 @@ fn report(
     stopped_at: StoppedAt,
     warned: bool,
     hostcalls: BTreeMap<String, u64>,
+    gates_declared: u32,
+    gates_evaluated: u32,
 ) -> CrankReport {
     CrankReport {
         steps_executed: steps,
         stopped_at,
         warn_threshold_fired: warned,
         hostcalls,
+        gates_declared,
+        gates_evaluated,
+        gates_vacuous: gates_declared == 0,
     }
 }
 
@@ -552,12 +662,49 @@ fn finalize(
     Ok(())
 }
 
+/// The DECLARED constraint keys the waterfall reads. A key that is ABSENT was
+/// not declared — the `mutations` default of `1` is a resolved value, not a
+/// declaration, and conflating the two is what made "declares no mutation"
+/// undecidable in the first place.
+const DECLARED_CONSTRAINT_KEYS: [&str; 5] = [
+    "evidence_refs",
+    "required_evidence",
+    "mutations",
+    "supporting_lines",
+    "needs_approval",
+];
+
+/// The waterfall's verdict for one queue item, plus the census that says
+/// whether the verdict was EARNED or VACUOUS.
+struct GateOutcome {
+    /// The conflict-code string that becomes a finding row, or `None` on pass.
+    rejection: Option<String>,
+    /// How many of [`DECLARED_CONSTRAINT_KEYS`] were present on the item.
+    declared: u32,
+    /// How many gate closures the waterfall actually pushed.
+    evaluated: u32,
+}
+
 /// The waterfall over one queue item's DECLARED constraints:
 /// `required_evidence[]`, `mutations`, `supporting_lines`, `needs_approval`.
 /// Absent constraints pass vacuously. A rejection returns the conflict-code
 /// string that becomes a finding row — never a silent skip.
-fn run_step_gates(item: Option<&Value>, has_answerer: bool) -> Option<String> {
-    let item = item?;
+///
+/// The returned census is what makes the vacuity visible: `declared == 0`
+/// with `evaluated > 0` means every gate that ran, passed on nothing.
+fn run_step_gates(item: Option<&Value>, has_answerer: bool) -> GateOutcome {
+    let Some(item) = item else {
+        // No queue item: nothing was declared and nothing was evaluated.
+        return GateOutcome {
+            rejection: None,
+            declared: 0,
+            evaluated: 0,
+        };
+    };
+    let declared = DECLARED_CONSTRAINT_KEYS
+        .iter()
+        .filter(|k| item.get(**k).is_some())
+        .count() as u32;
     let refs: Vec<EvidenceRef> = item
         .get("evidence_refs")
         .and_then(|v| v.as_array())
@@ -607,19 +754,31 @@ fn run_step_gates(item: Option<&Value>, has_answerer: bool) -> Option<String> {
         gates::gate_approval(has_answerer, needs_approval)
     }));
 
+    // Derived from the vector, not a literal: adding a gate above must move
+    // this count automatically, or `gates_evaluated` becomes its own lie.
+    let evaluated = gates_to_run.len() as u32;
+
     match gates::run_waterfall(gates_to_run) {
-        GateResult::Pass => None,
+        GateResult::Pass => GateOutcome {
+            rejection: None,
+            declared,
+            evaluated,
+        },
         GateResult::Reject(rej) => {
             let code = ConflictCode::GateOpen {
                 gate: rej.gate.as_str().to_string(),
                 missing: rej.missing.clone(),
             };
-            Some(format!(
-                "{}:{}:{}",
-                code.as_str(),
-                rej.gate.as_str(),
-                rej.reason
-            ))
+            GateOutcome {
+                rejection: Some(format!(
+                    "{}:{}:{}",
+                    code.as_str(),
+                    rej.gate.as_str(),
+                    rej.reason
+                )),
+                declared,
+                evaluated,
+            }
         }
     }
 }

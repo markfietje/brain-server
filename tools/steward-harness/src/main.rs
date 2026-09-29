@@ -2,7 +2,7 @@
 //!
 //! Commands (superset of the 0.1 stub):
 //!   open-run    {domain, seed?}          -> {ok, run_id}
-//!   crank       {run_id, max_steps?}     -> {ok, stopped_at, steps_executed, revision?}
+//!   crank       {run_id, max_steps?}     -> {ok, stopped_at, steps_executed, revision?, gates_*}
 //!   ask-human   {run_id, answer, digest} -> {ok}   (POST .../answer)
 //!   step-result {run_id, expected_rev, state_json} -> {ok, revision}  (PUT state)
 //!   advance     {run_id, next_state}     -> {ok, revision}               (PUT state)
@@ -93,6 +93,13 @@ async fn handle_rpc(host: &Arc<RemoteWorkflowHost>, v: &Value) -> Value {
                     "stopped_at": report.stopped_at.as_str(),
                     "steps_executed": report.steps_executed,
                     "warn_threshold_fired": report.warn_threshold_fired,
+                    // The gate census: how many constraints this turn actually
+                    // DECLARED vs. how many gate closures ran. A consumer
+                    // reading `gates_vacuous` learns that the gates passed on
+                    // nothing — the thing CrankReport used to not say.
+                    "gates_declared": report.gates_declared,
+                    "gates_evaluated": report.gates_evaluated,
+                    "gates_vacuous": report.gates_vacuous,
                 }),
                 Err(e) => json!({"ok": false, "run_id": run_id, "error": e.to_string()}),
             }
