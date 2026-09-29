@@ -500,3 +500,104 @@ fn r51_ring_diagram_does_not_draw_solve_writing_memory_directly() {
          Nothing enters memory without the gate."
     );
 }
+
+// ── the agentic-flow claims are claims about code too ─────────────────────
+
+/// **The collaboration and autonomy section is a set of assertions about the source, so
+/// they are pinned like the rest.** These exist because the second-pass review found the
+/// page describing a *more general* multi-agent capability than the code has: there is
+/// exactly one collaboration shape, no fan-out, and depth 2 is a type invariant. A
+/// diagram or a phrase that drifts back toward "multi-agent system" must fail here.
+#[test]
+fn r51_collaboration_shape_is_pinned_to_what_the_code_actually_does() {
+    let doc = read_kernel("docs/architecture.md");
+    let subagents = read_kernel("src/agentloop/subagents.rs");
+
+    // 1. The depth bound is a TYPE invariant, not a policy check.
+    assert!(
+        subagents.contains("if self.depth != 0"),
+        "the structural nesting bound must be enforced by a depth check on the budget \
+         authority, not by convention. If this moved, the architecture's claim that a \
+         child cannot delegate again is false."
+    );
+    // 2. There is NO fan-out in the kernel. If one is ever added, this pin is the
+    //    signal that the architecture's "one collaboration shape" claim must be
+    //    rewritten — in the same commit.
+    for combinator in ["join_all", "FuturesUnordered", "try_join"] {
+        assert!(
+            !subagents.contains(combinator),
+            "src/agentloop/subagents.rs now uses `{combinator}`. The architecture says \
+             there is no parallel delegation and no fan-out; that claim is now FALSE and \
+             must be corrected in the same commit."
+        );
+    }
+    // 3. The page must name the single shape explicitly, so a reader cannot infer a
+    //    general multi-agent system from the diagrams.
+    assert!(
+        doc.contains("exactly one collaboration primitive")
+            || doc.contains("There is exactly one collaboration shape"),
+        "the architecture must state the collaboration shape it has, in the page itself. \
+         Silence here is what let a reader infer a general multi-agent capability."
+    );
+    // 4. The asymmetry between the two axes is documented, not smoothed away.
+    assert!(
+        doc.contains("knowledge ring has no tiers")
+            || doc.contains("The knowledge ring has no tiers"),
+        "the architecture must state that autonomy is graduated on the Deliver axis and \
+         absent on the knowledge ring. That asymmetry is a design decision and a reader \
+         will ask about it."
+    );
+}
+
+/// **Where skills-based routing lives must be named with real anchors.** "The system
+/// knows who is good at what" is a claim that deserves an address, and the address must
+/// stay true as the code moves.
+#[test]
+fn r51_skills_routing_anchors_are_named_and_exist() {
+    let doc = read_kernel("docs/architecture.md");
+    let frontdoor = read_kernel("src/workflow/frontdoor.rs");
+    let crew = read_kernel("src/workflow/crew.rs");
+    let migration = read_kernel("src/migration.rs");
+
+    // The named anchors must exist in the source the page points at.
+    assert!(
+        frontdoor.contains("pub fn worktype_skills"),
+        "the page names frontdoor::worktype_skills; it must still exist"
+    );
+    assert!(
+        frontdoor.contains("pub const WORKTYPE_TABLE"),
+        "the page names frontdoor::WORKTYPE_TABLE; it must still exist"
+    );
+    assert!(
+        crew.contains("pub fn board_for_worktype"),
+        "the page names crew::board_for_worktype; it must still exist"
+    );
+    assert!(
+        crew.contains("fn file_skills_proposal"),
+        "the page names crew::file_skills_proposal — the proposal-gated write path. If \
+         skills could be written without a proposal, the page's safety claim is false."
+    );
+    assert!(
+        migration.contains("principal_skills"),
+        "the page names the principal_skills table; it must still exist"
+    );
+    // ...and the page must actually name them.
+    for anchor in [
+        "worktype_skills",
+        "WORKTYPE_TABLE",
+        "board_for_worktype",
+        "principal_skills",
+    ] {
+        assert!(
+            doc.contains(anchor),
+            "the architecture page must name `{anchor}` — a shipped capability with no \
+             address is a claim a reader cannot check."
+        );
+    }
+    // The proposal-gating invariant, stated in the page.
+    assert!(
+        doc.contains("proposal-gated"),
+        "the page must state that the skills routing table is proposal-gated: the system \
+         cannot write the table it is itself routed by."
+    );
+}

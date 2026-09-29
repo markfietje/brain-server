@@ -482,23 +482,25 @@ is a substitute for their own record.
 
 ## What the roadmap adds — and what it deliberately does not
 
-**No planned round changes the shape of this page.** R52 through R64 deepen what
+**No planned round changes the shape of this page.** R52 through R66 deepen what
 is here; they do not add a box, move an arrow, or redefine a stage. That is a
 design constraint, not an accident: the four stages and the return path are the
 vocabulary every later round is *written in*, so a round that redefined the shape
-would invalidate the fourteen that followed.
+would invalidate the fifteen that followed.
 
-What changes is **how much of each stage is real** — and where the human sits in
-it.
+**Everything in the last column below is PLANNED, NOT SHIPPED.** It is written here so
+the vocabulary a later round will be written in exists in one place, and so a reader can
+tell at a glance which parts of this page describe a running system and which describe
+an intention. Nothing below has been implemented; the plans live in the private IP repo.
 
-| Stage | Depth today | What the roadmap adds | Human's role after |
+| Stage | Depth today (shipped) | What the roadmap adds (planned) | Human's role after |
 |---|---|---|---|
 | **Create** | six routes, **promotion inert** | R60 extracts the core; R54 attaches a disproof condition | approves every claim — the gate never opens itself |
-| **Solve** | the most built stage | R52 makes the harness honest about what it decided; R53 sets a joint eval objective; R53a instruments decision classes | answers judgment calls; never decides whether an answer is *stored* |
+| **Solve** | the most built stage; skills routing ships | R52 makes the harness honest about what it decided; R53/R53a set a joint eval objective and instrument decision classes; **R65 adds per-class confidence→human deferral** | answers judgment calls; never decides whether an answer is *stored* |
 | **Evolve** | gate and publication built | R61 builds the core around **earned** autonomy — tiers that only widen when measurement has earned it | holds the widen decision; a tier can never widen itself |
-| **Deflect** | measurement only | R56 measures; R57 scores; R62 builds the core | reviews what the scoreboard says is not working |
-| **Operate** | **design only — no code** | R55 binds skills to models; R58b binds them to gates | approves every binding; this is the last stage to close |
-| **Deliver** | core + persistence + reads | R58 adds release gates; R63 enforces token binding | the promote gate is a human or a pre-earned tier, never the model |
+| **Deflect** | measurement only | R56 measures; R57 scores; R62 builds the core; **R66 closes the reuse edge that makes a template worth writing** | reviews what the scoreboard says is not working |
+| **Operate** | **design only — no code** | R55 binds skills to models; R58b binds them to gates; **R66 supplies one concrete edge** (front-line work → reusable procedure → measured reuse) | approves every binding; the corpus-wide path is the last to close |
+| **Deliver** | core + persistence + reads, four graduated tiers | R58 adds release gates; R63 enforces token binding | the promote gate is a human or a pre-earned tier, never the model |
 
 Three of these are worth naming because they are the ones that could be mistaken
 for plans to hand the machine more authority than it has:
@@ -765,6 +767,115 @@ point; the `untrusted: true` label travels with the rows — see
 
 ---
 
+## The agentic flow — delegation, autonomy, and who may be asked
+
+This section states the agentic shape **as built**, because the interesting properties
+here are the limits: what the loop may delegate, how far, and to whom the answer goes.
+
+### Delegation is bounded structurally, not by policy
+
+A loop may delegate to a **child loop**, and the child's authority is strictly narrower
+than its parent's:
+
+| Constraint | Where | What it guarantees |
+|---|---|---|
+| Filtered tools | `spec.allowed_tools` filtered against the parent's set | a child sees a **subset**, never more |
+| Narrowed environment | `narrowed_env(parent_env, &spec.caps)` | write, process and commands can only ever be **narrowed**; a write-denying parent denies the child, and disjoint command sets deny execution |
+| Explicit budget | `Some(spec.token_budget)` — never the `None` uncapped default | spend is bounded **before** dispatch |
+| Turn cap | `spec.max_turns` | a runaway child stops at the cap, loudly |
+| Namespacing | `child:<name>:` prefix | child output is never mistaken for the parent's |
+
+**The depth bound is a type invariant.** `ExchangeBudget` carries a `depth`; a root
+authority is 0, an exchange view or child reservation is 1, and `reserve_child` returns
+`AccountingRefusal::Invalid` when `depth != 0`. **A child structurally cannot delegate
+again** — the bound is in the type, not in a check that could be forgotten.
+
+> **Why depth 2, stated rather than assumed.** A hard nesting bound is a *safety*
+> decision, and the recent literature on skill abstraction is what makes it defensible
+> rather than accidental: abstractions are **leaky**, and a ladder you cannot descend is
+> a dead end — the evidence favours **abstraction plus primitives**, retaining a path back
+> down **[R13]**. A structural depth bound is this system's version of that: a child that
+> exceeds its envelope is refused at the type, and the honest fallback is the parent's own
+> primitives. **Widening the bound would need a demonstrated case, not a use case.**
+
+### There is exactly one collaboration shape, and it is not general
+
+**The kernel has one collaboration primitive**, and naming it precisely matters more than
+inflating it:
+
+- At the **Verify** phase, the GDL delegates **one tool-less child** whose entire mandate
+  is to **falsify** the confirmed hypothesis from captured evidence. Its allowed-tool set
+  is empty *by construction* — it reasons over the task text and cannot execute. Its
+  verdict is a **named gate failure**; an unavailable child **degrades honestly** and is
+  recorded rather than silently passing.
+
+**What does not exist, and is not coming by omission:** parallel children, peer-to-peer
+messaging, a blackboard, or any child-to-parent negotiation. A child returns exactly one
+typed outcome and has no way to ask the parent anything. `FuturesUnordered` and `join_all`
+appear nowhere in `src/` — there is no fan-out in the kernel at all. **If you are reading
+this expecting a general multi-agent system, this is the section that tells you it is not
+one** — it is a single-parent loop with one bounded, adversarial second opinion.
+
+### Autonomy is graduated on one axis, and the other axis has none
+
+The software lifecycle carries a **closed four-tier vocabulary** — `observe`, `propose`,
+`bounded-auto`, `delegated` — and the gate reads the run's **granted** tier, never the
+trace's *claimed* determinism. A trace that says "deterministic" buys no authority it was
+not granted.
+
+**The knowledge ring has no tiers at all.** The GDL runs at a fixed proficiency and its
+only narrowing is the write posture plus the phase machine above it. This asymmetry is
+real and worth stating rather than smoothing:
+
+| Axis | Graduated authority? | Why |
+|---|---|---|
+| **Deliver** (software) | Yes — four tiers, granted at run open | its phases are *self-contained artifact transformations* with an objective, checkable outcome (did the build pass?) |
+| **The knowledge ring** | No — fixed proficiency, gate on every write | its outcomes are **judgement calls about what is true**, where "the model was confident" is not evidence of correctness |
+
+That asymmetry is the design, and it should not be read as an omission waiting to be
+patched. The earned-autonomy work in the roadmap extends tiering **within** an axis; it
+does not propose to graduate the ring's authority on a model's confidence, because the
+per-class evidence in the research says confidence is the wrong instrument for that
+**[R14]**.
+
+### Skills-based routing — where it lives
+
+Routing a case to people by capability is **shipped**, deterministic, and HITL-owned.
+It is worth naming every seam, because "the system knows who is good at what" is a claim
+that deserves an address:
+
+| Piece | Where | Role |
+|---|---|---|
+| The store | `principal_skills` (`domain`, `principal`, `skill`, created at migration) | which principal holds which skill, per domain |
+| The class→skills map | `frontdoor::worktype_skills(kind)` | each case class's **required** skill tags (troubleshoot, care, returns, field-service, complaints, …) |
+| The class policy | `frontdoor::WORKTYPE_TABLE` | required evidence + ordered gates per worktype |
+| The board builder | `crew::board_for_worktype(skills, required)` | the principals who should see this class, given their skills |
+| The write path | `crew::file_skills_proposal` → `apply_skills_change` | skills change **only by proposal, then approval** |
+| The read surface | `GET /ops/crew`, `GET /ops/skills`, `GET /ops/workload` | the roster and per-principal load |
+| The write surface | `POST /ops/skills` (**Write**) — file a proposal; the machine cannot apply its own |
+
+**The invariant that makes this safe:** the routing table is **proposal-gated**. The
+system cannot write the table it is itself routed by — a skills change is a proposal like
+any other, and an operator disposes of it. Routing decides *who is asked*; it never
+decides anything.
+
+> **What does not exist yet, and is planned.** There is currently **no seam from a
+> confidence value to a human decision** — the classifier returns a confidence, thresholds
+> exist, and nothing joins them to a queue. Nor is there any front-line best-practice
+> template. Both are specified, with their research basis, in the roadmap below. Neither
+> has shipped, and this page does not pretend otherwise.
+>
+> The reason a confidence→human policy is *not* a single threshold is worth one line, since
+> it is the most likely wrong implementation: a global cutoff is the wrong instrument,
+> because metacognitive competence is **domain-specific in a way no aggregate metric
+> shows**, and lowering the model's temperature moves its confidence without moving its
+> competence **[R14]**. A naive policy also fails in a way that looks like success — it
+> collapses into "send the ambiguous cases to a human" while scoring well, which is the
+> documented failure mode of routing systems **[R15]**, and the reason a deployment whose
+> task mix differs from the evaluation's loses more than the table predicts **[R16]**.
+
+---
+
 ## Retrieval engine
 
 Recall is **hybrid**: a vector leg and a lexical leg run concurrently on independent
@@ -989,6 +1100,29 @@ wrong, the correction is recorded rather than silently applied.
   harness architecture: context techniques, compaction, sub-agent isolation.
   *(Located via OpenReview and ResearchGate listings; the canonical record was not
   retrieved directly. Cite the OpenReview entry, not a reconstructed one.)*
+
+- **[R13]** Cupiał, B., Tuyls, J., Wołczyk, M., Paglieri, D., Klissarov, M., Eysenbach, B.,
+  Miłoś, P. & Narasimhan, K. R. (2026). *Up and Down the Abstraction Ladder: Code-Based
+  Skills for Language Agents.* arXiv:2609.31076. — skills nearly triple progression and
+  cut inference cost 86%, but *"abstractions are leaky"*: combining skills **with
+  primitives** is what preserves a path back down. The argument for a structural depth
+  bound rather than an unbounded ladder. <https://arxiv.org/abs/2609.31076>
+- **[R14]** Cacioli, J. (2026). *Do LLMs Know What They Know? Measuring Metacognitive
+  Efficiency with Signal Detection Theory.* arXiv:2603.25112. Pre-registered. — Type-1
+  and Type-2 sensitivity are different capacities, and metacognitive efficiency is
+  **domain-specific in a way aggregate metrics cannot see**; temperature moves the
+  confidence criterion without changing the capacity. The reason the deferral policy is
+  per-class, and the reason the knowledge ring is not graduated on model confidence.
+  <https://arxiv.org/abs/2603.25112>
+- **[R15]** Garg, S. & Sagtani, A. (2026). *Unsolvability Ceiling in Multi-LLM Routing: An
+  Empirical Study of Evaluation Artifacts.* arXiv:2605.07395. — standard routers collapse
+  to **majority-class prediction**; reported routing headroom is substantially inflated.
+  The disproof condition any deferral or routing policy must be measured against.
+  <https://arxiv.org/abs/2605.07395>
+- **[R16]** Gans, J. S. (2026). *Artificial Jagged Intelligence: When AI Benchmarks
+  Misstate Deployment Value.* NBER Working Paper 34712. — deployment loss exceeds
+  benchmark loss exactly when the tasks an organisation uses most are the ones the
+  system handles worst. <https://www.nber.org/papers/w34712>
 
 **Governance — design rationale, not a compliance claim**
 
