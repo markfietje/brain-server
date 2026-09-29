@@ -553,104 +553,62 @@ the model **proposes**, and the deterministic gate **disposes** — the same div
 of labour GRAI describes, with the gate made enforceable rather than advisory.
 
 **Why knowledge must be able to die — knowledge lifecycle research.** The
-**Knowledge at Risk** lifecycle **[R6]** argues that all knowledge eventually
-becomes obsolete and should be deliberately retired, because its half-life depends
-on how fast its domain moves. This is the argument for `Deflect` measuring
-*staleness and non-reuse* rather than only *success* — a base that only grows is a
-hoard. It is also why the roadmap's `Operate` work is not optional: correction is
-a lifecycle stage, not a repair.
+**Knowledge at Risk** literature argues that all knowledge eventually becomes
+obsolete and should be deliberately retired, because its half-life depends on how
+fast its domain moves. *(Named in the research plan as Durst, *Knowledge at
+Risk*; the argument is standard in the KM literature but the exact edition was not
+located at verification time — see the unverified list below. It is stated here as
+a principle, not as a citation.)* That argument is why this system has `Deflect`
+measuring *staleness and non-reuse* rather than only *success* — a base that only
+grows is a hoard. It is also why the roadmap's `Operate` work is not optional:
+correction is a lifecycle stage, not a repair.
 
-**Why the harness is the safety surface.** Recent work on autonomous agents
-argues that safety state must not reset between iterations — a monitor that
-forgets is not a monitor **[R7]**. That is the direct ancestor of the R51 gate-law
-pin: a census of every production loop-construction site, re-derived on every run,
-because a convention that is not re-checked decays exactly this way. The same
-argument drives R52 and R64, whose subject is **harness truthfulness**: a harness
-that overstates what it decided is a correctness bug.
+**Why the harness is the safety surface — and the phantom-failure risk.** Recent
+work on autonomous agents argues that safety state must not reset between iterations:
+a monitor that forgets is not a monitor **[R6]**. That is the direct ancestor of the
+R51 gate-law pin — a census of every production loop-construction site, re-derived on
+every run, because a convention that is not re-checked decays exactly that way.
 
-**What the research does *not* license.** The AI-governance frameworks surveyed —
-NIST's AI RMF **[R8]** and the EU AI Act **[R9]** — are recorded here as *design
-rationale and traceability context only*. This system makes **no compliance
-claim**. Obligations in scope must be confirmed against primary sources at ship
-time, by someone accountable for that determination.
+The sharper warning is newer. Self-improving agent harnesses can **fabricate a
+failure that never happened and then "fix" it**, adding a guardrail that protects
+against a phantom problem — measured by a purpose-built *Counterfactual Fabrication
+Lab* **[R7]**. This is not a hypothetical failure mode; it is what an optimising
+harness does by construction when its self-reports cannot be checked against the
+world.
 
-### Sources
+That risk is exactly why R51 preregistered its **doc-state fixtures from real git
+history before the predicate existed** (P51.3). A guard written in response to a
+remembered defect, with the defect supplied by the harness's own account of itself,
+is the phantom case. Deriving the trigger state from a committed ref means the guard
+answers to something that provably happened. The same discipline is why every pin
+here is red-first: **a pin that has never failed has not been tested**, and an
+untested pin is a guard against nothing.
 
-Verification was performed 2026-09-29. Items marked **unverified** are named in
-the private research plan but could not be confirmed against a primary or
-reputable secondary source; they are listed so the gap is visible rather than
-inherited silently, and **nothing on this page depends on them**.
+The same argument drives R52 and R64, whose subject is **harness truthfulness**: a
+harness that overstates what it decided is a correctness bug, not a style issue.
 
-**Verified**
+**Context handling is a first-class architectural concern, not plumbing.** Work
+scaling long autonomous research loops identifies four mechanisms that survive
+contact with reality — among them *online context compaction* (rewriting the working
+context mid-run when compaction would actually pay) and an *evidence-preserving
+reducer* (shrinking the log without shrinking the evidence) **[R8]**. This kernel
+compacts conservatively and treats a degradation probe as a latch, because the
+asymmetry matters: a context that shrinks too little costs tokens, and one that
+shrinks the evidence costs correctness. A 2026 survey of harness engineering
+organises the same territory into a seven-part architecture — context techniques,
+compaction, sub-agent isolation and the rest **[R9]** — which is the closest
+published map to how this repository is actually built, and a useful check that
+nothing structural has been missed.
 
-- **[R1]** Argyris, C. & Schön, D. A. (1974). "Organizational Learning and
-  Action." *Harvard Business Review*, May–June 1974. — single-loop learning.
-  <https://hbr.org/1974/05/organizational-learning-and-action>
-- **[R2]** Argyris, C. (1977). "Double Loop Learning in Organizations."
-  *Harvard Business Review*, September 1977. — the governing-variable
-  distinction. Expanded with Schön in *Organizational Learning: Action as Adaptive
-  Change* (1978).
-  <https://hbr.org/1977/09/double-loop-learning-in-organizations>
-  *(Date corrected during verification: the research plan cited "Argyris & Schön
-  1978" for double-loop. The magazine article is 1977 and single-authored; 1978
-  is the book.)*
-- **[R3]** Tosey, P. (2012). "The origins and conceptualizations of 'triple-loop'
-  learning." *Human Resource Development Review* 1(2), 223–236. — a later
-  extension. Two independent sources confirm that **Argyris & Schön never used the
-  term**, so citing triple-loop learning as theirs is a common error.
-  <https://journals.sagepub.com/doi/abs/10.1177/1350507611426239>
-- **[R4]** Nonaka, I. & Takeuchi, H. (1995). *The Knowledge-Creating Company*.
-  Oxford University Press. — the SECI model.
-  <https://en.wikipedia.org/wiki/SECI_model_of_knowledge_dimensions>
-- **[R5]** Böhm, K. & Durst, S. (2025). "Knowledge management in the age of
-  generative artificial intelligence — from SECI to GRAI." *VINE Journal of
-  Knowledge Management* 56(1), 106–126. — the GRAI revision.
-  <https://www.sciencedirect.com/org/science/article/pii/S2059589125000463>
-- **[R6]** *Knowledge at Risk* — knowledge half-life and deliberate retirement.
-  *(Named in the private plan as Durst (2025). The argument is standard in the KM
-  literature and the general shape is confirmed, but no primary source for this
-  exact edition was located at verification time. Confirm before external
-  citation.)*
-- **[R7]** "Safety Does Not Compose: Non-Decaying Loop State for Autonomous LLM
-  Agents" (2026). — persistent, non-decaying loop-level safety state.
-- **[R8]** NIST (2023). *Artificial Intelligence Risk Management Framework
-  (AI RMF 1.0)*, NIST AI 100-1. — Govern / Map / Measure / Manage.
-  <https://www.nist.gov/itl/ai-risk-management-framework>
-- **[R9]** European Union (2024). Regulation (EU) 2024/1689 (Artificial Intel-
-  ligence Act), OJ L, 12.7.2024. — risk classification and human-oversight
-  obligations. <https://eur-lex.europa.eu/eli/reg/2024/1689/oj>
+**Governance frameworks are recorded as design rationale only.** NIST's AI RMF
+(Govern / Map / Measure / Manage) **[R10]**, its 2026 profile on *monitoring of
+deployed AI systems* **[R11]**, and the EU AI Act **[R12]** are context for
+traceability and record-keeping. This system makes **no compliance claim**.
+Obligations in scope must be confirmed against primary sources at ship time, by
+someone accountable for that determination — and note that the Act's timeline has
+been in flux, so a date asserted here would itself be the kind of claim this page
+refuses to make.
 
-**Standards cited by the architecture** (normative, not research)
-
-- KCS v6 — Knowledge-Centered Service, *Knowledge-Centered Service Standard
-  Practice*. — the Solve and Evolve lineage.
-- COPC — Customer Operations Performance Center, CX Standard. — deflection and
-  contact-centre framing. *(The "COPC 8.0 (2026)" edition cited in the private plan
-  was not confirmed at verification time; verify before external citation.)*
-- ISO 30401:2018 — *Knowledge management systems — Requirements*. — §2 "the
-  standards this converges on".
-- ISO 10002 — *Complaints handling guidelines*. — the complaint lifecycle.
-- ISO/IEC 42001:2023 — *AI management systems*. — record-keeping framing.
-- SLSA v1.2 (2025) and in-toto — software supply-chain provenance, for `Deliver`.
-- ISO 29110, DORA, ITIL 4 — the software-lifecycle row in the loop table.
-
-**Named in the research plan but NOT verified — do not cite without checking**
-
-- **Aegis** — "runtime action-boundary control; model proposes, trusted runtime
-  decides." The *principle* is real and is enforced in this codebase, but no
-  citable source was located.
-- **SARC** — "four enforcement sites: pre-action gate, action-time monitor,
-  post-action auditor, escalation router." Same status.
-- **CKLT (Zhang, 2026)** — computational knowledge lifecycle, birth/growth/
-  revision/death. No source located.
-- **ResearchLoop (Xia & Wang, 2026)** — evidence-gated claim admission. Not
-  directly located; a related and located work is *XScientist* (2026), an
-  agent-native research protocol using claim-to-evidence anchors.
-  <https://arxiv.org/> — *search by title; record the exact ID before citing.*
-
-> **The rule this section follows.** A citation is a claim, and an unverifiable one
-> is worse than none. Where verification failed, that is written down here instead
-> of being smoothed into a link.
 
 ## What’s inside the process
 
@@ -692,6 +650,13 @@ Three tiers, and the boundary between them is a **capability the agent's token
 does not hold** — not a prompt, not a model instruction, and not a check the
 model can talk its way past.
 
+This division of labour is not a house style. The knowledge-creation literature
+that produced GRAI reaches the same conclusion from the other direction: the
+machine may be generative *or* receptive, but the authors are explicit that the
+two roles are **not equal** — the human "gives the decisive steering impulse"
+**[R5]**. What this page adds is that the principle is *enforced* rather than
+advisory, and that the enforcement is a capability check the model cannot reach.
+
 | | Agent (the loop) | Operator (the human) | The runtime |
 |---|---|---|---|
 | **May decide** | how to investigate; which recall to run; when it is stuck | whether a proposal becomes memory; quarantine disposition; whether knowledge is wrong | whether a write is admitted at all; which capabilities exist |
@@ -725,9 +690,12 @@ disables them:
 
 The last two rows are the honest limit: **the system can be proposed to, screened,
 and gated, but it cannot decide that it was wrong.** That gap is the whole reason
-`Operate` exists as a design and not yet as code.
+`Operate` exists as a design and not yet as code. It is also the gap the harness
+literature warns about from the other side: a self-improving harness that cannot
+check its own account against the world will confidently guard against failures
+that never happened **[R7]**.
 
-## The write posture, stated precisely. `BRAIN_WRITE_POSTURE` is `open` by
+**The write posture, stated precisely.** `BRAIN_WRITE_POSTURE` is `open` by
 default (back-compatibility: write surfaces insert directly) or `review`, which
 routes the agent-facing writes through the proposal pipeline. An unrecognised
 value **refuses to boot** rather than silently degrading to `open` — a posture
@@ -953,6 +921,127 @@ is visible (v1.28.80). True storage isolation is a separate deployment mode
 (`BRAIN_MULTI_DB`), not the default shim.
 Shipped as v1.0 "Domains" (see [Roadmap](./roadmap.md)); `included_global`
 mixing labeled since v1.28.80.
+
+---
+
+---
+
+## Research sources
+
+Verified 2026-09-29 against primary or publisher sources. Items marked
+**unverified** are named in the private research plan but could not be confirmed;
+they are listed so the gap stays visible rather than being inherited silently, and
+**nothing on this page depends on them**. Where a citation in the research plan was
+wrong, the correction is recorded rather than silently applied.
+
+**Organizational learning — the ring's shape**
+
+- **[R1]** Argyris, C. & Schön, D. A. (1974). "Organizational Learning and
+  Action." *Harvard Business Review*, May–June 1974. — single-loop learning.
+  <https://hbr.org/1974/05/organizational-learning-and-action>
+- **[R2]** Argyris, C. (1977). "Double Loop Learning in Organizations."
+  *Harvard Business Review*, September 1977. — the governing-variable
+  distinction. Expanded with Schön in *Organizational Learning: Action as Adaptive
+  Change* (1978).
+  <https://hbr.org/1977/09/double-loop-learning-in-organizations>
+  *(Corrected during verification: the plan cited "Argyris & Schön 1978" for
+  double-loop. The magazine article is 1977 and single-authored; 1978 is the book.)*
+- **[R3]** Tosey, P. (2012). "The origins and conceptualizations of 'triple-loop'
+  learning." *Human Resource Development Review* 1(2), 223–236.
+  <https://journals.sagepub.com/doi/abs/10.1177/1350507611426239>
+  *(Corrected: the plan's journal, title and author list were wrong. Two
+  independent sources confirm Argyris & Schön **never used the term**, so citing
+  triple-loop learning as theirs is a common error.)*
+
+**Knowledge creation — why Create is separate, and who decides**
+
+- **[R4]** Nonaka, I. (1994). "A dynamic theory of organizational knowledge
+  creation." *Organization Science* 5(1), 14–37. — the SECI model in its original
+  peer-reviewed form. <https://journals.sagepub.com/doi/10.1287/orsc.5.1.14>
+  Book form: Nonaka, I. & Takeuchi, H. (1995), *The Knowledge-Creating Company*.
+- **[R5]** Böhm, K. & Durst, S. (2025). "Knowledge management in the age of
+  generative artificial intelligence — from SECI to GRAI." *VINE Journal of
+  Information and Knowledge Management Systems* 56(1), 106–126.
+  <https://www.sciencedirect.com/org/science/article/pii/S2059589125000463>
+  — the GRAI revision. **Read in full for this page.** Two passages carry the
+  architecture directly: GRAI splits each SECI phase into a human and a machine
+  field (*"the active role would generate an output … the passive role could be
+  compared to listening and adapting/rebuilding the internal representation"*), and
+  it is explicit that the roles are **not equal** — *"the authors see dominance or
+  importance of the human user in this process … the human actor gives the decisive
+  steering impulse."* That is the published basis for "Who may decide what" below.
+
+**Agent harness safety — the R51–R64 line of work**
+
+- **[R6]** "Safety Does Not Compose: Non-Decaying Loop State for Autonomous LLM
+  Agents" (2026), arXiv:2608.27141. — persistent, non-decaying loop-level safety
+  state; an arbiter detection floor under mediated commits.
+  <https://arxiv.org/pdf/2608.27141>
+- **[R7]** Wang, S. et al. (2026). "Phantom Guardrails: When Self-Improving Agent
+  Harnesses Fix Failures That Never Happened." arXiv:2607.13083. — the
+  counterfactual-fabrication failure mode, and the lab that measures it.
+  <https://arxiv.org/abs/2607.13083>
+- **[R8]** "SoL-Pi: Recursively Scaling Auto-Research Loops…" (2026),
+  arXiv:2609.20519. — four surviving mechanisms in long autonomous loops, including
+  online context compaction and an evidence-preserving reducer.
+  <https://arxiv.org/abs/2609.20519>
+- **[R9]** "Agent Harness Engineering: A Survey" (2026) — a seven-part account of
+  harness architecture: context techniques, compaction, sub-agent isolation.
+  *(Located via OpenReview and ResearchGate listings; the canonical record was not
+  retrieved directly. Cite the OpenReview entry, not a reconstructed one.)*
+
+**Governance — design rationale, not a compliance claim**
+
+- **[R10]** NIST (2023). *Artificial Intelligence Risk Management Framework
+  (AI RMF 1.0)*, NIST AI 100-1. <https://www.nist.gov/itl/ai-risk-management-framework>
+- **[R11]** NIST (2026). *Monitoring of Deployed AI Systems*, NIST AI 800-4,
+  March 2026. — six monitoring categories for deployed systems; notes that AI
+  outputs are typically non-deterministic, which is the premise behind this
+  system's "the model proposes, the runtime decides" split.
+- **[R12]** European Union (2024). Regulation (EU) 2024/1689 (Artificial
+  Intelligence Act), OJ L, 12.7.2024. <https://eur-lex.europa.eu/eli/reg/2024/1689/oj>
+  *Timeline as verified 2026-09-29:* general application date **2 August 2026**,
+  with Article 50 transparency obligations applying from that date; GPAI provider
+  obligations (Arts. 53–55) in force since 2 August 2025. **Some high-risk
+  deadlines have been the subject of postponement proposals**, so any date asserted
+  here would go stale — confirm at ship time against the Official Journal.
+
+**Standards — normative, not research**
+
+- KCS v6 — *Knowledge-Centered Service Standard Practice*, Consortium for Service
+  Innovation. v6 is current. <https://library.serviceinnovation.org/KCS/KCS_v6/KCS_v6_Practices_Guide/020>
+  — the Solve and Evolve lineage.
+- COPC — Customer Operations Performance Center, CX Standard. *(The "COPC 8.0
+  (2026)" edition cited in the plan was **not confirmed**; verify before external
+  citation.)*
+- ISO 30401:2018 — *Knowledge management systems — Requirements*. — §2, "the
+  standards this converges on".
+- ISO 10002 — *Complaints handling guidelines*. — the complaint lifecycle.
+- ISO/IEC 42001:2023 — *AI management systems*. — record-keeping framing.
+- SLSA v1.2 (2025) and in-toto — software supply-chain provenance, for `Deliver`.
+- ISO 29110, DORA, ITIL 4 — the software-lifecycle row in the loop table.
+
+**Named in the research plan but NOT verified — do not cite without checking**
+
+- **Aegis** — "runtime action-boundary control; model proposes, trusted runtime
+  decides." The *principle* is real and is enforced in this codebase, but no
+  citable source was located. The claim now rests on **[R5]** and on the code.
+- **SARC** — "four enforcement sites: pre-action gate, action-time monitor,
+  post-action auditor, escalation router." Same status.
+- **CKLT (Zhang, 2026)** — computational knowledge lifecycle,
+  birth/growth/revision/death. No source located.
+- **ResearchLoop (Xia & Wang, 2026)** — evidence-gated claim admission. Not
+  located. Two located works cover the same ground: **AutoKD** (multi-agent
+  autonomous knowledge discovery) and **XScientist** (arXiv, 2026 — an agent-native
+  research protocol using claim-to-evidence anchors).
+- **Durst, *Knowledge at Risk*** — knowledge half-life and deliberate retirement.
+  The argument is standard in the KM literature; the exact edition was not located.
+
+> **The rule this section follows.** A citation is a claim, and an unverifiable one
+> is worse than none. Where verification failed, that is written down here instead
+> of being smoothed into a link — and where it succeeded and *corrected* the plan,
+> the correction is recorded too, because a silently-fixed citation teaches the
+> reader nothing and cannot be audited later.
 
 ---
 
