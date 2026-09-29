@@ -58,6 +58,27 @@ flowchart LR
 > path) and `Deliver`'s `D5 Operate` below (phase 5 of the software lifecycle) are
 > distinct. They share a name and nothing else.
 
+### The four timescales
+
+The stages above are also nested, and they run at **four different cadences**. A reader
+must never have to guess which timescale a statement is about — the same word "faster"
+means something different at each level, and a cadence quoted without its level is not a
+measurement.
+
+| Level | Cadence | What turns at this level | Where it is visible here |
+|---|---|---|---|
+| **Business** | days – weeks | Why the knowledge base exists at all: outcomes attributed, priorities set, corpus-level deflection | `Operate` (the return path); Deflect's reuse/deflection metrics |
+| **Feedback** | continuous | The ring closing: an outcome becomes a signal that re-enters Evolve or Create | the `Operate → Evolve` / `Operate → Create` edges |
+| **Operational** | minutes | One case turning: the agentic crank, its human gate, its evidence | Loop 1 (Solve) — the GDL case machine below |
+| **Execution** | seconds | One model turn inside a step: tool calls, compaction, the bounded loop | the governed agentic loop; the run loop itself |
+
+> **Read a cadence with its level.** "Solve runs in minutes" is an operational claim about
+> one case; it is not a claim that a case resolves in seconds. The execution level is
+> *inside* the operational one, and neither is the business level — an Evolve publication
+> (days) is not "slow Solve". The nesting is what makes `reask` meaningful: a case
+> re-entering Solve later does so on a *moved* knowledge base, which is why the case record
+> carries `knowledge_version`.
+
 Create takes what a case captures and what a gap flags, hypothesises and validates it,
 and hands a proposal to the gate. Loop 1 never skips its human gate; Loop 2 exists only
 because Loop 1 left evidence worth keeping; Loop 3 is why the knowledge base pays rent.
@@ -327,6 +348,24 @@ flowchart LR
     D3 --> D4["D4 Release<br/>build → attest → approve → promote"]
     D4 --> D5["D5 Operate (SOFTWARE)<br/>observe → attribute → improve"]
 ```
+
+> **The six loops, enumerated.** The ring above names four knowledge stages; this section
+> is the separate software loop. The normative split is **5 knowledge loops + 1 software
+> loop** — see `PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md` §5.3 and
+> `docs/blueprint/02-SYSTEM_ARCHITECTURE.md` §2.2.
+
+| Loop | Axis | Where it is on this page | What it does |
+|---|---|---|---|
+| **Create** | Knowledge | `LOOP 0 · CREATE` in the ring above | gap or capture from a case → hypothesise + validate → proposal to the gate |
+| **Solve** | Knowledge | `LOOP 1 · SOLVE (per case — minutes)` | case opens → agentic crank → AskHuman when stuck → resolved + evidence |
+| **Evolve** | Knowledge | `LOOP 2 · EVOLVE (per pattern — days)` | captured article proposed FROM the case → human approves by digest → published to KB |
+| **Deflect** | Knowledge | `LOOP 3 · DEFLECT (per corpus — weeks)` | published knowledge serves customers AND agents first → fewer repeat contacts → gaps flagged |
+| **Operate** | Knowledge (the return path) | `OPERATE — the RETURN PATH` in the ring above | outcomes attributed to specific knowledge → improvements feed back into Evolve and Create |
+| **Deliver** | Software | this section, `D1`–`D5` | Scope · Design · Verify · Release · Operate — turns over *artifacts*, a different axis |
+
+> **Two different things are called Operate.** The knowledge **Operate** (the return path
+> that closes the ring) and **Deliver**'s `D5 Operate (SOFTWARE)` (phase 5 of the software
+> lifecycle, above) share a name and nothing else.
 
 > **D5 `Operate` here is the *software* lifecycle's phase 5** — observe, attribute,
 > improve the **delivered artifact**. It is **not** the knowledge `Operate` in the ring

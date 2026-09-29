@@ -984,13 +984,39 @@ fn r45_0_blueprint_names_all_six_loops() {
          must not diverge."
     );
 
-    // The knowledge chain appears in order, so the flow is legible, not just
+    // The knowledge stages appear in order, so the flow is legible, not just
     // six disconnected words.
+    //
+    // **R51 re-point (2026-09-29).** This previously asserted the FIVE-long chain
+    // `Create → Solve → Evolve → Deflect → Operate`. That encoded a taxonomy the
+    // operator superseded on 2026-09-28 (`619839e`): **Operate is the return path,
+    // not a fifth stage walked through.** A stage is either walked through or it is
+    // the thing that closes the walk — never both. The pin's INTENT (the flow must
+    // be legible, not six disconnected words) is unchanged; only the shape it
+    // demands moved from the chain to the four-stage ring.
+    //
+    // The stale five-chain this used to match lived in §2.1 and was corrected in the
+    // same R51 round. The guard was, until then, keeping a contradiction alive: §2.2
+    // said "ring, Operate is the return path" while §2.1 still drew Operate terminal.
     assert!(
-        text.contains("Create → Solve → Evolve → Deflect → Operate")
-            || text.contains("Create ──▶ Solve ──▶ Evolve ──▶ Deflect ──▶ Operate"),
-        "{BLUEPRINT} must show the five knowledge loops in order \
-         (Create → Solve → Evolve → Deflect → Operate), not merely list them."
+        text.contains("Create → Solve → Evolve → Deflect")
+            || text.contains("Create ──▶ Solve ──▶ Evolve ──▶ Deflect"),
+        "{BLUEPRINT} must show the four knowledge stages in order \
+         (Create → Solve → Evolve → Deflect) as a RING, not merely list them. \
+         Operate is the return path that closes the ring — it is not a fifth \
+         stage in the chain, and the authoritative plan §5.3 is the source."
+    );
+
+    // ...and the return path must be explicit, or the ring is drawn as a line
+    // again by the next editor who never read §5.3.
+    assert!(
+        text.contains("Operate is the return path")
+            || text.contains("OPERATE — the RETURN PATH")
+            || text.contains("Operate (knowledge) — the RETURN PATH"),
+        "{BLUEPRINT} must state that Operate is the RETURN PATH, not a fifth stage \
+         in the sequence. The four feedback edges (Operate→Evolve, Operate→Create, \
+         Deflect→Create, Deliver→all) are what make the stages a system rather \
+         than a list."
     );
 
     // Deliver is the SOFTWARE loop and is not part of that chain — dropping it
