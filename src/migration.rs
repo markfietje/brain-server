@@ -2337,7 +2337,7 @@ pub fn run_migration_with_store_dim(
         db.execute_batch("ALTER TABLE agent_cards ADD COLUMN signing_epoch INTEGER;")?;
     }
 
-    // ── R51 "Taxonomy closure": the knowledge-version axis on the case record ──
+    // ── the knowledge-version axis on the case record ──
     // The ring is not idempotent under time: Solve is per-case/minutes, Evolve is
     // per-pattern/days, Deflect is per-corpus/weeks. A case can therefore be open
     // while Evolve publishes a supersession UNDERNEATH it, and a reopened case
@@ -2351,7 +2351,7 @@ pub fn run_migration_with_store_dim(
     // CEILING (stated, not hidden): there is NO Evolve bump site yet, so the value
     // written today is CONSTANT. It records which version a case opened against; it
     // does not by itself prevent mixed-basis reasoning — the delta offer is where
-    // prevention lives, and delta semantics are R53/R57 work.
+    // prevention lives, and delta semantics are not yet defined.
     let has_kv: bool = db
         .query_row(
             "SELECT COUNT(*) FROM pragma_table_info('workflow_runs') WHERE name='knowledge_version'",

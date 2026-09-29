@@ -235,9 +235,9 @@ pub const SCHEMA_VERSION_V1_32_18: &str = "1.32.18";
 /// is dropped and no table is rebuilt, because a rebuild is the one operation
 /// that can lose rows under a crash. The read model is a query, never a view.
 ///
-/// Retained as a historical record: the R50 suite pins against it.
+/// Retained as a historical record: the Create-loop suite pins against it.
 pub const SCHEMA_VERSION_V1_32_19: &str = "1.32.19";
-/// R51's `knowledge_version` axis on the case record: the ring is not idempotent
+/// The `knowledge_version` axis on the case record: the ring is not idempotent
 /// under time, so a case records which knowledge version it opened against. ONE
 /// additive column on `workflow_runs`, `NULL` = predates tracking — no table is
 /// dropped and none is rebuilt.

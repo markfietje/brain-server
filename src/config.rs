@@ -29,7 +29,7 @@ pub const MAX_SUGGEST_K: u32 = 20;
 pub const MAX_SUGGEST_EXCLUDE: usize = 100;
 pub const DEFAULT_SUGGEST_K: u32 = 5;
 
-/// The knowledge version a newly opened case is recorded against (R51).
+/// The knowledge version a newly opened case is recorded against.
 ///
 /// An integer monotonic counter, not a timestamp: ordering is then total and
 /// comparison is a single integer.
@@ -39,7 +39,7 @@ pub const DEFAULT_SUGGEST_K: u32 = 5;
 /// does NOT by itself prevent mixed-basis reasoning — a case reopened after an Evolve
 /// publication re-enters Solve against a moved base, and this column is what makes
 /// that visible. The delta OFFER is where prevention lives; delta semantics are
-/// R53/R57 work. A sentinel `0` is deliberately not used: `NULL` means "predates
+/// not yet defined. A sentinel `0` is deliberately not used: `NULL` means "predates
 /// tracking", and `0` would falsely date every legacy row to version zero.
 pub const KNOWLEDGE_VERSION: i64 = 1;
 
@@ -456,6 +456,54 @@ pub fn validate_write_posture() -> Result<(), String> {
             "BRAIN_WRITE_POSTURE='{other}' is invalid; must be open or review"
         )),
     }
+}
+
+/// The `azp` environment variable. The token-intent binding for a JWT
+/// deployment whose `BRAIN_JWT_AUDIENCE` is **tenant-wide** (the common
+/// shared-IdP case: Auth0/Okta/Entra/Keycloak all issue for many client
+/// applications under one issuer). There, `aud` says "this tenant" and
+/// nothing says "this application" — `azp` is the only per-application
+/// binding, and until now it was absent from this codebase entirely.
+///
+/// **Unset is the default and is not an error**: `azp` is OPTIONAL in
+/// RFC 7519 §4.1.3, so refusing tokens that omit it would break every
+/// existing deployment. Set = azp required: absent refuses, mismatched
+/// refuses, matched accepts.
+///
+/// A **present-but-blank** value is the one case that REFUSES the boot (P63.4).
+/// It is indistinguishable at the enforcement layer from "unset" — it would
+/// resolve to the identical unbound posture — so silently accepting it would
+/// hand an operator who believes enforcement is on a deployment where it is
+/// not. That is the false-sense-of-enforcement failure mode the ceilings name,
+/// so it is a loud refusal instead, exactly as `BRAIN_WRITE_POSTURE` treats an
+/// unrecognised value.
+pub const JWT_AZP_ENV: &str = "BRAIN_JWT_AZP";
+
+/// Resolve `BRAIN_JWT_AZP` to the value `check_azp` compares against.
+/// `Ok(None)` = unbound (the historical posture). `Ok(Some(_))` = bound.
+/// `Err` = present-but-blank, which refuses the boot.
+pub fn resolve_jwt_azp() -> Result<Option<String>, String> {
+    match std::env::var(JWT_AZP_ENV) {
+        Err(_) => Ok(None),
+        Ok(raw) => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err(format!(
+                    "{JWT_AZP_ENV} is set but empty; unset it to run unbound, or give it \
+                     the application id this server accepts (refusing rather than silently \
+                     degrading to unbound)"
+                ));
+            }
+            Ok(Some(trimmed.to_string()))
+        }
+    }
+}
+
+/// Boot validation for the `azp` family. Separate from [`resolve_jwt_azp`] to
+/// match the house shape (`validate_write_posture`, `egress_allow_private`):
+/// a validator that refuses, called from bootstrap before the value is used.
+pub fn validate_jwt_azp_env() -> Result<(), String> {
+    resolve_jwt_azp().map(|_| ())
 }
 
 /// Deadbolt: the ONE egress opt-out. `BRAIN_EGRESS_ALLOW_PRIVATE=1` admits a

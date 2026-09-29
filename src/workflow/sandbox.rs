@@ -699,24 +699,67 @@ mod tests {
 
     #[test]
     fn realized_paths_law_pinned_against_symlinked_temp() {
-        // The law: every profile subpath is the REALIZED path. On macOS the
-        // temp roots are symlinks (/tmp → /private/tmp, /var → /private/var),
-        // so the realized form must differ from the alias; on kernels without
-        // the alias the two coincide.
-        let dir = scratch_dir("realized");
-        let realized_dir = realized(&dir).expect("realized");
-        assert!(realized_dir.is_absolute());
-        #[cfg(target_os = "macos")]
+        // The law: every profile subpath is the REALIZED path. Seatbelt
+        // evaluates canonical paths — a subpath written through a symlink does
+        // not authorize the path that symlink points at.
+        //
+        // The alias is CONSTRUCTED here, never inherited from the ambient
+        // TMPDIR. The previous version of this pin ASSUMED macOS's
+        // `/var` → `/private/var` symlink would always appear in the temp
+        // path, so the realized form must differ from the alias. That is true
+        // on a stock shell and FALSE wherever TMPDIR is already canonical —
+        // a sandboxed terminal, a container, a CI runner exporting an absolute
+        // real path. There the two forms coincide and the pin failed on the
+        // ENVIRONMENT, never on the code.
+        //
+        // Building the symlink explicitly makes the law deterministic on every
+        // host, and is STRICTLY STRONGER than the old form: the old pin proved
+        // nothing at all on any machine whose TMPDIR was canonical.
+        let root = scratch_dir("realized");
+        let through_alias = root.join("alias").join("child");
+        #[cfg(unix)]
         {
-            assert!(
-                realized_dir.starts_with("/private/"),
-                "macOS temp must realize under /private: {realized_dir:?}"
+            let real = root.join("real");
+            let alias = root.join("alias");
+            std::fs::create_dir_all(&real).expect("real dir");
+            std::os::unix::fs::symlink(&real, &alias).expect("alias symlink");
+            std::fs::create_dir_all(&through_alias).expect("child under the alias");
+
+            // THE LAW: the alias component is gone, whatever TMPDIR looked like.
+            let realized_dir = realized(&through_alias).expect("realized");
+            assert_ne!(
+                realized_dir, through_alias,
+                "a symlinked path component must not survive realization"
             );
-            assert_ne!(realized_dir, dir, "the alias must not survive");
+            assert!(
+                !realized_dir.to_string_lossy().contains("/alias/"),
+                "the alias must be REPLACED by its target, not merely resolved around: \
+                 {realized_dir:?}"
+            );
+            assert!(
+                realized_dir.starts_with(real.canonicalize().expect("target canonicalizes")),
+                "realization must land under the symlink's TARGET: {realized_dir:?}"
+            );
+            // Idempotent: realizing a realized path is a fixed point, so the
+            // value handed to the profile renderer is stable.
+            assert_eq!(
+                realized(&realized_dir).expect("re-realized"),
+                realized_dir,
+                "realization must be a fixed point"
+            );
+            // What the renderer receives is the realized form, never the alias.
+            let rendered = seatbelt_profile(&realized_dir, &realized_dir);
+            assert!(rendered.contains(&realized_dir.to_string_lossy().to_string()));
+            assert!(
+                !rendered.contains("/alias/"),
+                "the rendered profile must not carry the alias: {rendered}"
+            );
         }
-        let rendered = seatbelt_profile(&realized_dir, &realized_dir);
-        assert!(rendered.contains(&realized_dir.to_string_lossy().to_string()));
-        let _ = std::fs::remove_dir_all(&dir);
+        // Unconditional half: an ordinary path still realizes to an absolute
+        // one.
+        let plain = realized(&root).expect("realized");
+        assert!(plain.is_absolute());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
