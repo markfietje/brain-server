@@ -417,3 +417,86 @@ fn r51_four_stages_appear_in_ring_order_in_all_three_documents() {
         );
     }
 }
+
+// ── the diagrams must match the code they depict ─────────────────────────
+
+/// **A diagram is a claim about code, so it is pinned like one.** Three defects this
+/// round found by reading the diagrams against the source, all of which had survived
+/// every prose correction:
+///   * the ring drew `Solve → Create`, implying a case feeds Create directly. It does
+///     not: on close Solve emits a `kcs_new_article` / `kcs_update_article` PROPOSAL,
+///     and the proposal is what enters Evolve.
+///   * the delivery lifecycle drew a `Verify` phase. The real machine is
+///     `Scope → Design → Build → Release → Operate → Done` (`Phase::ALL`).
+///   * the crank cycle ended at "case closed · knowledge captured", implying a case
+///     writes memory. Nothing writes memory unreviewed.
+///
+/// A doc-truth guard that never opened the diagrams could not have caught any of these,
+/// which is the same defect class I51.3 was written to close — applied one level down.
+#[test]
+fn r51_delivery_phase_names_match_the_code() {
+    let core = read_kernel("crates/brain-delivery-core/src/lib.rs");
+    let kernel_doc = read_kernel("docs/architecture.md");
+    let blueprint = read_spine("docs/blueprint/02-SYSTEM_ARCHITECTURE.md");
+    let plan = read_spine("plans/PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md");
+
+    // The authoritative list, read from the code rather than restated here.
+    let all_block = core
+        .split("pub const ALL: [Phase; 6] = [")
+        .nth(1)
+        .and_then(|t| t.split(']').next())
+        .expect("Phase::ALL must be declared");
+    let phases: Vec<&str> = all_block
+        .split("Phase::")
+        .skip(1)
+        .filter_map(|s| s.split(|c: char| !c.is_ascii_alphabetic()).next())
+        .collect();
+    assert_eq!(
+        phases,
+        vec!["Scope", "Design", "Build", "Release", "Operate", "Done"],
+        "the delivery phase machine changed; re-point this pin rather than letting the \
+         documents describe a vocabulary the code no longer speaks"
+    );
+
+    for (label, text) in [
+        ("docs/architecture.md", &kernel_doc),
+        ("docs/blueprint/02-SYSTEM_ARCHITECTURE.md", &blueprint),
+        ("plans/PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md", &plan),
+    ] {
+        assert!(
+            !text.contains("D3 Verify") && !text.contains("│ Verify  │"),
+            "{label} names a `Verify` phase. The machine's third phase is **Build** \
+             (brain-delivery-core `Phase::ALL`: Scope, Design, Build, Release, Operate, \
+             Done). `Verify` was never a phase name — it is what Build does."
+        );
+        assert!(
+            !text.contains("Deliver → all five") && !text.contains("──▶ all five"),
+            "{label} says Deliver feeds 'all five' loops. It feeds all of them, but only \
+             four of the five knowledge names are stages — `all five` reintroduces exactly \
+             the flat peer-count this round removed."
+        );
+    }
+}
+
+#[test]
+fn r51_ring_diagram_does_not_draw_solve_writing_memory_directly() {
+    let doc = read_kernel("docs/architecture.md");
+    // The ring's Solve → Evolve arrow must be labelled as a proposal, and there must
+    // be no Solve → Create edge: a case never feeds Create directly.
+    assert!(
+        doc.contains("A4 -- \"resolution proposed\" --> B1"),
+        "the ring must draw Solve's output entering Evolve as a proposal, not as a direct \
+         write. On close a case emits a kcs_new_article/kcs_update_article proposal \
+         (src/workflow/kcs.rs); the human gate is between it and memory."
+    );
+    assert!(
+        !doc.contains("A4 -- \"capture\" --> Z1"),
+        "the ring must NOT draw Solve feeding Create. It does not: the captured article \
+         becomes a proposal into Evolve, and Create's input is a generated gap."
+    );
+    assert!(
+        !doc.contains("knowledge captured"),
+        "no diagram may end a case at 'knowledge captured' — a case emits a PROPOSAL. \
+         Nothing enters memory without the gate."
+    );
+}

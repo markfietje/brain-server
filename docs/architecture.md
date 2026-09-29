@@ -70,7 +70,7 @@ flowchart LR
         direction LR
         D1["outcomes attributed to<br/>specific knowledge"] --> D2["improvements feed back<br/>into Evolve and Create"]
     end
-    A4 -- "capture" --> Z1
+    A4 -- "resolution proposed" --> B1
     Z3 --> B1
     B4 --> C1
     C3 -.->|"gaps flag operator review; new cases arrive via connectors"| A1
@@ -79,6 +79,13 @@ flowchart LR
     D2 -.->|"Operate → Evolve"| B2
     D2 -.->|"Operate → Create"| Z1
 ```
+
+> **Nothing skips the gate.** Solve does not write memory. On close it emits a
+> `kcs_new_article` / `kcs_update_article` **proposal**, and that proposal is what enters
+> Evolve at `B1` — which is why the arrow runs `A4 → B1` and not `A4 → Z1`. Create's own
+> input (`Z1`, "gap or capture from a case") is a *question*, not a captured answer: gaps
+> are **generated** candidates, never detected ones, and the generator cannot set a status
+> because its output type has no field that could hold one.
 
 > **Two `Operate`s, one name.** The knowledge `Operate` above is the return path that
 > closes the ring. `Deliver`'s `D5 Operate` below is phase 5 of the *software*
@@ -242,7 +249,7 @@ flowchart LR
     Q -- "no · blocked on judgment" --> ASK["AskHuman:<br/>pending_question + digest"]
     ASK --> PAUSE["engine STOPS here<br/>SLA clock keeps running"]
     PAUSE -- "human answers (digest verified)" --> W
-    DONE --> CLOSE(["case closed ·<br/>knowledge captured"])
+    DONE --> CLOSE(["case closed ·<br/>proposal captured for the gate"])
 ```
 
 ### Who does what — and why the human wins
@@ -371,10 +378,16 @@ because Deliver exists.
 ```mermaid
 flowchart LR
     D1["D1 Scope<br/>intake → goal → done-criteria"] --> D2["D2 Design<br/>plan → decision → policy"]
-    D2 --> D3["D3 Verify<br/>implement → test → QA → critic"]
+    D2 --> D3["D3 Build<br/>implement → test → QA → critic"]
     D3 --> D4["D4 Release<br/>build → attest → approve → promote"]
     D4 --> D5["D5 Operate (SOFTWARE)<br/>observe → attribute → improve"]
+    D5 --> D6["Done<br/>terminal"]
 ```
+
+> **The phase machine is `Scope → Design → Build → Release → Operate → Done`**, forward-only,
+> from `brain-delivery-core` (`Phase::ALL`). The third phase is **Build** — implementing
+> and verifying the artifact — and **Done** is the terminal state. The vocabulary is closed:
+> an unrecognised phase string is a typed refusal, never a guess.
 
 > **The six names, enumerated.** The ring above carries four knowledge stages; this
 > section is the separate software loop. The split is **5 knowledge loops (four stages +
@@ -383,9 +396,9 @@ flowchart LR
 
 | Loop | Axis | Where it is on this page | What it does |
 |---|---|---|---|
-| **Create** | Knowledge | `LOOP 0 · CREATE` in the ring above | gap or capture from a case → hypothesise + validate → proposal to the gate |
+| **Create** | Knowledge | `LOOP 0 · CREATE` in the ring above | generated gap, or a question carried in from a case → hypothesise + validate → proposal to the gate |
 | **Solve** | Knowledge | `LOOP 1 · SOLVE (per case — minutes)` | case opens → agentic crank → AskHuman when stuck → resolved + evidence |
-| **Evolve** | Knowledge | `LOOP 2 · EVOLVE (per pattern — days)` | captured article proposed FROM the case → human approves by digest → published to KB |
+| **Evolve** | Knowledge | `LOOP 2 · EVOLVE (per pattern — days)` | the case's captured proposal arrives here → human approves by digest → published to KB |
 | **Deflect** | Knowledge | `LOOP 3 · DEFLECT (per corpus — weeks)` | published knowledge serves customers AND agents first → fewer repeat contacts → gaps flagged |
 | **Operate** | Knowledge (the return path) | `OPERATE — the RETURN PATH` in the ring above | outcomes attributed to specific knowledge → improvements feed back into Evolve and Create |
 | **Deliver** | Software | this section, `D1`–`D5` | Scope · Design · Verify · Release · Operate — turns over *artifacts*, a different axis |
