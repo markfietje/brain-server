@@ -168,6 +168,15 @@ pub(crate) struct ClaimUnderTest {
     pub(crate) claim_id: String,
     pub(crate) subject: String,
     pub(crate) predicate: String,
+    /// The row id of the schema this claim was WRITTEN against — the foreign
+    /// key, resolved before the battery runs.
+    ///
+    /// The gate is pure and never opens a store, so it cannot look a schema up
+    /// itself; the caller resolves the FK and hands the result across. The
+    /// field is here so that binding is visible at the type level rather than
+    /// reconstructed from a request string at read time — which is what this
+    /// field's absence once permitted.
+    pub(crate) schema_ref: i64,
     pub(crate) value: SlotValue,
     pub(crate) declared_type: SlotType,
     pub(crate) qualifiers: Vec<(String, String)>,
@@ -302,8 +311,18 @@ pub(crate) fn run(claim: &ClaimUnderTest, schema: Option<&[SlotDecl]>) -> GateOu
 /// declared slot the claim left unfilled is refused rather than defaulted —
 /// "no value" and "the value is the zero" are different claims, and a default
 /// would silently make them the same one.
+///
+/// A MISS on the lookup is a REFUSAL. This was a live defect: the lookup
+/// ended in `?`, so an undeclared predicate returned `None`, `run` read that as
+/// "this check has no objection", and the claim was admitted. Four checks did
+/// it independently, and a claim could clear all four by naming a predicate
+/// nobody had ever declared — which is the one thing a human schema exists to
+/// prevent.
 fn check_schema_conformance(claim: &ClaimUnderTest, slots: &[SlotDecl]) -> Option<Refusal> {
-    let decl = slots.iter().find(|s| s.predicate == claim.predicate)?;
+    let decl = match find_slot(claim, slots) {
+        Ok(decl) => decl,
+        Err(reason) => return Some(reason),
+    };
     if decl.ty != claim.declared_type {
         return Some(Refusal::SchemaMismatch);
     }
@@ -332,8 +351,15 @@ fn check_schema_conformance(claim: &ClaimUnderTest, slots: &[SlotDecl]) -> Optio
 }
 
 /// Check two: every value sits inside its declared domain.
+///
+/// Unreachable for an undeclared predicate — check one refused it — and it says
+/// so explicitly rather than bailing, so that the two halves cannot drift apart
+/// if the battery is ever reordered.
 fn check_bounds(claim: &ClaimUnderTest, slots: &[SlotDecl]) -> Option<Refusal> {
-    let decl = slots.iter().find(|s| s.predicate == claim.predicate)?;
+    let decl = match find_slot(claim, slots) {
+        Ok(decl) => decl,
+        Err(reason) => return Some(reason),
+    };
     if claim.subject.len() > MAX_IDENT_BYTES || claim.subject.is_empty() {
         return Some(Refusal::OutOfBounds);
     }
@@ -441,7 +467,10 @@ fn check_citation_resolvability(claim: &ClaimUnderTest) -> Result<(), Refusal> {
 /// contradiction between free-text claims is not deterministically checkable
 /// and is therefore not implemented here at all.
 fn check_contradiction(claim: &ClaimUnderTest, slots: &[SlotDecl]) -> Option<Refusal> {
-    let decl = slots.iter().find(|s| s.predicate == claim.predicate)?;
+    let decl = match find_slot(claim, slots) {
+        Ok(decl) => decl,
+        Err(reason) => return Some(reason),
+    };
     let class = decl.class?;
     for other in &claim.ratified {
         if other.class != Some(class) || other.predicate == claim.predicate {
@@ -505,13 +534,36 @@ fn check_premise_discipline(claim: &ClaimUnderTest, slots: &[SlotDecl]) -> Optio
     // admits exactly one answer, so being right about it is not evidence of
     // anything. Refusing it is what stops "always true" from being the
     // cheapest thing to generate.
-    let decl = slots.iter().find(|s| s.predicate == claim.predicate)?;
+    let decl = match find_slot(claim, slots) {
+        Ok(decl) => decl,
+        Err(reason) => return Some(reason),
+    };
     if matches!(decl.ty, SlotType::Integer | SlotType::Instant)
         && matches!((decl.lo, decl.hi), (Some(lo), Some(hi)) if lo == hi)
     {
         return Some(Refusal::PremiseDependent);
     }
     None
+}
+
+/// The one slot lookup, refusing a MISS.
+///
+/// Every check that needs the claim's declared slot goes through here. Before
+/// this existed each check inlined its own `slots.iter().find(...)?`, and the
+/// `?` made a miss indistinguishable from a pass — the single defect that let an
+/// undeclared predicate through four checks at once. One function, one
+/// behaviour.
+///
+/// The refusal is `SchemaMismatch` because that is what it is: the claim's
+/// shape does not conform to the schema it named. It is deliberately check
+/// one's reason rather than a per-check one, so the ORDER stays observable —
+/// a battery that reordered itself and started reporting a bounds failure for
+/// a claim with no declared bounds would be telling a caller something new.
+fn find_slot<'a>(claim: &ClaimUnderTest, slots: &'a [SlotDecl]) -> Result<&'a SlotDecl, Refusal> {
+    slots
+        .iter()
+        .find(|s| s.predicate == claim.predicate)
+        .ok_or(Refusal::SchemaMismatch)
 }
 
 #[cfg(test)]
@@ -569,6 +621,7 @@ mod tests {
         ClaimUnderTest {
             claim_id: "clm_1".into(),
             subject: "acme".into(),
+            schema_ref: 1,
             predicate: "warranty_months".into(),
             value: SlotValue::Integer(24),
             declared_type: SlotType::Integer,
@@ -584,6 +637,61 @@ mod tests {
     fn a_well_formed_claim_passes_every_check() {
         let slots = [slot("warranty_months", SlotType::Integer, Some("warranty"))];
         assert_eq!(run(&base_claim(), Some(&slots)), GateOutcome::Pass);
+    }
+
+    /// RED-FIRST (R54 §3.1). The doc comment above `check_schema_conformance`
+    /// states the law this pin holds: a slot the schema does not declare is
+    /// *refused rather than ignored*. The implementation did the opposite —
+    /// `?` on a missing `SlotDecl` returned `None`, and `run` reads `None` as
+    /// "this check has no objection", so checks 1, 2, 5 and 6 all fell through
+    /// and the claim was admitted.
+    #[test]
+    fn an_undeclared_predicate_is_refused_rather_than_ignored() {
+        let slots = [slot("warranty_months", SlotType::Integer, Some("warranty"))];
+        let mut claim = base_claim();
+        // Everything else about the claim is well formed: two independent
+        // resolvable sources, a discriminating value, no dangling reference.
+        // The ONLY defect is that the schema never declared this predicate.
+        claim.predicate = "never_declared".into();
+        match run(&claim, Some(&slots)) {
+            GateOutcome::Refused { check, reason } => {
+                assert_eq!(
+                    check,
+                    Check::SchemaConformance,
+                    "an undeclared predicate is a shape failure, and shape is check one"
+                );
+                assert_eq!(
+                    reason,
+                    Refusal::SchemaMismatch,
+                    "the claim's shape does not conform to the schema it named"
+                );
+            }
+            other => panic!(
+                "a predicate the human schema never declared must be REFUSED, got {other:?}. \
+                 The lookup below is a miss, and a miss is a refusal — not an absence of one."
+            ),
+        }
+    }
+
+    /// The second half of the same law, on the battery's own order. If the
+    /// undeclared-predicate refusal ever moved off check one, the remaining
+    /// three lookups would silently pass again. This pins the ORDER, not just
+    /// the outcome, because the outcome alone cannot tell those two cases apart.
+    #[test]
+    fn the_undeclared_predicate_refusal_is_reported_by_check_one() {
+        let slots = [slot("warranty_months", SlotType::Integer, Some("warranty"))];
+        let mut claim = base_claim();
+        claim.predicate = "never_declared".into();
+        claim.value = SlotValue::Integer(4_000); // ALSO out of bounds
+        match run(&claim, Some(&slots)) {
+            GateOutcome::Refused { check, .. } => assert_eq!(
+                check,
+                Check::SchemaConformance,
+                "shape is checked first, so the shape failure is what a caller is told — a \
+                 reordered battery would leak that these two defects are distinguishable"
+            ),
+            other => panic!("expected a refusal, got {other:?}"),
+        }
     }
 
     #[test]

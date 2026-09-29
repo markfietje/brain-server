@@ -18,7 +18,10 @@ Five phases, in the only order that is safe:
 2. **Hypothesize** — an agent **fills** a human-authored slot schema and never
    designs one.
 3. **Verify** — the gate. Six deterministic checks in a fixed order, each a pure
-   function over rows.
+   function over rows. The schema each claim is checked against is the one its
+   `schema_ref` foreign key names — the binding the writer made and the
+   database enforces. A predicate the bound schema does not declare is a
+   **refusal**, not an unexamined claim.
 4. **Promote** — a human, digest-bound, single-use act. **Disabled.**
 5. **Disseminate** — recall visibility, which the promoting path alone may move.
 
@@ -42,6 +45,16 @@ nobody has demonstrated.
 > is not a setting an operator can change, and that is deliberate: the decision
 > to enable promotion is one with a **named owner**, made against a published
 > measurement, and not a runtime preference.
+>
+> **The inertness has two independent encodings, and they are not related by any
+> pin.** The route hardcodes its refusal as a string literal and never calls
+> `promote()`, and the constant `PROMOTION_ENABLED` is read only inside
+> `promote()`. The consequence is that flipping the constant to `true` would
+> change no behaviour and turn no test red. The behaviour is correct and
+> *stronger* than a constant alone (a literal cannot be flipped by a build),
+> but the two are separate, and a reader looking for one switch will find two
+> mechanisms that neither constrains. `PROMOTION_ENABLED` is a statement of
+> intent; the route's literal is the enforcement.
 
 > **Gap detection has NO RELIABLE PUBLISHED DETECTION METHOD.** No published
 > technique reliably answers "what does this knowledge base not know". The
@@ -60,6 +73,12 @@ nobody has demonstrated.
 > composition. A batch that composes harmfully through slots nobody declared
 > related is **not** caught. No published control exists, this one is
 > hand-built, and it is the weakest-evidenced thing in the loop.
+>
+> **It is also currently unreached.** `set_level_check` has no production
+> caller: the batch visibility flip happens in no request path while promotion
+> is disabled, so the check is exercised by its own battery and by nothing
+> else. The fourth non-claim is therefore about a control that is not yet in the
+> path, which is a weaker statement than it appears.
 
 ## What the database fence does and does not defend
 

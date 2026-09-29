@@ -214,6 +214,7 @@ mod tests {
         ClaimUnderTest {
             claim_id: "clm_1".into(),
             subject: "acme".into(),
+            schema_ref: 1,
             predicate: "warranty_months".into(),
             value: SlotValue::Integer(24),
             declared_type: SlotType::Integer,

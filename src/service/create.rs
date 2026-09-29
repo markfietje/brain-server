@@ -259,6 +259,37 @@ pub(crate) fn schema_digest(conn: &Connection, id: i64) -> Result<Option<String>
 /// Rust where it can be expressed, and the store holds only its serialisation.
 /// A JSON Schema document would have been the opposite trade: portable, and
 /// unable to say that two slots are disjoint.
+/// Load a schema's declared slots by its row id — the FK the claim actually
+/// carries.
+///
+/// This is the read the GATE uses, and it keys on `id` rather than on `domain`
+/// deliberately. The writer binds `schema_ref` from the request's `domain`
+/// (`handlers/claims.rs:243-250`) and the database's foreign key is what makes
+/// that binding real; re-deriving the schema from any request string at read
+/// time throws the binding away and re-opens the door the FK closed.
+pub(crate) fn load_schema_slots_by_ref(
+    conn: &Connection,
+    schema_ref: i64,
+) -> Result<Option<Vec<SlotDecl>>, CreateError> {
+    let body: Option<String> = conn
+        .query_row(
+            "SELECT body FROM claim_schemas
+              WHERE id = ?1 AND ratified_at IS NOT NULL",
+            params![schema_ref],
+            |r| r.get(0),
+        )
+        .optional()?;
+    let Some(body) = body else { return Ok(None) };
+    Ok(Some(decode_slots(&body)?))
+}
+
+/// Load a schema's declared slots BY DOMAIN.
+///
+/// This is the read a WRITER uses — it is how `schema_ref` is chosen in the
+/// first place. The gate does not use it, and a future caller reaching for this
+/// to resolve a claim is re-opening the original defect: `domain` and `subject`
+/// are independent caller-controlled strings, so a lookup keyed on either of
+/// them at verification time consults a schema the writer never bound.
 pub(crate) fn load_schema_slots(
     conn: &Connection,
     domain: &str,
@@ -485,7 +516,16 @@ pub(crate) fn verify_claim(
             reason: Refusal::Referential,
         });
     };
-    let schema = load_schema_slots(conn, &claim.subject)?;
+    // The schema comes from the claim's OWN `schema_ref` — the foreign key the
+    // writer bound and the database enforces. It used to come from
+    // `claim.subject`, which is a free string on the request body with no
+    // relationship to `domain`, so a caller could name a subject that happened
+    // to match a different domain's schema and be gated against an artifact
+    // they never named. Fail-open and fail-closed were both live here: a claim
+    // on an undeclared predicate passed because every check bailed on the miss,
+    // and a legal claim was refused because the borrowed schema's bounds
+    // excluded it.
+    let schema = load_schema_slots_by_ref(conn, claim.schema_ref)?;
     Ok(crate::workflow::create::verify::run(
         &claim,
         schema.as_deref(),
@@ -503,7 +543,9 @@ struct ClaimRowFields {
     object: String,
     qualifiers: String,
     contradicts: String,
-    _schema_ref: i64,
+    /// The FK to `claim_schemas`. The gate needs it — it is how the claim's
+    /// schema is resolved at verification time — so it is read, not discarded.
+    schema_ref: i64,
     _support_n: i64,
 }
 
@@ -526,7 +568,7 @@ fn load_claim_under_test(
                     object: r.get(3)?,
                     qualifiers: r.get(4)?,
                     contradicts: r.get(5)?,
-                    _schema_ref: r.get(6)?,
+                    schema_ref: r.get(6)?,
                     _support_n: r.get(7)?,
                 })
             },
@@ -542,6 +584,7 @@ fn load_claim_under_test(
         object,
         qualifiers,
         contradicts,
+        schema_ref,
         ..
     } = fields;
     let cites = load_citations(conn, row_id, admitted)?;
@@ -554,6 +597,7 @@ fn load_claim_under_test(
     Ok(Some(ClaimUnderTest {
         claim_id: claim_id.to_string(),
         subject: subject.clone(),
+        schema_ref,
         predicate,
         value: match declared_type {
             SlotType::Integer => SlotValue::Integer(object.parse::<i64>().unwrap_or(0)),
@@ -894,6 +938,7 @@ pub(crate) fn gap_methods() -> &'static [GapMethod] {
 mod tests {
     use super::*;
     use crate::migration::run_migration;
+    use crate::workflow::create::verify::Check;
 
     fn db() -> Connection {
         crate::register_sqlite_vec::register_sqlite_vec();
@@ -1040,6 +1085,157 @@ mod tests {
         // And the screen read, the one surface that may look at a pending
         // claim, is a different function on purpose.
         assert!(load_for_screen(&conn, "clm_hidden").is_ok());
+    }
+
+    /// RED-FIRST (R54 §3.1, second defect). The write path mints `schema_ref`
+    /// from `body.domain` (`handlers/claims.rs:243-250`) and the gate then threw
+    /// that FK away and re-derived the schema from the caller-controlled
+    /// `subject` string. This drives the REAL seam — DB in, verdict out — which
+    /// no existing test did, and pins both halves of the law:
+    ///
+    ///  1. the schema the gate consults is the one the writer bound by FK, and
+    ///  2. a claim whose subject happens to name a DIFFERENT domain's schema is
+    ///     refused, not silently re-typed against the schema it did not name.
+    #[test]
+    fn the_gate_reads_the_schema_the_writer_bound_and_not_the_callers_subject() {
+        let conn = db();
+
+        // Two ratified schemas, in two different domains, declaring the same
+        // predicate with DIFFERENT bounds. If the gate consults the wrong one,
+        // the value's legality changes — which is exactly the observable.
+        let tx = conn.unchecked_transaction().expect("tx");
+        let acme = store_schema(
+            &tx,
+            "acme",
+            1,
+            PrincipalKind::Jwt,
+            r#"{"slots":[{"predicate":"warranty_months","ty":"integer","class":"warranty","lo":0,"hi":120}]}"#,
+            vec![slot()],
+            1,
+        )
+        .expect("admit");
+        let mut narrow = slot();
+        narrow.hi = Some(1); // acme allows 0..=1
+        store_schema(
+            &tx,
+            "globex",
+            1,
+            PrincipalKind::Jwt,
+            r#"{"slots":[{"predicate":"warranty_months","ty":"integer","class":"warranty","lo":0,"hi":1}]}"#,
+            vec![narrow],
+            1,
+        )
+        .expect("admit");
+        tx.commit().expect("commit");
+
+        // A claim written under the `acme` schema — where 24 is IN BOUNDS —
+        // but whose `subject` names the `globex` domain, where 24 is NOT.
+        // This is the attacker-chosen-subject case: `subject` is a free string
+        // on the wire, validated only for non-emptiness.
+        let tx = conn.unchecked_transaction().expect("tx");
+        store_claim(
+            &tx,
+            &ClaimDraft {
+                claim_id: "clm_keyed",
+                domain: "acme",
+                schema_ref: acme.id,
+                subject: "globex",
+                predicate: "warranty_months",
+                object: "24",
+                authored_by: PrincipalKind::AgentLoopback,
+                created_at: 1,
+                citations: &[],
+            },
+        )
+        .expect("store");
+        tx.commit().expect("commit");
+
+        // The FK the writer actually bound says `acme`, and `acme` admits 24.
+        // The gate must consult THAT. Keyed on `subject` it would load
+        // `globex` instead and refuse at check 2 (`bounds`), because 24 sits
+        // outside that schema's 0..=1.
+        //
+        // So the ORDER is the evidence: this claim carries no admitted sources,
+        // and an empty citation set is refused at check 4. Reaching check 4 at
+        // all proves checks 1-3 passed, and check 2 is the one that would have
+        // caught a wrongly-borrowed schema. The refusal below is therefore
+        // EXPECTED — what is asserted is that it is check FOUR and not check
+        // TWO.
+        match verify_claim(&conn, "clm_keyed", &[]).expect("gate") {
+            GateOutcome::Refused {
+                check: Check::CitationResolvability,
+                reason: Refusal::EvidenceUnresolvable,
+            } => {}
+            GateOutcome::Refused { check, reason } => panic!(
+                "the gate refused this claim BEFORE the citation check, at {} / {}. Its own \
+                 FK-bound schema admits 24, so an earlier refusal means the gate consulted a \
+                 schema other than the one the writer bound by FK — almost certainly the one \
+                 named by the caller's `subject`.",
+                check.as_str(),
+                reason.as_str()
+            ),
+            other => panic!("expected a citation refusal, got {other:?}"),
+        }
+    }
+
+    /// The companion to the test above, and the one that shows the fail-open is
+    /// REACHABLE. A claim whose predicate its bound schema never declares must
+    /// be refused by the gate. Before the fix the four `?`-on-lookup bails let
+    /// it through to `Pass`, and this test is what makes that reachable rather
+    /// than theoretical: the schema loads (the FK is valid), the predicate is
+    /// undeclared, and the check bails.
+    #[test]
+    fn a_claim_whose_predicate_its_bound_schema_never_declared_is_refused() {
+        let conn = db();
+        let tx = conn.unchecked_transaction().expect("tx");
+        let stored = store_schema(
+            &tx,
+            "acme",
+            1,
+            PrincipalKind::Jwt,
+            r#"{"slots":[{"predicate":"warranty_months","ty":"integer","class":"warranty","lo":0,"hi":120}]}"#,
+            vec![slot()],
+            1,
+        )
+        .expect("admit");
+        let schema_ref = stored.id;
+        tx.commit().expect("commit");
+
+        // The attack: `predicate` is never validated against the schema, so a
+        // caller may name a slot the human artifact does not contain. `subject`
+        // names a real domain so the schema lookup succeeds at all — which is
+        // the only reason this reaches the battery instead of stopping at
+        // `NoSchema`.
+        let tx = conn.unchecked_transaction().expect("tx");
+        store_claim(
+            &tx,
+            &ClaimDraft {
+                claim_id: "clm_undeclared",
+                domain: "acme",
+                schema_ref,
+                subject: "acme",
+                predicate: "operator_granted_superuser",
+                object: "1",
+                authored_by: PrincipalKind::AgentLoopback,
+                created_at: 1,
+                citations: &[],
+            },
+        )
+        .expect("store");
+        tx.commit().expect("commit");
+
+        match verify_claim(&conn, "clm_undeclared", &[]).expect("gate") {
+            GateOutcome::Refused { check, reason } => assert_eq!(
+                (check, reason),
+                (Check::SchemaConformance, Refusal::SchemaMismatch),
+                "an undeclared predicate is a shape failure"
+            ),
+            other => panic!(
+                "a claim on a predicate the bound schema never declared reached {other:?}. The \
+                 `subject` here names a live domain, so the schema DID load and the checks DID \
+                 run — they bailed. This is the reachable fail-open, not a theoretical one."
+            ),
+        }
     }
 
     #[test]
