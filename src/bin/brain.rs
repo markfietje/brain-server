@@ -317,6 +317,12 @@ const SUBCOMMANDS: &[Subcommand] = &[
         usage: "brain shred [--db PATH] [--yes]\n                 (physical residue drop: secure_delete=ON + wal_checkpoint(TRUNCATE)\n                  + VACUUM + integrity_check + one audited forget row; run per domain\n                  DB after a purge — filesystem copies/.bak/standby chunks excepted)",
     },
     Subcommand {
+        name: "census",
+        json: false,
+        run: cmd_census,
+        usage: "brain census [--db PATH] [--print-baseline]\n                 (the drift census: re-score the FROZEN gold corpus and diff every\n                  cell against the committed baseline under ONE global tolerance.\n                  A breach writes a hash-chained findings row and EXITS NON-ZERO.\n                  Cron-driven — there is no in-process scheduler (an operator-run\n                  process; a shipper inside the server it protects is a correlated\n                  failure). `--print-baseline` emits the measured vector so a\n                  re-anchor is a deliberate, diffable act and never a quiet edit)",
+    },
+    Subcommand {
         name: "key",
         json: false,
         run: cmd_key,
@@ -578,6 +584,10 @@ const BOOL_FLAGS: &[&str] = &[
     "replace",
     "with-case-status",
     "return",
+    // `brain census --print-baseline`: the deliberate re-anchor. A bool flag
+    // because it takes no value — it re-anchors against the compiled-in corpus,
+    // never against something a caller supplies.
+    "print-baseline",
     "help",
     "version",
 ];
@@ -2893,6 +2903,117 @@ fn cmd_shred(args: &[String]) -> Result<(), String> {
         "the forget row moved the chain head — re-anchor if you keep an off-host witness: brain anchor"
     );
     Ok(())
+}
+
+/// `brain census` — the DRIFT CENSUS pass: the cadence the round needed and the
+/// loop it closes.
+///
+/// One pass over the FROZEN gold corpus, every cell diffed against the committed
+/// baseline under ONE global tolerance. A breach writes a hash-chained findings
+/// row and this verb exits NON-ZERO, because a regression whose result is only
+/// visible in stdout is a regression nobody reads.
+///
+/// **There is no in-process scheduler in this server, and that is deliberate.**
+/// A shipper running inside the server it measures is a correlated failure: when
+/// the server is the thing that regressed, the thing that would have noticed is
+/// already in the blast radius. So the cadence is external — a timer, a
+/// CronJob, a launchd job — and the exit code is the signal it consumes.
+///
+/// **`--print-baseline` re-anchors, deliberately.** It prints the measured
+/// vector in the committed baseline's exact shape, so re-anchoring is an edit an
+/// operator reads in a diff and judges. A tolerance that moves quietly under
+/// pressure is not a threshold; it is a preference.
+fn cmd_census(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    if !positionals.is_empty() {
+        return usage_err("usage: brain census [--db PATH] [--print-baseline]".to_string());
+    }
+    // The re-anchor needs no database: it measures the corpus, not the store.
+    // Refusing to open a DB to print a vector would make the deliberate act
+    // harder than the routine one, which is backwards.
+    if flags.contains_key("print-baseline") {
+        let printed = brain_server::census::print_baseline().map_err(|e| e.to_string())?;
+        println!("{printed}");
+        println!();
+        println!(
+            "re-anchoring is a DELIBERATE act: commit this under evals/R57_DRIFT_BASELINE.json\n\
+             with a message saying WHY the scores moved. A baseline that drifts without a\n\
+             reason in the log is a census that has stopped measuring."
+        );
+        return Ok(());
+    }
+    let db = flags
+        .get("db")
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_db_path);
+    if !db.exists() {
+        return Err(format!(
+            "no DB at {db:?} — pass --db PATH or set BRAIN_DB_PATH"
+        ));
+    }
+    let mut conn = rusqlite::Connection::open(&db).map_err(|e| format!("open {db:?}: {e}"))?;
+    let now = chrono::Utc::now().timestamp();
+    let report = brain_server::census::run(&mut conn, now).map_err(|e| e.to_string())?;
+
+    println!(
+        "drift census — {} cell(s), global tolerance {} units of 10000",
+        report.cells.len(),
+        brain_server::census::tolerance_units()
+    );
+    for cell in &report.cells {
+        match cell.delta_units {
+            Some(delta) => println!(
+                "  {:<24} {:<12} observed {:>6}  delta {:>+6}",
+                cell.id, cell.verdict, cell.observed_units, delta
+            ),
+            None => println!(
+                "  {:<24} {:<12} observed {:>6}  delta      —",
+                cell.id, cell.verdict, cell.observed_units
+            ),
+        }
+    }
+
+    if report.unbaselined > 0 || report.orphaned > 0 {
+        // Loud, and NOT a pass. A cell that was never measured is a watchdog
+        // nobody has watched; a baseline entry with no case is a retired one.
+        if report.unbaselined > 0 {
+            println!(
+                "\n{} cell(s) have NO baseline and were REFUSED, not scored. This pass proves\n\
+                 nothing about them. Re-anchor deliberately: brain census --print-baseline",
+                report.unbaselined
+            );
+        }
+        if report.orphaned > 0 {
+            println!(
+                "\n{} baseline entr(y/ies) name a case the corpus no longer carries. A retired\n\
+                 case retires its own watchdog unless someone decides to retire it.",
+                report.orphaned
+            );
+        }
+    }
+
+    if report.breaches == 0 {
+        println!("\ncensus CLEAN — no cell past tolerance; nothing written.");
+        return Ok(());
+    }
+
+    println!(
+        "\ncensus BREACH — {} cell(s) past tolerance; {} findings row(s) written and\n\
+         hash-chained (source=drift_census, run_id=0).",
+        report.breaches, report.rows_written
+    );
+    for row in brain_server::census::recorded_breaches(&conn, report.breaches)
+        .map_err(|e| e.to_string())?
+    {
+        println!("  {}", row.1);
+    }
+    Err(format!(
+        "drift census found {} cell(s) past the global tolerance. The rows above are the \
+         evidence; 'brain audit/verify' will show them on the chain. A census whose exit code \
+         is ignored is a census measuring nothing.",
+        report.breaches
+    ))
 }
 
 fn cmd_ump_export(args: &[String]) -> Result<(), String> {

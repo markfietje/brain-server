@@ -1,6 +1,55 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R50 "Create"** — the first loop that *authors*
+> Current release (unreleased): **R57 "Census"** — the scoreboard, scoped down to
+> what the tree can actually prove. Theme: **four of the plan's eight items
+> shipped; the other four are named findings, because their premises measured
+> FALSE.** (1) The **drift census**: the frozen gold corpus re-scored every run
+> and diffed cell-by-cell against a committed baseline under **one** global
+> tolerance (500 units, preregistered before any measurement). A cell with no
+> baseline is **refused, never scored**; a breach past tolerance lands as a
+> hash-chained `findings` row (`source=drift_census`, the **second** writer under
+> the run-less `run_id=0` sentinel, named rather than incidental) and the verb
+> exits **non-zero**. A clean pass writes **nothing** — green rows are noise and
+> a breach buried in them is unread. Cadence is **externally cron-driven on
+> purpose**: a shipper inside the server it measures is a correlated failure.
+> (2) The **ranked gap queue** with a preregistered exploration quota, a spend
+> ceiling over **cost** (never over the forecast — a budget that rewards a flood
+> for promising more inverts), and a kill condition measured on the census's own
+> tolerance; one item traced end to end to `promotion_disabled`, and **the refusal
+> is the traceable end state** — the R50 non-claim was not weakened to make a
+> trace complete. (3) `ttr` ships as an explicit **NON-CLAIM, pinned**: no
+> resolution event exists anywhere, and a backfilled number is a fabrication
+> wearing a measurement's name.
+>
+> **Four plan premises measured false, and the tree won each time:** `I57.4`
+> schedules falsification for a disproof representation **that does not exist**;
+> `I57.5` attributes to model versions **recorded on no row** (independently
+> confirming R53a §9.4's ceiling, now load-bearing); `I57.7`/`I57.8` fall back
+> to an R55 registry that **has not shipped** (blocked on R53's halt);
+> `I57.1`'s "lineage keyed to the case" is **not expressible** because `claims`
+> has no `run_id`. A fifth, found this session: **the gold corpus is not
+> reachable from the server crate** without a new workspace path edge — so the
+> census compiles the packs in by `include_str!` and **`Cargo.lock` is
+> byte-identical, zero new dependency edges**. A bespoke per-cell tolerance is
+> **unrepresentable**: planting one first failed to COMPILE, because `Cell` has
+> nowhere to put it.
+>
+> Schema `1.32.20` **unchanged**; **no new route** (a CLI verb, so no openapi
+> row and no guard-table row are owed), **no new table** (the existing `findings`
+> table is reused, not duplicated), **zero new dependency edges**. `cargo audit`
+> clean over all three audited workspaces. A prior round's pin proved itself: a
+> tolerance-inheritance pin **passed with the pathology planted**, and was
+> rewritten to read the type's field list instead of a hand-chosen string list.
+> **No existing test was weakened and no baseline row was edited to make a gate
+> pass** — four gates fired and each was fixed at the root. Spire at ship: crate
+> floor **2 544 → 2 613** (walk-measured; the needle does not walk `tools/`), lib
+> **2 158** passed / 0 failed, `crates/` **281** (the `gold-sets` calibration lane
+> is no longer dead), `verify_claims.py` **53/53**. R53's halt is **unchanged**:
+> `gates_vacuous` is still advisory-only and R55/R58a are still blocked — this
+> round did not make that decision, and a reader who sees R57 land must not infer
+> the critical path advanced. It did not.
+
+> Predecessor: **R50 "Create"** — the first loop that *authors*
 > knowledge, shipped **INERT**. Five phase cores, a typed claim record, and a
 > four-trigger database fence. **No claim reaches durable state**: the promotion
 > route returns `promotion_disabled` in every configuration for every actor,

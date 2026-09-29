@@ -33,6 +33,7 @@ pub mod storage_layout;
 // enforces via HTTP 507 on writes and reports via `/health`. Lives in the lib
 // so `bench` + `brain-migrate-rehearse` assert against the same envelope.
 pub mod capacity;
+pub mod census;
 
 // Schema migration: extracted from `main.rs` so the
 // `brain-migrate-rehearse` binary can bring old-schema fixtures up to current.

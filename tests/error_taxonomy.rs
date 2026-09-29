@@ -74,6 +74,11 @@ const KNOWN_ERRORS: &[(&str, &str, &str, &str)] = &[
         "display",
     ),
     ("WfmError", "bin_common/wfm_import.rs", "service", "display"),
+    // The drift census's operator-facing error. `service` category: it is a
+    // cadence job's failure contract, and every variant is a fixed-prefix
+    // string with the offending value interpolated by the CONSTRUCTOR, never by
+    // a `Display` that would format raw internals from a stored variant.
+    ("RunError", "census.rs", "service", "display"),
     ("SecretError", "secrets.rs", "service", "display"),
     ("ProviderSecretError", "secret_file.rs", "input", "display"),
 ];

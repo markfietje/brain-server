@@ -66,6 +66,7 @@ pub(crate) mod corpus;
 pub(crate) mod disseminate;
 pub(crate) mod gap;
 pub(crate) mod promote;
+pub(crate) mod queue;
 pub(crate) mod schema;
 pub(crate) mod verify;
 

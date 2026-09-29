@@ -159,7 +159,21 @@ const ROUTER_SITES_FLOOR: usize = 255;
 /// Recorded as the measured value, not as a delta: the walk this constant is
 /// compared against also spans the uncommitted decision-record work sitting in
 /// the tree, so a "before" figure would not be a clean baseline.
-const CRATE_TEST_FLOOR: usize = 2_544;
+/// 2_544 → 2_613 (walk-measured) at the drift-census round: the census core's
+/// eighteen behavioural pins (the tolerance-inheritance red-proof, the
+/// unbaselined-is-not-a-pass posture, the orphaned-baseline refusal, the
+/// saturating-delta totality, the order-independence property, the two-pack-shape
+/// decoder, the pack bound, the strict-decoder refusal, the scale mirror, the
+/// corpus's seven frozen cases, and the real-scorer measurement), the storage
+/// core's seven (the planted regression's row + its audit, the clean pass writing
+/// nothing, the in-tx rollback twin, the source-scoped reader, the closed
+/// `source` convention, the evidence grammar, and the no-tolerance/no-verdict
+/// core law), the verb's six, the gap queue's fifteen, and
+/// `tests/r57_census_pins.rs`'s eighteen structural pins — several of which ride
+/// `#[tokio::test]`-free paths but all of which this needle counts. Set to the
+/// walk-measured truth, not to a hand-count of what the round added: a lower
+/// number would silently weaken the guard instead of failing loudly.
+const CRATE_TEST_FLOOR: usize = 2_613;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows, 208 at the operate round.

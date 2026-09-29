@@ -1,0 +1,15 @@
+{
+  "corpus": "gold-sets",
+  "scorer_version": "1",
+  "tolerance_units": 500,
+  "note": "regenerated ONLY by `brain census --print-baseline`; re-anchoring is a deliberate, diffable act and never a quiet edit",
+  "cells": {
+    "handoff_incomplete": 9000,
+    "intake_is_is_not": 10000,
+    "qc_clean_run": 10000,
+    "qc_incorrect_finding": 7400,
+    "repeater_3_30d": 8600,
+    "skipped_verify": 8400,
+    "stale_knowledge": 8000
+  }
+}

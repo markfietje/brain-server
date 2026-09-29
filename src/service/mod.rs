@@ -66,6 +66,7 @@ pub mod art30;
 pub mod compliance;
 pub mod create;
 pub mod domains_admin;
+pub mod drift_census;
 pub mod dsar;
 pub mod forget;
 pub mod gate;
