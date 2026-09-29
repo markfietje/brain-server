@@ -1146,6 +1146,20 @@ cargo clippy --all-targets --features otel -- -D warnings    # otel-gate
 cargo test  --all-targets --features otel
 # client-gate only when client/ touched (slow: wasm + desktop headers).
 
+# FEATURE LANES — every `[features]` entry has a job in .github/workflows/ci.yml.
+# Six did not, and two of those did not compile (`injection-classifier`,
+# 9 errors; `neural-embed`, 2 errors), so the breakage accumulated unnoticed.
+# A lane that does not exist looks exactly like a lane that passes.
+# `tests/feature_lane_pins.rs` derives the feature list from Cargo.toml and
+# fails on any feature no lane builds — do NOT delete that pin; it is the only
+# thing making the six lanes below durable.
+for f in compliance-pack multivec injection-classifier neural-embed loom rerank-tier; do
+  cargo clippy --all-targets --features "$f" -- -D warnings
+done
+# A lane proves a feature COMPILES. It does not prove the feature WORKS — the
+# ONNX/model artifacts are not fetched in every lane, and no lane exercises
+# layer-2 scoring or a live rerank.
+
 # Repo briefing — ONE-SHOT agent overview before any work (runs <1s):
 scripts/repo-brief.sh
 # (versions, HEAD, dirty paths, main.rs structure, env/route/CLI counts,

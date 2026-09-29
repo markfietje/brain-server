@@ -231,7 +231,7 @@ impl Embedder for StaticEmbedder {
 
 #[cfg(feature = "neural-embed")]
 pub mod neural {
-    use super::{EmbedError, Embedder};
+    use super::{EmbedError, Embedder, embed_input};
     use std::sync::Mutex;
 
     /// All three bge-m3 outputs from one forward pass. A future consumer
