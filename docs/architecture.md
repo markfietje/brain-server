@@ -22,7 +22,10 @@ the agent-loop provider HTTP client, OIDC/JWKS fetch, and the CRM connectors
 1. **The four stages are walked through; `Operate` closes the walk.** A stage is either
    something you pass through, or it is the thing that sends you back round. Operate is
    the latter. It is not a fifth stage, and calling the whole thing "4+2" does not help —
-   that is still a count, and a count is what makes the shape ambiguous.
+   that is still a count, and a count is what makes the shape ambiguous. This is the
+   single-loop / double-loop distinction in organizational-learning theory: correcting
+   action inside existing governing variables (Solve, Evolve) versus questioning the
+   governing variables themselves (Operate). See **Research basis [R1][R2]**.
 2. **Deliver is a different axis.** The four stages turn over *memory*; Deliver turns
    over *artifacts*. It is a software lifecycle the knowledge loop runs inside, not a
    rung beside it.
@@ -457,13 +460,15 @@ decision, a shipped pure core, and the persistence with a first read back — no
 a complete runtime.**
 
 **The law sentence, extended to include it: a model proposes; only the gate
-disposes.** In the knowledge ring that arbiter is the GDL phase machine's
-`parse_and_gate`. In D4 it is `promote`, a pure deny-wins function that reads the
-run's **autonomy tier** and never the recorded trace mode — a trace that claims
-to be deterministic buys no authority it was not granted, and the two narrowest
-tiers propose and never promote. Two ceilings are structural, not incidental:
-the crate does not sign and does not verify signatures, so an unsigned or
-foreign-signer case is a refusal the **host** must make and never a degraded
+disposes.** This is the generative/receptive division the knowledge-creation
+literature describes — the model generates candidates, a deterministic component
+adapts and disposes **[R5]**. In the knowledge ring that arbiter is the GDL phase
+machine's `parse_and_gate`. In D4 it is `promote`, a pure deny-wins function that
+reads the run's **autonomy tier** and never the recorded trace mode — a trace that
+claims to be deterministic buys no authority it was not granted, and the two
+narrowest tiers propose and never promote. Two ceilings are structural, not
+incidental: the crate does not sign and does not verify signatures, so an unsigned
+or foreign-signer case is a refusal the **host** must make and never a degraded
 mark from the core; and autonomy only ever narrows, so no tier can widen what a
 principal may do.
 
@@ -517,6 +522,135 @@ as an increment.
 The sequencing, the dependencies, and the failure mode if the tail is cut are in
 `EXECUTION_ORDER_R51_R64_2026-09-28.md`. Per-round detail lives in each
 `IMPL_R*_…` plan.
+
+## Research basis
+
+The shape on this page is not invented here. It matches established literature on
+organizational learning and knowledge creation, and where a claim below is
+load-bearing the source is named at the point of use. Markers like **[R1]** refer
+to the numbered list at the end of this document.
+
+**Why the ring, and not a chain — single- vs double-loop learning.** Argyris &
+Schön **[R1][R2]** distinguish *single-loop* learning, which corrects action inside
+existing governing variables, from *double-loop* learning, which questions the
+variables themselves. That distinction is exactly the difference between
+**Solve + Evolve** (fix the case correctly inside the current knowledge base) and
+**Operate** (question whether the base itself is right). The thermostat analogy is
+theirs: single-loop turns the heat on and off; double-loop asks *why it is set to
+69 °F*. **This is the strongest justification for treating `Operate` as a return
+path rather than a fifth stage** — it is a different kind of learning, not more of
+the same. Triple-loop learning, *learning how to learn*, is a later extension
+**[R3]** — and it is absent from Argyris & Schön's own published work, which is
+worth knowing before citing it as theirs.
+
+**Why `Create` is separate from `Evolve` — knowledge-creation theory.** Nonaka &
+Takeuchi's **SECI** model **[R4]** describes knowledge creation as
+Socialization → Externalization → Combination → Internalization, converting tacit
+knowledge into explicit and back again. Böhm & Durst's **GRAI** revision **[R5]**
+extends SECI for generative AI, separating *generative* (produces candidates) from
+*receptive* (adapts its representation). This system follows that split literally:
+the model **proposes**, and the deterministic gate **disposes** — the same division
+of labour GRAI describes, with the gate made enforceable rather than advisory.
+
+**Why knowledge must be able to die — knowledge lifecycle research.** The
+**Knowledge at Risk** lifecycle **[R6]** argues that all knowledge eventually
+becomes obsolete and should be deliberately retired, because its half-life depends
+on how fast its domain moves. This is the argument for `Deflect` measuring
+*staleness and non-reuse* rather than only *success* — a base that only grows is a
+hoard. It is also why the roadmap's `Operate` work is not optional: correction is
+a lifecycle stage, not a repair.
+
+**Why the harness is the safety surface.** Recent work on autonomous agents
+argues that safety state must not reset between iterations — a monitor that
+forgets is not a monitor **[R7]**. That is the direct ancestor of the R51 gate-law
+pin: a census of every production loop-construction site, re-derived on every run,
+because a convention that is not re-checked decays exactly this way. The same
+argument drives R52 and R64, whose subject is **harness truthfulness**: a harness
+that overstates what it decided is a correctness bug.
+
+**What the research does *not* license.** The AI-governance frameworks surveyed —
+NIST's AI RMF **[R8]** and the EU AI Act **[R9]** — are recorded here as *design
+rationale and traceability context only*. This system makes **no compliance
+claim**. Obligations in scope must be confirmed against primary sources at ship
+time, by someone accountable for that determination.
+
+### Sources
+
+Verification was performed 2026-09-29. Items marked **unverified** are named in
+the private research plan but could not be confirmed against a primary or
+reputable secondary source; they are listed so the gap is visible rather than
+inherited silently, and **nothing on this page depends on them**.
+
+**Verified**
+
+- **[R1]** Argyris, C. & Schön, D. A. (1974). "Organizational Learning and
+  Action." *Harvard Business Review*, May–June 1974. — single-loop learning.
+  <https://hbr.org/1974/05/organizational-learning-and-action>
+- **[R2]** Argyris, C. (1977). "Double Loop Learning in Organizations."
+  *Harvard Business Review*, September 1977. — the governing-variable
+  distinction. Expanded with Schön in *Organizational Learning: Action as Adaptive
+  Change* (1978).
+  <https://hbr.org/1977/09/double-loop-learning-in-organizations>
+  *(Date corrected during verification: the research plan cited "Argyris & Schön
+  1978" for double-loop. The magazine article is 1977 and single-authored; 1978
+  is the book.)*
+- **[R3]** Tosey, P. (2012). "The origins and conceptualizations of 'triple-loop'
+  learning." *Human Resource Development Review* 1(2), 223–236. — a later
+  extension. Two independent sources confirm that **Argyris & Schön never used the
+  term**, so citing triple-loop learning as theirs is a common error.
+  <https://journals.sagepub.com/doi/abs/10.1177/1350507611426239>
+- **[R4]** Nonaka, I. & Takeuchi, H. (1995). *The Knowledge-Creating Company*.
+  Oxford University Press. — the SECI model.
+  <https://en.wikipedia.org/wiki/SECI_model_of_knowledge_dimensions>
+- **[R5]** Böhm, K. & Durst, S. (2025). "Knowledge management in the age of
+  generative artificial intelligence — from SECI to GRAI." *VINE Journal of
+  Knowledge Management* 56(1), 106–126. — the GRAI revision.
+  <https://www.sciencedirect.com/org/science/article/pii/S2059589125000463>
+- **[R6]** *Knowledge at Risk* — knowledge half-life and deliberate retirement.
+  *(Named in the private plan as Durst (2025). The argument is standard in the KM
+  literature and the general shape is confirmed, but no primary source for this
+  exact edition was located at verification time. Confirm before external
+  citation.)*
+- **[R7]** "Safety Does Not Compose: Non-Decaying Loop State for Autonomous LLM
+  Agents" (2026). — persistent, non-decaying loop-level safety state.
+- **[R8]** NIST (2023). *Artificial Intelligence Risk Management Framework
+  (AI RMF 1.0)*, NIST AI 100-1. — Govern / Map / Measure / Manage.
+  <https://www.nist.gov/itl/ai-risk-management-framework>
+- **[R9]** European Union (2024). Regulation (EU) 2024/1689 (Artificial Intel-
+  ligence Act), OJ L, 12.7.2024. — risk classification and human-oversight
+  obligations. <https://eur-lex.europa.eu/eli/reg/2024/1689/oj>
+
+**Standards cited by the architecture** (normative, not research)
+
+- KCS v6 — Knowledge-Centered Service, *Knowledge-Centered Service Standard
+  Practice*. — the Solve and Evolve lineage.
+- COPC — Customer Operations Performance Center, CX Standard. — deflection and
+  contact-centre framing. *(The "COPC 8.0 (2026)" edition cited in the private plan
+  was not confirmed at verification time; verify before external citation.)*
+- ISO 30401:2018 — *Knowledge management systems — Requirements*. — §2 "the
+  standards this converges on".
+- ISO 10002 — *Complaints handling guidelines*. — the complaint lifecycle.
+- ISO/IEC 42001:2023 — *AI management systems*. — record-keeping framing.
+- SLSA v1.2 (2025) and in-toto — software supply-chain provenance, for `Deliver`.
+- ISO 29110, DORA, ITIL 4 — the software-lifecycle row in the loop table.
+
+**Named in the research plan but NOT verified — do not cite without checking**
+
+- **Aegis** — "runtime action-boundary control; model proposes, trusted runtime
+  decides." The *principle* is real and is enforced in this codebase, but no
+  citable source was located.
+- **SARC** — "four enforcement sites: pre-action gate, action-time monitor,
+  post-action auditor, escalation router." Same status.
+- **CKLT (Zhang, 2026)** — computational knowledge lifecycle, birth/growth/
+  revision/death. No source located.
+- **ResearchLoop (Xia & Wang, 2026)** — evidence-gated claim admission. Not
+  directly located; a related and located work is *XScientist* (2026), an
+  agent-native research protocol using claim-to-evidence anchors.
+  <https://arxiv.org/> — *search by title; record the exact ID before citing.*
+
+> **The rule this section follows.** A citation is a claim, and an unverifiable one
+> is worse than none. Where verification failed, that is written down here instead
+> of being smoothed into a link.
 
 ## What’s inside the process
 
