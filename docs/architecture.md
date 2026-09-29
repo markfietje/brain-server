@@ -14,75 +14,41 @@ the agent-loop provider HTTP client, OIDC/JWKS fetch, and the CRM connectors
 
 ## How memory moves — four stages and a return path
 
-> **SOURCE OF TRUTH, verified 2026-09-29 against `6007e62` + the R51 pins.**
-> Read this before trusting any diagram, count, or roadmap statement — including the
-> ones in this file. Three corrections are folded in here; each was checked against the
-> source, not against a prior document.
-
-### The taxonomy, stated once
+### The taxonomy
 
 > **Four stages in a ring — Create → Solve → Evolve → Deflect. Operate is the return
-> path that closes it. Deliver is a separate software lifecycle on a different axis.
-> Six names; not six peers; and not five stages either.**
+> path that closes it. Deliver is a separate software lifecycle on a different axis.**
 
-Three clauses, each load-bearing:
+1. **The four stages are walked through; `Operate` closes the walk.** A stage is either
+   something you pass through, or it is the thing that sends you back round. Operate is
+   the latter. It is not a fifth stage, and calling the whole thing "4+2" does not help —
+   that is still a count, and a count is what makes the shape ambiguous.
+2. **Deliver is a different axis.** The four stages turn over *memory*; Deliver turns
+   over *artifacts*. It is a software lifecycle the knowledge loop runs inside, not a
+   rung beside it.
+3. **The two `Operate`s are distinct things.** The knowledge `Operate` (this ring's
+   return path) and Deliver's `D5 Operate` (phase 5 of the software lifecycle) share a
+   name and nothing else. Wherever both can appear, the software one is written
+   `D5 Operate (SOFTWARE)`.
 
-1. **"Six loops" is a count of names, not a taxonomy.** Three of the six were accreted
-   to fill a gap someone noticed (plan §6): KCS v6 gave three (Solve, Evolve, Deflect);
-   Deliver was added because knowledge needs software; Operate because knowledge needs
-   feedback; Create because knowledge does not simply appear. It is a **history**, and a
-   history read as a flat list of six peers is what produced every diagram error below.
-2. **Operate is the return path, not a fifth stage.** A stage is either walked through,
-   or it is the thing that closes the walk. Operate is the latter. Calling it "4+2" does
-   not fix this — that is still a count, and the two documents disagreeing about whether
-   Operate is a stage or a feedback layer is exactly the ambiguity that produced the
-   chain-of-five in the first place.
-3. **Deliver is a different axis, not a sixth stage.** The four stages turn over
-   *memory*; Deliver turns over *artifacts*. This is a dated operator decision
-   (**D0, 2026-09-26**), recorded in this file's delivery-loop section.
+### Where each stage is implemented
 
-### The two `Operate`s — the collision that broke these documents
+Measured against the tree; re-run `plans/verify_claims.py` in the private IP repo after
+changing anything here.
 
-| | What it operates on | Where |
+| Stage | Where it lives | Status |
 |---|---|---|
-| **knowledge `Operate`** | outcomes attributed to *knowledge* | the ring's return path |
-| **delivery `D5 Operate`** | the *delivered artifact* | phase 5 of the software lifecycle |
+| **Create** | `src/workflow/create.rs` + `src/workflow/create/` (6 modules) · routes under `/workflow/claim-*` | Built and wired. **Promotion is inert** — the promote route returns `promotion_disabled` in every configuration |
+| **Solve** | `src/workflow/gdl.rs`, `gdl_checkpoint.rs`, `gdl_eval.rs`, `src/agentloop/run_loop.rs` · entry `src/handlers/case_run.rs:224` | The most built — the agentic crank, checkpointed and digest-gated |
+| **Evolve** | `src/gate.rs`, `src/handlers/gate.rs`, `src/service/gate.rs`, `src/workflow/kcs.rs` | Built and wired — the human approval gate |
+| **Deflect** | `src/workflow/kcs.rs`, `src/workflow/scoreboard.rs` | Measurement and evidence: it records reuse and deflection. It does not yet act on what it finds |
+| **Operate** | no module — the return path is the one part of the ring with no implementation | The edges `Operate → Evolve` and `Operate → Create` exist as design, not as code |
+| **Deliver** | `crates/brain-delivery-core`, `src/workflow/delivery.rs` | Built and wired |
 
-Same name, different axis. Invisible until both appear in one diagram — which is why
-the software phase is labelled `D5 Operate (SOFTWARE)` in this file.
-
-### Build status, as of `6007e62` — measured, not estimated
-
-**The ring is drawn complete in the diagrams below, but only two links have
-substance, and the return path has nothing.** Stating this is the point; a reader who
-believes all four stages are equally built will mis-plan every round after this one.
-
-| Loop | Where it lives (measured) | Status |
-|---|---|---|
-| **Create** | `src/workflow/create.rs` (239) + `src/workflow/create/` — 6 modules, 2,299 ln · six routes under `/workflow/claim-*` | **Built and wired; promotion INERT** — `promotion_disabled` in every configuration (`create/promote.rs:70`) |
-| **Solve** | `src/workflow/gdl.rs` (11,104) + `gdl_checkpoint.rs` (825) + `gdl_eval.rs` (1,191) + `src/agentloop/run_loop.rs` (4,561) · entry `src/handlers/case_run.rs:224` | **Most built** — the agentic crank, checkpointed and digest-gated |
-| **Evolve** | `src/gate.rs` (1,902) + `src/handlers/gate.rs` (3,089) + `src/service/gate.rs` (716) = 5,707 · `src/workflow/kcs.rs` (1,501) | **Built and wired** — the human approval gate |
-| **Deflect** | `src/workflow/kcs.rs` (1,501) + `src/workflow/scoreboard.rs` (1,097) = 2,598 | **Metrics and evidence only** — measures reuse/deflection; the least built of the four stages |
-| **Operate** | **no module anywhere** — `src/workflow/` contains no `deflect` and no `operate` | **A design statement, not code.** The edges `Operate → Evolve` and `Operate → Create` — the ones that make this a cycle rather than a line — do not exist in code |
-| **Deliver** | `crates/brain-delivery-core` (2,136) + `src/workflow/delivery.rs` | **Built and wired** |
-
-**The honest consequence:** `Solve` and `Evolve` are substantial; `Deflect` is
-measurement; `Create` is built but its promotion path is disabled by design; and
-`Operate` is prose. The round that makes `Operate → Evolve` / `Operate → Create` real is
-**R57** (the falsification scheduler) — the edges that make the ring a ring.
-
-> **Correction to a prior claim, recorded because it was wrong.** An earlier draft of
-> this section placed the gate at `src/workflow/gate.rs` (1,902) and sized the Create
-> loop at 2,538 lines. Measured truth: the 1,902-line module is `src/gate.rs` (crate
-> root, not under `workflow/`), and `create/` totals **2,299** lines across 6 modules
-> plus the 239-line `create.rs` parent. A stale number in an architecture document is
-> the same defect class as a stale diagram.
-
----
-
-Troubleshooting here is not one process but **four stages turning at different
-speeds plus the path that closes them**, converging on what ISO 10002, the
-KCS Solve loop, ITIL, and COPC each describe separately:
+**The consequence worth stating plainly:** the ring is drawn complete below, but in code
+`Solve` and `Evolve` carry the weight, `Deflect` observes, `Create` cannot yet promote,
+and `Operate` is unimplemented. The two edges that make a line into a cycle are the two
+that are missing.
 
 ```mermaid
 flowchart LR
@@ -114,15 +80,10 @@ flowchart LR
     D2 -.->|"Operate → Create"| Z1
 ```
 
-> **Amended 2026-09-28.** This page previously carried **three** loops and named none
-> of them `Create` or `Operate`, while `PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md` §5.3 and
-> `docs/blueprint/02-SYSTEM_ARCHITECTURE.md` both describe four knowledge stages plus a
-> return path. **Operate is the return path, not a stage walked through in sequence** —
-> attributing outcomes to specific knowledge is what sends the ring back round.
->
-> **Two different things are called Operate.** The knowledge `Operate` here (the return
-> path) and `Deliver`'s `D5 Operate` below (phase 5 of the software lifecycle) are
-> distinct. They share a name and nothing else.
+> **Two `Operate`s, one name.** The knowledge `Operate` above is the return path that
+> closes the ring. `Deliver`'s `D5 Operate` below is phase 5 of the *software*
+> lifecycle. They are distinct, and the software one is labelled `(SOFTWARE)` wherever
+> both can be seen.
 
 ### The four timescales
 
@@ -135,7 +96,7 @@ measurement.
 |---|---|---|---|
 | **Business** | days – weeks | Why the knowledge base exists at all: outcomes attributed, priorities set, corpus-level deflection | `Operate` (the return path); Deflect's reuse/deflection metrics |
 | **Feedback** | continuous | The ring closing: an outcome becomes a signal that re-enters Evolve or Create | the `Operate → Evolve` / `Operate → Create` edges |
-| **Operational** | minutes | One case turning: the agentic crank, its human gate, its evidence | Loop 1 (Solve) — the GDL case machine below |
+| **Operational** | minutes | One case turning: the agentic crank, its human gate, its evidence | Solve — the GDL case machine below |
 | **Execution** | seconds | One model turn inside a step: tool calls, compaction, the bounded loop | the governed agentic loop; the run loop itself |
 
 > **Read a cadence with its level.** "Solve runs in minutes" is an operational claim about
@@ -146,13 +107,13 @@ measurement.
 > carries `knowledge_version`.
 
 Create takes what a case captures and what a gap flags, hypothesises and validates it,
-and hands a proposal to the gate. Loop 1 never skips its human gate; Loop 2 exists only
-because Loop 1 left evidence worth keeping; Loop 3 is why the knowledge base pays rent.
+and hands a proposal to the gate. Solve never skips its human gate; Evolve exists only
+because Solve left evidence worth keeping; Deflect is why the knowledge base pays rent.
 The return path is why a system that only grows knowledge can also *correct* it. Hot topics
 and feedback flag gaps for operator review — new cases arrive via the CRM /
 channel / webhook connectors (plus in-loop `reask` / back-referral returns),
 never by automatic hot-topic→case creation. The rest of this page zooms into
-Loop 1, whose deterministic core is the GDL case machine (see below).
+Solve, whose deterministic core is the GDL case machine (see below).
 
 ## The governed agentic loop
 
@@ -306,7 +267,7 @@ deflects to self-service entirely — and the scoreboard proves which happened.
 
 ---
 
-## The GDL case machine — Loop 1's deterministic core
+## The GDL case machine — Solve's deterministic core
 
 The crank above is driven by the **GDL case machine** (`src/workflow/gdl.rs`,
 9,871 lines; `gdl_checkpoint.rs`, 771; `gdl_eval.rs`, 1,191 — 11,833 total):
@@ -319,9 +280,9 @@ The phase machine is deterministic Rust: the model proposes a phase artifact
 as JSON, a pure arbiter (`parse_and_gate`) decides, and a rejected artifact is
 retried bounded-then-routed — one original ask plus `MAX_PHASE_ATTEMPTS = 3`
 gate-error re-asks; exhausting them ROUTES the case (route, not resolve). The
-same law governs Loop 4 — a model proposes, only the gate disposes — where the
+same law governs Deliver — a model proposes, only the gate disposes — where the
 arbiter is `brain-delivery-core`'s `promote` instead (see The delivery loop —
-Loop 4).
+the software axis).
 Persistence per phase-pass is ONE `WorkflowTx`: the phase's `workflow_steps`
 row (Act adds one sub-row per executed test-log row), the CAS run-state
 advance (with its own audit row), and one audit row per inserted step —
@@ -400,12 +361,12 @@ labeling round).
 
 ---
 
-## The delivery loop — Loop 4
+## The delivery loop — the software axis
 
-**D0, recorded 2026-09-26:** the operator has ratified **Deliver as the fourth
-top-level loop**. The three loops above turn over *memory*; this one turns over
-*artifacts*, so it is a different axis rather than a fourth rung beside them.
-Nothing in Loops 1–3 changes.
+Deliver is a **different axis** from the ring above. The four knowledge stages turn over
+*memory*; Deliver turns over *artifacts*. It is a lifecycle the knowledge loop runs
+inside, not a rung beside it — and nothing about Solve, Evolve, or Deflect changes
+because Deliver exists.
 
 ```mermaid
 flowchart LR
@@ -415,9 +376,9 @@ flowchart LR
     D4 --> D5["D5 Operate (SOFTWARE)<br/>observe → attribute → improve"]
 ```
 
-> **The six loops, enumerated.** The ring above names four knowledge stages; this section
-> is the separate software loop. The normative split is **5 knowledge loops + 1 software
-> loop** — see `PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md` §5.3 and
+> **The six names, enumerated.** The ring above carries four knowledge stages; this
+> section is the separate software loop. The split is **5 knowledge loops (four stages +
+> the return path) + 1 software loop** — see `PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md` §5.3 and
 > `docs/blueprint/02-SYSTEM_ARCHITECTURE.md` §2.2.
 
 | Loop | Axis | Where it is on this page | What it does |
@@ -429,13 +390,9 @@ flowchart LR
 | **Operate** | Knowledge (the return path) | `OPERATE — the RETURN PATH` in the ring above | outcomes attributed to specific knowledge → improvements feed back into Evolve and Create |
 | **Deliver** | Software | this section, `D1`–`D5` | Scope · Design · Verify · Release · Operate — turns over *artifacts*, a different axis |
 
-> **Two different things are called Operate.** The knowledge **Operate** (the return path
-> that closes the ring) and **Deliver**'s `D5 Operate (SOFTWARE)` (phase 5 of the software
-> lifecycle, above) share a name and nothing else.
-
-> **D5 `Operate` here is the *software* lifecycle's phase 5** — observe, attribute,
-> improve the **delivered artifact**. It is **not** the knowledge `Operate` in the ring
-> above, which attributes outcomes to *knowledge*. Same name, different axis.
+> **`D5 Operate` is the software lifecycle's phase 5** — observe, attribute, improve the
+> **delivered artifact**. It is not the knowledge `Operate` in the ring above, which
+> attributes outcomes to *knowledge*.
 
 **Its state today: a ratified decision core, and its first persistence.** The
 decision law ships as `crates/brain-delivery-core` — the closed autonomy-tier
@@ -475,7 +432,7 @@ decision, a shipped pure core, and the persistence with a first read back — no
 a complete runtime.**
 
 **The law sentence, extended to include it: a model proposes; only the gate
-disposes.** In Loops 1–3 that arbiter is the GDL phase machine's
+disposes.** In the knowledge ring that arbiter is the GDL phase machine's
 `parse_and_gate`. In D4 it is `promote`, a pure deny-wins function that reads the
 run's **autonomy tier** and never the recorded trace mode — a trace that claims
 to be deterministic buys no authority it was not granted, and the two narrowest
