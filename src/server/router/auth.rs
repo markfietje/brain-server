@@ -190,6 +190,11 @@ pub struct JwtMiddlewareState {
     pub key_store: auth::jwks::KeyStore,
     pub jwt_issuer: String,
     pub jwt_audience: String,
+    /// RFC 7519 §4.1.3 `azp` this server accepts — the application a token
+    /// must have been minted FOR. `None` is the historical posture: azp is
+    /// not enforced, and the boot emits the P63.2 disclosure saying so.
+    /// Resolved once at boot from `BRAIN_JWT_AZP` (see `config::resolve_jwt_azp`).
+    pub jwt_azp: Option<String>,
     pub pool: Pool,
     pub revocation_cache: Arc<auth::revocation::RevocationCache>,
     pub db_path: PathBuf,
@@ -210,6 +215,10 @@ impl JwtMiddlewareState {
                 .expect("empty key store"),
             jwt_issuer: String::new(),
             jwt_audience: String::new(),
+            // Opaque mode verifies no JWT at all, so the azp posture is the
+            // unbound one — matching `opaque_for_tests`' documented contract
+            // of empty issuer/audience.
+            jwt_azp: None,
             pool,
             revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
             db_path,
@@ -260,6 +269,11 @@ pub async fn jwt_auth_middleware(
     let keys = s.key_store.verifying_keys();
     let issuer = s.jwt_issuer.clone();
     let audience = s.jwt_audience.clone();
+    // Resolved at boot, cloned per request. Read OUTSIDE the spawn_blocking
+    // closure on purpose: an env read inside it would be both a syscall on
+    // the blocking pool and a second source of truth for a value the process
+    // already decided.
+    let azp = s.jwt_azp.clone();
     let pool = s.pool.clone();
     let rev_cache = s.revocation_cache.clone();
     let path_owned = path.to_string();
@@ -272,6 +286,7 @@ pub async fn jwt_auth_middleware(
                 &keys,
                 &issuer,
                 &audience,
+                azp.as_deref(),
                 auth::jwt::TokenType::Access,
             )
             .map_err(|e| e.code().to_string())?;

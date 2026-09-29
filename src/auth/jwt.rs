@@ -19,6 +19,7 @@
 
 use jsonwebtoken::{Algorithm, DecodingKey, Header, Validation, decode, decode_header};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Algorithm whitelist. Per OWASP A04:2025 (Cryptographic Failures) and the
 /// JWT Cheat Sheet: only asymmetric algorithms are accepted in a distributed
@@ -73,6 +74,17 @@ pub struct Claims {
     pub iat: u64,
     pub nbf: u64,
     pub exp: u64,
+    /// RFC 7519 §4.1.3 "authorized party" — the application the token was
+    /// minted FOR, as distinct from `aud` (who may accept it). OPTIONAL in
+    /// the spec, so it is `Option` here and `#[serde(default)]` keeps
+    /// tokens that omit it parsing: a legal token is still a parseable token.
+    ///
+    /// Whether its ABSENCE is a refusal is a *policy* decision, not a parsing
+    /// one, and it lives in [`check_azp`] — never here. This binds an
+    /// application, NOT a person: it is not identity, and it must never be
+    /// read as a substitute for per-principal identity work.
+    #[serde(default)]
+    pub azp: Option<String>,
     /// OWASP Multi-Tenant Cheat Sheet: tenant context from the verified token.
     /// Falls back to `crate::audit::DEFAULT_TENANT` ("global") when absent —
     /// single-tenant deployments don't need to set it.
@@ -175,6 +187,17 @@ pub enum AuthError {
     MissingJti,
     /// Token type mismatch (e.g. refresh token presented to a data route).
     WrongType,
+    /// The verified token's `azp` claim is `absent`, or `mismatch` — it names
+    /// an application other than the configured `BRAIN_JWT_AZP`. The
+    /// token-intent / confused-deputy class: a genuine token from a trusted
+    /// issuer, minted for a DIFFERENT application in the same tenant.
+    ///
+    /// The payload is the *category only*. Neither the token, nor its `azp`,
+    /// nor the configured expected value is carried here — a refusal reason
+    /// that echoes the token would put token bytes in the audit row and the
+    /// 401 body. Reachable ONLY when azp enforcement is configured; unset is
+    /// the historical behavior and can never produce this.
+    AzpBinding(&'static str),
     /// Underlying library returned an error not classified above.
     Other(String),
 }
@@ -202,6 +225,7 @@ impl AuthError {
             AuthError::MissingJti => "missing_jti",
             AuthError::TokenLifetimeExceeded => "lifetime_exceeded",
             AuthError::WrongType => "wrong_token_type",
+            AuthError::AzpBinding(_) => "azp_binding",
             AuthError::Other(_) => "invalid_token",
         }
     }
@@ -228,6 +252,13 @@ impl std::fmt::Display for AuthError {
                 write!(f, "token lifetime exceeds the revocable horizon")
             }
             AuthError::WrongType => write!(f, "wrong token type for this route"),
+            AuthError::AzpBinding("absent") => {
+                write!(f, "azp claim absent but azp enforcement is configured")
+            }
+            AuthError::AzpBinding(_) => write!(
+                f,
+                "azp names a different application than the one this server accepts"
+            ),
             AuthError::Other(s) => write!(f, "verification failed: {s}"),
         }
     }
@@ -263,17 +294,92 @@ impl VerifyingKey {
     }
 }
 
+/// The literal P63.2 disclosure text. Named once so the emitted line and the
+/// pinned expectation cannot drift apart.
+pub const AZP_UNBOUND_DISCLOSURE: &str = "JWT azp NOT enforced (BRAIN_JWT_AZP unset): a token minted \
+for ANOTHER application in this tenant will be accepted if its aud matches — azp is the only \
+per-application binding when BRAIN_JWT_AUDIENCE is tenant-wide. Set BRAIN_JWT_AZP to close it.";
+
+/// **P63.2 — the boot disclosure, as a decision.** JWT mode on + azp unbound
+/// → the operator is told, in one line, that the token-intent gap is open.
+/// Anything else → `None`, and the boot says nothing (a bound deployment
+/// should not be warned about a control it has enabled).
+///
+/// A pure function of the two resolved values, so the pin tests the DECISION
+/// rather than grepping a log line — a guard that reads prose cannot fail when
+/// the prose drifts. The caller emits whatever this returns.
+pub fn azp_unbound_disclosure(jwt_enabled: bool, azp: Option<&str>) -> Option<&'static str> {
+    let bound = azp.map(str::trim).is_some_and(|z| !z.is_empty());
+    if jwt_enabled && !bound {
+        Some(AZP_UNBOUND_DISCLOSURE)
+    } else {
+        None
+    }
+}
+
+/// Monotonic count of tokens REFUSED because their `azp` claim was absent or
+/// named a different application. Only ever moves when `BRAIN_JWT_AZP` is
+/// configured, so a non-zero reading is a positive statement that the
+/// enforcement is live and biting. Surfaced at `/metrics` as
+/// `brain_jwt_azp_rejected_total` — the enforcement must be *observable*,
+/// not merely logged.
+static AZP_REJECTIONS: AtomicU64 = AtomicU64::new(0);
+
+/// The `/metrics` read side. Static, so the scrape needs no `AppState` (the
+/// `concurrency::CONCURRENCY` / `audit::BUSY_HITS` precedent).
+pub fn azp_rejections() -> u64 {
+    AZP_REJECTIONS.load(Ordering::Relaxed)
+}
+
+/// **P63.1 — the `azp` absence policy, as one decision.** `expected` is the
+/// configured `BRAIN_JWT_AZP`; `claimed` is the VERIFIED token's `azp`.
+///
+/// - `expected` **unset** → `Ok` for every token. The historical behavior,
+///   byte-identical, and no deployment breaks (this is what makes the change
+///   non-breaking by construction rather than by assertion).
+/// - `expected` **set** → azp is REQUIRED: absent refuses, mismatched
+///   refuses, matched accepts. A gate that refuses everything is not a gate,
+///   so the match arm returns `Ok` explicitly.
+///
+/// Per RFC 7519 §4.1.3 `azp` is OPTIONAL, so a token omitting it is **legal**;
+/// the refusal is the *policy's*, and it must be the pinned behavior rather
+/// than an accident. An empty/whitespace `azp` is treated as absent — a
+/// present-but-blank claim is not a binding, and fail-closed says so.
+///
+/// Increments the metric on refusal only (the `screen::ALLOW_BYPASSES`
+/// precedent: the counter lives at the decision, not at the call sites).
+pub fn check_azp(claimed: Option<&str>, expected: Option<&str>) -> Result<(), AuthError> {
+    let Some(expected) = expected.map(str::trim).filter(|e| !e.is_empty()) else {
+        return Ok(());
+    };
+    let category = match claimed.map(str::trim) {
+        None | Some("") => "absent",
+        Some(claimed) if claimed == expected => return Ok(()),
+        Some(_) => "mismatch",
+    };
+    AZP_REJECTIONS.fetch_add(1, Ordering::Relaxed);
+    Err(AuthError::AzpBinding(category))
+}
+
 /// Verify a raw JWT string against the configured key set + issuer/audience.
 /// Returns the typed claims + the resolved token type on success.
 ///
 /// This is the single entry point for JWT verification in the server. The
 /// middleware calls it; `/auth/refresh` calls it with `expected = Refresh`;
-/// tests call it directly. There is no other path that accepts a JWT.
+/// tests call it directly. There is no other path that accepts a JWT, and
+/// there is deliberately no azp-free variant of it — an entry point that
+/// silently skips a security check is a side door on a gate.
+///
+/// `azp` is the configured `BRAIN_JWT_AZP`, or `None` for the historical
+/// unbound posture. It is a parameter rather than an env read so the decision
+/// is resolved once at boot, is testable without touching the process
+/// environment, and cannot drift between the two production callers.
 pub fn verify_access_token(
     raw: &str,
     keys: &[VerifyingKey],
     issuer: &str,
     audience: &str,
+    azp: Option<&str>,
     expected: TokenType,
 ) -> Result<(Claims, TokenType), AuthError> {
     // Phase 1: header parse + algorithm whitelist + kid resolution.
@@ -325,6 +431,13 @@ pub fn verify_access_token(
     let token_data =
         decode::<Claims>(raw, &key.decoding_key, &validator).map_err(|e| map_decode_err(&e))?;
     let claims = token_data.claims;
+
+    // Phase 2b: `azp` application binding (P63.1). STRICTLY AFTER Phase 2 —
+    // i.e. after the signature verified and after `aud` was validated inside
+    // it — and never before. An unverified claim is not a claim. This
+    // ordering is a security invariant (P63.6) and is pinned, along with the
+    // unchanged pre-key-lookup `alg` whitelist at the top of this function.
+    check_azp(claims.azp.as_deref(), azp)?;
 
     // Phase 3: jti presence (not a library-recognized spec claim).
     if claims.jti.trim().is_empty() {
@@ -428,6 +541,7 @@ mod tests {
             roles: vec![],
             manages: vec![],
             chain: None,
+            azp: None,
         }
     }
 
@@ -494,8 +608,8 @@ mod tests {
     fn valid_token_with_all_claims_accepted() {
         let (priv_key, _, keys) = setup();
         let raw = sign(&priv_key, Algorithm::RS256, Some("test-kid-1"), |_| {});
-        let (claims, typ) =
-            verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).expect("valid token");
+        let (claims, typ) = verify_access_token(&raw, &keys, ISS, AUD, None, TokenType::Access)
+            .expect("valid token");
         assert_eq!(claims.sub, "user:test");
         assert_eq!(typ, TokenType::Access);
     }
@@ -507,7 +621,7 @@ mod tests {
             c.iat += 3600;
         });
         assert_eq!(
-            verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err(),
+            verify_access_token(&raw, &keys, ISS, AUD, None, TokenType::Access).unwrap_err(),
             AuthError::InvalidClaim("iat")
         );
     }
@@ -519,7 +633,7 @@ mod tests {
             c.exp += 30 * 24 * 3600;
         });
         assert_eq!(
-            verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err(),
+            verify_access_token(&raw, &keys, ISS, AUD, None, TokenType::Access).unwrap_err(),
             AuthError::TokenLifetimeExceeded
         );
     }
@@ -532,7 +646,7 @@ mod tests {
     fn rsa_kid_rejects_different_rs_variant() {
         let (priv_key, _, keys) = setup();
         let raw = sign(&priv_key, Algorithm::RS384, Some("test-kid-1"), |_| {});
-        let err = verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err();
+        let err = verify_access_token(&raw, &keys, ISS, AUD, None, TokenType::Access).unwrap_err();
         assert!(
             matches!(err, AuthError::AlgMismatchForKid(ref k) if k == "test-kid-1"),
             "RS384 against an RS256-pinned kid must refuse as alg_mismatch_for_kid, got {err:?}"
@@ -557,7 +671,7 @@ mod tests {
         // RS384 with the same RSA key verifies (RS384 is whitelisted), and
         // the pinning comparison never fires.
         let raw = sign(&priv_key, Algorithm::RS384, Some("unpinned-kid"), |_| {});
-        verify_access_token(&raw, &unpinned, ISS, AUD, TokenType::Access)
+        verify_access_token(&raw, &unpinned, ISS, AUD, None, TokenType::Access)
             .expect("an unpinned kid keeps family behavior");
     }
 
@@ -567,7 +681,7 @@ mod tests {
         // key lookup — the cheat sheet's first rule.
         let header = serde_json::json!({"alg": "none", "typ": "JWT", "kid": "test-kid-1"});
         let raw = sign_with_raw_header(&base_claims(), header);
-        let err = verify_access_token(&raw, &[], ISS, AUD, TokenType::Access).unwrap_err();
+        let err = verify_access_token(&raw, &[], ISS, AUD, None, TokenType::Access).unwrap_err();
         assert!(
             matches!(err, AuthError::WeakAlgorithm(_) | AuthError::Malformed),
             "alg:none must be rejected as weak/malformed, got {err:?}"
@@ -581,7 +695,7 @@ mod tests {
         // importantly the whitelist rejects HS* before key lookup.
         let header = serde_json::json!({"alg": "HS256", "typ": "JWT", "kid": "test-kid-1"});
         let raw = sign_with_raw_header(&base_claims(), header);
-        let err = verify_access_token(&raw, &[], ISS, AUD, TokenType::Access).unwrap_err();
+        let err = verify_access_token(&raw, &[], ISS, AUD, None, TokenType::Access).unwrap_err();
         assert!(
             matches!(err, AuthError::HmacForbidden | AuthError::WeakAlgorithm(_)),
             "HS256 must be rejected as hmac_forbidden, got {err:?}"
@@ -602,7 +716,8 @@ mod tests {
         let mid = bytes.len() / 2;
         bytes[mid] = if bytes[mid] == b'a' { b'b' } else { b'a' };
         let tampered = String::from_utf8(bytes).unwrap();
-        let err = verify_access_token(&tampered, &keys, ISS, AUD, TokenType::Access).unwrap_err();
+        let err =
+            verify_access_token(&tampered, &keys, ISS, AUD, None, TokenType::Access).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -623,7 +738,7 @@ mod tests {
             c.exp = now - 100; // expired 100s ago, beyond leeway
             c.nbf = now - 200;
         });
-        let err = verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err();
+        let err = verify_access_token(&raw, &keys, ISS, AUD, None, TokenType::Access).unwrap_err();
         assert_eq!(err, AuthError::InvalidClaim("exp"));
     }
 
@@ -638,7 +753,7 @@ mod tests {
             c.nbf = now + 600; // valid in 10 minutes, beyond leeway
             c.exp = now + 1200;
         });
-        let err = verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err();
+        let err = verify_access_token(&raw, &keys, ISS, AUD, None, TokenType::Access).unwrap_err();
         assert_eq!(err, AuthError::InvalidClaim("nbf"));
     }
 
@@ -648,7 +763,7 @@ mod tests {
         let raw = sign(&priv_key, Algorithm::RS256, Some("test-kid-1"), |c| {
             c.iss = "https://evil.example/".to_string();
         });
-        let err = verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err();
+        let err = verify_access_token(&raw, &keys, ISS, AUD, None, TokenType::Access).unwrap_err();
         assert_eq!(err, AuthError::InvalidClaim("iss"));
     }
 
@@ -658,7 +773,7 @@ mod tests {
         let raw = sign(&priv_key, Algorithm::RS256, Some("test-kid-1"), |c| {
             c.aud = "other-service".to_string();
         });
-        let err = verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err();
+        let err = verify_access_token(&raw, &keys, ISS, AUD, None, TokenType::Access).unwrap_err();
         assert_eq!(err, AuthError::InvalidClaim("aud"));
     }
 
@@ -668,7 +783,7 @@ mod tests {
         let raw = sign(&priv_key, Algorithm::RS256, Some("test-kid-1"), |c| {
             c.jti = String::new();
         });
-        let err = verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err();
+        let err = verify_access_token(&raw, &keys, ISS, AUD, None, TokenType::Access).unwrap_err();
         assert_eq!(err, AuthError::MissingJti);
     }
 
@@ -676,7 +791,7 @@ mod tests {
     fn missing_kid_rejected() {
         let (priv_key, _, keys) = setup();
         let raw = sign(&priv_key, Algorithm::RS256, None, |_| {});
-        let err = verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err();
+        let err = verify_access_token(&raw, &keys, ISS, AUD, None, TokenType::Access).unwrap_err();
         assert_eq!(err, AuthError::MissingKeyId);
     }
 
@@ -684,7 +799,7 @@ mod tests {
     fn unknown_kid_rejected() {
         let (priv_key, _, keys) = setup();
         let raw = sign(&priv_key, Algorithm::RS256, Some("wrong-kid"), |_| {});
-        let err = verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err();
+        let err = verify_access_token(&raw, &keys, ISS, AUD, None, TokenType::Access).unwrap_err();
         assert_eq!(
             err,
             AuthError::UnknownKeyId("wrong-kid".to_string()),
@@ -703,7 +818,7 @@ mod tests {
         let pem = priv_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
         let encoding = EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
         let raw = encode(&header, &claims, &encoding).unwrap();
-        let err = verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err();
+        let err = verify_access_token(&raw, &keys, ISS, AUD, None, TokenType::Access).unwrap_err();
         assert_eq!(err, AuthError::WrongType);
     }
 
@@ -717,7 +832,7 @@ mod tests {
         // the whitelist catches it before any signature work.
         let header = serde_json::json!({"alg": "PS256", "typ": "JWT", "kid": "test-kid-1"});
         let raw = sign_with_raw_header(&base_claims(), header);
-        let err = verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access).unwrap_err();
+        let err = verify_access_token(&raw, &keys, ISS, AUD, None, TokenType::Access).unwrap_err();
         assert!(
             matches!(err, AuthError::WeakAlgorithm(_) | AuthError::BadSignature),
             "PS256 must be rejected by whitelist, got {err:?}"
@@ -736,7 +851,7 @@ mod tests {
             c.exp = now - 10;
             c.nbf = now - 100;
         });
-        verify_access_token(&raw, &keys, ISS, AUD, TokenType::Access)
+        verify_access_token(&raw, &keys, ISS, AUD, None, TokenType::Access)
             .expect("token within leeway must verify");
     }
 }

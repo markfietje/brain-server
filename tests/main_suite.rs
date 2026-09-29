@@ -6126,6 +6126,7 @@ Final paragraph after the rule.";
             key_store,
             jwt_issuer: "https://brain.test/".to_string(),
             jwt_audience: "brain-server".to_string(),
+            jwt_azp: None,
             pool,
             revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
             db_path: std::path::PathBuf::from(":memory:"),
@@ -6163,6 +6164,7 @@ Final paragraph after the rule.";
             roles: roles.iter().map(|s| s.to_string()).collect(),
             manages: Vec::new(),
             chain: None,
+            azp: None,
         };
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some("test-kid".to_string());
@@ -6194,6 +6196,7 @@ Final paragraph after the rule.";
             &keys,
             &state.jwt_issuer,
             &state.jwt_audience,
+            None,
             auth::jwt::TokenType::Access,
         )
         .expect("valid token must verify");
@@ -6320,6 +6323,7 @@ Final paragraph after the rule.";
             &keys,
             &state.jwt_issuer,
             &state.jwt_audience,
+            None,
             auth::jwt::TokenType::Access,
         )
         .expect("valid token must verify");
@@ -6386,6 +6390,7 @@ Final paragraph after the rule.";
             &keys,
             &state.jwt_issuer,
             &state.jwt_audience,
+            None,
             auth::jwt::TokenType::Access,
         )
         .expect("cryptographic verification still passes; revocation is the gate");
@@ -10852,6 +10857,7 @@ Final paragraph after the rule.";
             key_store: auth::jwks::KeyStore::load(&tmp.path().join("keys")).expect("keys"),
             jwt_issuer: "https://brain.test/".to_string(),
             jwt_audience: "brain-server".to_string(),
+            jwt_azp: None,
             pool,
             revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
             db_path: tmp.path().join("db.sqlite"),
@@ -11131,6 +11137,7 @@ Final paragraph after the rule.";
             key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent")).unwrap(),
             jwt_issuer: "https://issuer.test".to_string(),
             jwt_audience: "brain".to_string(),
+            jwt_azp: None,
             pool: pool.clone(),
             revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
             db_path: std::path::PathBuf::from("/nonexistent/brain.db"),
@@ -17977,12 +17984,12 @@ mod r38_delivery {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_19),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_20),
             "the migration literal and the ceiling const must agree on the current stamp"
         );
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.19",
+            "1.32.20",
             "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
              this binary cannot migrate"
         );
@@ -18719,12 +18726,12 @@ mod r40_attestations {
         // round; what moves is the ceiling, and it moves for both.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_19),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_20),
             "the ceiling const and the migration literal must move together"
         );
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.19",
+            "1.32.20",
             "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
              this binary cannot migrate"
         );
@@ -19520,12 +19527,12 @@ mod r41_replay {
         // The stamp moved, and moved with the table.
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.19",
+            "1.32.20",
             "the release round is a schema round: the stamp moves with the table that earns it"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_19),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_20),
         );
         // ...and the parity table the migration rehearsal walks carries the new
         // table: a rehearsal that came back with zero bindings would produce a
@@ -19969,13 +19976,13 @@ mod r42_authority_bindings {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.19",
+            "1.32.20",
             "the bindings stamp pin moves with the release round's stamp: each schema round \
              re-pins the CURRENT stamp, so a stale ceiling fails loudly here"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some("1.32.19"),
+            Some("1.32.20"),
             "what the migration stamps must be what the ceiling declares"
         );
     }
@@ -20844,7 +20851,7 @@ mod r42_authority_bindings {
             .find("CREATE TABLE IF NOT EXISTS delivery_bindings")
             .expect("the table DDL must exist in the migration's production region");
         let stamp_at = migration
-            .find("'schema_version', '1.32.19'")
+            .find("'schema_version', '1.32.20'")
             .expect("the stamp must move to the current schema round's stamp");
         assert!(
             ddl_at < stamp_at,
@@ -20853,7 +20860,7 @@ mod r42_authority_bindings {
         // The stamp's two arms stay in lockstep — the lockstep pin derives both
         // sides, and a half-edited stamp makes `refuse-newer` lie.
         assert!(
-            migration.contains("DO UPDATE SET value = '1.32.19'"),
+            migration.contains("DO UPDATE SET value = '1.32.20'"),
             "both arms of the schema_version upsert must move together"
         );
         // Rehearsal parity: the new table is walked by the migration rehearsal,
@@ -21074,16 +21081,16 @@ mod r43_releases {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.19",
+            "1.32.20",
             "the release round is a schema round: the stamp moves with the table that earns it"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some("1.32.19"),
+            Some("1.32.20"),
         );
         let migration = src("src/migration.rs");
         assert!(
-            migration.contains("DO UPDATE SET value = '1.32.19'"),
+            migration.contains("DO UPDATE SET value = '1.32.20'"),
             "both arms of the schema_version upsert must move together"
         );
         let layout = src("src/storage_layout.rs");

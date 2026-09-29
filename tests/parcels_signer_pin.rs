@@ -64,6 +64,7 @@ fn build_server() -> TestServer {
         key_store: key_store.clone(),
         jwt_issuer: jwt_issuer.clone(),
         jwt_audience: jwt_audience.clone(),
+        jwt_azp: None,
         pool: pool.clone(),
         revocation_cache: Arc::new(brain_server::auth::revocation::RevocationCache::new()),
         db_path: db_path.clone(),
@@ -126,6 +127,7 @@ fn mint(srv: &TestServer) -> String {
         roles: vec!["admin".to_string()],
         manages: Vec::new(),
         chain: None,
+        azp: None,
     };
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some("matrix-kid".to_string());

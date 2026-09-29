@@ -135,6 +135,7 @@ aggregation remains Parcels federation). Gauges are scrape-time snapshots.
 | `brain_capacity_status` | gauge | Capacity posture: 1=ok 2=warning 3=exceeded | `capacity::classify` |
 | `brain_audit_chain_ok` | gauge | 1 = every registered domain's audit chain verifies; 0 = tamper detected (TTL-cached; authoritative answer on `/audit/verify`) | `audit::verify_chain` |
 | `brain_db_busy_total` | counter | SQLITE_BUSY events surfaced at the audit seam specifically (audit-tx settle failures after busy_timeout burn-through) — the narrower audit-seam twin of `brain_busy_errors_total` | `audit::busy_hits()` |
+| `brain_jwt_azp_rejected_total` | counter | Access tokens REFUSED because their RFC 7519 §4.1.3 `azp` claim was absent or named a different application (the token-intent / confused-deputy class). Only ever non-zero when `BRAIN_JWT_AZP` is configured, so a rising series is a positive statement that the control is live and biting; `0` is ambiguous between "not configured" and "nothing refused", and the **boot line** (P63.2 disclosure) is what states the posture, not this series. Mints from `/auth/refresh` carry the verified `azp` forward, so rotation cannot trip this | `auth::jwt::azp_rejections()` |
 
 `/health/db` JSON additive keys (v1.28.58): `concurrency.pool_timeouts_total`,
 `concurrency.busy_errors_total`, and `concurrency.wal_pages_pending` (a

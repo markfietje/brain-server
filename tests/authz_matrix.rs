@@ -120,6 +120,7 @@ fn build_server() -> TestServer {
         key_store: key_store.clone(),
         jwt_issuer: jwt_issuer.clone(),
         jwt_audience: jwt_audience.clone(),
+        jwt_azp: None,
         pool: pool.clone(),
         revocation_cache: Arc::new(brain_server::auth::revocation::RevocationCache::new()),
         db_path: db_path.clone(),
@@ -192,6 +193,7 @@ fn mint(
         roles: roles.iter().map(|s| s.to_string()).collect(),
         manages: Vec::new(),
         chain: None,
+        azp: None,
     };
     let mut header = Header::new(Algorithm::RS256);
     header.kid = Some("matrix-kid".to_string());
@@ -994,6 +996,7 @@ async fn authz_matrix_opaque_mode_superuser_and_none() {
         key_store: brain_server::auth::jwks::KeyStore::default(),
         jwt_issuer: String::new(),
         jwt_audience: String::new(),
+        jwt_azp: None,
         pool: pool.clone(),
         revocation_cache: Arc::new(brain_server::auth::revocation::RevocationCache::new()),
         db_path: db_path.clone(),
@@ -2639,6 +2642,34 @@ async fn admin_sees_domain_labels() {
     assert!(
         !body.contains("{domain=\"other\"}"),
         "no collapse series for admin"
+    );
+}
+
+/// R63 / D63.5 — the azp refusal counter is actually ON THE WIRE, not merely
+/// defined. The value is pinned behaviorally in `tests/r63_azp_pins.rs`; this
+/// pins the SCRAPE side, which is a separate link in the chain and can be lost
+/// silently (a counter that increments but is never exported is invisible to
+/// every operator watching a dashboard).
+#[tokio::test]
+async fn admin_scrape_exposes_the_azp_rejection_counter() {
+    let srv = build_server();
+    let admin = mint(
+        &srv,
+        "m2-azp",
+        "user:m2azp",
+        "team-a",
+        &["admin:*/*"],
+        &["admin", "matrix-role"],
+    );
+    let (st, body) = send_body(&srv, Some(&admin), "/metrics", "GET", "").await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        body.contains("# TYPE brain_jwt_azp_rejected_total counter"),
+        "the azp counter must be exported as a counter: {body}"
+    );
+    assert!(
+        body.contains("brain_jwt_azp_rejected_total "),
+        "the azp counter must carry a value line: {body}"
     );
 }
 

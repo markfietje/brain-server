@@ -390,6 +390,16 @@ pub fn bootstrap() -> Result<BootOutcome> {
         return Err(anyhow::anyhow!("fatal injection thresholds: {e}"));
     }
 
+    // ── fail-closed azp policy ─────────────────
+    // A BRAIN_JWT_AZP that is present-but-blank resolves to the same unbound
+    // posture as unset, so accepting it would leave an operator believing
+    // token-intent enforcement is on when it is not. Refuse instead. Absent
+    // is NOT an error: azp is optional in the token (RFC 7519 §4.1.3) and
+    // unset is the historical, non-breaking default.
+    if let Err(e) = config::validate_jwt_azp_env() {
+        return Err(anyhow::anyhow!("fatal JWT azp config: {e}"));
+    }
+
     // ── fail-closed durability policy (Headroom) ──────
     // The envelope's per-target defaults ⊕ the optional BRAIN_SYNCHRONOUS /
     // BRAIN_WAL_AUTOCHECKPOINT overrides. An unknown value refuses the boot
@@ -954,6 +964,11 @@ pub fn bootstrap() -> Result<BootOutcome> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "brain-server".to_string());
+    // Already validated above (fatal JWT azp config), so this cannot fail —
+    // and it is NOT `unwrap_or_default()`-ed past: a silent fallback to
+    // unbound here would defeat the refusal a few hundred lines up.
+    let jwt_azp =
+        config::resolve_jwt_azp().map_err(|e| anyhow::anyhow!("fatal JWT azp config: {e}"))?;
     let public_base_url = std::env::var("BRAIN_PUBLIC_BASE_URL")
         .ok()
         .map(|s| s.trim().to_string())
@@ -966,12 +981,19 @@ pub fn bootstrap() -> Result<BootOutcome> {
     };
     if auth_mode.is_jwt() {
         info!(
-            "JWT auth enabled: issuer={issuer} aud={aud} keys={n} dir={dir:?}",
+            "JWT auth enabled: issuer={issuer} aud={aud} azp={azp:?} keys={n} dir={dir:?}",
             issuer = jwt_issuer,
             aud = jwt_audience,
+            azp = jwt_azp,
             n = key_store.len(),
             dir = key_dir
         );
+        // P63.2 — fail loud, not fail silent. An unbound deployment is a
+        // supported posture, but an operator must never have to guess which
+        // one they are in.
+        if let Some(line) = auth::jwt::azp_unbound_disclosure(true, jwt_azp.as_deref()) {
+            warn!("{line}");
+        }
     } else {
         info!(
             "JWT auth not configured (set BRAIN_JWT_ISSUER + BRAIN_JWT_KEY_DIR); running in opaque-token mode"
@@ -1006,6 +1028,7 @@ pub fn bootstrap() -> Result<BootOutcome> {
         key_store: key_store.clone(),
         jwt_issuer: jwt_issuer.clone(),
         jwt_audience: jwt_audience.clone(),
+        jwt_azp: jwt_azp.clone(),
         pool: pool.clone(),
         revocation_cache: revocation_cache.clone(),
         db_path: db_path.clone(),

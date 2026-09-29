@@ -760,6 +760,17 @@ pub(crate) async fn metrics(
             "brain_db_busy_total {}\n",
             crate::audit::busy_hits()
         ));
+        // Zero is the healthy value and is ALSO the "not configured"
+        // value: the counter only moves when BRAIN_JWT_AZP is set, so a
+        // rising series is a positive statement that the azp control is live
+        // and refusing. An operator cannot read the difference from this
+        // series alone — the boot line (P63.2) is what states the posture.
+        out.push_str("# HELP brain_jwt_azp_rejected_total Access tokens REFUSED because their RFC 7519 azp claim was absent or named a different application. Only ever non-zero when BRAIN_JWT_AZP is configured. Monotonic.\n");
+        out.push_str("# TYPE brain_jwt_azp_rejected_total counter\n");
+        out.push_str(&format!(
+            "brain_jwt_azp_rejected_total {}\n",
+            crate::auth::jwt::azp_rejections()
+        ));
         out
     })
     .await

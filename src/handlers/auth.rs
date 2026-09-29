@@ -112,6 +112,13 @@ fn mint_pair(
         roles: source.roles.clone(),
         manages: source.manages.clone(),
         chain: None, // access tokens never carry the refresh family
+        // CARRY FORWARD, never invent. The server is not the IdP: it may only
+        // re-assert an `azp` it actually verified on the presented token.
+        // Minting `None` here would be a self-inflicted lockout — with
+        // BRAIN_JWT_AZP set, the first refresh would mint an azp-less pair
+        // and every refresh after it would be refused as `absent`. Pinned by
+        // `minted_refresh_token_preserves_the_verified_azp`.
+        azp: source.azp.clone(),
     };
     let mut access_header = Header::new(alg);
     access_header.kid = Some(signing_kid.to_string());
@@ -131,6 +138,11 @@ fn mint_pair(
         roles: Vec::new(),  // nor roles — not presented to data routes
         manages: Vec::new(),
         chain: Some(chain_id.to_string()),
+        // Carried forward for the same reason as the access token above, and
+        // with more force: the REFRESH token is re-presented to this same
+        // verifier on the next rotation, so dropping `azp` here would break
+        // the chain the moment enforcement is switched on.
+        azp: source.azp.clone(),
     };
     let mut refresh_header = Header::new(alg);
     refresh_header.kid = Some(signing_kid.to_string());
@@ -159,6 +171,11 @@ pub async fn refresh(
     let issuer = s.jwt_issuer.clone();
     let audience = s.jwt_audience.clone();
     let keys = s.key_store.verifying_keys();
+    // `azp` lives on `JwtMiddlewareState`, not duplicated onto `AppState`:
+    // it has two readers, and adding a 35th field to a struct with 34 literal
+    // construction sites is a worse trade than the one cross-struct read.
+    // `AppState` holds the middleware state, so it is reachable here.
+    let azp = s.jwt_middleware_state.jwt_azp.clone();
 
     // Phase 1: verify the refresh token cryptographically.
     let (claims, _) = verify_access_token(
@@ -166,6 +183,7 @@ pub async fn refresh(
         &keys,
         &issuer,
         &audience,
+        azp.as_deref(),
         TokenType::Refresh,
     )
     .map_err(AuthHandlerError::from_auth)?;
@@ -402,6 +420,14 @@ impl AuthHandlerError {
             | AuthError::MissingJti
             | AuthError::TokenLifetimeExceeded
             | AuthError::WrongType
+            // Token-intent refusal: a genuine token, wrong application. 401 is
+            // correct and deliberately indistinguishable from the sibling
+            // failures on the wire — telling a caller "your azp was wrong"
+            // separately from "your signature was wrong" is free signal about
+            // which of the two an attacker got past. The category reaches the
+            // operator through the audit row's `code` and the
+            // `brain_jwt_azp_rejected_total` counter, not the 401 body.
+            | AuthError::AzpBinding(_)
             | AuthError::Other(_) => StatusCode::UNAUTHORIZED,
         };
         AuthHandlerError {
@@ -680,6 +706,7 @@ mod tests {
             roles: vec![],
             manages: vec![],
             chain: None,
+            azp: None,
         };
         let pair = mint_pair(
             "test-kid",
@@ -704,6 +731,73 @@ mod tests {
         assert!(
             !payload["jti"].as_str().unwrap().is_empty(),
             "minted refresh token carries a jti"
+        );
+    }
+
+    /// **R63 — the minted pair must CARRY FORWARD the `azp` it verified.**
+    ///
+    /// This is a trap, not a nicety. `refresh` verifies the presented token
+    /// under azp enforcement and then mints its replacement. If `mint_pair`
+    /// dropped `azp`, the very first rotation would produce an azp-LESS pair,
+    /// and the NEXT refresh would be refused `AzpBinding("absent")` — a
+    /// deployment that enabled the control would lock itself out after one
+    /// cycle, with the audit trail pointing at the enforcement rather than at
+    /// the mint. The server is not the IdP: it may re-assert an `azp` it
+    /// actually verified, and must never invent one.
+    #[test]
+    fn mint_carries_the_verified_azp_forward() {
+        use rsa::pkcs8::EncodePrivateKey;
+        let mut rng = rand::rngs::ThreadRng::default();
+        let priv_key = rsa::RsaPrivateKey::new(&mut rng, 2048).unwrap();
+        let pem = priv_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+        let encoding = EncodingKey::from_rsa_pem(pem.as_bytes()).unwrap();
+        let now = now_unix();
+        let azp = "brain-server";
+        let source = Claims {
+            iss: "https://brain.test/".to_string(),
+            aud: "brain-server".to_string(),
+            sub: "user:test".to_string(),
+            jti: "login-jti".to_string(),
+            iat: now,
+            nbf: now,
+            exp: now + 600,
+            tenant: "global".to_string(),
+            scopes: vec![],
+            roles: vec![],
+            manages: vec![],
+            chain: None,
+            azp: Some(azp.to_string()),
+        };
+        let pair = mint_pair(
+            "test-kid",
+            &encoding,
+            Algorithm::RS256,
+            "https://brain.test/",
+            "brain-server",
+            &source,
+            "sess-azp",
+        )
+        .expect("mint");
+        use base64::Engine as _;
+        let decode_payload = |token: &str| -> serde_json::Value {
+            let segs: Vec<&str> = token.split('.').collect();
+            serde_json::from_slice(
+                &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(segs[1])
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            decode_payload(&pair.refresh_token)["azp"],
+            azp,
+            "the REFRESH token is re-presented to this same verifier on the next rotation; \
+             dropping azp here breaks the chain the moment enforcement is switched on"
+        );
+        assert_eq!(
+            decode_payload(&pair.access_token)["azp"],
+            azp,
+            "the access token carries the same verified binding"
         );
     }
 }
