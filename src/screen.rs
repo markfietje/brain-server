@@ -322,6 +322,7 @@ fn score_field(scorer: &dyn InjectionScorer, text: &str) -> f32 {
 #[cfg(feature = "injection-classifier")]
 mod onnx {
     use super::InjectionScorer;
+    use crate::config;
     use ort::session::Session;
 
     pub struct OnnxScorer {
@@ -339,6 +340,27 @@ mod onnx {
         session: std::sync::Mutex<Session>,
         tokenizer: tokenizers::Tokenizer,
         max_len: usize,
+    }
+
+    /// The declared execution contract for the classifier session.
+    ///
+    /// `intra` is the only thread count this build controls: the runtime runs
+    /// in SEQUENTIAL mode, so there is no inter-op parallelism to configure.
+    /// `deterministic_compute` is the knob that actually governs reproducible
+    /// kernels. Both are named in one place so a future change to either is a
+    /// diff against a declared value rather than an invisible edit.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct SessionThreads {
+        pub intra: usize,
+        pub deterministic_compute: bool,
+    }
+
+    impl SessionThreads {
+        /// The contract this build pins.
+        pub const DECLARED: Self = Self {
+            intra: 1,
+            deterministic_compute: true,
+        };
     }
 
     /// Load per the auto-on resolution order: the explicit `off` opt-out
@@ -372,8 +394,30 @@ mod onnx {
                 .map_err(|e| anyhow::anyhow!("ort session builder: {e:?}"))?
                 .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)
                 .map_err(|e| anyhow::anyhow!("ort opt level: {e:?}"))?
-                .with_intra_threads(1)
+                // Both settings are READ FROM `SessionThreads::DECLARED` rather
+                // than restated, so the declaration is the single source of
+                // truth and the builder cannot drift from it.
+                .with_intra_threads(SessionThreads::DECLARED.intra)
                 .map_err(|e| anyhow::anyhow!("ort threads: {e:?}"))?
+                // The real determinism control, and it was OFF. `ort` documents
+                // this knob as: "The default (non-deterministic) kernels will
+                // typically use faster algorithms that may introduce slight
+                // variance. Enabling deterministic compute will output
+                // reproducible results, but may come at a performance penalty."
+                // That is exactly the host-dependent variance this round exists
+                // to remove, and the build was accepting the faster,
+                // non-reproducible kernels.
+                .with_deterministic_compute(SessionThreads::DECLARED.deterministic_compute)
+                .map_err(|e| anyhow::anyhow!("ort deterministic compute: {e:?}"))?
+                // NOTE: `with_inter_threads` is deliberately NOT set. The
+                // runtime's execution mode defaults to SEQUENTIAL (parallel
+                // execution is off unless `with_parallel_execution(true)` is
+                // called, and nothing here calls it), and `ort` documents
+                // inter-op threads as having "no effect when the session
+                // execution mode is set to Sequential". Setting it would be
+                // cargo-culting: it would look like a determinism control while
+                // changing nothing. If parallel execution is ever enabled, this
+                // is the line that must be revisited - and revisited WITH it.
                 .commit_from_file(model_path)
                 .map_err(|e| anyhow::anyhow!("ort load {model_path}: {e:?}"))?;
             let tokenizer = tokenizers::Tokenizer::from_file(tokenizer_path)
@@ -1654,11 +1698,33 @@ mod tests {
 
         fn set_env(key: &str, value: Option<String>) {
             let _g = CLS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(v) = value {
-                std::env::set_var(key, v);
-            } else {
-                std::env::remove_var(key);
+            // SAFETY: single-threaded under CLS_ENV_LOCK — the documented
+            // env-mutation posture (the `standby.rs` / `config.rs` precedent).
+            unsafe {
+                if let Some(v) = value {
+                    std::env::set_var(key, v);
+                } else {
+                    std::env::remove_var(key);
+                }
             }
+        }
+
+        /// The declared execution contract is the one this build pins.
+        ///
+        /// `ort` 2.0.0-rc.13 exposes NO getter for either setting, so this
+        /// asserts the DECLARATION, not a value read back off a live session.
+        /// Saying so is the point: a pin that claimed to verify the effective
+        /// value would be a false claim, and `ort` does not make it available.
+        #[test]
+        fn declared_execution_contract_is_the_pinned_one() {
+            let d = onnx::SessionThreads::DECLARED;
+            assert_eq!(d.intra, 1, "intra-op stays pinned at 1 (Jetson budget)");
+            assert!(
+                d.deterministic_compute,
+                "deterministic compute must be ON: the default kernels are documented as \
+                 faster but 'may introduce slight variance', which is exactly the \
+                 host-dependent output this round exists to pin"
+            );
         }
 
         /// Explicit `off` opts out even when a model resolves.
@@ -1670,7 +1736,7 @@ mod tests {
                 crate::config::injection_classifier_setting(),
                 crate::config::ClassifierSetting::Off
             );
-            assert_eq!(onnx::try_load(), None, "off must not load");
+            assert!(onnx::try_load().is_none(), "off must not load");
             set_env("BRAIN_INJECTION_CLASSIFIER", None);
         }
 

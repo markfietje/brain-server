@@ -106,6 +106,47 @@ pub(crate) struct ToolSpec {
     pub schema_json: String,
 }
 
+/// **The declared sampling contract.**
+///
+/// Before this existed the provider sent `model`, `system_prompt`, `messages`
+/// and `tools` — and **no sampling field at all**. That is worse than a wrong
+/// value: an omitted field is an *unowned* contract that silently inherits
+/// whatever the upstream default happens to be, and an absent contract cannot
+/// fail a pin.
+///
+/// What this buys is **attribution, not determinism.** Sending
+/// `temperature: 0` does not make an upstream API reproducible — server-side
+/// batching, backend model updates and infrastructure changes all move outputs
+/// under byte-identical requests. It makes a divergence *explainable* ("the
+/// contract was honoured; upstream moved") instead of unfalsifiable. Anything
+/// claiming more than this is the overstatement class the claim pins police.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SamplingContract {
+    /// Sent as `temperature`. Greedy decoding.
+    pub temperature: f32,
+}
+
+impl SamplingContract {
+    /// The contract this build declares. Chosen once, pinned forever. The
+    /// point is not that 0.0 is optimal — it is that the field is **owned**.
+    pub const DECLARED: Self = Self { temperature: 0.0 };
+
+    /// Refuse a body that does not carry the declared contract.
+    ///
+    /// A contract that silently defaults is not a contract, so absence is an
+    /// error, not a "use the default" path. This runs on the send seam, so a
+    /// later refactor that drops the field from the body fails HERE — loudly,
+    /// at the request that would have inherited the upstream default — rather
+    /// than passing a suite that no longer asserts anything.
+    pub fn check(body: &serde_json::Value) -> Result<(), &'static str> {
+        match body.get("temperature").and_then(serde_json::Value::as_f64) {
+            Some(t) if t == f64::from(Self::DECLARED.temperature) => Ok(()),
+            Some(_) => Err("request declares a temperature outside the pinned contract"),
+            None => Err("request is missing the declared sampling contract"),
+        }
+    }
+}
+
 /// A streamed completion request. Value-typed end to end: the system prompt
 /// is a cache-stable prefix by construction (deterministic assembly lives in
 /// the loop), tools ride at the end, and nothing in here is provider-native.

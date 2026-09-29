@@ -89,6 +89,27 @@ impl std::fmt::Debug for HttpProviderConfig {
     }
 }
 
+/// The ONE place the outbound body is built.
+///
+/// Extracted from `stream` so the construction seam is nameable and testable:
+/// the determinism DoD ("the same input yields a byte-identical body") is a
+/// property of this function, and an inline `json!` has no address a pin can
+/// point at. Every key is a literal and every value is derived from the
+/// arguments — no clock, no uuid, no map iteration — so the output is a pure
+/// function of `(model, request)`.
+///
+/// The sampling contract rides EVERY request and is declared in exactly this
+/// one place, so there is no seam where a refactor could drop it.
+fn request_body(model: &str, req: &ProviderRequest) -> serde_json::Value {
+    serde_json::json!({
+        "model": model,
+        "system_prompt": req.system_prompt,
+        "messages": req.messages,
+        "tools": req.tools,
+        "temperature": crate::agentloop::provider::SamplingContract::DECLARED.temperature,
+    })
+}
+
 /// The screened, DNS-pinned, bounded HTTP transport implementing
 /// [`LlmProvider`]. Kernel-side by design: the SDK gains nothing.
 pub(crate) struct HttpProvider {
@@ -210,12 +231,15 @@ impl LlmProvider for HttpProvider {
         let auth = self.auth_header.clone();
         let client = self.client.clone();
         let max_bytes = self.max_response_bytes;
-        let body = serde_json::json!({
-            "model": model,
-            "system_prompt": req.system_prompt,
-            "messages": req.messages,
-            "tools": req.tools,
-        });
+        let body = request_body(&model, &req);
+        // Enforced, not defaulted: a body missing the contract refuses HERE,
+        // before the send, rather than going out and inheriting the upstream
+        // default. A direct `Err` (not a channel send) because this sits before
+        // the spawn — nothing is polling the receiver yet.
+        crate::agentloop::provider::SamplingContract::check(&body).map_err(|reason| {
+            tracing::error!("refusing outbound request: {reason}");
+            ProviderError::Refused
+        })?;
         tokio::spawn(async move {
             let response = tokio::select! {
                 biased;
@@ -470,6 +494,23 @@ mod tests {
     }
 
     static RECORDED_REQUEST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+    /// `RECORDED_REQUEST` is ONE shared slot, so every test that reads a
+    /// recorded body must hold this lock — otherwise two tests running in
+    /// parallel take each other's recording and both see `None`.
+    ///
+    /// `tokio::sync::Mutex`, not `std::sync::Mutex`: the guard is held across
+    /// `.await` points (the server round-trip), and a std guard across an await
+    /// is a clippy error *and* the wrong primitive for an async task.
+    ///
+    /// Also: a std Mutex taken inside `tokio::join!` would DEADLOCK — `join!`
+    /// polls both futures on one task, so the second acquisition could never be
+    /// released. Any test needing more than one recording takes the lock once
+    /// and records in sequence.
+    fn record_lock() -> &'static tokio::sync::Mutex<()> {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+    }
 
     /// Read one HTTP/1.1 request off the socket: headers, then the
     /// content-length body. Bounded by the loopback test frame.
@@ -856,6 +897,7 @@ mod tests {
 
     #[tokio::test]
     async fn request_carries_model_and_canonical_shape() {
+        let _record = record_lock().lock().await;
         RECORDED_REQUEST.lock().unwrap().take();
         let (addr, server) = spawn_server(Behavior::RecordThenSse).await;
         let provider = adapter_for(addr);
@@ -885,6 +927,119 @@ mod tests {
             "the canonical ProviderRequest serde shape rides the wire"
         );
         server.abort();
+    }
+
+    // ── the determinism contract ──────────────────────────────────────
+    //
+    // R63a.1 / R63a.5 / D63a.2 / D63a.3. The pre-fix state was that the body
+    // carried NO sampling field at all, so no pin could fail against it — an
+    // absent contract cannot be pinned. These pins fail if the field is
+    // dropped, and `D63a.2` (byte-identical across constructions) is the item
+    // three dependent rounds rest on.
+
+    /// R63a.1 / D63a.3 — the declared contract is ON THE WIRE, and its value
+    /// is the preregistered one (greedy: `temperature` 0).
+    #[tokio::test]
+    async fn request_carries_the_declared_sampling_contract() {
+        let _record = record_lock().lock().await;
+        RECORDED_REQUEST.lock().unwrap().take();
+        let (addr, server) = spawn_server(Behavior::RecordThenSse).await;
+        let provider = adapter_for(addr);
+        let events = drain(provider.stream(request()).unwrap()).await;
+        assert!(
+            events.iter().all(|e| e.is_ok()),
+            "serves cleanly: {events:?}"
+        );
+        let raw = RECORDED_REQUEST.lock().unwrap().clone().unwrap();
+        let body = raw
+            .split_once("\r\n\r\n")
+            .map(|(_, b)| b.to_string())
+            .unwrap_or(raw.clone());
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            v["temperature"],
+            serde_json::json!(crate::agentloop::provider::SamplingContract::DECLARED.temperature),
+            "the declared sampling contract must ride every request; an omitted field is an \
+             UNOWNED contract that silently inherits the upstream default"
+        );
+        server.abort();
+    }
+
+    /// D63a.2 / R63a.5 — **the same input yields a byte-identical request
+    /// body.** This is the property `D52.3`, `D58.2` and `D60.2` all rest on,
+    /// so it is asserted at the WIRE, twice, through the real adapter — not at
+    /// the builder, which would only prove the builder is pure.
+    #[tokio::test]
+    async fn same_input_yields_a_byte_identical_request_body() {
+        let _record = record_lock().lock().await;
+        // Sequential, NOT `join!`: a mutex taken inside would deadlock on one
+        // task. Byte-identity is the property under test; concurrency is not.
+        let mut bodies = Vec::new();
+        for round in 1..=2 {
+            RECORDED_REQUEST.lock().unwrap().take();
+            let (addr, server) = spawn_server(Behavior::RecordThenSse).await;
+            let events = drain(adapter_for(addr).stream(request()).unwrap()).await;
+            assert!(
+                events.iter().all(|e| e.is_ok()),
+                "round {round}: {events:?}"
+            );
+            let raw = RECORDED_REQUEST
+                .lock()
+                .unwrap()
+                .clone()
+                .unwrap_or_else(|| panic!("round {round} recorded no request"));
+            server.abort();
+            // The BODY, not the whole HTTP frame: two constructions land on two
+            // ephemeral ports, so the `host:` header necessarily differs and is
+            // transport, not request content. `D63a.2` is about the body.
+            let body = raw
+                .split_once("\r\n\r\n")
+                .map(|(_, b)| b.to_string())
+                .unwrap_or_else(|| panic!("round {round} recording had no body: {raw:?}"));
+            bodies.push(body);
+        }
+        assert_eq!(
+            bodies[0], bodies[1],
+            "two constructions of the same request must yield a byte-identical BODY — a \
+             replay, an eval, and a golden-output comparison all depend on this"
+        );
+        // Say what it was, so a failure diff is legible without a debugger.
+        assert!(
+            bodies[0].contains("\"temperature\":0.0"),
+            "the declared contract must be part of the compared bytes: {}",
+            bodies[0]
+        );
+    }
+
+    /// R63a.2 / D63a.3 — **a request lacking the declared field is REFUSED, not
+    /// defaulted.** A contract that silently defaults is not a contract. The
+    /// hand-built bodies below are exactly what a future refactor would
+    /// produce by dropping the key.
+    #[test]
+    fn a_body_without_the_declared_contract_is_refused_not_defaulted() {
+        use crate::agentloop::provider::SamplingContract;
+        let missing = serde_json::json!({
+            "model": "pilot-model",
+            "system_prompt": "sys",
+            "messages": [],
+            "tools": [],
+        });
+        let err = SamplingContract::check(&missing).expect_err(
+            "a body with no sampling field must be REFUSED, never sent to inherit the upstream \
+             default",
+        );
+        assert!(err.contains("missing"), "{err}");
+
+        // ...and a field carrying a value OUTSIDE the contract is refused too:
+        // the check is a contract, not a presence check.
+        let out_of_contract = serde_json::json!({ "temperature": 0.7 });
+        let err = SamplingContract::check(&out_of_contract)
+            .expect_err("a temperature outside the pinned contract must be refused");
+        assert!(err.contains("outside"), "{err}");
+
+        // The declared body passes.
+        SamplingContract::check(&request_body("pilot-model", &request()))
+            .expect("the declared body satisfies the contract");
     }
 
     #[test]
