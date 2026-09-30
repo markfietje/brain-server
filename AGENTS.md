@@ -1,6 +1,104 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R57b "Cite"** — decision lineage + the trace
+> Current release (unreleased): **R59 "Gate"** — the admission-gate suite, and
+> two DoD items refused. Theme: **a filter becomes a control loop — two things
+> the tree already *stated* and did not *do*, and two DoD items refused rather
+> than worked around.** (1) The **admission-gate suite** in `crates/gold-sets`
+> (209 lines before the round; the round adds **2 428** lines across 7 files,
+> **zero deletions, zero existing bytes modified**): 12 checks in the plan's
+> numbering, **faithfulness executed first** (its 42.5% failure rate makes it
+> the dominant property), each resolving to exactly one of mechanical /
+> adversarial / **inapplicable-with-a-reason** / **negative-routes-to-a-stage**.
+>
+> **The real deliverable is the routing, not the vertical** — "more than the
+> vertical", as the prompt put it. A negative check **names the stage that owns
+> the defect** (Create/Solve/Evolve/Deflect/Operate) and the case goes THERE.
+> `patch_at_gate` returns `Result<Infallible, PatchRefusal>`, so "patched at
+> the gate" is **not a state the type can represent** and the SWE-Proof
+> revision-routing rule is mechanical rather than advisory. That guarantee is
+> **compile-time**: widening the `Ok` type breaks the build inside the pin's own
+> `fn`-pointer binding, so it never produces a `test result: FAILED` line.
+>
+> **Inapplicable is a THIRD state, not a pass.** 3 of 12 checks
+> (ContentDisposition, ReadSeam, AuditCalibration) are unreachable from this
+> workspace node, each with a measured reason **and a `REOPEN` condition**. A
+> case with an UNDECLARED inapplicability is refused; an admitted case **names
+> its gaps in its receipt**, so **admitted never looks green**.
+>
+> The suite caught a defect in **its own attacker panel**, and **the pin caught
+> it before a human did**: `Mutant::DropSurface` popped an element from
+> `required_surface` and declared Faithfulness as its watcher, but popping a
+> requirement can only make coverage look BETTER, so a coverage check is
+> structurally incapable of noticing. It is now `UncoveredSurface`, which
+> **widens the CLAIM**. A **declared survivor** mutant
+> (`HumanVerdictContradiction`) is declared, not assumed: no mechanical check
+> reads the corpus's `human_pass` verdict, so it survives — and the panel now
+> *verifies* the declaration, reporting a stale one as its own negative.
+>
+> **What did NOT ship, stated plainly.** **`I59.4` STOPPED and `D59.5` recorded
+> UNSATISFIABLE** — not "hard", unsatisfiable. All four routes to a production
+> consumer for `brain-care-core` were measured closed **between the prompt's own
+> §7 and §10**: the root manifest edge moves `Cargo.lock` (§7 forbids it); the
+> harness edge is not production (`publish = false`, dev-dependency only, and
+> §0's own table classifies harness-only as NOT consumed); the internal
+> unconsumed-island edge is forbidden by name (§10); and R57's
+> `the_census_reaches_the_corpus_without_a_new_dependency_edge` forbids the
+> manifest edge outright. `cargo tree --invert brain-care-core` still returns a
+> **bare node** — the dead vertical points at itself via `brain-interview-core`.
+>
+> **`D59.6` reports "insufficient corpus"; `D59.7` reports the panel
+> UNCALIBRATED.** Both escapes were preregistered *for use* and used. **No check
+> was shrunk to fit the corpus**, and **no threshold was invented for a
+> calibration the assessment never supplied** — its only figure is the phrase "a
+> third to two thirds", and **a band that is a sentence is not a measurement**.
+> The claim R59 was bought for — §7's "One vertical is real", falsified by "a
+> number without provenance" — **is NOT MADE**: the suite is real, the vertical
+> is unwired, and **by the execution order's own falsification criterion the
+> round did not buy the claim.**
+>
+> **The critical path did not move.** R59 does not unblock R55/R58a/R58b/R61;
+> they wait on the R53 decision. `R53's halt is unchanged:` `gates_vacuous` is
+> still advisory-only, and **a reader who sees R59 land must not infer that it
+> did.** `R59.4` is **not** `R53`'s fork — R59.4 is about a gold case's
+> assertion, R53 is about the harness's `gates_vacuous`; neither resolved,
+> evaded, nor pre-empted the other.
+>
+> **The fifth wrong number — and this time in the handoff instrument itself.**
+> The prompt's §9 baseline said lib **2 158** passed; measured **2 818**: the
+> same digits transposed, **a number that was never a measurement**. That is
+> the **fifth** inherited figure wrong in consecutive rounds (after `crates/`
+> 281 vs 275), and sharper than the last — **the corruption is now in the
+> instrument that hands the work over, not only in predecessor ship notes.** Two
+> more of the round's own brief's premises measured false at the first
+> measurement: the pre-existing pin count is **11, not 7** (the 7 is the frozen
+> *case* count), and `lib.rs` had **5** pre-existing tests, not 4.
+>
+> Spire at ship: `crates/` **275 → 306**; lib **2 818** passed / 0 failed / 3
+> ignored (31 binaries); `main_suite` unchanged; harness **29**, `--test gold`
+> **6** unchanged; `gold-sets` **5 → 36**. `CRATE_TEST_FLOOR` **2 618 —
+> DELIBERATELY NOT RAISED**: the needle `find src tests -name "*.rs"` does not
+> walk `crates/`, so hand-counting this round's 31 additions would have set it
+> wrong by 31. The three floors stay **255 / 214 / 200**. Schema **1.32.21**
+> unchanged (probe 1.32.22). `verify_claims.py` **53/53**. Full gate **22/22** —
+> including two steps that **FAILED first on the round's own new code** and were
+> fixed at the root (`expect_used` denied in library code, restructured into a
+> `let-else` returning the same Negative, which also removed a duplicate bounds
+> check; and 42 unformatted hunks → `cargo fmt`). **Zero new dependency edges:
+> all three `Cargo.lock` files byte-identical.** `cargo audit` clean over all
+> three audited workspaces. All six frozen gold fixtures hash-verified
+> **IDENTICAL** to `6dcfff13`. Preregistered before any code at `6182f47`,
+> evidence after at `b7b829c`, shipped at `7001e478`.
+>
+> **Honest note on the "80-line vertical".** `brain-care-core` is 80 lines, but
+> its only production decision is a **two-element array membership test**
+> (`CARE_KINDS.contains`), its one production import (`DraftStore`) is held in a
+> field **no production path reads or writes**, and every ambiguity/draft/repair
+> call lives in `#[cfg(test)]`. With `brain-interview-core` the island is 552
+> lines, but 472 of those are interview machinery this crate does not exercise
+> in production either. **The behavioural figure, not the line figure, is the
+> load-bearing one** — which is how the round's preregistration was amended.
+>
+> Predecessor: **R57b "Cite"** — decision lineage + the trace
 > citation. Theme: **two things the tree already *stated* and did not *do*, and
 > three plan premises that measured FALSE before a line was written.** (1) The
 > **three-site lineage append**: `write_handoff_transition`,
@@ -1236,7 +1334,7 @@ p95` (bucket-quantile edges, no histograms crate); poison postures
  cargo build --release --features bench --bin brain-server --bin brain --bin mcp --bin bench
 
 # Tests + quality gates (always run with --features bench — the bench binary is feature-gated)
-cargo test --features bench                                  # current count: scripts/badges.sh (2,188 passed at HEAD d46c21c, 2026-09-22)
+cargo test --features bench                                  # current count: scripts/badges.sh (2,818 passed at HEAD 7001e478, 2026-09-30)
 cargo clippy --all-targets --features bench -- -D warnings   # zero warnings enforced
 cargo fmt --check
 
