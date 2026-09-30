@@ -3705,7 +3705,26 @@ fn cmd_restore(args: &[String]) -> Result<(), String> {
                 .to_string(),
         );
     }
-    if !force {
+    if force {
+        // The forced path previously emitted NOTHING: the guard above is
+        // skipped, and the blind-spot disclosure below sat inside the same
+        // `if !force` arm, so an operator who forces a restore was never told
+        // the probe would not have covered their server. Both now happen, and
+        // the decision leaves a hash-chained row.
+        //
+        // The row is best-effort BY NECESSITY, not by preference: this is a
+        // process about to overwrite the database file, there is no caller-held
+        // transaction to ride, and the audit log must never block a restore —
+        // the same posture `backup::audit_backup` takes. The difference is that
+        // the operator is now TOLD the write happened.
+        audit_restore_override(&db, &in_path, force);
+        eprintln!(
+            "note: --force skipped the liveness probe AND its disclosure — the probe covers {} \
+             only, so a server on another port/host was not detected. This override is recorded \
+             on the audit chain.",
+            base_url()
+        );
+    } else {
         // The probe found nothing — disclose its blind spot while its negative
         // result is the thing we are relying on.
         eprintln!(
@@ -3749,6 +3768,49 @@ fn cmd_restore(args: &[String]) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// Best-effort audit of a forced restore. Fails silently — the audit log must
+/// never break a restore, the same posture `backup::audit_backup` takes. The
+/// point is not that it cannot fail; it is that **its failure is silent while
+/// the operator is told the row exists**, because the disclosure on the forced
+/// path is unconditional and this is the evidence behind it.
+fn audit_restore_override(db: &Path, in_path: &str, force: bool) {
+    use brain_server::audit::{self, AuditKind, AuditStatus};
+    use brain_server::override_audit::{OverrideCounts, OverrideGate, observe};
+
+    if !force {
+        return;
+    }
+    // The closed vocabulary refuses anything outside it, so a typo here is a
+    // silent no-op on the counter rather than a new metric dimension.
+    let standing = match observe(
+        OverrideGate::RestoreLiveness.as_str(),
+        "cli",
+        brain_server::override_audit::OverrideJustification::SplitBrainUnderstood.as_str(),
+    ) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let Ok(conn) = rusqlite::Connection::open(db) else {
+        return;
+    };
+    let mut counts = OverrideCounts::new();
+    counts.record(&standing);
+    audit::record(
+        &conn,
+        AuditKind::Backup,
+        "restore",
+        &db.display().to_string(),
+        AuditStatus::Ok,
+        &format!(
+            "restore override: gate={} justification={} source={} overrides_total={}",
+            standing.gate().as_str(),
+            standing.justification().as_str(),
+            in_path,
+            counts.total()
+        ),
+    );
 }
 
 /// `--force` narrows the restore to the liveness probe; ONLY `--yes`
@@ -5379,6 +5441,146 @@ mod tests {
     #[test]
     fn dsar_subject_digest_is_sha256_prefix() {
         assert_eq!(subject_digest("alice@example.com"), "sha256:ff8d9819fc0e");
+    }
+
+    /// A FORCED restore leaves a hash-chained row, **and the production `if force`
+    /// arm reaches the writer.**
+    ///
+    /// Two pins, because a red-proof showed one is not enough. Deleting the
+    /// call `audit_restore_override(&db, &in_path, force);` from the forced arm
+    /// left `cargo test --bin brain` **32/32 green** — the behavioural pin below
+    /// exercises the helper directly and cannot see whether the CLI calls it.
+    /// The only thing that noticed was `dead_code` under `-D warnings`, which is
+    /// real defence but is a *compiler* instrument, and it evaporates the moment
+    /// anyone adds `#[allow(dead_code)]` or a third call site.
+    ///
+    /// So the call site gets its own pin, and it reads the SOURCE rather than
+    /// string-matching a comment: the forced arm must contain the call, and the
+    /// unforced arm must not.
+    #[test]
+    fn the_forced_restore_arm_is_the_one_that_reaches_the_audit_writer() {
+        let src = include_str!("brain.rs");
+        // Isolate the `if force { ... } else { ... }` that guards the disclosure.
+        let arm = src
+            .split("if force {")
+            .nth(1)
+            .and_then(|rest| rest.split("} else {").next())
+            .expect("the restore path must have a forced arm");
+        assert!(
+            arm.contains("audit_restore_override("),
+            "the FORCED arm must call the audit writer. An override that is skipped without a \
+             record is the defect this round closes."
+        );
+        let unforced = src
+            .split("} else {")
+            .nth(1)
+            .and_then(|rest| rest.split("// The human gate").next())
+            .unwrap_or_default();
+        assert!(
+            !unforced.contains("audit_restore_override("),
+            "the UNFORCED arm must not record an override — the counter is not a log, and a \
+             restore nobody forced must leave no override row."
+        );
+    }
+
+    /// A FORCED restore leaves a hash-chained row. This is the behavioural half
+    /// of the claim: the row exists, names the closed gate, and — the property
+    /// the chain actually gives us — carries a **digest** rather than the
+    /// operator's plaintext.
+    #[test]
+    fn a_forced_restore_is_recorded_on_the_audit_chain() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("brain.db");
+        {
+            let conn = rusqlite::Connection::open(&db).expect("open target db");
+            conn.execute_batch(
+                "CREATE TABLE audit_events(
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     ts TEXT DEFAULT CURRENT_TIMESTAMP,
+                     kind TEXT NOT NULL,
+                     actor TEXT,
+                     target_hash TEXT,
+                     status TEXT,
+                     detail_hash TEXT,
+                     tenant_id TEXT NOT NULL DEFAULT 'global',
+                     prev_hash TEXT
+                 );
+                 CREATE INDEX idx_audit_kind ON audit_events(kind);
+                 CREATE INDEX idx_audit_ts ON audit_events(ts);",
+            )
+            .expect("audit_events");
+        }
+        audit_restore_override(&db, "img/backup.tar", true);
+
+        let conn = rusqlite::Connection::open(&db).expect("reopen");
+        let (kind, actor, target_hash, status, detail_hash): (
+            String,
+            String,
+            String,
+            String,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT kind, actor, target_hash, status, detail_hash FROM audit_events \
+                 ORDER BY id DESC LIMIT 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .expect("a forced restore must leave an audit row");
+        assert_eq!(kind, "backup", "the row rides the backup/restore ledger");
+        assert_eq!(actor, "restore", "the actor names the command");
+        assert_eq!(status, "ok");
+
+        // **The detail is HASHED, not stored.** The chain keeps evidence that
+        // an override happened without retaining what the operator typed — so
+        // the audit row cannot become a content channel. Asserting the 64-hex
+        // digest rather than the plaintext is asserting the STRONGER property,
+        // and it is the one the chain actually provides.
+        assert!(
+            detail_hash.len() == 64
+                && detail_hash
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c)),
+            "the detail rides as a 64-char lowercase hex digest: {detail_hash}"
+        );
+        // The target is hashed on the same principle — the db path is evidence,
+        // and the chain stores its digest.
+        assert!(
+            target_hash.len() == 64,
+            "the target rides as a digest too: {target_hash}"
+        );
+    }
+
+    /// An UNFORCED restore writes no override row. The audit must not
+    /// manufacture a record of an override that did not happen — otherwise the
+    /// metric would read "operator forced something" on every restore.
+    #[test]
+    fn an_unforced_restore_writes_no_override_row() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = dir.path().join("brain.db");
+        {
+            let conn = rusqlite::Connection::open(&db).expect("open target db");
+            conn.execute_batch(
+                "CREATE TABLE audit_events(
+                     id INTEGER PRIMARY KEY AUTOINCREMENT,
+                     ts TEXT DEFAULT CURRENT_TIMESTAMP,
+                     kind TEXT NOT NULL,
+                     actor TEXT,
+                     target_hash TEXT,
+                     status TEXT,
+                     detail_hash TEXT,
+                     tenant_id TEXT NOT NULL DEFAULT 'global',
+                     prev_hash TEXT
+                 );",
+            )
+            .expect("audit_events");
+        }
+        audit_restore_override(&db, "img/backup.tar", false);
+        let conn = rusqlite::Connection::open(&db).expect("reopen");
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(n, 0, "no override, no row — the counter is not a log");
     }
 
     /// `--force` skips the LIVENESS PROBE only — the human gate needs `--yes`

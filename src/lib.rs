@@ -89,6 +89,7 @@ pub mod pii_mask;
 // engine-generated TEXT artifacts that leave a boundary — complaint remedy
 // drafts, ADR packets, outreach export packets, KB build manifests. Pure
 // module; signs via the shared `ump_integrity::sign_manifest_bytes`.
+pub mod override_audit;
 pub mod provenance;
 
 // The embedding abstraction: the trait + the static
