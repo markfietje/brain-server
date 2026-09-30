@@ -3033,9 +3033,40 @@ pub fn run_migration_with_store_dim(
     // (`DisproofCondition::new`), which is the stronger position anyway: the
     // vocabulary is refused before a value can be persisted, not after.
 
+    // ── v1.32.23 "Scope": the disproof condition's SEVENTH column ─────────
+    // v1.32.22 added six disproof columns. `DisproofCondition` has seven
+    // fields, and `scope` was the one with nowhere to go — so
+    // `DisproofForm::Evaluated`, which REQUIRES a scope, could not be
+    // persisted at all, and the writer refused with a named cause rather than
+    // writing a row its own read-back would reject. This closes that ceiling.
+    //
+    // The shape below is the v1.32.22 block's shape exactly: NULLable,
+    // additive, one `pragma_table_info` guard per column so re-running the
+    // runner is a no-op, and NO table rebuild — a rebuild is the one operation
+    // that can lose rows under a crash.
+    //
+    // `NULL` here means "the claim predates the column", which is the same
+    // stamp-blind story every other disproof column tells. It is NOT evidence
+    // the claim is sound, and a row that names `evaluated` with a `NULL` scope
+    // is refused by the constructor rather than read back as a condition.
+    {
+        let col = "disproof_scope";
+        let present: bool = db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('claims') WHERE name='{col}'"),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(&format!("ALTER TABLE claims ADD COLUMN {col} TEXT"), [])?;
+        }
+    }
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.22')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.22';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.23')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.23';",
         [],
     )?;
 

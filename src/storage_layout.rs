@@ -260,6 +260,17 @@ pub const SCHEMA_VERSION_V1_32_21: &str = "1.32.21";
 /// ship and deferred for want of ("no disproof-condition representation
 /// exists"). Both named the same absent thing.
 pub const SCHEMA_VERSION_V1_32_22: &str = "1.32.22";
+/// The disproof condition's SEVENTH column: `disproof_scope`, the
+/// machine-verifiable extent a predicate applies to. ONE additive nullable
+/// column on `claims`, named for the field it carries. `NULL` = the claim
+/// predates the column — stamp-blind by declaration, like every other
+/// disproof column, and NOT evidence the claim is sound.
+///
+/// v1.32.22 shipped the representation with six columns for a seven-field
+/// condition, so `DisproofForm::Evaluated` — which REQUIRES a scope — was
+/// unpersistable and the writer refused by name. This stamp is the ceiling
+/// that refusal moved. No table is dropped and none is rebuilt.
+pub const SCHEMA_VERSION_V1_32_23: &str = "1.32.23";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
@@ -281,7 +292,7 @@ pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 /// Security posture: a source DB stamped NEWER than this is refused loudly
 /// ([`refuse_newer_schema`]) — migrating *down* would silently drop columns
 /// the newer release added, i.e. data loss dressed as a migration.
-pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_22;
+pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_23;
 
 /// Numeric dotted-version compare (std-only, no semver dependency).
 /// Non-numeric components are skipped (the `schema_ge` precedent in the
@@ -735,12 +746,13 @@ mod tests {
         // moved the ceiling to 1.32.19, so the probe moved to 1.32.20, the taxonomy
         // round moved the ceiling to 1.32.20, so the probe moved to 1.32.21, and the
         // the citation round moved the ceiling to 1.32.21, so the probe moved to 1.32.22, and the
-        // disproof round moved the ceiling to 1.32.22, so the probe moved to 1.32.23. A probe
+        // the disproof round moved the ceiling to 1.32.22, so the probe moved to 1.32.23, and the
+        // scope round moved the ceiling to 1.32.23, so the probe moved to 1.32.24. A probe
         // pinned AT the ceiling silently tests `Equal`, not `Greater` — the assertion
         // would keep passing while a NEWER-schema database was blessed instead of
         // refused, which is the one failure this function exists to prevent.
-        assert!(is_newer_than_known(Some("1.32.23")));
-        assert!(!is_newer_than_known(Some("1.32.22")));
+        assert!(is_newer_than_known(Some("1.32.24")));
+        assert!(!is_newer_than_known(Some("1.32.23")));
         assert!(!is_newer_than_known(Some("1.32.9")));
         assert!(!is_newer_than_known(Some("1.28.9")));
     }

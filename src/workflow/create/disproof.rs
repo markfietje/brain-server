@@ -149,7 +149,7 @@ pub struct DisproofCondition {
     pub audit_ref: Option<String>,
 }
 
-/// The six persisted columns, exactly as a row carries them.
+/// The seven persisted columns, exactly as a row carries them.
 ///
 /// This is the wire shape between the table and [`DisproofCondition`], and it is
 /// **deliberately not the condition**: it is all-`Option` because SQL `NULL` and
@@ -162,27 +162,35 @@ pub struct DisproofCondition {
 /// `NOT NULL DEFAULT '[]'`, so **`'[]'` and `NULL` both mean "no coverage
 /// list"** and both are treated as empty on the way back in.
 ///
-/// # There is no `scope` here, and that is a measured finding
+/// # `scope` now HAS a column — the seventh, and the round that added it
 ///
 /// [`DisproofCondition`] has **seven** fields. Schema 1.32.22 added **six**
 /// columns: `disproof_form`, `disproof_body`, `disproof_op`,
-/// `disproof_citation`, `disproof_coverage`, `disproof_audit_ref`. **`scope` has
-/// no column.** The representation was shipped with a field the table cannot
-/// hold, which is only observable now that something finally writes it.
+/// `disproof_citation`, `disproof_coverage`, `disproof_audit_ref`. **`scope`
+/// had no column**, and because `DisproofForm::Evaluated` **requires** a scope,
+/// the representation could not persist the very form that makes a condition
+/// machine-checkable. The writer refused rather than dropping the field, which
+/// is how the ceiling was found: a refusal with a named cause instead of a
+/// corrupt row.
 ///
-/// The consequence is stated rather than papered over: `DisproofForm::Evaluated`
-/// **requires** a scope (`validate` refuses without one), so no `Evaluated`
-/// condition can be persisted without losing the very field that makes it
-/// machine-checkable. A writer that dropped `scope` on the floor would produce a
-/// row its own read-back then refuses — manufacturing corruption at the write
-/// seam, which is the one thing this module exists to prevent. So the write
-/// **refuses** instead; see [`DisproofCondition::to_columns`].
+/// Schema **1.32.23** adds `disproof_scope` as the seventh additive column, so
+/// the two shapes are now the same width and both forms round-trip. The refusal
+/// is gone because the thing it refused is now storable — see
+/// [`DisproofCondition::to_columns`], which no longer returns a `Result`,
+/// because there is nothing left for it to refuse.
+///
+/// A row written before 1.32.23 carries `NULL` there, which is the
+/// stamp-blind legacy story every other column already tells. A row that names
+/// `evaluated` and has `NULL` scope is therefore **damaged**, not legacy, and
+/// is refused by the constructor — the `Ok(None)`-laundering problem the
+/// read-back exists to prevent applies to this column like any other.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DisproofColumns {
     pub form: Option<String>,
     pub body: Option<String>,
     pub op: Option<String>,
     pub citation: Option<String>,
+    pub scope: Option<String>,
     pub coverage: Option<String>,
     pub audit_ref: Option<String>,
 }
@@ -357,11 +365,15 @@ impl DisproofCondition {
             .is_none_or(|c| c.is_empty() || c.trim() == "[]");
 
         // Legacy is a claim about EVERY column, not about one. A row with a
-        // body and no form is a damaged row, not a pre-field row.
+        // body and no form is a damaged row, not a pre-field row. `scope`
+        // takes part like the rest: a row carrying a scope and nothing else is
+        // a row that CLAIMED a condition, and reporting it `None` would exempt
+        // it from evaluation for the wrong reason.
         let legacy = blank(&cols.form)
             && blank(&cols.body)
             && blank(&cols.op)
             && blank(&cols.citation)
+            && blank(&cols.scope)
             && blank(&cols.audit_ref)
             && coverage_blank;
         if legacy {
@@ -392,62 +404,53 @@ impl DisproofCondition {
         // admissibility laws is refused here by the same laws that refused it
         // at construction time — and its error is returned, not swallowed.
         //
-        // `scope: None` is not a default, it is the measured shape of the
-        // table: there is no `disproof_scope` column (see [`DisproofColumns`]).
-        // A row naming `evaluated` therefore cannot rebuild — it is refused by
-        // the constructor, which is the correct outcome for a row claiming a
-        // form the table cannot hold.
+        // `scope` is read from its own column (schema 1.32.23). A row naming
+        // `evaluated` with `NULL` scope is refused by the constructor, which is
+        // the correct outcome for a row claiming a form it does not carry: the
+        // scope is what makes the condition machine-checkable, and a condition
+        // without it is not a lesser condition, it is no condition.
         let built = DisproofCondition::new(
             form,
             cols.body.as_deref().unwrap_or_default(),
             op,
             cols.citation.clone().filter(|s| !s.is_empty()),
-            None,
+            cols.scope.clone().filter(|s| !s.is_empty()),
             coverage,
             cols.audit_ref.clone().filter(|s| !s.is_empty()),
         )?;
         Ok(Some(built))
     }
 
-    /// **The write side.** Serialise into the six persisted columns, **or
-    /// refuse**.
+    /// **The write side.** Serialise into the seven persisted columns.
     ///
-    /// # Why this returns a `Result` — the `scope` defect
+    /// # Why this no longer returns a `Result`
     ///
-    /// The table has six disproof columns and the condition has seven fields.
-    /// **`scope` is the one with no column.** An `Evaluated` condition *requires*
-    /// a scope, so refusing to store it would mean storing an `Evaluated`
-    /// condition stripped of the field that makes it machine-checkable — a row
-    /// that reads back as a condition nobody wrote and cannot be rebuilt.
+    /// It used to, and the `Err` existed for exactly one reason: the table had
+    /// six disproof columns and the condition has seven fields, so `scope` had
+    /// nowhere to go. Because `DisproofForm::Evaluated` **requires** a scope,
+    /// refusing to store it would have meant storing an `Evaluated` condition
+    /// stripped of the field that makes it machine-checkable — a row that reads
+    /// back as a condition nobody wrote and cannot be rebuilt.
     ///
-    /// So this returns `Err` for exactly that case, and the refusal happens at
-    /// the SERIALISATION seam rather than at a second validation site:
-    /// `validate` still decides admissibility of a condition, and this decides
-    /// whether the table can hold the admissible one. Those are two different
-    /// questions, and collapsing them would either corrupt rows or refuse
-    /// `Evaluated` conditions for a reason that has nothing to do with their
-    /// validity.
+    /// Schema 1.32.23 added `disproof_scope`, so the two shapes are the same
+    /// width and **there is nothing left to refuse here**. A `Result` with no
+    /// error path would be a second, permanently-unreachable failure mode
+    /// dressed as a guard, so the signature says what it means: infallible.
     ///
-    /// An `Audited` condition carries `scope: None` by construction, so it
-    /// round-trips exactly. This is the round's real ceiling and it is stated
-    /// here rather than discovered later by a caller: **until `scope` has a
-    /// column, no `Evaluated` condition can be persisted.** A schema round
-    /// outside this write scope is what closes it.
-    pub fn to_columns(&self) -> Result<DisproofColumns, String> {
-        if self.scope.is_some() {
-            return Err(format!(
-                "DI_DISPROOF_SCOPE_NOT_PERSISTED:{}",
-                self.scope.as_deref().unwrap_or_default()
-            ));
-        }
-        Ok(DisproofColumns {
+    /// Admissibility is still decided in exactly one place — the constructor,
+    /// which validates — and nothing can hand this function a condition that
+    /// constructor did not admit. A writer that validated again here would be a
+    /// second law that could drift from the first.
+    pub fn to_columns(&self) -> DisproofColumns {
+        DisproofColumns {
             form: Some(self.form.as_str().to_string()),
             body: Some(self.body.clone()),
             op: self.op.map(|o| o.as_str().to_string()),
             citation: self.citation.clone(),
+            scope: self.scope.clone(),
             coverage: Some(encode_coverage(&self.coverage)),
             audit_ref: self.audit_ref.clone(),
-        })
+        }
     }
 }
 
@@ -761,74 +764,128 @@ mod tests {
             "a body with no form is a DAMAGED row, not a legacy one. Reporting None here would \
              exempt a damaged claim from evaluation — the laundering the read-back exists to stop"
         );
+
+        // The seventh column is the one this round added, so it is the one whose
+        // omission from the legacy conjunction would open the same hole silently:
+        // a row carrying ONLY a scope names a machine-checkable extent with no
+        // condition attached, and `Ok(None)` would exempt exactly that claim.
+        let scope_only = DisproofColumns {
+            scope: Some("claim.payer_state".into()),
+            coverage: Some("[]".into()),
+            ..DisproofColumns::default()
+        };
+        assert!(
+            DisproofCondition::from_columns(&scope_only).is_err(),
+            "a scope with no form is a DAMAGED row, not a legacy one. `scope` must take part in \
+             the legacy determination like every other column, or the seventh column becomes the \
+             one place `None` can still mean unreadable"
+        );
     }
 
     /// The round-trip, in the pure layer, before any SQL is involved: a
     /// condition that survives its own column form byte for byte. If this fails,
     /// a database round-trip cannot be trusted either.
     ///
-    /// Only the `audited` form is exercised, and that is not a shortcut — it is
-    /// the only form the table can currently hold. See the scope-defect pin
-    /// below for the measurement.
+    /// **Both** forms are exercised, and that is the change schema 1.32.23
+    /// bought: while `scope` had no column, `Evaluated` could not be
+    /// serialised at all, so the only thing this pin could honestly cover was
+    /// the prose form. A pin that covers half the representation is a pin that
+    /// would have stayed green if the seventh column were wired backwards.
     #[test]
     fn a_condition_survives_its_own_column_form() {
-        let c = audited();
-        let cols = c
-            .to_columns()
-            .expect("an audited condition has no scope, so the table can hold it");
+        for c in [audited(), evaluated()] {
+            let cols = c.to_columns();
+            assert_eq!(
+                DisproofCondition::from_columns(&cols),
+                Ok(Some(c.clone())),
+                "the columns must rebuild the exact condition — including which fields are None, \
+                 because a form that materialises an absent citation is a form that invents an \
+                 evaluation the author never wrote"
+            );
+        }
+    }
+
+    /// **The `scope` ceiling, INVERTED — the seventh column exists.**
+    ///
+    /// This pin asserted the opposite for a release: schema 1.32.22 added six
+    /// disproof columns and [`DisproofCondition`] has seven fields, so `scope`
+    /// had nowhere to go and every `Evaluated` condition — which REQUIRES a
+    /// scope — was refused at the serialisation seam by a named refusal code.
+    /// That refusal was correct then and is wrong now, so the pin was
+    /// **inverted rather than deleted**: a replaced pin that disappears takes
+    /// its coverage with it, and the coverage here is the load-bearing claim —
+    /// that the form which makes a condition machine-checkable is storable, and
+    /// stored byte for byte.
+    ///
+    /// It is still falsifiable, and the way it fails matters: if the column were
+    /// dropped on the floor again, `to_columns` would either drop the field (and
+    /// the round-trip below would rebuild a condition that is not the one
+    /// written) or refuse. Both lose.
+    #[test]
+    fn an_evaluated_condition_is_stored_because_scope_has_a_column() {
+        let c = evaluated();
+        let cols = c.to_columns();
+        assert_eq!(
+            cols.scope.as_deref(),
+            c.scope.as_deref(),
+            "the scope must reach its own column verbatim — this is the field whose absence made \
+             the form unpersistable, and a lossy copy of it would make the condition unfalsifiable"
+        );
         assert_eq!(
             DisproofCondition::from_columns(&cols),
             Ok(Some(c.clone())),
-            "the columns must rebuild the exact condition — including which fields are None, \
-             because a form that materialises an absent citation is a form that invents an \
-             evaluation the author never wrote"
+            "an Evaluated condition must survive its own column form. It is the form the \
+             constructor REQUIRES a scope for, so a round-trip that lost it would come back \
+             refused — the corruption-at-the-write-seam this module refuses to manufacture"
+        );
+        // And the prose form still carries NO scope, so the two forms stay
+        // distinguishable on disk rather than both writing something in column
+        // seven.
+        assert_eq!(
+            audited().to_columns().scope,
+            None,
+            "prose is scoped by its audit, not by a machine-checkable scope; writing one here \
+             would invent a field the author never set"
         );
     }
 
-    /// **The `scope` defect, measured rather than described.**
+    /// A row that names `evaluated` but carries no scope is DAMAGED, and must be
+    /// refused — never `Ok(None)`, which would exempt it from evaluation for the
+    /// wrong reason.
     ///
-    /// `DisproofCondition` has seven fields. Schema 1.32.22 added six columns.
-    /// `scope` is the seventh and it has nowhere to go, so every `Evaluated`
-    /// condition — which REQUIRES a scope — is refused at the serialisation
-    /// seam. If a later round adds `disproof_scope`, this pin is the thing that
-    /// says the ceiling moved, and it must be updated in the same commit.
+    /// This shape is reachable, not hypothetical: it is exactly the row a writer
+    /// that dropped `scope` on the floor would have written before schema
+    /// 1.32.23, and exactly the row any hand-edited or restored legacy row can
+    /// carry. The seventh column makes the form storable; it does not make a
+    /// scope-free `evaluated` row admissible.
     #[test]
-    fn an_evaluated_condition_is_refused_because_scope_has_no_column() {
-        let err = evaluated()
-            .to_columns()
-            .expect_err("there is no disproof_scope column, so this cannot be stored");
-        assert!(
-            err.starts_with("DI_DISPROOF_SCOPE_NOT_PERSISTED"),
-            "the refusal must name the missing column, got {err}"
-        );
-        // And the refusal is a refusal, not a lossy store: it happens BEFORE
-        // any column is produced, so there is no partial row to clean up.
-        assert!(
-            evaluated().to_columns().is_err(),
-            "dropping scope on the floor would write a row this module's own read-back then \
-             refuses, which is manufacturing corruption at the write seam"
-        );
-    }
-
-    /// A row that names `evaluated` cannot be rebuilt, because the table cannot
-    /// hold the scope that form requires. It must be refused — never `Ok(None)`,
-    /// which would exempt it from evaluation for the wrong reason.
-    #[test]
-    fn a_row_claiming_evaluated_cannot_rebuild_and_is_refused_not_legacy() {
+    fn a_row_claiming_evaluated_without_a_scope_cannot_rebuild_and_is_refused_not_legacy() {
         let cols = DisproofColumns {
             form: Some("evaluated".into()),
             body: Some("the payer matches".into()),
             op: Some("contains".into()),
             citation: Some("payer-verified".into()),
+            scope: None,
             coverage: Some("[\"payer_state\"]".into()),
             audit_ref: None,
         };
         assert_eq!(
             DisproofCondition::from_columns(&cols),
             Err("DI_DISPROOF_EVALUATED_NEEDS_SCOPE".into()),
-            "the row names a form whose required field the table cannot store, so the honest \
+            "the row names a form whose required field it does not carry, so the honest \
              answer is a refusal — Ok(None) here would silently exempt a claim that claims a \
              machine-checked condition it does not have"
+        );
+        // The same row WITH the scope rebuilds, which is what makes the refusal
+        // above about the missing field and not about the form being unreadable.
+        let cols = DisproofColumns {
+            scope: Some("claim.payer_state".into()),
+            ..cols
+        };
+        assert!(
+            DisproofCondition::from_columns(&cols).is_ok(),
+            "adding the scope must be sufficient to rebuild — otherwise this pin would pass on a \
+             row that is unreadable for some other reason"
         );
     }
 
@@ -838,11 +895,10 @@ mod tests {
     /// would refuse a prose condition it is supposed to accept.
     #[test]
     fn an_absent_field_round_trips_as_absent_not_as_empty_text() {
-        let cols = audited()
-            .to_columns()
-            .expect("an audited condition has no scope, so the table can hold it");
+        let cols = audited().to_columns();
         assert_eq!(cols.op, None, "prose carries no operator");
         assert_eq!(cols.citation, None, "prose carries no byte range");
+        assert_eq!(cols.scope, None, "prose carries no machine-checkable scope");
         assert_eq!(
             cols.audit_ref.as_deref(),
             Some("audit:care/consent-441"),
@@ -868,6 +924,7 @@ mod tests {
             body: Some("body".into()),
             op: None,
             citation: None,
+            scope: None,
             coverage: Some("[]".into()),
             audit_ref: Some("audit:x".into()),
         };
@@ -889,6 +946,7 @@ mod tests {
             body: Some("body".into()),
             op: None,
             citation: None,
+            scope: None,
             coverage: Some("not json".into()),
             audit_ref: Some("audit:x".into()),
         };

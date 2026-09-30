@@ -564,4 +564,136 @@ mod tests {
         assert!((mrr(&[4, 5, 1], &[1]) - 1.0 / 3.0).abs() < 1e-6);
         assert!((ndcg(&[1, 2, 3], &[1, 2], 5) - 1.0).abs() < 1e-6);
     }
+
+    // -----------------------------------------------------------------------
+    // Is the objective WIRED? — the question the whole section above exists to
+    // answer, asked from the module that shipped without a caller.
+    //
+    // These two pins live here, not in `tests/`, for one reason: they must
+    // COMPILE against the tree that had no caller. A behavioural pin in the
+    // CLI's own test module disappears with the code it pins, so against the
+    // pre-wiring tree it would simply not run — a green suite proving nothing.
+    // Reading the CLI's source from here means the pre-wiring tree gets a
+    // runtime FAILED instead.
+    // -----------------------------------------------------------------------
+
+    fn cli_source() -> String {
+        let path = format!("{}/src/bin/brain.rs", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading brain.rs: {e}"))
+    }
+
+    /// The body of `run_eval`, cut at the next top-level `fn` so a mention
+    /// elsewhere in the file — a test, a doc comment — cannot satisfy it.
+    fn run_eval_body(src: &str) -> String {
+        let start = src
+            .find("fn run_eval(")
+            .unwrap_or_else(|| panic!("run_eval must exist in src/bin/brain.rs"));
+        let rest = &src[start..];
+        let end = rest[1..].find("\nfn ").map_or(rest.len(), |i| i + 1);
+        rest[..end].to_owned()
+    }
+
+    /// The non-comment lines of [`run_eval_body`] that are not a print.
+    ///
+    /// Both filters are load-bearing and both are here because of a pin that
+    /// could be fooled: an earlier version of the check below grepped for one
+    /// hand-chosen literal (`mean[i] < *floor`), and planting the same bare
+    /// comparison on a different index sailed straight through it. The rule is
+    /// now a SHAPE — *no line may compare a floor without going through
+    /// `admit_floor`* — so it holds for any spelling, index or variable name.
+    /// Comment lines are dropped so the prose describing the comparison cannot
+    /// trip it, print lines are dropped because `FLOOR BREACH: … >= …` is a
+    /// receipt rather than a decision, and the signature line is dropped because
+    /// `-> Result<…>` is an arrow, not a comparison.
+    fn run_eval_decision_lines(body: &str) -> Vec<String> {
+        body.lines()
+            .map(|l| l.split("//").next().unwrap_or(l).trim().to_owned())
+            .filter(|l| !l.is_empty() && !l.contains("println!") && !l.contains("->"))
+            .collect()
+    }
+
+    fn compares_a_floor(line: &str) -> bool {
+        line.contains("floor") && ["<", ">", "<=", ">="].iter().any(|op| line.contains(op))
+    }
+
+    /// `brain eval` must route its floor decision through `eval::admit`, and
+    /// must render every verdict it is given — not compare accuracy to a number
+    /// and call that a gate.
+    ///
+    /// The negative half is the load-bearing one: the pre-wiring tree printed
+    /// `FLOOR BREACH` / `floor ok` off a bare `mean[i] < *floor` comparison,
+    /// which is precisely the shape that cannot refuse a safety violation
+    /// because it never looks at one.
+    #[test]
+    fn eval_joint_the_eval_cli_admits_through_the_joint_objective() {
+        let src = cli_source();
+        let body = run_eval_body(&src);
+        assert!(
+            body.contains("judge_admission(") && body.contains("admission.held"),
+            "run_eval must take its answer from judge_admission. A gate that decides for itself \
+             is a gate whose exit code is one edit away from its printing"
+        );
+        // The decision is a value, so the printer cannot move it. Asserted
+        // structurally: `held` may be READ here and never assigned.
+        assert!(
+            !body.contains("let mut held") && !body.contains("held = false"),
+            "run_eval must not assign the gate's answer — it reads `admission.held` and prints. \
+             A printer that can flip the exit code is a printer that decides"
+        );
+        for line in run_eval_decision_lines(&body) {
+            assert!(
+                !compares_a_floor(&line),
+                "run_eval compares a floor outside the joint objective, which is a second floor \
+                 law and the one with no safety term: `{line}`"
+            );
+        }
+        // Every outcome is rendered: an unrendered refusal is a refusal the
+        // operator never sees.
+        for variant in [
+            "FloorOutcome::Held",
+            "FloorOutcome::SafetyRefused",
+            "FloorOutcome::AccuracyBreached",
+            "FloorOutcome::CostBreached",
+        ] {
+            assert!(
+                body.contains(variant),
+                "run_eval does not render `{variant}`. A refusal the CLI does not report is a \
+                 refusal the CLI does not report at all"
+            );
+        }
+    }
+
+    /// The cost floor must stay **visibly unset**, and the "visibly" is the part
+    /// that is pinned: the ceiling is MAX (not zero, which would read as "cost
+    /// is free"), the reason names the telemetry it awaits and the
+    /// preregistration order, and the gate says so on every run.
+    #[test]
+    fn eval_joint_the_cost_ceiling_is_left_visibly_unset_and_does_not_default_to_free() {
+        let src = cli_source();
+        assert!(
+            src.contains(
+                "const EVAL_COST_CEILING_UNSET: brain_server::eval::LocalCost = \
+                 brain_server::eval::LocalCost::MAX;"
+            ),
+            "the cost ceiling must be a named MAX, not a literal and not a zero. Zero makes the \
+             comparison vacuous in a way that reads as 'measured and free'"
+        );
+        assert!(
+            src.contains("R53a") && src.contains("P53.4"),
+            "the reason the ceiling is unset must name the telemetry it awaits and the \
+             preregistration order that puts that telemetry first. A cost gate attached to an \
+             unmeasured term would be a number with no provenance wearing a gate's clothes"
+        );
+        assert!(
+            src.contains("cost term    : UNSET"),
+            "every eval run must print that the cost term was not enforced. A gate that refuses \
+             loudly and stays silent about what it did NOT check is a gate whose silence reads \
+             as coverage"
+        );
+        assert!(
+            src.contains("safety term  :"),
+            "every eval run must print the safety term's provenance, so an assumed-clean count is \
+             never read as a measurement"
+        );
+    }
 }

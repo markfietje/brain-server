@@ -674,7 +674,7 @@ pub(crate) fn store_claim(
 ///
 /// `None` is a claim about the row's HISTORY — "no condition was ever written
 /// here" — and never a claim that none was required. It writes SQL NULL into
-/// all five nullable disproof columns and leaves coverage at its `'[]'`
+/// all six nullable disproof columns and leaves coverage at its `'[]'`
 /// default, so a claim written before this round stays stamp-blind by
 /// declaration. Read it back with [`read_disproof`], which keeps that
 /// distinction rather than widening `None` to cover an unreadable row.
@@ -711,8 +711,8 @@ pub(crate) fn store_claim_with_disproof(
     // own author.
     let created_by = principal_kind_string(authored_by);
 
-    // The six disproof columns. A `None` condition writes SQL NULL into all
-    // five nullable ones and `[]` into coverage — which is the column's own
+    // The seven disproof columns. A `None` condition writes SQL NULL into all
+    // six nullable ones and `[]` into coverage — which is the column's own
     // DEFAULT, written explicitly so the INSERT is a single fixed statement
     // rather than two that could drift. The observable state is identical to a
     // row written before these columns existed: a claim written before this
@@ -723,36 +723,35 @@ pub(crate) fn store_claim_with_disproof(
     // (`DisproofCondition::new`), so there is deliberately NO validation here.
     // A second check at the write seam would be a second law that could drift
     // from the first, and it would be unreachable: nothing can hand this
-    // function a value the constructor did not admit. What CAN fail here is
-    // serialisation, and that refusal comes from `to_columns` above.
-    let (d_form, d_body, d_op, d_citation, d_coverage, d_audit_ref) = match disproof {
+    // function a value the constructor did not admit. Serialisation is
+    // infallible too, since schema 1.32.23 gave `scope` a column — so this
+    // seam can no longer manufacture a row its own read-back would refuse,
+    // which is what the `DI_DISPROOF_SCOPE_NOT_PERSISTED` refusal used to
+    // exist to prevent.
+    let (d_form, d_body, d_op, d_citation, d_scope, d_coverage, d_audit_ref) = match disproof {
         Some(c) => {
-            // A refusal here is the `scope` defect stated at the seam that hits
-            // it: an `Evaluated` condition has no column to go into, and writing
-            // it anyway would store a row this module's own read-back refuses.
-            let cols = c
-                .to_columns()
-                .map_err(|e| CreateError::Storage(format!("disproof_serialise:{e}")))?;
+            let cols = c.to_columns();
             (
                 cols.form,
                 cols.body,
                 cols.op,
                 cols.citation,
+                cols.scope,
                 cols.coverage,
                 cols.audit_ref,
             )
         }
-        None => (None, None, None, None, Some("[]".to_string()), None),
+        None => (None, None, None, None, None, Some("[]".to_string()), None),
     };
 
     tx.execute(
         "INSERT INTO claims(
             claim_id, schema_ref, subject, predicate, object, qualifiers, contradicts,
             evidence_digest, audit_target_hash, created_by, created_at, status,
-            disproof_form, disproof_body, disproof_op, disproof_citation,
+            disproof_form, disproof_body, disproof_op, disproof_citation, disproof_scope,
             disproof_coverage, disproof_audit_ref)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending',
-                 ?12, ?13, ?14, ?15, ?16, ?17)",
+                 ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         params![
             claim_id,
             schema_ref,
@@ -769,6 +768,7 @@ pub(crate) fn store_claim_with_disproof(
             d_body,
             d_op,
             d_citation,
+            d_scope,
             d_coverage,
             d_audit_ref,
         ],
@@ -840,7 +840,7 @@ pub(crate) fn read_disproof(
     let cols = conn
         .query_row(
             "SELECT disproof_form, disproof_body, disproof_op, disproof_citation,
-                    disproof_coverage, disproof_audit_ref
+                    disproof_scope, disproof_coverage, disproof_audit_ref
              FROM claims WHERE claim_id = ?1",
             params![claim_id],
             |r| {
@@ -849,8 +849,9 @@ pub(crate) fn read_disproof(
                     body: r.get(1)?,
                     op: r.get(2)?,
                     citation: r.get(3)?,
-                    coverage: r.get(4)?,
-                    audit_ref: r.get(5)?,
+                    scope: r.get(4)?,
+                    coverage: r.get(5)?,
+                    audit_ref: r.get(6)?,
                 })
             },
         )
@@ -1433,9 +1434,26 @@ mod tests {
         }
     }
 
-    /// A prose condition: the only form the table can currently hold, because
-    /// `Evaluated` requires a `scope` and there is no `disproof_scope` column.
-    /// See the scope-defect pin in `disproof.rs`.
+    /// A machine-checked condition: the form that was **unpersistable** before
+    /// schema 1.32.23, because `Evaluated` requires a scope and there was no
+    /// `disproof_scope` column. Held here so the round-trip pins can use the
+    /// form the table could not previously hold.
+    fn machine_checked() -> DisproofCondition {
+        use crate::workflow::create::disproof::{DisproofForm, EvaluatedOp};
+        DisproofCondition::new(
+            DisproofForm::Evaluated,
+            "the payer matches",
+            Some(EvaluatedOp::Contains),
+            Some("payer-verified".into()),
+            Some("subject.payer_state".into()),
+            vec!["payer_state".into()],
+            None,
+        )
+        .expect("an evaluated condition carries its operator, byte range and scope")
+    }
+
+    /// A prose condition: scoped by its audit rather than by a machine-checkable
+    /// scope, so it carries no `scope` and must round-trip without one.
     fn prose() -> DisproofCondition {
         DisproofCondition::new(
             crate::workflow::create::disproof::DisproofForm::Audited,
@@ -1624,8 +1642,13 @@ mod tests {
         let path = dir.path().join("rollback_twin.db");
         let url = format!("file:{}?mode=rwc", path.display());
         {
-            let mut conn = Connection::open(&url).expect("open");
+            // Registration BEFORE the connection: `sqlite3_auto_extension` only
+            // reaches connections opened after it. Opening first left this pin
+            // green in the full suite (where a sibling test had already
+            // registered) and red on its own — an order dependency, not a
+            // result.
             crate::register_sqlite_vec::register_sqlite_vec();
+            let mut conn = Connection::open(&url).expect("open");
             crate::migration::run_migration(&mut conn, 512).expect("migration");
         }
         // A second connection to the SAME file: a write through it does not
@@ -1866,11 +1889,17 @@ mod tests {
         let _ = EvaluatedOp::Contains;
     }
 
-    /// The write path refuses an `Evaluated` condition rather than dropping its
-    /// scope. This is the round's measured ceiling, and it is pinned at the
-    /// database so nobody can widen it silently.
+    /// The write path STORES an `Evaluated` condition, scope included.
+    ///
+    /// **This pin is inverted, not deleted.** It asserted the opposite for a
+    /// release: `Evaluated` requires a scope and the table had no
+    /// `disproof_scope` column, so the writer refused rather than write a row
+    /// its own read-back would reject. Schema 1.32.23 closed that ceiling, and
+    /// the claim that replaced it is the load-bearing one — the form that makes
+    /// a condition machine-checkable is now durable. A pin that vanishes takes
+    /// its coverage with it, so the replacement has to bite just as hard.
     #[test]
-    fn an_evaluated_condition_is_refused_at_the_write_seam_not_stored_incomplete() {
+    fn an_evaluated_condition_is_stored_with_its_scope_not_refused() {
         use crate::workflow::create::disproof::{DisproofForm, EvaluatedOp};
         let conn = db();
         let schema_ref = admit(&conn, "acme");
@@ -1886,19 +1915,152 @@ mod tests {
         .expect("admissible as a CONDITION");
 
         let tx = conn.unchecked_transaction().expect("tx");
-        let outcome =
-            store_claim_with_disproof(&tx, &draft("clm_eval", schema_ref), Some(&evaluated));
-        assert!(
-            outcome.is_err(),
-            "an Evaluated condition has a scope and the table has no disproof_scope column. \
-             Storing it would drop the field that makes it machine-checkable and produce a row \
-             this module's own read-back refuses"
+        store_claim_with_disproof(&tx, &draft("clm_eval", schema_ref), Some(&evaluated))
+            .expect("schema 1.32.23 gave scope a column, so the whole form persists");
+        tx.commit().expect("commit");
+
+        // On disk, read WITHOUT the read-back: the column must actually carry
+        // the scope, not merely round-trip through a function handed it.
+        let scope: Option<String> = conn
+            .query_row(
+                "SELECT disproof_scope FROM claims WHERE claim_id = 'clm_eval'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the claim row must exist");
+        assert_eq!(
+            scope.as_deref(),
+            Some("subject.payer_state"),
+            "the scope must be in its own column. If it were dropped on the floor the read-back \
+             below would refuse the row, and if the read-back were loosened to accept it the \
+             condition would be unfalsifiable — neither is acceptable"
         );
-        tx.rollback().expect("rollback");
-        let rows: i64 = conn
-            .query_row("SELECT COUNT(*) FROM claims", [], |r| r.get(0))
+        assert_eq!(
+            read_disproof(&conn, "clm_eval").expect("read"),
+            Some(evaluated.clone()),
+            "and the condition comes back whole"
+        );
+        assert_eq!(
+            evaluate_disproof(&conn, "clm_eval", "the payer is payer-verified").expect("verdict"),
+            DisproofVerdict::Refuted,
+            "a machine-checked condition is now EXERCISED, not merely storable"
+        );
+    }
+
+    /// The migration applied to a database that ALREADY has the six v1.32.22
+    /// columns, with rows in them.
+    ///
+    /// The obvious test builds a fresh database, which cannot fail: it proves
+    /// the `ALTER TABLE` runs, not that it runs *on a populated pre-column
+    /// table*. So this one walks the shape backwards instead — it migrates, then
+    /// **drops the seventh column** to reconstruct the 1.32.22 shape exactly,
+    /// writes rows through the pre-column writer, and only then re-runs the
+    /// migration.
+    ///
+    /// A rebuild-based migration would pass the fresh-database test and destroy
+    /// these rows here, so this is the pin that keeps the round additive.
+    #[test]
+    fn the_scope_migration_applies_to_an_existing_six_column_database_with_rows() {
+        use crate::workflow::create::disproof::{DisproofForm, EvaluatedOp};
+        let dir = tempfile::tempdir().expect("temp dir");
+        // Registration FIRST: `sqlite3_auto_extension` only reaches connections
+        // opened after it, so opening before registering yields a connection
+        // with no `vec0` — and this test would then pass or fail depending on
+        // whether some OTHER test in the binary had already registered. It ran
+        // green in the full suite and failed on its own, which is the whole
+        // order-dependency class.
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = Connection::open(dir.path().join("pre-column.db")).expect("open");
+        run_migration(&mut conn, 512).expect("first migration");
+
+        // Rows in it FIRST, then the shape walks backwards to 1.32.22. Writing
+        // them through the real writer is not a shortcut: prose carries no
+        // scope, so the seven-column writer's row and the six-column writer's row
+        // are the same row. (Running the current writer against a six-column
+        // table cannot work at all — it names the seventh column — which is why
+        // the rows go in first.)
+        let schema_ref = admit(&conn, "acme");
+        let prose = prose();
+        let tx = conn.unchecked_transaction().expect("tx");
+        store_claim_with_disproof(&tx, &draft("clm_pre", schema_ref), Some(&prose))
+            .expect("store prose");
+        store_claim(&tx, &draft("clm_pre_bare", schema_ref)).expect("store bare");
+        tx.commit().expect("commit");
+
+        // Back to the v1.32.22 shape: the six columns, no seventh. SQLite's
+        // DROP COLUMN is exactly the additive round's inverse, so what is left is
+        // a populated table this release has to UPGRADE rather than create.
+        conn.execute("ALTER TABLE claims DROP COLUMN disproof_scope", [])
+            .expect("reconstruct the pre-column shape");
+        let six: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('claims') WHERE name LIKE 'disproof_%'",
+                [],
+                |r| r.get(0),
+            )
             .expect("count");
-        assert_eq!(rows, 0, "a refused write leaves no row");
+        assert_eq!(
+            six, 6,
+            "the reconstructed table has exactly the six old columns"
+        );
+
+        // Upgrade.
+        run_migration(&mut conn, 512).expect("the migration applies to an existing database");
+
+        let seven: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('claims') WHERE name='disproof_scope'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(seven, 1, "the seventh column was added");
+
+        // The rows survived, byte for byte, and the old ones read back exactly
+        // as they did before the upgrade — including the NULL in the new column
+        // being "predates the field" and not "unreadable".
+        let scope: Option<String> = conn
+            .query_row(
+                "SELECT disproof_scope FROM claims WHERE claim_id = 'clm_pre'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("row survived");
+        assert_eq!(
+            scope, None,
+            "a row written before the column existed carries NULL there, and NULL is not an \
+             empty string a reader could mistake for content"
+        );
+        assert_eq!(
+            read_disproof(&conn, "clm_pre").expect("read"),
+            Some(prose),
+            "the pre-upgrade condition reads back unchanged"
+        );
+        assert_eq!(
+            read_disproof(&conn, "clm_pre_bare").expect("read"),
+            None,
+            "a claim that predates the field still reads back as None"
+        );
+
+        // And the upgraded table can hold the form it could not hold before.
+        let evaluated = DisproofCondition::new(
+            DisproofForm::Evaluated,
+            "the payer matches",
+            Some(EvaluatedOp::Contains),
+            Some("payer-verified".into()),
+            Some("subject.payer_state".into()),
+            vec!["payer_state".into()],
+            None,
+        )
+        .expect("admissible");
+        let tx = conn.unchecked_transaction().expect("tx");
+        store_claim_with_disproof(&tx, &draft("clm_post", schema_ref), Some(&evaluated))
+            .expect("store evaluated after the upgrade");
+        tx.commit().expect("commit");
+        assert_eq!(
+            read_disproof(&conn, "clm_post").expect("read"),
+            Some(evaluated)
+        );
     }
 
     #[test]

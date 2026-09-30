@@ -248,7 +248,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
         name: "eval",
         json: true,
         run: cmd_eval,
-        usage: "brain eval [--floor r5=0.85 r10=0.9]",
+        usage: "brain eval [--floor r5=0.85 r10=0.9] [--safety-violations N]",
     },
     Subcommand {
         name: "procedure",
@@ -638,6 +638,7 @@ const VALUE_FLAGS: &[&str] = &[
     "reason",
     "repo",
     "retention",
+    "safety-violations",
     "session",
     "since",
     "source",
@@ -4827,18 +4828,19 @@ fn cmd_bench() -> Result<(), String> {
         Ok(spec) if !spec.trim().is_empty() => parse_floors(&spec)?,
         _ => Vec::new(),
     };
-    let ok = run_eval("/search", &floors)?;
+    let ok = run_eval("/search", &floors, SafetyTerm::Unobserved)?;
     if !ok {
         return Err("recall floor breached (see BENCH_RECALL_FLOOR)".into());
     }
     Ok(())
 }
 
-/// `brain eval [--floor r5=0.85 r10=0.9]` — run the frozen
-/// judged corpus (`tests/fixtures/eval_queries.md`) against `/recall`, report
-/// the metrics, and exit non-zero when any `--floor` is breached. The fixture
-/// ships in the repo so the gate is reproducible on any machine with a live
-/// server; the operator's private judged corpus remains a separate step.
+/// `brain eval [--floor r5=0.85 r10=0.9] [--safety-violations N]` — run the
+/// frozen judged corpus (`tests/fixtures/eval_queries.md`) against `/recall`,
+/// report the metrics, and exit non-zero when the JOINT admission refuses:
+/// on a safety violation, or on a floor breach. The fixture ships in the repo
+/// so the gate is reproducible on any machine with a live server; the
+/// operator's private judged corpus remains a separate step.
 fn cmd_eval(args: &[String]) -> Result<(), String> {
     let (_positionals, flags) = parse_flags(args)?;
     let mut floors: Vec<(String, f32)> = Vec::new();
@@ -4860,7 +4862,8 @@ fn cmd_eval(args: &[String]) -> Result<(), String> {
             }
         }
     }
-    let ok = run_eval("/recall", &floors)?;
+    let safety = parse_safety_violations(&flags)?;
+    let ok = run_eval("/recall", &floors, safety)?;
     if json_mode() {
         let floors_json: serde_json::Value = floors
             .iter()
@@ -4868,13 +4871,311 @@ fn cmd_eval(args: &[String]) -> Result<(), String> {
             .collect();
         return emit_json_ok(
             "eval",
-            serde_json::json!({ "floors": floors_json, "breached": !ok }),
+            serde_json::json!({
+                "floors": floors_json,
+                "breached": !ok,
+                // Both unset terms are reported, because an unset term that
+                // reads as a passing term is the failure this round exists to
+                // prevent. `safety_observed: false` means the safety count is an
+                // ASSUMPTION, not a measurement; `cost_ceiling: null` means no
+                // cost ceiling has been measured at all.
+                "safety_observed": safety.observed(),
+                "safety_violations": safety.count(),
+                "cost_ceiling": serde_json::Value::Null,
+                "cost_term": "unset_awaits_R53a_telemetry",
+            }),
         );
     }
     if !ok {
-        return Err("recall floor breached".into());
+        return Err("joint admission refused (safety violation or floor breach)".into());
     }
     Ok(())
+}
+
+/// The safety term as the CLI can report it — **two states, not one**, because
+/// "nothing observed it" and "it was observed clean" are different claims and
+/// collapsing them is how an assumption starts reading as a measurement.
+///
+/// `Unobserved` is the honest default for this harness: there is no per-case
+/// behavioural-safety instrumentation to read, so nothing here counts
+/// violations. It maps to a zero count only because `JointObjective`'s field is
+/// a `u32`, and every receipt below says which of the two it was — the text
+/// gate prints the provenance on its own line and `--json` carries
+/// `safety_observed`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SafetyTerm {
+    /// A caller-declared observation: this many evaluated cases took an action
+    /// their own gates forbid. The caller owns the provenance, exactly as it
+    /// does for [`EVAL_COST_CEILING_UNSET`]'s absence below.
+    Declared(u32),
+    /// Nothing observed the term.
+    Unobserved,
+}
+
+impl SafetyTerm {
+    /// The count handed to the objective.
+    ///
+    /// **`Unobserved` is zero because the field is a `u32`, not because zero
+    /// was observed.** That distinction is the whole reason [`Self::observed`]
+    /// exists and is reported: a bare `0` read by anything other than this
+    /// receipt would be indistinguishable from a clean measurement.
+    fn count(self) -> u32 {
+        match self {
+            SafetyTerm::Declared(n) => n,
+            SafetyTerm::Unobserved => 0,
+        }
+    }
+
+    /// Whether a caller actually supplied the count.
+    fn observed(self) -> bool {
+        matches!(self, SafetyTerm::Declared(_))
+    }
+
+    /// The receipt wording. Both arms name what the number is, because a receipt
+    /// that only printed the number would print an assumption as a measurement.
+    fn provenance(self) -> String {
+        match self {
+            SafetyTerm::Declared(n) => {
+                format!("OBSERVED (caller-declared: {n} violation(s) across the run)")
+            }
+            SafetyTerm::Unobserved => {
+                "ASSUMED CLEAN — NOT OBSERVED (no per-case behavioural-safety \
+                                     telemetry exists in this harness; the count is zero because \
+                                     the field is a u32, not because safety was measured)"
+                    .into()
+            }
+        }
+    }
+}
+
+/// `--safety-violations N` — the caller-declared safety observation.
+///
+/// There is deliberately **no default of "clean"** here beyond
+/// [`SafetyTerm::Unobserved`], which reports itself as an assumption on every
+/// run. A caller with a real observation passes it; a caller without one gets
+/// the assumption, named.
+fn parse_safety_violations(flags: &FlagMap) -> Result<SafetyTerm, String> {
+    let Some(v) = flags.get("safety-violations") else {
+        return Ok(SafetyTerm::Unobserved);
+    };
+    let raw = v
+        .as_deref()
+        .ok_or("--safety-violations requires a count")?
+        .trim();
+    match raw.parse::<u32>() {
+        Ok(n) => Ok(SafetyTerm::Declared(n)),
+        Err(e) => Err(format!("--safety-violations value '{raw}': {e}")),
+    }
+}
+
+/// The cost term is **UNSET**, and the value below is how that is spelled
+/// without inventing a measurement.
+///
+/// # Why `LocalCost::MAX` and not zero
+///
+/// A zero ceiling would read as "cost must be zero, and cost is zero, so cost
+/// is free" — a claim nothing supports. There is no per-case token accounting
+/// anywhere in this harness (`Usage` is `pub(crate)` in the server and never
+/// reaches an eval) and no wall-clock instrumentation at all, so there is no
+/// number to compare against ANY ceiling. `LocalCost::MAX` says the honest
+/// thing: **no ceiling has been measured.** It makes the cost comparison
+/// vacuous, and that is not the same as passing it — the receipt says so on
+/// every run, in text and in `--json`.
+///
+/// Wiring a real cost floor here needs R53a telemetry, and per the `P53.4`
+/// preregistration order that telemetry comes FIRST: a cost gate attached to an
+/// unmeasured term would be a number with no provenance wearing a gate's
+/// clothes. Until then this stays unset, visibly.
+const EVAL_COST_CEILING_UNSET: brain_server::eval::LocalCost = brain_server::eval::LocalCost::MAX;
+
+/// The cost observation this CLI can make: none.
+///
+/// `LocalCost::ZERO` is the value `LocalCost` itself documents for "not
+/// measured", which is deliberately **not** the claim "measured and free" — so
+/// using it here is saying exactly what is true, as long as the run says so
+/// out loud too, which it does.
+const EVAL_COST_UNMEASURED: brain_server::eval::LocalCost = brain_server::eval::LocalCost::ZERO;
+
+/// The run's safety term, as the joint objective decided it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SafetyOutcome {
+    Cleared,
+    Refused { violations: u32 },
+}
+
+/// What one declared floor's admission concluded.
+#[derive(Debug, Clone, PartialEq)]
+enum FloorOutcome {
+    Held {
+        metric: String,
+        observed: f32,
+        floor: f32,
+    },
+    /// The floor was never decided: the run was refused for safety first.
+    /// Its own state is NOT a breach — printing a breach here would name the
+    /// wrong cause for a metric that may well have held.
+    SafetyRefused {
+        metric: String,
+        observed: f32,
+        violations: u32,
+    },
+    AccuracyBreached {
+        metric: String,
+        observed: f32,
+        floor: f32,
+    },
+    CostBreached {
+        metric: String,
+        tokens: u32,
+    },
+}
+
+/// The joint admission's verdict, as DATA.
+///
+/// # Why the decision is a value and not a printing loop
+///
+/// The gate's exit code is the one thing nobody reads a line of output for, so
+/// it must not depend on the printing. Extracting the decision means the exit
+/// code is a pure function of (metrics, floors, safety) and can be pinned
+/// WITHOUT a live server — including the arm that matters most, "a safety
+/// violation refuses the run". Inside the printer, that arm was one line away
+/// from being cosmetic and nothing would have noticed.
+#[derive(Debug, Clone, PartialEq)]
+struct Admission {
+    /// The gate's answer. `false` on any refusal, of any kind.
+    held: bool,
+    run_safety: SafetyOutcome,
+    floors: Vec<FloorOutcome>,
+}
+
+/// Admit the run: safety once for the whole run, then each declared floor.
+///
+/// `mean` is the six metrics in `["r5", "r10", "p5", "p10", "mrr", "ndcg"]`
+/// order. A floor naming a metric outside that set is skipped, exactly as the
+/// pre-wiring loop skipped it — `parse_floors` already refuses an unknown name
+/// at the flag, so by this point a skip can only mean a caller that bypassed it.
+fn judge_admission(mean: &[f32; 6], floors: &[(String, f32)], safety: SafetyTerm) -> Admission {
+    let names = ["r5", "r10", "p5", "p10", "mrr", "ndcg"];
+    let mut held = true;
+
+    // Safety FIRST, once for the run. A violation is a refusal no metric can
+    // buy its way past, and the run-level call is what makes that true when the
+    // caller declared no `--floor` at all: with no floors there would otherwise
+    // be no admission for safety to refuse, and "no floors" would silently read
+    // as "nothing to check".
+    let run_safety = match admit_run_safety(safety) {
+        brain_server::eval::JointVerdict::RejectedSafetyViolation(v) => {
+            held = false;
+            SafetyOutcome::Refused {
+                violations: v.violations,
+            }
+        }
+        // Unreachable for every input: this call passes `+inf` accuracy and the
+        // maximum token count against a bar of zero and an unset ceiling, so it
+        // can only be Accepted or refused for safety.
+        // `the_run_level_safety_admission_can_only_be_refused_for_safety` holds
+        // that shut rather than leaving it to this comment.
+        brain_server::eval::JointVerdict::Accepted(_)
+        | brain_server::eval::JointVerdict::RejectedFloor { .. } => SafetyOutcome::Cleared,
+    };
+
+    let mut outcomes = Vec::new();
+    for (metric, floor) in floors {
+        let Some(i) = names.iter().position(|m| m == metric) else {
+            continue;
+        };
+        let observed = mean[i];
+        let floor = *floor;
+        let metric = metric.clone();
+        outcomes.push(match admit_floor(observed, floor, safety) {
+            brain_server::eval::JointVerdict::Accepted(_) => FloorOutcome::Held {
+                metric,
+                observed,
+                floor,
+            },
+            brain_server::eval::JointVerdict::RejectedSafetyViolation(v) => {
+                held = false;
+                FloorOutcome::SafetyRefused {
+                    metric,
+                    observed,
+                    violations: v.violations,
+                }
+            }
+            brain_server::eval::JointVerdict::RejectedFloor {
+                breach: brain_server::eval::FloorBreach::AccuracyBelowFloor,
+                ..
+            } => {
+                held = false;
+                FloorOutcome::AccuracyBreached {
+                    metric,
+                    observed,
+                    floor,
+                }
+            }
+            brain_server::eval::JointVerdict::RejectedFloor {
+                breach: brain_server::eval::FloorBreach::CostAboveCeiling,
+                observed: o,
+            } => {
+                held = false;
+                FloorOutcome::CostBreached {
+                    metric,
+                    tokens: o.cost.tokens(),
+                }
+            }
+        });
+    }
+
+    Admission {
+        held,
+        run_safety,
+        floors: outcomes,
+    }
+}
+
+/// Admit the run's safety term through the joint objective.
+///
+/// # The figures on this call are not inputs to a trade
+///
+/// Safety is a constraint on the RUN, not a per-metric floor, so it is admitted
+/// once and the refusal has to hold whatever the metrics were. `admit` reads
+/// safety first and returns before it looks at accuracy or cost, so nothing here
+/// is compared against anything on a violated run.
+///
+/// Which is why this takes **no accuracy and no cost measurement**: it passes
+/// the strongest figures a violation could possibly buy — `+inf` accuracy and
+/// the maximum token count — rather than the run's actual means. Handing it a
+/// measurement would suggest the number mattered, and it does not. It also
+/// removes the one input that could have produced a floor rejection here: with
+/// no accuracy parameter there is nothing a caller can pass to breach a bar of
+/// zero, so the `RejectedFloor` arm discarded at the call site is unreachable
+/// for **every** input, not merely for the ones this CLI happens to produce.
+///
+/// The verdict is returned verbatim: re-mapping it would be the one way a floor
+/// rejection could be laundered into "cleared".
+fn admit_run_safety(term: SafetyTerm) -> brain_server::eval::JointVerdict {
+    brain_server::eval::admit(
+        &brain_server::eval::JointObjective::new(
+            f32::INFINITY,
+            term.count(),
+            brain_server::eval::LocalCost::MAX,
+        ),
+        &brain_server::eval::JointFloor::new(0.0, EVAL_COST_CEILING_UNSET),
+    )
+}
+
+/// Admit ONE declared floor, carrying the run's safety term and its unmeasured
+/// cost term.
+///
+/// Per-floor rather than one aggregate call because the floors are per-metric
+/// (`r5`, `mrr`, …) and a refusal has to name which term failed. The safety
+/// count rides every call so no floor can report `ok` on a run that is refused
+/// for safety — a green line under a violated run is exactly the reading this
+/// exists to prevent.
+fn admit_floor(observed: f32, floor: f32, term: SafetyTerm) -> brain_server::eval::JointVerdict {
+    brain_server::eval::admit(
+        &brain_server::eval::JointObjective::new(observed, term.count(), EVAL_COST_UNMEASURED),
+        &brain_server::eval::JointFloor::new(floor, EVAL_COST_CEILING_UNSET),
+    )
 }
 
 /// Parse `r5:0.85,r10:0.9` (or `r5=0.85`; mixed separators allowed) into
@@ -4907,10 +5208,16 @@ fn parse_floors(spec: &str) -> Result<Vec<(String, f32)>, String> {
 }
 
 /// Run the frozen eval fixture against `endpoint` (`/search` or `/recall`),
-/// print per-query + mean metrics, and return whether every floor held.
-/// Floors are (metric, min) pairs over the means: r5/r10 = recall@k,
+/// print per-query + mean metrics, and return whether the JOINT admission
+/// holds. Floors are (metric, min) pairs over the means: r5/r10 = recall@k,
 /// p5/p10 = precision@k, mrr, ndcg.
-fn run_eval(endpoint: &str, floors: &[(String, f32)]) -> Result<bool, String> {
+///
+/// `safety` is the run's safety term, in the two states [`SafetyTerm`] names.
+/// It is admitted ONCE for the whole run and again on every floor, and it is
+/// the reason the answer is no longer a bare accuracy comparison: this returns
+/// `false` on a safety violation as well as on a floor breach, and no figure
+/// printed on the way can offset the first.
+fn run_eval(endpoint: &str, floors: &[(String, f32)], safety: SafetyTerm) -> Result<bool, String> {
     let fixture = "tests/fixtures/eval_queries.md";
     let raw = std::fs::read_to_string(fixture)
         .map_err(|e| format!("cannot read {fixture}: {e} (run from the repo root)"))?;
@@ -5008,20 +5315,67 @@ fn run_eval(endpoint: &str, floors: &[(String, f32)]) -> Result<bool, String> {
         mean[5],
         queries.len()
     );
-    let names = ["r5", "r10", "p5", "p10", "mrr", "ndcg"];
-    let mut held = true;
-    for (metric, floor) in floors {
-        if let Some((i, _)) = names.iter().enumerate().find(|(_, m)| **m == metric) {
-            if mean[i] < *floor {
-                held = false;
-                println!("FLOOR BREACH: {metric} = {:.3} < {floor:.3}", mean[i]);
-            } else {
-                println!("floor ok    : {metric} = {:.3} >= {floor:.3}", mean[i]);
-            }
+    // ── the joint admission ──────────────────────────────────────────────
+    //
+    // The decision is `judge_admission`'s, not this function's: `held` is read
+    // off the value it returns and is never assigned here, so the printing
+    // below cannot change the gate's answer. Only the receipt is this
+    // function's job.
+    let admission = judge_admission(&mean, floors, safety);
+    if let SafetyOutcome::Refused { violations } = admission.run_safety {
+        println!(
+            "SAFETY REFUSED: {violations} of the evaluated cases took an action their own gates \
+             forbid"
+        );
+        println!("safety term  : {}", safety.provenance());
+    }
+    for outcome in &admission.floors {
+        match outcome {
+            FloorOutcome::Held {
+                metric,
+                observed,
+                floor,
+            } => println!("floor ok    : {metric} = {observed:.3} >= {floor:.3}"),
+            // Reported as its own line, NOT as a breach of this metric: the
+            // floor may well have held, and saying otherwise would name the
+            // wrong cause.
+            FloorOutcome::SafetyRefused {
+                metric,
+                observed,
+                violations,
+            } => println!(
+                "floor UNVERIFIED : {metric} = {observed:.3} — the run was refused for safety \
+                 ({violations} violation(s)), so this floor was never decided"
+            ),
+            FloorOutcome::AccuracyBreached {
+                metric,
+                observed,
+                floor,
+            } => println!("FLOOR BREACH: {metric} = {observed:.3} < {floor:.3}"),
+            FloorOutcome::CostBreached { metric, tokens } => println!(
+                "COST CEILING BREACH: {metric} — {tokens} token(s) observed against an unset \
+                 ceiling ({EVAL_COST_UNSET_REASON}). The cost term is UNSET, so a breach here \
+                 means the ceiling moved"
+            ),
         }
     }
-    Ok(held)
+
+    // The two unset terms, said out loud on every run. A gate that prints a
+    // refusal and stays silent about what it did NOT check is a gate whose
+    // silence reads as coverage.
+    println!("safety term  : {}", safety.provenance());
+    println!(
+        "cost term    : UNSET — no per-case token accounting and no wall-clock instrumentation \
+         exist in this harness, so no cost ceiling has been measured and none is enforced \
+         ({EVAL_COST_UNSET_REASON})"
+    );
+    Ok(admission.held)
 }
+
+/// Named once so the receipt above and the breach arm below cannot disagree
+/// about WHY the ceiling is unset.
+const EVAL_COST_UNSET_REASON: &str =
+    "LocalCost::MAX, not zero — awaiting R53a telemetry, per the P53.4 preregistration order";
 
 struct EvalQuery {
     query: String,
@@ -5245,6 +5599,363 @@ mod tests {
         assert!(parse_floors("0.5").is_err(), "missing metric rejected");
         assert!(parse_floors("r5=abc").is_err(), "non-numeric rejected");
         assert_eq!(parse_floors("").unwrap(), vec![]);
+    }
+
+    // ── the joint admission: `brain eval` refuses, not just compares ────────
+    //
+    // These pins cover the DECISION, not the HTTP round trip — `run_eval` needs
+    // a live server, and what it decides with `admit_floor` /
+    // `admit_run_safety` is the part that can silently regress. Each one is
+    // written so that the pre-wiring behaviour — a bare `mean[i] < floor`
+    // comparison — fails it rather than passing it.
+
+    use brain_server::eval::{FloorBreach, JointVerdict};
+
+    /// **The CLI refuses a safety violation**, with the floor figures as good as
+    /// the fixture can make them.
+    ///
+    /// This is the claim that was absent before: `run_eval` compared accuracy to
+    /// a number and knew nothing about safety, so a run in which the system took
+    /// a forbidden action printed `floor ok` on every line and exited 0. The
+    /// sweep covers the whole figure range including `+inf`, so no accuracy
+    /// value — not even a physically impossible one — buys acceptance.
+    #[test]
+    fn eval_refuses_a_safety_violation_however_good_the_metrics_are() {
+        for accuracy in [0.0_f32, 0.5, 0.85, 0.99, 1.0, f32::INFINITY] {
+            let verdict = admit_floor(accuracy, 0.85, SafetyTerm::Declared(1));
+            assert!(
+                matches!(verdict, JointVerdict::RejectedSafetyViolation(v) if v.violations == 1),
+                "a declared safety violation must refuse the floor whatever the accuracy \
+                 (accuracy={accuracy}). Got {verdict:?}"
+            );
+            // And the run-level admission agrees, which is what makes the
+            // refusal independent of whether a floor was declared at all.
+            assert!(
+                matches!(
+                    admit_run_safety(SafetyTerm::Declared(3)),
+                    JointVerdict::RejectedSafetyViolation(v) if v.violations == 3
+                ),
+                "the run-level safety admission must refuse too (accuracy={accuracy})"
+            );
+        }
+    }
+
+    /// **The gate's EXIT CODE refuses** — the decision `judge_admission`
+    /// returns, pinned against the CI invocation's own floors.
+    ///
+    /// This is the arm that was one line from being cosmetic. `admit_run_safety`
+    /// refusing is not the same claim as the gate refusing: a future edit could
+    /// compute the refusal and print it without ever failing the run, and every
+    /// other pin here would stay green because they pin the ADMISSION, not what
+    /// the binary does with it. So `held` is asserted directly, over the CI
+    /// floors, at a perfect accuracy — the strongest case a violation could buy.
+    #[test]
+    fn the_gate_refuses_the_run_itself_on_a_safety_violation() {
+        let ci_floors = vec![
+            ("r5".to_string(), 0.85),
+            ("r10".to_string(), 0.85),
+            ("mrr".to_string(), 0.85),
+        ];
+        // A perfect run against every CI floor: still refused.
+        let perfect = [1.0_f32; 6];
+        let admitted = judge_admission(&perfect, &ci_floors, SafetyTerm::Unobserved);
+        assert!(
+            admitted.held,
+            "fixture sanity: a perfect clean run must be admitted"
+        );
+
+        let refused = judge_admission(&perfect, &ci_floors, SafetyTerm::Declared(2));
+        assert!(
+            !refused.held,
+            "a safety violation must fail the gate even at perfect accuracy against the CI \
+             floors. A refusal that is computed, printed and then ignored is not a refusal"
+        );
+        assert_eq!(
+            refused.run_safety,
+            SafetyOutcome::Refused { violations: 2 },
+            "the run-level outcome must carry the count, so the receipt can name it"
+        );
+        // And NO floor may report `Held` under a refused run: a green line
+        // printed over a violated run is the reading this whole seam exists to
+        // stop.
+        for outcome in &refused.floors {
+            assert!(
+                matches!(outcome, FloorOutcome::SafetyRefused { violations: 2, .. }),
+                "every floor on a refused run must read as unverified, not as held: {outcome:?}"
+            );
+        }
+
+        // The same with NO floors declared at all — the case that would otherwise
+        // have had no admission to refuse.
+        let no_floors = judge_admission(&perfect, &[], SafetyTerm::Declared(1));
+        assert!(
+            !no_floors.held,
+            "a safety violation must refuse the run even when the caller declared no --floor"
+        );
+        assert!(no_floors.floors.is_empty());
+    }
+
+    /// **The CLI refuses a floor breach**, and names WHICH term failed — so a
+    /// reader is not left with a boolean.
+    #[test]
+    fn eval_refuses_a_floor_breach_and_names_the_term() {
+        match admit_floor(0.84, 0.85, SafetyTerm::Unobserved) {
+            JointVerdict::RejectedFloor {
+                breach: FloorBreach::AccuracyBelowFloor,
+                ..
+            } => {}
+            other => panic!(
+                "0.84 against a 0.85 floor must be refused as an accuracy breach, got {other:?}"
+            ),
+        }
+        // Exactly at the floor still holds: the comparison is `>=`, so the
+        // boundary is not a breach. That is the pre-existing CLI convention
+        // `admit` documents and it is asserted here so a future `>` cannot
+        // quietly tighten the published gate.
+        assert!(
+            matches!(
+                admit_floor(0.85, 0.85, SafetyTerm::Unobserved),
+                JointVerdict::Accepted(_)
+            ),
+            "the floor is inclusive — 0.85 against 0.85 holds"
+        );
+
+        // And the breach fails the GATE, naming the metric that breached — the
+        // published CI floors against the long-standing smoke figures, where
+        // p5 and mrr sit below a 0.85 bar if one is declared for them.
+        let mean = [0.919_f32, 0.919, 0.276, 0.138, 0.905, 0.909];
+        let refused = judge_admission(
+            &mean,
+            &[("p5".to_string(), 0.85), ("mrr".to_string(), 0.85)],
+            SafetyTerm::Unobserved,
+        );
+        assert!(!refused.held, "a floor breach must fail the gate");
+        assert_eq!(
+            refused.floors,
+            vec![
+                FloorOutcome::AccuracyBreached {
+                    metric: "p5".into(),
+                    observed: 0.276,
+                    floor: 0.85
+                },
+                FloorOutcome::Held {
+                    metric: "mrr".into(),
+                    observed: 0.905,
+                    floor: 0.85
+                }
+            ],
+            "each floor must report its own outcome, so one breach cannot hide a passing \
+             neighbour — and one pass cannot hide a breach"
+        );
+    }
+
+    /// A floor naming a metric outside the six is skipped, not admitted and not
+    /// breached. `parse_floors` refuses the unknown name at the flag, so this is
+    /// the second door — and a silent *breach* here would fail a gate over a
+    /// metric that does not exist.
+    #[test]
+    fn an_unknown_floor_metric_is_skipped_rather_than_decided() {
+        let admission = judge_admission(
+            &[1.0_f32; 6],
+            &[("not_a_metric".to_string(), 0.85)],
+            SafetyTerm::Unobserved,
+        );
+        assert!(admission.held, "an unknown metric is not a breach");
+        assert!(
+            admission.floors.is_empty(),
+            "and it produces no floor line at all: {:?}",
+            admission.floors
+        );
+    }
+
+    /// **Still exits 0 when the floors hold** — the CI invocation's whole point.
+    ///
+    /// `ci.yml` runs exactly `brain eval --floor r5=0.85 --floor r10=0.85
+    /// --floor mrr=0.85` against a seeded scratch instance and fails the job if
+    /// the binary exits non-zero. So the "floors hold" arm is not a nicety, it
+    /// is the gate's shipped behaviour, and the safety term being ASSUMED must
+    /// not turn it red.
+    #[test]
+    fn eval_admits_a_clean_run_with_the_ci_floors() {
+        // The CI invocation's three floors, against a run that clears them.
+        let ci_floors = vec![
+            ("r5".to_string(), 0.85),
+            ("r10".to_string(), 0.85),
+            ("mrr".to_string(), 0.85),
+        ];
+        // The long-standing CI smoke figures, rounded to three places exactly as
+        // the receipt prints them.
+        let mean = [0.919_f32, 0.919, 0.276, 0.138, 0.905, 0.909];
+        let admitted = judge_admission(&mean, &ci_floors, SafetyTerm::Unobserved);
+        assert!(
+            admitted.held,
+            "the CI invocation must still exit 0 when the floors hold. Got {:?}",
+            admitted.floors
+        );
+        assert_eq!(admitted.run_safety, SafetyOutcome::Cleared);
+        for outcome in &admitted.floors {
+            assert!(
+                matches!(outcome, FloorOutcome::Held { .. }),
+                "every CI floor must read as held: {outcome:?}"
+            );
+        }
+
+        // The run-level admission admits the same clean run with no floors at
+        // all, so "no --floor declared" cannot read as "nothing to check".
+        assert!(
+            matches!(
+                admit_run_safety(SafetyTerm::Unobserved),
+                JointVerdict::Accepted(_)
+            ),
+            "an unobserved-but-unviolated safety term admits the run"
+        );
+    }
+
+    /// The discarded arms on the run-level admission are unreachable, and this
+    /// is the sweep that keeps that a fact.
+    ///
+    /// `admit_run_safety` throws away `Accepted` and `RejectedFloor` at the call
+    /// site. That is only honest if it cannot be refused for a floor — asserted
+    /// here over the full range of violation counts including the boundary and
+    /// the saturation value, rather than assumed in prose. If a future edit
+    /// handed this call a real accuracy bar or a real cost ceiling, a breach
+    /// would be silently discarded and the run would report `ok`.
+    #[test]
+    fn the_run_level_safety_admission_can_only_be_refused_for_safety() {
+        for violations in [0_u32, 1, 2, 7, 1_000, u32::MAX] {
+            let term = SafetyTerm::Declared(violations);
+            let verdict = admit_run_safety(term);
+            if violations == 0 {
+                assert!(
+                    matches!(verdict, JointVerdict::Accepted(_)),
+                    "zero violations is the boundary of the feasible set and must be Accepted. \
+                     Got {verdict:?}"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        verdict,
+                        JointVerdict::RejectedSafetyViolation(v) if v.violations == violations
+                    ),
+                    "a violation must be a SAFETY refusal and nothing else, because the \
+                     RejectedFloor arm is discarded at the call site. Got {verdict:?}"
+                );
+            }
+        }
+    }
+
+    /// The unset terms must not read as passed terms. This is the pin the whole
+    /// cost story rests on: a ceiling of zero would make `0 > 0` false, i.e. it
+    /// would report "cost is free", which is a claim no measurement supports.
+    #[test]
+    fn the_cost_term_is_unset_and_does_not_default_to_free() {
+        // The ceiling is MAX, not zero — asserted directly, because the number
+        // is the entire content of the claim.
+        assert_eq!(
+            EVAL_COST_CEILING_UNSET.tokens(),
+            u32::MAX,
+            "the cost ceiling must be MAX (no ceiling measured). Zero would make the comparison \
+             vacuous in a way that reads as 'measured and free', and 'free' is a claim this \
+             harness cannot support — it has no token accounting and no wall clock"
+        );
+        assert_eq!(EVAL_COST_UNMEASURED.tokens(), 0);
+        assert!(
+            EVAL_COST_UNSET_REASON.contains("R53a") && EVAL_COST_UNSET_REASON.contains("P53.4"),
+            "the reason the ceiling is unset must name the telemetry it awaits and the \
+             preregistration order that puts that telemetry first. Got {EVAL_COST_UNSET_REASON}"
+        );
+        // And the unset ceiling cannot manufacture a cost refusal: no
+        // observation this harness can make breaches it. If it ever can, the
+        // receipt's "vacuous, not passed" claim is wrong and this fires.
+        for tokens in [0_u32, 1, 1_000, u32::MAX] {
+            let observed = brain_server::eval::LocalCost::new(tokens);
+            let verdict = brain_server::eval::admit(
+                &brain_server::eval::JointObjective::new(0.95, 0, observed),
+                &brain_server::eval::JointFloor::new(0.85, EVAL_COST_CEILING_UNSET),
+            );
+            assert!(
+                matches!(verdict, JointVerdict::Accepted(_)),
+                "tokens={tokens} must not breach an unset ceiling of MAX. A ceiling that a \
+                 maximal observation could breach would not be unset, it would be wrong"
+            );
+        }
+    }
+
+    /// The safety term is a TWO-state receipt, and the unobserved state says so
+    /// in words. A receipt that printed only the number would print an
+    /// assumption as a measurement.
+    #[test]
+    fn an_unobserved_safety_term_reports_itself_as_an_assumption() {
+        assert_eq!(SafetyTerm::Unobserved.count(), 0);
+        assert!(!SafetyTerm::Unobserved.observed());
+        let said = SafetyTerm::Unobserved.provenance();
+        assert!(
+            said.contains("NOT OBSERVED") && said.contains("not because safety was measured"),
+            "the receipt must say the term was not observed, and why the zero is not a \
+             measurement. A receipt that printed only the number would print an assumption as a \
+             measurement. Got {said}"
+        );
+        assert_eq!(SafetyTerm::Declared(4).count(), 4);
+        assert!(SafetyTerm::Declared(4).observed());
+        assert!(
+            SafetyTerm::Declared(4).provenance().contains("OBSERVED"),
+            "a declared count must report itself as observed"
+        );
+    }
+
+    /// `--safety-violations` parses, and a malformed one is a usage error rather
+    /// than a silently-absent observation — which would read as "clean".
+    ///
+    /// The args go through the REAL `parse_flags`, not a hand-built map. An
+    /// earlier version of this pin built the `FlagMap` directly and passed while
+    /// the flag was **unreachable**: `VALUE_FLAGS` is a closed vocabulary, so
+    /// `--safety-violations` was refused as an unknown flag at the parser and
+    /// the safety term could never be anything but `Unobserved` in production.
+    /// A pin that constructs its own input is a pin that cannot see the door.
+    #[test]
+    fn the_safety_violation_flag_parses_and_rejects_junk() {
+        let (_, flags) = parse_flags(&["--floor".into(), "r5=0.85".into()]).unwrap();
+        assert_eq!(
+            parse_safety_violations(&flags).unwrap(),
+            SafetyTerm::Unobserved,
+            "no flag means UNOBSERVED, not Declared(0) — the difference is the receipt"
+        );
+
+        // Reachable, and it reaches the parser through the real path.
+        let (pos, flags) = parse_flags(&[
+            "--floor".into(),
+            "r5=0.85".into(),
+            "--safety-violations".into(),
+            "2".into(),
+        ])
+        .expect("--safety-violations must be in the VALUE_FLAGS vocabulary");
+        assert!(
+            pos.is_empty(),
+            "the flag must not swallow a positional: {pos:?}"
+        );
+        assert_eq!(
+            parse_safety_violations(&flags).unwrap(),
+            SafetyTerm::Declared(2)
+        );
+        // The `--flag=value` form too.
+        let (_, flags) = parse_flags(&["--safety-violations=5".into()]).unwrap();
+        assert_eq!(
+            parse_safety_violations(&flags).unwrap(),
+            SafetyTerm::Declared(5)
+        );
+
+        // A negative count is not a count; reading it as zero would report a
+        // violated run as clean.
+        let bad = match parse_flags(&["--safety-violations".into(), "-1".into()]) {
+            Ok((_, f)) => f,
+            // `-1` is rejected by the parser as an unknown flag, which is also a
+            // refusal and also not "clean". Either door refuses.
+            Err(_) => return,
+        };
+        assert!(
+            parse_safety_violations(&bad).is_err(),
+            "a negative count must not become a zero"
+        );
     }
 
     /// `brain ump` rejects a missing subcommand and `import`

@@ -815,10 +815,12 @@ fn the_standing_laws_the_round_must_not_break_still_hold() {
 // path carries the six columns, that the read-back is fail-closed, and that the
 // refusal is a distinct state rather than a widened `None`.
 
-/// The claim write must carry all six disproof columns. Before this round the
-/// INSERT listed twelve columns and named none of them.
+/// The claim write must carry all seven disproof columns. Before the disproof
+/// round the INSERT listed twelve columns and named none of them; before this
+/// round it listed six and left `disproof_scope` out, which is the inert state
+/// this one ends for the seventh field.
 #[test]
-fn the_claim_write_carries_all_six_disproof_columns() {
+fn the_claim_write_carries_all_seven_disproof_columns() {
     let core = production("src/service/create.rs");
     // Isolate the one INSERT so a column named in a comment or a test cannot
     // satisfy this.
@@ -834,6 +836,7 @@ fn the_claim_write_carries_all_six_disproof_columns() {
         "disproof_body",
         "disproof_op",
         "disproof_citation",
+        "disproof_scope",
         "disproof_coverage",
         "disproof_audit_ref",
     ] {
@@ -841,6 +844,31 @@ fn the_claim_write_carries_all_six_disproof_columns() {
             insert.contains(col),
             "`{col}` is missing from the claims INSERT. A column that is not named here is a \
              column no write ever populates, which is the inert state this round exists to end"
+        );
+    }
+    // …and the read-back must carry the same seven, or a write could store a
+    // column nothing ever reads — inert in the other direction.
+    let at = core
+        .find("SELECT disproof_form")
+        .expect("the read-back SELECT must exist");
+    let back = core[at..]
+        .split("FROM claims")
+        .next()
+        .expect("the read-back column list must close");
+    for col in [
+        "disproof_form",
+        "disproof_body",
+        "disproof_op",
+        "disproof_citation",
+        "disproof_scope",
+        "disproof_coverage",
+        "disproof_audit_ref",
+    ] {
+        assert!(
+            back.contains(col),
+            "`{col}` is written but never read. A column the read-back does not select is a \
+             column whose value no reader can see, which is the same inert state wearing the \
+             other hat"
         );
     }
 }
@@ -872,7 +900,13 @@ fn the_read_back_is_fail_closed_and_none_means_only_legacy() {
         back.contains("let legacy = blank(&cols.form)"),
         "the legacy determination must be visible and must start from the form column"
     );
-    for col in ["cols.body", "cols.op", "cols.citation", "cols.audit_ref"] {
+    for col in [
+        "cols.body",
+        "cols.op",
+        "cols.citation",
+        "cols.scope",
+        "cols.audit_ref",
+    ] {
         assert!(
             back.contains(&format!("blank(&{col})")),
             "`{col}` must take part in the legacy determination. Legacy is a claim about EVERY \
@@ -916,21 +950,45 @@ fn the_legacy_case_is_pinned_against_a_real_column_shape() {
     );
 }
 
-/// The `scope` defect, pinned at the source level because it is a statement
-/// about the SCHEMA that a behaviour test can only see indirectly.
+/// The `scope` ceiling, INVERTED — the seventh column exists and the
+/// serialisation refusal is gone.
+///
+/// **Inverted, not deleted.** This asserted the opposite for a release: schema
+/// 1.32.22 added six disproof columns for a seven-field condition, so `scope`
+/// had nowhere to go, `Evaluated` was unpersistable, and the writer refused
+/// with `DI_DISPROOF_SCOPE_NOT_PERSISTED`. That was true then. Schema 1.32.23
+/// added `disproof_scope`, so it is false now, and the pin's own instruction
+/// ("this pin must be updated in the SAME commit, along with `to_columns`") is
+/// what this is.
+///
+/// The pin still bites, in both directions, which is the point of inverting
+/// rather than removing: it now fails if the column disappears again, **and**
+/// if the refusal is reinstated. Either one alone would be the old defect or
+/// its opposite, and a pin that only checked the first would have gone
+/// vacuously green on a tree that stored a scope nothing could read back.
 #[test]
-fn the_scope_field_is_refused_because_the_table_has_no_column_for_it() {
+fn the_scope_column_exists_and_the_serialisation_refusal_is_gone() {
     let migration = read_repo("src/migration.rs");
     assert!(
-        !migration.contains("disproof_scope"),
-        "a `disproof_scope` column has appeared. The round refused to store an Evaluated \
-         condition because scope had nowhere to go — if the column now exists, that ceiling has \
-         moved and this pin must be updated in the SAME commit, along with `to_columns`"
+        migration.contains("disproof_scope"),
+        "the `disproof_scope` column has been removed. `Evaluated` requires a scope, so without it \
+         the machine-checkable form is unpersistable again — which is the defect this pin was \
+         rewritten to hold shut"
     );
     let disproof = read_repo("src/workflow/create/disproof.rs");
     assert!(
-        disproof.contains("DI_DISPROOF_SCOPE_NOT_PERSISTED"),
-        "the serialisation refusal for an unpersistable scope must stay. Without it a writer \
-         would drop scope on the floor and produce a row its own read-back then refuses"
+        !disproof.contains("DI_DISPROOF_SCOPE_NOT_PERSISTED"),
+        "the serialisation refusal is back. The column exists, so the refusal now means the \
+         writer is dropping scope on the floor — producing a row its own read-back refuses, which \
+         is manufacturing corruption at the write seam"
+    );
+    // And the refusal's removal is not a hole opened in its place: the writer
+    // must still refuse a condition the CONSTRUCTOR would not admit, which is a
+    // different seam and a different law.
+    assert!(
+        disproof.contains("pub fn to_columns(&self) -> DisproofColumns"),
+        "to_columns is serialisation, and it is now infallible because the table can hold every \
+         field. If it is carrying a second validation, that is a second law — admissibility \
+         belongs to the one constructor"
     );
 }
