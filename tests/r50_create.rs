@@ -791,3 +791,146 @@ fn the_standing_laws_the_round_must_not_break_still_hold() {
         );
     }
 }
+
+// ── the disproof writer and its fail-closed read-back ──────────────────────
+//
+// Everything below pins the WRITER and the READ-BACK: until this round the
+// disproof representation existed and was inert — six columns on `claims` that
+// no production code wrote and no production code read.
+//
+// # Why these are SOURCE pins and not database pins
+//
+// The obvious place for a real round-trip is this file, and that is a trap. This
+// is an EXTERNAL integration test: it links the crate as a downstream consumer
+// and can only name `pub` items. `store_claim_with_disproof` and
+// `read_disproof` are `pub(crate)`, and `crate::workflow::create::disproof` is
+// a `pub(crate) mod` behind a `pub(crate) mod create`. Widening any of them to
+// `pub` to make a test compile would be a production API change made for test
+// convenience — the exact "make the test pass by changing the thing under test"
+// trade this repository's discipline exists to refuse.
+//
+// So the DB-level pins live beside their subject, in `src/service/create.rs`'s
+// own `#[cfg(test)] mod tests` (which has the real `db()` helper and reaches
+// `pub(crate)`), and this file pins what it CAN see from outside: that the write
+// path carries the six columns, that the read-back is fail-closed, and that the
+// refusal is a distinct state rather than a widened `None`.
+
+/// The claim write must carry all six disproof columns. Before this round the
+/// INSERT listed twelve columns and named none of them.
+#[test]
+fn the_claim_write_carries_all_six_disproof_columns() {
+    let core = production("src/service/create.rs");
+    // Isolate the one INSERT so a column named in a comment or a test cannot
+    // satisfy this.
+    let insert = core
+        .split("INSERT INTO claims(")
+        .nth(1)
+        .expect("the claim INSERT must exist")
+        .split(')')
+        .next()
+        .expect("the column list must close");
+    for col in [
+        "disproof_form",
+        "disproof_body",
+        "disproof_op",
+        "disproof_citation",
+        "disproof_coverage",
+        "disproof_audit_ref",
+    ] {
+        assert!(
+            insert.contains(col),
+            "`{col}` is missing from the claims INSERT. A column that is not named here is a \
+             column no write ever populates, which is the inert state this round exists to end"
+        );
+    }
+}
+
+/// The read-back must be a `Result`, and its `None` must be reachable ONLY from
+/// the legacy shape. This is the round's central law, pinned structurally
+/// because the behavioural pins live where they can reach the function.
+#[test]
+fn the_read_back_is_fail_closed_and_none_means_only_legacy() {
+    let disproof = read_repo("src/workflow/create/disproof.rs");
+    let back = disproof
+        .split("pub fn from_columns(")
+        .nth(1)
+        .expect("the fail-closed read-back must exist")
+        .split("\n    /// ")
+        .next()
+        .unwrap_or_default();
+
+    assert!(
+        back.contains("Result<Option<Self>, String>"),
+        "the read-back must return a Result whose None is distinct from its error. A plain \
+         Option cannot tell a pre-field row from a damaged one, and that difference is the whole \
+         point of the function"
+    );
+    // The legacy branch must be a conjunction over EVERY column. A legacy test
+    // that only checks `form` would pass on a row carrying a body and no form —
+    // which is a damaged row, and the laundering this exists to prevent.
+    assert!(
+        back.contains("let legacy = blank(&cols.form)"),
+        "the legacy determination must be visible and must start from the form column"
+    );
+    for col in ["cols.body", "cols.op", "cols.citation", "cols.audit_ref"] {
+        assert!(
+            back.contains(&format!("blank(&{col})")),
+            "`{col}` must take part in the legacy determination. Legacy is a claim about EVERY \
+             column: a row with a body and no form is DAMAGED, not a pre-field row"
+        );
+    }
+    // And past the legacy branch, a row that names a form it cannot rebuild
+    // must be an error, not a None.
+    assert!(
+        back.contains("ok_or(\"DI_DISPROOF_ROW_FORM_MISSING\")"),
+        "a row that carries disproof bytes but no form must be refused, not reported as legacy"
+    );
+}
+
+/// The `None` case must be a real, tested legacy story — not a tautology. The
+/// previous version of this law compared a literal `None` against `is_none()`,
+/// which passes whether or not the representation exists at all.
+#[test]
+fn the_legacy_case_is_pinned_against_a_real_column_shape() {
+    let disproof = read_repo("src/workflow/create/disproof.rs");
+    let tests = disproof
+        .split("#[cfg(test)]")
+        .nth(1)
+        .expect("the module must have tests");
+    let legacy = tests
+        .split("fn legacy_claims_carry_no_condition_and_that_is_not_a_refutation")
+        .nth(1)
+        .expect("the legacy pin must exist")
+        .split("\n    #[test]")
+        .next()
+        .unwrap_or_default();
+
+    assert!(
+        legacy.contains("DisproofCondition::from_columns(&cols)"),
+        "the legacy pin must go through the read-back against a column shape. Asserting on a \
+         literal `None` is a pin that cannot fail, which is worse than no pin"
+    );
+    assert!(
+        !legacy.contains("let legacy: Option<DisproofCondition> = None"),
+        "the tautology is back"
+    );
+}
+
+/// The `scope` defect, pinned at the source level because it is a statement
+/// about the SCHEMA that a behaviour test can only see indirectly.
+#[test]
+fn the_scope_field_is_refused_because_the_table_has_no_column_for_it() {
+    let migration = read_repo("src/migration.rs");
+    assert!(
+        !migration.contains("disproof_scope"),
+        "a `disproof_scope` column has appeared. The round refused to store an Evaluated \
+         condition because scope had nowhere to go — if the column now exists, that ceiling has \
+         moved and this pin must be updated in the SAME commit, along with `to_columns`"
+    );
+    let disproof = read_repo("src/workflow/create/disproof.rs");
+    assert!(
+        disproof.contains("DI_DISPROOF_SCOPE_NOT_PERSISTED"),
+        "the serialisation refusal for an unpersistable scope must stay. Without it a writer \
+         would drop scope on the floor and produce a row its own read-back then refuses"
+    );
+}

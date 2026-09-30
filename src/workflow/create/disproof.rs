@@ -149,6 +149,44 @@ pub struct DisproofCondition {
     pub audit_ref: Option<String>,
 }
 
+/// The six persisted columns, exactly as a row carries them.
+///
+/// This is the wire shape between the table and [`DisproofCondition`], and it is
+/// **deliberately not the condition**: it is all-`Option` because SQL `NULL` and
+/// the empty string are different things, and conflating them is how a
+/// half-written condition starts reading as a legacy row.
+///
+/// `coverage` is a JSON array rather than a delimited string, because a
+/// coverage item is free prose and a delimiter would have to be escaped in a
+/// column whose only other content is a form spelling. It is
+/// `NOT NULL DEFAULT '[]'`, so **`'[]'` and `NULL` both mean "no coverage
+/// list"** and both are treated as empty on the way back in.
+///
+/// # There is no `scope` here, and that is a measured finding
+///
+/// [`DisproofCondition`] has **seven** fields. Schema 1.32.22 added **six**
+/// columns: `disproof_form`, `disproof_body`, `disproof_op`,
+/// `disproof_citation`, `disproof_coverage`, `disproof_audit_ref`. **`scope` has
+/// no column.** The representation was shipped with a field the table cannot
+/// hold, which is only observable now that something finally writes it.
+///
+/// The consequence is stated rather than papered over: `DisproofForm::Evaluated`
+/// **requires** a scope (`validate` refuses without one), so no `Evaluated`
+/// condition can be persisted without losing the very field that makes it
+/// machine-checkable. A writer that dropped `scope` on the floor would produce a
+/// row its own read-back then refuses — manufacturing corruption at the write
+/// seam, which is the one thing this module exists to prevent. So the write
+/// **refuses** instead; see [`DisproofCondition::to_columns`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DisproofColumns {
+    pub form: Option<String>,
+    pub body: Option<String>,
+    pub op: Option<String>,
+    pub citation: Option<String>,
+    pub coverage: Option<String>,
+    pub audit_ref: Option<String>,
+}
+
 impl DisproofCondition {
     /// Construct with validation. **This is the only constructor**, which is why
     /// the refusal cannot be bypassed by building the struct and inserting it.
@@ -285,6 +323,162 @@ impl DisproofCondition {
             },
         }
     }
+
+    /// **The fail-closed read-back.** Reconstruct a condition from a stored row.
+    ///
+    /// # The distinction this function exists to keep
+    ///
+    /// There are three outcomes and they are NOT two:
+    ///
+    /// | stored shape | result |
+    /// |---|---|
+    /// | every column empty | `Ok(None)` — a row that **predates the field** |
+    /// | form present, reconstructs | `Ok(Some(c))` |
+    /// | form present, does NOT reconstruct | **`Err`** |
+    ///
+    /// `Ok(None)` means *"no condition was ever written here"* and nothing else.
+    /// **A corrupt row must never report `Ok(None)`**, because the caller cannot
+    /// tell a claim that predates the field from a claim whose condition was
+    /// damaged — and the first is exempt from evaluation while the second is
+    /// exactly the claim that should be looked at hardest. Widening `None` to
+    /// cover "unreadable" is the single defect this function is written to
+    /// prevent, and the corrupt tests below pin each shape that would cause it.
+    ///
+    /// The refusal is **not** a second validation site: reconstruction builds
+    /// through [`DisproofCondition::new`], the one constructor, so the
+    /// admissibility laws have exactly one enforcement point and a row that
+    /// reconstructs into something inadmissible is refused by the same rules
+    /// that refused it at write time.
+    pub fn from_columns(cols: &DisproofColumns) -> Result<Option<Self>, String> {
+        let blank = |v: &Option<String>| v.as_deref().is_none_or(str::is_empty);
+        let coverage_blank = cols
+            .coverage
+            .as_deref()
+            .is_none_or(|c| c.is_empty() || c.trim() == "[]");
+
+        // Legacy is a claim about EVERY column, not about one. A row with a
+        // body and no form is a damaged row, not a pre-field row.
+        let legacy = blank(&cols.form)
+            && blank(&cols.body)
+            && blank(&cols.op)
+            && blank(&cols.citation)
+            && blank(&cols.audit_ref)
+            && coverage_blank;
+        if legacy {
+            return Ok(None);
+        }
+
+        // Past this point the row CLAIMS a condition, so failing to rebuild one
+        // is an error. Reporting `None` here would launder a damaged row as a
+        // legacy one, which is the laundering this function refuses to do.
+        let form_raw = cols
+            .form
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .ok_or("DI_DISPROOF_ROW_FORM_MISSING")?;
+        let form = DisproofForm::parse(form_raw)?;
+
+        let op = match cols.op.as_deref().filter(|s| !s.is_empty()) {
+            None => None,
+            Some(raw) => Some(EvaluatedOp::parse(raw)?),
+        };
+
+        let coverage = match cols.coverage.as_deref() {
+            None | Some("") => Vec::new(),
+            Some(raw) => decode_coverage(raw)?,
+        };
+
+        // Goes through the ONE constructor, so a row that cannot satisfy the
+        // admissibility laws is refused here by the same laws that refused it
+        // at construction time — and its error is returned, not swallowed.
+        //
+        // `scope: None` is not a default, it is the measured shape of the
+        // table: there is no `disproof_scope` column (see [`DisproofColumns`]).
+        // A row naming `evaluated` therefore cannot rebuild — it is refused by
+        // the constructor, which is the correct outcome for a row claiming a
+        // form the table cannot hold.
+        let built = DisproofCondition::new(
+            form,
+            cols.body.as_deref().unwrap_or_default(),
+            op,
+            cols.citation.clone().filter(|s| !s.is_empty()),
+            None,
+            coverage,
+            cols.audit_ref.clone().filter(|s| !s.is_empty()),
+        )?;
+        Ok(Some(built))
+    }
+
+    /// **The write side.** Serialise into the six persisted columns, **or
+    /// refuse**.
+    ///
+    /// # Why this returns a `Result` — the `scope` defect
+    ///
+    /// The table has six disproof columns and the condition has seven fields.
+    /// **`scope` is the one with no column.** An `Evaluated` condition *requires*
+    /// a scope, so refusing to store it would mean storing an `Evaluated`
+    /// condition stripped of the field that makes it machine-checkable — a row
+    /// that reads back as a condition nobody wrote and cannot be rebuilt.
+    ///
+    /// So this returns `Err` for exactly that case, and the refusal happens at
+    /// the SERIALISATION seam rather than at a second validation site:
+    /// `validate` still decides admissibility of a condition, and this decides
+    /// whether the table can hold the admissible one. Those are two different
+    /// questions, and collapsing them would either corrupt rows or refuse
+    /// `Evaluated` conditions for a reason that has nothing to do with their
+    /// validity.
+    ///
+    /// An `Audited` condition carries `scope: None` by construction, so it
+    /// round-trips exactly. This is the round's real ceiling and it is stated
+    /// here rather than discovered later by a caller: **until `scope` has a
+    /// column, no `Evaluated` condition can be persisted.** A schema round
+    /// outside this write scope is what closes it.
+    pub fn to_columns(&self) -> Result<DisproofColumns, String> {
+        if self.scope.is_some() {
+            return Err(format!(
+                "DI_DISPROOF_SCOPE_NOT_PERSISTED:{}",
+                self.scope.as_deref().unwrap_or_default()
+            ));
+        }
+        Ok(DisproofColumns {
+            form: Some(self.form.as_str().to_string()),
+            body: Some(self.body.clone()),
+            op: self.op.map(|o| o.as_str().to_string()),
+            citation: self.citation.clone(),
+            coverage: Some(encode_coverage(&self.coverage)),
+            audit_ref: self.audit_ref.clone(),
+        })
+    }
+}
+
+/// Serialise the coverage list. A `Vec<String>` of JSON strings is the same
+/// shape [`decode_coverage`] reads, which is what makes the round-trip exact
+/// rather than approximately symmetric.
+fn encode_coverage(items: &[String]) -> String {
+    serde_json::to_string(items).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// Decode the coverage column. Bounded by the same item cap the constructor
+/// enforces, and a column that is not a JSON array of strings is **refused**
+/// rather than coerced to an empty list — an empty list would then be refused
+/// for emptiness, which names the wrong cause.
+fn decode_coverage(raw: &str) -> Result<Vec<String>, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|e| format!("DI_DISPROOF_ROW_COVERAGE_NOT_JSON:{e}"))?;
+    let arr = value
+        .as_array()
+        .ok_or_else(|| "DI_DISPROOF_ROW_COVERAGE_NOT_ARRAY".to_string())?;
+    let mut out = Vec::new();
+    for v in arr.iter().take(MAX_DISPROOF_COVERAGE_ITEMS + 1) {
+        let s = v
+            .as_str()
+            .ok_or_else(|| "DI_DISPROOF_ROW_COVERAGE_ITEM_NOT_STRING".to_string())?;
+        out.push(s.to_string());
+    }
+    if out.len() > MAX_DISPROOF_COVERAGE_ITEMS {
+        return Err(format!("DI_DISPROOF_ROW_COVERAGE_TOO_LARGE:{}", out.len()));
+    }
+    Ok(out)
 }
 
 /// What evaluating a condition can conclude. **`NoVerdict` is a distinct state
@@ -525,11 +719,184 @@ mod tests {
 
     #[test]
     fn legacy_claims_carry_no_condition_and_that_is_not_a_refutation() {
-        // The None case is the whole legacy story: a claim written before this
-        // round carries no condition, and that is not evidence the claim is
-        // sound or unsound.
-        let legacy: Option<DisproofCondition> = None;
-        assert!(legacy.is_none());
-        assert!(!legacy.map(|c| c.validate().is_ok()).unwrap_or(false));
+        // Replaced. The previous version of this test bound a literal `None` to
+        // an `Option<DisproofCondition>` and asserted `is_none()` on it — a
+        // literal compared against itself, which passes whether or not
+        // `DisproofCondition` exists at all. It was a pin that could not fail,
+        // which is worse than no pin.
+        //
+        // NOTE: the marker string the external guard in `tests/r50_create.rs`
+        // greps for is deliberately NOT reproduced verbatim in this comment. A
+        // guard that matches a string its own subject quotes is a guard that
+        // fails on documentation, which is how a source pin becomes a pin that
+        // cannot pass. Describe the defect; do not spell the needle.
+        //
+        // The real legacy claim is a claim about a STORED ROW, so this now goes
+        // through the read-back against the column shape a pre-field row
+        // actually carries: every column NULL, and coverage at its `'[]'`
+        // default. `Ok(None)` here means "predates the field" and nothing else.
+        for coverage in [Some("[]"), Some(""), None] {
+            let cols = DisproofColumns {
+                coverage: coverage.map(str::to_string),
+                ..DisproofColumns::default()
+            };
+            assert_eq!(
+                DisproofCondition::from_columns(&cols),
+                Ok(None),
+                "a row with no form, body, op, citation, scope or audit predates the field, and \
+                 coverage {coverage:?} is the empty form of the mandatory declaration"
+            );
+        }
+
+        // And the half of the story the tautology could not see: `None` is
+        // reserved for "predates the field", so a row that carries ANY other
+        // disproof byte is NOT legacy. A body alone is enough.
+        let body_only = DisproofColumns {
+            body: Some("a condition body".into()),
+            coverage: Some("[]".into()),
+            ..DisproofColumns::default()
+        };
+        assert!(
+            DisproofCondition::from_columns(&body_only).is_err(),
+            "a body with no form is a DAMAGED row, not a legacy one. Reporting None here would \
+             exempt a damaged claim from evaluation — the laundering the read-back exists to stop"
+        );
+    }
+
+    /// The round-trip, in the pure layer, before any SQL is involved: a
+    /// condition that survives its own column form byte for byte. If this fails,
+    /// a database round-trip cannot be trusted either.
+    ///
+    /// Only the `audited` form is exercised, and that is not a shortcut — it is
+    /// the only form the table can currently hold. See the scope-defect pin
+    /// below for the measurement.
+    #[test]
+    fn a_condition_survives_its_own_column_form() {
+        let c = audited();
+        let cols = c
+            .to_columns()
+            .expect("an audited condition has no scope, so the table can hold it");
+        assert_eq!(
+            DisproofCondition::from_columns(&cols),
+            Ok(Some(c.clone())),
+            "the columns must rebuild the exact condition — including which fields are None, \
+             because a form that materialises an absent citation is a form that invents an \
+             evaluation the author never wrote"
+        );
+    }
+
+    /// **The `scope` defect, measured rather than described.**
+    ///
+    /// `DisproofCondition` has seven fields. Schema 1.32.22 added six columns.
+    /// `scope` is the seventh and it has nowhere to go, so every `Evaluated`
+    /// condition — which REQUIRES a scope — is refused at the serialisation
+    /// seam. If a later round adds `disproof_scope`, this pin is the thing that
+    /// says the ceiling moved, and it must be updated in the same commit.
+    #[test]
+    fn an_evaluated_condition_is_refused_because_scope_has_no_column() {
+        let err = evaluated()
+            .to_columns()
+            .expect_err("there is no disproof_scope column, so this cannot be stored");
+        assert!(
+            err.starts_with("DI_DISPROOF_SCOPE_NOT_PERSISTED"),
+            "the refusal must name the missing column, got {err}"
+        );
+        // And the refusal is a refusal, not a lossy store: it happens BEFORE
+        // any column is produced, so there is no partial row to clean up.
+        assert!(
+            evaluated().to_columns().is_err(),
+            "dropping scope on the floor would write a row this module's own read-back then \
+             refuses, which is manufacturing corruption at the write seam"
+        );
+    }
+
+    /// A row that names `evaluated` cannot be rebuilt, because the table cannot
+    /// hold the scope that form requires. It must be refused — never `Ok(None)`,
+    /// which would exempt it from evaluation for the wrong reason.
+    #[test]
+    fn a_row_claiming_evaluated_cannot_rebuild_and_is_refused_not_legacy() {
+        let cols = DisproofColumns {
+            form: Some("evaluated".into()),
+            body: Some("the payer matches".into()),
+            op: Some("contains".into()),
+            citation: Some("payer-verified".into()),
+            coverage: Some("[\"payer_state\"]".into()),
+            audit_ref: None,
+        };
+        assert_eq!(
+            DisproofCondition::from_columns(&cols),
+            Err("DI_DISPROOF_EVALUATED_NEEDS_SCOPE".into()),
+            "the row names a form whose required field the table cannot store, so the honest \
+             answer is a refusal — Ok(None) here would silently exempt a claim that claims a \
+             machine-checked condition it does not have"
+        );
+    }
+
+    /// The empty-string/NULL conflation, which is the one place this design
+    /// could quietly widen `None`. `op` is `None` for prose and absent in the
+    /// row; if `from_columns` ever turned that into `Some("")` the constructor
+    /// would refuse a prose condition it is supposed to accept.
+    #[test]
+    fn an_absent_field_round_trips_as_absent_not_as_empty_text() {
+        let cols = audited()
+            .to_columns()
+            .expect("an audited condition has no scope, so the table can hold it");
+        assert_eq!(cols.op, None, "prose carries no operator");
+        assert_eq!(cols.citation, None, "prose carries no byte range");
+        assert_eq!(
+            cols.audit_ref.as_deref(),
+            Some("audit:care/consent-441"),
+            "and its audit is the one field prose does carry"
+        );
+        assert_eq!(
+            cols.coverage.as_deref(),
+            Some("[\"consent\"]"),
+            "coverage is declared, not inherited from the column default"
+        );
+    }
+
+    /// `disproof_coverage` is `NOT NULL DEFAULT '[]'`, so a row written with no
+    /// condition still carries a value there. The read-back must not mistake
+    /// that default for a declared coverage list.
+    #[test]
+    fn the_coverage_default_is_not_a_declared_coverage_list() {
+        // Form present, coverage at its default: the row claims a condition and
+        // under-declares its coverage. Coverage is mandatory, so this is
+        // refused — by the constructor, through the one seam.
+        let cols = DisproofColumns {
+            form: Some("audited".into()),
+            body: Some("body".into()),
+            op: None,
+            citation: None,
+            coverage: Some("[]".into()),
+            audit_ref: Some("audit:x".into()),
+        };
+        assert_eq!(
+            DisproofCondition::from_columns(&cols),
+            Err("DI_DISPROOF_COVERAGE_REQUIRED".into()),
+            "an empty coverage list is a refusal, not a default to inherit"
+        );
+    }
+
+    /// A coverage column that is not a JSON array must not be coerced to an
+    /// empty list. Coercing would produce `DI_DISPROOF_COVERAGE_REQUIRED`,
+    /// naming "you declared no coverage" for a row whose real fault is that its
+    /// coverage column is unreadable.
+    #[test]
+    fn an_unreadable_coverage_column_is_named_as_such() {
+        let cols = DisproofColumns {
+            form: Some("audited".into()),
+            body: Some("body".into()),
+            op: None,
+            citation: None,
+            coverage: Some("not json".into()),
+            audit_ref: Some("audit:x".into()),
+        };
+        let err = DisproofCondition::from_columns(&cols)
+            .expect_err("a coverage column that is not json cannot be read");
+        assert!(
+            err.starts_with("DI_DISPROOF_ROW_COVERAGE_NOT_JSON"),
+            "the refusal must name the unreadable column, got {err}"
+        );
     }
 }

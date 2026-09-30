@@ -57,6 +57,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::audit::{AuditKind, AuditStatus};
 use crate::auth::policy::PrincipalKind;
 use crate::workflow::create::corpus::PlantedClaim;
+use crate::workflow::create::disproof::{DisproofColumns, DisproofCondition, DisproofVerdict};
 use crate::workflow::create::gap::{GapCandidate, GapMethod};
 use crate::workflow::create::schema::{self, SchemaDecl, SchemaFault};
 use crate::workflow::create::verify::{
@@ -655,9 +656,32 @@ fn decode_list(raw: &str) -> Result<Vec<String>, CreateError> {
 /// This is the only write path into `claims`, and the audit row is written
 /// inside the caller's transaction so a claim and the evidence that it exists
 /// commit or roll back together.
+///
+/// It carries no disproof condition. The condition travels as a separate
+/// argument to [`store_claim_with_disproof`] rather than as a field on
+/// [`ClaimDraft`], because `ClaimDraft` has a construction site outside this
+/// write scope (`src/handlers/claims.rs`); adding a field there would make the
+/// tree unbuildable without a change this round may not make. The two functions
+/// share one INSERT, so there is still exactly one write path into `claims`.
 pub(crate) fn store_claim(
     tx: &rusqlite::Transaction<'_>,
     draft: &ClaimDraft<'_>,
+) -> Result<i64, CreateError> {
+    store_claim_with_disproof(tx, draft, None)
+}
+
+/// [`store_claim`], carrying the claim's disproof condition.
+///
+/// `None` is a claim about the row's HISTORY — "no condition was ever written
+/// here" — and never a claim that none was required. It writes SQL NULL into
+/// all five nullable disproof columns and leaves coverage at its `'[]'`
+/// default, so a claim written before this round stays stamp-blind by
+/// declaration. Read it back with [`read_disproof`], which keeps that
+/// distinction rather than widening `None` to cover an unreadable row.
+pub(crate) fn store_claim_with_disproof(
+    tx: &rusqlite::Transaction<'_>,
+    draft: &ClaimDraft<'_>,
+    disproof: Option<&DisproofCondition>,
 ) -> Result<i64, CreateError> {
     let ClaimDraft {
         claim_id,
@@ -686,11 +710,49 @@ pub(crate) fn store_claim(
     // there is no spelling of this function that lets a request body name its
     // own author.
     let created_by = principal_kind_string(authored_by);
+
+    // The six disproof columns. A `None` condition writes SQL NULL into all
+    // five nullable ones and `[]` into coverage — which is the column's own
+    // DEFAULT, written explicitly so the INSERT is a single fixed statement
+    // rather than two that could drift. The observable state is identical to a
+    // row written before these columns existed: a claim written before this
+    // round stays stamp-blind by declaration, and an empty string is never
+    // substituted for NULL.
+    //
+    // The condition is validated at its single constructor
+    // (`DisproofCondition::new`), so there is deliberately NO validation here.
+    // A second check at the write seam would be a second law that could drift
+    // from the first, and it would be unreachable: nothing can hand this
+    // function a value the constructor did not admit. What CAN fail here is
+    // serialisation, and that refusal comes from `to_columns` above.
+    let (d_form, d_body, d_op, d_citation, d_coverage, d_audit_ref) = match disproof {
+        Some(c) => {
+            // A refusal here is the `scope` defect stated at the seam that hits
+            // it: an `Evaluated` condition has no column to go into, and writing
+            // it anyway would store a row this module's own read-back refuses.
+            let cols = c
+                .to_columns()
+                .map_err(|e| CreateError::Storage(format!("disproof_serialise:{e}")))?;
+            (
+                cols.form,
+                cols.body,
+                cols.op,
+                cols.citation,
+                cols.coverage,
+                cols.audit_ref,
+            )
+        }
+        None => (None, None, None, None, Some("[]".to_string()), None),
+    };
+
     tx.execute(
         "INSERT INTO claims(
             claim_id, schema_ref, subject, predicate, object, qualifiers, contradicts,
-            evidence_digest, audit_target_hash, created_by, created_at, status)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending')",
+            evidence_digest, audit_target_hash, created_by, created_at, status,
+            disproof_form, disproof_body, disproof_op, disproof_citation,
+            disproof_coverage, disproof_audit_ref)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, 'pending',
+                 ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             claim_id,
             schema_ref,
@@ -703,6 +765,12 @@ pub(crate) fn store_claim(
             target_hash,
             created_by,
             created_at,
+            d_form,
+            d_body,
+            d_op,
+            d_citation,
+            d_coverage,
+            d_audit_ref,
         ],
     )?;
     let row_id = tx.last_insert_rowid();
@@ -735,7 +803,7 @@ pub(crate) fn store_claim(
 }
 
 /// A claim as offered for storage. Borrowed throughout, so the handler can
-/// pass a projection rather than a clone, and named so the nine fields of a
+/// pass a projection rather than a clone, and named so the fields of a
 /// claim write are visible as a shape rather than as a call's argument list.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ClaimDraft<'a> {
@@ -748,6 +816,77 @@ pub(crate) struct ClaimDraft<'a> {
     pub(crate) authored_by: PrincipalKind,
     pub(crate) created_at: i64,
     pub(crate) citations: &'a [(Citation, Vec<u8>)],
+}
+
+/// Read a claim's disproof condition back, **fail-closed**.
+///
+/// # Why this is a separate function and not a column decode
+///
+/// The distinction `Ok(None)` carries is *"this claim predates the field"*.
+/// It does **not** carry "the condition could not be read". A row that names a
+/// form it cannot rebuild is returned as an `Err`, because a caller that
+/// receives `None` treats the claim as exempt from evaluation — and a damaged
+/// condition is precisely the claim that should be looked at hardest. Widening
+/// `None` to also mean "unreadable" is the one defect this seam exists to
+/// prevent.
+///
+/// A missing claim row is `Ok(None)` for the ordinary reason that there is
+/// nothing there to read; a claim whose disproof columns are corrupt is an
+/// error naming the claim, never a silent absence.
+pub(crate) fn read_disproof(
+    conn: &Connection,
+    claim_id: &str,
+) -> Result<Option<DisproofCondition>, CreateError> {
+    let cols = conn
+        .query_row(
+            "SELECT disproof_form, disproof_body, disproof_op, disproof_citation,
+                    disproof_coverage, disproof_audit_ref
+             FROM claims WHERE claim_id = ?1",
+            params![claim_id],
+            |r| {
+                Ok(DisproofColumns {
+                    form: r.get(0)?,
+                    body: r.get(1)?,
+                    op: r.get(2)?,
+                    citation: r.get(3)?,
+                    coverage: r.get(4)?,
+                    audit_ref: r.get(5)?,
+                })
+            },
+        )
+        .optional()?;
+    let Some(cols) = cols else {
+        return Ok(None);
+    };
+    // The refusal is mapped into `Storage`, which is the core's existing
+    // "this row is not what it claims to be" channel. The cause string is
+    // preserved verbatim: it names which column failed to rebuild, and it is
+    // NOT a location hint about the request — nothing here echoes request
+    // input back to a caller.
+    DisproofCondition::from_columns(&cols)
+        .map_err(|e| CreateError::Storage(format!("disproof_read_back:{e}")))
+}
+
+/// Evaluate a stored claim's condition against a subject, fail-closed.
+///
+/// The three-state result is preserved end to end: a claim with no condition
+/// and a claim whose condition has no mechanical verdict both come back as
+/// `NoVerdict`, which [`DisproofVerdict::is_green`] reports as NOT green. There
+/// is no path through this function by which an unevaluated claim reads as
+/// satisfied.
+pub(crate) fn evaluate_disproof(
+    conn: &Connection,
+    claim_id: &str,
+    subject: &str,
+) -> Result<DisproofVerdict, CreateError> {
+    match read_disproof(conn, claim_id)? {
+        Some(c) => Ok(c.verdict(subject)),
+        // No condition is not a pass. The reason is the legacy one, stated
+        // rather than left as a silent green.
+        None => Ok(DisproofVerdict::NoVerdict {
+            reason: "DI_DISPROOF_ABSENT_PREDATES_FIELD".into(),
+        }),
+    }
 }
 
 /// The digest of a claim's evidence, computed at write time so promotion can
@@ -1246,8 +1385,520 @@ mod tests {
         assert!(recall_page(&conn, usize::MAX).is_ok());
         // A compile-time relation, so a later edit that inverts the two fails
         // the build rather than producing a default past the cap.
-        const { assert!(RECALL_PAGE_DEFAULT < RECALL_PAGE_MAX) };
+        const {
+            assert!(RECALL_PAGE_DEFAULT < RECALL_PAGE_MAX);
+        };
         assert_eq!(RECALL_PAGE_MAX, 50);
+    }
+
+    // ── the disproof writer and its fail-closed read-back ──────────────
+    //
+    // These live HERE rather than in `tests/r50_create.rs` because that file is
+    // an external integration test: it links the crate as a downstream consumer
+    // and cannot name a `pub(crate)` item. Widening `store_claim_with_disproof`
+    // or `read_disproof` to `pub` to make a test compile would be a production
+    // API change made for test convenience, so the behavioural pins sit beside
+    // their subject and the source-level pins sit outside.
+
+    /// A real schema for a claim to bind to, so the write path is exercised
+    /// exactly as production exercises it.
+    fn admit(conn: &Connection, domain: &str) -> i64 {
+        let tx = conn.unchecked_transaction().expect("tx");
+        let stored = store_schema(
+            &tx,
+            domain,
+            1,
+            PrincipalKind::Jwt,
+            r#"{"slots":[{"predicate":"warranty_months","ty":"integer","class":"warranty","lo":0,"hi":120}]}"#,
+            vec![slot()],
+            1,
+        )
+        .expect("admit");
+        let id = stored.id;
+        tx.commit().expect("commit");
+        id
+    }
+
+    fn draft<'a>(claim_id: &'a str, schema_ref: i64) -> ClaimDraft<'a> {
+        ClaimDraft {
+            claim_id,
+            domain: "acme",
+            schema_ref,
+            subject: "acme",
+            predicate: "warranty_months",
+            object: "24",
+            authored_by: PrincipalKind::AgentLoopback,
+            created_at: 1,
+            citations: &[],
+        }
+    }
+
+    /// A prose condition: the only form the table can currently hold, because
+    /// `Evaluated` requires a `scope` and there is no `disproof_scope` column.
+    /// See the scope-defect pin in `disproof.rs`.
+    fn prose() -> DisproofCondition {
+        DisproofCondition::new(
+            crate::workflow::create::disproof::DisproofForm::Audited,
+            "this claim is false if the member's consent was not recorded",
+            None,
+            None,
+            None,
+            vec!["consent".into(), "scope_of_use".into()],
+            Some("audit:care/consent-441".into()),
+        )
+        .expect("a prose condition shipped with its audit")
+    }
+
+    /// The raw stored columns, read WITHOUT the read-back, so an assertion about
+    /// what is on disk is not answered by the function under test.
+    fn raw_columns(conn: &Connection, claim_id: &str) -> (Option<String>, Option<String>, String) {
+        conn.query_row(
+            "SELECT disproof_form, disproof_body, disproof_coverage FROM claims
+             WHERE claim_id = ?1",
+            params![claim_id],
+            |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            },
+        )
+        .expect("the claim row must exist")
+    }
+
+    /// Round-trip (task 1) — a real condition written by the real writer, read
+    /// back byte for byte.
+    #[test]
+    fn a_disproof_condition_survives_a_real_database_round_trip() {
+        let conn = db();
+        let schema_ref = admit(&conn, "acme");
+        let c = prose();
+
+        let tx = conn.unchecked_transaction().expect("tx");
+        store_claim_with_disproof(&tx, &draft("clm_rt", schema_ref), Some(&c)).expect("store");
+        tx.commit().expect("commit");
+
+        // On disk first, read without the read-back: the row must actually CARRY
+        // the condition, not merely round-trip through a function that is
+        // returning something it was handed.
+        let (form, body, coverage) = raw_columns(&conn, "clm_rt");
+        assert_eq!(form.as_deref(), Some("audited"), "the form was written");
+        assert_eq!(
+            body.as_deref(),
+            Some("this claim is false if the member's consent was not recorded"),
+            "the body was written verbatim"
+        );
+        assert_eq!(
+            coverage, "[\"consent\",\"scope_of_use\"]",
+            "coverage is a JSON array, order preserved"
+        );
+
+        // And now the read-back, field by field.
+        let back = read_disproof(&conn, "clm_rt")
+            .expect("a well-formed row reads back")
+            .expect("the row carries a condition");
+        assert_eq!(back, c, "every field survives the round trip");
+    }
+
+    /// Legacy (task 2) — a claim with no condition reads back `None`, and the
+    /// columns on disk are the pre-field shape.
+    #[test]
+    fn a_claim_written_without_a_condition_reads_back_as_none() {
+        let conn = db();
+        let schema_ref = admit(&conn, "acme");
+        let tx = conn.unchecked_transaction().expect("tx");
+        store_claim(&tx, &draft("clm_legacy", schema_ref)).expect("store");
+        tx.commit().expect("commit");
+
+        // The five nullable columns are SQL NULL — not an empty string, which
+        // would be a value a reader could mistake for content.
+        let (form, body, coverage) = raw_columns(&conn, "clm_legacy");
+        assert_eq!(form, None, "no form, and it is NULL rather than ''");
+        assert_eq!(body, None, "no body, and it is NULL rather than ''");
+        assert_eq!(coverage, "[]", "coverage stays at the column's own default");
+        assert_eq!(
+            read_disproof(&conn, "clm_legacy").expect("read"),
+            None,
+            "a row that predates the field reads back as None"
+        );
+        // And None is NOT a pass: it is a distinct verdict that is never green.
+        let v = evaluate_disproof(&conn, "clm_legacy", "anything").expect("evaluate");
+        assert!(!v.is_green(), "an unevaluated claim is never green");
+        assert_eq!(
+            v,
+            DisproofVerdict::NoVerdict {
+                reason: "DI_DISPROOF_ABSENT_PREDATES_FIELD".into()
+            },
+            "absence is named, not silently treated as satisfied"
+        );
+    }
+
+    /// Corrupt, three shapes (task 3) — each must be an `Err` and NEVER
+    /// `Ok(None)`. This is the whole point of the round: `Ok(None)` exempts a
+    /// claim from evaluation, so a damaged row reported as legacy is a damaged
+    /// row nobody looks at.
+    #[test]
+    fn a_corrupt_disproof_row_is_refused_and_never_masquerades_as_legacy() {
+        for (claim_id, form, body) in [
+            // form present, body absent
+            ("clm_c1", Some("audited"), None),
+            // body present, form absent
+            ("clm_c2", None, Some("a condition body")),
+            // unparseable form spelling
+            ("clm_c3", Some("prose"), Some("a condition body")),
+        ] {
+            let conn = db();
+            let schema_ref = admit(&conn, "acme");
+            let tx = conn.unchecked_transaction().expect("tx");
+            store_claim(&tx, &draft(claim_id, schema_ref)).expect("store");
+            tx.commit().expect("commit");
+
+            // Plant the corruption the way a bad migration or a tampered row
+            // would: directly in the columns.
+            conn.execute(
+                "UPDATE claims SET disproof_form = ?2, disproof_body = ?3 WHERE claim_id = ?1",
+                params![claim_id, form, body],
+            )
+            .expect("plant");
+
+            let outcome = read_disproof(&conn, claim_id);
+            assert!(
+                outcome.is_err(),
+                "{claim_id} (form={form:?} body={body:?}) read back as {outcome:?}. A corrupt row \
+                 reported as Ok(None) is reported as a claim that predates the field — which \
+                 exempts it from evaluation. Damaged is not legacy."
+            );
+        }
+    }
+
+    /// The unparseable OPERATOR is its own corrupt shape, because `op` is the
+    /// one column whose vocabulary is closed and whose parse failure would
+    /// otherwise be silent: an unreadable op would become `None`, and `None` is
+    /// a legal op only for prose.
+    #[test]
+    fn an_unparseable_operator_is_refused_rather_than_becoming_absent() {
+        let conn = db();
+        let schema_ref = admit(&conn, "acme");
+        let tx = conn.unchecked_transaction().expect("tx");
+        store_claim(&tx, &draft("clm_op", schema_ref)).expect("store");
+        tx.commit().expect("commit");
+        conn.execute(
+            "UPDATE claims SET disproof_form = 'audited', disproof_body = 'b',
+                    disproof_op = 'regex', disproof_coverage = '[\"c\"]',
+                    disproof_audit_ref = 'audit:x'
+             WHERE claim_id = 'clm_op'",
+            [],
+        )
+        .expect("plant");
+        let err = read_disproof(&conn, "clm_op").expect_err("an unknown op is not an absent one");
+        assert!(
+            format!("{err}").contains("DI_DISPROOF_OP_UNKNOWN"),
+            "the refusal must name the unknown operator, got {err}"
+        );
+    }
+
+    /// Transactional rollback twin (task 4) — force the claim write to fail and
+    /// assert that NO claim row, NO disproof column and NO audit row survives.
+    ///
+    /// # Why this database is FILE-backed, and why that matters
+    ///
+    /// The obvious version of this test runs on the in-memory `db()` helper and
+    /// asserts only that the claim row is gone after a rollback. That version
+    /// **cannot fail**. It was written that way, planted with a disproof write
+    /// in a second statement, and observed PASSING — because a write inside the
+    /// SAME transaction rolls back with everything else, whether or not the
+    /// disproof columns actually ride the claim's statement. A green pin that
+    /// cannot fail is worse than no pin, so the test was rewritten.
+    ///
+    /// What makes it falsifiable is a second connection. A write through it
+    /// genuinely ESCAPES the caller's transaction — and a second connection to
+    /// `:memory:` is a different database, so this test opens a file. The two
+    /// control rows below then PROVE the harness can see an escaped write, and
+    /// only after that do the absence assertions mean anything: they now
+    /// distinguish "the audit row rides the caller's transaction" from "the
+    /// audit row was written elsewhere and outlived the claim".
+    #[test]
+    fn a_failed_claim_write_leaves_no_disproof_column_and_no_audit_row() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rollback_twin.db");
+        let url = format!("file:{}?mode=rwc", path.display());
+        {
+            let mut conn = Connection::open(&url).expect("open");
+            crate::register_sqlite_vec::register_sqlite_vec();
+            crate::migration::run_migration(&mut conn, 512).expect("migration");
+        }
+        // A second connection to the SAME file: a write through it does not
+        // participate in the other connection's transaction.
+        let outside = Connection::open(&url).expect("open second");
+        let conn = Connection::open(&url).expect("open");
+        let schema_ref = admit(&conn, "acme");
+
+        // Control 1 — a CLAIM row written outside any transaction must be
+        // visible from `conn`.
+        outside
+            .execute(
+                "INSERT INTO claims(claim_id, schema_ref, subject, predicate, object,
+                        qualifiers, contradicts, evidence_digest, audit_target_hash,
+                        created_by, created_at, status)
+                 VALUES ('clm_control', ?1, 'acme', 'warranty_months', '24', '{}', '[]',
+                         'd', ?2, 'agent', 1, 'pending')",
+                params![schema_ref, crate::audit::hash("clm_control")],
+            )
+            .expect("the out-of-transaction control row must be writable");
+        let control: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM claims WHERE claim_id = 'clm_control'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(
+            control, 1,
+            "the control row is not visible from the other connection, so this harness cannot \
+             distinguish an escaped write from a rolled-back one and the assertions below would \
+             pass vacuously"
+        );
+
+        // Control 2 — an AUDIT row written outside the transaction must also be
+        // visible. This is the control the audit assertion actually depends on:
+        // without it, "no audit row" would hold even for a broken audit-per-write
+        // law, because the escaped row would be invisible to the query.
+        let control_target = crate::audit::hash("clm_audit_control");
+        outside
+            .execute(
+                "INSERT INTO audit_events(kind, actor, target_hash, status, detail_hash)
+                 VALUES ('workflow', 'agent', ?1, 'ok', 'control')",
+                params![control_target],
+            )
+            .expect("the out-of-transaction control audit row must be writable");
+        let control_audits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE target_hash = ?1",
+                params![control_target],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(
+            control_audits, 1,
+            "an audit row written OUTSIDE the caller's transaction is not visible here. The \
+             absence asserted below would then hold even for a broken audit-per-write law, and \
+             this twin would be a pin that cannot fail"
+        );
+
+        // Now the rollback. The second claim collides on the UNIQUE claim_id, so
+        // the claim write itself fails — and the transaction is rolled back.
+        let tx = conn.unchecked_transaction().expect("tx");
+        store_claim_with_disproof(&tx, &draft("clm_rolled", schema_ref), Some(&prose()))
+            .expect("first write");
+        let second =
+            store_claim_with_disproof(&tx, &draft("clm_rolled", schema_ref), Some(&prose()));
+        assert!(
+            second.is_err(),
+            "the duplicate claim_id must be refused; if it succeeded the test is not exercising \
+             a failure at all"
+        );
+        tx.rollback().expect("rollback");
+
+        // No claim row, so no disproof column.
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM claims WHERE claim_id = 'clm_rolled'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(rows, 0, "the rolled-back claim left a row behind");
+
+        // And no audit row for it. The audit rides the caller's transaction, so
+        // a rolled-back claim leaves no evidence that it happened. Control 2 is
+        // what makes this absence mean something.
+        let target = crate::audit::hash("clm_rolled");
+        let audits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE target_hash = ?1",
+                params![target],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(
+            audits, 0,
+            "a rolled-back claim left an audit row. The claim and the evidence that it exists \
+         must commit or roll back TOGETHER — an audit row that outlives its claim is \
+         evidence of a write that did not happen"
+        );
+    }
+
+    /// **The structural half of the rollback law, and the half that is actually
+    /// falsifiable.**
+    ///
+    /// The database twin above asserts that a rolled-back claim leaves nothing
+    /// behind. That assertion cannot be made to fail by planting an "escaped
+    /// write" into the writer, and the reason is worth stating rather than
+    /// hiding: `store_claim_with_disproof` receives a `&rusqlite::Transaction`
+    /// and nothing else. It has no `&Connection`, no pool and no way to open
+    /// one, so **every byte it writes is inside the caller's transaction by
+    /// construction**. Two separate plants (a second statement in the same
+    /// transaction, and an `ATTACH`ed sink) were tried and both left the suite
+    /// green, which is the correct behaviour and the reason this pin exists.
+    ///
+    /// So the law is carried by the SIGNATURE, and this asserts it. If a later
+    /// round widens the writer to take a `&Connection` — so it can "also" write
+    /// a projection row, or an index entry, or a cache — this fails, and it
+    /// fails at compile-review time rather than in production.
+    #[test]
+    fn the_claim_write_cannot_escape_the_callers_transaction() {
+        let source = include_str!("create.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap_or_default();
+        let writer = production
+            .split("pub(crate) fn store_claim_with_disproof(")
+            .nth(1)
+            .expect("the disproof-carrying writer must exist")
+            .split(") -> Result<i64, CreateError> {")
+            .next()
+            .expect("the writer's parameter list must close");
+
+        assert!(
+            writer.contains("tx: &rusqlite::Transaction<'_>"),
+            "the writer must take the caller's transaction. A writer that also took a \
+             &Connection could write outside it, and the audit row would stop rolling back \
+             with the claim"
+        );
+        for escape in ["&Connection", "Pool", "Connection::open", "get()"] {
+            assert!(
+                !writer.contains(escape),
+                "the writer's parameters name `{escape}`. Every byte this function writes must \
+                 ride the caller's transaction, and a connection or a pool is a way out of it"
+            );
+        }
+
+        // And the BODY must not open a way out either. A parameter-list check
+        // alone passed a writer that took only the transaction and then went
+        // and opened its own connection — the same defect wearing a different
+        // hat. That plant was observed passing here before this body check was
+        // added, which is why the body check is here.
+        let body = production
+            .split("pub(crate) fn store_claim_with_disproof(")
+            .nth(1)
+            .expect("the writer must exist")
+            .split("\n/// ")
+            .next()
+            .unwrap_or_default();
+        for escape in ["Connection::open", "unchecked_open", "ATTACH"] {
+            assert!(
+                !body.contains(escape),
+                "the writer's body reaches for `{escape}`. Every byte it writes must ride the \
+                 caller's transaction; opening or attaching a second database is a way out of it"
+            );
+        }
+    }
+
+    /// The twin read in the other direction: prove the disproof columns really
+    /// are part of the claim's INSERT, by rolling back and confirming a
+    /// SUCCESSFUL write left them behind. Without this, test 4 would also pass
+    /// if the columns were simply never written.
+    #[test]
+    fn a_successful_claim_write_commits_its_disproof_columns() {
+        let conn = db();
+        let schema_ref = admit(&conn, "acme");
+        let tx = conn.unchecked_transaction().expect("tx");
+        store_claim_with_disproof(&tx, &draft("clm_ok", schema_ref), Some(&prose()))
+            .expect("store");
+        tx.commit().expect("commit");
+        let (form, body, _) = raw_columns(&conn, "clm_ok");
+        assert_eq!(form.as_deref(), Some("audited"));
+        assert!(body.is_some(), "the body was committed with the claim");
+        assert!(read_disproof(&conn, "clm_ok").expect("read").is_some());
+    }
+
+    /// Construction refusal (task 5) — an inadmissible condition cannot be
+    /// built, so it cannot reach the write path. This is asserted at the
+    /// constructor, and it is WHY there is no validation at the write seam:
+    /// `store_claim_with_disproof` trusts its argument because the only way to
+    /// obtain one is through a constructor that refuses. A second check at the
+    /// write would be a second law that could drift from the first.
+    #[test]
+    fn an_inadmissible_condition_cannot_be_constructed_and_so_cannot_be_written() {
+        use crate::workflow::create::disproof::{DisproofForm, EvaluatedOp};
+        // Prose with no audit: refused at construction.
+        let refused = DisproofCondition::new(
+            DisproofForm::Audited,
+            "false if consent was never recorded",
+            None,
+            None,
+            None,
+            vec!["consent".into()],
+            None,
+        )
+        .expect_err("prose with neither evaluation nor audit must be refused");
+        assert_eq!(refused, "DI_DISPROOF_PROSE_NEEDS_AUDIT");
+        // No coverage at all: refused.
+        assert!(
+            DisproofCondition::new(
+                DisproofForm::Audited,
+                "body",
+                None,
+                None,
+                None,
+                vec![],
+                Some("audit:x".into()),
+            )
+            .is_err(),
+            "coverage is mandatory alongside either form"
+        );
+        // An evaluated condition with no operator: refused.
+        assert!(
+            DisproofCondition::new(
+                DisproofForm::Evaluated,
+                "body",
+                None,
+                Some("c".into()),
+                Some("s".into()),
+                vec!["c".into()],
+                None,
+            )
+            .is_err(),
+            "an evaluated condition with no operator is not machine-checkable"
+        );
+        // So the writer's argument is admissible by construction, and the
+        // writer therefore holds no validation of its own — which is the claim
+        // this test exists to make load-bearing.
+        let _ = EvaluatedOp::Contains;
+    }
+
+    /// The write path refuses an `Evaluated` condition rather than dropping its
+    /// scope. This is the round's measured ceiling, and it is pinned at the
+    /// database so nobody can widen it silently.
+    #[test]
+    fn an_evaluated_condition_is_refused_at_the_write_seam_not_stored_incomplete() {
+        use crate::workflow::create::disproof::{DisproofForm, EvaluatedOp};
+        let conn = db();
+        let schema_ref = admit(&conn, "acme");
+        let evaluated = DisproofCondition::new(
+            DisproofForm::Evaluated,
+            "the payer matches",
+            Some(EvaluatedOp::Contains),
+            Some("payer-verified".into()),
+            Some("subject.payer_state".into()),
+            vec!["payer_state".into()],
+            None,
+        )
+        .expect("admissible as a CONDITION");
+
+        let tx = conn.unchecked_transaction().expect("tx");
+        let outcome =
+            store_claim_with_disproof(&tx, &draft("clm_eval", schema_ref), Some(&evaluated));
+        assert!(
+            outcome.is_err(),
+            "an Evaluated condition has a scope and the table has no disproof_scope column. \
+             Storing it would drop the field that makes it machine-checkable and produce a row \
+             this module's own read-back refuses"
+        );
+        tx.rollback().expect("rollback");
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM claims", [], |r| r.get(0))
+            .expect("count");
+        assert_eq!(rows, 0, "a refused write leaves no row");
     }
 
     #[test]
