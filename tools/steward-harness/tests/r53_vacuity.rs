@@ -205,6 +205,86 @@ async fn the_two_arms_differ_only_by_declaration_not_by_fixture() {
     assert_eq!(replay.stopped_at, StoppedAt::Done);
 }
 
+/// **The named false green, and the pin that keeps it named.**
+///
+/// `tests/r52_behavioural.rs` `an_early_stop_leaves_the_remaining_work_queued`
+/// asserted `steps_executed < 5` and `remaining == 50 - steps_executed` and
+/// **named no stop reason**. When the vacuity stop first landed it went GREEN
+/// while its sibling `crank_stops_before_exhausting_the_budget` went RED.
+///
+/// It could not see the stop because the stop does not truncate: the override
+/// lives in `report(...)`, which runs after the loop, so the refused turn
+/// still executed its 4 steps and still left 46 queued. Both of its
+/// assertions were simply true of a turn that had been refused.
+///
+/// This pin reproduces that exact configuration and asserts the property the
+/// original could not: a DECLARED `Live` turn stops at the budget threshold
+/// with the threshold as its reason. If the vacuity stop ever started firing
+/// here, the sibling's `assert_ne!(stopped_at, GatesVacuous)` is what would
+/// catch it — and this pin fails alongside, so the two can never disagree
+/// about which stop a declared run takes.
+#[tokio::test]
+async fn the_named_false_green_fixture_reaches_the_budget_stop_not_the_vacuity_one() {
+    let host = Arc::new(InMemHost::new());
+    // The false-green's exact fixture: 50 DECLARED items, budget 5.
+    host.seed(1, &declared_queue(50));
+    let report = engine::crank(host as Arc<dyn WorkflowHost>, 1, 5)
+        .await
+        .unwrap();
+
+    assert_eq!(report.run_kind, RunKind::Live);
+    // The census counts what THIS TURN executed, not what the queue held: the
+    // budget stop ends the turn at 4 steps, so 4 declarations. Written down
+    // after measuring it — an assertion of 50 here would have been a guess
+    // about queue length dressed as a fact about the census.
+    assert_eq!(
+        report.gates_declared, 4,
+        "one declaration per EXECUTED step; the turn stopped at 4"
+    );
+    assert!(!report.gates_vacuous, "a declared queue is not vacuous");
+    assert_eq!(
+        report.stopped_at,
+        StoppedAt::BudgetWarn,
+        "the threshold is the stop — the vacuity refusal is for undeclared runs"
+    );
+    assert_eq!(
+        report.steps_executed, 4,
+        "and it executed 4 steps, which is exactly why the false green's \
+         count-based assertions could not distinguish this from a refused run"
+    );
+}
+
+/// The complementary half, and the reason the two pins above cannot both be
+/// satisfied by a blind check: an UNDECLARED run of the *same* shape is
+/// refused, with the same step count.
+///
+/// This is the discriminating pair. Same queue length, same budget, same
+/// executed steps — the only difference is the declaration, and it moves the
+/// stop REASON. A count-only assertion is blind to exactly this difference,
+/// which is the whole of the false green.
+#[tokio::test]
+async fn the_same_run_shape_differs_only_in_the_stop_reason() {
+    let host = Arc::new(InMemHost::new());
+    host.seed(1, &undeclared_queue(50));
+    let refused = engine::crank(host as Arc<dyn WorkflowHost>, 1, 5)
+        .await
+        .unwrap();
+
+    // Identical shape: same steps executed, so every count-based assertion
+    // the false green made would hold here too.
+    assert_eq!(refused.steps_executed, 4, "same shape, same work");
+    assert_eq!(refused.gates_declared, 0);
+    assert!(refused.gates_vacuous);
+    // The difference is the reason, and the reason is the whole claim.
+    assert_eq!(
+        refused.stopped_at,
+        StoppedAt::GatesVacuous,
+        "an undeclared Live run is refused where a declared one reaches the \
+         threshold — the false green could not tell these two apart"
+    );
+    assert_ne!(refused.stopped_at, StoppedAt::BudgetWarn);
+}
+
 // ── the label is only load-bearing if a DECLARED run survives ───────────────
 
 /// A `Live` run that DOES declare constraints is unaffected. If this failed,
