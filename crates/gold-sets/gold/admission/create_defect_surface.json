@@ -1,0 +1,61 @@
+{
+  "id": "create_defect_surface",
+  "family": "admission",
+  "scorer_version": "1",
+  "kappa_units": 8100,
+  "human_pass": true,
+  "resolution": "Resolved",
+  "verified": true,
+  "handoff_complete": true,
+  "escalation_honored": true,
+  "required_surface": [
+    "ambiguity floor",
+    "consent confirmation"
+  ],
+  "owner": "intake@care",
+  "evidence_refs": [
+    {
+      "kind": "contact-history",
+      "locator": "contact-history/adm-4472",
+      "digest": "0e6b47a38d51c2b96e04fd831a7593c6b2085d47e1c946b27af508d3c6e1942b"
+    },
+    {
+      "kind": "run",
+      "locator": "workflow/runs/adm-4472",
+      "digest": "c84012fe6b37d925a8e140c6f7b23d8965c01a4fe73b092da5c86f21d84ae0b7"
+    }
+  ],
+  "superseded_refs": [],
+  "withdrawn": false,
+  "steps": [
+    {
+      "expected": "state the ambiguity floor: which question is the caller actually asking",
+      "actual": "state the ambiguity floor: which question is the caller actually asking",
+      "gate_verdict": "Pass"
+    },
+    {
+      "expected": "read the consent confirmation back to the caller before recording scope",
+      "actual": "read the consent confirmation back to the caller before recording scope",
+      "gate_verdict": "Pass"
+    }
+  ],
+  "budget": {
+    "steps": 2,
+    "evidence_refs": 2
+  },
+  "pre_fix_twin": null,
+  "accepted_gaps": [
+    {
+      "check": "ContentDisposition",
+      "reason": "The write-time screen seam (screen_content) lives in the server crate; reaching it from this workspace node is the workspace path edge the census pin forbids by name. Declared INAPPLICABLE, not passed."
+    },
+    {
+      "check": "ReadSeam",
+      "reason": "sanitize_read is the same server-crate seam behind the same forbidden workspace path edge. Declared INAPPLICABLE, not passed."
+    },
+    {
+      "check": "AuditCalibration",
+      "reason": "No out-of-loop calibration set exists; every artifact in this pack was authored alongside the gate that judges it. Declared INAPPLICABLE, not passed — the panel's miss rate here is UNCALIBRATED."
+    }
+  ]
+}

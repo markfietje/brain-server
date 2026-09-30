@@ -1,0 +1,64 @@
+{
+  "id": "solve_defect_resolution",
+  "family": "admission",
+  "scorer_version": "1",
+  "kappa_units": 7900,
+  "human_pass": true,
+  "resolution": "Resolved",
+  "verified": false,
+  "handoff_complete": false,
+  "escalation_honored": true,
+  "required_surface": [
+    "ambiguity floor",
+    "consent confirmation"
+  ],
+  "owner": "operator@care",
+  "evidence_refs": [
+    {
+      "kind": "run",
+      "locator": "workflow/runs/adm-4473",
+      "digest": "9b25e70a4c183fd6ba4905e3782c1d0fa63b94e720c58f315d6ac04b73e81a9d"
+    },
+    {
+      "kind": "audit",
+      "locator": "audit/adm-4473/close",
+      "digest": "37fca08e5b62d1946ea730c5f28b4901ce637da5b30814f9862ca3e705bdc912"
+    }
+  ],
+  "superseded_refs": [],
+  "withdrawn": false,
+  "steps": [
+    {
+      "expected": "state the ambiguity floor before committing to a date or a payer",
+      "actual": "state the ambiguity floor before committing to a date or a payer",
+      "gate_verdict": "Pass"
+    },
+    {
+      "expected": "read the consent confirmation back to the caller before recording scope",
+      "actual": "read the consent confirmation back to the caller before recording scope - caller had already ended the call",
+      "gate_verdict": "Pass"
+    }
+  ],
+  "budget": {
+    "steps": 2,
+    "evidence_refs": 2
+  },
+  "pre_fix_twin": {
+    "step_index": 0,
+    "mutation": "GateRejectedStep"
+  },
+  "accepted_gaps": [
+    {
+      "check": "ContentDisposition",
+      "reason": "The write-time screen seam (screen_content) lives in the server crate; reaching it from this workspace node is the workspace path edge the census pin forbids by name. Declared INAPPLICABLE, not passed."
+    },
+    {
+      "check": "ReadSeam",
+      "reason": "sanitize_read is the same server-crate seam behind the same forbidden workspace path edge. Declared INAPPLICABLE, not passed."
+    },
+    {
+      "check": "AuditCalibration",
+      "reason": "No out-of-loop calibration set exists; every artifact in this pack was authored alongside the gate that judges it. Declared INAPPLICABLE, not passed — the panel's miss rate here is UNCALIBRATED."
+    }
+  ]
+}

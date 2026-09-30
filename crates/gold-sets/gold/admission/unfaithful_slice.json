@@ -1,0 +1,64 @@
+{
+  "id": "unfaithful_slice",
+  "family": "admission",
+  "scorer_version": "1",
+  "kappa_units": 7600,
+  "human_pass": true,
+  "resolution": "Resolved",
+  "verified": true,
+  "handoff_complete": true,
+  "escalation_honored": true,
+  "required_surface": [
+    "ambiguity floor",
+    "consent confirmation"
+  ],
+  "owner": "intake@care",
+  "evidence_refs": [
+    {
+      "kind": "run",
+      "locator": "workflow/runs/adm-4474",
+      "digest": "3f9ac41d8b02e7f51a66d08942bc5e3a7d14b268e0cf93a56b3d18fec74ad920"
+    },
+    {
+      "kind": "finding",
+      "locator": "findings/adm-4474/coverage-gap",
+      "digest": "a51c9d3ef70b24c8b6ea05d971f38c24e90d3a7bdf62148c0b5e72f1ad396c80"
+    }
+  ],
+  "superseded_refs": [],
+  "withdrawn": false,
+  "steps": [
+    {
+      "expected": "state the ambiguity floor before committing to a date or a payer",
+      "actual": "state the ambiguity floor before committing to a date or a payer",
+      "gate_verdict": "Pass"
+    },
+    {
+      "expected": "record the caller's stated need and the callback number offered",
+      "actual": "record the caller's stated need and the callback number offered",
+      "gate_verdict": "Pass"
+    }
+  ],
+  "budget": {
+    "steps": 2,
+    "evidence_refs": 2
+  },
+  "pre_fix_twin": {
+    "step_index": 0,
+    "mutation": "UndoneStep"
+  },
+  "accepted_gaps": [
+    {
+      "check": "ContentDisposition",
+      "reason": "The write-time screen seam (screen_content) lives in the server crate; reaching it from this workspace node is the workspace path edge the census pin forbids by name. Declared INAPPLICABLE, not passed."
+    },
+    {
+      "check": "ReadSeam",
+      "reason": "sanitize_read is the same server-crate seam behind the same forbidden workspace path edge. Declared INAPPLICABLE, not passed."
+    },
+    {
+      "check": "AuditCalibration",
+      "reason": "No out-of-loop calibration set exists; every artifact in this pack was authored alongside the gate that judges it. Declared INAPPLICABLE, not passed — the panel's miss rate here is UNCALIBRATED."
+    }
+  ]
+}

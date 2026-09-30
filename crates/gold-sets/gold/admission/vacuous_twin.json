@@ -1,0 +1,64 @@
+{
+  "id": "vacuous_twin",
+  "family": "admission",
+  "scorer_version": "1",
+  "kappa_units": 7500,
+  "human_pass": false,
+  "resolution": "Unresolved",
+  "verified": false,
+  "handoff_complete": false,
+  "escalation_honored": true,
+  "required_surface": [
+    "ambiguity floor",
+    "draft revision"
+  ],
+  "owner": "operator@care",
+  "evidence_refs": [
+    {
+      "kind": "run",
+      "locator": "workflow/runs/adm-4475",
+      "digest": "0e6b47a38d51c2b96e04fd831a7593c6b2085d47e1c946b27af508d3c6e1942b"
+    },
+    {
+      "kind": "contradiction",
+      "locator": "contradictions/adm-4475/payer-identity",
+      "digest": "c84012fe6b37d925a8e140c6f7b23d8965c01a4fe73b092da5c86f21d84ae0b7"
+    }
+  ],
+  "superseded_refs": [],
+  "withdrawn": false,
+  "steps": [
+    {
+      "expected": "state the ambiguity floor before committing to a date or a payer",
+      "actual": "asked which payer, left the call before answering",
+      "gate_verdict": "Pass"
+    },
+    {
+      "expected": "send the draft revision to the care team and log the receipt",
+      "actual": "send the draft revision to the care team and log the receipt",
+      "gate_verdict": "Pass"
+    }
+  ],
+  "budget": {
+    "steps": 2,
+    "evidence_refs": 2
+  },
+  "pre_fix_twin": {
+    "step_index": 0,
+    "mutation": "UndoneStep"
+  },
+  "accepted_gaps": [
+    {
+      "check": "ContentDisposition",
+      "reason": "The write-time screen seam (screen_content) lives in the server crate; reaching it from this workspace node is the workspace path edge the census pin forbids by name. Declared INAPPLICABLE, not passed."
+    },
+    {
+      "check": "ReadSeam",
+      "reason": "sanitize_read is the same server-crate seam behind the same forbidden workspace path edge. Declared INAPPLICABLE, not passed."
+    },
+    {
+      "check": "AuditCalibration",
+      "reason": "No out-of-loop calibration set exists; every artifact in this pack was authored alongside the gate that judges it. Declared INAPPLICABLE, not passed — the panel's miss rate here is UNCALIBRATED."
+    }
+  ]
+}

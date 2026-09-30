@@ -6,10 +6,20 @@
 //! Honest ceiling: κ values are recorded per pack from the human labeling
 //! round that froze it; this crate validates shape and the κ ≥ 0.7 gate, it
 //! cannot re-run the labeling round.
+//!
+//! **`admission` is additive and separate from the frozen seven.** The
+//! admission-gate suite reads its own pack through [`admission::AdmissionCase`]
+//! and its own accessor, so `GoldCase`/`CaseArtifacts`/`CaseStep` and all seven
+//! frozen cases are untouched. That separation is deliberate: `crates/gold-sets`
+//! is a contested surface two rounds now claim, and this round only adds to it.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 use serde::{Deserialize, Serialize};
+
+pub mod admission;
+
+pub use admission::{AdmissionCase, AdmissionReport, CheckId, CheckOutcome, Stage};
 
 /// The scorer contract version every current pack was labeled against.
 pub const SCORER_VERSION: &str = "1";
@@ -148,6 +158,45 @@ pub fn all() -> Result<Vec<GoldCase>, String> {
     let mut v = qc_report()?;
     v.extend(gdl_cases()?);
     Ok(v)
+}
+
+/// The R59 admission pack: cases put forward for admission, read by the
+/// admission-gate suite in [`admission`].
+///
+/// **A separate accessor, deliberately.** `all()` is the frozen seven and both
+/// `lib.rs`'s own test and `tools/steward-harness/tests/gold.rs` pin its length
+/// to 7. Folding admission cases into `all()` would break two landed tests to
+/// serve this round, and §10 of the round's prompt makes "an existing test needs
+/// weakening" a stop condition.
+pub fn admission_cases() -> Result<Vec<AdmissionCase>, String> {
+    const FILES: &[(&str, &str)] = &[
+        (
+            "care_inquiry_clean",
+            include_str!("../gold/admission/care_inquiry_clean.json"),
+        ),
+        (
+            "create_defect_surface",
+            include_str!("../gold/admission/create_defect_surface.json"),
+        ),
+        (
+            "solve_defect_resolution",
+            include_str!("../gold/admission/solve_defect_resolution.json"),
+        ),
+        (
+            "unfaithful_slice",
+            include_str!("../gold/admission/unfaithful_slice.json"),
+        ),
+        (
+            "vacuous_twin",
+            include_str!("../gold/admission/vacuous_twin.json"),
+        ),
+    ];
+    FILES
+        .iter()
+        .map(|(name, raw)| {
+            serde_json::from_str(raw).map_err(|e| format!("admission/{name}.json corrupt: {e}"))
+        })
+        .collect()
 }
 
 /// The calibration gate: every pack valid AND at or above the κ floor.
