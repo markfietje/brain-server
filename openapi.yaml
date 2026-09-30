@@ -7439,6 +7439,169 @@ paths:
         "400": { description: kappa_limit_out_of_bounds }
         "401": { description: Not authenticated }
         "403": { description: Not authorized (the DPO dual gate + calibrate) }
+  /workflow/agreement/queue:
+    get:
+      summary: The caller's own run rows awaiting a verdict (calibrate role)
+      description: >
+        The agreement-labelling path's reviewer queue: REAL `delivery_traces`
+        rows carrying a populated `model_ref`, oldest first, bounded. Rows
+        carry the trace's metadata (masked through the read seam with
+        unconditional PII masking) and the CALLER'S own latest verdict — never
+        another reviewer's. The machine's verdict is NOT in the rows: it has
+        no field on the type a reviewer reads, so blindness is the core's
+        output type and not a discipline. The response echoes the caller's
+        slot and reviewer id. Rows are ordered oldest-first; a row with a
+        NULL `model_ref` is not labelable and never appears.
+      operationId: workflowAgreementQueue
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: The caller's own bounded queue
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  slot: { type: integer, minimum: 0 }
+                  reviewer_id: { type: string }
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        run_id: { type: integer }
+                        subject_id: { type: string }
+                        stage: { type: string }
+                        phase: { type: string }
+                        tier: { type: string }
+                        model_ref: { type: string, nullable: true }
+                        my_verdict: { type: string, nullable: true }
+                        my_verdict_seq: { type: integer, nullable: true }
+                  count: { type: integer }
+        "400": { description: agreement_limit_out_of_bounds }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (the calibrate capability is required) }
+  /workflow/agreement/labels:
+    post:
+      summary: Bind one verdict to one real run row (calibrate role; the reviewer is the principal)
+      description: >
+        One verdict on one REAL run row: body `{run_id, subject_id, verdict}`
+        — the verdict comes from the closed vocabulary (confirmed |
+        overturned | uncertain), the reviewer IS the authenticated
+        principal, and the reviewer slot derives from it (the client never
+        names the judge). The write is exactly-once and append-only under the
+        run id: a re-submitted latest verdict is the no-op receipt, a changed
+        verdict appends a supersession row, and the audit rows land inside the
+        caller's transaction. The machine's verdict is DERIVED from the run
+        row and FROZEN into the label, so flipping the run's outcome later
+        does not silently re-score a judgment made against what the row said
+        then. A label without a reviewer is refused before any write.
+      operationId: workflowAgreementLabel
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [run_id, subject_id, verdict]
+              properties:
+                run_id: { type: integer }
+                subject_id: { type: string }
+                verdict: { type: string, enum: [confirmed, overturned, uncertain] }
+      responses:
+        "200":
+          description: The verdict receipt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: { type: integer }
+                  subject_id: { type: string }
+                  reviewer_id: { type: string }
+                  slot: { type: integer }
+                  created: { type: boolean }
+                  seq: { type: integer }
+                  supersession: { type: integer }
+                  machine_verdict: { type: string, enum: [advanced, stopped, deferred] }
+                  audited: { type: boolean }
+        "400": { description: verdict_required / verdict_invalid / reviewer_required / reviewer_invalid }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (the calibrate capability is required) }
+        "404": { description: No such run row (probe-blind) }
+  /workflow/agreement/report:
+    get:
+      summary: The agreement report — raw agreement per reviewer, plus inter-rater kappa pairs (DPO/admin dual gate + calibrate; audited)
+      description: >
+        Agreement WITH THE OPERATOR over the labeled set, kept in two halves
+        that are never blended. `rows` is one cell per (domain × reviewer):
+        `n_confirmed` / `n_overturned` / `n_uncertain` are reported SEPARATELY
+        (collapsing the last two would let clean uncertainty masquerade as
+        failure) and `raw_agreement_units` is `confirmed / labeled` in integer
+        ten-thousandths. `distinct_reviewers` rides each cell so the
+        single-rater era is readable from the data: `1` means NO inter-rater
+        reliability exists behind the number. `pairs` is one cell per
+        (domain × reviewer PAIR) with Cohen's kappa, DELEGATED to the shared
+        pure function — it is EMPTY in a single-rater era, because a pair
+        that does not exist is not a reliability. Every number here is DATA;
+        nothing gates on it and no promotion bar is applied. EVERY call lands
+        an audit row naming the principal and the counts.
+      operationId: workflowAgreementReport
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        "200":
+          description: The bounded agreement cells and pair cells
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  measure: { type: string, enum: [agreement-with-the-operator] }
+                  rows:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        domain: { type: string }
+                        reviewer_id: { type: string }
+                        n_labeled: { type: integer }
+                        n_confirmed: { type: integer }
+                        n_overturned: { type: integer }
+                        n_uncertain: { type: integer }
+                        raw_agreement_units: { type: integer }
+                        distinct_reviewers: { type: integer }
+                  count: { type: integer }
+                  pairs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        domain: { type: string }
+                        reviewer_a: { type: string }
+                        reviewer_b: { type: string }
+                        n_joint: { type: integer }
+                        kappa_units: { type: integer }
+                        kappa_note: { type: string, nullable: true }
+                  pair_count: { type: integer }
+        "400": { description: agreement_limit_out_of_bounds }
+        "401": { description: Not authenticated }
+        "403": { description: Not authorized (the DPO dual gate + calibrate) }
   /workflow/wizard/packs:
     get:
       summary: The ratified wizard pack catalog (Read on global; validated data)

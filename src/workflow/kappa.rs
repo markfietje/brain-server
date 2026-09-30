@@ -90,8 +90,9 @@ pub(crate) fn cohen_kappa_units(rater_a: &[String], rater_b: &[String]) -> Resul
     Ok((kappa * 10_000.0).round() as i32)
 }
 
-/// Char-bound cap, the reflection core's exact shape.
-fn cap_chars(s: &str, cap: usize) -> String {
+/// Char-bound cap, the reflection core's exact shape. `pub(super)`: the
+/// agreement module shares THIS copy — the dup_guard pin forbids a second.
+pub(super) fn cap_chars(s: &str, cap: usize) -> String {
     s.char_indices()
         .nth(cap)
         .map_or_else(|| s.to_string(), |(idx, _)| s[..idx].to_string())
@@ -109,8 +110,9 @@ const ASSIGNMENT_DOMAIN: &str = "kappa-assign-v1";
 const SLOT_DOMAIN: &str = "kappa-slot-v1";
 
 /// The first eight hex digits of a versioned digest, folded base-16 into
-/// a number (the `partition_for_run` shape).
-fn fold8(hex: &str) -> u32 {
+/// a number (the `partition_for_run` shape). `pub(super)`: the agreement
+/// module shares THIS copy — the dup_guard pin forbids a second.
+pub(super) fn fold8(hex: &str) -> u32 {
     let mut acc = 0u32;
     for b in hex.bytes().take(8) {
         let d = match b {

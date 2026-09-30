@@ -409,10 +409,11 @@ fn r48_adds_no_table_no_stamp_no_dependency() {
 #[test]
 fn r48_the_route_tables_are_unchanged() {
     // This pin froze the tables at R48's close and was an exact `assert_eq!`.
-    // It is RETIRED by the round that adds routes, deliberately and with the
-    // numbers recorded rather than deleted: the create loop adds six surfaces
-    // across five distinct paths, so the coverage table grew by five and the
-    // authz table by six.
+    // It has been RETIRED TWICE by a round that adds routes, deliberately and
+    // with the numbers recorded rather than deleted: the create loop added six
+    // surfaces across five distinct paths (coverage +5, authz +6), and the
+    // agreement-labelling path added three distinct paths (coverage +3, authz
+    // +3), taking the tables to 217 and 203.
     //
     // A pin that says "still exactly N" cannot survive a round that is allowed
     // to add routes, and a round that quietly edited the constant instead would
@@ -420,8 +421,8 @@ fn r48_the_route_tables_are_unchanged() {
     // create-loop suite's `route_tables_count_six_more_rows_than_the_prior_freeze`,
     // which states the same property positively and cannot be satisfied by
     // deleting rows.
-    const OPEN_ROUTES: usize = 214;
-    const OPEN_GATES: usize = 200;
+    const OPEN_ROUTES: usize = 217;
+    const OPEN_GATES: usize = 203;
 
     let guards = read_repo("src/server/router/route_guards.rs");
     let between = |start: &str| -> String {

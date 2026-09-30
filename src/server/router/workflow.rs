@@ -377,6 +377,23 @@ pub(crate) fn router() -> Router<Arc<AppState>> {
             "/workflow/kappa/report",
             get(handlers::kappa::get_kappa_report),
         )
+        // The agreement-labelling path: the reviewer's own queue of real run
+        // rows, the verdict capture bound to one, and the DPO-gated report.
+        // The queue GET and label POST register FIRST; the DPO-gated report
+        // GET registers LAST so the authz source-scan maps the family to the
+        // strictest reader.
+        .route(
+            "/workflow/agreement/queue",
+            get(handlers::agreement::get_agreement_queue),
+        )
+        .route(
+            "/workflow/agreement/labels",
+            post(handlers::agreement::post_agreement_label),
+        )
+        .route(
+            "/workflow/agreement/report",
+            get(handlers::agreement::get_agreement_report),
+        )
         // The wizard pack catalog: the three ratified packs as read-only
         // validated data — the SvelteTauri shell's one declared kernel need
         // (Read on global, any authenticated principal; pure data, no pool).

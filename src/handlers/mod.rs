@@ -18,6 +18,7 @@
 //!    changing the contract.
 
 pub mod accounts;
+pub mod agreement;
 pub mod auth;
 pub mod breaches;
 pub mod case_run;

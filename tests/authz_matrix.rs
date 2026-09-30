@@ -412,6 +412,19 @@ fn rows() -> Vec<(&'static str, String, &'static str, &'static str)> {
             "/workflow/kappa/queue" => ("GET", ""),
             "/workflow/kappa/labels" => ("POST", r#"{"digest":"aa","label":"agree","run_id":1}"#),
             "/workflow/kappa/report" => ("GET", ""),
+            // The agreement-labelling path: the same posture as the bench.
+            // The label body is complete-shaped so the Json extractor clears
+            // and the GATES decide — the subject matches no seeded trace row,
+            // so a principal that clears every gate reaches the handler's own
+            // probe-blind 404 rather than a decode failure. (A `{}` body here
+            // would answer 422 on the extractor and the authz assertion would
+            // never be reached: the refusal must come from the gate.)
+            "/workflow/agreement/queue" => ("GET", ""),
+            "/workflow/agreement/labels" => (
+                "POST",
+                r#"{"run_id":1,"subject_id":"trc_absent","verdict":"confirmed"}"#,
+            ),
+            "/workflow/agreement/report" => ("GET", ""),
             // The decision-runs listing row drives the DPO-gated GET side
             // (the gate row's stricter handler, the /accounts convention);
             // the execute POST is handler-source-pinned.
@@ -699,6 +712,9 @@ const EMPTY_SAFE_200: &[&str] = &[
     // the κ bench reads on an empty corpus are literal 200s
     "/workflow/kappa/queue",
     "/workflow/kappa/report",
+    // the agreement-labelling path's reads are literal 200s on an empty corpus
+    "/workflow/agreement/queue",
+    "/workflow/agreement/report",
     // the evaluation listing has an empty-corpus 200 anchor
     "/workflow/decision-evals",
 ];
@@ -2408,6 +2424,12 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/workflow/kappa/queue",
     "/workflow/kappa/labels",
     "/workflow/kappa/report",
+    // The agreement-labelling path: same posture as the bench — queue +
+    // capture demand the `calibrate` capability, the report carries the DPO
+    // dual gate, so the agent class is refused on all three paths.
+    "/workflow/agreement/queue",
+    "/workflow/agreement/labels",
+    "/workflow/agreement/report",
     // The decision-run surfaces: execute/read/replay demand the
     // `workflow` role on top of the scope gate, and the listing carries
     // the DPO dual gate (the agent HAS roles, so the dual gate binds) —

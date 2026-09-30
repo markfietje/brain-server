@@ -288,6 +288,12 @@ pub const OPENAPI_ROUTES: &[&str] = &[
     "/workflow/kappa/queue",
     "/workflow/kappa/labels",
     "/workflow/kappa/report",
+    // The agreement-labelling path: a verdict bound to a REAL run row. Same
+    // shape as the bench — queue + capture are `calibrate`-gated Writes, the
+    // report is the DPO dual gate.
+    "/workflow/agreement/queue",
+    "/workflow/agreement/labels",
+    "/workflow/agreement/report",
     // The wizard pack catalog (the shell renderer's pack read).
     "/workflow/wizard/packs",
     // The decision-run surfaces: execute (POST), the stored trace by row
@@ -655,6 +661,13 @@ pub const AUTHZ_GATES: &[(&str, &str)] = &[
     ("/workflow/kappa/queue", "Write"),
     ("/workflow/kappa/labels", "Write"),
     ("/workflow/kappa/report", "Admin"),
+    // The agreement-labelling path: queue + verdict capture are
+    // `calibrate`-gated Writes on the global domain (the role gate is pinned
+    // by the handler source below); the report is the DPO dual gate — Admin
+    // here, the DPO role + `calibrate` capability demanded by the handler.
+    ("/workflow/agreement/queue", "Write"),
+    ("/workflow/agreement/labels", "Write"),
+    ("/workflow/agreement/report", "Admin"),
     // The wizard pack catalog: a plain Read on the global domain — the
     // ratified posture (PII-free schema templates; no role gate, no
     // PRE_GATE/empty-safe joins).

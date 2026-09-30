@@ -7036,6 +7036,13 @@ Final paragraph after the rule.";
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/accounts.rs"
                             )),
+                            // The agreement-labelling path's surfaces: the
+                            // reverse scan needs the source to read the gates
+                            // the handler actually calls.
+                            "agreement" => include_str!(concat!(
+                                env!("CARGO_MANIFEST_DIR"),
+                                "/src/handlers/agreement.rs"
+                            )),
                             "kappa" => include_str!(concat!(
                                 env!("CARGO_MANIFEST_DIR"),
                                 "/src/handlers/kappa.rs"
