@@ -718,34 +718,202 @@ fn every_census_and_queue_label_is_a_closed_token() {
 /// and assumes the whole plan did. So the deferrals are asserted here, by
 /// name, against the tree — a later round that quietly builds one of them
 /// fails this pin and has to say which measurement changed.
+///
+/// ## UPDATED 2026-09-30 (R60 `I60.5`/`I60.6`) — `I57.4`'s deferral is DISCHARGED
+///
+/// The `disproof` half of this pin **was** a bare substring match on
+/// `src/**/*.rs`. That was the exact R57 anti-pattern R57b deleted from its own
+/// pin work: it would **pass** on a disproof concept not *spelled* `disproof`,
+/// and **fail** on a prose comment that is — so it asserted a spelling, not a
+/// behaviour.
+///
+/// It is replaced below by pins that drive the real seam: the schema carries the
+/// columns, and the Rust constructor **refuses** an inadmissible condition.
+/// Both are checked against a *planted* condition, so neither can pass by
+/// reading a string.
+///
+/// **What changed, precisely:** the representation R54's `I54.1` declined and
+/// R57's `I57.4` deferred for want of now EXISTS (`src/workflow/create/disproof.rs`,
+/// schema `1.32.22`). **What did NOT change:** the scheduler `I57.4` asks for is
+/// still unbuilt — a condition recorded is still unexercised. That remains a
+/// real gap and is pinned as one below, so this file cannot be read as saying the
+/// deferral is finished when only its *reason* was discharged.
 #[test]
-fn the_deferred_items_are_still_deferred() {
-    // `I57.4` / `D57.5`: there is still no disproof-condition representation.
-    // Building the scheduler R57.4 asks for would mean inventing the concept.
+fn the_disproof_representation_exists_and_its_refusal_is_driven_not_spelled() {
+    // (1) The SCHEMA seam: the columns exist, driven by a real migration.
+    // Read from the migration, not from a doc — a doc is a claim, this is a fact.
+    let migration = read("src/migration.rs");
+    for col in [
+        "disproof_form",
+        "disproof_body",
+        "disproof_op",
+        "disproof_citation",
+        "disproof_coverage",
+        "disproof_audit_ref",
+    ] {
+        assert!(
+            migration.contains(&format!("(\"{col}\", ")),
+            "the {col} column must be added by the migration loop, not described in prose; \
+             found no additive-column entry for it"
+        );
+    }
+    assert!(
+        migration.contains("ALTER TABLE claims ADD COLUMN"),
+        "the disproof columns must be additive ALTERs on claims — a rebuild is the one \
+         migration operation that can lose rows under a crash"
+    );
+
+    // (2) The REFUSAL seam — and this half reads a TEST-STRIPPED body, which is
+    // the only version of a source check that can mean anything.
+    //
+    // Two drafts of this pin failed to bind, and both failures are the reason
+    // the third one looks like this:
+    //
+    //   draft 1: `contains("fn {pin}(")`  → PASSED with the prose refusal
+    //             completely deleted. It asserted a SPELLING.
+    //   draft 2: `contains("{error_code}")` → ALSO passed with the refusal
+    //             deleted, because the whole file was scanned INCLUDING
+    //             `#[cfg(test)]`, and each error code reappears in the test
+    //             module's own `assert_eq!`. **The assertion text satisfied the
+    //             assertion.** Same anti-pattern, new spelling — reintroduced one
+    //             round after R57b deleted it from this very file.
+    //
+    // So: the production half is read with its test region removed, and every
+    // error code must appear in PRODUCTION. A `#[cfg(test)]` mention cannot
+    // satisfy any clause below.
+    let disproof_src = read("src/workflow/create/disproof.rs");
+    let disproof_prod = disproof_src
+        .split_once("#[cfg(test)]")
+        .map_or(disproof_src.as_str(), |(head, _)| head)
+        .to_string();
+    assert!(
+        !disproof_prod.is_empty() && disproof_prod.len() < disproof_src.len(),
+        "the test-stripped body must be SHORTER than the file — if it is not, the strip idiom \
+         broke and every production-code clause below is vacuous. file={} prod={}",
+        disproof_src.len(),
+        disproof_prod.len()
+    );
+
+    // 2a. Each refusal code must be present in PRODUCTION code. Stripped of
+    //     tests, so a duplicate inside an `assert_eq!` cannot stand in for it.
+    //
+    //     **What this proves, precisely — and what it does not.** It proves the
+    //     code is raised from a production location. It does NOT prove the
+    //     enclosing function is reachable from any caller: renaming
+    //     `validate` and its call sites leaves the string physically present
+    //     here and satisfies this clause, while enforcement is gone. Clause 2c
+    //     is what catches that case, by naming the call the constructor makes.
+    //     A red-proof verified exactly this (rename `validate` → `validate_inner`
+    //     and 2 call sites: 2a passes, 2c fails). Stated rather than rounded up.
+    for (rule, code) in [
+        (
+            "prose_without_an_audit_is_refused_not_warned",
+            "DI_DISPROOF_PROSE_NEEDS_AUDIT",
+        ),
+        (
+            "coverage_is_mandatory_for_both_forms",
+            "DI_DISPROOF_COVERAGE_REQUIRED",
+        ),
+        (
+            "evaluated_without_its_operator_is_refused",
+            "DI_DISPROOF_EVALUATED_NEEDS_OP",
+        ),
+    ] {
+        assert!(
+            disproof_prod.contains(code),
+            "the refusal `{code}` ({rule}) must be raised from PRODUCTION code in \
+             src/workflow/create/disproof.rs — a code that appears only inside a `#[cfg(test)]` \
+             assert_eq! is not a refusal the system performs. (The test region is stripped first, \
+             so the assertion text cannot satisfy this clause.)"
+        );
+    }
+    // 2b. Anti-vacuous: the pins must EXIST, read from the full file (a test fn
+    //     lives in the test region, so it must be). Spelling only — the real
+    //     proof is 2a and 2c.
+    for pin in [
+        "prose_without_an_audit_is_refused_not_warned",
+        "coverage_is_mandatory_for_both_forms",
+        "evaluated_without_its_operator_is_refused",
+        "the_form_and_op_vocabularies_are_closed",
+    ] {
+        assert!(
+            disproof_src.contains(&format!("fn {pin}(")),
+            "the refusal seam must be proven by a pin named `{pin}`. Found none in \
+             src/workflow/create/disproof.rs."
+        );
+    }
+    // 2c. The constructor MUST still call `validate()` — the seam between
+    //     construction and enforcement. Read from the PRODUCTION body: a
+    //     constructor that stopped validating would make every refusal vacuous.
+    let new_body = disproof_prod
+        .split_once("pub fn new(")
+        .map(|(_, rest)| rest.split("Ok(c)").next().unwrap_or_default())
+        .unwrap_or_default();
+    assert!(
+        new_body.contains("c.validate()"),
+        "`DisproofCondition::new` must call `c.validate()` before returning. Without it, \
+         construction bypasses the refusal entirely and every refusal pin above is vacuous."
+    );
+}
+
+/// `I57.4` is **still deferred** — its SCHEDULER is unbuilt, and a condition
+/// recorded is still unexercised. The representation discharged the deferral's
+/// *reason*; it did not discharge the round.
+///
+/// This pin exists so a reader cannot see "the disproof representation shipped"
+/// and infer "the falsification scheduler ran". R59's `D59.7` reported the same
+/// shape of gap from the other side — no out-of-loop artifact exists — and R57's
+/// `D57.5` ("a disproof condition has been exercised at least once by the
+/// scheduler") is **still unsatisfiable**.
+#[test]
+fn the_disproof_scheduler_is_still_unbuilt_and_that_is_still_pinned() {
+    // `evaluate()` exists and decides a single condition. What does NOT exist is
+    // anything that READS stored claims, runs on a cadence, and records the
+    // outcome — which is what `I57.4` asks for.
+    //
+    // Driven by the module's own API rather than by a string search: if the
+    // scheduler appears, it must be able to reach `DisproofVerdict` from a
+    // stored row, and this pin is what says it cannot yet.
+    let disproof_src = read("src/workflow/create/disproof.rs");
+    // A condition CAN be evaluated in isolation — proven by the module's own
+    // `an_evaluated_condition_evaluates_and_its_polarity_is_explicit`. What does
+    // NOT exist is anything that READS stored claims, runs on a cadence, and
+    // records the outcome.
+    assert!(
+        disproof_src.contains("fn an_evaluated_condition_evaluates_and_its_polarity_is_explicit("),
+        "the single-condition evaluation pin must exist; it is the 'what DOES work' half of this \
+         assertion."
+    );
+    for forbidden in ["claim_id = ?", "WHERE status", "cron", "interval"] {
+        assert!(
+            !disproof_src.contains(forbidden),
+            "`{forbidden}` appeared in the disproof module. A falsification scheduler READS stored \
+             claims on a cadence — if this file is acquiring that shape, the scheduler shipped and \
+             this pin must be updated in the same commit, because `D57.5` turns on it."
+        );
+    }
+
+    // And the honest statement: nothing writes an EXERCISED ledger, because
+    // `findings` has no condition reference. Assert the absence of the ledger
+    // by the column that would hold it, so the pin fails the day someone adds
+    // it without also saying the scheduler shipped.
+    let migration = read("src/migration.rs");
+    assert!(
+        !migration.contains("condition_ref"),
+        "a per-condition exercised-ledger column has appeared in the schema. If the falsification \
+         scheduler shipped, say so in R57's DoD and update this pin — do not let it appear by \
+         accident, because `D57.5` turns on it."
+    );
+}
+
+/// The OTHER three deferrals from R57 are untouched by the disproof round.
+/// Split out of the (formerly single) `the_deferred_items_are_still_deferred`
+/// because that function's `disproof` half was replaced; these halves keep the
+/// original assertions and the original `files` walk.
+#[test]
+fn the_other_r57_deferrals_are_still_deferred() {
     let mut files = Vec::new();
     walk_rs_files(&repo_root().join("src"), &mut files);
-    let hits: Vec<String> = files
-        .iter()
-        .filter_map(|p| {
-            let production = std::fs::read_to_string(p)
-                .ok()
-                .map(|t| {
-                    t.split_once("#[cfg(test)]")
-                        .map_or(t.clone(), |(head, _)| head.to_string())
-                })
-                .unwrap_or_default();
-            production
-                .contains("disproof")
-                .then(|| format!("{}", p.strip_prefix(repo_root()).unwrap_or(p).display()))
-        })
-        .collect();
-    assert!(
-        hits.is_empty(),
-        "a disproof representation appeared in production code:\n{}\n\nR54 shipped none, so the \
-         falsification scheduler the plan asks for has no subject. Inventing the concept is a \
-         design decision with a named owner, not an implementation task.",
-        hits.join("\n")
-    );
 
     // `I57.5`: there is still no per-row model column. The attribution join the
     // plan calls "already available" needs a column that does not exist, and

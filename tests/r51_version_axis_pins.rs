@@ -88,8 +88,9 @@ fn r51_knowledge_version_migration_is_additive_and_idempotent() {
 /// the axis shipped at 1.32.20, and the const is the record of that — so it is
 /// asserted forever and never edited. The two assertions BELOW it pin the
 /// CURRENT ceiling and CURRENT stamp, which every schema round re-pins (R57b
-/// moved them to 1.32.21 for the decision trace's model citation). A test that
-/// conflated the two would either rot on the ceiling or lose the history.
+/// moved them to 1.32.21 for the decision trace's model citation, and R60 moved
+/// them to 1.32.22 for the disproof condition's six columns on `claims`). A test
+/// that conflated the two would either rot on the ceiling or lose the history.
 #[test]
 fn r51_schema_stamp_moved_with_the_axis() {
     let layout = read("src/storage_layout.rs");
@@ -98,14 +99,14 @@ fn r51_schema_stamp_moved_with_the_axis() {
         "the schema ceiling must move to 1.32.20 with the additive column."
     );
     assert!(
-        layout.contains("LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_21"),
+        layout.contains("LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_22"),
         "LATEST_KNOWN_SCHEMA must track the newest const, or a newer-schema database would \
          not be refused."
     );
     let m = read("src/migration.rs");
     assert!(
-        m.contains("'schema_version', '1.32.21'"),
-        "run_migration must stamp 1.32.21 — the stamp and the ceiling move together."
+        m.contains("'schema_version', '1.32.22'"),
+        "run_migration must stamp 1.32.22 — the stamp and the ceiling move together."
     );
 }
 

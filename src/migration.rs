@@ -2983,9 +2983,59 @@ pub fn run_migration_with_store_dim(
         END;",
     )?;
 
+    // ── v1.32.22 "Disproof": the disproof condition on a claim ────────────
+    // The representation two earlier rounds declined to ship ("one round owns
+    // the reader") and deferred for want of ("no disproof-condition
+    // representation exists"). BOTH deferrals named the SAME absent thing and
+    // neither named the other's deferral; the owner is now named in
+    // `IMPL_R60_CREATE_CORE_2026-09-28.md:75-83`, so this ships.
+    //
+    // TWO forms, no third (`ASSESSMENT_SWE_PROOF_2609.21190` §1: a prose
+    // condition accepts a great deal a targeted adversary can then refute —
+    // 32% of resolving submissions). `disproof_form` is `evaluated|audited`,
+    // and the CHECK below is what makes a third form unrepresentable rather
+    // than merely discouraged.
+    //
+    // `disproof_coverage` is MANDATORY alongside either form (`I60.6`): an
+    // empty coverage list is refused by `disproof::DisproofCondition::validate`,
+    // not defaulted here. Partial coverage is a first-class class.
+    //
+    // All five are NULLable and additive: a claim written before this round
+    // carries NO condition, which is stamp-blind by declaration (the
+    // `content_owner_stamp` precedent) and is NOT evidence that the claim is
+    // sound. No table is dropped and none is rebuilt — a rebuild is the one
+    // operation that can lose rows under a crash. Guarded per column by
+    // `pragma_table_info`, so re-running the runner is a no-op.
+    for (col, def) in [
+        ("disproof_form", "TEXT"),
+        ("disproof_body", "TEXT"),
+        ("disproof_op", "TEXT"),
+        ("disproof_citation", "TEXT"),
+        ("disproof_coverage", "TEXT NOT NULL DEFAULT '[]'"),
+        ("disproof_audit_ref", "TEXT"),
+    ] {
+        let present: bool = db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('claims') WHERE name='{col}'"),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(&format!("ALTER TABLE claims ADD COLUMN {col} {def}"), [])?;
+        }
+    }
+
+    // The two-form CHECK is a SEPARATE statement because SQLite cannot add a
+    // table-level constraint to an existing table via ALTER — the closed
+    // vocabulary is therefore enforced in Rust at the single constructor
+    // (`DisproofCondition::new`), which is the stronger position anyway: the
+    // vocabulary is refused before a value can be persisted, not after.
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.21')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.21';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.22')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.22';",
         [],
     )?;
 

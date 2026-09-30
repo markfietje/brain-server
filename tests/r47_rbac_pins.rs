@@ -713,9 +713,10 @@ fn r47_single_authorize_decision_still_holds() {
 fn r47_rbac_adds_no_table_no_stamp_no_dependency() {
     let layout = read_repo("src/storage_layout.rs");
     assert!(
-        layout.contains("LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_21;"),
+        layout.contains("LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_22;"),
         "the schema stamp is untouched: R47 adds no table and no stamp (the ceiling itself is \
-         re-pinned by each schema round — R57b moved it last, for the trace citation)"
+         re-pinned by each schema round — R57b moved it, for the trace citation, and R60 moved \
+         it last, for the disproof condition's six columns on `claims`)"
     );
     let rehearse = read_repo("src/bin/brain_migrate_rehearse.rs");
     assert!(

@@ -248,6 +248,18 @@ pub const SCHEMA_VERSION_V1_32_20: &str = "1.32.20";
 /// record types join with no translation layer. `NULL` = predates tracking —
 /// no table is dropped and none is rebuilt.
 pub const SCHEMA_VERSION_V1_32_21: &str = "1.32.21";
+/// The DISPROOF condition: six additive columns on `claims`
+/// (`disproof_form` / `_body` / `_op` / `_citation` / `_coverage` /
+/// `_audit_ref`), carrying what would REFUTE the claim in one of exactly two
+/// forms — `evaluated` (a machine-checked predicate the system runs) or
+/// `audited` (prose shipped with its faithfulness audit). `NULL` = the claim
+/// predates tracking; a legacy NULL is stamp-blind by declaration and is NOT
+/// evidence the claim is sound. No table is dropped and none is rebuilt.
+///
+/// This is the representation two earlier rounds independently declined to
+/// ship and deferred for want of ("no disproof-condition representation
+/// exists"). Both named the same absent thing.
+pub const SCHEMA_VERSION_V1_32_22: &str = "1.32.22";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
@@ -269,7 +281,7 @@ pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 /// Security posture: a source DB stamped NEWER than this is refused loudly
 /// ([`refuse_newer_schema`]) — migrating *down* would silently drop columns
 /// the newer release added, i.e. data loss dressed as a migration.
-pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_21;
+pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_22;
 
 /// Numeric dotted-version compare (std-only, no semver dependency).
 /// Non-numeric components are skipped (the `schema_ge` precedent in the
@@ -722,12 +734,13 @@ mod tests {
         // ceiling to 1.32.18, so the probe moved to 1.32.19, the create-loop round
         // moved the ceiling to 1.32.19, so the probe moved to 1.32.20, the taxonomy
         // round moved the ceiling to 1.32.20, so the probe moved to 1.32.21, and the
-        // citation round moved the ceiling to 1.32.21, so the probe moved to 1.32.22. A probe
+        // the citation round moved the ceiling to 1.32.21, so the probe moved to 1.32.22, and the
+        // disproof round moved the ceiling to 1.32.22, so the probe moved to 1.32.23. A probe
         // pinned AT the ceiling silently tests `Equal`, not `Greater` — the assertion
         // would keep passing while a NEWER-schema database was blessed instead of
         // refused, which is the one failure this function exists to prevent.
-        assert!(is_newer_than_known(Some("1.32.22")));
-        assert!(!is_newer_than_known(Some("1.32.21")));
+        assert!(is_newer_than_known(Some("1.32.23")));
+        assert!(!is_newer_than_known(Some("1.32.22")));
         assert!(!is_newer_than_known(Some("1.32.9")));
         assert!(!is_newer_than_known(Some("1.28.9")));
     }

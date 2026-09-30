@@ -63,6 +63,7 @@
 //! set-level check) · `corpus` (the planted attack data).
 
 pub(crate) mod corpus;
+pub(crate) mod disproof;
 pub(crate) mod disseminate;
 pub(crate) mod gap;
 pub(crate) mod promote;
