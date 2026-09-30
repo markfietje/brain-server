@@ -39,7 +39,9 @@ use crate::workflow::harness::pipeline::{
     DecisionRunRequest, RegistryRef, StageRecord, run_decision_pipeline,
 };
 use crate::workflow::harness::retrieval::SearchRetriever;
-use crate::workflow::harness::trace::{build_decision_run_trace, persist_decision_run_trace_with};
+use crate::workflow::harness::trace::{
+    ModelCitation, build_decision_run_trace, persist_decision_run_trace_with,
+};
 use crate::workflow::registry;
 use brain_engine_sdk::decision::RunMode;
 
@@ -327,6 +329,16 @@ pub async fn post_decision_run(
                 registry_version: registry_row.version.clone(),
             });
         }
+        // The trace's CITATION, taken from the row the resolver just
+        // returned — the same `(id, version, config_digest)` the gate cleared,
+        // not the key the config asked for and not a re-read of the table. A
+        // second lookup here could observe a row that changed since the gate,
+        // and a trace would then cite a model that never ran it.
+        let citation = ModelCitation {
+            registry_id: registry_row.id.clone(),
+            registry_version: registry_row.version.clone(),
+            config_digest: registry_row.config_digest.clone(),
+        };
 
         // The escalation proposal rides the writer's OWN transition: the
         // trace it cites and the proposal citing it commit together or not
@@ -383,9 +395,14 @@ pub async fn post_decision_run(
         };
 
         let mut conn = pool.get().map_err(HandlerError::db_down)?;
-        let receipt =
-            persist_decision_run_trace_with(&mut conn, &trace, chrono::Utc::now().timestamp(), Some(&side))
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
+        let receipt = persist_decision_run_trace_with(
+            &mut conn,
+            &trace,
+            &citation,
+            chrono::Utc::now().timestamp(),
+            Some(&side),
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))?;
 
         let mut reply = serde_json::json!({
             "trace_id": receipt.trace_row_id,

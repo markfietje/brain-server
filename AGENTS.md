@@ -1,6 +1,64 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R57 "Census"** — the scoreboard, scoped down to
+> Current release (unreleased): **R57b "Cite"** — decision lineage + the trace
+> citation. Theme: **two things the tree already *stated* and did not *do*, and
+> three plan premises that measured FALSE before a line was written.** (1) The
+> **three-site lineage append**: `write_handoff_transition`,
+> `write_back_referral_return` and `advance_pipeline` already emitted a
+> session-store row and an audit row, and **no lineage event** — while the
+> operator's timeline (`GET /workflow/runs/{id}/events`) is served by the
+> `outbox`. A decision was on two of three chains and invisible on the one an
+> operator reads. One helper over the EXISTING `append_lineage`, topic
+> `case/decision`, refs-only payload, idempotency key `(run, kind, subject,
+> outcome)`, each append inside its caller's EXISTING transaction. (2) The
+> **trace citation**: three additive nullable columns on `decision_run_traces`
+> using the same names `decision_evaluation_runs` already uses, written at the
+> host seam from **what `resolve_for_execution` returned** — never re-derived,
+> never the requested key. Schema **1.32.20 → 1.32.21**, the coupled migration
+> shipped as one unit and the refuse-newer probe moved to **1.32.22**.
+>
+> **Three premises measured false, and the tree won each time.** (a) The plan's
+> **second write seam does not exist**: `grep -c "decision_run_traces"
+> src/workflow/delivery.rs` → **0**; the delivery loop writes `delivery_traces`,
+> which **already** carries `model_ref` + `config_digest`. The plan conflated
+> "two callers of `resolve_for_execution`" (true) with "two writers of the
+> trace" (false) — **one** seam, and a pin now holds it at one. (b) `P57b.2`'s
+> re-anchor claim is **partly false in its load-bearing half**:
+> `anchor.rs:238` deliberately does NOT compare `schema_version`, so a migration
+> cannot read as the behind-the-chain tamper class — `--verify` printed OK across
+> the bump. (c) `P57b.5` predicted `main_suite`'s global `COUNT(*) FROM outbox`
+> assertion survives "because the steering control is about a refused write" —
+> the outcome held, the **reason did not**: those tests are per-test isolated
+> (`drawbridge_state(&tmp)`), and the plan named **one** such assertion where
+> the tree has **two**.
+>
+> **The round's own most instructive failure was authored by the round.**
+> `I57b.3` first shipped `citation: Option<&ModelCitation>`, which leaves "a
+> trace row cannot be written without its citation" true only of a convention;
+> it is now `&ModelCitation` and `NULL` is unreachable on a new row. The pin
+> proving that ALSO string-scanned the handler for `registry_row.…` — the exact
+> R57 anti-pattern — failed on its first run because `cargo fmt` reflowed the
+> line, and was **deleted** in favour of driving the real seam. No new route (so
+> no `openapi.yaml`/authz/guard-table row is owed; the three floors stay
+> **255 / 214 / 200**), **no new table**, **zero new dependency edges**,
+> `Cargo.lock` byte-identical. Spire at ship: crate floor **2 613 → 2 618**
+> (walk-measured), lib **2 158** passed / 0 failed, `main_suite` **329**,
+> `crates/` **275** measured, `verify_claims.py` **53/53**, `cargo audit` clean
+> over all three workspaces, full gate **18/18**. A sixth gap, found at the
+> floor and not in the code: the predecessor's record claimed `crates/` **281**,
+> and `crates/` is **byte-identical to R57's own commit** (no commit touching
+> it since `0a0315f1`, no working-tree change), so the true count under the
+> canonical invocation is **275** — R57's number was overstated by 6 and is a
+> *record* defect, not a regression. The source-needle reads 279, so 281
+> matches neither the run nor the needle. **A number shipped without anyone
+> diffing it against a measurement** — the exact failure this programme's
+> preregistration discipline exists to prevent, found in the record the
+> discipline produced. `R53's halt is unchanged:**
+> `gates_vacuous` is still advisory-only and R55/R58a/R59 are still blocked —
+> **this round did not advance the critical path, and a reader who sees R57b land
+> must not infer that it did.**
+>
+> Predecessor: **R57 "Census"** — the scoreboard, scoped down to
 > what the tree can actually prove. Theme: **four of the plan's eight items
 > shipped; the other four are named findings, because their premises measured
 > FALSE.** (1) The **drift census**: the frozen gold corpus re-scored every run

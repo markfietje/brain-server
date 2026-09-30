@@ -242,6 +242,12 @@ pub const SCHEMA_VERSION_V1_32_19: &str = "1.32.19";
 /// additive column on `workflow_runs`, `NULL` = predates tracking — no table is
 /// dropped and none is rebuilt.
 pub const SCHEMA_VERSION_V1_32_20: &str = "1.32.20";
+/// The decision trace's model CITATION: three nullable columns on
+/// `decision_run_traces` (`model_registry_id` / `_version` / `_digest`),
+/// named exactly as `decision_evaluation_runs` already names them so the two
+/// record types join with no translation layer. `NULL` = predates tracking —
+/// no table is dropped and none is rebuilt.
+pub const SCHEMA_VERSION_V1_32_21: &str = "1.32.21";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
@@ -263,7 +269,7 @@ pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 /// Security posture: a source DB stamped NEWER than this is refused loudly
 /// ([`refuse_newer_schema`]) — migrating *down* would silently drop columns
 /// the newer release added, i.e. data loss dressed as a migration.
-pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_20;
+pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_21;
 
 /// Numeric dotted-version compare (std-only, no semver dependency).
 /// Non-numeric components are skipped (the `schema_ge` precedent in the
@@ -714,11 +720,14 @@ mod tests {
         // to 1.32.16, so the probe moved to 1.32.17, the bindings round moved the
         // ceiling to 1.32.17, so the probe moved to 1.32.18, the release round moved the
         // ceiling to 1.32.18, so the probe moved to 1.32.19, the create-loop round
-        // moved the ceiling to 1.32.19, so the probe moved to 1.32.20, and the taxonomy
-        // round moved the ceiling to 1.32.20, so the probe moved to 1.32.21. A probe pinned AT the
-        // ceiling silently tests `Equal`, not `Greater`.
-        assert!(is_newer_than_known(Some("1.32.21")));
-        assert!(!is_newer_than_known(Some("1.32.20")));
+        // moved the ceiling to 1.32.19, so the probe moved to 1.32.20, the taxonomy
+        // round moved the ceiling to 1.32.20, so the probe moved to 1.32.21, and the
+        // citation round moved the ceiling to 1.32.21, so the probe moved to 1.32.22. A probe
+        // pinned AT the ceiling silently tests `Equal`, not `Greater` — the assertion
+        // would keep passing while a NEWER-schema database was blessed instead of
+        // refused, which is the one failure this function exists to prevent.
+        assert!(is_newer_than_known(Some("1.32.22")));
+        assert!(!is_newer_than_known(Some("1.32.21")));
         assert!(!is_newer_than_known(Some("1.32.9")));
         assert!(!is_newer_than_known(Some("1.28.9")));
     }

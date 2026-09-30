@@ -3931,6 +3931,23 @@ pub(crate) fn write_handoff_transition(
         AuditStatus::Ok,
         &format!("handoff {}", transition.as_str()),
     );
+    // The LINEAGE row, inside this same transaction and after its audit, so a
+    // rolled-back transition leaves no event claiming it happened. `subject`
+    // is the owner the case was handed to and `outcome` is the transition —
+    // both closed vocabulary. The route's `detail` blob does NOT cross (it
+    // lives in the session row beside this); the decision reference does ride
+    // the payload, as the pointer a lineage reader needs, while the audit text
+    // above stays exactly as its writer wrote it.
+    super::outbox::append_case_decision(
+        tx,
+        run_id,
+        super::outbox::HANDOFF_DECISION_KIND,
+        owner,
+        transition.as_str(),
+        decision_ref,
+        now,
+    )
+    .map_err(checkpoint::persist_error)?;
     Ok(())
 }
 
@@ -4083,6 +4100,22 @@ pub(crate) fn write_back_referral_return(
             if late { " — LATE receipt" } else { "" }
         ),
     );
+    // The LINEAGE row, inside this same transaction and after its audit, so
+    // the release commits with the contract row it closes or not at all.
+    // `subject` is the contract key the reader already holds. The `report` —
+    // the operator's clinical prose — does NOT cross: this row is republished
+    // to every event-chain subscriber, and a broadcast payload is the wrong
+    // place for a finding.
+    super::outbox::append_case_decision(
+        tx,
+        run_id,
+        super::outbox::BACK_REFERRAL_DECISION_KIND,
+        contract_key,
+        super::outbox::RETURNED_OUTCOME,
+        Some(decision_ref),
+        now,
+    )
+    .map_err(checkpoint::persist_error)?;
     Ok(())
 }
 

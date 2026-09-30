@@ -369,8 +369,9 @@ fn r48_the_runbook_names_the_offsite_approval_requirement() {
 fn r48_adds_no_table_no_stamp_no_dependency() {
     let layout = read_repo("src/storage_layout.rs");
     assert!(
-        layout.contains("LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_20;"),
-        "the schema stamp is untouched: R48 adds no table and no stamp"
+        layout.contains("LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_21;"),
+        "the schema stamp is untouched: R48 adds no table and no stamp (the ceiling itself is \
+         re-pinned by each schema round — R57b moved it last, for the trace citation)"
     );
     let manifest = read_repo("Cargo.toml");
     let deps = manifest

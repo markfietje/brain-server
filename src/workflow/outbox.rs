@@ -315,6 +315,187 @@ pub(crate) fn append_lineage(
     Ok(id)
 }
 
+/// The lineage topic a case decision lands on.
+///
+/// DELIBERATELY FREE in [`RESERVED_OUTBOX_TOPICS`]. A reserved topic is a
+/// claim that a row is a DISPATCH to something outside the run — consent to be
+/// re-verified inside `enqueue_out`, an approve role to be held, a reply window
+/// to be checked, a connector key to be authenticated. `case/decision` is none
+/// of those: it is the run's own record of a decision the operator has already
+/// made, addressed to nobody, and it carries no body. Reserving it would make
+/// the matcher assert a capability this topic does not have. The topic-freedom
+/// side of that is pinned at the matcher itself, not only in this comment.
+const CASE_DECISION_TOPIC: &str = "case/decision";
+
+// The three writer kinds, named so a call site cannot spell one wrong: a
+// misspelled kind is a RUNTIME refusal at the append, and a call site that
+// cannot fail that way is worth these three lines.
+pub(crate) const HANDOFF_DECISION_KIND: &str = "handoff_transition";
+pub(crate) const BACK_REFERRAL_DECISION_KIND: &str = "back_referral_return";
+pub(crate) const PIPELINE_DECISION_KIND: &str = "pipeline_advance";
+
+/// The back-referral release's single outcome word. The three writers do not
+/// share an outcome vocabulary (see [`CASE_DECISION_OUTCOMES`]), so the one
+/// that is a constant of its own is named here rather than inlined.
+pub(crate) const RETURNED_OUTCOME: &str = "returned";
+
+/// The closed `kind` vocabulary a case-decision row may carry: one entry per
+/// writer. A kind names WHICH machine made the call, and there are exactly
+/// three such writers. Widening the list is a dated act, not an accident.
+pub const CASE_DECISION_KINDS: &[&str] = &[
+    HANDOFF_DECISION_KIND,
+    BACK_REFERRAL_DECISION_KIND,
+    PIPELINE_DECISION_KIND,
+];
+
+/// The closed `outcome` vocabulary: the UNION of the three source vocabularies
+/// the writers already own — `HandoffTransition::as_str`'s five words, the
+/// back-referral release's single `returned`, and `Stage::as_str`'s five stage
+/// names.
+///
+/// The union is deliberate. This is a LINEAGE vocabulary, not a second copy of
+/// three domain vocabularies: copying each source list would create three more
+/// places for a new transition to be forgotten, and forgetting is not silent —
+/// [`append_case_decision`] refuses a word outside the list rather than write a
+/// row no reader of the lineage knows how to interpret. The
+/// `case_decision_outcomes_cover_every_source_vocabulary` pin in
+/// `tests/r57b_lineage_pins.rs` holds the union to the three source enums it
+/// mirrors, so refusing on drift is a CI failure rather than a surprise in a
+/// handoff.
+pub const CASE_DECISION_OUTCOMES: &[&str] = &[
+    // HandoffTransition::as_str
+    "requested",
+    "generated",
+    "delivered",
+    "cancelled",
+    "failed",
+    // the back-referral release
+    RETURNED_OUTCOME,
+    // Stage::as_str
+    "lead",
+    "qualified",
+    "proposal",
+    "closed_won",
+    "closed_lost",
+];
+
+/// The subject is a REFERENCE, never a body: a principal label, a contract key,
+/// the literal `"stage"`. The two real inputs are already bounded upstream
+/// (`decision_ref`/`contract_key` at 256 chars; a principal label is a
+/// configured subject), and this is headroom over both — a lineage row that
+/// cannot carry an unbounded string is the second half of "refs never bodies".
+const MAX_CASE_DECISION_SUBJECT_LEN: usize = 512;
+
+/// A named refusal for a word outside a closed vocabulary. Specific rather
+/// than a generic constraint error on purpose: a drift here means a call site
+/// reached for a word the lineage has no reader for, and the operator should
+/// see WHICH word.
+fn vocabulary_refusal(field: &str, value: &str, allowed: &[&str]) -> rusqlite::Error {
+    rusqlite::Error::InvalidParameterName(format!(
+        "case decision {field} `{value}` is outside the closed vocabulary [{allowed:?}]"
+    ))
+}
+
+/// Append the run's own record of a decision the operator already made, as a
+/// LINEAGE event at the run's current tip.
+///
+/// ## Why this is a lineage row and not another session row
+///
+/// Two of the three call sites already write a body-carrying payload to the
+/// session store (`agent_session_events`) in the same transaction, and that row
+/// stays exactly where it is — it is the detailed record and its readers need
+/// the detail. This row is the other thing: the one that makes the decision part
+/// of the run's EVENT CHAIN, so a reader of the run's lineage sees that a
+/// decision was taken, on what, and with what outcome, without parsing a session
+/// log. (The alert worker's drain republishes these rows to the workflow event
+/// stream, so the decision becomes visible to subscribers that never read the
+/// session store at all. That is the point of the row, and it is also why the
+/// payload is refs only — see below.)
+///
+/// ## REFS NEVER BODIES
+///
+/// The payload grammar is CLOSED and preregistered: `kind`, `decision_ref`,
+/// `subject`, `outcome`, `at`. There is no slot for a detail blob, a contract,
+/// a report, or free text, and the absence is the design. An event chain is a
+/// broadcast surface: everything in it ends up in front of every subscriber,
+/// and behind an operator-configured webhook sink when one exists. So `detail`
+/// — the handoff route's own `{"route": ...}` marker — never crosses; the
+/// back-referral `report`, which is the operator's clinical prose, never
+/// crosses; the contract never crosses. `subject` is a reference the reader
+/// already held before this row existed. The
+/// `case_decision_payload_carries_only_the_closed_key_set` pin holds the key
+/// set closed against the three bodies that did not cross.
+///
+/// ## WHY `decision_ref` RIDES THE PAYLOAD BUT NOT THE AUDIT TEXT
+///
+/// The two records have different readers, and this helper edits neither. The
+/// audit chain is a hash-chained operator-recovery surface — it is what you
+/// read to prove WHO decided, and the pipeline precedent (`stage {}→{}`,
+/// closed vocabulary only) deliberately keeps the reference out of its text,
+/// because chain detail is the string most likely to be copied into a log line,
+/// a metrics label or an error message. The lineage payload is the POINTER: a
+/// reader holding a lineage row needs the reference in order to resolve the
+/// decision the row names. So the reference is stored once, in the record that
+/// is about the decision, and each writer's existing audit text is left exactly
+/// as that writer wrote it.
+///
+/// ## EXACTLY-ONCE
+///
+/// The idempotency key is exactly `(run, kind, subject, outcome)` — the
+/// decision itself. Not the clock, not the decision reference: a replayed
+/// decision is a no-op receipt, while a DIFFERENT outcome in the same run is a
+/// different decision and must be a different row.
+///
+/// ## INSIDE THE CALLER'S TRANSACTION, AFTER ITS AUDIT
+///
+/// This rides the caller's `BEGIN IMMEDIATE`, after that transaction's audit
+/// row. The tip read and the insert are then serialized with the state change
+/// they describe, so a rolled-back decision leaves no lineage row claiming it
+/// happened and a committed one is parented at the tip the decision actually
+/// saw. Called outside the transaction, a concurrent writer could slip a row in
+/// between the read and the insert and the chain would fork silently.
+///
+/// Fails closed on a word outside either closed vocabulary, an empty subject, or
+/// a subject over the cap. Never truncates, never invents a word.
+#[allow(clippy::too_many_arguments)] // the six are the decision's own fields; a struct would hide the closed grammar
+pub(crate) fn append_case_decision(
+    conn: &Connection,
+    run_id: i64,
+    kind: &str,
+    subject: &str,
+    outcome: &str,
+    decision_ref: Option<&str>,
+    now: i64,
+) -> rusqlite::Result<i64> {
+    if !CASE_DECISION_KINDS.contains(&kind) {
+        return Err(vocabulary_refusal("kind", kind, CASE_DECISION_KINDS));
+    }
+    if !CASE_DECISION_OUTCOMES.contains(&outcome) {
+        return Err(vocabulary_refusal(
+            "outcome",
+            outcome,
+            CASE_DECISION_OUTCOMES,
+        ));
+    }
+    if subject.trim().is_empty() || subject.len() > MAX_CASE_DECISION_SUBJECT_LEN {
+        return Err(rusqlite::Error::InvalidParameterName(format!(
+            "case decision subject must be 1..={MAX_CASE_DECISION_SUBJECT_LEN} chars — \
+             a lineage row that names nothing is not a record of a decision"
+        )));
+    }
+    // The CLOSED grammar, spelled out: five keys, in this order, and no sixth.
+    let payload = serde_json::json!({
+        "kind": kind,
+        "decision_ref": decision_ref,
+        "subject": subject,
+        "outcome": outcome,
+        "at": now,
+    })
+    .to_string();
+    let key = format!("run{run_id}:{CASE_DECISION_TOPIC}:{kind}:{subject}:{outcome}");
+    append_lineage(conn, run_id, CASE_DECISION_TOPIC, &payload, &key, now)
+}
+
 /// Chain-integrity check beside the audit chain: every non-root `parent_id`
 /// must reference an existing row of the SAME run with a SMALLER id. Smaller-id
 /// parents make cycles impossible by construction; this verifies the stored

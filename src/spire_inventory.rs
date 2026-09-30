@@ -173,7 +173,7 @@ const ROUTER_SITES_FLOOR: usize = 255;
 /// `#[tokio::test]`-free paths but all of which this needle counts. Set to the
 /// walk-measured truth, not to a hand-count of what the round added: a lower
 /// number would silently weaken the guard instead of failing loudly.
-const CRATE_TEST_FLOOR: usize = 2_613;
+const CRATE_TEST_FLOOR: usize = 2_618;
 /// Route-coverage table rows (`route_guards::OPENAPI_ROUTES`) — 151 paths at
 /// extraction (v1.28.54), 163 at the Wardline gate, 167 when Blackout's
 /// reverse-direction guard found the missing rows, 208 at the operate round.

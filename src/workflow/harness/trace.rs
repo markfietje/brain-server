@@ -16,6 +16,11 @@
 //! are exactly-once by idempotency key and their audit rows ride the
 //! same transition. `pub(crate)`: no route reads or writes any of it —
 //! the writer ships before its callers.
+//!
+//! The model CITATION ([`ModelCitation`]) is a persistence argument the
+//! caller hands in, not something resolved here: the writer records which
+//! registered model the run executed under, and the engine still resolves
+//! nothing and decides nothing.
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -127,6 +132,43 @@ pub(crate) struct TracePersistReceipt {
     pub(crate) session_seqs: Vec<i64>,
 }
 
+/// The model identity one trace row CITES: the `(id, version, config_digest)`
+/// the registry resolver RETURNED for this run.
+///
+/// It is a persistence ARGUMENT, not a resolution: nothing in this module
+/// looks a model up, and the engine still writes no durable state of its own
+/// (the `harness` module doc). The host seam is where the resolver runs —
+/// it already runs it, because the gate needs the resolved identity before
+/// the engine may execute — and a second resolution inside the writer would
+/// be a second answer to a question that already has one, free to disagree
+/// with the gate that authorized the run.
+///
+/// The digest is optional because `RegistryRow.config_digest` is: a trace
+/// records what the resolver returned, and a row with no digest records
+/// that. A digest invented here would be a fabrication wearing a
+/// measurement's name, and the column is NULLable precisely so it need not be.
+///
+/// **REQUIRED at every write, by the type rather than by a check.** The
+/// writer's parameter is `&ModelCitation`, not `Option<&…>`: an
+/// `Option` here would make "persist a trace that cites no model" a
+/// signature a future contributor can reach for, and the row would then
+/// read like a run whose model identity was never established — which is
+/// exactly what the columns' `NULL` means (below). `NULL` is therefore
+/// reachable ONLY on rows that predate this column, never on a new one.
+///
+/// **Why the columns stay NULLable, then.** `NULL` is the honest encoding
+/// of "this row predates citation tracking", and the replay path is what
+/// preserves it: a re-persist of a pre-tracking trace hits the content
+/// identity's early return and leaves the original columns as they were.
+/// That is a second durable write of an artifact that already committed,
+/// so it is a declared ceiling, not an oversight.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModelCitation {
+    pub(crate) registry_id: String,
+    pub(crate) registry_version: String,
+    pub(crate) config_digest: Option<String>,
+}
+
 /// The stored trace document by row id — the bounded-query face for the
 /// read route. `None` = absent id (the route answers the probe-blind 404).
 pub(crate) fn load_decision_run_trace_json(
@@ -201,12 +243,15 @@ fn refused(msg: String) -> rusqlite::Error {
 /// re-run of the same trace is the same artifact), the session events by
 /// idempotency key. All rows commit in ONE BEGIN IMMEDIATE transition the
 /// writer owns. `now` is the row's creation instant (time as argument).
+/// `citation` is REQUIRED: the resolved model identity the row records. There
+/// is no way to call this without one (see [`ModelCitation`]).
 pub(crate) fn persist_decision_run_trace(
     conn: &mut Connection,
     trace: &DecisionRunTrace,
+    citation: &ModelCitation,
     now: i64,
 ) -> rusqlite::Result<TracePersistReceipt> {
-    persist_decision_run_trace_with(conn, trace, now, None)
+    persist_decision_run_trace_with(conn, trace, citation, now, None)
 }
 
 /// The route-side side effect: one caller-owned step run inside the
@@ -221,19 +266,22 @@ pub(crate) type SideEffect<'a> = &'a dyn Fn(&rusqlite::Transaction) -> Result<()
 /// atomically with the trace they cite, and a failing side effect rolls
 /// the whole transition back (an exactly-once replay still no-ops without
 /// running the side effect: the original artifact is already durable).
-/// `persist_decision_run_trace` is this function with `side: None`.
+/// `persist_decision_run_trace` is this function with `side: None` and the
+/// same citation.
 pub(crate) fn persist_decision_run_trace_with(
     conn: &mut Connection,
     trace: &DecisionRunTrace,
+    citation: &ModelCitation,
     now: i64,
     side: Option<SideEffect<'_>>,
 ) -> rusqlite::Result<TracePersistReceipt> {
-    persist_inner(conn, trace, now, side)
+    persist_inner(conn, trace, citation, now, side)
 }
 
 fn persist_inner(
     conn: &mut Connection,
     trace: &DecisionRunTrace,
+    citation: &ModelCitation,
     now: i64,
     side: Option<SideEffect<'_>>,
 ) -> rusqlite::Result<TracePersistReceipt> {
@@ -243,6 +291,11 @@ fn persist_inner(
     // (WorkflowTx rolls back on any error drop).
     let mut wtx = WorkflowTx::begin(conn)?;
 
+    // Content identity, unchanged by the citation: a trace is the same
+    // artifact whether or not the caller cited a model, so a replay of a
+    // row that predates citation tracking still no-ops and its columns stay
+    // NULL. Rewriting them would be a second durable write of an artifact
+    // that already committed — a declared ceiling, not an oversight.
     if let Some(existing) = wtx
         .tx()
         .query_row(
@@ -259,16 +312,27 @@ fn persist_inner(
         });
     }
 
+    // The citation is written exactly as the resolver returned it: the two
+    // identity fields are always present, the digest stands alone, and no
+    // value is derived, defaulted, or backfilled here.
+    let cite_id = citation.registry_id.clone();
+    let cite_version = citation.registry_version.clone();
+    let cite_digest = citation.config_digest.clone();
+
     wtx.tx().execute(
-        "INSERT INTO decision_run_traces(run_id, mode, pipeline_version, config_hash, trace_json, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO decision_run_traces(run_id, mode, pipeline_version, config_hash, trace_json, created_at,
+             model_registry_id, model_registry_version, model_registry_digest)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![
             trace.run_id,
             trace.mode,
             trace.pipeline_version,
             trace.config_hash,
             trace_json,
-            now
+            now,
+            cite_id,
+            cite_version,
+            cite_digest
         ],
     )?;
     let trace_row_id = wtx.tx().last_insert_rowid();
@@ -374,6 +438,17 @@ mod tests {
     use crate::workflow::session_log;
     use brain_engine_sdk::decision::{RunMode, TrustTier};
     use rusqlite::Connection;
+
+    /// A stand-in citation for the unit tests that are about the writer's
+    /// TRANSITION discipline, not about model identity (the real citation
+    /// round-trip is pinned from outside, where the route is drivable).
+    fn cited() -> ModelCitation {
+        ModelCitation {
+            registry_id: "rules-unit".into(),
+            registry_version: "1.0.0".into(),
+            config_digest: Some("c".repeat(64)),
+        }
+    }
 
     const DIGEST_A: &str = "cc0000000000000000000000000000000000000000000000000000000000000c";
     const QUERY: &str = "the raw query text must never reach the trace";
@@ -493,7 +568,8 @@ mod tests {
 
         // Persist: one row, one session batch, all-or-nothing.
         let mut conn = test_db();
-        let receipt = persist_decision_run_trace(&mut conn, &trace, 1_800_000_600).unwrap();
+        let receipt =
+            persist_decision_run_trace(&mut conn, &trace, &cited(), 1_800_000_600).unwrap();
         assert!(receipt.trace_created);
         let row_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM decision_run_traces", [], |r| r.get(0))
@@ -517,7 +593,7 @@ mod tests {
         assert_eq!(receipt.session_seqs.len(), kinds.len());
         // The exactly-once law: a replayed persist is a no-op receipt and
         // adds neither rows nor events.
-        let again = persist_decision_run_trace(&mut conn, &trace, 1_800_000_700).unwrap();
+        let again = persist_decision_run_trace(&mut conn, &trace, &cited(), 1_800_000_700).unwrap();
         assert!(!again.trace_created);
         assert!(again.session_seqs.is_empty());
         assert_eq!(again.trace_row_id, receipt.trace_row_id);
@@ -549,7 +625,8 @@ mod tests {
             refused.action,
             super::super::pipeline::ActionLabel::Escalate
         );
-        let receipt = persist_decision_run_trace(&mut conn, &refused_trace, 1_800_000_800).unwrap();
+        let receipt =
+            persist_decision_run_trace(&mut conn, &refused_trace, &cited(), 1_800_000_800).unwrap();
         assert!(receipt.trace_created);
         let replayed = session_log::replay(&conn, 501, session_log::REPLAY_CAP).unwrap();
         let refusal_row = replayed
@@ -604,7 +681,7 @@ mod tests {
         // A committed side effect lands with the trace: only after the
         // call returns does the proposal-grade row exist.
         let mut conn = test_db();
-        let receipt = persist_decision_run_trace_with(&mut conn, &trace, 10, Some(&|tx| {
+        let receipt = persist_decision_run_trace_with(&mut conn, &trace, &cited(), 10, Some(&|tx| {
             tx.execute(
                 "INSERT INTO agent_session_events(run_id, seq, idempotency_key, kind, payload_json, created_at)
                  VALUES (771, 9000, 'side:marker', 'decision_run', '{}', 10)",
@@ -630,6 +707,7 @@ mod tests {
         let err = persist_decision_run_trace_with(
             &mut conn,
             &trace,
+            &cited(),
             11,
             Some(&|_tx| Err("side refused".into())),
         )

@@ -181,6 +181,23 @@ pub(crate) fn advance_pipeline(
             crate::audit::AuditStatus::Ok,
             &format!("stage {}→{}", from.as_str(), to.as_str()),
         );
+        // The LINEAGE row, in the same tx and after the audit, gated on the
+        // same `created` flag so a replay is a no-op receipt rather than a
+        // second event. `subject` is the literal `stage`: the row records THAT
+        // a stage decision was taken, and the timeline row beside it already
+        // carries `from`/`to` in full. `decision_ref` rides the payload
+        // because a lineage reader needs it to resolve the decision — the
+        // audit text above deliberately does not.
+        super::outbox::append_case_decision(
+            tx.tx(),
+            account_id,
+            super::outbox::PIPELINE_DECISION_KIND,
+            "stage",
+            to.as_str(),
+            Some(decision_ref),
+            now,
+        )
+        .map_err(|e| format!("pipeline: case decision lineage append failed: {e}"))?;
     }
     Ok(PipelineReceipt {
         created,

@@ -2410,6 +2410,50 @@ pub fn run_migration_with_store_dim(
             ON decision_run_traces(run_id);",
     )?;
 
+    // ── the trace row's model citation ──────────────────────────────────
+    // WHICH registered model actually produced this run's verdict — the one
+    // gap a trace could not answer: the trace recorded the pipeline, the
+    // config, and the digests, but not the identity of the promoted model
+    // that the human gate had cleared. The three field names are the ones
+    // `decision_evaluation_runs` ALREADY uses, deliberately: a trace row and
+    // an evaluation row then join on the same three columns with no
+    // translation layer between the two record types.
+    //
+    // All three are NULLABLE and carry NO default. NULL means "this trace
+    // predates citation tracking" — a DEFAULT or a sentinel would backfill
+    // over every historical row and falsely date it to a model. The digest
+    // is NULLable for a second, independent reason: `RegistryRow.config_digest`
+    // is itself optional, and a trace records what the resolver RETURNED
+    // rather than a digest invented at the write edge.
+    //
+    // Guarded per column by `pragma_table_info` (the in-file additive-column
+    // loop), so re-running the runner is a no-op rather than an error, and a
+    // DB that already carries them is left alone. No table is dropped and
+    // none is rebuilt: a rebuild is the one operation that can lose rows
+    // under a crash.
+    for (col, def) in [
+        ("model_registry_id", "TEXT"),
+        ("model_registry_version", "TEXT"),
+        ("model_registry_digest", "TEXT"),
+    ] {
+        let present: bool = db
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('decision_run_traces') WHERE name='{col}'"
+                ),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(
+                &format!("ALTER TABLE decision_run_traces ADD COLUMN {col} {def}"),
+                [],
+            )?;
+        }
+    }
+
     // ── the decision-harness provenance column ──────────────────────────
     // `proposals.decision_run_ref` — additive, nullable TEXT carrying the
     // decision-run provenance ref (trace id, run id, recorded mode, config
@@ -2940,8 +2984,8 @@ pub fn run_migration_with_store_dim(
     )?;
 
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.20')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.20';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.21')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.21';",
         [],
     )?;
 
