@@ -8,6 +8,7 @@
 //! checkpointed at the step boundary and resumable with a larger budget.
 
 use std::collections::BTreeMap;
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use brain_engine_sdk::host::{HostError, WorkflowHost};
@@ -43,6 +44,16 @@ pub enum StoppedAt {
     /// (`engine.rs:359` fell through to `cas_persist` at `:361`) — the
     /// warning was real and the response to it was nil.
     BudgetWarn,
+    /// A LIVE run finished its turn having declared **no** constraint, so
+    /// every gate closure it pushed passed on nothing. This is a REFUSAL to
+    /// call the turn complete, not a warning about it: `Done` would certify
+    /// a governed advance that no gate ever constrained.
+    ///
+    /// Only [`RunKind::Live`] can land here. A [`RunKind::Replay`] turn that
+    /// declares nothing is the documented posture — recorded steps replayed
+    /// under the gates those steps declared — and keeps `Done` with
+    /// `gates_vacuous` set, exactly as before this variant existed.
+    GatesVacuous,
 }
 
 impl StoppedAt {
@@ -54,9 +65,99 @@ impl StoppedAt {
             StoppedAt::Cancelled => "cancelled",
             StoppedAt::Stale { .. } => "stale",
             StoppedAt::BudgetWarn => "budget_warn",
+            StoppedAt::GatesVacuous => "gates_vacuous",
         }
     }
 }
+
+/// What a crank turn IS, as declared by its caller.
+///
+/// The vacuity census (`gates_declared` / `gates_evaluated` /
+/// `gates_vacuous`) was computed on every turn and **acted on for none**:
+/// `gates_declared == 0` set a bool and the turn still reported `Done`. That
+/// made a governed-advance claim indistinguishable from an evidence replay,
+/// and 100% of the frozen corpus reports `true` — so the field said "these
+/// gates passed on nothing" on every ordinary run and nobody could act on it.
+///
+/// The two cases are genuinely different and must not be decided by the
+/// engine on the caller's behalf:
+///
+/// * [`RunKind::Live`] — a live governed advance. Gates that evaluated on
+///   nothing certified nothing, so the turn is **refused** a `Done`
+///   ([`StoppedAt::GatesVacuous`]).
+/// * [`RunKind::Replay`] — recorded steps replayed under the gates those
+///   steps declared. Vacuous gates are the documented posture here
+///   ("replaying recorded steps is evidence replay under gates those steps
+///   declared"), and the census stays advisory.
+///
+/// **A `Replay` label is a CLAIM, and a false one is worse than no gate.** A
+/// test that cannot state what it exercises must be [`RunKind::Live`] and must
+/// then fail. See [`RunKind::authorise`] for why the label cannot be used to
+/// skip a check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunKind {
+    Live,
+    Replay,
+}
+
+impl RunKind {
+    /// Whether a turn that declared no constraint may still be certified
+    /// `Done`.
+    ///
+    /// This is the whole asymmetry, in one place, so it cannot be applied at
+    /// one call site and forgotten at another.
+    pub fn admits_vacuous_done(self) -> bool {
+        match self {
+            RunKind::Live => false,
+            RunKind::Replay => true,
+        }
+    }
+
+    /// **A `RunKind` never authorises anything.** The `Ok` type is
+    /// [`Infallible`]: "this label permitted skipping a check" is not a state
+    /// this signature can represent.
+    ///
+    /// The property being protected is that declaring `Replay` must not become
+    /// a licence. `Replay` relaxes exactly one thing — whether vacuous gates
+    /// block `Done` — and the type says so by having no other effect to
+    /// grant. A future edit that tries to make this return `Ok(..)` breaks
+    /// the build at the `fn`-pointer pin in the test module, not a gate.
+    pub fn authorise(self, _skip: CheckSkip) -> Result<Infallible, NotAnAuthorisation> {
+        Err(NotAnAuthorisation)
+    }
+}
+
+/// The checks a `RunKind` label must never be used to skip. A closed
+/// vocabulary, so `authorise` cannot be handed a free-text "reason" and
+/// thereby become an escape hatch with a description.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckSkip {
+    /// Skipping gate evaluation entirely.
+    GateEvaluation,
+    /// Skipping the vacuity census.
+    VacuityCensus,
+    /// Skipping the `Live` refusal on a vacuous turn.
+    VacuityStop,
+    /// Treating a gate rejection as anything other than a finding row.
+    RejectionAsFinding,
+}
+
+/// Why a `RunKind` label is never an authorisation. The only constructor is
+/// the refusal itself, so there is no way to construct "authorised".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NotAnAuthorisation;
+
+impl std::fmt::Display for NotAnAuthorisation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "a RunKind is a claim about what a turn exercises, never a permission: \
+             it relaxes only the vacuity stop, and it can never authorise skipping a check"
+        )
+    }
+}
+
+impl std::error::Error for NotAnAuthorisation {}
 
 /// The outcome of one crank invocation.
 #[derive(Debug, Clone, PartialEq)]
@@ -83,13 +184,23 @@ pub struct CrankReport {
     /// ran, and every one of them passed on nothing.
     pub gates_evaluated: u32,
     /// `gates_declared == 0`: this turn passed its gates without a single
-    /// declared constraint. REPORTED, not a stop — for a replayed run that is
-    /// the documented posture (`engine.rs` "replaying recorded steps is
-    /// evidence replay under gates those steps declared"), and a hard stop
-    /// here would refuse the entire gold corpus, whose steps declare zero
-    /// constraints by construction. Making the number visible is the honest
-    /// half; making it fatal is a capability decision R52 declines.
+    /// declared constraint.
+    ///
+    /// **What this MEANS depends on [`RunKind`], and that is the whole point.**
+    /// For a [`RunKind::Replay`] turn it is the documented posture — recorded
+    /// steps replayed under the gates those steps declared — so it stays
+    /// advisory and the turn may still be `Done`. For a [`RunKind::Live`]
+    /// turn it means no gate constrained anything, and the turn is refused
+    /// [`StoppedAt::GatesVacuous`] rather than certified.
+    ///
+    /// It is still **reported for both**: a `Replay` turn that declares
+    /// nothing is visible, not silent. The field changed meaning from
+    /// "always advisory" to "advisory exactly where advisory is correct".
     pub gates_vacuous: bool,
+    /// What this turn was declared to be. Carried on the report so a
+    /// consumer reading only the JSON can tell an evidence replay from a
+    /// governed advance without re-deriving it from the census.
+    pub run_kind: RunKind,
 }
 
 #[derive(Debug)]
@@ -147,12 +258,38 @@ pub fn resolve_checkpoint_every(env_val: Option<u32>) -> u32 {
 /// Run the governed loop until a stop condition. `max_steps` bounds ONE
 /// crank invocation; the run itself may need many cranks (human-cranked).
 /// The checkpoint cadence is the default [`resolve_checkpoint_every`].
+///
+/// **The turn is declared [`RunKind::Live`]**, the fail-closed default: a
+/// caller that does not say what it is exercising gets the strict arm, and a
+/// vacuous one is refused rather than certified. Use [`crank_replay`] to
+/// declare the replay posture explicitly.
 pub async fn crank(
     host: Arc<dyn WorkflowHost>,
     run_id: i64,
     max_steps: u32,
 ) -> Result<CrankReport, HarnessError> {
     crank_full(host, None, None, None, run_id, max_steps, 0).await
+}
+
+/// [`crank`] for a turn that replays recorded steps under the gates those
+/// steps declared — the frozen corpus, whose provenance was recorded with the
+/// case and must not be invented at replay time.
+pub async fn crank_replay(
+    host: Arc<dyn WorkflowHost>,
+    run_id: i64,
+    max_steps: u32,
+) -> Result<CrankReport, HarnessError> {
+    crank_full_kind(
+        host,
+        None,
+        None,
+        None,
+        run_id,
+        max_steps,
+        0,
+        RunKind::Replay,
+    )
+    .await
 }
 
 /// `crank` with an optional steering LOG source drained at each step
@@ -179,19 +316,7 @@ pub async fn crank_with_steering(
     .await
 }
 
-/// The full crank: an optional [`Effects`] door makes every event emission
-/// ride the mediated hostcall dispatch (counted, audited); without one the
-/// emissions fall back to the host trait's own audited enqueue seam. An
-/// optional cancel token (`brain_engine_sdk::hostcall::CancellationToken`,
-/// clones share the signal) is honored at every step boundary and settles
-/// the run as [`StoppedAt::Cancelled`] exactly between steps.
-///
-/// The checkpoint cadence is deterministic by construction: a
-/// `workflow/checkpoint` fires on every phase transition ([`Decision::
-/// Advance`], the whole-state-replacement boundary), on every
-/// [`StoppedAt::AskHuman`] pause, every `checkpoint_every` emitted events
-/// (0 → default), and once during finalize — so a completed run always ends
-/// ON a checkpoint. Replayable windows need replayable boundaries.
+/// The full crank, declared [`RunKind::Live`]. See [`crank_full_kind`].
 #[allow(clippy::too_many_arguments)]
 pub async fn crank_full(
     host: Arc<dyn WorkflowHost>,
@@ -201,6 +326,52 @@ pub async fn crank_full(
     run_id: i64,
     max_steps: u32,
     checkpoint_every: u32,
+) -> Result<CrankReport, HarnessError> {
+    crank_full_kind(
+        host,
+        reader,
+        effects,
+        cancel,
+        run_id,
+        max_steps,
+        checkpoint_every,
+        RunKind::Live,
+    )
+    .await
+}
+
+/// The full crank: an optional [`Effects`] door makes every event emission
+/// ride the mediated hostcall dispatch (counted, audited); without one the
+/// emissions fall back to the host trait's own audited enqueue seam. An
+/// optional cancel token (`brain_engine_sdk::hostcall::CancellationToken`,
+/// clones share the signal) is honored at every step boundary and settles
+/// the run as [`StoppedAt::Cancelled`] exactly between steps.
+///
+/// `kind` is the caller's DECLARATION of what this turn exercises, and it is
+/// the only input to whether a vacuous turn may be certified [`StoppedAt::Done`]
+/// — the engine never guesses. See [`RunKind`].
+///
+/// The checkpoint cadence is deterministic by construction: a
+/// `kind` is the caller's DECLARATION of what this turn exercises, and it is
+/// the only input to whether a vacuous turn may be certified [`StoppedAt::Done`]
+/// — the engine never guesses. See [`RunKind`].
+///
+/// The checkpoint cadence is deterministic by construction: a
+/// `workflow/checkpoint` fires on every phase transition ([`Decision::
+/// Advance`], the whole-state-replacement boundary), on every
+/// [`StoppedAt::AskHuman`] pause, every `checkpoint_every` emitted events
+/// (0 → default), and once during finalize — so a completed run always ends
+/// ON a checkpoint. Replayable windows need replayable boundaries.
+#[allow(clippy::too_many_arguments)]
+pub async fn crank_full_kind(
+    host: Arc<dyn WorkflowHost>,
+    reader: Option<Arc<dyn SteeringReader>>,
+    effects: Option<Arc<crate::effects::Effects>>,
+    cancel: Option<CancellationToken>,
+    run_id: i64,
+    max_steps: u32,
+    checkpoint_every: u32,
+    kind: RunKind,
 ) -> Result<CrankReport, HarnessError> {
     let max_steps = clamp_max_steps(max_steps);
     let cadence = if checkpoint_every == 0 {
@@ -271,6 +442,7 @@ pub async fn crank_full(
                 hostcalls,
                 gates_declared,
                 gates_evaluated,
+                kind,
             ));
         }
 
@@ -284,6 +456,7 @@ pub async fn crank_full(
                 hostcalls,
                 gates_declared,
                 gates_evaluated,
+                kind,
             ));
         }
 
@@ -311,6 +484,7 @@ pub async fn crank_full(
                     hostcalls,
                     gates_declared,
                     gates_evaluated,
+                    kind,
                 ));
             }
             Decision::AskHuman { question } => {
@@ -340,6 +514,7 @@ pub async fn crank_full(
                     hostcalls,
                     gates_declared,
                     gates_evaluated,
+                    kind,
                 ));
             }
             Decision::Advance { next_state } => {
@@ -363,6 +538,7 @@ pub async fn crank_full(
                             hostcalls,
                             gates_declared,
                             gates_evaluated,
+                            kind,
                         ));
                     }
                 }
@@ -446,6 +622,7 @@ pub async fn crank_full(
                             hostcalls,
                             gates_declared,
                             gates_evaluated,
+                            kind,
                         ));
                     }
                 }
@@ -501,6 +678,7 @@ pub async fn crank_full(
                         hostcalls,
                         gates_declared,
                         gates_evaluated,
+                        kind,
                     ));
                 }
             }
@@ -508,6 +686,34 @@ pub async fn crank_full(
     }
 }
 
+/// Build the turn's report, applying the ONE place the vacuity census
+/// becomes a stop.
+///
+/// The asymmetry lives here and nowhere else, so it cannot be enforced at one
+/// exit path and forgotten at another: a [`RunKind::Live`] turn whose gates
+/// ran on nothing is refused [`StoppedAt::GatesVacuous`] instead of being
+/// certified, while a [`RunKind::Replay`] turn keeps the advisory posture and
+/// its real stop reason.
+///
+/// **The stop is on the vacuous CASE, not on the bare `declared == 0`.** A
+/// turn that executed no steps at all evaluated no gates, so there is nothing
+/// for them to have passed on — a `Live` turn that pauses at `AskHuman` before
+/// its first step, or finds an empty queue, is *not* a gate escape. This is
+/// the definition the census field's own doc gives: "a `declared` of 0 with an
+/// `evaluated` above 0 is precisely the vacuous case — gates ran, and every
+/// one of them passed on nothing."
+///
+/// Note the reported [`CrankReport::gates_vacuous`] keeps its original
+/// `declared == 0` meaning, unchanged, so no shipped consumer's reading of that
+/// field moves. The narrower predicate is the STOP, and it is strictly
+/// narrower — it can only refuse turns the looser one would also refuse, and
+/// it additionally spares the never-ran case that the looser one would
+/// falsely punish.
+///
+/// `real` is the stop the loop actually reached. Overriding it is the whole
+/// mechanism: a `Live` turn that ran to completion on unconstrained gates did
+/// not complete, it escaped evaluation, and `Done` is a claim the census does
+/// not support.
 fn report(
     steps: u32,
     stopped_at: StoppedAt,
@@ -515,7 +721,15 @@ fn report(
     hostcalls: BTreeMap<String, u64>,
     gates_declared: u32,
     gates_evaluated: u32,
+    kind: RunKind,
 ) -> CrankReport {
+    let gates_vacuous = gates_declared == 0;
+    let vacuous_case = gates_declared == 0 && gates_evaluated > 0;
+    let stopped_at = if vacuous_case && !kind.admits_vacuous_done() {
+        StoppedAt::GatesVacuous
+    } else {
+        stopped_at
+    };
     CrankReport {
         steps_executed: steps,
         stopped_at,
@@ -523,7 +737,8 @@ fn report(
         hostcalls,
         gates_declared,
         gates_evaluated,
-        gates_vacuous: gates_declared == 0,
+        gates_vacuous,
+        run_kind: kind,
     }
 }
 

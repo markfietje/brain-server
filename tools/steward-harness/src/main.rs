@@ -2,7 +2,7 @@
 //!
 //! Commands (superset of the 0.1 stub):
 //!   open-run    {domain, seed?}          -> {ok, run_id}
-//!   crank       {run_id, max_steps?}     -> {ok, stopped_at, steps_executed, revision?, gates_*}
+//!   crank       {run_id, max_steps?, run_kind?} -> {ok, stopped_at, steps_executed, revision?, gates_*, run_kind}
 //!   ask-human   {run_id, answer, digest} -> {ok}   (POST .../answer)
 //!   step-result {run_id, expected_rev, state_json} -> {ok, revision}  (PUT state)
 //!   advance     {run_id, next_state}     -> {ok, revision}               (PUT state)
@@ -69,6 +69,21 @@ async fn handle_rpc(host: &Arc<RemoteWorkflowHost>, v: &Value) -> Value {
             let Some(run_id) = v.get("run_id").and_then(|x| x.as_i64()) else {
                 return json!({"ok": false, "error": "missing run_id"});
             };
+            // The CALLER declares what this turn exercises. Absent = the
+            // fail-closed `Live` arm, never `Replay`: a client that forgets to
+            // say must not silently get the lenient posture.
+            let kind = match v.get("run_kind").and_then(|x| x.as_str()) {
+                None | Some("live") => engine::RunKind::Live,
+                Some("replay") => engine::RunKind::Replay,
+                Some(other) => {
+                    return json!({
+                        "ok": false,
+                        "error": format!(
+                            "unknown run_kind {other:?} — expected \"live\" or \"replay\""
+                        ),
+                    });
+                }
+            };
             let env_max = std::env::var("BRAIN_MAX_STEPS")
                 .ok()
                 .and_then(|s| s.parse::<u32>().ok());
@@ -78,12 +93,15 @@ async fn handle_rpc(host: &Arc<RemoteWorkflowHost>, v: &Value) -> Value {
             let ckpt_every = std::env::var("BRAIN_CHECKPOINT_EVERY")
                 .ok()
                 .and_then(|s| s.parse::<u32>().ok());
-            match engine::crank_with_steering(
+            match engine::crank_full_kind(
                 host.clone(),
                 Some(host.clone()),
+                None,
+                None,
                 run_id,
                 max_steps,
                 engine::resolve_checkpoint_every(ckpt_every),
+                kind,
             )
             .await
             {
@@ -96,10 +114,16 @@ async fn handle_rpc(host: &Arc<RemoteWorkflowHost>, v: &Value) -> Value {
                     // The gate census: how many constraints this turn actually
                     // DECLARED vs. how many gate closures ran. A consumer
                     // reading `gates_vacuous` learns that the gates passed on
-                    // nothing — the thing CrankReport used to not say.
+                    // nothing — the thing CrankReport used to not say. Echoed
+                    // with the declaration it was judged under, so the JSON is
+                    // self-explaining without re-deriving the kind.
                     "gates_declared": report.gates_declared,
                     "gates_evaluated": report.gates_evaluated,
                     "gates_vacuous": report.gates_vacuous,
+                    "run_kind": match report.run_kind {
+                        engine::RunKind::Live => "live",
+                        engine::RunKind::Replay => "replay",
+                    },
                 }),
                 Err(e) => json!({"ok": false, "run_id": run_id, "error": e.to_string()}),
             }

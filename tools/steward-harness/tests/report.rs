@@ -33,7 +33,13 @@ fn repo_root() -> PathBuf {
 
 fn long_queue(n: usize) -> String {
     let queue: Vec<Value> = (0..n)
-        .map(|_| json!({"expected": "e", "actual": "a"}))
+        // `mutations: 1` is what `record_step_in_state` does to a queued item,
+        // so declaring it is TRUE by construction rather than an invented
+        // provenance. The census counts presence, and `gate_one_variable`
+        // already passed the absent case on its `.unwrap_or(1)` default — so
+        // every gate verdict here is unchanged and only the report's honesty
+        // moves. These are `RunKind::Live` turns.
+        .map(|_| json!({"expected": "e", "actual": "a", "mutations": 1}))
         .collect();
     json!({"next_step": "step-0", "queue": queue}).to_string()
 }
@@ -138,16 +144,31 @@ async fn budget_warn_stop_is_resumable_with_a_larger_budget() {
 
 // ── R52.2 · gate-vacuity ───────────────────────────────────────────────────
 
-/// A run whose steps declare no constraints reports `gates_vacuous == true`.
-/// Pre-fix this pin did not compile: `CrankReport` had no such field.
+/// The census is REPORTED for a replay, and the replay is exactly why that is
+/// correct: recorded steps replayed under the gates those steps declared. This
+/// is the `RunKind::Replay` arm of the asymmetry, pinned behaviourally — the
+/// same synthetic queue is vacuous either way, and only the DECLARED kind
+/// decides whether it may be certified.
 #[tokio::test]
 async fn vacuous_gates_are_reported_not_hidden() {
     let host = Arc::new(InMemHost::new());
-    host.seed(1, &long_queue(3));
+    // Undeclared on purpose: this test's SUBJECT is the vacuous census.
+    let queue: Vec<Value> = (0..3)
+        .map(|_| json!({"expected": "e", "actual": "a"}))
+        .collect();
+    host.seed(
+        1,
+        &json!({"next_step": "step-0", "queue": queue}).to_string(),
+    );
     let h = host.clone() as Arc<dyn WorkflowHost>;
-    let report = engine::crank(h, 1, 50).await.unwrap();
+    let report = engine::crank_replay(h, 1, 50).await.unwrap();
 
     assert_eq!(report.stopped_at, StoppedAt::Done);
+    assert_eq!(
+        report.run_kind,
+        engine::RunKind::Replay,
+        "a replay turn keeps the advisory posture — asserted, not assumed"
+    );
     assert_eq!(
         report.gates_declared, 0,
         "these steps declare none of the five constraint keys"
@@ -182,6 +203,11 @@ async fn declared_constraints_are_counted_and_clear_vacuity() {
     let report = engine::crank(h, 2, 50).await.unwrap();
     assert_eq!(report.stopped_at, StoppedAt::Done);
     assert_eq!(
+        report.run_kind,
+        engine::RunKind::Live,
+        "a declared live run"
+    );
+    assert_eq!(
         report.gates_declared, 3,
         "step 1 declares evidence_refs + mutations; step 2 declares needs_approval"
     );
@@ -211,6 +237,7 @@ async fn mutations_default_does_not_count_as_a_declaration() {
     );
     let h = host.clone() as Arc<dyn WorkflowHost>;
     let report = engine::crank(h, 3, 50).await.unwrap();
+    assert_eq!(report.run_kind, engine::RunKind::Live);
     assert_eq!(
         report.gates_declared, 1,
         "only the second step declared one"

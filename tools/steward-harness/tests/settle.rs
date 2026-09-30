@@ -18,7 +18,11 @@ use steward_harness::inmem::InMemHost;
 
 fn long_queue(n: usize) -> String {
     let queue: Vec<Value> = (0..n)
-        .map(|_| json!({"expected": "e", "actual": "a"}))
+        // Declared: these are `RunKind::Live` cancellation/settle turns.
+        // `mutations: 1` is what the crank performs on a queued item, so the
+        // declaration is true by construction; the census counts presence and
+        // every gate verdict is unchanged.
+        .map(|_| json!({"expected": "e", "actual": "a", "mutations": 1}))
         .collect();
     json!({"next_step": "step-0", "queue": queue}).to_string()
 }
@@ -83,6 +87,9 @@ impl WorkflowHost for BlockyHost {
     }
 }
 
+/// A `RunKind::Live` turn (the strict, declared arm) driven to completion or
+/// cancellation on a blocking host. The kind is named at the seam every settle
+/// test goes through, so a settle turn cannot be silently a replay.
 fn block_on_crank(
     h: Arc<dyn WorkflowHost>,
     tk: CancellationToken,

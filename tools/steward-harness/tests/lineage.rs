@@ -110,8 +110,17 @@ impl WorkflowHost for TapeHost {
 #[tokio::test]
 async fn checkpoint_payload_round_trips_state_exactly() {
     let host = Arc::new(TapeHost::default());
-    host.seed(r#"{"next_step":"inventory","queue":[{"expected":"a","actual":"a"}]}"#);
+    // Declared: a `RunKind::Live` turn. `mutations: 1` is what the crank does
+    // to a queued item, so this is true by construction, not a fabricated
+    // provenance. Without it the vacuity stop refuses the `done` this test
+    // asserts — which is the stop working, not the test breaking.
+    host.seed(r#"{"next_step":"inventory","queue":[{"expected":"a","actual":"a","mutations":1}]}"#);
     let report = engine::crank(host.clone(), 1, 8).await.unwrap();
+    assert_eq!(
+        report.run_kind,
+        engine::RunKind::Live,
+        "a declared live run"
+    );
     assert_eq!(report.stopped_at.as_str(), "done");
     let (final_state, _) = host.snapshot().0.expect("run state exists after crank");
     // The LAST checkpoint event carries the full state snapshot AT ITS STEP
@@ -136,11 +145,12 @@ async fn checkpoint_payload_round_trips_state_exactly() {
 async fn rewind_creates_branch_and_replay_is_idempotent() {
     let host = Arc::new(TapeHost::default());
     host.seed(
-        r#"{"next_step":"inventory","queue":[{"expected":"a","actual":"a"}],
+        r#"{"next_step":"inventory","queue":[{"expected":"a","actual":"a","mutations":1}],
             "branches":[{"from_event":42,"reason":"wrong turn","at":9}]}"#,
     );
     // First crank: the first emitted event must PARENT at the rewind target.
     let r1 = engine::crank(host.clone(), 1, 8).await.unwrap();
+    assert_eq!(r1.run_kind, engine::RunKind::Live);
     assert_eq!(r1.stopped_at.as_str(), "done");
     let (_, events_after_first) = host.snapshot();
     assert!(
@@ -198,13 +208,18 @@ async fn checkpoints_fire_on_askhuman_phase_and_event_count() {
     let host = Arc::new(TapeHost::default());
     host.seed(
         r#"{"next_step":"s","queue":[
-            {"expected":"a","actual":"a"},{"expected":"b","actual":"b"},
-            {"expected":"c","actual":"c"},{"expected":"d","actual":"d"},
-            {"expected":"e","actual":"e"}]}"#,
+            {"expected":"a","actual":"a","mutations":1},{"expected":"b","actual":"b","mutations":1},
+            {"expected":"c","actual":"c","mutations":1},{"expected":"d","actual":"d","mutations":1},
+            {"expected":"e","actual":"e","mutations":1}]}"#,
     );
-    engine::crank_full(host.clone(), None, None, None, 1, 50, 2)
+    let report = engine::crank_full(host.clone(), None, None, None, 1, 50, 2)
         .await
         .unwrap();
+    assert_eq!(
+        report.run_kind,
+        engine::RunKind::Live,
+        "a declared live run"
+    );
     let (_, events) = host.snapshot();
     let ckpts = events
         .iter()

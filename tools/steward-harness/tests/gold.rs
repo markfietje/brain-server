@@ -1,5 +1,25 @@
 //! The gold-set pins: the governed loop replays every frozen case
 //! end-to-end, exactly once, with gates that reject into FINDINGS.
+//!
+//! # Run kinds
+//!
+//! Every crank here DECLARES what it exercises, and the declaration is
+//! load-bearing rather than documentary — [`engine::RunKind::Live`] turns that
+//! declare no constraint are refused [`StoppedAt::GatesVacuous`] instead of
+//! being certified `Done`.
+//!
+//! * The two tests that replay a **frozen recorded case** are
+//!   [`RunKind::Replay`](engine::RunKind::Replay): the corpus's declared
+//!   provenance was recorded with the case, and the seeds are replayed under
+//!   the gates those steps declared.
+//! * The rest drive **synthetic** queues, so they are
+//!   [`RunKind::Live`](engine::RunKind::Live) and their seeds declare
+//!   `mutations: 1` — a true statement by construction (one `record_step` per
+//!   queued item), not an invented provenance. See `seed_declared_queue`.
+//!
+//! **No gold fixture is amended to achieve this.** `seed_state` below copies
+//! five artifact fields and nothing else, so the corpus stays vacuous by
+//! construction — which is the correct and documented state for a replay.
 
 #![forbid(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
@@ -11,6 +31,31 @@ use gold_sets::{CaseArtifacts, GoldCase};
 use serde_json::{Value, json};
 use steward_harness::engine::{self, CrankReport, StoppedAt};
 use steward_harness::inmem::InMemHost;
+
+/// A synthetic queue item that DECLARES the one mutation it performs.
+///
+/// `mutations: 1` is not a token to get past the vacuity stop: it is what
+/// `record_step_in_state` does to a queued item, and the census counts
+/// PRESENCE (`engine.rs` `DECLARED_CONSTRAINT_KEYS`) rather than the resolved
+/// value — `gate_one_variable` already passed the absent case via its
+/// `.unwrap_or(1)` default. Declaring it changes the report's honesty and
+/// leaves every gate verdict byte-identical.
+fn declared_item(expected: &str, actual: &str) -> Value {
+    json!({"expected": expected, "actual": actual, "mutations": 1})
+}
+
+/// A synthetic queue of `n` declared items — the [`engine::RunKind::Live`]
+/// counterpart of `seed_state`, for tests that exercise crank MECHANICS
+/// (budget, resume, ask-human) rather than corpus replay.
+fn seed_declared_queue(run_id: i64, n: usize) -> Arc<InMemHost> {
+    let host = Arc::new(InMemHost::new());
+    let queue: Vec<Value> = (0..n).map(|_| declared_item("e", "a")).collect();
+    host.seed(
+        run_id,
+        &json!({"next_step": "step-0", "queue": queue}).to_string(),
+    );
+    host
+}
 
 /// Build the replay seed state for a frozen case: its recorded steps become
 /// queue items carrying their artifact fields + declared findings.
@@ -86,10 +131,15 @@ async fn crank_runs_a_full_gold_case_end_to_end() {
     let case = &gold_sets::all().unwrap()[1]; // skipped_verify (the GDL pin)
     let host = Arc::new(InMemHost::new());
     host.seed(1, &seed_state(case));
-    let report: CrankReport = engine::crank(host.clone() as Arc<dyn WorkflowHost>, 1, 100)
+    let report: CrankReport = engine::crank_replay(host.clone() as Arc<dyn WorkflowHost>, 1, 100)
         .await
         .unwrap();
     assert_eq!(report.stopped_at, StoppedAt::Done);
+    assert_eq!(
+        report.run_kind,
+        engine::RunKind::Replay,
+        "a frozen-case replay declares Replay and is therefore never vacuity-stopped"
+    );
     let (state_json, rev) = host.state(1).unwrap();
     assert!(
         state_json.contains("\"status\":\"completed\""),
@@ -110,12 +160,12 @@ async fn gold_case_replays_exactly_once() {
         let run_id = i as i64 + 1;
         host.seed(run_id, &seed_state(case));
         let h = host.clone() as Arc<dyn WorkflowHost>;
-        engine::crank(h, run_id, 1000).await.unwrap();
+        engine::crank_replay(h, run_id, 1000).await.unwrap();
         let after_first = host.outbox_len(run_id);
         assert!(after_first > 0, "case {} produced events", case.id);
         // Second crank on a completed run: zero NEW events.
         let h = host.clone() as Arc<dyn WorkflowHost>;
-        engine::crank(h, run_id, 1000).await.unwrap();
+        engine::crank_replay(h, run_id, 1000).await.unwrap();
         assert_eq!(
             host.outbox_len(run_id),
             after_first,
@@ -133,10 +183,16 @@ async fn crank_stops_at_askhuman_and_resumes_after_answer() {
     let host = Arc::new(InMemHost::new());
     host.seed(
         9,
-        r#"{"pending_question":"collect logs first?","next_step":"step-0","queue":[{"expected":"x","actual":"y"}]}"#,
+        &json!({
+            "pending_question": "collect logs first?",
+            "next_step": "step-0",
+            "queue": [declared_item("x", "y")],
+        })
+        .to_string(),
     );
     let h = host.clone() as Arc<dyn WorkflowHost>;
     let report = engine::crank(h, 9, 10).await.unwrap();
+    assert_eq!(report.run_kind, engine::RunKind::Live, "synthetic queue");
     assert_eq!(
         report.stopped_at,
         StoppedAt::AskHuman {
@@ -164,17 +220,12 @@ async fn crank_stops_at_askhuman_and_resumes_after_answer() {
 
 #[tokio::test]
 async fn budget_warn_stops_at_80pct_and_resumes_with_a_larger_budget() {
-    let host = Arc::new(InMemHost::new());
-    // A long queue: far more steps than the tiny budget allows.
-    let queue: Vec<Value> = (0..50)
-        .map(|_| json!({"expected": "e", "actual": "a"}))
-        .collect();
-    host.seed(
-        3,
-        &json!({"next_step": "step-0", "queue": queue}).to_string(),
-    );
+    // A long queue: far more steps than the tiny budget allows. Declared, so
+    // the turn is a governed advance rather than an unconstrained one.
+    let host = seed_declared_queue(3, 50);
     let h = host.clone() as Arc<dyn WorkflowHost>;
     let report = engine::crank(h, 3, 5).await.unwrap();
+    assert_eq!(report.run_kind, engine::RunKind::Live);
     // R52 (P52.4): this test previously asserted `steps_executed == 5` and
     // `StoppedAt::Budget` — i.e. it passed BECAUSE the crank ignored the 80%
     // threshold and ran on to budget exhaustion. `StoppedAt::BudgetWarn` is
@@ -201,14 +252,7 @@ async fn budget_warn_stops_at_80pct_and_resumes_with_a_larger_budget() {
 
 #[tokio::test]
 async fn cas_stale_reloads_and_reports_not_panics() {
-    let host = Arc::new(InMemHost::new());
-    let queue: Vec<Value> = (0..20)
-        .map(|_| json!({"expected": "e", "actual": "a"}))
-        .collect();
-    host.seed(
-        4,
-        &json!({"next_step": "step-0", "queue": queue}).to_string(),
-    );
+    let host = seed_declared_queue(4, 20);
     // Simulate a concurrent driver racing ahead: keep bumping the revision
     // behind the crank's back. The crank must reload-and-retry once, then
     // REPORT stale — never panic, never wedge.
