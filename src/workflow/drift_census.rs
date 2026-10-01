@@ -241,8 +241,21 @@ pub(crate) struct CorpusCase {
     /// stamped for a different scorer is measuring a different instrument, so
     /// this is carried rather than assumed equal.
     pub(crate) scorer_version: String,
-    /// The agreed human verdict. The census never predicts it — it measures
-    /// whether the scorer still reproduces it.
+    /// The agreed human verdict. **Carried, never compared**: the only production
+    /// reference to it is the decode that copies it in here, and no reader
+    /// scores, thresholds, or gates on it.
+    ///
+    /// The report types below carry no verdict column, so the census emits no
+    /// agreement figure at all — the verdict is neither reproduced nor reported.
+    /// The mechanical check that the scorer still agrees with the frozen verdict
+    /// lives in the engine SDK's `qa_score` test module, which is a pin (it fails
+    /// a build) and not a runtime control.
+    ///
+    /// **Reporting would be the ceiling even once a column existed.** A
+    /// single-rater, non-independent agreement measure over a corpus this size is
+    /// a report, not a control; it becomes a control only when multi-rater
+    /// calibration exists. Emitting one before then would dress a report up as a
+    /// gate.
     pub(crate) human_pass: bool,
     pub(crate) artifacts: PackArtifacts,
 }
