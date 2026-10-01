@@ -68,6 +68,7 @@ pub(crate) mod disseminate;
 pub(crate) mod gap;
 pub(crate) mod promote;
 pub(crate) mod queue;
+pub(crate) mod replay_gate;
 pub(crate) mod schema;
 pub(crate) mod verify;
 
