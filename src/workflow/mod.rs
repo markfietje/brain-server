@@ -44,6 +44,7 @@ pub(crate) mod delivery_read;
 pub(crate) mod drift_census;
 pub(crate) mod driver;
 pub(crate) mod entitlement;
+pub(crate) mod routing;
 
 // ── fuzz seams (doc-hidden; not API — the fuzz targets' only entry) ────────
 //
