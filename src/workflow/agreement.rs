@@ -55,6 +55,42 @@ pub(crate) const AUDIT_AGREEMENT_REPORT: &str = "agreement_report";
 /// other and both are counted, so the report can say which era it is reporting.
 pub(crate) const RATER_SLOTS: u8 = 2;
 
+/// The closed reviewer-kind vocabulary: WHO is judging. **One member today —
+/// `operator`.**
+///
+/// This is a type change, not a configuration knob, and the distinction is
+/// load-bearing. A κ between two raters of the SAME kind is inter-rater
+/// reliability. A κ between an operator and a machine is a DIFFERENT quantity
+/// with a DIFFERENT ceiling: it measures model-vs-human agreement, not whether
+/// humans agree with each other. Collapsing the two is how a machine rater
+/// would silently inflate `distinct_reviewers` to 2 and have a reader conclude
+/// an inter-rater reliability exists that nobody measured.
+///
+/// So a machine rater is a DATED AMENDMENT to this constant plus the report's
+/// same-kind rule, never a string a client supplies. The body names the
+/// judgment, never the judge — and now never the judge's KIND either.
+pub(crate) const RATER_KINDS: &[&str] = &["operator"];
+
+/// The kind stamped on every label written today. A named member of
+/// [`RATER_KINDS`], so the constant and the vocabulary cannot drift: if the
+/// vocabulary is amended, this must resolve to one of its members or the
+/// writer's own validation refuses the first label.
+pub(crate) const REVIEWER_KIND_OPERATOR: &str = "operator";
+
+/// A reviewer kind against the closed vocabulary: named refusals, never a
+/// silent accept. This is what makes a machine rater a TYPE change — the
+/// string a client would send is refused here, and admitting one means
+/// amending [`RATER_KINDS`] deliberately.
+pub(crate) fn validate_reviewer_kind(raw: &str) -> Result<(), String> {
+    if raw.is_empty() {
+        return Err("agreement: reviewer_kind required".into());
+    }
+    if !RATER_KINDS.contains(&raw) {
+        return Err(format!("agreement: reviewer_kind unknown: {raw}"));
+    }
+    Ok(())
+}
+
 /// The closed verdict vocabulary. An operator judges whether the machine's
 /// verdict for a run is right, so these name the JUDGE'S relation to it, not an
 /// outcome in its own right. Widenable only by a dated addendum; the arithmetic
@@ -148,13 +184,14 @@ pub(crate) struct AgreementLabelPayload {
     pub run_id: i64,
     pub verdict: String,
     pub reviewer_id: String,
+    pub reviewer_kind: String,
     pub reviewer_slot: u8,
     pub machine_verdict: String,
 }
 
 /// The total parser every stored payload round-trips through: any input yields
 /// the payload or a named `agreement: …` refusal. No I/O, no clock, no panic.
-/// Unknown keys REFUSE — the payload carries exactly the ratified six, and a
+/// Unknown keys REFUSE — the payload carries exactly the ratified seven, and a
 /// permissive parser is how a future field would quietly become a stored one.
 pub(crate) fn parse_agreement_label(
     value: &serde_json::Value,
@@ -169,6 +206,7 @@ pub(crate) fn parse_agreement_label(
                 | "run_id"
                 | "verdict"
                 | "reviewer_id"
+                | "reviewer_kind"
                 | "reviewer_slot"
                 | "machine_verdict"
         ) {
@@ -196,6 +234,11 @@ pub(crate) fn parse_agreement_label(
         .and_then(serde_json::Value::as_str)
         .ok_or("agreement: reviewer_id must be a string")?;
     validate_reviewer_id(reviewer_id)?;
+    let reviewer_kind = obj
+        .get("reviewer_kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("agreement: reviewer_kind must be a string")?;
+    validate_reviewer_kind(reviewer_kind)?;
     let slot_raw = obj
         .get("reviewer_slot")
         .ok_or("agreement: reviewer_slot required")?
@@ -218,9 +261,54 @@ pub(crate) fn parse_agreement_label(
         run_id,
         verdict: verdict.to_string(),
         reviewer_id: reviewer_id.to_string(),
+        reviewer_kind: reviewer_kind.to_string(),
         reviewer_slot: slot_raw as u8,
         machine_verdict: machine_verdict.to_string(),
     })
+}
+
+/// The REPORT-side reader: parses a stored label row WITHOUT validating the
+/// reviewer's kind against today's [`RATER_KINDS`].
+///
+/// A stored row is a FACT, not an input. When a future round amends the
+/// vocabulary to admit a machine rater and writes through the normal path, the
+/// strict parser would then reject that very row on the way back out — the
+/// operator's existing, valid measurements would fail to report because a
+/// NEW kind exists. That is the wrong failure direction: a new kind must not
+/// be able to break the read of history.
+///
+/// So the report reads the kind as an opaque stored string and applies the
+/// SAME-KIND pairing rule against it. A kind the report has never seen is
+/// simply not the same kind as any other, so it pairs with nothing rather than
+/// being counted as a rater of the incumbent kind. Unknown keys still refuse
+/// (the payload's SHAPE is still closed); only the kind's membership check is
+/// deferred to the pairing rule.
+fn parse_stored_label_for_report(
+    value: &serde_json::Value,
+) -> Result<AgreementLabelPayload, String> {
+    // Reuse the strict parser for everything except the kind. Temporarily
+    // present the stored kind as the incumbent one so the strict pass accepts
+    // a known-shape row, then restore the true kind. This keeps ONE definition
+    // of "is this a well-shaped label" — duplicating the field list here would
+    // be a second answer to the same question.
+    let obj = value
+        .as_object()
+        .ok_or("agreement: label payload must be a JSON object")?;
+    let stored_kind = obj
+        .get("reviewer_kind")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("agreement: reviewer_kind must be a string")?
+        .to_string();
+    let mut normalised = value.clone();
+    if let Some(map) = normalised.as_object_mut() {
+        map.insert(
+            "reviewer_kind".to_string(),
+            serde_json::Value::String(REVIEWER_KIND_OPERATOR.to_string()),
+        );
+    }
+    let mut payload = parse_agreement_label(&normalised)?;
+    payload.reviewer_kind = stored_kind;
+    Ok(payload)
 }
 
 /// One created (or replayed) label write: `created` is false for an
@@ -288,6 +376,11 @@ pub(crate) fn slot_for_principal(sub: &str) -> u8 {
 /// Refuses, before any write: a verdict outside the closed vocabulary, a
 /// reviewer id that is empty or oversized, a slot outside the roster, and a
 /// subject that is not a real trace row under this run.
+///
+/// The reviewer's KIND is stamped by this core, never taken from the request:
+/// today every authenticated reviewer is [`REVIEWER_KIND_OPERATOR`], and the
+/// writer is the only place that decides. A client cannot name a rater kind, so
+/// "operator" is what lands unless a dated amendment changes the constant.
 pub(crate) fn write_agreement_label(
     tx: &mut WorkflowTx<'_>,
     run_id: i64,
@@ -308,6 +401,7 @@ pub(crate) fn write_agreement_label(
         "run_id": run_id,
         "verdict": verdict,
         "reviewer_id": reviewer_id,
+        "reviewer_kind": REVIEWER_KIND_OPERATOR,
         "reviewer_slot": slot,
         "machine_verdict": machine,
     })
@@ -482,7 +576,7 @@ fn own_latest_verdict(
         let (seq, payload_json) = row.map_err(|e| format!("agreement: label read failed: {e}"))?;
         let value: serde_json::Value = serde_json::from_str(&payload_json)
             .map_err(|e| format!("agreement: stored label unreadable: {e}"))?;
-        let payload = parse_agreement_label(&value)?;
+        let payload = parse_stored_label_for_report(&value)?;
         if payload.subject_id == subject_id && payload.reviewer_id == reviewer_id {
             latest = Some((payload.verdict, seq));
         }
@@ -568,15 +662,21 @@ pub(crate) fn agreement_queue(
 pub(crate) struct AgreementCell {
     pub domain: String,
     pub reviewer_id: String,
+    pub reviewer_kind: String,
     pub n_labeled: usize,
     pub n_confirmed: usize,
     pub n_overturned: usize,
     pub n_uncertain: usize,
     pub raw_agreement_units: i32,
-    /// How many distinct reviewers labeled anything at all. `1` is the
-    /// single-rater era, declared in DATA: a reader sees that no inter-rater
-    /// reliability exists behind this cell without consulting a decision doc.
+    /// How many distinct reviewers OF THE SAME KIND labeled anything. `1` is
+    /// the single-rater era, declared in DATA. The count is per-kind, so a
+    /// second reviewer of a DIFFERENT kind cannot make a single-rater cell
+    /// read as an inter-rater measurement.
     pub distinct_reviewers: usize,
+    /// How many distinct kinds appear across the whole labeled set. Today
+    /// always `1` (`operator`); a future machine-rater amendment would move
+    /// it, and the per-kind `distinct_reviewers` would stay honest.
+    pub distinct_reviewer_kinds: usize,
 }
 
 /// One reviewer PAIR's inter-rater reliability inside one domain, over the
@@ -588,6 +688,11 @@ pub(crate) struct AgreementPairCell {
     pub domain: String,
     pub reviewer_a: String,
     pub reviewer_b: String,
+    /// The shared kind of the two raters. A pair is only ever emitted for
+    /// raters of the SAME kind, so this names what the κ is about: inter-rater
+    /// reliability WITHIN a kind, never a model-vs-human comparison wearing
+    /// the same field.
+    pub rater_kind: String,
     pub n_joint: usize,
     pub kappa_units: i32,
     pub kappa_note: Option<String>,
@@ -621,6 +726,9 @@ pub(crate) fn agreement_report(conn: &rusqlite::Connection) -> Result<Vec<Agreem
     // at judgment time.
     let mut latest: std::collections::BTreeMap<(String, String), (String, String, i64)> =
         std::collections::BTreeMap::new();
+    // reviewer_id → its ratified kind, read from the stored payload. Built in
+    // the same pass so the per-kind reviewer census costs no extra query.
+    let mut kinds: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     {
         let mut stmt = conn
             .prepare(
@@ -642,7 +750,8 @@ pub(crate) fn agreement_report(conn: &rusqlite::Connection) -> Result<Vec<Agreem
                 row.map_err(|e| format!("agreement: report read failed: {e}"))?;
             let value: serde_json::Value = serde_json::from_str(&payload_json)
                 .map_err(|e| format!("agreement: stored label unreadable: {e}"))?;
-            let payload = parse_agreement_label(&value)?;
+            let payload = parse_stored_label_for_report(&value)?;
+            kinds.insert(payload.reviewer_id.clone(), payload.reviewer_kind.clone());
             let key = (payload.subject_id.clone(), payload.reviewer_id.clone());
             latest
                 .entry(key)
@@ -692,7 +801,14 @@ pub(crate) fn agreement_report(conn: &rusqlite::Connection) -> Result<Vec<Agreem
     let mut reviewers: Vec<&String> = latest.keys().map(|(_, r)| r).collect();
     reviewers.sort();
     reviewers.dedup();
-    let distinct_reviewers = reviewers.len();
+    // The inter-rater census is PER KIND, and the distinct-kind count rides
+    // beside it. A second reviewer of a different kind must not make a
+    // single-rater cell read as an inter-rater measurement: the count that
+    // backs "is there a pair?" is the count of THIS cell's kind.
+    let mut kind_names: Vec<&String> = kinds.values().collect();
+    kind_names.sort();
+    kind_names.dedup();
+    let distinct_reviewer_kinds = kind_names.len();
     // Group by (domain, reviewer), keeping the verdict so the three counts can
     // be separated. The machine verdict is NOT consulted here: it is frozen
     // into the payload, and `confirmed` is the reviewer's statement that it
@@ -727,15 +843,27 @@ pub(crate) fn agreement_report(conn: &rusqlite::Connection) -> Result<Vec<Agreem
         let n_overturned = rows.iter().filter(|(_, v)| v == "overturned").count();
         let n_uncertain = rows.iter().filter(|(_, v)| v == "uncertain").count();
         let raw = ((n_confirmed as f64 / n_labeled as f64) * 10_000.0).round() as i32;
+        let reviewer_kind = kinds
+            .get(&reviewer_id)
+            .cloned()
+            .unwrap_or_else(|| "(unknown)".to_string());
+        // The inter-rater census for THIS cell's kind — a reviewer of another
+        // kind is not a partner in a reliability measurement.
+        let distinct_reviewers = reviewers
+            .iter()
+            .filter(|r| kinds.get(**r).map(String::as_str) == Some(reviewer_kind.as_str()))
+            .count();
         cells.push(AgreementCell {
             domain,
             reviewer_id,
+            reviewer_kind,
             n_labeled,
             n_confirmed,
             n_overturned,
             n_uncertain,
             raw_agreement_units: raw,
             distinct_reviewers,
+            distinct_reviewer_kinds,
         });
     }
     Ok(cells)
@@ -758,9 +886,10 @@ pub(crate) fn agreement_report(conn: &rusqlite::Connection) -> Result<Vec<Agreem
 pub(crate) fn agreement_pair_report(
     conn: &rusqlite::Connection,
 ) -> Result<Vec<AgreementPairCell>, String> {
-    // Latest label per (subject, reviewer).
+    // Latest label per (subject, reviewer), with each reviewer's ratified kind.
     let mut latest: std::collections::BTreeMap<(String, String), String> =
         std::collections::BTreeMap::new();
+    let mut kinds: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
     {
         let mut stmt = conn
             .prepare(
@@ -775,7 +904,8 @@ pub(crate) fn agreement_pair_report(
             let payload_json = row.map_err(|e| format!("agreement: pair read failed: {e}"))?;
             let value: serde_json::Value = serde_json::from_str(&payload_json)
                 .map_err(|e| format!("agreement: stored label unreadable: {e}"))?;
-            let payload = parse_agreement_label(&value)?;
+            let payload = parse_stored_label_for_report(&value)?;
+            kinds.insert(payload.reviewer_id.clone(), payload.reviewer_kind.clone());
             latest.insert((payload.subject_id, payload.reviewer_id), payload.verdict);
         }
     }
@@ -812,6 +942,22 @@ pub(crate) fn agreement_pair_report(
     let mut cells = Vec::new();
     for (i, a) in reviewers.iter().enumerate() {
         for b in reviewers.iter().skip(i + 1) {
+            // **SAME-KIND PAIRS ONLY.** A κ between raters of different kinds
+            // is not inter-rater reliability — it is a model-vs-human (or
+            // otherwise cross-kind) comparison, a DIFFERENT quantity with a
+            // DIFFERENT ceiling. Emitting one under this field would let a
+            // machine rater join, push `distinct_reviewers` to 2, and have a
+            // reader conclude a calibrated inter-rater reliability exists that
+            // nobody measured. A cross-kind pair is not reported as a pair at
+            // all; a future amendment that admits another kind gets its own
+            // report shape.
+            let (Some(kind_a), Some(kind_b)) = (kinds.get(a), kinds.get(b)) else {
+                continue;
+            };
+            if kind_a != kind_b {
+                continue;
+            }
+            let rater_kind = kind_a.clone();
             // The subjects BOTH labeled, in a deterministic order.
             let mut subjects: Vec<String> = latest
                 .keys()
@@ -844,6 +990,7 @@ pub(crate) fn agreement_pair_report(
                     domain,
                     reviewer_a: a.clone(),
                     reviewer_b: b.clone(),
+                    rater_kind: rater_kind.clone(),
                     n_joint,
                     kappa_units,
                     kappa_note: kappa_note.clone(),
@@ -870,7 +1017,7 @@ pub(crate) fn distinct_reviewers(conn: &rusqlite::Connection) -> Result<usize, S
             row.map_err(|e| format!("agreement: reviewer census read failed: {e}"))?;
         let value: serde_json::Value = serde_json::from_str(&payload_json)
             .map_err(|e| format!("agreement: stored label unreadable: {e}"))?;
-        let payload = parse_agreement_label(&value)?;
+        let payload = parse_stored_label_for_report(&value)?;
         if !seen.contains(&payload.reviewer_id) {
             seen.push(payload.reviewer_id);
         }
@@ -949,6 +1096,44 @@ mod tests {
                 .unwrap();
         wtx.commit().unwrap();
         receipt
+    }
+
+    /// Plant a label row DIRECTLY, with an arbitrary reviewer kind, bypassing
+    /// the writer. The writer refuses an unratified kind; this is how a future
+    /// round's data would look if it amended [`RATER_KINDS`] and then wrote
+    /// through the normal path, so the report's same-kind rule must hold for it.
+    fn plant_label_with_kind(
+        conn: &mut Connection,
+        run_id: i64,
+        subject_id: &str,
+        verdict: &str,
+        reviewer_id: &str,
+        kind: &str,
+    ) {
+        let payload = serde_json::json!({
+            "subject_id": subject_id,
+            "run_id": run_id,
+            "verdict": verdict,
+            "reviewer_id": reviewer_id,
+            "reviewer_kind": kind,
+            "reviewer_slot": 0,
+            "machine_verdict": "advanced",
+        })
+        .to_string();
+        let key = format!("run{run_id}:planted:{subject_id}:{reviewer_id}");
+        let seq: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_session_events WHERE run_id = ?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO agent_session_events(run_id, seq, idempotency_key, kind, payload_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+            params![run_id, seq, key, AGREEMENT_LABEL_KIND, payload],
+        )
+        .unwrap();
     }
 
     /// R55p.1 / R55p.4 — a real trace row with a populated `model_ref` takes a
@@ -1241,6 +1426,120 @@ mod tests {
         assert_eq!(tuple.my_verdict.as_deref(), Some("confirmed"));
     }
 
+    /// **A machine rater is a TYPE change, not a string.** A `reviewer_kind`
+    /// outside the closed vocabulary is refused at every boundary, so an
+    /// LLM rater cannot be smuggled in as data — admitting one is a dated
+    /// amendment to [`RATER_KINDS`].
+    #[test]
+    fn a_machine_reviewer_kind_is_refused_everywhere() {
+        // The vocabulary is one member, and the constant names it.
+        assert_eq!(RATER_KINDS, &["operator"]);
+        assert_eq!(REVIEWER_KIND_OPERATOR, "operator");
+        assert!(RATER_KINDS.contains(&REVIEWER_KIND_OPERATOR));
+        // Validation refuses anything outside it.
+        validate_reviewer_kind("operator").unwrap();
+        for bad in ["", "machine", "llm", "gpt", "operator ", "Machine"] {
+            assert!(
+                validate_reviewer_kind(bad).is_err(),
+                "{bad:?} must not be an admitted rater kind"
+            );
+        }
+        // And a payload carrying one will not parse.
+        let smuggled = serde_json::json!({
+            "subject_id": "s", "run_id": 1, "verdict": "confirmed",
+            "reviewer_id": "gpt-4o-mini", "reviewer_kind": "machine",
+            "reviewer_slot": 0, "machine_verdict": "advanced",
+        });
+        let err = parse_agreement_label(&smuggled).unwrap_err();
+        assert!(err.contains("reviewer_kind unknown"), "{err}");
+    }
+
+    /// **A cross-kind pair is NOT an inter-rater reliability.** The whole point
+    /// of the kind is that a model rater joining cannot push
+    /// `distinct_reviewers` to 2 and have a reader conclude a calibrated
+    /// reliability exists. This pins the same-kind rule at the report.
+    #[test]
+    fn a_cross_kind_pair_produces_no_kappa() {
+        let mut conn = db();
+        let s1 = seed_trace(&conn, 71, "acme", "phase", "advanced", Some("m@1"));
+        let s2 = seed_trace(&conn, 71, "acme", "phase", "advanced", Some("m@1"));
+        // TWO DISTINCT operator ids — a pair needs two raters, and the point
+        // of the baseline is a same-kind pair that DOES produce a κ.
+        submit(&mut conn, 71, &s1, "confirmed", "operator");
+        submit(&mut conn, 71, &s1, "confirmed", "operator-2");
+        submit(&mut conn, 71, &s2, "confirmed", "operator");
+        submit(&mut conn, 71, &s2, "overturned", "operator-2");
+        let operator_pair = agreement_pair_report(&conn).unwrap();
+        assert_eq!(operator_pair.len(), 1, "two operators are a same-kind pair");
+        assert_eq!(operator_pair[0].rater_kind, "operator");
+
+        // Now plant a MACHINE rater directly into the store — bypassing the
+        // writer, which is exactly what a future round's code would do once it
+        // amends the vocabulary. The report must still refuse to pair across
+        // kinds, because the pairing rule reads the stored kind.
+        plant_label_with_kind(&mut conn, 71, &s1, "confirmed", "gpt-4o-mini", "machine");
+        plant_label_with_kind(&mut conn, 71, &s2, "confirmed", "gpt-4o-mini", "machine");
+
+        // The operator cells' per-kind census is UNCHANGED by the machine
+        // rater: the baseline already had two operators, so each operator cell
+        // still reads 2 — the machine did NOT push it to 3, which is exactly
+        // what "per-kind" buys. Both kinds are visible on the report.
+        let cells = agreement_report(&conn).unwrap();
+        let op = cells.iter().find(|c| c.reviewer_id == "operator").unwrap();
+        assert_eq!(
+            op.distinct_reviewers, 2,
+            "a machine rater must not inflate the operator's inter-rater census"
+        );
+        assert_eq!(op.reviewer_kind, "operator");
+        let machine_cell = cells
+            .iter()
+            .find(|c| c.reviewer_id == "gpt-4o-mini")
+            .expect("the planted machine rater has its own cell");
+        assert_eq!(machine_cell.reviewer_kind, "machine");
+        assert_eq!(
+            machine_cell.distinct_reviewers, 1,
+            "the machine's own census is its own — it is not a second OPERATOR"
+        );
+        assert_eq!(op.distinct_reviewer_kinds, 2, "both kinds are now visible");
+
+        // The SAFETY property: no emitted pair ever spans two kinds. The
+        // operator-operator pair from the baseline legitimately survives; a
+        // machine rater is its own rater and produces NO cross-kind cell
+        // wearing the inter-rater field. The lone machine rater has no partner,
+        // so it contributes no pair at all.
+        let pairs = agreement_pair_report(&conn).unwrap();
+        let kind_of = |id: &str| -> String {
+            if id.starts_with("gpt") {
+                "machine".to_string()
+            } else {
+                "operator".to_string()
+            }
+        };
+        for p in &pairs {
+            assert_eq!(
+                kind_of(&p.reviewer_a),
+                p.rater_kind,
+                "reviewer_a's kind must match the pair's kind: {p:?}"
+            );
+            assert_eq!(
+                kind_of(&p.reviewer_b),
+                p.rater_kind,
+                "reviewer_b's kind must match the pair's kind: {p:?}"
+            );
+        }
+        // Exactly one pair survives: the two operators. The lone machine rater
+        // found no same-kind partner, and the operator/machine combination is
+        // never emitted.
+        assert_eq!(pairs.len(), 1, "only the same-kind operator pair survives");
+        assert_eq!(pairs[0].rater_kind, "operator");
+        assert!(
+            !pairs
+                .iter()
+                .any(|p| { kind_of(&p.reviewer_a) != kind_of(&p.reviewer_b) }),
+            "a cross-kind pair was emitted as if it were inter-rater"
+        );
+    }
+
     /// The in-memory report over synthetic labels — the store, the query and
     /// the arithmetic with NO HUMAN PRESENT. This is what makes the round
     /// agent-verifiable, and it is a measurement over synthetic labels, never
@@ -1410,12 +1709,13 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect();
-        assert_eq!(keys.len(), 6);
+        assert_eq!(keys.len(), 7);
         for key in [
             "subject_id",
             "run_id",
             "verdict",
             "reviewer_id",
+            "reviewer_kind",
             "reviewer_slot",
             "machine_verdict",
         ] {
@@ -1427,7 +1727,7 @@ mod tests {
         // An unknown key refuses rather than round-tripping into storage.
         let polluted = serde_json::json!({
             "subject_id": "s", "run_id": 1, "verdict": "confirmed",
-            "reviewer_id": "r", "reviewer_slot": 0,
+            "reviewer_id": "r", "reviewer_kind": "operator", "reviewer_slot": 0,
             "machine_verdict": "advanced", "governed_truth": "leak"
         });
         assert!(parse_agreement_label(&polluted).is_err());

@@ -273,12 +273,14 @@ pub async fn get_agreement_report(
             serde_json::json!({
                 "domain": c.domain,
                 "reviewer_id": c.reviewer_id,
+                "reviewer_kind": c.reviewer_kind,
                 "n_labeled": c.n_labeled,
                 "n_confirmed": c.n_confirmed,
                 "n_overturned": c.n_overturned,
                 "n_uncertain": c.n_uncertain,
                 "raw_agreement_units": c.raw_agreement_units,
                 "distinct_reviewers": c.distinct_reviewers,
+                "distinct_reviewer_kinds": c.distinct_reviewer_kinds,
             })
         })
         .collect();
@@ -290,6 +292,7 @@ pub async fn get_agreement_report(
                 "domain": p.domain,
                 "reviewer_a": p.reviewer_a,
                 "reviewer_b": p.reviewer_b,
+                "rater_kind": p.rater_kind,
                 "n_joint": p.n_joint,
                 "kappa_units": p.kappa_units,
                 "kappa_note": p.kappa_note,

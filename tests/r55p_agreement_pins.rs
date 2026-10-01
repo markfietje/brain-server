@@ -321,3 +321,73 @@ fn the_reviewer_id_is_a_payload_field_and_not_a_column() {
         "the reviewer id is a payload field"
     );
 }
+
+/// **A machine rater is a TYPE change, not a string.** The reviewer-kind
+/// vocabulary is closed to one member, the writer refuses anything outside it,
+/// and the report pairs only same-kind raters. A model rater joining as data
+/// would push `distinct_reviewers` to 2 and have a reader conclude an
+/// inter-rater reliability that nobody measured.
+#[test]
+fn the_reviewer_kind_vocabulary_is_closed_and_enforced() {
+    let src = read("src/workflow/agreement.rs");
+    // The vocabulary is declared closed and holds exactly one member.
+    assert!(
+        src.contains("pub(crate) const RATER_KINDS: &[&str] = &[\"operator\"];"),
+        "the rater-kind vocabulary must be closed to `operator`"
+    );
+    assert!(
+        src.contains("pub(crate) fn validate_reviewer_kind("),
+        "the kind is validated, not accepted as a bare string"
+    );
+    // The WRITER stamps the kind from a core constant, never from the request.
+    let writer = src
+        .find("pub(crate) fn write_agreement_label(")
+        .expect("the writer exists");
+    let writer_body = &src[writer..writer + 2000];
+    assert!(
+        writer_body.contains("REVIEWER_KIND_OPERATOR"),
+        "the writer stamps the ratified kind constant"
+    );
+    assert!(
+        !writer_body.contains("body.reviewer_kind")
+            && !writer_body.contains("reviewer_kind: reviewer_kind"),
+        "the writer must not take the kind from the request"
+    );
+    // The pair report gates on same-kind.
+    assert!(
+        src.contains("if kind_a != kind_b {"),
+        "the pair report must skip cross-kind pairs"
+    );
+    // The report reader is LENIENT about the kind (a stored row is a fact), so
+    // a future kind cannot break the read of history — but the pairing rule
+    // still reads the stored kind.
+    assert!(
+        src.contains("fn parse_stored_label_for_report("),
+        "the report uses a kind-lenient reader"
+    );
+}
+
+/// The handler must not let a client name a rater kind, and the report must
+/// surface the kind it measured.
+#[test]
+fn the_handler_never_accepts_a_client_named_reviewer_kind() {
+    let src = read("src/handlers/agreement.rs");
+    // The body carries no kind field.
+    let body = src
+        .find("pub struct AgreementLabelBody {")
+        .expect("the body struct exists");
+    let body_end = src[body..].find("\n}").expect("the body is closed");
+    assert!(
+        !src[body..body + body_end].contains("reviewer_kind"),
+        "the request body must not carry a reviewer kind"
+    );
+    // And the report emits it.
+    assert!(
+        src.contains("\"reviewer_kind\": c.reviewer_kind"),
+        "the report surfaces the kind"
+    );
+    assert!(
+        src.contains("\"rater_kind\": p.rater_kind"),
+        "the pair cell surfaces the kind"
+    );
+}

@@ -7580,12 +7580,14 @@ paths:
                       properties:
                         domain: { type: string }
                         reviewer_id: { type: string }
+                        reviewer_kind: { type: string, enum: [operator] }
                         n_labeled: { type: integer }
                         n_confirmed: { type: integer }
                         n_overturned: { type: integer }
                         n_uncertain: { type: integer }
                         raw_agreement_units: { type: integer }
                         distinct_reviewers: { type: integer }
+                        distinct_reviewer_kinds: { type: integer }
                   count: { type: integer }
                   pairs:
                     type: array
@@ -7595,6 +7597,7 @@ paths:
                         domain: { type: string }
                         reviewer_a: { type: string }
                         reviewer_b: { type: string }
+                        rater_kind: { type: string, enum: [operator] }
                         n_joint: { type: integer }
                         kappa_units: { type: integer }
                         kappa_note: { type: string, nullable: true }
