@@ -156,7 +156,7 @@ pub async fn get_run_context(
             "payload_json": sanitize(&e.payload_json),
         })).collect::<Vec<_>>(),
         "findings_digests": window.findings_digests,
-        "open_question": window.open_question.as_ref().map(&sanitize),
+        "open_question": window.open_question.as_ref().map(sanitize),
         "truncated": window.truncated,
     })))
 }

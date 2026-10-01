@@ -91,8 +91,8 @@ pub async fn get_ops_crew(
                     "principal": seam(&m.principal),
                     "state": m.state.as_str(),
                     "activity_kind": m.activity_kind,
-                    "current_case_ref": m.current_case_ref.as_deref().map(&seam),
-                    "site": m.site.as_deref().map(&seam),
+                    "current_case_ref": m.current_case_ref.as_deref().map(seam),
+                    "site": m.site.as_deref().map(seam),
                     "roles": m.roles.iter().map(|r| seam(r)).collect::<Vec<_>>(),
                     "skills": m.skills.iter().map(|r| seam(r)).collect::<Vec<_>>(),
                 })
