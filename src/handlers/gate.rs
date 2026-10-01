@@ -207,9 +207,11 @@ pub(crate) async fn create_proposal(
     // round-trip, so unknown/mixed-case values (which `from_str` silently
     // resolves to Fact) are rejected, not stored as a different kind.
     // `draft` is a PROPOSAL-only kind: a content draft whose
-    // body travels the normal HITL lifecycle; it never becomes its own
-    // knowledge node_kind (a promoted draft lands as `fact`, the
-    // forward-compat default).
+    // body travels the normal HITL lifecycle. STORED vs RESOLVED: a promoted
+    // draft writes `node_kind='draft'` verbatim (no branch rewrites it); what
+    // resolves it to a `MemoryKind` is READ-BACK — `MemoryKind::from_str`
+    // falls back to `Fact` on the unknown value. So the stored column value is
+    // `draft`, not `fact`; only the resolved kind is `fact`.
     // Caravel: `channel/template` is likewise PROPOSAL-only — a governed
     // outbound template act (Meta registry + OUR digest-bound approval).
     // Approving it dispatches through the channel seam; it can never be
@@ -490,6 +492,61 @@ pub async fn list_proposals(
     }
 
     Ok(Json(rows))
+}
+
+/// The exact set of proposal kinds the approve ladder's default arm admits.
+///
+/// This is the ALLOW-list for the generic promote path, and it is deliberately
+/// NOT "every kind some branch claims". Two facts decide its shape, both
+/// measured against the tree rather than assumed:
+///
+/// 1. The plain [`crate::procedural::MemoryKind`] vocabulary reaches the
+///    promote tail by DESIGN — it is the ordinary promote path and no branch
+///    claims it. A gate phrased as "is this claimed by some branch" would
+///    refuse `fact` and break every ordinary approval.
+/// 2. `draft` is a proposal-only kind that is exempt at creation validation
+///    and has no branch, yet promoting it is intended (it lands as
+///    `node_kind='draft'`; read-back resolves it to `fact`).
+///
+/// Two further kinds are admitted because they promote today by design and a
+/// refusal would break live behaviour:
+/// - `delivery/artifact` — the executor's typed artifact. Its own doc says it
+///   "never becomes a knowledge row", but nothing enforces that; refusing it
+///   here would turn a documented-but-unwired claim into a hard refusal.
+/// - `decision_review` — the decision-run escalation. Its deterministic mode
+///   is asserted to approve 200 (`src/handlers/decision_runs.rs`), so it is a
+///   live promote path, not a foot-gun.
+///
+/// Every other kind (e.g. `case_merge_suggested`, the `gdl_*` capture family)
+/// has no defined destination here and is refused. The complement of this list
+/// is the refusal set, so adding a kind to the queue REQUIRES adding it here
+/// or the promotion stops silently working — that is the point.
+const PROMOTABLE_KINDS: [&str; 9] = [
+    // The six MemoryKind strings — the ordinary promote path.
+    "fact",
+    "procedure",
+    "step",
+    "decision",
+    "episodic",
+    "entitlement",
+    // Proposal-only, no branch, promotion is intended.
+    "draft",
+    // Promote today by design; see the doc comment above.
+    "delivery/artifact",
+    "decision_review",
+];
+
+/// Is `kind` one of the kinds the approve ladder's default arm admits?
+///
+/// The single decision point for the tail's fail-closed arm: a kind outside
+/// [`PROMOTABLE_KINDS`] is refused with `unknown_proposal_kind` instead of
+/// being written verbatim into `knowledge.node_kind`.
+///
+/// `pub` (not `pub(crate)`) because the red-proofs in `tests/` drive this
+/// exact function rather than a second copy of the list — a copy would be free
+/// to drift green beside a broken arm.
+pub fn promote_kind_is_governed(kind: &str) -> bool {
+    PROMOTABLE_KINDS.contains(&kind)
 }
 
 /// `POST /proposals/{id}/approve` — promote a candidate into long-term memory.
@@ -1368,6 +1425,33 @@ pub async fn approve_proposal(
                 "status": "approved",
                 "kcs_state": if crate::workflow::kcs::KIND_LINK_ONLY == kind { "unchanged" } else { "draft" },
             }));
+        }
+
+        // ── The ladder's default arm. Every kind with a governed destination
+        // has already returned above, so anything still holding `kind` at this
+        // line has NO defined destination in this handler. Fail closed rather
+        // than promote it: `knowledge.node_kind` is `TEXT NOT NULL DEFAULT
+        // 'fact'` with no CHECK, so promoting an unclaimed kind silently stores
+        // a value no reader can resolve (everything unknown reads back as
+        // `fact`).
+        //
+        // The admitted set is exactly the kinds whose promote IS the intended
+        // outcome — NOT "is this claimed by some branch", because the plain
+        // `MemoryKind` vocabulary reaches here by design as the ordinary
+        // promote path and is claimed by no branch. The governed branch kinds
+        // are therefore absent from this list on purpose: they returned above.
+        //
+        // Rollback is implicit — an `Err` return drops `tx`, which rolls back
+        // (no CAS ran, so the proposal stays `pending` and no knowledge row,
+        // vec row, or audit row lands).
+        if !crate::handlers::gate::promote_kind_is_governed(&kind) {
+            return Err(HandlerError::bad_request(
+                "unknown_proposal_kind",
+                format!(
+                    "proposal kind `{kind}` is claimed by no approval branch and is not a \
+                     promotable memory kind — refused rather than published as knowledge"
+                ),
+            ));
         }
 
         // Embed + store the chunk through the same knowledge + vec0 path.
