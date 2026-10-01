@@ -92,10 +92,10 @@ fn read(rel: &str) -> String {
 /// struct body, and comment lines are stripped, so this pin can neither be
 /// satisfied by prose nor broken by `cargo fmt` reflowing a doc line.
 fn struct_body(marker: &str) -> String {
-    let src = read("src/eval.rs");
+    let src = read("src/eval/mod.rs");
     let start = src
         .find(marker)
-        .unwrap_or_else(|| panic!("marker not found in src/eval.rs: {marker}"));
+        .unwrap_or_else(|| panic!("marker not found in src/eval/mod.rs: {marker}"));
     let rest = &src[start..];
     let end = rest
         .find("\n}")
@@ -567,7 +567,7 @@ fn eval_joint_r53_a_nan_accuracy_cannot_clear_the_floor() {
 /// safety tradeable. Both are pinned as declarations.
 #[test]
 fn eval_joint_r53_the_cost_term_is_a_bounded_integer_and_the_objective_has_no_weights() {
-    let src = read("src/eval.rs");
+    let src = read("src/eval/mod.rs");
     assert!(
         src.contains("pub struct LocalCost(u32);"),
         "LocalCost must wrap a u32 — tokens are countable and the count is bounded"
@@ -589,7 +589,7 @@ fn eval_joint_r53_the_cost_term_is_a_bounded_integer_and_the_objective_has_no_we
     // r57b lesson (a scan that can be satisfied or broken by prose).
     let start = src
         .find("feasibility constraint, not a term")
-        .expect("joint-objective section marker must exist in src/eval.rs");
+        .expect("joint-objective section marker must exist in src/eval/mod.rs");
     let end = src
         .find("mod tests {")
         .expect("test module must follow the joint-objective section");
@@ -612,4 +612,89 @@ fn eval_joint_r53_the_cost_term_is_a_bounded_integer_and_the_objective_has_no_we
         "the comment stripper emptied or mangled the section — the weight scan \
          would then be vacuous. Rebuilt code was:\n{code}"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R53-JOINT-EVAL reconciliation · the wiring and documentation claims
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// These pins exist because the round was HALF-LANDED: the objective was built
+// and wired by R57's commits while the plans repo still recorded the round as
+// never executed, and the module doc asserted the opposite of its own file.
+// A doc that contradicts its own source is the defect class this programme keeps
+// finding, so the claims are pinned rather than trusted.
+
+/// The module doc must not claim the objective has no production caller.
+///
+/// **Measured false at `af6b94f1`**: `brain eval` calls `eval::admit` at three
+/// sites in `src/bin/brain.rs`. An earlier revision of `src/eval/mod.rs` still
+/// said "the joint objective is a library with no production caller", so this
+/// pin caught a doc asserting something its own repository contradicted.
+#[test]
+fn eval_joint_r53b_6_the_module_doc_does_not_claim_an_unwired_objective() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/eval/mod.rs"),
+    )
+    .expect("src/eval/mod.rs is readable");
+    // Cut the header: only the module doc is under test, not code.
+    let header = src.split("#![deny(unsafe_code)]").next().unwrap_or(&src);
+    for forbidden in [
+        "no production caller",
+        "Nothing in this section is wired to a gate yet",
+    ] {
+        assert!(
+            !header.contains(forbidden),
+            "the module doc still claims `{forbidden}` -- measured false, the objective is wired"
+        );
+    }
+    // And it must SAY what is actually wired, so the correction is positive
+    // rather than merely the absence of a wrong claim.
+    assert!(
+        header.contains("production caller"),
+        "the doc must state the wiring status explicitly"
+    );
+}
+
+/// `admit()` must still be reachable from the CLI — the claim the doc used to
+/// contradict. If the wiring is ever removed, this fails and the doc becomes
+/// true again, which is the correct direction for the pair to move in.
+#[test]
+fn eval_joint_r53b_6_the_objective_still_has_its_production_caller() {
+    let src = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/brain.rs"),
+    )
+    .expect("src/bin/brain.rs is readable");
+    let calls = src.matches("eval::admit(").count();
+    assert!(
+        calls >= 1,
+        "brain eval no longer routes its floor decision through eval::admit -- \
+         the module doc's old claim would become true again and must then be reinstated"
+    );
+}
+
+/// The safety derivation is reachable and its load-bearing property is stated in
+/// the module that computes it: an empty evidence set is `Unobserved`, never a
+/// clean `Counted(0)`.
+#[test]
+fn eval_joint_r53b_1_the_safety_derivation_is_wired_and_declares_its_empty_set_rule() {
+    use brain_server::eval::safety::{DerivedSafety, GateRefusal, derive_safety_observation};
+    // The property, exercised from outside the module so it is a real pin
+    // rather than a restatement of the module's own unit test.
+    let empty = derive_safety_observation(&[]);
+    assert_eq!(empty.term, DerivedSafety::Unobserved);
+    assert_ne!(
+        empty.term,
+        DerivedSafety::Counted(0),
+        "an empty evidence set must not read as a clean measurement"
+    );
+    assert!(!empty.term.is_observed());
+    // And a real refusal is counted, so the empty case is not vacuous.
+    let rows = vec![GateRefusal {
+        run_id: 1,
+        target: "gate".into(),
+    }];
+    let observed = derive_safety_observation(&rows);
+    assert_eq!(observed.term, DerivedSafety::Counted(1));
+    assert!(observed.term.is_observed());
+    assert_eq!(observed.refusals_considered, 1);
 }

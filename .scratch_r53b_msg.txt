@@ -1,0 +1,72 @@
+plans: R53-JOINT-EVAL reconciled -- the round was HALF-landed
+
+The critical path's round had an objective in the tree and a plan that said it
+never ran. Both were true. Evidence file written; the authoritative order's
+stale row corrected.
+
+THE FINDING. src/eval/mod.rs:326 JointObjective landed in a419fec0, titled
+"R57-I57.4a + R53-joint-eval". brain eval calls eval::admit at three sites. All
+three red-proofs R53.1-R53.3 pass as 11 pins. I53.4's upward-only floor is
+pinned. What did NOT exist: P53.1-P53.3 preregistration, the section 4 evidence
+file, and -- the actual finding -- EITHER non-accuracy input. The round was not
+started; it was RECONCILED, and the evidence says so rather than implying the
+objective was newly built.
+
+THREE PREMISES MEASURED FALSE, and the tree already said so.
+I53.2 "gate rejections are already recorded as finding rows" -- findings has 7+
+writers, none a gate rejection, all keyed to a run_id an eval set does not have;
+gates_declared/gates_vacuous return 0 hits in src/ and do not exist at all.
+I53.3 "Source: Usage, already accumulated per turn" -- Usage is pub(crate) and
+never reaches an eval, there is no wall-clock instrumentation, and R53a, which
+P53.4 requires first, produced no ledger.
+P53.1 cites BENCHMARKS.md section v1.28.60; the figures are in section v1.28.6,
+and BENCHMARKS.md has not moved since 2026-09-06 -- predating the plan's own
+reading date -- so D53.5's "state the drift" has no prose-side drift to state.
+
+SHIPPED. src/eval/safety.rs: a DERIVED safety observation over gate-refusal
+rows, plus a declared-vs-derived conflict check. src/eval.rs moved to
+src/eval/mod.rs via git mv to make room for the sibling, following src/search/
+exactly. I53.5's false-negative surface is now a RUNTIME test -- a system that
+obeys its own wrong gate scores clean -- instead of prose. And the module doc
+that claimed "no production caller" is corrected; it was false since af6b94f1,
+and is now pinned in both directions so it cannot drift again silently.
+
+THE LOAD-BEARING PROPERTY: an empty evidence set yields Unobserved, never
+Counted(0). Absence of evidence is not evidence of absence, and a function that
+returned a clean bill of health for an empty input would hand the objective its
+one veto for free by not looking.
+
+G2 CLOSED AS A MEASUREMENT FINDING, NOT CODE. run_eval is an HTTP client against
+a live server and no response carries a usage figure, so no per-case token count
+exists. A proxy was deliberately NOT added: the plan's own section 5 says the
+cost term does not price a local model against a frontier one, and
+decision_class.rs already refuses that substitution by name -- "a zero with an
+honest HELP line beats a plausible number that is a different quantity."
+Inventing a proxy would have been the exact defect P53.4 exists to prevent.
+
+FOUR RED-PROOFS SHOWN FAILING, restored byte-identical, no checkout and no
+stash. One of them was not a plant but a real defect I introduced: moving
+src/eval.rs broke three pins that read the old path, which is how I know those
+pins read real paths rather than string literals.
+
+VERIFICATION, independently confirmed across 14 CI lanes: 2922 passed / 0
+failed on the bench lane, 2933 default, 2937 otel; clippy clean on bench,
+default, otel and engine-crates; all six feature lanes clean; audit clean on
+both lockfiles; Cargo.lock, crates/Cargo.lock and src/migration.rs all
+0-change; schema 1.32.23 unmoved; zero stale src/eval.rs references and
+brain_server::eval:: resolves across 33 call sites.
+
+ONE GATE IS RED and it is not mine: lipstyk-gate.sh reports four findings in
+service/create.rs, bin/brain.rs and workflow/create/disproof.rs. Proven
+pre-existing by blob comparison -- git diff on all three is empty and each
+flagged line was read verbatim from the committed blob at ff8633e6. Left alone
+rather than fixed opportunistically outside this change's blast radius.
+
+THE ORDER IS CORRECTED, and R58a is still blocked. Its safety term is still
+caller-typed and its cost term vacuous, so the round does NOT unblock it. Nor
+does it unblock R55: N still needs real labels and the primitive path. The
+R53/R53b namespace is left unresolved and named -- three documents demand a
+renumber that would orphan eleven pins which already exist and pass, and
+renaming passing pins is not a documentation fix.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

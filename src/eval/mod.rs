@@ -49,15 +49,43 @@
 //!
 //! **The safety term measures gate agreement, not truth.** A system that agrees
 //! with its own gates and is systematically wrong scores perfectly. Nothing here
-//! can detect a wrong gate.
+//! can detect a wrong gate. The false-negative surface is demonstrated rather
+//! than asserted: see `safety::tests::a_system_that_obeys_a_wrong_gate_scores_clean`.
 //!
-//! **Nothing in this section is wired to a gate yet.** The CLI floor check at
-//! `src/bin/brain.rs` still enforces the six accuracy scalars and has no cost
-//! or safety term; the CI lane still passes three accuracy floors only. Wiring
-//! both is a follow-up this round's write scope excluded, and until it lands the
-//! joint objective is a library with no production caller.
+//! ## What is wired, measured at `ff8633e6`
+//!
+//! **The objective has a production caller.** `brain eval` routes its floor
+//! decision through [`admit`] at three call sites in `src/bin/brain.rs`.
+//!
+//! **An earlier revision of this doc denied that, and the denial was false
+//! against its own repository** — corrected here rather than left to mislead the
+//! next reader. The claim and its refutation are both pinned in
+//! `tests/eval_joint_objective_pins.rs`.
+//!
+//! **The cost arm remains vacuous, visibly.** `brain eval` supplies
+//! `LocalCost::ZERO` and a ceiling of `LocalCost::MAX`, because **no per-case
+//! token count exists**: the harness is an HTTP client against a live server and
+//! no response carries a usage figure. A vacuous comparison is **not** a passing
+//! comparison, and the receipt says so on every run.
+//!
+//! **The safety arm is still caller-declared.** `brain eval` takes
+//! `--safety-violations N`; [`safety`] provides the derivation over gate-refusal
+//! rows so a declaration can be cross-checked against evidence, but the harness
+//! does not yet read the audit chain itself. Until it does, the declared term is
+//! an assertion with honest provenance, not a measurement.
+//!
+//! The measurement itself is blocked on an input that does not exist: the
+//! harness is an HTTP client against a live server and **no response carries a
+//! token count**, so there is no per-case figure for [`LocalCost`] to carry.
+//! `LocalCost::ZERO` plus a `LocalCost::MAX` ceiling is the honest encoding of
+//! that, and the round's own ceiling forbids substituting a proxy: a token count
+//! does not price a 2M local model against a frontier model, so a proxy would
+//! under-value the local tier and would be a number with no provenance wearing a
+//! measurement's clothes.
 
 #![deny(unsafe_code)]
+
+pub mod safety;
 
 /// Precision@k: fraction of the top-k retrieved ids that are relevant.
 /// Empty relevant set ⇒ 0 (no judgment means we can't credit a hit).
