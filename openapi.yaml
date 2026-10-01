@@ -10440,7 +10440,20 @@ components:
         category:
           type: string
           enum: [technology, business_process, compliance, finance, vendor, assessment, infrastructure, general]
-        confidence: { type: number, format: float, description: "In [0.0, 1.0]." }
+        confidence:
+          type: number
+          format: float
+          description: >
+            In [0.0, 1.0]. The winning category's SHARE of the fired keywords,
+            not a calibrated probability — one keyword firing uncontested and ten
+            keywords all agreeing both read 1.0. Read `evidence_count` alongside
+            it.
+        evidence_count:
+          type: integer
+          description: >
+            How many keywords fired for the winning category — the evidence
+            standing behind the verdict, and the quantity a threshold keys on.
+            `0` for `general`; always equal to `matched_keywords.length`.
         matched_keywords: { type: array, items: { type: string } }
     DecisionOutcome:
       type: object

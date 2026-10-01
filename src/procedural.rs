@@ -102,6 +102,33 @@ pub const CATEGORIES: &[&str] = &[
     "general",
 ];
 
+/// Whole-word keyword membership. `keyword` fires iff it equals one of `text`'s
+/// tokens — `text` is split on non-alphanumeric characters and compared
+/// case-insensitively.
+///
+/// Substring matching (`lower.contains(k)`) let a single spurious hit manufacture a
+/// perfect score: `"ai"` fired inside `"email"`, `"said"`, `"detail"` and
+/// `"maintain"`, and — worst — inside `"openai"`, a *different* lexicon entry,
+/// so a vendor name voted for the technology category. The share of fired
+/// keywords then reported that fabricated hit as an uncontested `1.0`.
+///
+/// Splitting on non-alphanumeric characters keeps both directions honest:
+/// `ai-assistant` and `AI-driven` still fire `ai`, while `openai` does not.
+fn keyword_fires(tokens: &[String], keyword: &str) -> bool {
+    tokens.iter().any(|t| t == keyword)
+}
+
+/// Tokenize for keyword matching: maximal runs of alphanumeric characters,
+/// lowercased. Shared by the scoring loop and the matched-keyword report so the
+/// two can never disagree about what fired.
+fn tokenize(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// Categorize a text deterministically. Returns the **highest-scoring**
 /// category (or `general` when no keyword clears the threshold). This is the
 /// lazy substitute for an LLM classifier: a keyword router with a tiny,
@@ -110,11 +137,16 @@ pub const CATEGORIES: &[&str] = &[
 /// is traceable to a specific keyword, which matters for a consultant whose
 /// recommendations must be defensible.
 ///
+/// **Ceiling on the returned `confidence`:** it is the winning category's *share*
+/// of the keywords that fired, not a calibrated probability. One keyword firing
+/// uncontested scores `1.0` exactly as ten do — [`CategoryResult::evidence_count`]
+/// is what separates those two cases, and a consumer must read both.
+///
 /// `ponytail:` ceiling: keyword matching is O(text × lexicon). Fine for chunk-
 /// sized inputs (≤ MAX_CONTENT); a corpus-wide re-classification would want an
 /// inverted index. Upgrade path: a model2vec custom-vocab classifier (v1.11).
 pub fn classify(text: &str) -> CategoryResult {
-    let lower = text.to_lowercase();
+    let tokens = tokenize(text);
     let mut scores: [(usize, &str); 7] = [0; 7].map(|_| (0, ""));
     //Lexicon is small + hand-curated; one keyword = one vote.
     for (i, cat) in [
@@ -132,7 +164,7 @@ pub fn classify(text: &str) -> CategoryResult {
         let kw = LEXICON[i];
         let mut hits = 0usize;
         for k in kw {
-            if lower.contains(k) {
+            if keyword_fires(&tokens, k) {
                 hits += 1;
             }
         }
@@ -144,11 +176,14 @@ pub fn classify(text: &str) -> CategoryResult {
         return CategoryResult {
             category: "general",
             confidence: 0.0,
+            evidence_count: 0,
             matched_keywords: Vec::new(),
         };
     }
     // Confidence = best category's hits / total non-zero hits. A text that's
-    // 100% finance keywords scores 1.0; a 50/50 split scores 0.5.
+    // 100% finance keywords scores 1.0; a 50/50 split scores 0.5. This is an
+    // UNCONTESTED SHARE, not a confidence: `evidence_count` is the companion
+    // signal, because both 1-of-1 and 10-of-10 read as 1.0 here.
     let total: usize = scores.iter().map(|(h, _)| *h).sum();
     let confidence = if total == 0 {
         0.0
@@ -160,14 +195,19 @@ pub fn classify(text: &str) -> CategoryResult {
     // index (that bug surfaced as `classify_detects_compliance` failing to
     // report its `hipaa` match). CATEGORIES[0..7] mirrors LEXICON order.
     let lex_idx = CATEGORIES.iter().position(|c| *c == best_cat).unwrap_or(0);
-    let matched_keywords = LEXICON[lex_idx]
+    let matched_keywords: Vec<String> = LEXICON[lex_idx]
         .iter()
-        .filter(|k| lower.contains(**k))
+        .filter(|k| keyword_fires(&tokens, k))
         .map(|s| s.to_string())
         .collect();
     CategoryResult {
         category: best_cat,
         confidence,
+        // The count a threshold actually needs, and the honest answer to "how
+        // much evidence stands behind this verdict". Always equal to
+        // `matched_keywords.len()` by construction — the count is derived from
+        // the same scan, never counted independently.
+        evidence_count: best_hits,
         matched_keywords,
     }
 }
@@ -178,7 +218,16 @@ pub fn classify(text: &str) -> CategoryResult {
 pub struct CategoryResult {
     pub category: &'static str,
     /// In `[0.0, 1.0]`. `0.0` for `general` (no signal).
+    ///
+    /// **This is the winning category's share of the fired keywords, not a
+    /// calibrated probability.** One keyword firing uncontested and ten keywords
+    /// all agreeing both read `1.0` here; [`Self::evidence_count`] is what tells
+    /// them apart, so a consumer must read both fields together.
     pub confidence: f32,
+    /// How many keywords fired for the winning category — the evidence standing
+    /// behind the verdict, and the quantity a threshold actually keys on. `0` for
+    /// `general`, and always equal to `matched_keywords.len()`.
+    pub evidence_count: usize,
     /// The keywords that fired for the winning category. Empty for `general`.
     pub matched_keywords: Vec<String>,
 }
