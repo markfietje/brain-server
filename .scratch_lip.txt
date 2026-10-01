@@ -1,0 +1,35 @@
+style: clear the four lipstyk findings that were blocking the push gate
+
+scripts/lipstyk-gate.sh was the one red gate. Four findings, all pre-existing:
+three verbose-match and one needless-lifetimes. Proven pre-existing rather than
+assumed -- git diff on all three files was empty and each flagged line was read
+verbatim from the committed blob at ff8633e6 -- but they blocked the gate, and
+"pre-existing" is a reason to fix them, not a reason to leave them.
+
+Fixed as behaviour-preserving rewrites:
+
+  service/create.rs    match on read_disproof -> map_or_else, keeping the
+                       "no condition is not a pass" comment attached to the arm
+                       it explains. The comment is the point; it moves with the
+                       refusal rather than being deleted.
+  service/create.rs    fn draft<'a>(claim_id: &'a str) -> the lifetime elided.
+                       This is a #[cfg(test)] helper, and the house note is
+                       right that test bodies are still scanned.
+  bin/brain.rs         match on raw.parse::<u32>() -> map + map_err. Same
+                       arms, same error text.
+  create/disproof.rs   match on the optional operator -> map(EvaluatedOp::parse)
+                       + transpose, which keeps the `?` propagation on the
+                       parse. The first attempt used a closure and clippy's
+                       redundant_closure rejected it, so the associated
+                       function is passed directly.
+
+Gate state: lipstyk exit 0 (was 1). clippy clean. cargo fmt clean. Full bench
+lane 2922 passed / 0 failed / 0 ignored -- IDENTICAL to the count before these
+four edits, which is the evidence that the rewrites are behaviour-preserving
+rather than merely compiling. disproof's 20 tests and the create/safety suites
+pass.
+
+No test was weakened, no assertion relaxed, no error text changed, and no
+comment that carried meaning was dropped.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>

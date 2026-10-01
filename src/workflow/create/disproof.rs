@@ -390,10 +390,12 @@ impl DisproofCondition {
             .ok_or("DI_DISPROOF_ROW_FORM_MISSING")?;
         let form = DisproofForm::parse(form_raw)?;
 
-        let op = match cols.op.as_deref().filter(|s| !s.is_empty()) {
-            None => None,
-            Some(raw) => Some(EvaluatedOp::parse(raw)?),
-        };
+        let op = cols
+            .op
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(EvaluatedOp::parse)
+            .transpose()?;
 
         let coverage = match cols.coverage.as_deref() {
             None | Some("") => Vec::new(),

@@ -880,14 +880,16 @@ pub(crate) fn evaluate_disproof(
     claim_id: &str,
     subject: &str,
 ) -> Result<DisproofVerdict, CreateError> {
-    match read_disproof(conn, claim_id)? {
-        Some(c) => Ok(c.verdict(subject)),
-        // No condition is not a pass. The reason is the legacy one, stated
-        // rather than left as a silent green.
-        None => Ok(DisproofVerdict::NoVerdict {
-            reason: "DI_DISPROOF_ABSENT_PREDATES_FIELD".into(),
-        }),
-    }
+    // No condition is not a pass. The reason is the legacy one, stated
+    // rather than left as a silent green.
+    read_disproof(conn, claim_id)?.map_or_else(
+        || {
+            Ok(DisproofVerdict::NoVerdict {
+                reason: "DI_DISPROOF_ABSENT_PREDATES_FIELD".into(),
+            })
+        },
+        |c| Ok(c.verdict(subject)),
+    )
 }
 
 /// The digest of a claim's evidence, computed at write time so promotion can
@@ -1420,7 +1422,7 @@ mod tests {
         id
     }
 
-    fn draft<'a>(claim_id: &'a str, schema_ref: i64) -> ClaimDraft<'a> {
+    fn draft(claim_id: &str, schema_ref: i64) -> ClaimDraft<'_> {
         ClaimDraft {
             claim_id,
             domain: "acme",

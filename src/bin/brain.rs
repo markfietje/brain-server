@@ -4962,10 +4962,9 @@ fn parse_safety_violations(flags: &FlagMap) -> Result<SafetyTerm, String> {
         .as_deref()
         .ok_or("--safety-violations requires a count")?
         .trim();
-    match raw.parse::<u32>() {
-        Ok(n) => Ok(SafetyTerm::Declared(n)),
-        Err(e) => Err(format!("--safety-violations value '{raw}': {e}")),
-    }
+    raw.parse::<u32>()
+        .map(SafetyTerm::Declared)
+        .map_err(|e| format!("--safety-violations value '{raw}': {e}"))
 }
 
 /// The cost term is **UNSET**, and the value below is how that is spelled
