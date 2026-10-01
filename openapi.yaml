@@ -1639,7 +1639,9 @@ paths:
         Keyword-router categorization — no LLM, no cloud, fully auditable.
         Returns the winning category, confidence, the matched keywords, and
         the full taxonomy. `general` (confidence 0.0) when no keyword clears
-        the threshold.
+        the threshold. Also returns the DEFERRAL DECISION for the same label,
+        so a client learns "what is this?" and "does a human decide it?" in one
+        call and cannot reconstruct the second from the confidence number.
       requestBody:
         required: true
         content:
@@ -1659,6 +1661,7 @@ paths:
                 properties:
                   result: { $ref: "#/components/schemas/CategoryResult" }
                   categories: { type: array, items: { type: string } }
+                  deferral: { $ref: "#/components/schemas/DeferralReceipt" }
         "400": { description: Empty text }
         "413": { description: Text exceeds MAX_CONTENT bytes }
   /decision/{id}/evaluate:
@@ -10455,6 +10458,37 @@ components:
             standing behind the verdict, and the quantity a threshold keys on.
             `0` for `general`; always equal to `matched_keywords.length`.
         matched_keywords: { type: array, items: { type: string } }
+    DeferralReceipt:
+      type: object
+      description: >
+        What happens to a classified case, and who decides. Present so a caller
+        never has to infer "the machine was unsure" from a confidence number —
+        the decision is made for the caller, not left to be reconstructed.
+        Every outcome currently requires a human: no class is auto-authorised
+        because no per-class reliability has been measured.
+      properties:
+        routing_class:
+          type: string
+          enum: [technology, business_process, compliance, finance, vendor, assessment, infrastructure, general, human_unmeasured]
+          description: >
+            The class the decision keyed on — the same label the classifier
+            returned, so the two correlate without a second vocabulary.
+            `human_unmeasured` is a label this build does not recognise; it is
+            refused rather than mapped onto a neighbour.
+        outcome:
+          type: string
+          enum: [defer, clarify, stop]
+          description: >
+            `defer` — a human judges the case on the evidence.
+            `clarify` — a human is asked a specific question, and the answer
+            then decides the case.
+            `stop` — the case stops here and hands off.
+        requires_human:
+          type: boolean
+          description: >
+            Whether a person decides. True for every outcome today; the field
+            exists so a future machine-authorised class cannot silently invert
+            its meaning.
     DecisionOutcome:
       type: object
       description: Result of evaluating a decision rule (`POST /decision/{id}/evaluate`).

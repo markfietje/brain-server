@@ -3270,6 +3270,21 @@ fn cmd_classify(args: &[String]) -> Result<(), String> {
             .collect();
         println!("taxonomy   : {cats:?}");
     }
+    // The deferral receipt, when the server sends one. Optional on purpose: a
+    // server that predates the field still classifies, and a CLI that hard-fails
+    // on a missing receipt would break against an older deployment rather than
+    // degrade. Absent receipt = "ask the server version", stated rather than
+    // silently omitted.
+    match v.get("deferral") {
+        Some(d) if !d.is_null() => {
+            let class = d["routing_class"].as_str().unwrap_or("?");
+            let outcome = d["outcome"].as_str().unwrap_or("?");
+            let human = d["requires_human"].as_bool().unwrap_or(true);
+            println!("routing    : {class}");
+            println!("decision   : {outcome} (requires_human={human})");
+        }
+        _ => println!("decision   : (not reported by this server version)"),
+    }
     Ok(())
 }
 

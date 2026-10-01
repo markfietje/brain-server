@@ -61,6 +61,14 @@ const KNOWN_ERRORS: &[(&str, &str, &str, &str)] = &[
     ("ShiftError", "workflow/shifts.rs", "workflow", "display"),
     ("OutboxError", "workflow/outbox.rs", "workflow", "display"),
     ("CrewError", "workflow/crew.rs", "workflow", "display"),
+    // The deferral decision's error. `workflow` category: it refuses a case
+    // rather than failing a write, so it is a governed-lane outcome.
+    (
+        "DeferralError",
+        "workflow/confidence.rs",
+        "workflow",
+        "display",
+    ),
     ("OfferError", "workflow/relay.rs", "workflow", "display"),
     ("TokenError", "ump_integrity.rs", "auth", "display"),
     ("PurgeError", "service/purge.rs", "service", "display"),

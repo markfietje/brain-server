@@ -413,3 +413,352 @@ proptest! {
         );
     }
 }
+
+// ── The deferral decision ──────────────────────────────────────────────────
+//
+// The pins below drive the REAL decision path end to end: `classify()` on a
+// text, the label resolved into a `RoutingClass` by the real resolver, and the
+// real `decide_deferral()` called with the features the classifier actually produced.
+//
+// ## The two traps this programme has hit, both encoded here
+//
+// 1. **A pin that passes with the defect planted**, because it reads a
+//    hand-built literal instead of the real value. The vocabulary-parity pin
+//    derives its expected set from `procedural::CATEGORIES` and the resolved
+//    label from the real `classify()` output — never from a restated table.
+// 2. **A fixture claiming discrimination must assert it discriminates.** The
+//    empty-table pin proves discrimination by showing two classes that differ
+//    in *every* observable except the one under test, and by requiring the
+//    measured-reliability lookup to be `None` for all of them.
+//
+// ## Why the "empty table" pin is the load-bearing one
+//
+// A policy that defers everything scores perfectly on accuracy and is
+// worthless in production. So a future round WILL want to grant a class `Auto`.
+// This file makes that a loud, deliberate act: the pin fails the moment an
+// entry appears without a measured reliability beside it.
+
+use brain_server::workflow::confidence::{
+    DeferralFeatures, DeferralOutcome, RoutingClass, decide_deferral, measured_reliability,
+    routing_classes_cover_classifier,
+};
+
+/// The features a real classification produced, resolved through the real path.
+fn deferral_for(text: &str) -> (RoutingClass, DeferralFeatures, DeferralOutcome) {
+    let r = classify(text);
+    let class = RoutingClass::from_label(r.category);
+    let features = DeferralFeatures::new(r.evidence_count, r.confidence);
+    let outcome = decide_deferral(class, &features).expect("a finite confidence must decide");
+    (class, features, outcome)
+}
+
+// ── I65.2a · every class is HumanRequired — the fail-closed default ────────
+
+/// **The round's load-bearing claim.** No class is auto-authorised, because no
+/// per-class reliability has been measured.
+///
+/// This is asserted over BOTH sources of classes — the enum's own `ALL`, and
+/// the classifier's real vocabulary — so it cannot pass while a class exists
+/// that the enum forgot.
+#[test]
+fn i65_2a_every_class_defers_and_the_table_ships_empty() {
+    // Driven through the real `ALL`, not a hand-built list.
+    assert!(
+        !RoutingClass::ALL.is_empty(),
+        "fixture drifted: the class list is empty"
+    );
+    for class in RoutingClass::ALL {
+        assert_eq!(
+            measured_reliability(class),
+            None,
+            "{class:?} carries a measured reliability — the table is no longer empty, \
+             which is a measurement event that must be recorded deliberately"
+        );
+        for evidence in [0usize, 1, 3, 10, 100] {
+            let features = DeferralFeatures::new(evidence, 1.0);
+            let outcome = decide_deferral(class, &features).expect("decide");
+            assert_eq!(
+                outcome,
+                DeferralOutcome::Defer,
+                "{class:?} with {evidence} keywords must defer while the table is empty"
+            );
+        }
+    }
+}
+
+/// **Discrimination assertion** (trap #2). A pin that only checked "the outcome
+/// is one of three" would pass an implementation that always returned the first
+/// variant for any reason at all.
+///
+/// So this proves the classes are genuinely distinct inputs: two classes that
+/// differ in every observable except the one under test must both reach the same
+/// outcome *through different code*, and the resolver must place them apart.
+/// If a future implementation made every class collapse to one variant for a
+/// reason other than the table, this is where it would show.
+#[test]
+fn i65_2a_the_fixture_discriminates_between_classes() {
+    // Two classes, maximally different inputs.
+    let (tech, tech_features, tech_outcome) = deferral_for("cloud saas api software");
+    let (fin, fin_features, fin_outcome) =
+        deferral_for("ROI is 3x; budget is $50k; they use QuickBooks.");
+
+    // The fixture really is discriminating: different classes, different
+    // features. If these ever agree, the fixture stopped isolating the property.
+    assert_ne!(
+        tech, fin,
+        "fixture drifted: both inputs classified the same"
+    );
+    assert_ne!(
+        tech_features, fin_features,
+        "fixture drifted: both inputs produced identical features"
+    );
+
+    // And the shared outcome is therefore a real decision, not an artefact of
+    // the inputs being indistinguishable.
+    assert_eq!(tech_outcome, DeferralOutcome::Defer);
+    assert_eq!(fin_outcome, DeferralOutcome::Defer);
+}
+
+// ── I65.2b · an absent class is refused, never guessed ────────────────────
+
+/// Absence of evidence is not evidence of competence. An unrecognised label
+/// must resolve to the absence class and defer.
+///
+/// This is the typo case: `"complaince"` must not be silently mapped onto
+/// `compliance`, because a class that earned authority would then be reachable
+/// by misspelling it.
+#[test]
+fn i65_2b_an_unrecognised_label_defers_and_is_never_guessed() {
+    for label in [
+        "complaince",
+        "FINANCE",
+        "Compliance",
+        "",
+        "technolog",
+        "factual",
+    ] {
+        let class = RoutingClass::from_label(label);
+        assert_eq!(
+            class,
+            RoutingClass::HumanUnmeasured,
+            "{label:?} must resolve to the absence class, never to a neighbour"
+        );
+        let outcome = decide_deferral(class, &DeferralFeatures::new(50, 1.0)).expect("decide");
+        assert_eq!(
+            outcome,
+            DeferralOutcome::Defer,
+            "{label:?} must defer even on overwhelming evidence"
+        );
+    }
+}
+
+// ── I65.2c · vocabulary parity, both directions ────────────────────────────
+
+/// The classifier's vocabulary and the deferral policy must agree on what a
+/// label IS. A label the classifier emits with no policy variant would resolve
+/// to the absence class — safe, but a silent degradation.
+///
+/// **Both directions, derived from the real source** (trap #1): the classifier's
+/// labels against the policy's resolver, and the policy's own enum against the
+/// same labels. A hand-built expected list would pass beside a real drift.
+#[test]
+fn i65_2c_routing_classes_cover_the_classifier_vocabulary() {
+    // Forward: every real classifier label resolves to a KNOWN class.
+    assert!(
+        routing_classes_cover_classifier(),
+        "the classifier emits a label the deferral policy does not model — it would \
+         silently degrade to HumanRequired"
+    );
+    for label in brain_server::procedural::CATEGORIES {
+        let class = RoutingClass::from_label(label);
+        assert_ne!(
+            class,
+            RoutingClass::HumanUnmeasured,
+            "classifier label {label:?} resolved to the absence class"
+        );
+    }
+
+    // Reverse: every enum variant except the absence class is a real label.
+    // The absence class is deliberately NOT a classifier label — it exists for
+    // labels the classifier does not know — so it is excluded by name.
+    for class in RoutingClass::ALL {
+        if class == RoutingClass::HumanUnmeasured {
+            continue;
+        }
+        assert!(
+            brain_server::procedural::CATEGORIES.contains(&class.as_str()),
+            "{class:?} ({:?}) is not a classifier label — it is dead policy surface",
+            class.as_str()
+        );
+    }
+}
+
+// ── I65.3 · monotonicity · I65.4 · purity ─────────────────────────────────
+
+proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+
+    /// The authority the machine is granted for one outcome.
+    ///
+    /// **This pin was vacuous twice before it earned its name, and both failures
+    /// are the finding:**
+    ///
+    /// 1. The first version ranked `Stop` as the *most* human outcome, so the
+    ///    assertion "more evidence never reduces human involvement" passed
+    ///    against a planted inversion. The rank was simply backwards.
+    /// 2. The second version asserted `requires_human()`, which is `true` for
+    ///    **every** outcome by construction — so it could not distinguish `Defer`
+    ///    from `Stop` and passed against the same plant.
+    ///
+    /// The honest property, and the one that survives both: **the outcome is a
+    /// function of the class alone, not of the evidence.** A deferral policy that
+    /// answers differently as keywords pile up is a policy whose decision depends
+    /// on how many words happened to match — the same keyword-share defect the
+    /// whole round exists to repair, reappearing one layer up. So: same class,
+    /// any evidence, same outcome.
+    #[test]
+    fn proptest_outcome_depends_on_the_class_not_the_evidence(
+        class_index in 0usize..9,
+        low in 0usize..8,
+        delta in 1usize..32,
+    ) {
+        let class = RoutingClass::ALL[class_index];
+        let fewer = decide_deferral(class, &DeferralFeatures::new(low, 0.5)).expect("decide");
+        let more = decide_deferral(class, &DeferralFeatures::new(low + delta, 0.5)).expect("decide");
+        prop_assert_eq!(
+            fewer, more,
+            "class {:?} decided {:?} at {} keywords but {:?} at {} — the outcome \
+             must not depend on how many keywords happened to fire",
+            class, fewer, low, more, low + delta
+        );
+        // And every outcome that reaches here is a human decision, whatever it is.
+        prop_assert!(
+            more.requires_human(),
+            "class {:?} produced {:?}, which takes the case away from a human",
+            class, more
+        );
+    }
+
+    /// A confidence the measurement cannot express must be refused, not carried
+    /// into a receipt as a number.
+    #[test]
+    fn proptest_non_finite_confidence_is_refused(class_index in 0usize..9) {
+        let class = RoutingClass::ALL[class_index];
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let features = DeferralFeatures::new(3, bad);
+            let result = decide_deferral(class, &features);
+            prop_assert!(
+                result.is_err(),
+                "{:?} accepted a non-finite confidence ({bad})",
+                class
+            );
+        }
+    }
+}
+
+/// Purity, proven by shape rather than by assertion: the decision is a total
+/// function of its two arguments, so the same input cannot produce two
+/// different outcomes. Run it repeatedly, interleaved, and demand identity.
+///
+/// (The strong form — no I/O, no clock — is structural: `decide` takes only
+/// `&DeferralFeatures` and returns an enum; there is no place for a clock read
+/// or a query to hide.)
+#[test]
+fn i65_4_decide_is_pure_across_repeated_and_interleaved_calls() {
+    let inputs: Vec<(&str, usize, f32)> = vec![
+        ("cloud saas api software", 4, 1.0),
+        ("the cat sat on the mat", 0, 0.0),
+        ("ROI is 3x; budget is $50k.", 3, 0.6),
+        ("complaince", 9, 1.0),
+    ];
+    let first: Vec<DeferralOutcome> = inputs
+        .iter()
+        .map(|(t, _, _)| {
+            let r = classify(t);
+            decide_deferral(
+                RoutingClass::from_label(r.category),
+                &DeferralFeatures::new(r.evidence_count, r.confidence),
+            )
+            .expect("decide")
+        })
+        .collect();
+
+    // Interleave and repeat: same inputs, same outputs, every time.
+    for _ in 0..3 {
+        for (i, (t, _, _)) in inputs.iter().enumerate() {
+            let r = classify(t);
+            let again = decide_deferral(
+                RoutingClass::from_label(r.category),
+                &DeferralFeatures::new(r.evidence_count, r.confidence),
+            )
+            .expect("decide");
+            assert_eq!(
+                again, first[i],
+                "decide is not pure: {t:?} gave {again:?} on a repeat call"
+            );
+        }
+    }
+}
+
+/// The outcome vocabulary and its strings are a compatibility surface, frozen
+/// the way `DecisionClass::as_str` is — a downstream routing consumer reads
+/// these, so adding or renaming one is a wire-visible change.
+#[test]
+fn i65_4_the_outcome_vocabulary_is_frozen() {
+    let labels: Vec<&str> = DeferralOutcome::ALL.iter().map(|o| o.as_str()).collect();
+    assert_eq!(
+        labels,
+        vec!["defer", "clarify", "stop"],
+        "the deferral outcome vocabulary is preregistered and frozen"
+    );
+    // Every outcome is a human decision — the whole point of the type.
+    for outcome in DeferralOutcome::ALL {
+        assert!(
+            outcome.requires_human(),
+            "{outcome:?} does not require a human, which contradicts the seam's purpose"
+        );
+    }
+}
+
+/// The real-life path: a knowledge worker's text goes in, and what comes out is
+/// something an operator can act on and explain. This is the round-trip a
+/// caller actually performs.
+#[test]
+fn i65_2a_the_real_path_defers_an_ambiguous_case_with_a_reason() {
+    // An ambiguous business sentence — the kind that reaches a queue.
+    //
+    // FIXTURE ISOLATION, ASSERTED NOT ASSUMED (trap #2, hit while writing this
+    // file): an earlier draft read "we should probably revisit the onboarding
+    // thing at some point" and asserted `general`. It failed — **`onboarding`
+    // is a `business_process` lexicon entry**, so the fixture emitted a second
+    // signal and the assertion was about the wrong class. Every token is
+    // therefore checked against the real classifier below, so the fixture
+    // cannot drift back.
+    let text = "we should probably revisit that thing at some point";
+    let probe = classify(text);
+    assert_eq!(
+        probe.category, "general",
+        "fixture drifted: {:?} fired on {:?}",
+        text, probe.matched_keywords
+    );
+    assert_eq!(
+        probe.matched_keywords.len(),
+        0,
+        "fixture drifted: {:?} is not keyword-free",
+        text
+    );
+
+    let (class, features, outcome) = deferral_for(text);
+
+    // The abstain class, no evidence — and therefore a deferral.
+    assert_eq!(class, RoutingClass::General, "no keyword fired");
+    assert_eq!(features.evidence_count, 0);
+    assert_eq!(outcome, DeferralOutcome::Defer);
+
+    // And the operator can state WHY in terms a human reads: the class, the
+    // evidence count, and the outcome — none of which requires reading the
+    // source to reconstruct.
+    assert!(!class.as_str().is_empty());
+    assert_eq!(class.as_str(), "general");
+    assert_eq!(outcome.as_str(), "defer");
+}

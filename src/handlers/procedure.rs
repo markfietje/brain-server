@@ -12,6 +12,7 @@ use crate::AppState;
 use crate::handlers::auth::OptPrincipal;
 use crate::handlers::{HandlerError, MAX_CONTENT, MAX_TITLE};
 use crate::procedural::{self, DecisionOutcome, DecisionRule, MemoryKind};
+use crate::workflow::confidence;
 // zerocopy::IntoBytes provides Vec<f32>::as_bytes() — the same cast the /ingest
 // path uses to hand f32 vectors to vec_quantize_int8's blob parameter.
 use zerocopy::IntoBytes;
@@ -371,7 +372,12 @@ pub struct ClassifyRequest {
 
 /// `POST /classify` — categorize a text deterministically. No LLM, no cloud.
 /// Returns the category + confidence + the matched keywords (auditable) + the
-/// full taxonomy so a client knows the universe of labels.
+/// full taxonomy so a client knows the universe of labels, and the **deferral
+/// decision** for that label.
+///
+/// The decision rides the classifier's only caller on purpose: a client that has
+/// just asked "what is this?" needs "and does a human decide it?" in the same
+/// breath, and making it a second call would let the two disagree.
 pub async fn classify(
     State(_state): State<Arc<AppState>>,
     principal: OptPrincipal,
@@ -392,9 +398,25 @@ pub async fn classify(
             "text exceeds {MAX_CONTENT} bytes"
         )));
     }
+    let result = procedural::classify(&text);
+    // The deferral decision. Pure, and fail-closed: with no measured per-class
+    // reliability on file every class defers. A non-finite confidence is
+    // refused loudly rather than answered, because a decision derived from a
+    // number that cannot exist is not a decision.
+    let routing_class = confidence::RoutingClass::from_label(result.category);
+    let decision = confidence::decide_deferral(
+        routing_class,
+        &confidence::DeferralFeatures::new(result.evidence_count, result.confidence),
+    )
+    .map_err(|e| HandlerError::internal(e.to_string()))?;
     Ok(Json(ClassifyResponse {
-        result: procedural::classify(&text),
+        result,
         categories: procedural::categories(),
+        deferral: DeferralReceipt {
+            routing_class: routing_class.as_str(),
+            outcome: decision.as_str(),
+            requires_human: decision.requires_human(),
+        },
     }))
 }
 
@@ -402,6 +424,21 @@ pub async fn classify(
 pub struct ClassifyResponse {
     pub result: procedural::CategoryResult,
     pub categories: &'static [&'static str],
+    /// What happens to this case, and who decides. Present so a caller never
+    /// has to infer "the machine was unsure" from a confidence number.
+    pub deferral: DeferralReceipt,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeferralReceipt {
+    /// The class the decision keyed on — the same label the caller was given,
+    /// so the two can be correlated without a second vocabulary.
+    pub routing_class: &'static str,
+    /// `defer` | `clarify` | `stop`.
+    pub outcome: &'static str,
+    /// Whether a person decides. Every current outcome is true; the field exists
+    /// so a future machine-authorised class cannot silently invert its meaning.
+    pub requires_human: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────

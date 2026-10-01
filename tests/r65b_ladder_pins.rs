@@ -808,3 +808,106 @@ fn the_refusal_set_matches_a_real_production_writer() {
         );
     }
 }
+
+// ── The deferral receipt on the wire ───────────────────────────────────────
+//
+// The decision is computed in `src/workflow/confidence.rs` and returned by
+// `POST /classify`. Nothing else in the tree asserted the response BODY — the
+// authz matrix checks the route's status, not its shape. So this is the only
+// place the wire contract for the receipt is actually proven.
+//
+// It matters because the receipt is what stops a caller from having to
+// reconstruct "the machine was unsure" from a confidence number. If the field
+// silently stopped shipping, every consumer would fall back to guessing — and
+// nothing else in the suite would notice.
+
+/// POST `/classify` carries the deferral decision for the same label it
+/// classified, and the two agree.
+#[tokio::test]
+async fn the_classify_route_carries_the_deferral_receipt() {
+    let srv = server();
+    let (status, body) = json(
+        &srv.state,
+        "POST",
+        "/classify",
+        r#"{"text":"This client handles patient records; HIPAA and PII apply."}"#.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "classify must answer: {body}");
+
+    let category = body["result"]["category"]
+        .as_str()
+        .expect("a category in the result")
+        .to_string();
+
+    let receipt = &body["deferral"];
+    assert!(
+        receipt.is_object(),
+        "the deferral receipt must ship in the response: {body}"
+    );
+
+    // The receipt keys on the SAME label the caller was handed — that
+    // correlation is the point of shipping it beside the result rather than as
+    // a separate call the two could disagree about.
+    assert_eq!(
+        receipt["routing_class"].as_str(),
+        Some(category.as_str()),
+        "the receipt must key on the label the classifier returned: {body}"
+    );
+
+    let outcome = receipt["outcome"].as_str().expect("an outcome");
+    assert!(
+        ["defer", "clarify", "stop"].contains(&outcome),
+        "outcome {outcome:?} is outside the frozen vocabulary: {body}"
+    );
+    assert_eq!(
+        receipt["requires_human"].as_bool(),
+        Some(true),
+        "every outcome requires a human while the table is empty: {body}"
+    );
+}
+
+/// A case with no signal defers too — and the receipt is still a real answer,
+/// not a defaulted field.
+#[tokio::test]
+async fn an_unsignalled_case_still_carries_a_decision() {
+    let srv = server();
+    let (status, body) = json(
+        &srv.state,
+        "POST",
+        "/classify",
+        r#"{"text":"the cat sat on the mat"}"#.to_string(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["result"]["category"].as_str(), Some("general"));
+    assert_eq!(
+        body["deferral"]["routing_class"].as_str(),
+        Some("general"),
+        "the abstain label must still produce a receipt: {body}"
+    );
+    assert_eq!(
+        body["deferral"]["requires_human"].as_bool(),
+        Some(true),
+        "{body}"
+    );
+}
+
+/// The read gate still precedes the receipt: an unauthorized caller learns
+/// nothing about the decision, not even that the field exists.
+#[tokio::test]
+async fn the_deferral_receipt_is_behind_the_read_gate() {
+    let srv = server();
+    let req = Request::builder()
+        .method("POST")
+        .uri("/classify")
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"text":"the cat sat on the mat"}"#))
+        .expect("request");
+    let res = app(srv.state.clone()).oneshot(req).await.expect("oneshot");
+    let status = res.status();
+    assert!(
+        status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
+        "an unauthenticated /classify must be refused at the door, got {status}"
+    );
+}

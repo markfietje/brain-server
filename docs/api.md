@@ -90,7 +90,7 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | POST | `/consolidate/propose` · `/apply` · `/undo` | Reviewable consolidation, supersession, undo |
 | POST | `/suggest` · `/suggest/feedback` · GET `/suggest/metrics` | Opt-in anticipation + false-positive metric. Hits carry `untrusted: true` (v1.28.65, recall/search parity — suggested content is data, never instructions) |
 | POST | `/verify` | Claim span verification |
-| POST | `/classify` · `/decision/{id}/evaluate` | Deterministic categorization / decision rules |
+| POST | `/classify` · `/decision/{id}/evaluate` | Deterministic categorization / decision rules. `/classify` also returns the DEFERRAL DECISION for the label (`deferral.routing_class` / `.outcome` / `.requires_human`) so a caller learns "what is this?" and "does a human decide it?" in one call and never reconstructs the second from the confidence number. Every outcome currently requires a human: no class is auto-authorised, because no per-class reliability has been measured. A label the build does not recognise resolves to `human_unmeasured` and is refused, never mapped onto a neighbour |
 | POST | `/procedure` · GET `/procedure/{id}/steps` | Ordered procedures (steps bind the `X-Brain-Domain` label + record gate) |
 
 ---

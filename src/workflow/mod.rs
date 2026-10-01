@@ -30,6 +30,10 @@ pub(crate) mod case_status;
 pub(crate) mod channel;
 pub mod channels;
 pub(crate) mod complaint;
+/// The deferral decision is exposed so the classifier's own caller can act on
+/// it: `/classify` answers "what is this?" and "does a human decide it?" in one
+/// response, so a client never has to infer the second from a confidence number.
+pub mod confidence;
 pub(crate) mod create;
 pub(crate) mod crew;
 pub(crate) mod decide;
