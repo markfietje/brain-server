@@ -67,6 +67,16 @@ pub enum RoutingClass {
     Vendor,
     Assessment,
     Infrastructure,
+    /// The subject-matter pool: the case is about Dell/EMC infrastructure.
+    ///
+    /// **Grants no authority.** `decide_deferral` consults `measured_reliability`,
+    /// which is empty for every class today, so this variant defers exactly as
+    /// `infrastructure` does. It is modelled rather than aliased because the
+    /// vocabulary-parity pin requires every classifier label to resolve to a
+    /// known class, and an unmodelled label degrades to `HumanUnmeasured` —
+    /// safe, but a SILENT degradation. When a reliability is ever measured for a
+    /// subject-matter class, it is measured here, on its own evidence.
+    DellSupport,
     /// The classifier's own abstain label.
     General,
     /// A label this build does not recognise. Absence of evidence is not evidence of
@@ -76,7 +86,7 @@ pub enum RoutingClass {
 
 impl RoutingClass {
     /// Every class, in the same order as [`CATEGORIES`], plus the absence class last.
-    pub const ALL: [RoutingClass; 9] = [
+    pub const ALL: [RoutingClass; 10] = [
         RoutingClass::Technology,
         RoutingClass::BusinessProcess,
         RoutingClass::Compliance,
@@ -84,6 +94,7 @@ impl RoutingClass {
         RoutingClass::Vendor,
         RoutingClass::Assessment,
         RoutingClass::Infrastructure,
+        RoutingClass::DellSupport,
         RoutingClass::General,
         RoutingClass::HumanUnmeasured,
     ];
@@ -99,6 +110,7 @@ impl RoutingClass {
             RoutingClass::Vendor => "vendor",
             RoutingClass::Assessment => "assessment",
             RoutingClass::Infrastructure => "infrastructure",
+            RoutingClass::DellSupport => "dell_support",
             RoutingClass::General => "general",
             RoutingClass::HumanUnmeasured => "human_unmeasured",
         }
@@ -116,6 +128,7 @@ impl RoutingClass {
             "vendor" => RoutingClass::Vendor,
             "assessment" => RoutingClass::Assessment,
             "infrastructure" => RoutingClass::Infrastructure,
+            "dell_support" => RoutingClass::DellSupport,
             "general" => RoutingClass::General,
             _ => RoutingClass::HumanUnmeasured,
         }

@@ -96,6 +96,7 @@ pub enum RoutingClass {
     Vendor,
     Assessment,
     Infrastructure,
+    DellSupport,
     General,
 }
 
@@ -103,7 +104,7 @@ impl RoutingClass {
     /// Every class, in the classifier's order. Pinned equal to
     /// [`crate::procedural::CATEGORIES`] so the routing axis cannot drift from
     /// the classifier that feeds it.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Technology,
         Self::BusinessProcess,
         Self::Compliance,
@@ -111,6 +112,7 @@ impl RoutingClass {
         Self::Vendor,
         Self::Assessment,
         Self::Infrastructure,
+        Self::DellSupport,
         Self::General,
     ];
 
@@ -124,6 +126,7 @@ impl RoutingClass {
             Self::Vendor => "vendor",
             Self::Assessment => "assessment",
             Self::Infrastructure => "infrastructure",
+            Self::DellSupport => "dell_support",
             Self::General => "general",
         }
     }

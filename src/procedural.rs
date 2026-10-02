@@ -91,6 +91,20 @@ pub fn categories() -> &'static [&'static str] {
 /// tuned to the small-business AI-transformation domain. The keyword router
 /// is deliberately conservative — it returns `general` (no strong signal)
 /// rather than guessing, so the classification is always defensible.
+///
+/// **`dell_support` is a POOL, not a peer.** The eight above classify an
+/// ENGAGEMENT — its commercial posture, its compliance surface, whether an
+/// assessment is happening. `dell_support` classifies the SUBJECT MATTER: the
+/// case is about Dell/EMC infrastructure. Those are different axes, which is
+/// exactly why the earlier refusal held: the 33 fault families (`vsan`,
+/// `xe-gpu`, `san-fabric`, ...) had no home in a set containing `finance`.
+///
+/// It is added here rather than beside the eight because the classifier emits
+/// exactly one category, so a pool must occupy a slot to be emittable. It sits
+/// LAST, immediately before `general`, so the fallback stays the fallback and
+/// no existing index moves — `CATEGORIES[0..7]` is mirrored by `LEXICON` order
+/// and by `RoutingClass`'s discriminants, and appending is the only edit that
+/// leaves all three intact.
 pub const CATEGORIES: &[&str] = &[
     "technology",
     "business_process",
@@ -99,6 +113,7 @@ pub const CATEGORIES: &[&str] = &[
     "vendor",
     "assessment",
     "infrastructure",
+    "dell_support",
     "general",
 ];
 
@@ -147,20 +162,12 @@ fn tokenize(text: &str) -> Vec<String> {
 /// inverted index. Upgrade path: a model2vec custom-vocab classifier (v1.11).
 pub fn classify(text: &str) -> CategoryResult {
     let tokens = tokenize(text);
-    let mut scores: [(usize, &str); 7] = [0; 7].map(|_| (0, ""));
+    // One entry per scored category, derived from CATEGORIES (see
+    // `scored_categories`) so the array can never drift from the vocabulary.
+    let cats: Vec<&'static str> = scored_categories().collect();
+    let mut scores: Vec<(usize, &str)> = Vec::with_capacity(cats.len());
     //Lexicon is small + hand-curated; one keyword = one vote.
-    for (i, cat) in [
-        "technology",
-        "business_process",
-        "compliance",
-        "finance",
-        "vendor",
-        "assessment",
-        "infrastructure",
-    ]
-    .iter()
-    .enumerate()
-    {
+    for (i, cat) in cats.iter().enumerate() {
         let kw = LEXICON[i];
         let mut hits = 0usize;
         for k in kw {
@@ -168,7 +175,7 @@ pub fn classify(text: &str) -> CategoryResult {
                 hits += 1;
             }
         }
-        scores[i] = (hits, cat);
+        scores.push((hits, cat));
     }
     scores.sort_by_key(|s| std::cmp::Reverse(s.0));
     let (best_hits, best_cat) = scores[0];
@@ -327,7 +334,68 @@ const LEXICON: &[&[&str]] = &[
         "kubernetes",
         "deploy",
     ],
+    // dell_support — the SUBJECT-MATTER pool, not an engagement category.
+    // These are the product-line and symptom words that distinguish a Dell/EMC
+    // support case from a generic infrastructure one. `infrastructure` above
+    // holds `server`/`network`/`storage` on purpose: it is the ENGAGEMENT-side
+    // category, and a Dell case may legitimately score on both. The winner is
+    // decided by share of fired keywords, so a case that names a Dell product
+    // line outranks a case that merely says "server".
+    //
+    // Coverage is the CORPUS vocabulary, taken from the 33 fault-family tokens
+    // in the routing matrix: the hardware lines (idrac, perc, poweredge, idrac9,
+    // powerstore, powerscale, powermax, powervault, unity, vnx, dell, xeon, xe),
+    // the stacks (vsan, vxrail, vcf, nsx, esxi, vcenter, vcsa, powerflex,
+    // powermax, scaleio), and the storage/peripheral nouns (san, nas, fibre/
+    // fiber, tape, rma, dimm, raid, nvme).
+    &[
+        "dell",
+        "emc",
+        "poweredge",
+        "idrac",
+        "perc",
+        "raid",
+        "nvme",
+        "dimm",
+        "xeon",
+        "powerstore",
+        "powerscale",
+        "powermax",
+        "powervault",
+        "unity",
+        "vnx",
+        "clariion",
+        "powerflex",
+        "scaleio",
+        "vsan",
+        "vxrail",
+        "vcf",
+        "nsx",
+        "esxi",
+        "esx",
+        "vcenter",
+        "vcsa",
+        "san",
+        "nas",
+        "fibre",
+        "fiber",
+        "tape",
+        "rma",
+    ],
 ];
+
+/// The scoring categories: `CATEGORIES` minus the `general` fallback.
+///
+/// DERIVED from `CATEGORIES` rather than restated. The classifier used to score
+/// a hard-coded `[7]` array against a separately-typed list of the same seven
+/// names — a second copy of the vocabulary, in the one function whose whole job
+/// is to read that vocabulary, and it had already drifted once (the array was
+/// widened to 7 while `LEXICON` still had 7 entries, leaving `general`
+/// unreachable as a scored category). Deriving it means a category added to
+/// `CATEGORIES` with a matching `LEXICON` entry is scored automatically.
+fn scored_categories() -> impl Iterator<Item = &'static str> {
+    CATEGORIES.iter().copied().filter(|c| *c != "general")
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // decision — deterministic rule evaluation (the consultant's reasoning core).
@@ -498,6 +566,188 @@ mod tests {
         let r = classify("We need an LLM integration via their SaaS API.");
         assert_eq!(r.category, "technology");
         assert!(r.matched_keywords.iter().any(|k| k == "llm"));
+    }
+
+    // ── dell_support: the subject-matter pool ─────────────────────────────
+
+    /// The pool FIRES. A category nothing emits is a category that routes
+    /// nowhere, which is exactly what the routing-axis drift pin exists to
+    /// prevent — so the new variant needs a positive proof, not just the pin.
+    #[test]
+    fn classify_detects_dell_support() {
+        let r = classify(
+            "PowerEdge R760 is down, the idrac is unresponsive and the perc shows a failed VD",
+        );
+        assert_eq!(
+            r.category, "dell_support",
+            "a case naming Dell hardware lines must reach the subject-matter pool. \
+             Got {:?} with keywords {:?}",
+            r.category, r.matched_keywords
+        );
+        assert!(r.matched_keywords.iter().any(|k| k == "idrac"));
+        assert!(r.matched_keywords.iter().any(|k| k == "poweredge"));
+    }
+
+    /// The pool does NOT SWALLOW the engagement categories.
+    ///
+    /// **This pin discriminates on a TIE-BREAK, and that is deliberate.** An
+    /// earlier version of it asserted only that generic infrastructure language
+    /// lands on `infrastructure` — and it PASSED with `server`/`network`/
+    /// `storage` planted into the pool's own lexicon. The reason: the classifier
+    /// returns the highest-scoring category, and a plant that adds three words
+    /// to a pool that already matches the text produces a 3-vs-3 TIE, which the
+    /// stable sort resolves toward the earlier category. The outcome was
+    /// unchanged, so the pin proved nothing.
+    ///
+    /// The property that actually distinguishes the pool is therefore stronger
+    /// and stated directly: **the pool must not hold a generic-infrastructure
+    /// word at all.** That is a structural property, it cannot be defeated by a
+    /// tie, and it is what stops the pool quietly re-routing every non-Dell case.
+    #[test]
+    fn the_dell_pool_holds_no_generic_infrastructure_word() {
+        const GENERIC: &[&str] = &[
+            "server", "network", "storage", "backup", "linux", "database", "deploy",
+        ];
+        let pool: Vec<&str> = LEXICON[CATEGORIES
+            .iter()
+            .position(|c| *c == "dell_support")
+            .expect("the pool is a scored category")]
+        .to_vec();
+        for g in GENERIC {
+            assert!(
+                !pool.contains(g),
+                "the dell_support pool must not contain {g:?}. `infrastructure` owns the \
+                 generic vocabulary: a word in both lexicons makes the two categories tie, \
+                 and the winner is then decided by sort order rather than by meaning. \
+                 Pool currently: {pool:?}"
+            );
+        }
+    }
+
+    /// And the behavioural twin: a case whose ONLY signal is generic
+    /// infrastructure language must reach `infrastructure`, not the pool. This
+    /// is the discrimination the tie-proof above makes structural — with the
+    /// pool holding no generic word, the two categories cannot tie on this text.
+    #[test]
+    fn dell_support_does_not_swallow_generic_infrastructure() {
+        // No Dell product line named. This must stay `infrastructure`.
+        let r = classify("The server network storage backup needs attention");
+        assert_eq!(
+            r.category, "infrastructure",
+            "generic infrastructure language must not be captured by the Dell pool — \
+             the pool is for the SUBJECT, not for hardware-shaped words. \
+             Got {:?} with keywords {:?}",
+            r.category, r.matched_keywords
+        );
+        // Prove the pool contributed nothing at all, rather than merely losing.
+        assert!(
+            !r.matched_keywords
+                .iter()
+                .any(|k| k == "poweredge" || k == "idrac"),
+            "the Dell lexicon fired on a text with no Dell vocabulary — it must be inert here"
+        );
+    }
+
+    /// The eight engagement categories are UNAFFECTED by the ninth's arrival.
+    /// Derived from `CATEGORIES` rather than hand-typed, so it cannot rot: it
+    /// asserts every non-`dell_support` category is still present and still
+    /// ordered as before.
+    #[test]
+    fn dell_support_did_not_displace_any_existing_category() {
+        let cats = CATEGORIES;
+        assert_eq!(
+            cats.len(),
+            9,
+            "nine categories: the original eight plus the dell_support pool"
+        );
+        // The load-bearing slice is [0..7]: those seven are the SCORED ones,
+        // and `LEXICON` mirrors exactly this range in order. `general` is the
+        // fallback and is never scored, so its position is a separate concern
+        // (asserted below). Inserting the pool anywhere inside [0..7] would
+        // re-pair every keyword with the wrong category.
+        assert_eq!(
+            &cats[..7],
+            &[
+                "technology",
+                "business_process",
+                "compliance",
+                "finance",
+                "vendor",
+                "assessment",
+                "infrastructure"
+            ],
+            "the first SEVEN must keep their exact indices — LEXICON mirrors \
+             CATEGORIES[0..7] in order. Inserting the pool inside that range \
+             would silently re-pair every keyword with the wrong category."
+        );
+        assert_eq!(
+            cats[7], "dell_support",
+            "the pool occupies the eighth slot, immediately before the fallback"
+        );
+        assert_eq!(
+            cats[cats.len() - 1],
+            "general",
+            "`general` stays LAST so it remains the fallback: an empty match must \
+             still land on general, never on the pool."
+        );
+    }
+
+    /// No lexicon may name the same word twice. `keyword_fires` is whole-token
+    /// equality, so a duplicated word makes ONE token vote TWICE — inflating the
+    /// category's share of fired keywords and therefore its confidence, on no
+    /// additional evidence. That is precisely the fabricated-score defect the
+    /// substring-matching fix above was made to close, reintroduced by a
+    /// copy-paste slip: `poweredge` shipped twice in the dell_support pool.
+    #[test]
+    fn no_lexicon_names_the_same_word_twice() {
+        for (i, cat) in CATEGORIES
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| **c != "general")
+        {
+            let words = LEXICON[i];
+            let mut seen = std::collections::BTreeSet::new();
+            let dupes: Vec<&str> = words.iter().copied().filter(|w| !seen.insert(*w)).collect();
+            assert!(
+                dupes.is_empty(),
+                "the {cat} lexicon names {dupes:?} more than once. A duplicate makes one \
+                 token vote twice, inflating that category's share of fired keywords and \
+                 therefore its confidence on no extra evidence — the same fabricated-score \
+                 class as the substring-matching defect."
+            );
+        }
+    }
+    /// The scored list is DERIVED, and `LEXICON` must cover it exactly. A
+    /// category with no lexicon entry would index out of bounds; a lexicon entry
+    /// with no category would be scored under a name nothing emits.
+    #[test]
+    fn the_lexicon_covers_every_scored_category_exactly() {
+        let scored: Vec<&str> = scored_categories().collect();
+        assert_eq!(
+            LEXICON.len(),
+            scored.len(),
+            "LEXICON has {} entries for {} scored categories — the two must be \
+             equal or `classify` reads past the end (or scores under a name \
+             nothing emits)",
+            LEXICON.len(),
+            scored.len()
+        );
+        assert_eq!(LEXICON.len() + 1, CATEGORIES.len());
+    }
+
+    /// An UNMATCHED text still falls back to `general`, never to the pool. The
+    /// pool competes on keyword share; with nothing fired there is no share.
+    #[test]
+    fn an_unmatched_text_still_falls_back_to_general() {
+        let r = classify("please advise on your preferred meeting times");
+        assert_eq!(
+            r.category, "general",
+            "no keyword fired, so nothing competes and the fallback must win. \
+             Got {:?}",
+            r.category
+        );
+        assert_eq!(r.evidence_count, 0);
+        assert!(r.confidence == 0.0);
     }
 
     #[test]
