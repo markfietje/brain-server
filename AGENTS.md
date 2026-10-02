@@ -1,6 +1,87 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R59 "Gate"** — the admission-gate suite, and
+> Current release (unreleased): **R2 "Consumer"** — the replay gate gets the
+> production consumer it was shipped without, and the one verification gap in
+> this programme's history closes. Theme: **a gate that could never fire, wired
+> to a path that can — and the fixture the measurement corrected on the way.**
+> The §0 sweep (`scripts/r65-verify-sweep.sh`, 15 lanes) **ran to completion for
+> the first time ever**: **15/15 PASS, `SWEEP_EXIT=0`**, all-targets **2 989
+> passed / 0 failed** across 36 binaries, `crates/` 306, harness 44. Every named
+> gate had passed before at `dd5ecd95`; **no full run had ever finished**, so
+> nothing carried a release sign-off. It does now. (1) **The replay-determinism
+> gate is wired to the LIVE release promotion** — `releases::promote_release`,
+> after `chain_defect` and before `brain_delivery_core::promote`, refusing with
+> an audit `Denied` and **no state change**, and never repairing. It refuses
+> because it detects, not because it is broken: an identical trace still reaches
+> `allowed`. **`DenyReason` was NOT extended** (frozen crate enum) — the reason
+> travels as a server-namespaced `replay_divergent` /
+> `replay_insufficient_evidence` string, derived from a new `refusal_code()`
+> kept deliberately separate from `refusal_reason()`. **Both red-proofs fired,
+> and the second is the load-bearing one:** removing the gate promoted the
+> divergent trace (`left: "allowed"`), and a planted **always-refuse** gate left
+> that first proof **GREEN** — caught only by the anti-vacuity pin. Without that
+> pin the round could have shipped a gate that refuses everything and proves
+> nothing. (2) **Two premises the brief states measured FALSE, and both are
+> refusals rather than implementations.** `classify_replay` is **not** on the
+> classifier axis — it compares re-derived vs recorded **stage digests** in
+> `delivery_traces` and **never calls the classifier**; `classifier_gold_set` /
+> `predicted_category` appear **zero times** in `src/ crates/ tools/ client/`.
+> And the promotion the brief reaches, `create::promote`, is **inert by
+> construction**: `PROMOTION_ENABLED` is a compile-time `false` checked FIRST,
+> and its route never even calls `promote()`. Wiring a gate there would have
+> produced a green suite over a function no caller can reach. (3) **Two things
+> the round found rather than assumed.** The first fixture rewrote a `seq` and
+> expected one mismatch; it produced **three**, because the sort order *and* the
+> digest (`canonical_bytes` includes `seq`) both moved — **the exact defect the
+> gate's own fixture doc warns about**. The pin now asserts the **verdict, not
+> a count**. And `InsufficientEvidence` is **unreachable at this seam**:
+> emptying the traces makes `live_subject_digest` answer `no_artifact` first, so
+> the artifact law precedes the gate — recorded as a **ceiling**, and
+> `r2_c` asserts that fact rather than a discrimination the seam lacks.
+>
+> **Spire at ship:** needle-measured `src`+`tests` **3 069** `#[test]` (the
+> canonical `find src tests -name "*.rs"` invocation), `crates/` **310**,
+> `tools/` **100**. `CRATE_TEST_FLOOR` **2 758 in code — DELIBERATELY NOT
+> RAISED**: the needle reads 3 069, so the floor was already 311 under the
+> truth and raising it to the needle would have spent the guard's headroom on a
+> measurement rather than on a round. The three other floors stay
+> **255 / 214 / 200**. Lib **2 242** passed / 0 failed / 2 ignored
+> (`--features bench`); all-targets **2 716** passed / 0 failed. Schema
+> **1.32.23** unchanged (probe 1.32.24). `verify_claims.py` **53/53** — it was
+> **50/53 and exiting non-zero**, from three pre-existing drifted figures in
+> files R2 never touched; re-baselined to measured truth with the movement
+> **attributed, not absorbed** (see below). **Zero new dependency edges: all
+> three `Cargo.lock` files byte-identical**, `src/migration.rs` and
+> `openapi.yaml` and `route_guards.rs` all **0 diff**. `cargo audit` clean over
+> the root lockfile. Diff: `releases.rs` +336, `replay_gate.rs` +33/−6.
+>
+> **The debt batch (R8), landed with this line.** `chacha20` **0.10.1 → 0.10.2**
+> in `tools/steward-harness/Cargo.lock` — the harness had drifted a patch behind
+> the root lockfile, which already carried 0.10.2; one package, checksum-only
+> delta, harness **44 passed / 0 failed**, and `cargo audit --file
+> tools/steward-harness/Cargo.lock` clean over 162 dependencies. **This is the
+> one `Cargo.lock` that MOVED this round**, and it moved because the brief asked
+> for it, not because a new edge appeared. **And this file's own figures were
+> stale:** the header said `CRATE_TEST_FLOOR` **2 618** and lib **2 818**; the
+> code said **2 758** and the needle said **3 069**. The 140-line gap the brief
+> flagged was real, and it was **document drift, not a typo** — every figure in
+> the R59 header predated R60–R65.
+>
+> **What did NOT ship, stated plainly.** **Not a classifier-fidelity gate** —
+> nothing in R2 reads the gold pack; that consumption is a named separate
+> increment, because attaching it here would mean the round's red-proof proved a
+> property of a function that does not exist. **Not a measured gate-quality
+> figure** — "divergence is detectable" moves from non-claim to machine-checked
+> **and no further**: no out-of-sample rate, no false-promotion rate, no owner.
+> **Not R53.** `gates_vacuous` is still advisory-only and R55/R58a/R58b/R61
+> remain blocked: **R2 does not unblock the critical path, and a reader who sees
+> R2 land must not infer that it did.** Not an autonomy change —
+> offer-never-assign stands, `refuse_agent` is untouched, and
+> `PROMOTION_ENABLED` is still `false`. **No SME sign-off was performed** and no
+> simulated approvals were used; **D-6 stays OPEN.** Preregistration committed
+> before any code at `3f80d0c`, evidence after, code at `9fcb7adc`.
+>
+> Predecessor: **R59 "Gate"** — the admission-gate suite, and
 > two DoD items refused. Theme: **a filter becomes a control loop — two things
 > the tree already *stated* and did not *do*, and two DoD items refused rather
 > than worked around.** (1) The **admission-gate suite** in `crates/gold-sets`

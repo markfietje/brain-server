@@ -36,8 +36,8 @@
 //!
 //! ## What this is NOT
 //!
-//! ~~**No production consumer exists.**~~ **Superseded at R2 (2026-10-02).**
-//! Promotion of a *claim* is still refused by a compile-time `false`
+//! ~~**No production consumer exists.**~~ **Superseded.** Promotion of a
+//! *claim* is still refused by a compile-time `false`
 //! ([`crate::workflow::create::PROMOTION_ENABLED`]) by deliberate design — but
 //! that is the **wrong seam**, and wiring a gate there would have produced a
 //! green test suite over a function no caller can reach. The consumer landed on
