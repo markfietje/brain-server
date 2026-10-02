@@ -3064,9 +3064,31 @@ pub fn run_migration_with_store_dim(
         }
     }
 
+    // ── v1.32.24 "Axis": the PER-DOMAIN knowledge-version counter ────────
+    // `workflow_runs.knowledge_version` has recorded a case's knowledge basis
+    // since v1.32.20, but the value was a compile-time CONSTANT because nothing
+    // ever moved it. This table is the per-domain axis it is recorded against:
+    // one row per domain, monotonic, from the base version.
+    //
+    // Shape is `domain_profiles`' exact shape (`domain TEXT PRIMARY KEY`) and
+    // the upsert is the `embedding_dim` stamp's `ON CONFLICT(key) DO UPDATE`.
+    // A MISSING ROW IS NOT VERSION 0 — a domain that has never published is at
+    // the base version, and `NULL` in the runs column means "predates tracking".
+    // One additive table: nothing dropped, nothing rebuilt.
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.23')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.23';",
+        "CREATE TABLE IF NOT EXISTS knowledge_domain_versions (
+            domain         TEXT PRIMARY KEY,
+            version        INTEGER NOT NULL,
+            bumped_at      INTEGER NOT NULL,
+            bumped_by      TEXT NOT NULL,
+            bumped_article INTEGER NOT NULL
+         );",
+        [],
+    )?;
+
+    db.execute(
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.24')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.24';",
         [],
     )?;
 

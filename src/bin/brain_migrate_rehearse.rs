@@ -75,6 +75,7 @@ const PARITY_TABLES: &[&str] = &[
     "retention_policy",
     "profiles",
     "domain_profiles",
+    "knowledge_domain_versions",
     "legal_holds",
     "roles",
     "breach_events",
