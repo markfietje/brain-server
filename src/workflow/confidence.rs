@@ -39,6 +39,15 @@
 
 use crate::procedural::CATEGORIES;
 
+/// The session-log kind carrying one run's deferral decision.
+///
+/// An additive kind, which is the tree's established way to add a fact without a
+/// migration: every pre-existing reader of `agent_session_events` filters by
+/// `kind`, so a kind nothing else names is inert to all of them. The safety
+/// property was MEASURED across all 19 files referencing the table, not assumed
+/// from the docstring — see `PREREG_R67D_CARRIED_DECISION_2026-10-02.md` §3.
+pub const DEFERRAL_DECISION_KIND: &str = "deferral_decision";
+
 /// A class the deferral decision keys on.
 ///
 /// Mirrors [`CATEGORIES`] — the classifier's eight labels — plus the absence class.
@@ -284,4 +293,56 @@ pub fn decide_deferral(
     let auto_authorised: Option<MeasuredReliability> = measured_reliability(class);
     let _ = (auto_authorised, features.evidence_count);
     Ok(DeferralOutcome::Defer)
+}
+
+/// The decision plus the evidence it was made from, in the shape a caller
+/// persists and a reader displays.
+///
+/// `POST /classify` already computes all four of these and
+/// returns them, then drops them. This type exists so a run can CARRY the
+/// decision instead of the receipt being the only place it ever existed — the
+/// cockpit's queue needs the decision attached to the case, and a client may not
+/// re-derive it (no business logic in the client).
+///
+/// `confidence` and `evidence_count` travel TOGETHER and must be read together:
+/// `confidence` is the winning category's uncontested SHARE, so one keyword
+/// firing alone and ten agreeing both read `1.0`. A consumer holding
+/// `confidence` without `evidence_count` is holding a number whose caveat is
+/// missing. This struct makes the pair inseparable by construction — there is
+/// no constructor that takes one without the other.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CarriedDecision {
+    /// The class the decision keyed on — the classifier's own label.
+    pub routing_class: RoutingClass,
+    /// What happens to this case. `defer` for every class today; see
+    /// [`AUTO_CLASSES`] for why `clarify`/`stop` are not yet reachable.
+    pub outcome: DeferralOutcome,
+    /// The classifier's uncontested share in `[0.0, 1.0]`. **Read with
+    /// `evidence_count`, never alone.**
+    pub confidence: f32,
+    /// How many keywords fired for the winning category. The independent
+    /// signal: it is what separates `1.0`-on-one-hit from `1.0`-on-ten.
+    pub evidence_count: usize,
+}
+
+/// Classify `text` and decide what happens to it, as one carryable value.
+///
+/// Still pure: the classifier is a pure function and [`decide_deferral`] is
+/// total, so the same text always yields the same [`CarriedDecision`]. The only
+/// error is the non-finite-confidence refusal, which is propagated rather than
+/// coerced — a decision derived from a number that cannot exist is not a
+/// decision.
+pub fn carry_decision(text: &str) -> Result<CarriedDecision, DeferralError> {
+    let result = crate::procedural::classify(text);
+    let routing_class = RoutingClass::from_label(result.category);
+    let outcome = decide_deferral(
+        routing_class,
+        &DeferralFeatures::new(result.evidence_count, result.confidence),
+    )?;
+    Ok(CarriedDecision {
+        routing_class,
+        outcome,
+        confidence: result.confidence,
+        evidence_count: result.evidence_count,
+    })
 }

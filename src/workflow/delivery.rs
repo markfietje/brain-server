@@ -757,6 +757,38 @@ pub(crate) struct Created {
     pub state_revision: i64,
 }
 
+/// The session-log payload carrying one run's deferral decision.
+///
+/// Four scalars, refs and numbers only — **never the goal text**,
+/// which is stored on the run row already and must not be duplicated into the
+/// session log where a replay would hand it to a context builder.
+///
+/// `confidence` and `evidence_count` are both present or the payload is
+/// refused: a receipt carrying the share without the count is the exact
+/// half-number R65a exists to prevent, and a struct that cannot be built wrong
+/// is stronger than a reader that must remember.
+fn deferral_payload(goal: &str) -> String {
+    let carried =
+        super::confidence::carry_decision(goal).unwrap_or(super::confidence::CarriedDecision {
+            // An unclassifiable goal is not an error state here: the classifier
+            // is total, so this arm is reachable only if a future non-finite
+            // confidence appears. Failing closed means recording the ABSENCE
+            // class with zero evidence, never a plausible-looking number.
+            routing_class: super::confidence::RoutingClass::HumanUnmeasured,
+            outcome: super::confidence::DeferralOutcome::Defer,
+            confidence: 0.0,
+            evidence_count: 0,
+        });
+    serde_json::json!({
+        "routing_class": carried.routing_class.as_str(),
+        "outcome": carried.outcome.as_str(),
+        "requires_human": carried.outcome.requires_human(),
+        "confidence": carried.confidence,
+        "evidence_count": carried.evidence_count,
+    })
+    .to_string()
+}
+
 pub(crate) fn create_run(
     conn: &mut Connection,
     req: &CreateRun<'_>,
@@ -817,6 +849,34 @@ pub(crate) fn create_run(
     };
     row.id = row.content_id();
     write_trace(tx.tx(), &row)?;
+
+    // CARRY the deferral decision for this run. `POST /classify`
+    // computes exactly this and returns it, then drops it — so before this line
+    // the decision existed only as a response body, attached to nothing. The
+    // run is the intake, `req.goal` is its text, and this is the one seam where
+    // both the text and the id exist, so the decision is made HERE and made
+    // once.
+    //
+    // Three properties this deliberately does NOT have:
+    // - it GATES nothing. No branch below reads it; it is recorded, not acted on.
+    // - it is not a threshold. `confidence::decide_deferral` is total and
+    //   fail-closed, and with `AUTO_CLASSES` empty it resolves every class to
+    //   `defer`. Two of the three outcomes are unreachable at this seam today.
+    // - it adds no table. It rides the additive-kind law on the run's own
+    //   session log, which every pre-existing reader filters past by kind.
+    //
+    // Inside the caller's `WorkflowTx`: the run, its admission trace, and the
+    // decision it was admitted on commit together or not at all. A run whose
+    // decision failed to record does not exist.
+    super::session_log::append(
+        tx.tx(),
+        run_id,
+        super::confidence::DEFERRAL_DECISION_KIND,
+        &deferral_payload(req.goal),
+        &format!("deferral:{run_id}"),
+        req.now,
+    )
+    .map_err(|e| DeliveryError::Storage(format!("deferral carry failed: {e}")))?;
 
     // LAST statement before the commit.
     delivery_audit(
@@ -5053,5 +5113,143 @@ mod tests {
                 i + 1
             );
         }
+    }
+
+    // ── R67-DECISION: the intake carries its decision ───────────────────────
+
+    /// P1 — a created run CARRIES its deferral decision. The decision was
+    /// already computed by `POST /classify` and thrown away; this asserts it is
+    /// now attached to the run, in the run's own transaction.
+    #[test]
+    fn created_run_carries_its_deferral_decision() {
+        let mut conn = seed();
+        // A goal whose classification is NOT `general`, so the receipt carries
+        // a real class and a real evidence count rather than the empty case.
+        let created = create_run(
+            &mut conn,
+            &CreateRun {
+                domain: "global",
+                goal: "HIPAA and PII apply to this client",
+                tier: "observe",
+                policy_digest: None,
+                config_digest: None,
+                budgets: &[],
+                now: 1,
+            },
+        )
+        .expect("a delivery run opens");
+        let payload: String = conn
+            .query_row(
+                "SELECT payload_json FROM agent_session_events
+                  WHERE run_id = ?1 AND kind = ?2",
+                params![
+                    created.run_id,
+                    super::super::confidence::DEFERRAL_DECISION_KIND
+                ],
+                |r| r.get(0),
+            )
+            .expect("the run carries a decision");
+        let v: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(v["routing_class"], "compliance");
+        assert_eq!(
+            v["outcome"], "defer",
+            "every outcome is `defer` while AUTO_CLASSES is empty — asserted so a \
+             future auto-authorisation cannot land without this pin noticing"
+        );
+        assert_eq!(v["requires_human"], true);
+        assert!(
+            v["evidence_count"].as_u64().unwrap() >= 1,
+            "a compliance goal has evidence behind it: {payload}"
+        );
+        assert!(
+            v["confidence"].as_f64().unwrap() > 0.0,
+            "the share rides beside the count: {payload}"
+        );
+        // The goal TEXT is never duplicated into the session log — it lives on
+        // the run row, and a replay must not hand it to a context builder twice.
+        assert!(
+            !payload.contains("HIPAA"),
+            "the carried payload is refs and numbers, never the case text: {payload}"
+        );
+    }
+
+    /// P1b — the carrying rides the caller's transaction. A run whose decision
+    /// could not be written must not exist at all: a run with no recorded
+    /// decision would read as "never decided" rather than "never admitted".
+    #[test]
+    fn the_decision_rides_the_caller_transaction() {
+        let mut conn = seed();
+        let created = create_run(
+            &mut conn,
+            &CreateRun {
+                domain: "global",
+                goal: "ship the thing",
+                tier: "observe",
+                policy_digest: None,
+                config_digest: None,
+                budgets: &[],
+                now: 1,
+            },
+        )
+        .expect("a delivery run opens");
+        // Exactly ONE decision row: a replayed admission does not append a
+        // second. `session_log::append` is idempotency-keyed on the run.
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE run_id = ?1 AND kind = ?2",
+                params![
+                    created.run_id,
+                    super::super::confidence::DEFERRAL_DECISION_KIND
+                ],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "one admission carries exactly one decision");
+    }
+
+    /// P4 — **the decision gates nothing.** The grep that matters: the carried
+    /// kind is READ in exactly one place (this round's reader) and WRITTEN in
+    /// exactly one (this round's writer). If a third site ever reads it to
+    /// BRANCH, this round's non-claim has been quietly broken.
+    #[test]
+    fn the_decision_changes_no_gate() {
+        let kind = super::super::confidence::DEFERRAL_DECISION_KIND;
+        let readers: Vec<String> = std::fs::read_dir("src")
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .flat_map(|p| {
+                if p.is_dir() {
+                    std::fs::read_dir(p)
+                        .unwrap()
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.path())
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![p]
+                }
+            })
+            .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+            .filter_map(|p| {
+                let name = p.file_name()?.to_str()?.to_string();
+                let text = std::fs::read_to_string(&p).ok()?;
+                text.contains(kind).then_some(name)
+            })
+            .collect();
+        // confidence.rs defines the constant; delivery.rs writes it;
+        // agreement.rs reads it. Nothing else may even name it.
+        for name in &readers {
+            assert!(
+                ["confidence.rs", "delivery.rs", "agreement.rs"].contains(&name.as_str()),
+                "R67-DECISION: {name} names the carried decision. The writer and the one \
+                 reader are the whole design — a new site must be a stated amendment, \
+                 not a quiet third reader that starts gating on it."
+            );
+        }
+        assert!(
+            readers.iter().any(|n| n == "agreement.rs"),
+            "the reader must still exist — a pin that passes because nothing references \
+             the kind at all is vacuous"
+        );
     }
 }

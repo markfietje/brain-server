@@ -858,7 +858,7 @@ export interface paths {
         put?: never;
         /**
          * Deterministic categorization (v1.10.0, Mem0's premium free)
-         * @description Keyword-router categorization — no LLM, no cloud, fully auditable. Returns the winning category, confidence, the matched keywords, and the full taxonomy. `general` (confidence 0.0) when no keyword clears the threshold.
+         * @description Keyword-router categorization — no LLM, no cloud, fully auditable. Returns the winning category, confidence, the matched keywords, and the full taxonomy. `general` (confidence 0.0) when no keyword clears the threshold. Also returns the DEFERRAL DECISION for the same label, so a client learns "what is this?" and "does a human decide it?" in one call and cannot reconstruct the second from the confidence number.
          */
         post: operations["classify"];
         delete?: never;
@@ -3277,6 +3277,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/ops/authz/explain": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Explain this caller's own RBAC verdict for a route (Admin on global; audited)
+         * @description R47: the operator-facing half of the RBAC round. Returns the gate row for a route PATTERN, the required action, and the verdict for the CALLER'S OWN principal with a closed reason. Deliberately never answers "what would another role get": given a role set, "which gates would these clear" is the reconnaissance tool this surface refuses to be. A route with no gate row answers a probe-blind 404. Role-less posture (BRAIN_RBAC_ROLELESS_POSTURE) is echoed on every response.
+         */
+        get: operations["explainAuthzVerdict"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workflow/runs/{id}/delegations": {
         parameters: {
             query?: never;
@@ -3723,6 +3743,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workflow/agreement/queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The caller's own run rows awaiting a verdict (calibrate role)
+         * @description The agreement-labelling path's reviewer queue: REAL `delivery_traces` rows carrying a populated `model_ref`, oldest first, bounded. Rows carry the trace's metadata (masked through the read seam with unconditional PII masking) and the CALLER'S own latest verdict — never another reviewer's. The machine's verdict is NOT in the rows: it has no field on the type a reviewer reads, so blindness is the core's output type and not a discipline. The response echoes the caller's slot and reviewer id. Rows are ordered oldest-first; a row with a NULL `model_ref` is not labelable and never appears. **`confidence` / `evidence_count` / `outcome` / `routing_class` (R67-DECISION) are the run's CARRIED deferral decision, and every one of them is NULLABLE because NULL is load-bearing: it means "no decision was recorded for this run", NOT "zero" and NOT "measured as nothing". A run created before the carrying seam has no decision, and a defaulted `0.0` would put a number on a reviewer's screen that was never measured. Read `confidence` and `evidence_count` TOGETHER or not at all — `confidence` is the winning category's uncontested SHARE, so one keyword firing alone and ten agreeing both read `1.0`. **`outcome` is `defer` for every row today.** `deferral::AUTO_CLASSES` is empty and the decision is fail-closed, so `clarify` and `stop` are UNREACHED rather than broken; a client rendering two empty panels is showing the truth about the policy's coverage. This is a per-CASE routing decision and is distinct from the machine's VERDICT, which remains unreachable by a reviewer.
+         */
+        get: operations["workflowAgreementQueue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/agreement/labels": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bind one verdict to one real run row (calibrate role; the reviewer is the principal)
+         * @description One verdict on one REAL run row: body `{run_id, subject_id, verdict}` — the verdict comes from the closed vocabulary (confirmed | overturned | uncertain), the reviewer IS the authenticated principal, and the reviewer slot derives from it (the client never names the judge). The write is exactly-once and append-only under the run id: a re-submitted latest verdict is the no-op receipt, a changed verdict appends a supersession row, and the audit rows land inside the caller's transaction. The machine's verdict is DERIVED from the run row and FROZEN into the label, so flipping the run's outcome later does not silently re-score a judgment made against what the row said then. A label without a reviewer is refused before any write.
+         */
+        post: operations["workflowAgreementLabel"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/agreement/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The agreement report — raw agreement per reviewer, plus inter-rater kappa pairs (DPO/admin dual gate + calibrate; audited)
+         * @description Agreement WITH THE OPERATOR over the labeled set, kept in two halves that are never blended. `rows` is one cell per (domain × reviewer): `n_confirmed` / `n_overturned` / `n_uncertain` are reported SEPARATELY (collapsing the last two would let clean uncertainty masquerade as failure) and `raw_agreement_units` is `confirmed / labeled` in integer ten-thousandths. `distinct_reviewers` rides each cell so the single-rater era is readable from the data: `1` means NO inter-rater reliability exists behind the number. `pairs` is one cell per (domain × reviewer PAIR) with Cohen's kappa, DELEGATED to the shared pure function — it is EMPTY in a single-rater era, because a pair that does not exist is not a reliability. Every number here is DATA; nothing gates on it and no promotion bar is applied. EVERY call lands an audit row naming the principal and the counts.
+         */
+        get: operations["workflowAgreementReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workflow/wizard/packs": {
         parameters: {
             query?: never;
@@ -3845,6 +3925,334 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workflow/delivery/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The domain's delivery runs (Read on the queried domain plus the `workflow` role)
+         * @description The run read census's listing: every delivery run in ONE domain, oldest first, keyset-paginated on the id (`after_id`) so a caller never sees a row twice. `limit` is clamped in the core — the cap is law, not a request field — and both bounds are disclosed in the payload. The phase and tier are read from the run's own state; the state bytes themselves are not echoed (the engine-exact view is the machine surface). Read on the queried domain plus the `workflow` role. Serving this list grants no authority and makes no compliance finding.
+         */
+        get: operations["listDeliveryRuns"];
+        put?: never;
+        /**
+         * Open a delivery run (Write on the target domain plus the `workflow` role)
+         * @description Admits a run onto the EXISTING run engine with kind = `delivery` — no second engine and no schema widening. The phase machine is the pure crate's: forward-only, total, and borrowed rather than re-derived. The tier is the design owner's closed set (observe, propose, bounded-auto, delegated) and the trace mode is DERIVED from it, never taken from the client. Any budget ceilings in the request are STORED as evidence and are not enforced by this round: no route consults a ceiling here. A delivery run carries no jurisdiction, so no law-version stamp is written.
+         */
+        post: operations["createDeliveryRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/delivery/runs/{id}/advance": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Advance a delivery run one phase (Write on the run's domain plus the `workflow` role)
+         * @description One phase pass, and one transaction: the step row, the revision CAS, the trace row, and a fail-closed audit row commit together or not at all. The move is legal only if it is one of the five adjacent phases; a skip and a rewind are both refusals, and a lost CAS refuses the whole pass rather than overwriting the winner. The run closes `completed` only at the terminal phase, inside the engine's existing closed status set. An optional `artifact` rides the pass: a TYPED artifact the phase produces, filed in the SAME transaction as a PENDING proposal with no disposition, so a reviewable artifact can never cite a pass that did not commit. The executor proposes; only the gate disposes. On a `build` pass the artifact's `quality_gate` is evaluated first and an artifact whose evidence is not a live surface is refused before anything is written. The response's `proposal_id` is the proposal the artifact filed, or `0` when the pass carried none. The digest is derived server-side — there is no digest field to supply. R40: the pass now also signs an ATTESTATION link and appends it to the run's chain, inside this same transaction, and the trace row names the chain head. An optional `model` binding names the registry row this pass executed under: the server resolves it, and the signed predicate carries the row's ARTIFACT DIGEST, so a model name with no bytes behind it is refused rather than recorded. The four registry refusals are distinct. KEY POSTURE (fail-closed): a phase pass REFUSES when the host has no usable operator key — `delivery_attestation_refused` covers an absent key and a refused one alike, and neither ever degrades into an unsigned link. A run on a keyless host therefore never advances past its admission.
+         */
+        post: operations["advanceDeliveryRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/delivery/runs/{id}/answer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Answer a delivery run's pending question (Write plus the `workflow` role)
+         * @description Clears the run's `pending_question` routing key through the same revision CAS the phase pass uses, and records that an answer happened. The answer itself is operator-authored prose on a run the operator owns: it is stored in the run's own state, bounded, and is never copied into a trace row. A run with no pending question is a refusal.
+         */
+        post: operations["answerDeliveryRun"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/delivery/runs/{id}/gates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Evaluate the phase gate for a delivery run (Write plus the `workflow` role)
+         * @description A DISPOSITION, never a mutation: the run's phase, status, and revision are untouched, and the only writes are the trace row and its audit. The evaluation is pure and offline. Deny wins — the terminal phase and an illegal move are refusals, and a value outside the closed phase vocabulary is a refusal rather than a nearest-match guess. A tier that may not promote is told to ask: the disposition is `prompt`, and the human's advance route is the disposal. No budget ceiling is consulted.
+         */
+        post: operations["evaluateDeliveryGate"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/delivery/runs/{id}/attestations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the run's attestation chain and its verification verdict (Read plus the `workflow` role)
+         * @description The chain of signed statements about what this run's phase passes actually did, newest-last, and the UNCONDITIONAL verification verdict over it. The verdict ships on every response and no parameter can switch it off; `?verify=1` is accepted and is an explicit request for the IDENTICAL payload. A link that does not verify is REPORTED per link with a named refusal code — it is never hidden, never dropped, and never downgraded into a mark that reads as verified. The only 409 is a chain that could not be READ at all, which is reported rather than rendered as an empty verified-looking chain. THE NON-CLAIMS, which are load-bearing and not decorative. This envelope is NOT DSSE. It is the project envelope convention: a signature over a canonicalized JSON object. It does not implement the DSSE envelope structure and does not apply the DSSE Pre-Authentication Encoding (DSSE v1.0.2, 2024-05-10), and it WILL NOT VERIFY AGAINST ANY DSSE VERIFIER. The field names `subject_digest`, `predicate_type`, and `predicate` were chosen to MIRROR the naming of the in-toto Attestation Framework's Statement v1 model (`subject[].digest`, `predicateType`, `predicate`; `_type` `https://in-toto.io/Statement/v1`). That is naming adjacency in this project's own design lineage. The envelope is not an in-toto Statement, carries no `_type` field, and verifies against neither an in-toto nor a DSSE verifier. No SLSA claim. SLSA (Supply-chain Levels for Software Artifacts, Version 1.2, 2025-11-24) is the ecosystem's frame for BUILD provenance. This is not a build artifact: there is NO SLSA PROVENANCE ATTESTATION here and no SLSA build level is claimed, so the envelope will not verify against a SLSA or in-toto provenance verifier either. The IETF WIMSE agent-audit drafts (2026; four drafts, zero RFCs, two of them individual submissions rather than Working Group documents) are contemporaneous prior art for signed statements about what an agent did. They are cited as prior art only: no WIMSE relationship, adoption, or alignment is claimed. AUTHORSHIP IS NOT AUTHORITY. A verified link proves the holder of the key named in `signer_did` signed these bytes. There is no PKI, no revocation oracle, and no key epoch, so a rotated key leaves historical links verifiable and valid. Nothing about whether the act was PERMITTED is asserted anywhere in this payload. OPERATIONAL POSTURE: on a host with NO operator key, every delivery phase pass REFUSES, because an attestation that cannot be signed is never written as an unsigned link. A run created on such a host therefore has an empty chain rather than a chain of unsigned rows. The predicate carries 4 of its 13 fields non-empty today — `gate_verdicts`, `approval_ref`, `authority_receipts`, and `budget_spend` stay empty until the rounds that populate them ship. Do not read it as a rich claim.
+         */
+        get: operations["getDeliveryAttestations"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/delivery/runs/{id}/replay-verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Re-derive the run's stored trace and report whether it is internally consistent (Read plus the `workflow` role)
+         * @description For every trace row, in ORDINAL order, this re-computes the row's content address from its own STORED columns and compares it with the address stored beside it. A disagreement is reported as a diff row and the request still succeeds: a mismatch is DATA, never an error status. The ordinal series is also checked for contiguity, and a gap or a descent is reported as an `order` diff. Models are NEVER re-run. This surface reaches no model provider and no network — the comparator lives in a crate whose entire dependency set is serde, serde_json and sha2, so the zero-model property is structural rather than a promise. The verdict says NOTHING about whether an outcome was CORRECT; it compares stored bytes to each other. ADJACENCY, DISCLOSED RATHER THAN HIDDEN. A pre-existing route, `POST /workflow/decision-runs/{id}/replay-diff`, publishes a similar concept under similar wire keys (`stages`, `match`, `all_match`). The two are NOT unified, share no code, and disagree about method: that route RE-EXECUTES the pipeline and loads a bound model, where this one does not re-execute anything — it re-derives from stored bytes only and cannot run a model even in principle. Do not read one route's verdict as bearing on the other. THE CEILING, which is the whole point. This is tamper EVIDENCE over stored bytes. It is NOT tamper-proofing: an attacker who edits a stored column AND recomputes the row's content address leaves nothing to detect here. It does NOT bind a trace row to the signed attestation chain — the chain is what binds, and this checks; cross-checking the two is not implemented and is not claimed. A verified replay AUTHORIZES NOTHING: authorship is not authority, and a byte-identical replay is NOT a compliance finding. Classification, retention, and any legal sufficiency of this output are operator-and-counsel determinations. The window is bounded at 500 rows and the bound is DISCLOSED in every response (`window.cap`, `window.truncated`); a bounded window never reads as the whole run. The `ddl_*` narrative appendix is bounded separately and discloses its own cap.
+         */
+        get: operations["getDeliveryReplayVerify"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/delivery/runs/{id}/trace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The run's stored trace rows in ordinal order, with the chain head (Read plus the `workflow` role)
+         * @description The rows `delivery_traces` actually holds for this run, in the stored ordinal order, plus the attestation chain head read from storage and the same bounded, self-disclosing `ddl_*` narrative appendix the replay verdict carries. It rides the SAME read function and the SAME window function as the verdict, so the two apply identical logic to storage: any difference you observe between them is a change in storage, not a difference of method. They are two separate requests with no shared snapshot, so this is not a consistency guarantee across a moving run — this one answers "what is actually there", which is the question a reader has when the verdict reports that something did not line up. Serving these bytes is not an endorsement of them. The rows are operator-authored text and digests, returned as stored. The window is bounded at 500 rows and the bound is DISCLOSED in every response (`window.cap`, `window.truncated`).
+         */
+        get: operations["getDeliveryTrace"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/delivery/bindings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The authority bindings configured for a domain (Read plus the `workflow` role)
+         * @description The standing authorities this machine holds to read external systems on behalf of ONE domain. `domain` is a query parameter and is required; the surface is domain-scoped because a binding resolves to one tenant's authority and an unscoped resolve would be a cross-tenant leak. A binding names an endpoint, a stable external ref (`owner/repo`), and an `authority_digest` covering the endpoint, the ref, and the secret's FILE NAME. The digest never covers the secret and never its path: a digest over secret material is a credential at rest in a hash column. No field in this response reveals where a credential lives. `capabilities` is the operator's declared read/intent surface, parsed with `deny_unknown_fields` — an unknown field or an unknown capability is a REFUSED binding, not an ignored one. A block this server cannot parse renders as the literal `"unparseable"` rather than as a default that would read as unconstrained. The pending-intent counters are the ops signal that a delivery intent which is merely not-yet-promoted is distinguishable from one that was lost, and from a FORGED row carrying a delivery topic whose key is not a kernel mint. `untrusted_pending` should be zero; a non-zero value means something wrote the reserved topic root without the minter. There is deliberately NO write route. Consent to an external authority is given by configuring a binding at boot and withdrawn by setting `active = 0` — never by a request, because a request must never be able to create or widen an authority. Serving this list grants no authority, approves nothing, and makes no compliance finding. Authorship is not authority.
+         */
+        get: operations["listDeliveryBindings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/delivery/releases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The domain's release rows (Read on the queried domain plus the `workflow` role)
+         * @description The release census: every release row in ONE domain, newest first, capped, with the cap DISCLOSED in the payload. The approval columns ride the row because the row IS the approval artifact; every text field passes the read seam. Serving this list grants no authority, approves nothing, and makes no compliance finding.
+         */
+        get: operations["listDeliveryReleases"];
+        put?: never;
+        /**
+         * File a governed release (Write on the run's domain plus the `workflow` role; the agent preset is refused)
+         * @description The machine's proposal to move ONE artifact toward ONE external authority. The kernel names everything that binds: the artifact digest is derived from the run's own typed-artifact bytes (never from a request field), and the authority binding is resolved from the run's own domain and the named target kind — a client-named binding id could name another tenant's authority. The request names only the run, the target kind, the governed ref, the OTel environment (the closed four-value `deployment.environment.name` set), and, honestly optionally, the OTel revision (`vcs.repository.ref.revision` is Release Candidate — cited by name, never claimed stable). The new release lands `proposed`. It is not an approval, not an authority, and not a compliance finding: it is the row a human's approval will later bind to. The agent preset is refused before any work: agents hold `write:*`, the role gate alone would admit them, and this is the write family whose consequences reach another system.
+         */
+        post: operations["createDeliveryRelease"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/delivery/releases/{id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Record the approval (Write on the release's domain plus the `workflow` role; the agent preset is refused)
+         * @description The approval is COLUMNS on the release row, and the binding is THREE-WAY: the content digest as of the approval (kernel-written from the release row, never client-asserted), the authority digest recomputed from the binding row as it is now, and the run's state revision as it is now. An approval that binds content but not the target is replayable against a different external system; one that binds both but not the revision is replayable across a later phase pass. The expiry is measured from `approved_at` — the window that matters is exactly the gap between approve and promote — and is evaluated inside the promote transaction, fail-closed at the boundary. The approving principal is recorded from the authenticated caller, never asserted from the body. Approve and promote are separate requests by design: today's atomic approve-and-promote shape is what makes replay possible, and splitting them is what makes the binding re-verifiable at the moment of the act. An approval is an authorization ARTIFACT, not an identity record and not a compliance finding.
+         */
+        post: operations["approveDeliveryRelease"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/delivery/releases/{id}/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The promotion gate (Write on the release's domain plus the `workflow` role; the agent preset is refused)
+         * @description One transaction that re-verifies EVERYTHING before the pure gate reads anything: the signature chain (offline verifier — a broken chain is a typed refusal before the gate), the live digest re-derived from the artifact bytes as they exist now, the authority (recomputed; drift is a 409), the run's revision (unchanged since the approval), the approver's principal (the kill-switch), and the tier (the run's state and the chain's signed predicate must agree — a tier the run never granted is the forgery this refuses). Then the crate's total gate decides, deny-wins, first reason reported in push order. The trace mode is carried and deliberately UNREAD — authority comes from the tier, never from how a trace was produced. A permitted promotion walks the crate's one-step-at-a-time transition law inside the same transaction, lands `promoted`, records the post-hoc budget draw (elapsed minutes and the one artifact moved — `spent` moves only when a producer exists), and MINTS the dispatch intents. Promotion IS the outbox write: nothing here touches the network, and the intents wait for the /due crank. The ledger's belief moves only when the inbound authority observation reconciles — the crank never writes `verified_at`. Budgets are enforced at PROMOTION TIME, inside the promote transaction — not at a hostcall seam, which the delivery loop never touches (the hostcall `Budget` is a 30 s wall clock with no run/kind/spend). Every enforced budget kind needs explicit, unexhausted headroom; `blast_radius` is never enforced (crate law). `confirm` is the human disposition act on a `prompt` verdict; absent is false, and nothing moves until the answer arrives.
+         */
+        post: operations["promoteDeliveryRelease"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/delivery/due": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * The /due crank (Write on the body's domain plus the `workflow` role; the agent preset is refused)
+         * @description The valet precedent, transplanted: request-scoped (no daemon, no scheduler — the cron recipe IS the scheduler), a bounded batch that DRAINS (never wedges), `remaining` reported AND audited, and a hard in-handler batch cap — no route-level rate limiter exists, so the cap is the only thing between a crank and an egress storm. The body's `domain` is the scope, checked immediately after authz. Three phases, and the middle one holds NO database connection: (1) select and RE-VERIFY each pending kernel-authentic intent whose release is `promoted` — authenticity, the release's status, the approval's currency against the LIVE artifact digest, the approver's principal, and the chain's verification — all re-run here even though the promote checked them too, because the world moves between the mint and the drain; (2) dispatch each verified intent through the R42 pinned read-egress path (the only egress the tree has — exact-host refused, bearer read at the call and never stored); (3) mark each succeeded row delivered through the guarded `pending → delivered` update, where a concurrent drain is a receipt and not a second effect. The ledger's BELIEF moves only when the inbound authority observation reconciles — the crank NEVER writes `verified_at`. A crash between a mark and anything else replays a durable row, never a double-release, because promotion IS the outbox write and the dispatch is a read.
+         */
+        post: operations["runDeliveryDueCrank"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/delivery/runs/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One delivery run's head (Read on the run's domain plus the `workflow` role)
+         * @description The id-scoped half of the census. The domain resolve comes first (probe-blind 404 on an absent or foreign run), and a non-delivery run reads as absent rather than as a wrong-kind error — the collapse that keeps this surface from being an existence oracle.
+         */
+        get: operations["getDeliveryRun"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/delivery/runs/{id}/steps": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One delivery run's steps (Read on the run's domain plus the `workflow` role)
+         * @description The run's steps in id order, capped like every list surface. Same probe-blind collapse as the head read.
+         */
+        get: operations["listDeliveryRunSteps"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/delivery/outcomes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The derived delivery read model (Read on the domain plus the `workflow` role)
+         * @description The DO-named operate surface: a derived, read-time-only cluster over the domain's own audited release rows and authority-fact findings. Throughput and instability are a coupled cluster; change_fail_rate is the control — its readings carry `role: "control"`, and the cluster carries the recorded framing (leading indicators for organizational performance; lagging for delivery practices) so no client can render a bare throughput number as a performance verdict. There is one route and one response object: no field decomposition lets a consumer target throughput in isolation. `domain` is a required query parameter and the surface is domain-scoped, because a release row resolves to one tenant and an unscoped resolve would be a cross-tenant leak. `window` is an optional integer number of days, default 30, bounded 1..=366 and validated in the core: a value outside the bound is `400 window_out_of_bounds`, never a silent clamp. OWASP LLM10 (unbounded consumption) is the relevant threat and the window bound is the control; there is no model call, so no injection surface is added. Every metric carries a typed state — `computed` with a value, or `insufficient` with a closed reason (`window_empty`, `no_vcs_revision_recorded`, `no_incident_facts`, `no_rework_signal`, `insufficient_history`). An absent metric is never rendered `0`, and a zero is never rendered absent. Where DORA (DevOps Research and Assessment) names are used at all they carry `dora_name` + `definition_match: proxy` + a one-line definition note; the native measures (`approval_to_promotion_elapsed`, `governed_release_cadence`) are named natively, and the native elapsed measure is never presented as DORA change lead time. Metrics vocabulary only; no thresholds or tables reproduced — no benchmark thresholds, tables, figures, or performance bands appear anywhere, and the run's own history (`own_baseline`) is the only baseline the response carries. The change-fail rate is the count of the window's promoted releases whose run carries a delivery authority contradiction (the closed `delivery:%` source vocabulary narrowed by the typed confidence column — the claim text is never read) over all of the window's promoted releases; a contradiction on a run whose release is not promoted in-window is out of the denominator. Commit-anchored change lead time computes only when the release's `commit_sha` joins to a recorded vcs commit-time fact. No production writer records such a fact today, so the live branch is `insufficient` (`no_vcs_revision_recorded`) — the honest answer, not an approximation; the computed branch is implemented and unit-proven so the metric is correct the day the facts exist. This surface is transparency and auditability by design: a governed operator reads derived facts over their own audited records. It makes no automated decision about a person, so no AI Act high-risk duty is triggered by this code. It carries no EU DORA obligation and makes no operational-resilience claim. Nothing is persisted: the derivation is a pure query, deterministic for (window, now), and it writes no findings row, no counter, and no scalar anywhere.
+         */
+        get: operations["getDeliveryOutcomes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/webhooks/delivery/{kind}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * An inbound AUTHORITY OBSERVATION (public; HMAC self-authenticating)
+         * @description The delivery observation sub-family. It is admitted by the EXISTING public `/webhooks/` prefix rule and adds no new public path: it authenticates with the shipped GitHub HMAC verifier over the raw body and lands in the same bounded queue as every other verified webhook, so the replay window, the delivery-id idempotency, and the flood cap are the consent boundary it actually passes through rather than properties it re-implements. The observation is NEVER trusted ahead of reconciliation. A verified body says only that these bytes came from the configured sender; what the ledger believes comes from the authority itself, read through the shared egress family, and a mismatch is recorded as typed evidence for a human to decide. The 200 reports the RECONCILED verdict, not the claim. The run, the domain, and the secret root are resolved SERVER-SIDE from the configured binding. None of them rides the request: a body claiming a different tenant is ignored, which is the point of a domain-scoped authority. An observation arriving with no open run in that domain is refused rather than attached to an arbitrary one. The signature shows the holder of the configured secret sent these bytes. It says nothing about whether their contents are true.
+         */
+        post: operations["receiveDeliveryObservation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/workflow/model-registry": {
         parameters: {
             query?: never;
@@ -3905,10 +4313,444 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workflow/claim-schemas": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Author a claim schema (Write on global plus the `workflow` role; human principal only)
+         * @description A claim schema is a HUMAN artifact. Only a human principal may author one, and a self-authored schema is refused at admission rather than warned about. The reason is measured rather than assumed: an agent writing its own specification gains nothing over an unaided baseline, and the reported failure mode is faithfulness — it constrains part of the problem and frees the rest, which an author who cannot tell the difference is not positioned to review. The stored `authored_by` string is mapped from the TYPED principal kind inside the service core, so no request body can name its own author. The table's CHECK on that column is a tripwire on the write path, not an identity proof — a CHECK reads a column, never the live session — and the binding check that the acting principal is human lives in this route's role gate. The budget consequence is real and is not hidden: one human artifact per domain, recurring forever.
+         */
+        post: operations["createClaimSchema"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/claims": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The gated claim read (Read on global; audited)
+         * @description The loop's ONLY reader. It joins on `status = 'ratified' AND recall_visible = 1` — the same two columns the database fence protects — so a trigger that was somehow bypassed still leaves an unratified claim invisible here, and a row that somehow became visible without a promote audit row is invisible there. The surface has no parameter that could reach unratified material, so it cannot be asked for any. Bounded, newest-first, every emitted text field through the read seam.
+         */
+        get: operations["listRecallableClaims"];
+        put?: never;
+        /**
+         * Propose a claim (Write on global plus the `workflow` role; audited)
+         * @description A claim is a TYPED tuple — domain, subject, predicate, value — against a ratified schema. A free-text proposal cannot mint one, which is the defect this loop exists for. Every typed slot must be filled: a slot that defaulted its way to ratified would be the same failure in a narrower column. The claim lands `pending`, invisible to every recall surface. The stored principal kind is derived from the caller's typed principal, so the `created_by` fence column cannot be asserted by a request body.
+         */
+        post: operations["createClaim"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/claims/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one claim for the promotion screen (Read on global; audited)
+         * @description The ONE surface besides the service core that may see a claim that is not yet ratified, which is why it is a separate operation rather than a flag on the gated read. Authorization precedes the lookup, so an absent id is probe-blind.
+         */
+        get: operations["getClaimForPromotion"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/claims/{id}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Run the gate over a claim (Write on global plus the `workflow` role; audited)
+         * @description The gate is six deterministic checks in a fixed order, each a pure function over rows: shape, bounds, referential, citation resolvability, contradiction, and premise discipline. No model, no score, no threshold, no tie-break by judgement — and that is the design, because if any gate authority derived from model judgement then more proposals would make the gate strictly worse. Citation resolution is delegated to the byte-range evidence resolver over ADMITTED bytes, never over a live substring match. The response carries the verdict and a CLOSED refusal code. It never carries the failing byte offset, the adjacent text, or which evidence item was at fault: a location hint handed back to a generator turns the gate into an oracle it can be searched against. The detailed diagnostic goes to the audit chain and the promotion screen only.
+         */
+        post: operations["verifyClaim"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflow/claims/{id}/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Promote a claim — DISABLED, returns a typed refusal in every configuration
+         * @description THE LOOP SHIPS INERT. This route exists, is authorized, is audited, and returns `promotion_disabled` in every configuration, for every actor, whether or not a token was presented. A deterministic gate's honesty is a MEASURED property, not an architectural one. The one relevant published datapoint reads zero failures in benchmark and one in a hundred and forty-six out of benchmark, and nobody has published a long-run figure. Promotion therefore stays disabled until a published out-of-sample figure exists and has a NAMED OWNER. The switch is a compile-time constant with no environment variable and no flag behind it. The attempt is audited whether or not it succeeds: a promotion path that only records its successes is one whose refusals are invisible, and an invisible refusal rate is a gate that has already lost.
+         */
+        post: operations["promoteClaim"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        DeliveryRunCreated: {
+            /** Format: int64 */
+            run_id: number;
+            /** @enum {string} */
+            phase: "scope" | "design" | "build" | "release" | "operate" | "done";
+            /** @enum {string} */
+            tier: "observe" | "propose" | "bounded-auto" | "delegated";
+            /** @enum {string} */
+            trace_mode: "deterministic" | "exploratory";
+            trace_id: string;
+            /** Format: int64 */
+            state_revision: number;
+            principal: string;
+        };
+        /** @description The response of `POST /workflow/delivery/runs/{id}/advance`. Served by the route handler `post_delivery_advance`, which calls `workflow::delivery::advance` and serializes its return value — the `pub(crate) struct Advanced` at `src/workflow/delivery.rs:868`. The Rust and spec names deliberately differ, and this is a house convention rather than a one-off: the wire vocabulary is namespaced (`DeliveryRunCreated`, `DeliveryRunAdvanced`, `DeliveryRunAnswered`, `DeliveryGateVerdict`) while the service-core types are terse (`Created`, `Advanced`, `Answered`, `GateVerdict`) because they live in one module and the module already supplies the namespace. The same divergence exists across the spec (`MemorySearchResult`, `DsarExport`), so renaming either side would be a repo-wide convention change, not a correction — deliberately not done unilaterally. The pairing is machine-checked, not asserted: see `delivery_advance_wire_schema_matches_the_handler` in `src/docs_truth.rs`, which pins the key set AND this route-to-type binding, so a future rename on either side fails the build rather than silently desynchronizing the spec from the served response. */
+        DeliveryRunAdvanced: {
+            /** Format: int64 */
+            run_id: number;
+            /** @enum {string} */
+            phase: "scope" | "design" | "build" | "release" | "operate" | "done";
+            /** @enum {string} */
+            tier: "observe" | "propose" | "bounded-auto" | "delegated";
+            /** @enum {string} */
+            trace_mode: "deterministic" | "exploratory";
+            trace_id: string;
+            /** Format: int64 */
+            state_revision: number;
+            /** Format: int64 */
+            step_id: number;
+            /**
+             * Format: int64
+             * @description The pending proposal the typed artifact filed, or 0 when the pass carried no artifact
+             */
+            proposal_id: number;
+        };
+        /** @description The typed artifact a phase pass carries. Its SHA-256 is derived server-side from `content` — there is no digest field, so a client cannot name the digest of an artifact the server did not derive. The content is screened at this boundary (reject 400, quarantine 409) and stored verbatim, so the approval digest is computed over one shape. */
+        DeliveryArtifact: {
+            id: string;
+            content: string;
+            /** @description The executor's checkpoint gate as JSON, evaluated by the shipped validator on a `build` pass. Consulted only when the pass targets `build`; carried and ignored on every other phase. Parsed as structured data and never rendered. */
+            quality_gate?: string;
+        };
+        DeliveryRunAnswered: {
+            /** Format: int64 */
+            run_id: number;
+            trace_id: string;
+            /** Format: int64 */
+            state_revision: number;
+        };
+        DeliveryGateVerdict: {
+            /** Format: int64 */
+            run_id: number;
+            /** @enum {string} */
+            phase: "scope" | "design" | "build" | "release" | "operate" | "done";
+            /** @enum {string|null} */
+            next_phase?: "scope" | "design" | "build" | "release" | "operate" | "done" | null;
+            /** @enum {string} */
+            tier: "observe" | "propose" | "bounded-auto" | "delegated";
+            /** @enum {string} */
+            trace_mode: "deterministic" | "exploratory";
+            /** @enum {string} */
+            disposition: "allowed" | "prompt" | "denied";
+            /** @enum {string|null} */
+            deny_reason: "terminal-phase" | "illegal-phase-transition" | "closed-vocabulary" | "exhausted-budget" | null;
+            trace_id: string;
+            /** Format: int64 */
+            evaluated_at: number;
+        };
+        /** @description The registry row a phase pass executes under, NAMED by the client. The server resolves the key and derives the artifact digest, so a client can never vouch for a model it did not run; a row that resolves without an artifact digest is refused. Absent is the previous behaviour: the trace rows carry honest nulls and the signed predicate's model fields stay empty. */
+        DeliveryModelBinding: {
+            key: string;
+            config_digest: string;
+        };
+        /** @description One signed statement about one phase pass. `verified` is this link's own verdict and `refusal` (present only when it is false) names why — a closed vocabulary, never a generic failure. The raw signed envelope is deliberately NOT returned: it is canonical bytes carrying a base64 signature, and this surface answers "does it verify, and who signed it". The envelope is retrievable from storage by a holder of the chain. */
+        DeliveryAttestationLink: {
+            id: string;
+            /** Format: int64 */
+            run_id: number;
+            /** Format: int64 */
+            step_id: number;
+            /** @description Kernel-derived (`delivery/phase/{phase}` plus a bounded artifact-id suffix). Agent free text never becomes a signed name. */
+            subject_name: string;
+            subject_digest: string;
+            /** @enum {string} */
+            predicate_type: "urn:brain:attest:delivery:v1";
+            predicate_digest: string;
+            /** @description The key that signed, as a did:key. This IS the key history: there is no epoch column, no revocation oracle, and no PKI, so a rotated key leaves historical links verifiable. Authorship is not authority. */
+            signer_did: string;
+            /** @description Empty at the chain root; otherwise the parent link's row id. */
+            parent_id: string;
+            chain_hash: string;
+            /** Format: int64 */
+            created_at: number;
+            verified: boolean;
+            /**
+             * @description Why this link does not verify. Present only when `verified` is false.
+             * @enum {string}
+             */
+            refusal?: "attestation_root_has_parent" | "attestation_broken_link" | "attestation_envelope_malformed" | "attestation_integrity_incomplete" | "attestation_signer_mismatch" | "attestation_content_hash_mismatch" | "attestation_unknown_signer" | "attestation_signature_invalid" | "attestation_predicate_type_mismatch" | "attestation_predicate_malformed" | "attestation_predicate_incomplete" | "attestation_predicate_digest_mismatch" | "attestation_chain_hash_mismatch" | "attestation_column_mismatch" | "attestation_dated_in_future";
+        };
+        /** @description The UNCONDITIONAL verdict over the chain. There is no parameter that can switch it off. An empty chain (a run that has not yet passed a phase) reports `verified: true` with `link_count: 0`, which means "nothing to refute", not "everything is fine". */
+        DeliveryAttestationVerdict: {
+            verified: boolean;
+            /** @description The last link's row id, or null when the chain is empty. */
+            head?: string | null;
+            link_count: number;
+            /** @description Distinct keys that signed this chain, sorted. */
+            signer_dids: string[];
+        };
+        /** @description The run's chain in append order, with the verdict. Served from `brain_delivery_core`'s predicate and record-digest forms over the shipped integrity stack; verified OFFLINE, with no key file, no network, and no clock involved. See the route description for the non-claims, which are part of the contract. */
+        DeliveryAttestationChain: {
+            /** Format: int64 */
+            run_id: number;
+            chain: components["schemas"]["DeliveryAttestationLink"][];
+            verdict: components["schemas"]["DeliveryAttestationVerdict"];
+        };
+        /** @description One stage's digests, as the replay surface projects them. `input_digest` is `sha256:` over the row's canonical stored facts; `output_digest` is the row's content address (`trc_...`) — STORED on the recorded side and RE-DERIVED from the columns on the other. Because the recorded side carries the stored address and the re-derived side the recomputed one, `output_digest` is the only field in this document whose disagreement carries information: the `input_digest` arms are computed by the same pure function over the same stored columns and therefore always agree. */
+        DeliveryStageDigest: {
+            /** @enum {string} */
+            stage: "run" | "phase" | "gate" | "answer" | "order";
+            input_digest: string;
+            output_digest: string;
+        };
+        /** @description One mismatch. A diff is the PRODUCT of this surface, not an error: the request returns 200 and the reader is handed what was stored, what the columns imply, and which of the two comparisons failed. `stage` is `order` when the STORED ORDINAL series is not contiguous ascending, in which case the digests carry the expected and actual ordinals and `mismatch` is `order_not_contiguous` — a code of its own, because `input_digest_differs` is reserved for a digest comparison and (per `DeliveryStageDigest` above) those arms can never actually disagree. A violation of contiguity means a hole in the evidence log, not a malformed projection, and the two demand different responses. */
+        DeliveryStageDiff: {
+            /** @enum {string} */
+            stage: "run" | "phase" | "gate" | "answer" | "order";
+            /** @enum {string} */
+            mismatch: "missing_recorded" | "missing_rederived" | "stage_differs" | "input_digest_differs" | "output_digest_differs" | "order_not_contiguous";
+            recorded: components["schemas"]["DeliveryStageDigest"] | null;
+            rederived: components["schemas"]["DeliveryStageDigest"] | null;
+        };
+        DeliveryEventRow: {
+            /** Format: int64 */
+            seq: number;
+            kind: string;
+            payload_json: string;
+            /** Format: int64 */
+            created_at: number;
+        };
+        /** @description The `ddl_*` narrative appendix. It is human-readable and ADDITIVE: it is never the re-derivation source, and a mismatch is never read out of it. `cap` and `truncated` travel together so a reader can always tell a bounded tail from the whole log. */
+        DeliveryEventLog: {
+            rows: components["schemas"]["DeliveryEventRow"][];
+            cap: number;
+            truncated: boolean;
+        };
+        /** @description The disclosed bounds of a read. `rows` is what was returned, `cap` is the bound that was applied, and `truncated` says whether the bound actually bit. A bounded window that does not announce itself is a silent short read, so all three are always present. */
+        DeliveryWindow: {
+            rows: number;
+            cap: number;
+            truncated: boolean;
+        };
+        /** @description The replay verdict, as DATA. It contains no run status, no approval, and no disposition, and the surface persists nothing. `order_ok` is the contiguity verdict on the stored ordinal series; a violation appears in `diffs` with stage `order` and is counted in `mismatched`, so `matched + mismatched == compared` holds. This is tamper EVIDENCE over stored bytes and is not tamper-proofing; it binds nothing to the attestation chain and is not a compliance finding. See the route description, which carries the ceiling. */
+        DeliveryReplayReport: {
+            /** Format: int64 */
+            run_id: number;
+            window: components["schemas"]["DeliveryWindow"];
+            order_ok: boolean;
+            compared: number;
+            matched: number;
+            mismatched: number;
+            diffs: components["schemas"]["DeliveryStageDiff"][];
+            event_log: components["schemas"]["DeliveryEventLog"];
+            /** Format: int64 */
+            generated_at: number;
+        };
+        /** @description One stored trace row, as it sits in `delivery_traces`. Returned as stored; serving these bytes is not an endorsement of them. */
+        DeliveryTraceRow: {
+            id: string;
+            /** Format: int64 */
+            run_id: number;
+            /** Format: int64 */
+            seq: number;
+            /** @enum {string} */
+            stage: "run" | "phase" | "gate" | "answer";
+            phase: string;
+            status: string;
+            /** @enum {string} */
+            tier: "observe" | "propose" | "bounded-auto" | "delegated";
+            actor: string;
+            model_ref: string | null;
+            policy_digest: string | null;
+            config_digest: string | null;
+            pipeline_version: string;
+            budget_digest: string | null;
+            artifact_refs_json: string;
+            attestation_root: string | null;
+            /** Format: int64 */
+            created_at: number;
+        };
+        /** @description The run's stored rows in ORDINAL order, the attestation chain head READ from storage (`null` before the first link — never a fabricated address), and the same bounded, self-disclosing narrative appendix the replay verdict carries. It rides the same read function and the same window function as the verdict, so the two apply identical logic to storage: any difference you observe between them is a change in storage, not a difference of method. They are two separate requests with no shared snapshot, so this is not a consistency guarantee across a moving run. */
+        DeliveryTraceListing: {
+            /** Format: int64 */
+            run_id: number;
+            window: components["schemas"]["DeliveryWindow"];
+            rows: components["schemas"]["DeliveryTraceRow"][];
+            attestation_root: string | null;
+            event_log: components["schemas"]["DeliveryEventLog"];
+            /** Format: int64 */
+            generated_at: number;
+        };
+        /** @description One standing authority. `authority_digest` covers the endpoint, the stable external ref, and the secret's FILE NAME — never the secret and never its path. No field here reveals where a credential lives. */
+        DeliveryBinding: {
+            /** Format: int64 */
+            id: number;
+            domain: string;
+            /**
+             * @description `registry`, `deploy`, `pm` and `incident` are declared and CONSUMER-LESS: they have no adapter, and a binding of one of those kinds is never read. They stay in the vocabulary so adding one is a deliberate act with code behind it.
+             * @enum {string}
+             */
+            target_kind: "vcs" | "ci" | "registry" | "deploy" | "pm" | "incident";
+            target_ref: string;
+            endpoint: string;
+            authority_digest: string;
+            /** @description The operator's declared surface, serialized. It parses with `deny_unknown_fields`; a block this server cannot parse renders as the literal `"unparseable"` rather than as a default that would read as unconstrained. */
+            capabilities: string;
+            /** @enum {integer} */
+            active: 0 | 1;
+            /** Format: int64 */
+            updated_at: number;
+        };
+        /** @description The domain's bindings plus the pending-intent census. `intents_pending` and `observed_pending` are EXPECTED to be non-zero in normal operation: the intents are undrained by design and the release act belongs to a gate that does not exist yet. They exist so a lost intent is distinguishable from an un-promoted one. `untrusted_pending` should be zero — a non-zero value means something wrote the reserved topic root without the minter. */
+        DeliveryBindingsView: {
+            bindings: components["schemas"]["DeliveryBinding"][];
+            /** Format: int64 */
+            intents_pending: number;
+            /** Format: int64 */
+            observed_pending: number;
+            /** Format: int64 */
+            untrusted_pending: number;
+        };
+        /** @description The derived read model. Metrics vocabulary only; no thresholds or tables reproduced. Every metric object carries `state` — `computed` with a value, or `insufficient` with a closed `reason` — so an absent metric is never rendered `0` and a zero is never rendered absent. */
+        DeliveryOutcomesView: {
+            window_days: number;
+            /**
+             * Format: int64
+             * @description epoch seconds; the `now` the derivation is deterministic against
+             */
+            generated_at: number;
+            domain: string;
+            cluster: {
+                note: string;
+                framing: string;
+                throughput: {
+                    change_lead_time: components["schemas"]["DeliveryLeadTimeMetric"];
+                    governed_release_cadence: components["schemas"]["DeliveryCadenceMetric"];
+                    failed_deployment_recovery_time: {
+                        /** @enum {string} */
+                        state: "insufficient";
+                        /** @enum {string} */
+                        reason: "no_incident_facts";
+                    };
+                    /** @enum {string} */
+                    control: "change_fail_rate";
+                };
+                instability: {
+                    change_fail_rate: components["schemas"]["DeliveryFailRateMetric"];
+                    deployment_rework_rate: {
+                        /** @enum {string} */
+                        state: "insufficient";
+                        /** @enum {string} */
+                        reason: "no_rework_signal";
+                    };
+                };
+                native_measures: {
+                    /** @description The NATIVE measure — never presented as DORA change lead time; it carries no dora_name. */
+                    approval_to_promotion_elapsed: {
+                        /** @enum {string} */
+                        state: "computed" | "insufficient";
+                        value_minutes?: number;
+                        /** @enum {string} */
+                        reason?: "window_empty";
+                    };
+                    note: string;
+                };
+                /** @description The run's OWN history — the only baseline the model carries. */
+                own_baseline: {
+                    window_days: number;
+                    change_fail_rate: components["schemas"]["DeliveryFailRateMetric"];
+                    cadence_per_week: components["schemas"]["DeliveryCadenceMetric"];
+                };
+            };
+            attribution: {
+                programme: string;
+                reference: string;
+                license_note: string;
+            };
+        };
+        /** @description Commit-anchored change lead time; computed only when the release's commit_sha joins to a recorded vcs commit-time fact. */
+        DeliveryLeadTimeMetric: {
+            /** @enum {string} */
+            state: "computed" | "insufficient";
+            value_minutes?: number;
+            /** @enum {integer} */
+            percentile?: 50;
+            /** @enum {string} */
+            dora_name: "change lead time";
+            /** @enum {string} */
+            definition_match: "proxy";
+            definition_note: string;
+            anchor: string;
+            /** @enum {string} */
+            reason?: "window_empty" | "no_vcs_revision_recorded";
+        };
+        DeliveryCadenceMetric: {
+            /** @enum {string} */
+            state: "computed" | "insufficient";
+            per_week?: number;
+            /** @enum {string} */
+            dora_name: "deployment frequency";
+            /** @enum {string} */
+            definition_match: "proxy";
+            definition_note: string;
+            /** @enum {string} */
+            reason?: "window_empty" | "insufficient_history";
+        };
+        DeliveryFailRateMetric: {
+            /** @enum {string} */
+            state: "computed" | "insufficient";
+            ratio?: number;
+            /** @enum {string} */
+            role?: "control";
+            /** @enum {string} */
+            dora_name: "change failure rate";
+            /** @enum {string} */
+            definition_match: "proxy";
+            definition_note: string;
+            /** @enum {string} */
+            reason?: "window_empty" | "insufficient_history";
+        };
         DecisionEvaluationRecord: {
             evaluation_id: string;
             idempotency_key: string;
@@ -4361,10 +5203,27 @@ export interface components {
             category?: "technology" | "business_process" | "compliance" | "finance" | "vendor" | "assessment" | "infrastructure" | "general";
             /**
              * Format: float
-             * @description In [0.0, 1.0].
+             * @description In [0.0, 1.0]. The winning category's SHARE of the fired keywords, not a calibrated probability — one keyword firing uncontested and ten keywords all agreeing both read 1.0. Read `evidence_count` alongside it.
              */
             confidence?: number;
+            /** @description How many keywords fired for the winning category — the evidence standing behind the verdict, and the quantity a threshold keys on. `0` for `general`; always equal to `matched_keywords.length`. */
+            evidence_count?: number;
             matched_keywords?: string[];
+        };
+        /** @description What happens to a classified case, and who decides. Present so a caller never has to infer "the machine was unsure" from a confidence number — the decision is made for the caller, not left to be reconstructed. Every outcome currently requires a human: no class is auto-authorised because no per-class reliability has been measured. */
+        DeferralReceipt: {
+            /**
+             * @description The class the decision keyed on — the same label the classifier returned, so the two correlate without a second vocabulary. `human_unmeasured` is a label this build does not recognise; it is refused rather than mapped onto a neighbour.
+             * @enum {string}
+             */
+            routing_class?: "technology" | "business_process" | "compliance" | "finance" | "vendor" | "assessment" | "infrastructure" | "general" | "human_unmeasured";
+            /**
+             * @description `defer` — a human judges the case on the evidence. `clarify` — a human is asked a specific question, and the answer then decides the case. `stop` — the case stops here and hands off.
+             * @enum {string}
+             */
+            outcome?: "defer" | "clarify" | "stop";
+            /** @description Whether a person decides. True for every outcome today; the field exists so a future machine-authorised class cannot silently invert its meaning. */
+            requires_human?: boolean;
         };
         /** @description Result of evaluating a decision rule (`POST /decision/{id}/evaluate`). */
         DecisionOutcome: {
@@ -6551,6 +7410,7 @@ export interface operations {
                     "application/json": {
                         result?: components["schemas"]["CategoryResult"];
                         categories?: string[];
+                        deferral?: components["schemas"]["DeferralReceipt"];
                     };
                 };
             };
@@ -12129,6 +12989,69 @@ export interface operations {
             };
         };
     };
+    explainAuthzVerdict: {
+        parameters: {
+            query: {
+                /** @description The route PATTERN, e.g. /workflow/runs/{id} */
+                route: string;
+                /** @description The HTTP method (the gate table is not method-keyed) */
+                method?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's own verdict for this route */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        route?: string;
+                        method?: string;
+                        /** @enum {string} */
+                        required_action?: "Read" | "Write" | "Admin";
+                        /** @enum {string} */
+                        verdict?: "allow" | "defer" | "deny";
+                        reason?: string;
+                        /** @enum {string} */
+                        roleless_posture?: "pass" | "deny";
+                    };
+                };
+            };
+            /** @description authz_explain_role_set_refused (a role-set query is refused by design), authz_explain_route_invalid, authz_explain_method_invalid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Admin on global) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No gate row for that route (probe-blind) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     getWorkflowRunDelegations: {
         parameters: {
             query?: {
@@ -13389,6 +14312,208 @@ export interface operations {
             };
         };
     };
+    workflowAgreementQueue: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's own bounded queue */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        slot?: number;
+                        reviewer_id?: string;
+                        rows?: {
+                            run_id?: number;
+                            subject_id?: string;
+                            stage?: string;
+                            phase?: string;
+                            tier?: string;
+                            model_ref?: string | null;
+                            my_verdict?: string | null;
+                            my_verdict_seq?: number | null;
+                            routing_class?: string | null;
+                            /** @enum {string|null} */
+                            outcome?: "defer" | "clarify" | "stop" | null;
+                            /** Format: float */
+                            confidence?: number | null;
+                            evidence_count?: number | null;
+                        }[];
+                        count?: number;
+                    };
+                };
+            };
+            /** @description agreement_limit_out_of_bounds */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (the calibrate capability is required) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    workflowAgreementLabel: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    run_id: number;
+                    subject_id: string;
+                    /** @enum {string} */
+                    verdict: "confirmed" | "overturned" | "uncertain";
+                };
+            };
+        };
+        responses: {
+            /** @description The verdict receipt */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        run_id?: number;
+                        subject_id?: string;
+                        reviewer_id?: string;
+                        slot?: number;
+                        created?: boolean;
+                        seq?: number;
+                        supersession?: number;
+                        /** @enum {string} */
+                        machine_verdict?: "advanced" | "stopped" | "deferred";
+                        audited?: boolean;
+                    };
+                };
+            };
+            /** @description verdict_required / verdict_invalid / reviewer_required / reviewer_invalid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (the calibrate capability is required) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description No such run row (probe-blind) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    workflowAgreementReport: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The bounded agreement cells and pair cells */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        measure?: "agreement-with-the-operator";
+                        rows?: {
+                            domain?: string;
+                            reviewer_id?: string;
+                            /** @enum {string} */
+                            reviewer_kind?: "operator";
+                            n_labeled?: number;
+                            n_confirmed?: number;
+                            n_overturned?: number;
+                            n_uncertain?: number;
+                            raw_agreement_units?: number;
+                            distinct_reviewers?: number;
+                            distinct_reviewer_kinds?: number;
+                        }[];
+                        count?: number;
+                        pairs?: {
+                            domain?: string;
+                            reviewer_a?: string;
+                            reviewer_b?: string;
+                            /** @enum {string} */
+                            rater_kind?: "operator";
+                            n_joint?: number;
+                            kappa_units?: number;
+                            kappa_note?: string | null;
+                        }[];
+                        pair_count?: number;
+                    };
+                };
+            };
+            /** @description agreement_limit_out_of_bounds */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (the DPO dual gate + calibrate) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     workflowWizardPacks: {
         parameters: {
             query?: never;
@@ -13914,6 +15039,922 @@ export interface operations {
             };
         };
     };
+    listDeliveryRuns: {
+        parameters: {
+            query: {
+                domain: string;
+                limit?: number;
+                after_id?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The domain's delivery runs plus the disclosed bounds */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description domain is required */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Read on the domain plus the `workflow` role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createDeliveryRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    domain: string;
+                    goal: string;
+                    /** @enum {string} */
+                    tier: "observe" | "propose" | "bounded-auto" | "delegated";
+                    policy_digest?: string;
+                    config_digest?: string;
+                    budgets?: {
+                        /** @enum {string} */
+                        kind: "tokens" | "tool_calls" | "files" | "minutes" | "blast_radius";
+                        /** Format: int64 */
+                        ceiling: number;
+                    }[];
+                };
+            };
+        };
+        responses: {
+            /** @description Delivery run admitted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryRunCreated"];
+                };
+            };
+            /** @description delivery_unknown_vocabulary | delivery_goal_too_long | delivery_budgets_too_many */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Write on the domain plus the `workflow` role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    advanceDeliveryRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: int64 */
+                    expected_revision: number;
+                    /** @enum {string} */
+                    to_phase: "scope" | "design" | "build" | "release" | "operate" | "done";
+                    artifact_refs?: string[];
+                    artifact?: components["schemas"]["DeliveryArtifact"];
+                    model?: components["schemas"]["DeliveryModelBinding"];
+                };
+            };
+        };
+        responses: {
+            /** @description Phase pass committed */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryRunAdvanced"];
+                };
+            };
+            /** @description delivery_unknown_vocabulary | artifact_screened_reject | delivery_input_too_long | delivery_input_too_many */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Write on the run's domain plus the `workflow` role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery run not found (probe-blind; unaudited) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description delivery_gate_stale_revision | delivery_illegal_phase_transition | delivery_terminal_phase | delivery_quality_gate_refused | artifact_screened_quarantine | delivery_attestation_refused | delivery_model_not_registered | delivery_model_not_promoted | delivery_model_retired | delivery_model_digest_missing */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    answerDeliveryRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: int64 */
+                    expected_revision: number;
+                    answer: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Question answered */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryRunAnswered"];
+                };
+            };
+            /** @description delivery_answer_too_long */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Write on the run's domain plus the `workflow` role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery run not found (probe-blind; unaudited) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description delivery_gate_stale_revision | delivery_no_pending_question */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    evaluateDeliveryGate: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** @enum {string} */
+                    to_phase?: "scope" | "design" | "build" | "release" | "operate" | "done";
+                };
+            };
+        };
+        responses: {
+            /** @description Gate disposition (200 whatever the verdict; a deny is a recorded outcome, not a transport error) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryGateVerdict"];
+                };
+            };
+            /** @description delivery_unknown_vocabulary */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Write on the run's domain plus the `workflow` role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery run not found (probe-blind; unaudited) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getDeliveryAttestations: {
+        parameters: {
+            query?: {
+                /** @description Accepted and documented for explicitness; carries no behaviour. The chain verdict is unconditional and is present whether this parameter is sent or not. */
+                verify?: "1";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The chain, its per-link verdicts, and the overall verdict */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryAttestationChain"];
+                };
+            };
+            /** @description delivery_unknown_vocabulary */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Read on the run's domain plus the `workflow` role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery run not found (probe-blind) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description attestation_chain_too_long | attestation_envelope_malformed | attestation_storage */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getDeliveryReplayVerify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The replay verdict, as data */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryReplayReport"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Read on the run's domain plus the `workflow` role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery run not found (probe-blind) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getDeliveryTrace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The run's trace rows, chain head, and event log */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryTraceListing"];
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Read on the run's domain plus the `workflow` role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery run not found (probe-blind) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listDeliveryBindings: {
+        parameters: {
+            query: {
+                /** @description The tenant whose bindings to read. Scoped by the Read gate. */
+                domain: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The domain's bindings and its pending-intent census */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryBindingsView"];
+                };
+            };
+            /** @description domain is required */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Read on the domain plus the `workflow` role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listDeliveryReleases: {
+        parameters: {
+            query: {
+                domain: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The domain's release rows plus the disclosed cap */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description domain is required */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Read on the domain plus the `workflow` role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createDeliveryRelease: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    run_id: number;
+                    /** @enum {string} */
+                    target_kind: "vcs" | "ci";
+                    ref: string;
+                    /** @enum {string} */
+                    environment: "development" | "test" | "staging" | "production";
+                    commit_sha?: string;
+                };
+            };
+        };
+        responses: {
+            /** @description The release, `proposed` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description A value is outside its closed vocabulary or over its bound */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery run not found (probe-blind) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The release law refused (no artifact */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    approveDeliveryRelease: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @default promote */
+                    scope?: string;
+                    /** @description Window from approved_at; capped */
+                    ttl_secs?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description The approval, recorded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Release not found (probe-blind) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The approval law refused (not proposed */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    promoteDeliveryRelease: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": {
+                    /** @default false */
+                    confirm?: boolean;
+                };
+            };
+        };
+        responses: {
+            /** @description The verdict, total over the gate's three answers: disposition allowed (status promoted), prompt (awaiting confirm), or denied (the crate's first reason in push order, no state change). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Release not found (probe-blind) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The release law refused — not approved, not promotable, authority drift, approval stale (the run moved since the approval), approver revoked, tier mismatch, or a chain that fails its signatures. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    runDeliveryDueCrank: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    domain: string;
+                    /** @description Evaluate "now" at this unix-seconds timestamp (testing/replay) */
+                    now?: number;
+                };
+            };
+        };
+        responses: {
+            /** @description The drain report — `{ok, domain, batch_cap, drained, refused, failed, remaining}` */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description domain is required */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The delivery authority is not configured */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getDeliveryRun: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The run's head */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Read on the run's domain plus the `workflow` role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery run not found (probe-blind) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listDeliveryRunSteps: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The run's steps */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Read on the run's domain plus the `workflow` role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Delivery run not found (probe-blind) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getDeliveryOutcomes: {
+        parameters: {
+            query: {
+                /** @description The tenant whose derived outcomes to read. Scoped by the Read gate. */
+                domain: string;
+                /** @description The window in days; validated in the core and refused outside the bound, never clamped. */
+                window?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The coupled cluster for the domain and window */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeliveryOutcomesView"];
+                };
+            };
+            /** @description domain is required */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Read on the domain plus the `workflow` role) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    receiveDeliveryObservation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description `github` reconciles a `vcs` binding; `actions` reconciles a `ci` one. A kind outside this vocabulary is refused by name. */
+                kind: "github" | "actions";
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Enqueued and reconciled */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Malformed body */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Signature verification failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Queue full */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     listModelRegistry: {
         parameters: {
             query?: {
@@ -14107,6 +16148,337 @@ export interface operations {
             };
             /** @description model_already_registered */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createClaimSchema: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    domain: string;
+                    version: number;
+                    /** @description The typed slot document. JSON Schema is deliberately NOT used: a schema document is a syntax contract, and the contradiction arithmetic needs a disjointness CLASS, which a JSON Schema can express only as a comment. */
+                    body: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Schema authored and ratified at admission */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        domain: string;
+                        version: number;
+                        body_digest: string;
+                        /** @enum {string} */
+                        authored_by: "human";
+                        authored: boolean;
+                    };
+                };
+            };
+            /** @description claim_incomplete | body_too_large | empty_schema | too_many_slots | malformed_predicate | malformed_bounds | malformed_labels | malformed_version | not_human_authored */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Write on global plus `workflow` */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    listRecallableClaims: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The recallable claims, bounded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        limit: number;
+                        claims: {
+                            claim_id: string;
+                            subject: string;
+                            predicate: string;
+                            object: string;
+                            scope?: string | null;
+                            promoted_by?: string | null;
+                            promoted_at?: number | null;
+                        }[];
+                    };
+                };
+            };
+            /** @description claim_limit_out_of_bounds */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Read on global) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    createClaim: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    claim_id: string;
+                    domain: string;
+                    subject: string;
+                    predicate: string;
+                    /** @description The typed slot value */
+                    object: unknown;
+                };
+            };
+        };
+        responses: {
+            /** @description Claim recorded as pending */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        claim_id: string;
+                        /** @enum {string} */
+                        status: "pending";
+                        /** @enum {string} */
+                        created_by: "human" | "agent";
+                    };
+                };
+            };
+            /** @description claim_incomplete | claim_id_invalid | no_schema */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Write on global plus `workflow`) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getClaimForPromotion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The claim row */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        claim_id: string;
+                        subject: string;
+                        predicate: string;
+                        object: string;
+                        scope?: string | null;
+                        promoted_by?: string | null;
+                        promoted_at?: number | null;
+                    };
+                };
+            };
+            /** @description claim_id_invalid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Read on global) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description claim not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    verifyClaim: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The gate verdict */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        claim_id: string;
+                        /** @enum {string} */
+                        verdict: "pass" | "refused" | "unavailable";
+                        /**
+                         * @description A CLOSED vocabulary, and never an index: schema_mismatch, out_of_bounds, referential, evidence_unresolvable, contradicts_ratified, premise_dependent, insufficient_support, no_schema. A code carrying a digit would be an index into the proposer's own evidence.
+                         * @enum {string}
+                         */
+                        reason?: "schema_mismatch" | "out_of_bounds" | "referential" | "evidence_unresolvable" | "contradicts_ratified" | "premise_dependent" | "insufficient_support" | "no_schema";
+                        /** @description Which check was reached */
+                        check?: string;
+                    };
+                };
+            };
+            /** @description claim_id_invalid */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Write on global plus `workflow`) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    promoteClaim: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The typed disabled refusal */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        claim_id: string;
+                        /** @enum {string} */
+                        status: "refused";
+                        /** @enum {string} */
+                        reason: "promotion_disabled";
+                        note: string;
+                    };
+                };
+            };
+            /** @description Not authenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Not authorized (Write on global plus `workflow`) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description claim not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

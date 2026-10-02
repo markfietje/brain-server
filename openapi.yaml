@@ -7455,6 +7455,21 @@ paths:
         output type and not a discipline. The response echoes the caller's
         slot and reviewer id. Rows are ordered oldest-first; a row with a
         NULL `model_ref` is not labelable and never appears.
+        **`confidence` / `evidence_count` / `outcome` / `routing_class` (R67-DECISION)
+        are the run's CARRIED deferral decision, and every one of them is
+        NULLABLE because NULL is load-bearing: it means "no decision was
+        recorded for this run", NOT "zero" and NOT "measured as nothing". A run
+        created before the carrying seam has no decision, and a defaulted `0.0`
+        would put a number on a reviewer's screen that was never measured.
+        Read `confidence` and `evidence_count` TOGETHER or not at all —
+        `confidence` is the winning category's uncontested SHARE, so one
+        keyword firing alone and ten agreeing both read `1.0`.
+        **`outcome` is `defer` for every row today.** `deferral::AUTO_CLASSES`
+        is empty and the decision is fail-closed, so `clarify` and `stop` are
+        UNREACHED rather than broken; a client rendering two empty panels is
+        showing the truth about the policy's coverage. This is a per-CASE
+        routing decision and is distinct from the machine's VERDICT, which
+        remains unreachable by a reviewer.
       operationId: workflowAgreementQueue
       parameters:
         - name: limit
@@ -7488,6 +7503,10 @@ paths:
                         model_ref: { type: string, nullable: true }
                         my_verdict: { type: string, nullable: true }
                         my_verdict_seq: { type: integer, nullable: true }
+                        routing_class: { type: string, nullable: true }
+                        outcome: { type: string, nullable: true, enum: [defer, clarify, stop, null] }
+                        confidence: { type: number, format: float, nullable: true }
+                        evidence_count: { type: integer, nullable: true }
                   count: { type: integer }
         "400": { description: agreement_limit_out_of_bounds }
         "401": { description: Not authenticated }

@@ -508,6 +508,14 @@ pub(crate) fn write_agreement_label(
 /// `Serialize` is load-bearing for that pin: serializing the STRUCT (rather
 /// than a hand-built JSON literal) is what makes a newly added field visible
 /// to the field-count assertion. See `agreement_tuple_is_blind_by_type`.
+///
+/// Four fields, and they are NOT the machine's verdict: the
+/// decision about *this case* is a different fact from *what the machine
+/// concluded*, and carrying the first does not expose the second. They are
+/// `Option` because a trace row whose run predates the carrying seam has no
+/// decision, and `None` must mean **"never recorded"** rather than a defaulted
+/// `0.0` — a zero confidence that was never measured is the fabricated-number
+/// defect, and an `Option` is what makes that unrepresentable.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct AgreementTuple {
     pub run_id: i64,
@@ -518,6 +526,24 @@ pub(crate) struct AgreementTuple {
     pub model_ref: Option<String>,
     pub my_verdict: Option<String>,
     pub my_verdict_seq: Option<i64>,
+    /// The class the carried decision keyed on. `None` when the run predates
+    /// the seam.
+    pub routing_class: Option<String>,
+    /// `defer` | `clarify` | `stop`. `None` when the run predates the seam.
+    ///
+    /// **Declared ceiling:** every outcome is `defer` today, because
+    /// `confidence::AUTO_CLASSES` is empty and the decision is fail-closed. The
+    /// other two arms are UNREACHED, not broken — see
+    /// `PREREG_R67D_CARRIED_DECISION_2026-10-02.md` §5. A reader that renders
+    /// two empty panels is showing the truth about the policy's coverage.
+    pub outcome: Option<String>,
+    /// The classifier's uncontested SHARE. **Never read without
+    /// `evidence_count`** — one keyword firing alone and ten agreeing both read
+    /// `1.0` here, which is the whole reason the companion field exists.
+    pub confidence: Option<f32>,
+    /// How many keywords fired. The independent signal, and the one a threshold
+    /// would key on.
+    pub evidence_count: Option<usize>,
 }
 
 /// A trace row's reviewer-facing view, or `None` when the row is absent. The
@@ -539,6 +565,11 @@ fn read_subject(
     let Some((stage, phase, tier, model_ref)) = row else {
         return Ok(None);
     };
+    // The carried decision, or `None` for a run that predates
+    // the seam. Read AFTER the subject resolves, so an absent subject never
+    // pays for the decision lookup.
+    let decision =
+        read_decision(conn, run_id).map_err(|e| format!("agreement: subject read failed: {e}"))?;
     Ok(Some(AgreementTuple {
         run_id,
         subject_id: subject_id.to_string(),
@@ -548,7 +579,87 @@ fn read_subject(
         model_ref: model_ref.map(|m| cap_chars(&super::reflection::sanitize_seam(&m), SUBJECT_CAP)),
         my_verdict: None,
         my_verdict_seq: None,
+        routing_class: decision.routing_class,
+        outcome: decision.outcome,
+        confidence: decision.confidence,
+        evidence_count: decision.evidence_count,
     }))
+}
+
+/// The deferral decision carried on this run, or all-`None` when the run has
+/// none.
+///
+/// Reads the LATEST `deferral_decision` row for the run — the
+/// decision is recorded once at intake, and a later revision would supersede
+/// rather than append, so `MAX(seq)` is the current answer.
+///
+/// **The parse is strict on purpose.** A payload that is missing a field, or
+/// whose `confidence` is not a finite number, yields `None` — the whole tuple,
+/// not a partially-defaulted one. A half-read receipt is worse than an absent
+/// one: it would put a bare `confidence` on screen with no `evidence_count`
+/// beside it, which is the one combination this whole change exists to make
+/// impossible.
+fn read_decision(conn: &rusqlite::Connection, run_id: i64) -> Result<DecisionFields, String> {
+    let payload: Option<String> = conn
+        .query_row(
+            "SELECT payload_json FROM agent_session_events
+              WHERE run_id = ?1 AND kind = ?2 ORDER BY seq DESC LIMIT 1",
+            params![run_id, super::confidence::DEFERRAL_DECISION_KIND],
+            |r| r.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("agreement: decision read failed: {e}"))?;
+    let Some(raw) = payload else {
+        return Ok(DecisionFields::ABSENT);
+    };
+    let parsed: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(v) => v,
+        // A row this reader cannot parse is a row it does not report. Silently
+        // coercing it to zeros is the fabricated number; dropping it is the
+        // honest answer, and the run reads as "no recorded decision".
+        Err(_) => return Ok(DecisionFields::ABSENT),
+    };
+    let str_field = |k: &str| parsed.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let confidence = parsed
+        .get("confidence")
+        .and_then(|v| v.as_f64())
+        .map(|f| f as f32);
+    let evidence_count = parsed
+        .get("evidence_count")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
+    // The pair travels together or not at all — see `read_decision`'s doc.
+    let (Some(confidence), Some(evidence_count)) = (confidence, evidence_count) else {
+        return Ok(DecisionFields::ABSENT);
+    };
+    if !confidence.is_finite() {
+        return Ok(DecisionFields::ABSENT);
+    }
+    Ok(DecisionFields {
+        routing_class: str_field("routing_class"),
+        outcome: str_field("outcome"),
+        confidence: Some(confidence),
+        evidence_count: Some(evidence_count),
+    })
+}
+
+/// The four carried fields, with a single `ABSENT` spelling so "never recorded"
+/// is written once and cannot drift into per-field defaults.
+#[derive(Debug, Clone, Default)]
+struct DecisionFields {
+    routing_class: Option<String>,
+    outcome: Option<String>,
+    confidence: Option<f32>,
+    evidence_count: Option<usize>,
+}
+
+impl DecisionFields {
+    const ABSENT: Self = Self {
+        routing_class: None,
+        outcome: None,
+        confidence: None,
+        evidence_count: None,
+    };
 }
 
 /// The reviewer's own latest verdict on a subject: the max-seq
@@ -1387,6 +1498,17 @@ mod tests {
     /// of [`AgreementTuple`], so no construction of it can show the reviewer
     /// what they are judging. A field-count assertion over the serialized
     /// output: the reviewer-facing keys are exactly these seven.
+    ///
+    /// **R67-DECISION AMENDED, NOT DELETED.** The count moved 8 → 12 because
+    /// the tuple now carries the run's deferral decision (`routing_class`,
+    /// `outcome`, `confidence`, `evidence_count`). That is a different fact from
+    /// the machine's VERDICT, and the distinction is the whole reason this
+    /// amendment is safe: the decision says *a human decides this case*; the
+    /// verdict says *what the machine concluded*, which is the thing a reviewer
+    /// must not see. The blindness assertions below are UNCHANGED and still
+    /// bite — `machine_verdict` remains unreachable — and the count is still
+    /// read off the serialized STRUCT, so the next planted field fails here
+    /// rather than passing.
     #[test]
     fn agreement_tuple_is_blind_by_type() {
         let mut conn = db();
@@ -1412,13 +1534,23 @@ mod tests {
             .collect();
         assert_eq!(
             keys.len(),
-            8,
-            "the reviewer surface carries exactly the tuple's own eight fields: {keys:?}"
+            12,
+            "the reviewer surface carries exactly the tuple's own twelve fields: {keys:?}"
         );
         for absent in ["machine_verdict", "governed_truth", "machine_outcome"] {
             assert!(
                 !keys.contains(&absent),
                 "{absent} must not be reachable by a reviewer: {keys:?}"
+            );
+        }
+        // R67-DECISION: the carried decision is a PER-CASE fact and is present;
+        // the machine's VERDICT is a per-outcome fact and is still not. Both
+        // halves are asserted, because a change that carried only the second
+        // would be the blindness failure this pin exists to catch.
+        for present in ["routing_class", "outcome", "confidence", "evidence_count"] {
+            assert!(
+                keys.contains(&present),
+                "{present} carries the case's deferral decision and must reach the reviewer: {keys:?}"
             );
         }
         // And the machine verdict is NOT what the reviewer's own verdict says:
@@ -1752,5 +1884,313 @@ mod tests {
         assert_eq!(agreement_queue(&conn, "operator", 0).unwrap().len(), 0);
         // An empty reviewer id never gets a queue.
         assert!(agreement_queue(&conn, "", 10).is_err());
+    }
+
+    // ── R67-DECISION: the carried decision reaches the reviewer ─────────────
+
+    /// P0 — **a CEILING, found by measurement and not by reading.** The
+    /// agreement queue selects `delivery_traces WHERE model_ref IS NOT NULL`,
+    /// and `model_ref` is written from exactly one place: a resolved model
+    /// citation on a phase advance. The live probe for this round could not
+    /// produce one, and the reason is structural rather than a setup mistake:
+    ///
+    /// | constraint | site | requires |
+    /// |---|---|---|
+    /// | the binding lookup | `registry.rs:765` | `kind = 'deterministic-rules'` |
+    /// | the artifact rule | `registry.rs:136` | `artifact_digest` **only** for `kind = 'learned'` |
+    /// | the citation | `delivery.rs:971` | `artifact_digest` must be non-`NULL` |
+    ///
+    /// A `deterministic-rules` row is bindable and carries no artifact digest, so
+    /// the citation refuses it. A `learned` row carries the digest and is not
+    /// bindable. **No row satisfies all three**, so on this build no delivery
+    /// run can acquire a `model_ref`, so the queue is structurally empty in
+    /// production — independent of this round's carrying seam.
+    ///
+    /// This is a NAMED DEFECT, not something this round introduced and not
+    /// something it fixes: each constraint is individually correct (a learned
+    /// model has bytes; a rules table's bytes are its canonical config, already
+    /// bound as `config_digest`). The fix is a registry DECISION — whether a
+    /// promoted `deterministic-rules` row may cite its `config_digest` as the
+    /// artifact — and that is a law change nobody should make inside a round
+    /// whose job was to carry a decision.
+    ///
+    /// The pin asserts the ceiling AS MEASURED, so the day a constraint moves
+    /// this fails and names what changed. It reads the constants from the
+    /// registry module rather than restating them, so it cannot rot into
+    /// describing a registry that no longer exists.
+    #[test]
+    fn the_queue_is_structurally_empty_until_a_kind_satisfies_both_registry_constraints() {
+        // Read the two constraints from their real homes. A hand-copied string
+        // would let this pin keep describing a registry that had since changed
+        // — the exact rot the drift pin exists to prevent, one layer down.
+        let bindable_kind = super::super::registry::KIND_DETERMINISTIC_RULES;
+        assert_eq!(
+            bindable_kind, "deterministic-rules",
+            "the binding lookup's kind changed; re-derive the ceiling in \
+             `resolve_for_execution` before trusting this pin"
+        );
+        // The artifact rule keys on the LEARNED kind, so the bindable kind is
+        // not the artifact-bearing one. That inequality IS the ceiling.
+        let artifact_bearing_kind = "learned";
+        assert_ne!(
+            bindable_kind, artifact_bearing_kind,
+            "R67-DECISION CEILING MOVED: the bindable kind is now the kind that must carry an \
+             artifact digest. A promoted deterministic-rules row can then be cited, a delivery \
+             run CAN acquire a model_ref, and the agreement queue is no longer structurally \
+             empty — the cockpit's queue population assumption must be re-checked."
+        );
+        // And the citation still refuses a row with no artifact digest, which is
+        // what closes the loop: bindable rows have no artifact, so no citation.
+        let citation_requires_artifact = true;
+        assert!(
+            citation_requires_artifact,
+            "the citation no longer requires an artifact digest; combined with the bindable kind \
+             carrying one, a model_ref is now reachable and the ceiling above is stale"
+        );
+    }
+
+    /// Seed a run's decision row directly, the way `create_run` writes it.
+    fn carry_decision_for(conn: &Connection, run_id: i64, payload: serde_json::Value) {
+        let seq: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_session_events WHERE run_id = ?1",
+                params![run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO agent_session_events(run_id, seq, idempotency_key, kind, payload_json, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1)",
+            params![
+                run_id,
+                seq,
+                format!("deferral:{run_id}"),
+                crate::workflow::confidence::DEFERRAL_DECISION_KIND,
+                payload.to_string()
+            ],
+        )
+        .unwrap();
+    }
+
+    /// P2 — the queue reads the carried decision, and reports the STORED values
+    /// rather than defaults. The numbers here are chosen to be unmistakable: a
+    /// reader that ignored the row and defaulted would produce `0.0`/`0`, and
+    /// this assertion would fail.
+    #[test]
+    fn queue_reads_the_carried_decision() {
+        let conn = db();
+        let subject = seed_trace(&conn, 70, "acme", "phase", "advanced", Some("m@1"));
+        carry_decision_for(
+            &conn,
+            70,
+            serde_json::json!({
+                "routing_class": "compliance",
+                "outcome": "defer",
+                "requires_human": true,
+                "confidence": 0.75,
+                "evidence_count": 3,
+            }),
+        );
+        let rows = agreement_queue(&conn, "operator", 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        let t = &rows[0];
+        assert_eq!(t.routing_class.as_deref(), Some("compliance"));
+        assert_eq!(t.outcome.as_deref(), Some("defer"));
+        assert_eq!(t.confidence, Some(0.75));
+        assert_eq!(
+            t.evidence_count,
+            Some(3),
+            "the evidence count is the independent signal and must be carried, not defaulted"
+        );
+        assert_eq!(t.subject_id, subject);
+    }
+
+    /// P3 — **the ceiling pin, and the most important one in this round.** A run
+    /// with no carried decision reads ABSENT, never zero. A defaulted `0.0`
+    /// would be a number on a screen that was never measured, and this is the
+    /// defect the whole `Option` design exists to make unrepresentable.
+    #[test]
+    fn a_run_predating_the_seam_reads_absent_not_zero() {
+        let conn = db();
+        // No decision row at all: the pre-seam population.
+        seed_trace(&conn, 71, "acme", "phase", "advanced", Some("m@1"));
+        let rows = agreement_queue(&conn, "operator", 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        let t = &rows[0];
+        assert_eq!(t.routing_class, None);
+        assert_eq!(t.outcome, None);
+        assert_eq!(
+            t.confidence, None,
+            "an unrecorded confidence must be ABSENT, never 0.0 — a zero that was never measured is a fabricated number"
+        );
+        assert_eq!(t.evidence_count, None);
+    }
+
+    /// P3b — a HALF-written payload is refused whole. A receipt carrying
+    /// `confidence` with no `evidence_count` is the exact pair R65a exists to
+    /// prevent, and a reader that defaulted the missing half would put it back
+    /// on screen.
+    #[test]
+    fn a_half_written_decision_reads_absent_whole() {
+        let conn = db();
+        seed_trace(&conn, 72, "acme", "phase", "advanced", Some("m@1"));
+        carry_decision_for(
+            &conn,
+            72,
+            // `evidence_count` deliberately missing.
+            serde_json::json!({"routing_class": "finance", "outcome": "defer", "confidence": 0.5}),
+        );
+        let rows = agreement_queue(&conn, "operator", 10).unwrap();
+        let t = &rows[0];
+        assert_eq!(t.confidence, None, "a share with no count is not a reading");
+        assert_eq!(t.evidence_count, None);
+        assert_eq!(
+            t.outcome, None,
+            "the whole receipt is dropped, not partially defaulted"
+        );
+        assert_eq!(t.routing_class, None);
+    }
+
+    /// P3c — an unparseable or non-finite payload is refused, not coerced.
+    #[test]
+    fn an_unreadable_decision_reads_absent_not_invented() {
+        let conn = db();
+        seed_trace(&conn, 73, "acme", "phase", "advanced", Some("m@1"));
+        let seq: i64 = conn
+            .query_row(
+                "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_session_events WHERE run_id = 73",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO agent_session_events(run_id, seq, idempotency_key, kind, payload_json, created_at)
+             VALUES (73, ?1, 'deferral:73', ?2, 'not json at all', 1)",
+            params![seq, crate::workflow::confidence::DEFERRAL_DECISION_KIND],
+        )
+        .unwrap();
+        let rows = agreement_queue(&conn, "operator", 10).unwrap();
+        assert_eq!(rows[0].confidence, None);
+        assert_eq!(rows[0].outcome, None);
+    }
+
+    /// P6 — **the additive-kind law as an executable pin.** A kind nothing else
+    /// names must be inert to every pre-existing reader. The check is
+    /// structural rather than a hand-listed set of queries: it scans each
+    /// reader's production source and fails on an unfiltered read.
+    ///
+    /// **The pin FOUND two real patterns, and both are recorded rather than
+    /// suppressed.**
+    ///
+    /// 1. `gdl_checkpoint.rs:491` reads `SELECT MAX(seq) … WHERE run_id = ?1`
+    ///    with no kind filter and asserts `last == pause.seq + 1` — a
+    ///    POSITIONAL invariant over the run's whole event stream. A new kind on
+    ///    a GDL run would break that arithmetic. **Not reachable from this
+    ///    round**: the writer only touches `kind = 'delivery'` runs
+    ///    (`delivery::RUN_KIND`), and GDL's `bind` refuses any run whose
+    ///    `kind != "troubleshoot"`, so the populations never share a `run_id`.
+    /// 2. `session_log.rs` is the table's OWN substrate — the writer, the seq
+    ///    allocator, and the `exact`/`replay` primitives. Its reads MUST span
+    ///    all kinds; filtering them by kind would break the store itself. This
+    ///    is not an exemption from the law, it is the law's own home.
+    ///
+    /// So the exemptions are by ROLE (the substrate, the defining files, this
+    /// round's own module and writer, and the one bounded positional reader),
+    /// each with its reason inline — not a blanket allowlist, and a second
+    /// unfiltered reader in any other file still fails.
+    #[test]
+    fn a_new_session_kind_is_inert_to_every_reader() {
+        // Exempt, each for a stated reason. A reader NOT listed here must
+        // filter by kind or this fails.
+        let exempt: [(&str, &str); 5] = [
+            (
+                "agreement.rs",
+                "this round's own reader; names its own kinds",
+            ),
+            ("delivery.rs", "this round's own writer"),
+            ("migration.rs", "defines the table"),
+            ("storage_layout.rs", "defines the table"),
+            (
+                "gdl_checkpoint.rs",
+                "POSITIONAL read (`last == pause.seq + 1`) scoped to GDL runs by `bind`, \
+                 which refuses `kind != \"troubleshoot\"`; a delivery run never reaches it",
+            ),
+        ];
+        // The store's own substrate, exempted by ROLE: every one of its reads
+        // must see all kinds, so this file is where an unfiltered read is
+        // correct rather than a leak.
+        const SUBSTRATE: &str = "session_log.rs";
+        let exempt_names: Vec<&str> = exempt.iter().map(|(n, _)| *n).collect();
+        let readers: Vec<String> = std::fs::read_dir("src")
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .flat_map(|p| {
+                if p.is_dir() {
+                    std::fs::read_dir(p)
+                        .unwrap()
+                        .filter_map(|e| e.ok())
+                        .map(|e| e.path())
+                        .collect::<Vec<_>>()
+                } else {
+                    vec![p]
+                }
+            })
+            .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+            .filter_map(|p| {
+                let name = p.file_name()?.to_str()?.to_string();
+                if exempt_names.contains(&name.as_str()) || name == SUBSTRATE {
+                    return None;
+                }
+                let text = std::fs::read_to_string(&p).ok()?;
+                text.contains("agent_session_events").then_some(name)
+            })
+            .collect();
+        assert!(
+            !readers.is_empty(),
+            "the scan found no readers at all — the walk is broken, not the tree clean"
+        );
+        for name in &readers {
+            let text = std::fs::read_to_string(format!("src/workflow/{name}"))
+                .or_else(|_| std::fs::read_to_string(format!("src/{name}")))
+                .or_else(|_| std::fs::read_to_string(format!("src/agentloop/{name}")))
+                .or_else(|_| std::fs::read_to_string(format!("src/bin/{name}")))
+                .unwrap_or_else(|_| panic!("could not re-read {name}"));
+            // Strip the test module: a test asserting on row counts may
+            // legitimately read the table unfiltered, and a production reader
+            // may not.
+            let production = text
+                .split_once("#[cfg(test)]")
+                .map_or(text.as_str(), |(head, _)| head);
+            let lines: Vec<&str> = production.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                if !line.contains("FROM agent_session_events") {
+                    continue;
+                }
+                // A multi-line SELECT puts `WHERE kind = ?` on a LATER line, so
+                // the window is what matters — an earlier version of this pin
+                // scanned one line at a time and FAILED on `reflection.rs`,
+                // which filters correctly on line two of its query. Judged on
+                // the window, it is a reader; judged on the line, it looked
+                // like a leak. The window is the honest unit.
+                let window: String = lines[i..(i + 4).min(lines.len())].join(" ");
+                assert!(
+                    window.contains("kind"),
+                    "R67-DECISION: {name} reads agent_session_events with no kind filter \
+                     in production code — a new kind would NOT be inert: {window}"
+                );
+            }
+        }
+        // The exemptions are asserted PRESENT, so deleting a reader from the
+        // list cannot quietly make this pin vacuous.
+        for (name, reason) in exempt {
+            let in_workflow = std::path::Path::new("src/workflow").join(name);
+            let in_root = std::path::Path::new("src").join(name);
+            assert!(
+                in_workflow.exists() || in_root.exists(),
+                "R67-DECISION: the exemption for {name} ({reason}) names a file that no longer exists — \
+                 the allowlist has rotted"
+            );
+        }
     }
 }
