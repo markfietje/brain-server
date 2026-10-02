@@ -36,12 +36,22 @@
 //!
 //! ## What this is NOT
 //!
-//! **No production consumer exists.** Promotion is refused by a compile-time
-//! `false` ([`crate::workflow::create::PROMOTION_ENABLED`]) by deliberate
-//! design, and no release pipeline consumes this verdict yet. Shipping the
-//! decision un-wired is the honest state: the alternative — attaching an
-//! unmeasured blocking gate to a live path — is the error the inert promotion
-//! constant exists to prevent. The consumer is a named, later round.
+//! ~~**No production consumer exists.**~~ **Superseded at R2 (2026-10-02).**
+//! Promotion of a *claim* is still refused by a compile-time `false`
+//! ([`crate::workflow::create::PROMOTION_ENABLED`]) by deliberate design — but
+//! that is the **wrong seam**, and wiring a gate there would have produced a
+//! green test suite over a function no caller can reach. The consumer landed on
+//! the **live** release promotion instead: [`crate::workflow::releases::promote_release`]
+//! reads this verdict after its `chain_defect` check and before
+//! `brain_delivery_core::promote`, and a refusing verdict denies with no state
+//! change. That path promotes for real, so the gate there is falsifiable — which
+//! is the property the inert claim promotion could never have had.
+//!
+//! **The claim is narrow and the round says so.** This gate proves that a
+//! promotion cannot rest on a trace that no longer re-derives. It says nothing
+//! about classifier fidelity (a different axis entirely — `classify_replay`
+//! never calls the classifier) and nothing about how *often* divergence occurs;
+//! no out-of-sample figure is claimed.
 
 use crate::workflow::delivery::ReplayReport;
 
@@ -61,6 +71,23 @@ pub enum ReplayGateVerdict {
 }
 
 impl ReplayGateVerdict {
+    /// The two refusing verdicts' wire slugs, DISTINCT.
+    ///
+    /// A separate method from [`Self::refusal_reason`] because the two answer
+    /// different questions: the reason is a sentence for a human reading an
+    /// audit row, and this is a stable token for a caller that must branch or
+    /// aggregate. Collapsing them would make `insufficient_evidence` — an empty
+    /// window, where determinism was never demonstrated — indistinguishable from
+    /// a real divergence at the call site, which is precisely the distinction
+    /// this enum exists to keep.
+    pub const fn refusal_code(self) -> &'static str {
+        match self {
+            ReplayGateVerdict::Divergent { .. } => "divergent",
+            ReplayGateVerdict::InsufficientEvidence { .. } => "insufficient_evidence",
+            ReplayGateVerdict::Clean { .. } => "clean",
+        }
+    }
+
     /// Whether this verdict permits a promotion.
     ///
     /// **Only [`Self::Clean`] does.** Divergence and insufficient evidence both

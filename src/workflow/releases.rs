@@ -887,6 +887,52 @@ pub(crate) fn promote_release(
             intents_minted: 0,
         });
     }
+    // ── the replay-determinism gate ──────────────────────────────────────────
+    // AFTER chain_defect, BEFORE the crate's decision. The ordering is the one
+    // preregistered in `R2_PREREGISTRATION_2026-10-02.md` §5: the structural
+    // precondition still reports first for a chain-broken artifact, and a
+    // divergent trace is refused before ANY state change.
+    //
+    // **This is the replay gate's first production consumer.** Until this seam
+    // it was a pure decision with no caller outside its own tests — a gate that
+    // could not change an outcome. `classify_replay` compares RE-DERIVED vs
+    // RECORDED stage digests (it never calls the classifier); what it buys here
+    // is the narrow claim that **a promotion cannot rest on a trace that no
+    // longer re-derives.**
+    //
+    // The report is read inside this transaction and written nowhere: the gate
+    // refuses, it never repairs.
+    let replay =
+        delivery::replay_verify(conn, release.run_id, req.now).map_err(delivery::storage_error)?;
+    let replay_verdict = crate::workflow::create::replay_gate::classify_replay(&replay);
+    if let Some(reason) = replay_verdict.refusal_reason() {
+        delivery::delivery_audit(
+            conn,
+            &domain,
+            &format!("delivery_release:{}", release.id),
+            AuditStatus::Denied,
+            &format!(
+                "release promote denied reason=replay_{} compared={} mismatched={} — {reason}",
+                replay_verdict.refusal_code(),
+                replay.compared,
+                replay.mismatched
+            ),
+        )?;
+        tx.commit().map_err(delivery::storage_error)?;
+        return Ok(PromoteVerdict {
+            release_id: release.id,
+            run_id: release.run_id,
+            status: release.status,
+            disposition: "denied".to_string(),
+            // Server-namespaced, NOT a new `DenyReason`: that enum is a frozen
+            // crate type and this round does not touch the crate. The two
+            // refusing verdicts stay DISTINCT strings — "we looked and it
+            // diverged" must never read like "we looked at nothing".
+            deny_reason: Some(format!("replay_{}", replay_verdict.refusal_code())),
+            deployed_at: None,
+            intents_minted: 0,
+        });
+    }
     let decision = brain_delivery_core::promote(&request);
 
     match decision {
@@ -2022,6 +2068,296 @@ mod tests {
         assert!(
             refused.is_err(),
             "this bare world has no binding; the refusal is the binding's, never blast_radius's"
+        );
+    }
+
+    // ── the replay-determinism gate (R2) ────────────────────────────────────
+
+    /// Break the run's trace series so the replay refuses.
+    ///
+    /// **Measured, and the measurement changed the fixture.** The first
+    /// version rewrote one `seq` to `99`, expecting a single order violation.
+    /// It produced `mismatched = 3`, because `ORDER BY seq` re-sorted the rows
+    /// and `canonical_bytes()` — which the digest is computed over — includes
+    /// `seq`, so EVERY downstream position both re-sorted and re-hashed. That is
+    /// the exact defect `replay_gate`'s own fixture doc warns about, and this
+    /// fixture walked into it.
+    ///
+    /// The version below increments the LAST `seq` instead. It still breaks
+    /// contiguity (`order_ok` goes false) but keeps the sort order intact, so
+    /// the tampering is one localized defect rather than a reshuffle.
+    ///
+    /// **The assertion below is therefore on the VERDICT, not on a count.** A
+    /// pin that demanded `mismatched == 1` would be asserting an accident of the
+    /// fixture's arithmetic, not the property under test — and the count is
+    /// exactly what the first version got wrong.
+    fn break_the_trace_ordinals(conn: &Connection, run_id: i64) {
+        let changed = conn
+            .execute(
+                "UPDATE delivery_traces SET seq = seq + 1 WHERE run_id = ?1 \
+                 AND seq = (SELECT MAX(seq) FROM delivery_traces WHERE run_id = ?1)",
+                rusqlite::params![run_id],
+            )
+            .expect("the ordinal rewrite lands");
+        assert_eq!(
+            changed, 1,
+            "the fixture must rewrite exactly one ordinal, or the pin is vacuous"
+        );
+    }
+
+    /// R2.1 — a divergent trace refuses the promotion, at the PRODUCTION seam.
+    ///
+    /// This is the round's DoD: *plant a divergent trace → the promotion
+    /// refuses.* The call under test is `promote_release`, the function
+    /// `POST /workflow/delivery/releases/{id}/promote` reaches — not the gate,
+    /// and not a hand-built verdict.
+    ///
+    /// **The fixture asserts it discriminates before it asserts the refusal**
+    /// (trap #2). Two facts must hold first, or this pin could pass for an
+    /// unrelated reason: the replay must actually compare something, and the
+    /// digests must actually still match. Only then does `Divergent` mean what
+    /// it says.
+    #[test]
+    fn r2_a_divergent_trace_refuses_the_release_promotion() {
+        let (mut conn, run_id) = seed();
+        let created = file_release(&mut conn, run_id, 3);
+        approve(&mut conn, created.release_id, 4);
+        break_the_trace_ordinals(&conn, run_id);
+
+        // The fixture discriminates: a real comparison over real rows, and a
+        // broken ordinal series. Without the first, an empty report would also
+        // refuse and this pin could not tell the two apart.
+        let report = delivery::replay_verify(&conn, run_id, 5).expect("the report assembles");
+        assert!(
+            report.compared > 0,
+            "the fixture must compare something, or this pin is vacuous"
+        );
+        assert!(
+            !report.order_ok,
+            "the fixture must actually break the ordinal series"
+        );
+        assert!(
+            report.mismatched > 0,
+            "the tampering must be visible as a mismatch, not merely reordered rows"
+        );
+
+        let verdict = promote_release(
+            &mut conn,
+            &PromoteRelease {
+                release_id: created.release_id,
+                confirm: false,
+                actor: "operator",
+                now: 5,
+            },
+        )
+        .expect("the gate returns a verdict, never an error");
+        assert_eq!(
+            verdict.disposition, "denied",
+            "a trace that no longer re-derives must not promote"
+        );
+        assert_eq!(
+            verdict.deny_reason.as_deref(),
+            Some("replay_divergent"),
+            "the refusal must name the replay gate, not borrow another reason"
+        );
+        assert_eq!(
+            verdict.status, "approved",
+            "a refusal leaves NO state change — the release stays where it was"
+        );
+        assert_eq!(verdict.deployed_at, None);
+        assert_eq!(verdict.intents_minted, 0);
+    }
+
+    /// R2.2 — THE ANTI-VACUITY PIN, and the load-bearing half of the round.
+    ///
+    /// Without this, R2.1 could pass because promotion is broken rather than
+    /// because the gate fired — a refusal that appears for every input proves
+    /// nothing about the rule that produced it. This is the twin of R2.1's
+    /// fixture with the tamper removed, and it must still reach `allowed`.
+    #[test]
+    fn r2_b_an_identical_trace_still_promotes_so_the_gate_is_not_vacuous() {
+        let (mut conn, run_id) = seed();
+        let created = file_release(&mut conn, run_id, 3);
+        approve(&mut conn, created.release_id, 4);
+        // NO tamper. The same world R2.1 denied must promote here.
+
+        let report = delivery::replay_verify(&conn, run_id, 5).expect("the report assembles");
+        assert!(report.compared > 0, "the twin must also compare something");
+        assert_eq!(
+            report.mismatched, 0,
+            "the twin's whole point: nothing diverged"
+        );
+        assert!(report.order_ok);
+
+        let verdict = promote_release(
+            &mut conn,
+            &PromoteRelease {
+                release_id: created.release_id,
+                confirm: false,
+                actor: "operator",
+                now: 5,
+            },
+        )
+        .expect("the gate allows");
+        assert_eq!(
+            verdict.disposition, "allowed",
+            "an intact trace must still promote — otherwise R2.1 proved nothing"
+        );
+        assert_eq!(verdict.status, "promoted");
+        assert_eq!(verdict.deny_reason, None);
+    }
+
+    /// The two refusing verdicts stay DISTINCT at the seam — and this pin is
+    /// where that separation was **measured to be unreachable in production**,
+    /// not merely unexercised.
+    ///
+    /// The instinct was to delete every trace row and assert
+    /// `replay_insufficient_evidence`. **That fixture cannot work here, and the
+    /// reason is structural rather than a mistake in the test:** the release's
+    /// live subject digest is resolved from a proposal keyed on
+    /// `'trc:' || delivery_traces.id` (`live_subject_digest`,
+    /// `src/workflow/releases.rs:168`). Empty the traces and that lookup answers
+    /// `no_artifact` — which the promotion refuses on, **before** the replay gate
+    /// is ever reached. Measured:
+    ///
+    /// ```text
+    /// DIAG empty-window live_subject_digest = Err(ReleaseRefused { reason: "no_artifact" })
+    /// DIAG empty compared=0 mismatched=0 order_ok=true
+    /// ```
+    ///
+    /// So at THIS seam `InsufficientEvidence` is **unreachable**, by
+    /// construction: any run that gets far enough to be gated has, by
+    /// definition, at least one trace row, and therefore a non-empty window.
+    ///
+    /// This is recorded as a **ceiling, not a gap**. The distinction the enum
+    /// draws still matters — it is what stops `classify_replay` reading "no
+    /// mismatches" on an empty comparison as a pass — and the arm is still
+    /// reachable through the pure decision's own callers. But claiming the
+    /// release promotion distinguishes "empty" from "divergent" would be
+    /// claiming a discrimination this seam does not have. It does not.
+    ///
+    /// What this pin actually asserts is therefore the honest fact: the
+    /// artifact law fires first, so an emptied window never reaches the gate.
+    #[test]
+    fn r2_c_an_emptied_window_is_refused_by_the_artifact_law_before_the_gate() {
+        let (mut conn, run_id) = seed();
+        let created = file_release(&mut conn, run_id, 3);
+        approve(&mut conn, created.release_id, 4);
+        conn.execute("DELETE FROM delivery_traces WHERE run_id = ?1", [run_id])
+            .expect("the window empties");
+
+        // The gate's own verdict for this world, computed directly — this IS
+        // the arm that would fire if the seam reached it.
+        let report = delivery::replay_verify(&conn, run_id, 5).expect("the report assembles");
+        assert_eq!(report.compared, 0, "the fixture must compare nothing");
+        assert_eq!(
+            crate::workflow::create::replay_gate::classify_replay(&report),
+            crate::workflow::create::replay_gate::ReplayGateVerdict::InsufficientEvidence {
+                compared: 0
+            },
+            "an empty window is insufficient evidence, never clean"
+        );
+
+        // And at the seam, the refusal that actually happens is the artifact's.
+        let refused = promote_release(
+            &mut conn,
+            &PromoteRelease {
+                release_id: created.release_id,
+                confirm: false,
+                actor: "operator",
+                now: 5,
+            },
+        )
+        .expect_err("an emptied window has no artifact to promote");
+        assert!(
+            matches!(
+                refused,
+                DeliveryError::ReleaseRefused {
+                    reason: "no_artifact"
+                }
+            ),
+            "the artifact law precedes the replay gate — measured, not assumed: {refused:?}"
+        );
+    }
+
+    /// The gate refuses; it never repairs. Classifying at the seam must leave
+    /// the stored trace byte-identical — a gate that rewrote what it detected
+    /// would be patching the specification.
+    #[test]
+    fn r2_d_the_replay_gate_refuses_without_repairing_anything() {
+        let (mut conn, run_id) = seed();
+        let created = file_release(&mut conn, run_id, 3);
+        approve(&mut conn, created.release_id, 4);
+        break_the_trace_ordinals(&conn, run_id);
+
+        let before: String = conn
+            .query_row(
+                "SELECT group_concat(id || ':' || seq || ':' || stage, ';') \
+                 FROM (SELECT id, seq, stage FROM delivery_traces WHERE run_id = ?1 ORDER BY id)",
+                [run_id],
+                |r| r.get(0),
+            )
+            .expect("the trace fingerprint");
+        let verdict = promote_release(
+            &mut conn,
+            &PromoteRelease {
+                release_id: created.release_id,
+                confirm: false,
+                actor: "operator",
+                now: 5,
+            },
+        )
+        .expect("the gate returns a verdict");
+        assert_eq!(verdict.disposition, "denied");
+        let after: String = conn
+            .query_row(
+                "SELECT group_concat(id || ':' || seq || ':' || stage, ';') \
+                 FROM (SELECT id, seq, stage FROM delivery_traces WHERE run_id = ?1 ORDER BY id)",
+                [run_id],
+                |r| r.get(0),
+            )
+            .expect("the trace fingerprint");
+        assert_eq!(
+            before, after,
+            "the gate refused, so it must not have touched a single stored row"
+        );
+    }
+
+    /// The seam is where it is, on purpose. The replay gate runs AFTER the
+    /// chain check and BEFORE the crate's decision, and this pins the first
+    /// half of that: a chain-broken artifact still reports the CHAIN, not the
+    /// replay, so the pre-existing deny-wins reporting order is unchanged.
+    #[test]
+    fn r2_e_a_chain_broken_release_still_reports_the_chain_not_the_replay() {
+        let (mut conn, run_id) = seed();
+        let created = file_release(&mut conn, run_id, 3);
+        approve(&mut conn, created.release_id, 4);
+        // Both defects at once, planted together.
+        break_the_trace_ordinals(&conn, run_id);
+        conn.execute(
+            "UPDATE delivery_releases SET status = 'approved' WHERE id = ?1",
+            [created.release_id],
+        )
+        .expect("the status lands");
+        // Break the attestation chain the way the sibling refusal detects.
+        conn.execute("DELETE FROM delivery_attestations", [])
+            .expect("the chain empties");
+
+        let verdict = promote_release(
+            &mut conn,
+            &PromoteRelease {
+                release_id: created.release_id,
+                confirm: false,
+                actor: "operator",
+                now: 5,
+            },
+        )
+        .expect("the gate returns a verdict");
+        assert_eq!(verdict.disposition, "denied");
+        assert_eq!(
+            verdict.deny_reason.as_deref(),
+            Some(DenyReason::AttestationChainBroken.as_str()),
+            "the chain check keeps precedence — R2 must not reorder an existing refusal"
         );
     }
 
