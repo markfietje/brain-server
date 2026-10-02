@@ -911,6 +911,25 @@ pub async fn approve_proposal(
                     serde_json::json!([]),
                 ));
             }
+            // The per-domain knowledge-version axis, inside the SAME transaction as
+            // the state change it moves, so a failed commit cannot leave a bumped
+            // axis behind a publication that did not land. Only a PUBLICATION bumps:
+            // `retract` is the machine's backward edge, and a retraction does not
+            // decrement — the axis is monotonic by definition.
+            //
+            // The domain is NOT passed in. The branch's audit tenant below is the
+            // literal "global" and is an audit label, not a domain; the core
+            // resolves the article's own `knowledge.domain`, so no caller can hand
+            // this a shared counter wearing a per-domain name.
+            if action == "publish" {
+                crate::service::gate::bump_article_knowledge_version(
+                    &tx,
+                    knowledge_id,
+                    principal_to_owner(&principal.0).as_deref().unwrap_or("api"),
+                    now_ts,
+                )
+                .map_err(|e| HandlerError::internal(e.to_string()))?;
+            }
             crate::audit::record_tenant(
                 &tx,
                 crate::audit::AuditKind::Workflow,

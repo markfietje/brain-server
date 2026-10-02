@@ -233,6 +233,10 @@ pub(crate) fn stamp_law_version(
 /// Open a run: the row write + id resolution inside the CALLER'S
 /// transaction ([`super::tx::WorkflowTx`]). The caller owes the `open`
 /// audit row and the presence touch, in the same tx.
+///
+/// `knowledge_version` records the domain's CURRENT version at case-open, read
+/// from the per-domain axis. A domain with no row is at the base version, never
+/// zero, and `NULL` keeps its stated meaning ("predates tracking").
 pub(crate) fn open_run(
     conn: &Connection,
     domain: &str,
@@ -240,10 +244,11 @@ pub(crate) fn open_run(
     state_json: &str,
     now: i64,
 ) -> rusqlite::Result<i64> {
+    let knowledge_version = crate::service::gate::current_domain_knowledge_version(conn, domain);
     conn.execute(
         "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at, knowledge_version)
          VALUES (?1, ?2, ?3, 0, 'active', ?4, ?4, ?5)",
-        params![domain, kind, state_json, now, crate::config::KNOWLEDGE_VERSION],
+        params![domain, kind, state_json, now, knowledge_version],
     )?;
     Ok(conn.last_insert_rowid())
 }

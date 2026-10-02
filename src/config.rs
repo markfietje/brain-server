@@ -34,14 +34,23 @@ pub const DEFAULT_SUGGEST_K: u32 = 5;
 /// An integer monotonic counter, not a timestamp: ordering is then total and
 /// comparison is a single integer.
 ///
-/// **CEILING, stated rather than hidden: there is no Evolve bump site yet, so this
-/// value is CONSTANT.** It records which knowledge version a case opened against. It
-/// does NOT by itself prevent mixed-basis reasoning — a case reopened after an Evolve
-/// publication re-enters Solve against a moved base, and this column is what makes
-/// that visible. The delta OFFER is where prevention lives; delta semantics are
-/// not yet defined. A sentinel `0` is deliberately not used: `NULL` means "predates
-/// tracking", and `0` would falsely date every legacy row to version zero.
-pub const KNOWLEDGE_VERSION: i64 = 1;
+/// **CEILING, stated rather than hidden: this constant is the BASE, not the
+/// value.** It is what a domain sits at before it has ever published, and the
+/// per-domain axis (`knowledge_domain_versions`) is what a case is now recorded
+/// against. It records which knowledge version a case opened against. It
+/// does NOT by itself prevent mixed-basis reasoning — a case reopened after a
+/// publication re-enters Solve against a moved base, and this column is what
+/// makes that visible. **The delta is surfaced and audited, and nothing
+/// branches on it:** an unmeasured "your basis moved" prompt with no operator
+/// policy behind it would be a new unmeasured gate. The delta OFFER is where
+/// prevention lives; delta semantics are not yet defined. A sentinel `0` is
+/// deliberately not used: `NULL` means "predates tracking", and `0` would
+/// falsely date every legacy row to version zero.
+pub const KNOWLEDGE_BASE_VERSION: i64 = 1;
+
+/// The historical constant, kept as the named BASE so the axis reads against a
+/// single defined value rather than a literal repeated at its call sites.
+pub const KNOWLEDGE_VERSION: i64 = KNOWLEDGE_BASE_VERSION;
 
 /// Evidence quality: bounded snippet window (chars) and the redaction cap
 /// on `explain` payloads so they can never leak unbounded source text.

@@ -307,8 +307,9 @@ fn the_reviewer_id_is_a_payload_field_and_not_a_column() {
     );
     let layout = read("src/storage_layout.rs");
     assert!(
-        layout.contains("LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_23"),
-        "the schema version must be unmoved by this round"
+        layout.contains("LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_24"),
+        "the schema version must be unmoved by this round — the ceiling tracks the newest \
+         schema round, and this round ships no migration of its own"
     );
     // And the reviewer rides the parsed payload, keyed with the rest.
     let src = read("src/workflow/agreement.rs");

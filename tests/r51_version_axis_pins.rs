@@ -37,9 +37,9 @@ fn r51_open_run_writes_knowledge_version() {
         "the case-open insert must set `knowledge_version` — that is the whole axis."
     );
     assert!(
-        state.contains("KNOWLEDGE_VERSION"),
-        "the case-open insert must read the version from the single pinned constant, not a \
-         literal, so there is exactly one place the value is defined."
+        state.contains("current_domain_knowledge_version"),
+        "the case-open insert must read the domain's CURRENT version from the per-domain axis, \
+         not a compile-time constant — that is what makes the recorded value move."
     );
     // every run kind goes through `open_run`, so this is the single choke point
     let callers = [
@@ -116,14 +116,22 @@ fn r51_schema_stamp_moved_with_the_axis() {
 /// The ceiling is WRITTEN DOWN, in code, at every place a reader would assume the axis
 /// is doing more than it does. This is the honesty pin: it asserts the limitation is
 /// declared, not that a protection exists.
+///
+/// **RE-SCOPED, NOT DELETED.** The axis now MOVES — a publication bumps its domain's
+/// version — so the old claim ("there is no Evolve bump site yet, so this value is
+/// CONSTANT") is no longer true and would be a false claim in the code. What
+/// replaced it is the limitation that SURVIVES the bump, and it is a real one:
+/// recording the version still does not prevent anything, because nothing branches on
+/// the delta. Deleting this pin would have removed the honesty check itself, which is
+/// the one thing it exists to be.
 #[test]
 fn r51_knowledge_version_ceiling_is_stated() {
     let config = read("src/config.rs");
     // The declaration's own doc comment: collect the whole contiguous `///` block
     // immediately above the const.
     let idx = config
-        .find("pub const KNOWLEDGE_VERSION")
-        .expect("KNOWLEDGE_VERSION must be declared in config.rs");
+        .find("pub const KNOWLEDGE_BASE_VERSION")
+        .expect("KNOWLEDGE_BASE_VERSION must be declared in config.rs");
     let head = config[..idx].lines().collect::<Vec<_>>();
     let mut start = head.len();
     while start > 0 && head[start - 1].trim_start().starts_with("///") {
@@ -132,27 +140,23 @@ fn r51_knowledge_version_ceiling_is_stated() {
     let doc: String = head[start..].join("\n");
     let decl = format!("{doc}\n{}", &config[idx..(idx + 60).min(config.len())]);
     assert!(
-        decl.contains("no Evolve bump site yet") && decl.contains("CONSTANT"),
-        "the KNOWLEDGE_VERSION constant must state, in the declaration itself, that the value \
-         is currently CONSTANT because no Evolve bump site exists. A reader who finds only \
-         the column would otherwise assume a version axis that moves. Declaration:\n{decl}"
+        decl.contains("CEILING") && decl.contains("BASE"),
+        "the base-version constant must state, in the declaration itself, that it is the BASE \
+         a domain sits at before it has ever published — not the value every case records. \
+         A reader who found only the column would otherwise assume a single global counter. \
+         Declaration:\n{decl}"
     );
     assert!(
         decl.contains("does NOT by itself prevent"),
         "the constant must state that recording the version does not by itself prevent \
-         mixed-basis reasoning — the delta offer is where prevention lives."
+         mixed-basis reasoning — the delta is surfaced and audited, and acting on it is where \
+         prevention would live."
     );
-    // Read the literal from source: this is an integration test, so the lib's private
-    // `config` module is not reachable. The literal is what ships.
-    let pinned = config
-        .lines()
-        .find_map(|l| l.trim().strip_prefix("pub const KNOWLEDGE_VERSION: i64 = "))
-        .map(|v| v.trim_end_matches(';').trim())
-        .expect("KNOWLEDGE_VERSION must be declared in config.rs");
-    assert_eq!(
-        pinned, "1",
-        "the pinned value is 1; a silent edit here would make every case-open assertion \
-         below vacuous relative to the recorded evidence. Found: {pinned:?}"
+    assert!(
+        decl.contains("nothing\n/// branches on it") || decl.contains("nothing branches on it"),
+        "the constant must state that the delta is NOT acted on. An unmeasured 'your basis \
+         moved' prompt with no operator policy behind it would be a new unmeasured gate — the \
+         error PROMOTION_ENABLED exists to prevent exactly that."
     );
 }
 
