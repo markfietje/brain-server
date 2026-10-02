@@ -851,6 +851,66 @@ pub(crate) fn resolve_for_execution(
     }
 }
 
+/// The artifact digest a resolved row CITES, or `None` when the row has no
+/// artifact to name.
+///
+/// R67D-CLOSURE. This closes a measured contradiction between three laws, each
+/// individually correct and jointly unsatisfiable:
+///
+/// | # | law | site | requires |
+/// |---|---|---|---|
+/// | 1 | the execution binding | `resolve_for_execution` | `kind = deterministic-rules` |
+/// | 2 | the artifact rule | `validate_stored_row:136` | `artifact_digest` only for `learned` |
+/// | 3 | the citation | `delivery::resolve_citation` | a non-`NULL` artifact digest |
+///
+/// A `deterministic-rules` row is the only bindable kind, and it is the one kind
+/// that carries no `artifact_digest` — by construction, not by configuration:
+/// `validate_stored_row` requires the artifact only for `learned`, the
+/// registration handler REFUSES a rules row that declares one
+/// (`handlers/model_registry.rs:177` → `IdentityDeclared`), and the registry's
+/// own pin asserts `config_digest: Some(..)` with `artifact_digest: None`. So
+/// law 3 could never be satisfied by law 1, no delivery run could acquire a
+/// `model_ref`, and the agreement queue was structurally empty.
+///
+/// **The resolution is that for a rules row the two digests name the SAME
+/// bytes.** The module doc already says it: *"Registration content is never
+/// stored: the canonical digest IS the pin."* For a rules table the content is
+/// the rules document, so the canonical digest of that document is precisely
+/// what a citation must name — and the row already carries it, as
+/// `config_digest`. Demanding a second name for the same bytes and refusing
+/// the only row kind that has them was the defect.
+///
+/// **This does not weaken the learned law.** The fallback is gated on the KIND,
+/// not on "the artifact happened to be absent": a `learned` or `reranker` row
+/// with no `artifact_digest` returns `None` and the citation refuses it, exactly
+/// as before, so a model that declared no bytes still cannot be cited. Pinned
+/// by `a_learned_row_still_requires_its_own_artifact_digest`.
+///
+/// The gate is an explicit `if` on `row.kind` rather than a `debug_assert` on
+/// the same condition, for two reasons. First, a debug assertion disappears in
+/// release, and the law must hold in the shipped binary. Second — and this was
+/// found by the pin that exists to catch it — an assertion *fired* the moment a
+/// caller passed a `learned` row directly, which is a legitimate thing for a
+/// unit test to do and is precisely the input the law must refuse. The right
+/// response to "an unexpected row kind reached the fallback" is to REFUSE it
+/// by name, not to panic.
+pub(crate) fn cited_artifact_digest(row: &RegistryRow) -> Option<String> {
+    if let Some(artifact) = row
+        .artifact_digest
+        .as_deref()
+        .filter(|d| !d.trim().is_empty())
+    {
+        return Some(artifact.to_string());
+    }
+    // The rules arm: the canonical digest of the rules document IS the artifact.
+    // Gated on the kind so a learned/reranker row can never borrow its config
+    // digest as an artifact, whatever its shape.
+    if row.kind != KIND_DETERMINISTIC_RULES {
+        return None;
+    }
+    row.config_digest.clone().filter(|d| !d.trim().is_empty())
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     //! Test-only seeds and probes: the handler test modules stay SQL-free

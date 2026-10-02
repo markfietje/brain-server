@@ -968,9 +968,18 @@ fn resolve_citation(
         Err(ResolveRefusal::NotPromoted) => return Err(DeliveryError::ModelNotPromoted),
         Err(ResolveRefusal::Retired) => return Err(DeliveryError::ModelRetired),
     };
-    let artifact_digest = row
-        .artifact_digest
-        .filter(|d| !d.trim().is_empty())
+    // R67D-CLOSURE: the artifact a citation names is resolved by the registry
+    // module, which owns the kind laws. A `deterministic-rules` row cites its
+    // `config_digest` — the canonical digest of the rules document IS the pin
+    // for that kind (see `registry::cited_artifact_digest`). Before this, the
+    // citation demanded a distinct `artifact_digest` from the only bindable
+    // kind, which carries none by construction, so no delivery run could ever
+    // acquire a `model_ref` and the agreement queue was structurally empty.
+    //
+    // The refusal below is still live: a row with NEITHER digest has no bytes
+    // to name, and a citation the verifier cannot check is exactly what the
+    // artifact law exists to prevent.
+    let artifact_digest = crate::workflow::registry::cited_artifact_digest(&row)
         .ok_or(DeliveryError::ModelDigestMissing)?;
     Ok(Citation {
         key: binding.key.clone(),
@@ -4336,28 +4345,67 @@ mod tests {
     /// refused. The row exists, the name is real, and there is still nothing
     /// that says which bytes acted — so the citation is incomplete and the pass
     /// refuses rather than attesting a name.
+    ///
+    /// **R67D-CLOSURE AMENDED, NOT DELETED.** The LAW is intact: a citation must
+    /// name bytes. What changed is *which field* names them for a
+    /// `deterministic-rules` row.
+    ///
+    /// The original pin used `seed_model(..., artifact = None)` — a promoted
+    /// rules row with a config digest and no artifact digest — and asserted the
+    /// pass refuses. That shape is **the registry's only bindable shape**: the
+    /// registration handler refuses a rules row that declares an artifact digest
+    /// (`IdentityDeclared`), and the registry's own pin asserts
+    /// `config_digest: Some(..)` with `artifact_digest: None`. So the pinned
+    /// shape was not an edge case — it was the ONLY shape a bindable rules row
+    /// can have, and the pin therefore asserted that no delivery run can ever be
+    /// model-cited. That is the defect this amendment closes.
+    ///
+    /// A6's stated intent (R40 plan §A6) is *"a name without a digest is not
+    /// evidence"*; the predicate field is `model_digest` = the model BYTES. For a
+    /// rules table the bytes ARE the rules document and the row already carries
+    /// that document's canonical digest as `config_digest`.
+    ///
+    /// **Two refusals are asserted, because the bytes can be missing at two
+    /// different seams and both must fail closed:**
+    ///
+    /// 1. **No `config_digest` at all.** The binding lookup matches on
+    ///    `id AND config_digest AND kind` (`registry.rs:761`), so a row with a
+    ///    NULL config can never be selected: the pass refuses at
+    ///    `delivery_model_not_registered`, *before* the citation is ever built.
+    /// 2. **No `artifact_digest` on a kind that requires one.** Unreachable
+    ///    through the delivery route by construction (the only bindable kind is
+    ///    the rules kind), so it is pinned at the resolver directly in
+    ///    `a_learned_row_still_requires_its_own_artifact_digest`.
     #[test]
     fn attestation_refuses_a_model_without_artifact_digest() {
         let mut conn = seed();
         let _operator = crate::test_support::operator_key_guard();
-        seed_model(
-            &conn,
-            "mb-nodigest",
-            &"c".repeat(64),
-            crate::workflow::registry::STATUS_PROMOTED,
-            None,
-        );
+        // A rules row with NO digest of any kind: there are no bytes to name
+        // under any field. The binding cannot select it, so the pass refuses at
+        // the earliest seam and writes nothing.
+        conn.execute(
+            "INSERT INTO decision_model_registry(id, version, kind, name, output_vocabulary, \
+             artifact_digest, config_digest, calibration_ref, status, evaluation_refs, \
+             proposed_by, approved_by, created_at, updated_at) \
+             VALUES ('mb-nodigest','1',?1,'m','[\"choice\"]',NULL,NULL,NULL,?2,'[]','tester','tester',1,1)",
+            params![
+                crate::workflow::registry::KIND_DETERMINISTIC_RULES,
+                crate::workflow::registry::STATUS_PROMOTED,
+            ],
+        )
+        .expect("seed a rules row with no digest at all");
         let run = open(&mut conn, "bounded-auto");
         let binding = ModelBinding {
             key: "rules:mb-nodigest".to_string(),
             config_digest: "c".repeat(64),
         };
         let err = advance_with_model(&mut conn, run.run_id, 0, "design", Some(&binding))
-            .expect_err("a name with no bytes must refuse");
+            .expect_err("a name with no bytes under any field must refuse");
         assert_eq!(
             err.to_string(),
-            "delivery_model_digest_missing",
-            "the refusal is its own code, distinct from the three registry refusals"
+            "delivery_model_not_registered",
+            "a row whose config digest cannot be matched is not a citable row at all; \
+             the refusal is fail-closed and happens before any citation is built"
         );
         assert_eq!(
             count(&conn, "SELECT COUNT(*) FROM delivery_attestations"),
@@ -4367,6 +4415,43 @@ mod tests {
             count(&conn, "SELECT COUNT(*) FROM workflow_steps"),
             0,
             "the refusal rolls the whole pass back"
+        );
+
+        // And the `model_digest_missing` code is still LIVE, not orphaned by the
+        // amendment: a row that DOES bind but yields no citable digest refuses
+        // with its own distinct code rather than being silently accepted. This
+        // is the original refusal, reached at the resolver.
+        //
+        // **ONE `operator_key_guard` for the whole test.** The guard holds a
+        // process-global non-reentrant `ENV_LOCK`, so taking it twice in one test
+        // self-deadlocks — which is exactly what the first draft of this pin did
+        // and what the suite hung on. The second half is a pure resolver
+        // assertion that never signs, so it needs no key at all.
+        let conn = seed();
+        seed_model(
+            &conn,
+            "mb-nodigest",
+            &"c".repeat(64),
+            crate::workflow::registry::STATUS_PROMOTED,
+            None,
+        );
+        let row = crate::workflow::registry::row_by_ref(&conn, "mb-nodigest", "1")
+            .expect("the row exists")
+            .expect("the row is present");
+        assert_eq!(
+            crate::workflow::registry::cited_artifact_digest(&row),
+            Some("c".repeat(64)),
+            "a rules row's canonical config digest names its bytes"
+        );
+        // A row of a kind that must declare artifact bytes and did not:
+        let mut learned = row.clone();
+        learned.kind = crate::workflow::registry::KIND_LEARNED.to_string();
+        learned.artifact_digest = None;
+        assert_eq!(
+            crate::workflow::registry::cited_artifact_digest(&learned),
+            None,
+            "the learned arm still refuses, so `model_digest_missing` is still reachable \
+             // and still means what it said: a name with no bytes behind it"
         );
     }
 
@@ -5250,6 +5335,181 @@ mod tests {
             readers.iter().any(|n| n == "agreement.rs"),
             "the reader must still exist — a pin that passes because nothing references \
              the kind at all is vacuous"
+        );
+    }
+
+    // ── R67D-CLOSURE: the rules row is citable, the learned law is not ────
+
+    const HEX_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HEX_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    /// PA1 — **the fix, end to end.** A promoted `deterministic-rules` row with
+    /// NO `artifact_digest` — the shape the registry's own pin asserts, and the
+    /// shape the registration handler makes impossible to declare otherwise —
+    /// now resolves, and the phase pass lands a real `model_ref` on the trace.
+    ///
+    /// This is the ceiling-A closure: `model_ref` is the queue's population
+    /// key, so before this a run could never enter the reviewer's queue at all.
+    #[test]
+    fn a_promoted_rules_row_is_citable_and_lands_a_model_ref() {
+        let mut conn = seed();
+        // The exact defect shape: bindable kind, promoted, artifact_digest NULL.
+        seed_model(&conn, "rules-probe", HEX_B, "promoted", None);
+        let run = open(&mut conn, "bounded-auto");
+        advance_with_model(
+            &mut conn,
+            run.run_id,
+            0,
+            "design",
+            Some(&ModelBinding {
+                key: "rules:rules-probe".to_string(),
+                config_digest: HEX_B.to_string(),
+            }),
+        )
+        .expect("a promoted rules row is citable: its config digest IS its artifact");
+        let model_ref: Option<String> = conn
+            .query_row(
+                "SELECT model_ref FROM delivery_traces
+                      WHERE run_id = ?1 AND stage = 'phase'",
+                params![run.run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            model_ref.as_deref(),
+            Some("rules:rules-probe"),
+            "the trace must now carry the model identity, or the queue stays empty"
+        );
+    }
+
+    /// PA2 — **the law this fix must NOT weaken, and the one that matters
+    /// most.** A `learned` row with no artifact digest still refuses, and a
+    /// learned row with one still cites THAT digest rather than its config.
+    ///
+    /// If this ever passes vacuously the fix has become a hole: a model that
+    /// declared no bytes would be citing a config digest as if it were an
+    /// artifact, which is precisely the "a model name with no bytes behind it
+    /// is not evidence" case the artifact law exists to refuse.
+    #[test]
+    fn a_learned_row_still_requires_its_own_artifact_digest() {
+        use crate::workflow::registry::{RegistryRow, cited_artifact_digest};
+        let row = |kind: &str, artifact: Option<&str>, config: Option<&str>| RegistryRow {
+            id: "m".into(),
+            version: "1".into(),
+            kind: kind.into(),
+            name: "m".into(),
+            output_vocabulary: vec!["choice".into()],
+            artifact_digest: artifact.map(str::to_string),
+            config_digest: config.map(str::to_string),
+            calibration_ref: None,
+            status: "promoted".into(),
+            evaluation_refs: vec![],
+            proposed_by: "t".into(),
+            approved_by: Some("t".into()),
+            created_at: 0,
+            updated_at: 0,
+        };
+        // A learned row with BOTH digests cites its ARTIFACT, never its config.
+        assert_eq!(
+            cited_artifact_digest(&row("learned", Some(HEX_A), Some(HEX_B))).as_deref(),
+            Some(HEX_A),
+            "a learned model's citation names the artifact bytes, not its config"
+        );
+        // A learned row with NO artifact has nothing to name.
+        assert_eq!(
+            cited_artifact_digest(&row("learned", None, Some(HEX_B))),
+            None,
+            "a model that declared no bytes must NOT borrow its config digest as an artifact — \
+                 that is the whole point of the artifact law"
+        );
+        // A rules row cites its config, which is the same bytes by construction.
+        assert_eq!(
+            cited_artifact_digest(&row("deterministic-rules", None, Some(HEX_B))).as_deref(),
+            Some(HEX_B)
+        );
+        // A row with NEITHER digest still has nothing to name, in either kind.
+        assert_eq!(
+            cited_artifact_digest(&row("deterministic-rules", None, None)),
+            None
+        );
+    }
+
+    /// PA3 — the citation names the SAME bytes under the field the trace
+    /// already carries, so `config_digest` and the cited artifact agree for a
+    /// rules row. Two different names for one artifact would be a second
+    /// identity, which is the confusion the fix is meant to remove.
+    #[test]
+    fn a_rules_row_cites_its_config_digest_as_the_artifact() {
+        let mut conn = seed();
+        seed_model(&conn, "rules-same", HEX_B, "promoted", None);
+        let run = open(&mut conn, "bounded-auto");
+        advance_with_model(
+            &mut conn,
+            run.run_id,
+            0,
+            "design",
+            Some(&ModelBinding {
+                key: "rules:rules-same".to_string(),
+                config_digest: HEX_B.to_string(),
+            }),
+        )
+        .expect("citable");
+        let (config_digest, model_ref): (Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT config_digest, model_ref FROM delivery_traces
+                      WHERE run_id = ?1 AND stage = 'phase'",
+                params![run.run_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            config_digest.as_deref(),
+            Some(HEX_B),
+            "the trace's config digest is the rules document's canonical digest"
+        );
+        assert_eq!(
+            model_ref.as_deref(),
+            Some("rules:rules-same"),
+            "and the model identity rides beside it"
+        );
+    }
+
+    /// PA4 — the ceiling is CLOSED, so the agreement queue's population law
+    /// must now be reachable. This is the inverse of the R67-DECISION ceiling
+    /// pin: that one asserted the queue was structurally empty and named the
+    /// contradiction; this one asserts the contradiction is resolved and fails
+    /// loudly if the registry's kind laws move again.
+    #[test]
+    fn the_queue_population_is_reachable_again() {
+        let mut conn = seed();
+        seed_model(&conn, "rules-reach", HEX_B, "promoted", None);
+        let run = open(&mut conn, "bounded-auto");
+        advance_with_model(
+            &mut conn,
+            run.run_id,
+            0,
+            "design",
+            Some(&ModelBinding {
+                key: "rules:rules-reach".to_string(),
+                config_digest: HEX_B.to_string(),
+            }),
+        )
+        .expect("a promoted rules row acquires a model_ref");
+        // The queue reads `WHERE model_ref IS NOT NULL`. Prove a row now EXISTS
+        // that satisfies it — the population the reviewer sees.
+        let labelable: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM delivery_traces WHERE run_id = ?1 AND model_ref IS NOT NULL",
+                params![run.run_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            labelable, 1,
+            "R67D-CLOSURE REGRESSION: no row satisfies the queue's population filter again. \
+                 Either resolve_for_execution narrowed its kind query, or the citation stopped \
+                 landing a model_ref. Re-derive the registry kind laws before assuming the queue \
+                 is still reachable."
         );
     }
 }
