@@ -888,10 +888,10 @@ pub(crate) fn promote_release(
         });
     }
     // ── the replay-determinism gate ──────────────────────────────────────────
-    // AFTER chain_defect, BEFORE the crate's decision. The ordering is the one
-    // preregistered in `R2_PREREGISTRATION_2026-10-02.md` §5: the structural
-    // precondition still reports first for a chain-broken artifact, and a
-    // divergent trace is refused before ANY state change.
+    // AFTER chain_defect, BEFORE the crate's decision. The ordering is
+    // load-bearing: the structural precondition still reports first for a
+    // chain-broken artifact, and a divergent trace is refused before ANY state
+    // change.
     //
     // **This is the replay gate's first production consumer.** Until this seam
     // it was a pure decision with no caller outside its own tests — a gate that
