@@ -929,9 +929,14 @@ fn restore_inner(
         // Harvest the ACTIVE legal holds BEFORE the snapshot —
         // restoring a pre-hold backup previously dropped every hold row, and
         // a frozen-for-litigation id silently became purgable. The holds are
-        // re-applied to the restored DB below. Best-effort read (a missing
-        // table on an unmigrated file = no holds).
-        active_holds = conn
+        // re-applied to the restored DB below.
+        //
+        // A MISSING TABLE on an unmigrated file genuinely means "no holds", so
+        // that one error is tolerated. Every OTHER error means the holds could
+        // NOT BE VERIFIED, and proceeding would overwrite the database on the
+        // strength of a read that failed — which is precisely how this defect
+        // destroyed every freeze in the first place. So the restore REFUSES.
+        active_holds = match conn
             .prepare(
                 "SELECT knowledge_id, reason, held_by FROM legal_holds \
                   WHERE released_at IS NULL",
@@ -939,8 +944,24 @@ fn restore_inner(
             .and_then(|mut s| {
                 let rows = s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()
-            })
-            .unwrap_or_default();
+            }) {
+            Ok(holds) => holds,
+            Err(e) if e.to_string().contains("no such table") => {
+                tracing::warn!(
+                    "restore: no legal_holds table (unmigrated store) — proceeding with no \
+                     holds to re-apply"
+                );
+                Vec::new()
+            }
+            Err(e) => {
+                anyhow::bail!(
+                    "refusing restore: active legal holds could NOT be read ({e}). A restore \
+                     that cannot confirm its holds is the restore that destroys them — the \
+                     live database has NOT been modified. Re-run once the legal_holds table \
+                     is readable, or restore to a scratch copy and re-apply the holds by hand."
+                );
+            }
+        };
         // The tombstone ids — after restore we check which
         // purged ids the backup resurrects (the WORM-lite disclosure).
         tombstoned = conn
@@ -1412,6 +1433,103 @@ mod tests {
         let _ = fs::remove_file(&out);
         let _ = fs::remove_file(&dst);
         let _ = fs::remove_file(dst.with_file_name("hold-dst.bak"));
+    }
+
+    /// An UNREADABLE legal_holds table refuses the restore, and leaves the live
+    /// database untouched.
+    ///
+    /// **This is the anti-silence pin.** The defect this round fixed read
+    /// `legal_holds.placed_by` against a table whose column is `held_by`, and
+    /// `unwrap_or_default()` turned that error into an empty hold list — so the
+    /// restore completed cleanly, with a success exit, having destroyed every
+    /// litigation freeze. A restore that cannot READ its holds must not proceed
+    /// to overwrite the database on the strength of a read that failed.
+    ///
+    /// The tolerated case is narrow and named: a **missing table** on an
+    /// unmigrated store genuinely means "no holds", and the existing tests
+    /// depend on it. Any other read error refuses.
+    #[test]
+    fn restore_refuses_when_legal_holds_cannot_be_read() {
+        let src = tmp_path("unreadable-src");
+        let out = std::env::temp_dir().join(format!(
+            "brain-backup-unreadable-{}.enc",
+            std::process::id()
+        ));
+        let dst = tmp_path("unreadable-dst");
+        let _ = fs::remove_file(&out);
+        let _ = fs::remove_file(&dst);
+        make_db(&src, "held evidence").unwrap();
+        backup(&src, &out, b"pass".as_slice()).unwrap();
+
+        // A `legal_holds` table with the WRONG SHAPE: present, so the
+        // "missing table" tolerance does not apply, but unreadable by the query.
+        make_db(&dst, "current state").unwrap();
+        {
+            let conn = rusqlite::Connection::open(&dst).unwrap();
+            conn.execute(
+                "CREATE TABLE legal_holds(id INTEGER PRIMARY KEY, note TEXT)",
+                [],
+            )
+            .unwrap();
+            conn.close().map_err(|(_, e)| e).unwrap();
+        }
+        let before = fs::read(&dst).unwrap();
+
+        let err = restore_with_options(&out, &dst, b"pass".as_slice(), true)
+            .expect_err("a restore that cannot read its holds must REFUSE");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("legal holds could NOT be read"),
+            "the refusal must name the cause: {msg}"
+        );
+        assert!(
+            msg.contains("has NOT been modified"),
+            "the refusal must state the live DB is intact: {msg}"
+        );
+
+        // The live database was not overwritten by the refused attempt.
+        assert_eq!(
+            fs::read(&dst).unwrap(),
+            before,
+            "the refused restore modified the live database anyway"
+        );
+
+        let _ = fs::remove_file(&src);
+        let _ = fs::remove_file(&out);
+        let _ = fs::remove_file(&dst);
+        let _ = fs::remove_file(dst.with_file_name("unreadable-dst.bak"));
+    }
+
+    /// A store with NO legal_holds table still restores — the tolerated case.
+    ///
+    /// Without this the fix above would be a regression: every restore onto an
+    /// unmigrated store would refuse, and "no table" genuinely means "no holds".
+    #[test]
+    fn restore_still_works_on_a_store_with_no_legal_holds_table() {
+        let src = tmp_path("noholds-src");
+        let out =
+            std::env::temp_dir().join(format!("brain-backup-noholds-{}.enc", std::process::id()));
+        let dst = tmp_path("noholds-dst");
+        let _ = fs::remove_file(&out);
+        let _ = fs::remove_file(&dst);
+        make_db(&src, "some data").unwrap();
+        backup(&src, &out, b"pass".as_slice()).unwrap();
+        // `dst` gets `make_db` only — no legal_holds table at all.
+        make_db(&dst, "other data").unwrap();
+
+        restore_with_options(&out, &dst, b"pass".as_slice(), true)
+            .expect("a missing legal_holds table means no holds, not a failure");
+
+        let conn = rusqlite::Connection::open(&dst).unwrap();
+        let text: String = conn
+            .query_row("SELECT text FROM knowledge", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(text, "some data", "the restore did not take effect");
+
+        let _ = fs::remove_file(&src);
+        let _ = fs::remove_file(&out);
+        let _ = fs::remove_file(&dst);
+        let _ = fs::remove_file(dst.with_file_name("noholds-dst.bak"));
     }
 
     #[test]
