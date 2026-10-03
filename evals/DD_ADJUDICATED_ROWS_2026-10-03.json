@@ -1,0 +1,81 @@
+{
+  "overlay_id": "DD_ADJUDICATED_ROWS_2026-10-03",
+  "decision": "D-D",
+  "source_pack": "brain-consultancy/evals/classifier_gold_set/classifier_gold_set.json",
+  "source_pack_sha256": "2bd6b5b0c4dc1675fc77a960d4c643ad03b83baaadefd28e5b95626512c07916",
+  "reviewer_id": "simulated-sme-chat-2026-10-03",
+  "simulated": true,
+  "discharges_d6": false,
+  "vocabulary_rule": "Rows 1-8 are care/QC/support process cases OUTSIDE the 21-queue fault matrix, so they take CATEGORY verdicts from the classifier's 8 domains. A queue verdict applies only where a fault-queue genuinely applies; row 9 is the only such row.",
+  "non_claims": [
+    "human_pass is NOT written by this overlay - it remains the operator's frozen judgment.",
+    "This does not amend the frozen gold corpus.",
+    "This does not discharge D-6 and creates no kappa.",
+    "The single-rater ceiling stands."
+  ],
+  "rows": [
+    {
+      "id": "care_inquiry_clean",
+      "operator_adjudication_required": true,
+      "verdict_kind": "category",
+      "verdict": "general",
+      "reason": "resolved intake, outside the fault matrix; no queue applies"
+    },
+    {
+      "id": "intake_is_is_not",
+      "operator_adjudication_required": true,
+      "verdict_kind": "category",
+      "verdict": "business_process",
+      "reason": "IS/IS-NOT state capture is intake process discipline"
+    },
+    {
+      "id": "qc_clean_run",
+      "operator_adjudication_required": true,
+      "verdict_kind": "category",
+      "verdict": "business_process",
+      "reason": "a clean QC pass; quality assurance, not a fault"
+    },
+    {
+      "id": "qc_incorrect_finding",
+      "operator_adjudication_required": true,
+      "verdict_kind": "category",
+      "verdict": "business_process",
+      "reason": "an incorrect-finding defect logged; a knowledge-accuracy signal"
+    },
+    {
+      "id": "repeater_3_30d",
+      "operator_adjudication_required": true,
+      "verdict_kind": "category",
+      "verdict": "business_process",
+      "reason": "repeat contact is a Deflect-loop signal, not a hardware fault"
+    },
+    {
+      "id": "skipped_verify",
+      "operator_adjudication_required": true,
+      "verdict_kind": "category",
+      "verdict": "compliance",
+      "reason": "a verification waiver under customer instruction is an audit-recorded exception"
+    },
+    {
+      "id": "stale_knowledge",
+      "operator_adjudication_required": true,
+      "verdict_kind": "category",
+      "verdict": "compliance",
+      "reason": "stale knowledge applied is a freshness/audit defect; the Evolve concern in miniature"
+    },
+    {
+      "id": "unfaithful_slice",
+      "operator_adjudication_required": true,
+      "verdict_kind": "category",
+      "verdict": "compliance",
+      "reason": "consent confirmation + evidence refs make fidelity the axis"
+    },
+    {
+      "id": "vacuous_twin",
+      "operator_adjudication_required": true,
+      "verdict_kind": "queue",
+      "verdict": "Q-OPS-ESCALATION",
+      "reason": "unresolved, payer identity contradicted, escalation honored: this is exactly the fail-closed human queue"
+    }
+  ]
+}
