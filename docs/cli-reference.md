@@ -144,6 +144,9 @@ step. There is NO hot failover and NO RPO=0 claim anywhere.
 | `brain standby status [--to <dir>]` | Integrity self-check of the follower: verifies the manifest's Ed25519 signature and recomputes artifact hashes — any tamper or torn cycle FAILS (exit 1). Prints cycle, age, cycles behind, and `rpo_max = interval + checkpoint lag`. |
 | `brain standby promote-check --from <dir>` `[--passphrase-file PATH]` `[--expected-signer DID]` | THE DRILL: restores the follower into a temp dir (the shipped restore path), replays the WAL chunk, runs `PRAGMA integrity_check`, and prints measured RTO plus computed RPO. Exit code gates. |
 
+| `brain disproof` [`--claim-id ID`] [`--db PATH`] | Evaluates every claim's stored **disproof condition** against the claim's own subject and reports the **three** states: `satisfied` (the named disproof was NOT observed — these stand), `REFUTED` (it WAS observed — these do **NOT** stand, and are listed by id), and `no verdict` (a prose condition, or a claim predating the field — **never green**). The three are counted separately on purpose: a single "ok" number would make a prose condition read as a pass. |
+| `brain disproof` (posture) | **Writes nothing.** No `status` is set, nothing is demoted, nothing is ratified — a sweep that wrote its own verdicts back would be a promotion path, and promotion is disabled. Run it **on a cadence from cron**: a shipper inside the server it falsifies is a correlated failure. A sweep over zero claims says so explicitly, because an empty denominator is not a clean bill of health. |
+
 ## Routing (operator-run, writes nothing)
 
 `brain route` is the operator-run entry point to the routing seam. It is a verb and not

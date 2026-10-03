@@ -311,6 +311,12 @@ const SUBCOMMANDS: &[Subcommand] = &[
         usage: "brain anchor [--db PATH]\n  brain anchor --verify \"<recorded line>\" [--db PATH]\n                 (off-host tamper witness: state fingerprint to record OUTSIDE this\n                  machine; verify later — any state change trips it, the audit chain\n                  explains legitimate ones)",
     },
     Subcommand {
+        name: "disproof",
+        json: true,
+        run: cmd_disproof,
+        usage: "brain disproof [--claim-id ID] [--db PATH]\n                 (evaluate every claim's stored DISPROOF CONDITION against the claim's own\n                  subject and report the three states: satisfied (the named disproof was NOT\n                  observed, so the claim stands), refuted (it WAS observed, so the claim does\n                  NOT stand), and no-verdict (a prose condition, or a claim predating the\n                  field -- never green). WRITES NOTHING: no status is set, nothing is\n                  demoted, nothing is ratified. Run it on a cadence from cron -- a shipper\n                  inside the server it falsifies is a correlated failure)",
+    },
+    Subcommand {
         name: "route",
         json: true,
         run: cmd_route,
@@ -2994,6 +3000,123 @@ fn cmd_route(args: &[String]) -> Result<(), String> {
     } else {
         println!("\nWrites nothing. The routing decision is a read of the declared vocabulary.");
     }
+    Ok(())
+}
+
+/// `brain disproof` — evaluate every claim's stored disproof condition.
+///
+/// **This is the falsification sweep's only caller, and it writes nothing.** The
+/// disproof core shipped complete and unreachable: `evaluate_disproof` had no
+/// production caller, so a claim's condition could be stored and never once read
+/// back against the text it was written about.
+///
+/// ## Why a verb, and why it writes nothing
+///
+/// A falsification sweep is a cadence job, and the law against correlated failure
+/// says the runner is an operator-run process rather than a thread in the server it
+/// falsifies — the same posture as the census. Run it from cron.
+///
+/// **No `status` is written.** A sweep that demoted or ratified its own findings
+/// would be a promotion path, and promotion is a compile-time `false` this has no
+/// standing to change. So the receipt is a report and the operator disposes of it.
+///
+/// ## The three states, and why the receipt keeps all three
+///
+/// A prose condition has no mechanical reading, and a claim predating the field
+/// has no condition at all. Both report no-verdict, and **neither is a pass**. A
+/// receipt that printed one "ok" number would make the difference unavailable
+/// rather than merely discouraged, so this counts the three separately and names
+/// the refuted ones — those are the claims that do NOT stand.
+fn cmd_disproof(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    if !positionals.is_empty() {
+        return usage_err("usage: brain disproof [--claim-id ID] [--db PATH]".to_string());
+    }
+    let db = flags
+        .get("db")
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_db_path);
+    if !db.exists() {
+        return Err(format!(
+            "no DB at {db:?} — pass --db PATH or set BRAIN_DB_PATH"
+        ));
+    }
+    let conn = rusqlite::Connection::open(&db).map_err(|e| format!("open {db:?}: {e}"))?;
+    let readings = brain_server::service::create::sweep_disproofs(&conn)?;
+
+    // A named claim is a filter over the SAME sweep, not a second evaluation
+    // path: one code path, so the receipt cannot differ by argument.
+    let only = flags.get("claim-id").and_then(|o| o.clone());
+    let selected: Vec<&brain_server::service::create::DisproofReading> = match &only {
+        Some(id) => {
+            let hits: Vec<_> = readings.iter().filter(|r| &r.claim_id == id).collect();
+            if hits.is_empty() {
+                return Err(format!(
+                    "no claim with id {id:?} — a claim id that matches nothing is a wrong \
+                     command line, and reporting it as zero findings would read as a clean sweep"
+                ));
+            }
+            hits
+        }
+        None => readings.iter().collect(),
+    };
+
+    let satisfied = selected.iter().filter(|r| r.verdict.is_satisfied()).count();
+    let refuted: Vec<&str> = selected
+        .iter()
+        .filter(|r| r.verdict.is_refuted())
+        .map(|r| r.claim_id.as_str())
+        .collect();
+    let no_verdict = selected.len() - satisfied - refuted.len();
+
+    if json_mode() {
+        return emit_json_ok(
+            "disproof",
+            serde_json::json!({
+                "claims_read": selected.len(),
+                "satisfied": satisfied,
+                "refuted": refuted.len(),
+                "no_verdict": no_verdict,
+                "refuted_claim_ids": refuted,
+                "wrote_anything": false,
+            }),
+        );
+    }
+
+    println!(
+        "disproof sweep — {} claim(s) read from {}",
+        selected.len(),
+        db.display()
+    );
+    println!("  satisfied    {satisfied}   (the named disproof was NOT observed — these stand)");
+    println!(
+        "  REFUTED      {}   (the disproof WAS observed — these do NOT stand)",
+        refuted.len()
+    );
+    println!(
+        "  no verdict   {no_verdict}   (a prose condition, or predating the field — NEVER green)"
+    );
+    if !refuted.is_empty() {
+        println!("\n  refuted claim ids:");
+        for id in &refuted {
+            println!("    {id}");
+        }
+    }
+    if no_verdict > 0 {
+        println!(
+            "\n  {no_verdict} claim(s) carry no mechanical verdict. That is NOT a pass: a prose\n\
+             condition cannot be read by a sweep, and a claim predating the field has no\n\
+             condition at all."
+        );
+    }
+    if selected.is_empty() {
+        println!(
+            "\n  No claims are stored, so this sweep says nothing. An empty denominator is not a\n\
+             clean bill of health."
+        );
+    }
+    println!("\nWrote nothing: no status set, nothing demoted, nothing ratified.");
     Ok(())
 }
 

@@ -57,7 +57,106 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::audit::{AuditKind, AuditStatus};
 use crate::auth::policy::PrincipalKind;
 use crate::workflow::create::corpus::PlantedClaim;
-use crate::workflow::create::disproof::{DisproofColumns, DisproofCondition, DisproofVerdict};
+use crate::workflow::create::disproof::{DisproofColumns, DisproofCondition};
+
+/// Re-exported so a caller of [`sweep_disproofs`] can name the three states
+/// without reaching into the crate-private workflow module.
+///
+/// The verdict type is **not** re-implemented or mirrored here — it is the same
+/// type the core returns, so a caller cannot read a three-state verdict through
+/// a two-state summary.
+pub use crate::workflow::create::disproof::DisproofVerdict;
+
+/// One claim's stored disproof condition, read back and evaluated.
+///
+/// **The three states survive, and this is the whole point of the type.**
+/// `NoVerdict` is not a soft pass and not a rounding of the other two: it is
+/// what a prose condition and a claim that predates the field both report, and
+/// [`DisproofVerdict::is_green`] exists so it cannot be mistaken for
+/// `Satisfied`. Collapsing the three into a boolean here is the one change that
+/// would make this module lie, so nothing collapses them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisproofReading {
+    pub claim_id: String,
+    pub verdict: DisproofVerdict,
+}
+
+/// The sweep's totals — three counts, never one.
+///
+/// **A single "pass" number is the defect this shape exists to prevent.** A
+/// sweep that reports "N of M ok" invites reading `NoVerdict` as a pass, and the
+/// three counts are what makes that reading unavailable rather than merely
+/// discouraged.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DisproofSweep {
+    /// Claims carrying a mechanically-evaluated condition whose disproof was
+    /// NOT observed. These stand.
+    pub satisfied: usize,
+    /// Claims whose named disproof WAS observed. **These do not stand**, and the
+    /// name says so rather than the reader having to remember the polarity.
+    pub refuted: usize,
+    /// Claims with a prose condition, or none at all. **Never green.**
+    pub no_verdict: usize,
+}
+
+impl DisproofSweep {
+    /// Claims read. The denominator, so a sweep over zero claims cannot read as
+    /// a clean bill of health.
+    pub fn total(&self) -> usize {
+        self.satisfied + self.refuted + self.no_verdict
+    }
+}
+
+/// The bounds law: the sweep reads every claim row, so the cap bounds a
+/// receipt, not a verdict. A claim past the cap is NOT counted as green — it is
+/// simply not read, and `total()` says so.
+const MAX_SWEEP_CLAIMS: usize = 10_000;
+
+/// Read every claim's stored disproof condition and evaluate it against the
+/// claim's own subject.
+///
+/// **This writes NOTHING.** No `status` is set, nothing is demoted, nothing is
+/// ratified, and no audit row is emitted — the sweep is a read, and that is what
+/// lets it ship while promotion stays a compile-time `false`. A sweep that wrote
+/// its verdicts back would be a promotion path, which is a different artifact
+/// with a different authority.
+///
+/// The `subject` is the claim's own stored `subject` column. That is the
+/// text the condition was written against, so evaluating it against anything
+/// else — the current knowledge base, a re-rendered body — would be measuring a
+/// different claim than the one on the row.
+/// The sweep's typed refusal.
+///
+/// [`CreateError`] is `pub(crate)`, and widening it is a change to a published
+/// type this module has no standing to make — so the PUBLIC entry point maps it
+/// to a rendered string at the boundary rather than leaking a crate-private
+/// type through a `pub` signature. The cause is preserved verbatim, so the
+/// message still names what failed.
+pub fn sweep_disproofs(conn: &Connection) -> Result<Vec<DisproofReading>, String> {
+    sweep_disproofs_inner(conn).map_err(|e| e.to_string())
+}
+
+fn sweep_disproofs_inner(conn: &Connection) -> Result<Vec<DisproofReading>, CreateError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT claim_id, subject FROM claims
+             ORDER BY id LIMIT ?1",
+        )
+        .map_err(|e| CreateError::Storage(format!("disproof_sweep_read:{e}")))?;
+    let rows = stmt
+        .query_map(params![MAX_SWEEP_CLAIMS as i64], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(|e| CreateError::Storage(format!("disproof_sweep_read:{e}")))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (claim_id, subject) =
+            row.map_err(|e| CreateError::Storage(format!("disproof_sweep_read:{e}")))?;
+        let verdict = evaluate_disproof(conn, &claim_id, &subject)?;
+        out.push(DisproofReading { claim_id, verdict });
+    }
+    Ok(out)
+}
 use crate::workflow::create::gap::{GapCandidate, GapMethod};
 use crate::workflow::create::schema::{self, SchemaDecl, SchemaFault};
 use crate::workflow::create::verify::{
