@@ -144,6 +144,20 @@ step. There is NO hot failover and NO RPO=0 claim anywhere.
 | `brain standby status [--to <dir>]` | Integrity self-check of the follower: verifies the manifest's Ed25519 signature and recomputes artifact hashes — any tamper or torn cycle FAILS (exit 1). Prints cycle, age, cycles behind, and `rpo_max = interval + checkpoint lag`. |
 | `brain standby promote-check --from <dir>` `[--passphrase-file PATH]` `[--expected-signer DID]` | THE DRILL: restores the follower into a temp dir (the shipped restore path), replays the WAL chunk, runs `PRAGMA integrity_check`, and prints measured RTO plus computed RPO. Exit code gates. |
 
+## Routing (operator-run, writes nothing)
+
+`brain route` is the operator-run entry point to the routing seam. It is a verb and not
+a route because routing has no cadence: nothing polls for a routing decision, and a
+shipper inside the server it measures is a correlated failure. It runs in the operator's
+own process on the operator's own filesystem access, writes nothing, and needs no
+credential — the trust boundary is the operator's.
+
+| Command | Purpose |
+|---|---|
+| `brain route --domain D --class LABEL` [`--queue Q`] [`--confidence N`] [`--db PATH`] | Routes ONE case and prints the receipt: the queue it went to, whether it escalated, and the declared vocabulary it was routed against. The queue routes **only if the taxonomy has declared it** — an undeclared queue escalates to a human, and so does every case in a domain that has declared nothing. That is the anti-invention law made visible: the seam holds **no class→queue table of its own**, so a queue becomes routable when something declares it. |
+| `brain route --class human_unmeasured` (and any unrecognised label) | **REFUSED, exit 2.** `--class` must be a label the classifier emits. An unrecognised label is *no class* — never a default. Routing a case under a class the classifier did not emit is routing on nothing, and silently defaulting would make that invisible. |
+| `brain route --confidence N` | Accepted and **DISCARDED**, and the receipt says so. Confidence is a quality signal; whether a destination exists is a fact about the declared vocabulary. No number, however high, can make an undeclared destination declared. |
+
 ## Evidence & physical erasure (v1.28.91)
 
 | Command | Purpose |

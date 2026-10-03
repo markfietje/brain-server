@@ -24,6 +24,24 @@
 //! assignee field and no writer behind it, so this module cannot assign work even
 //! by accident — see `routing_offers_never_assign` in the pin file, which asserts
 //! the **type** rather than scanning source.
+//!
+//! ## The standing ceiling: nothing declares a queue
+//!
+//! **This module is a reader, and no writer exists anywhere in the tree.** Measured:
+//! `queue_declaration` appears nowhere in `src/`, `crates/` or `tools/` outside this
+//! file, so a queue exists to be routed only once something proposed one and that
+//! proposal was approved. Until then **every** case escalates — including in a domain
+//! where a queue has plainly been agreed in conversation.
+//!
+//! That is the correct answer, not a defect to be tidied away: a mapping invented to
+//! make routing look productive is the invention the anti-invention law exists to
+//! refuse, and an unmeasured queue routing real work is worse than a human reading
+//! an escalation. **The ceiling is recorded here rather than fixed**, because closing
+//! it means someone declaring real queues through the governed proposal surface —
+//! which is the operator's and the taxonomy's act, not this crate's.
+//!
+//! This is also the argument for the seam's caller being an operator-run verb rather
+//! than a route: it is run *after* something has been declared.
 
 use rusqlite::Connection;
 

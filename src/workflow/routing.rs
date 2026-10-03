@@ -130,6 +130,23 @@ impl RoutingClass {
             Self::General => "general",
         }
     }
+
+    /// Resolve a classifier label to the class that carries it.
+    ///
+    /// **The vocabulary is searched, not typed.** A `match` over label literals
+    /// would be a second copy of the classifier's vocabulary, free to drift green
+    /// beside [`Self::ALL`] — and [`Self::ALL`] is already pinned equal to
+    /// [`crate::procedural::CATEGORIES`], so a search inherits that pin instead of
+    /// competing with it.
+    ///
+    /// An unrecognised label is [`None`], never a guess at the nearest neighbour. This
+    /// type has no absence class, so "the classifier did not say" has no value here
+    /// that could be routed: a caller holding no class must refuse rather than
+    /// invent one, and a caller must not be handed a class the classifier never
+    /// emitted. There is deliberately no fallback arm.
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|class| class.as_str() == label)
+    }
 }
 
 /// Route a case to its owning queue.
@@ -343,6 +360,70 @@ mod tests {
             crate::procedural::CATEGORIES.to_vec(),
             "the routing axis has drifted from the classifier that feeds it. A class nothing \
              emits routes into a vocabulary nothing produces; a class we invented routes nowhere."
+        );
+    }
+
+    #[test]
+    fn every_classifier_category_resolves_to_its_own_class() {
+        // The resolver's vocabulary is the one the classifier emits, so this walks
+        // the classifier's list rather than a restated one: a category added to
+        // CATEGORIES that the resolver cannot reach fails here. That is also what
+        // catches a hand-typed label list going stale — a resolver that forgot a
+        // category cannot pass this loop, which is the drift the search exists to
+        // make impossible and the honest test of.
+        for label in crate::procedural::CATEGORIES {
+            let class = RoutingClass::from_label(label)
+                .unwrap_or_else(|| panic!("{label} is a classifier category with no class"));
+            assert_eq!(
+                class.as_str(),
+                *label,
+                "{label} resolved to a class that reports a different name — the label vocabulary \
+                 and the class vocabulary are two lists, and one of them is wrong"
+            );
+        }
+    }
+
+    #[test]
+    fn the_resolver_answers_no_class_rather_than_guessing_one() {
+        // Each of these is a label this build does not recognise. None may become
+        // a class, and least of all the catch-all: a case routed under a class the
+        // classifier never emitted is routed on nothing.
+        for label in [
+            "",
+            "human_unmeasured",
+            "technolog",  // truncated
+            "Technology", // not case folded
+            "business process",
+            "general ", // trailing whitespace
+            "Q-OPS-ESCALATION",
+        ] {
+            assert_eq!(
+                RoutingClass::from_label(label),
+                None,
+                "{label:?} resolved to a class; an unrecognised label must be no class"
+            );
+        }
+    }
+
+    #[test]
+    fn every_class_resolves_back_to_itself() {
+        // The round trip, both directions. A class whose own name does not resolve
+        // to it could still satisfy the two pins above — this is what makes the
+        // resolver total over ALL rather than accidentally correct on the labels
+        // the classifier happens to emit today.
+        for class in RoutingClass::ALL {
+            assert_eq!(
+                RoutingClass::from_label(class.as_str()),
+                Some(class),
+                "{class:?} does not resolve from its own name; a class nothing can name is a \
+                 class no caller can reach"
+            );
+        }
+        assert_eq!(
+            RoutingClass::ALL.len(),
+            crate::procedural::CATEGORIES.len(),
+            "the resolver searches ALL, so the two vocabularies must be the same size as well as \
+             the same contents"
         );
     }
 

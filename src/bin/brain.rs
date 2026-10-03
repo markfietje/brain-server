@@ -311,6 +311,12 @@ const SUBCOMMANDS: &[Subcommand] = &[
         usage: "brain anchor [--db PATH]\n  brain anchor --verify \"<recorded line>\" [--db PATH]\n                 (off-host tamper witness: state fingerprint to record OUTSIDE this\n                  machine; verify later — any state change trips it, the audit chain\n                  explains legitimate ones)",
     },
     Subcommand {
+        name: "route",
+        json: true,
+        run: cmd_route,
+        usage: "brain route --domain D --class LABEL [--queue Q] [--confidence N] [--db PATH]\n                 (route ONE case through the routing seam and print the receipt. The\n                  queue is routed only if the TAXONOMY HAS DECLARED IT — an\n                  undeclared queue escalates to a human, and so does every case in a\n                  domain that has declared nothing. --class must be a classifier label\n                  (technology, business_process, ...); anything else is REFUSED, never\n                  defaulted to general. --confidence is accepted and DISCARDED: a\n                  number cannot make an undeclared destination declared. Writes nothing)",
+    },
+    Subcommand {
         name: "shred",
         json: false,
         run: cmd_shred,
@@ -632,9 +638,12 @@ const VALUE_FLAGS: &[&str] = &[
     "out",
     "db",
     "base-url",
+    "class",
+    "confidence",
     "passphrase-file",
     "phrase",
     "profile",
+    "queue",
     "reason",
     "repo",
     "retention",
@@ -2853,6 +2862,146 @@ fn cmd_anchor(args: &[String]) -> Result<(), String> {
             );
             Ok(())
         }
+    }
+}
+
+/// `brain route` — the operator-run entry point to the routing seam.
+///
+/// **This is the production caller the seam had none of.** The seam could be driven
+/// from a test and from nowhere else, which made an unreadable routing core and a
+/// load-bearing one look identical.
+///
+/// ## Why a verb and not a route
+///
+/// Routing has no cadence, so there is nothing for a request handler to answer. The
+/// shape this shares with the other operator verbs is the point: it runs in the
+/// operator's process, on the operator's own filesystem access, and it is run when
+/// there is something to route. That is also why it writes nothing, and why it needs
+/// no credential — the trust boundary is the operator's own.
+///
+/// ## What it refuses
+///
+/// An unrecognised `--class` is refused rather than resolved to the catch-all. A
+/// case routed under a class the classifier never emitted is routed on nothing, and
+/// silently defaulting would make that invisible.
+fn cmd_route(args: &[String]) -> Result<(), String> {
+    let (positionals, flags) = parse_flags(args)?;
+    if !positionals.is_empty() {
+        return usage_err(
+            "usage: brain route --domain D --class LABEL [--queue Q] [--confidence N] [--db PATH]"
+                .to_string(),
+        );
+    }
+    let domain = require_flag(&flags, "domain")?;
+    let label = require_flag(&flags, "class")?;
+
+    // The refusal happens BEFORE the database is opened: a label this build does
+    // not recognise is a wrong command line, and opening a store to be told so
+    // would read as a routing attempt that failed.
+    let class =
+        brain_server::workflow::routing::RoutingClass::from_label(&label).ok_or_else(|| {
+            usage(format!(
+                "unknown --class {label:?} — it must be one the classifier emits:\n  {}\n\
+             An unrecognised label is NO class, never a default: routing under a class the\n\
+             classifier did not emit is routing on nothing.",
+                brain_server::procedural::CATEGORIES.join(", ")
+            ))
+        })?;
+
+    let confidence = flags
+        .get("confidence")
+        .and_then(|o| o.clone())
+        .map(|raw| {
+            raw.parse::<i32>().map_err(|_| {
+                usage(format!(
+                    "--confidence must be an integer, got {raw:?} — and note it does not decide \
+                     the outcome: a number cannot make an undeclared destination declared"
+                ))
+            })
+        })
+        .transpose()?;
+
+    let db = flags
+        .get("db")
+        .and_then(|o| o.clone())
+        .map(PathBuf::from)
+        .unwrap_or_else(default_db_path);
+    if !db.exists() {
+        return Err(format!(
+            "no DB at {db:?} — pass --db PATH or set BRAIN_DB_PATH"
+        ));
+    }
+    // Opened the way the other operator verbs open it: a plain connection to the
+    // operator's own store, no pool and no registry.
+    let conn = rusqlite::Connection::open(&db).map_err(|e| format!("open {db:?}: {e}"))?;
+    let routed = brain_server::service::routing::route_case(
+        &conn,
+        &domain,
+        class,
+        flags.get("queue").and_then(|o| o.clone()).as_deref(),
+        confidence,
+    )
+    .map_err(|e| format!("routing refused for {domain:?}: {e}"))?;
+
+    let declared = &routed.declared_queues;
+    if json_mode() {
+        let data = serde_json::json!({
+            "domain": routed.domain,
+            "class": routed.class.as_str(),
+            "queue": routed.queue(),
+            "escalated": routed.is_escalated(),
+            "declared_queues": declared,
+            "confidence_supplied": confidence.is_some(),
+        });
+        return emit_json_ok("route", data);
+    }
+
+    println!(
+        "routing receipt — domain {} · class {}",
+        routed.domain,
+        routed.class.as_str()
+    );
+    println!("  queue      {}", routed.queue());
+    println!(
+        "  outcome    {}",
+        if routed.is_escalated() {
+            "ESCALATED to a human"
+        } else {
+            "routed to a declared queue"
+        }
+    );
+    println!(
+        "  declared   {} queue(s){}",
+        declared.len(),
+        if declared.is_empty() {
+            " — this domain has declared NOTHING, so every case here escalates"
+        } else {
+            ""
+        }
+    );
+    if let Some(queue) = declared.first() {
+        println!("              ({queue} …)");
+    }
+    if confidence.is_some() {
+        println!("  confidence supplied and DISCARDED — it did not decide this outcome");
+    }
+    if routed.is_escalated() {
+        println!(
+            "\nAn undeclared queue escalates because the seam holds no class→queue table of its\n\
+             own: a queue becomes routable when the taxonomy declares one, and this verb never\n\
+             invents the destination. Writes nothing."
+        );
+    } else {
+        println!("\nWrites nothing. The routing decision is a read of the declared vocabulary.");
+    }
+    Ok(())
+}
+
+/// A required value flag, refused by name when absent or valueless.
+fn require_flag(flags: &FlagMap, name: &str) -> Result<String, String> {
+    match flags.get(name).and_then(|o| o.clone()) {
+        Some(v) if !v.is_empty() => Ok(v),
+        _ => Err(usage(format!("missing required flag: --{name}"))),
     }
 }
 
