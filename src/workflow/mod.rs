@@ -44,6 +44,7 @@ pub(crate) mod delivery_read;
 pub(crate) mod drift_census;
 pub(crate) mod driver;
 pub(crate) mod entitlement;
+pub mod measurement;
 pub mod routing;
 pub mod separation;
 
