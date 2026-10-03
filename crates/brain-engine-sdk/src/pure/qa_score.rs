@@ -65,6 +65,20 @@ pub fn score_run(a: &RunArtifacts) -> QaScore {
     }
 }
 
+/// The machine verdict for a run: **pass only at a perfect score**.
+///
+/// This is the rule the gold oracle already checks every corpus case against,
+/// promoted out of the oracle's test module so a consumer that compares the
+/// scorer to human truth calls the scorer's own predicate instead of restating
+/// the boundary. A second copy of "perfect is a pass" is a second policy, and
+/// the two would drift apart the first time the scale did.
+///
+/// Takes the total rather than the artifacts so a caller that has already
+/// scored pays for one scoring, not two.
+pub fn machine_pass(total_units: i32) -> bool {
+    total_units == SCALE
+}
+
 fn score_resolution(a: &RunArtifacts) -> ScoredQuestion {
     let (score, just) = if a.repeat_contact {
         (
@@ -459,8 +473,11 @@ mod tests {
         }
 
         /// Machine verdict for a case: pass only at a perfect score.
+        ///
+        /// Fully qualified so it calls the promoted production rule above
+        /// rather than shadowing it — one implementation of the boundary.
         fn machine_pass(c: &GoldCase) -> bool {
-            score_run(&artifacts(c)).total_units == SCALE
+            crate::pure::qa_score::machine_pass(score_run(&artifacts(c)).total_units)
         }
 
         #[test]

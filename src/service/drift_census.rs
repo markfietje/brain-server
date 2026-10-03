@@ -298,6 +298,11 @@ mod tests {
         pairs.iter().map(|(k, v)| ((*k).to_string(), *v)).collect()
     }
 
+    /// The frozen human verdict per case id, as the census receives it.
+    fn verdicts(pairs: &[(&str, bool)]) -> BTreeMap<String, bool> {
+        pairs.iter().map(|(k, v)| ((*k).to_string(), *v)).collect()
+    }
+
     #[test]
     fn a_planted_regression_becomes_a_findings_row_and_an_audit_row() {
         let conn = db();
@@ -307,7 +312,11 @@ mod tests {
             id: "qc_clean_run".into(),
             observed_units: 5_000,
         }];
-        let out = run_census(&cells, &base(&[("qc_clean_run", 10_000)]));
+        let out = run_census(
+            &cells,
+            &base(&[("qc_clean_run", 10_000)]),
+            &verdicts(&[("qc_clean_run", true)]),
+        );
         assert!(out.breaches().len() == 1, "the plant must breach");
 
         let tx = conn.unchecked_transaction().expect("tx");
@@ -359,6 +368,7 @@ mod tests {
                 observed_units: 10_000,
             }],
             &base(&[("qc_clean_run", 10_000)]),
+            &verdicts(&[("qc_clean_run", true)]),
         );
         assert!(out.is_clean());
         let tx = conn.unchecked_transaction().expect("tx");
@@ -384,6 +394,7 @@ mod tests {
                 observed_units: 0,
             }],
             &base(&[("qc_clean_run", 10_000)]),
+            &verdicts(&[("qc_clean_run", true)]),
         );
         let tx = conn.unchecked_transaction().expect("tx");
         record_breaches(&tx, &breach_rows(&out).expect("reduce"), "gold-sets", 1).expect("w");
@@ -414,6 +425,7 @@ mod tests {
                 observed_units: 10_000,
             }],
             &BTreeMap::new(),
+            &verdicts(&[("brand_new_case", true)]),
         );
         assert_eq!(breach_rows(&out).expect("reduce").len(), 0);
     }
@@ -511,6 +523,7 @@ mod tests {
                     .map(|(k, v)| (k.as_str(), *v))
                     .collect::<Vec<_>>(),
             ),
+            &BTreeMap::new(),
         );
         assert!(
             breach_rows(&out).is_err(),

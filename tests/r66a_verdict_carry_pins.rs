@@ -1,11 +1,33 @@
-// R66 increment A — the carried human verdict, and the census that never reads it.
+// The carried human verdict, and the ONE seam that reads it.
 //
 // ## Why this file exists separately from the module
 //
-// The claim below is an ABSENCE: that nothing in production scores, thresholds,
-// or gates on the frozen human verdict. A module cannot assert its own absence —
-// a module that could see its own wiring could argue with it — so these pins
-// live outside it and read the tree.
+// The claim below is about where the frozen verdict may be READ. A module
+// cannot assert its own absence — a module that could see its own wiring could
+// argue with it — so these pins live outside it and read the tree.
+//
+// ## What changed, and why the claim is stronger than it was
+//
+// This file used to assert an absence: the verdict is carried and never read
+// in production. The agreement column made that false, and the design named the
+// consequence in advance — adding the field turns a green pin into a weaker
+// claim than it was, unless the pin's claim is revised with it.
+//
+// So the claim moved from "never read" to **"read at exactly one declared
+// seam, and nowhere else"**. That is not a relaxation:
+//
+// 1. `the_census_reports_agreement_and_carries_no_verdict_column` replaces an
+//    absence with a PRESENCE claim — the exact field list of `CellResult`, the
+//    column's declared nullability, and a continued refusal of any raw verdict
+//    column. A field this file has never heard of still fails it, because it
+//    reads the type's field list rather than a list of names.
+// 2. `the_verdict_is_read_only_at_the_one_declared_seam` no longer asks whether
+//    each occurrence is a known-good string. It **cuts the seam out of the
+//    production region** and requires every remaining occurrence to be a carry
+//    form. A new reader anywhere else therefore fails by construction, and
+//    cannot be absorbed by growing an allowlist.
+// 3. `no_production_site_outside_the_census_reads_the_verdict` is unchanged and
+//    verbatim: the whole-tree walk still holds.
 //
 // ## The read-as-text idiom, and why it is not the weak version
 //
@@ -19,13 +41,12 @@
 //    file's single `#[cfg(test)]` boundary. The census's test fixtures carry
 //    the identifier in JSON raw strings, so an unscoped scan would be reading
 //    the fixtures rather than the claim.
-// 2. The pins assert the **allowed forms exhaustively**, not the presence of a
-//    string. A scan that merely checked "the identifier appears" would pass on
-//    the field declaration alone and stay green through a comparison.
-// 3. The reader-set pin walks the whole `src/` tree and asserts the identifier
-//    occurs in **exactly one** file. A second reader anywhere — a service core,
-//    a handler, the CLI — fails immediately, so the claim is about the tree and
-//    not about one file's good behaviour.
+// 2. The pins assert **allowed forms exhaustively** and pin the count, so a
+//    rename cannot silently empty the scan and a new site cannot appear
+//    unremarked.
+// 3. The reader-set pin walks the whole `src/` tree. A second reader anywhere —
+//    a service core, a handler, the CLI — fails immediately, so the claim is
+//    about the tree and not about one file's good behaviour.
 
 use std::path::{Path, PathBuf};
 
@@ -139,7 +160,33 @@ fn walk_rs(dir: &Path, out: &mut Vec<PathBuf>) {
 
 const CENSUS: &str = "src/workflow/drift_census.rs";
 
-/// The three forms a carried verdict may legally take in production:
+/// The declared seam: the census's one production reader of the verdict.
+///
+/// Located by its declaration and cut out **whole**, signature included, so the
+/// text that remains is exactly what a second reader would have to hide in.
+const SEAM: &str = "pub(crate) fn verdicts(";
+
+/// The production region with the declared seam cut out of it.
+///
+/// Cutting rather than filtering is what keeps the claim honest: an allowlist
+/// of "known-good forms" can be widened by whoever writes the next reader,
+/// whereas a hole cut around exactly one function cannot.
+fn production_outside_the_seam() -> String {
+    let src = production_region(CENSUS);
+    let start = src
+        .find(SEAM)
+        .unwrap_or_else(|| panic!("the census must declare `{SEAM}` — the one production reader"));
+    let rest = &src[start..];
+    let end = rest
+        .find("\n}")
+        .unwrap_or_else(|| panic!("`verdicts` must close at column 0"));
+    let mut out = String::with_capacity(src.len());
+    out.push_str(&src[..start]);
+    out.push_str(&rest[end..]);
+    out
+}
+
+/// The three forms a carried verdict may legally take outside the seam:
 /// declared on the decode struct, declared on the corpus struct, and copied
 /// between them by the decoder. Everything else is a read.
 fn is_carry_form(line: &str) -> bool {
@@ -149,43 +196,59 @@ fn is_carry_form(line: &str) -> bool {
     )
 }
 
-/// Field names that would make the census *carry a human verdict as data*.
+/// The verdict is READ, but only inside the declared seam — and only once.
 ///
-/// Deliberately not a match on `verdict`: the census's `CellResult::verdict` is
-/// its own drift outcome, a different thing wearing a similar name.
-fn is_human_verdict_field(field: &str) -> bool {
-    let f = field.to_ascii_lowercase();
-    f.contains("human") || f.contains("pass") || f.contains("agree")
-}
-
+/// The count is exhaustive in both directions: one occurrence inside the seam
+/// (a second one is a second comparison), and exactly three outside it (a fourth
+/// is a reader that has not declared itself).
 #[test]
-fn the_verdict_is_carried_and_never_read_in_production() {
+fn the_verdict_is_read_only_at_the_one_declared_seam() {
     let production = production_region(CENSUS);
-    let hits = identifier_sites(&production, "human_pass");
+
+    // Inside the seam: exactly one read, and it is a read.
+    let seam_start = production.find(SEAM).expect("the declared seam must exist");
+    let seam_end = production[seam_start..]
+        .find("\n}")
+        .map(|e| seam_start + e)
+        .expect("the seam must close");
+    let seam = &production[seam_start..seam_end];
+    let in_seam = identifier_sites(seam, "human_pass");
+    assert_eq!(
+        in_seam.len(),
+        1,
+        "the declared seam must read the verdict exactly once, found {}: {in_seam:?}. Two reads \
+         in one function means a second comparison the claim does not describe.",
+        in_seam.len()
+    );
+    assert!(
+        in_seam[0].1.contains(".human_pass"),
+        "the seam must read the FIELD, not a local wearing its name: {}",
+        in_seam[0].1
+    );
+
+    // Outside the seam: carries only.
+    let outside = production_outside_the_seam();
+    let hits = identifier_sites(&outside, "human_pass");
     assert!(
         !hits.is_empty(),
         "the corpus struct must still carry the verdict, or this pin is asserting nothing."
     );
     let mut offenders = Vec::new();
-    for (line_no, line) in &hits {
+    for (_, line) in &hits {
         if !is_carry_form(line) {
-            offenders.push(format!("{CENSUS}:{line_no}: {line}"));
+            offenders.push(line.clone());
         }
     }
     assert!(
         offenders.is_empty(),
-        "the census must carry the frozen human verdict without reading it. A production site \
-         outside the declaration/copy forms is a comparison, threshold, or gate — and the comment \
-         on the field would then be claiming a read that exists:\n{}",
+        "the verdict may be read at the declared seam and nowhere else. A production site outside \
+         it is a comparison, threshold, or gate that the seam does not describe:\n{}",
         offenders.join("\n")
     );
-    // Exhaustiveness: carrying is three forms today, and a fourth would be a
-    // reader. Pinning the count stops a rename from silently emptying the scan.
     assert_eq!(
         hits.len(),
         3,
-        "expected the verdict at exactly three carry sites in the production region, found {}: \
-         {hits:?}",
+        "expected the verdict at exactly three carry sites outside the seam, found {}: {hits:?}",
         hits.len()
     );
 }
@@ -225,15 +288,48 @@ fn no_production_site_outside_the_census_reads_the_verdict() {
     );
 }
 
-/// The census reports no agreement figure.
+/// The census reports agreement, and reports no verdict.
 ///
-/// This is the measured answer, pinned so that *adding* the column becomes a
-/// deliberate act that breaks this test rather than a silent drift — at which
-/// point the field's doc comment has to be rewritten in the same commit.
+/// The former claim here was an absence — no agreement column at all — and it
+/// was written so that *adding* one would break this pin rather than drift in
+/// silently. That has happened, deliberately, so the claim becomes its
+/// successor: the column exists, its shape is pinned exactly, and the thing it
+/// must never become — a raw verdict carried onto a report type — is still
+/// refused.
 #[test]
-fn the_census_report_types_carry_no_verdict_column() {
+fn the_census_reports_agreement_and_carries_no_verdict_column() {
     let src = production_region(CENSUS);
-    for ty in ["Cell", "CellResult", "Census"] {
+
+    // `CellResult` is pinned by its exact field list. A field this pin has never
+    // heard of therefore still fails it.
+    let results = struct_fields(&src, "CellResult");
+    assert_eq!(
+        results,
+        vec![
+            "id",
+            "verdict",
+            "observed_units",
+            "delta_units",
+            "agreement_units"
+        ],
+        "`CellResult`'s fields are {results:?}. The agreement column is the fifth; a sixth is \
+         either a second vocabulary the reader has to learn or a per-cell band the tolerance law \
+         refuses, and neither may arrive without this pin failing."
+    );
+
+    // The nullability is the control. `Option` is what lets an unmeasured cell
+    // read as refused; a bare `i32` would have to invent a number for it, and
+    // the smallest invented number is a zero that reads as agreement.
+    assert!(
+        src.contains("agreement_units: Option<i32>"),
+        "`agreement_units` must stay `Option<i32>`. A defaulted value puts a number nobody measured \
+         on a reviewer's screen, and it would read as the weakest possible agreement rather than \
+         as an absence."
+    );
+
+    // And no report type carries the raw verdict. `Cell` and `Census` gain
+    // nothing; `CellResult` reports the agreement, not the label behind it.
+    for ty in ["Cell", "Census"] {
         let fields = struct_fields(&src, ty);
         assert!(
             !fields.is_empty(),
@@ -245,9 +341,19 @@ fn the_census_report_types_carry_no_verdict_column() {
             .collect();
         assert!(
             leaked.is_empty(),
-            "`struct {ty}` must carry no human-verdict column. The census reports drift, not \
-             scorer/verdict agreement; a column here would make an uncalibrated single-rater \
-             measure look like a control. Offending fields: {leaked:?}"
+            "`struct {ty}` must carry no human-verdict column. The census reports agreement, not \
+             the label it compared against, and a verdict column on a report type would invite a \
+             reader to treat one case's label as a threshold. Offending fields: {leaked:?}"
         );
     }
+}
+
+/// Field names that would make a report type carry a human verdict as data.
+///
+/// Deliberately NOT a match on `agree`: `agreement_units` is the sanctioned
+/// column and is checked on its own terms above. This predicate is the narrower
+/// question of whether the *label* itself rode out.
+fn is_human_verdict_field(field: &str) -> bool {
+    let f = field.to_ascii_lowercase();
+    f.contains("human") || f.contains("pass")
 }

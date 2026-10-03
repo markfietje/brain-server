@@ -91,6 +91,13 @@ pub struct CellLine {
     pub observed_units: i32,
     /// `None` when there is no baseline to move from.
     pub delta_units: Option<i32>,
+    /// Signed agreement with the frozen human verdict, in the scorer's units:
+    /// `SCALE_UNITS` when the scorer agreed, `-SCALE_UNITS` when it did not.
+    ///
+    /// **Only the sign carries information** — the magnitude is full scale
+    /// either way, so this cannot be read as a strength of agreement.
+    /// `None` when the census refused the cell.
+    pub agreement_units: Option<i32>,
 }
 
 /// A census error, surfaced to a CLI as a message and never as a panic.
@@ -234,8 +241,8 @@ pub fn tolerance_units() -> i32 {
 pub fn run(conn: &mut Connection, now: i64) -> Result<CensusReport, RunError> {
     corpus_scorer_version()?;
     let baseline = baseline()?;
-    let cells = census_core::measure().map_err(RunError::Decode)?;
-    let out: Census = census_core::census(&cells, &baseline);
+    let (cells, verdicts) = census_core::measure().map_err(RunError::Decode)?;
+    let out: Census = census_core::census(&cells, &baseline, &verdicts);
     let rows = breach_rows(&out)?;
     let breaches = rows.len();
     let unbaselined = out.unbaselined().len();
@@ -259,6 +266,7 @@ pub fn run(conn: &mut Connection, now: i64) -> Result<CensusReport, RunError> {
                 verdict: r.verdict.as_str(),
                 observed_units: r.observed_units,
                 delta_units: r.delta_units,
+                agreement_units: r.agreement_units,
             })
             .collect(),
         breaches,
@@ -283,7 +291,7 @@ pub fn is_clean(report: &CensusReport) -> bool {
 /// under pressure.
 pub fn print_baseline() -> Result<String, RunError> {
     corpus_scorer_version()?;
-    let cells = census_core::measure().map_err(RunError::Decode)?;
+    let (cells, _) = census_core::measure().map_err(RunError::Decode)?;
     let mut map = serde_json::Map::new();
     for cell in &cells {
         map.insert(

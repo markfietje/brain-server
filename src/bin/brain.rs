@@ -2963,17 +2963,31 @@ fn cmd_census(args: &[String]) -> Result<(), String> {
         brain_server::census::tolerance_units()
     );
     for cell in &report.cells {
+        // Reported, never acted on. The sign says whether the scorer agreed with
+        // the frozen human verdict; the magnitude is full scale either way, so
+        // this is not a strength of agreement and the width below is honest
+        // about that.
+        let agreement = match cell.agreement_units {
+            Some(units) => format!("{:>+6}", units),
+            None => "     —".to_string(),
+        };
         match cell.delta_units {
             Some(delta) => println!(
-                "  {:<24} {:<12} observed {:>6}  delta {:>+6}",
+                "  {:<24} {:<12} observed {:>6}  delta {:>+6}  agreement {agreement}",
                 cell.id, cell.verdict, cell.observed_units, delta
             ),
             None => println!(
-                "  {:<24} {:<12} observed {:>6}  delta      —",
+                "  {:<24} {:<12} observed {:>6}  delta      —  agreement {agreement}",
                 cell.id, cell.verdict, cell.observed_units
             ),
         }
     }
+
+    println!(
+        "\nagreement is the SIGN only, against the frozen human verdict (+ = the scorer agreed, \
+         — = refused); the magnitude is full scale and says nothing about strength. It is \
+         reported, never gated: a single-rater measure over this corpus cannot block a release."
+    );
 
     if report.unbaselined > 0 || report.orphaned > 0 {
         // Loud, and NOT a pass. A cell that was never measured is a watchdog

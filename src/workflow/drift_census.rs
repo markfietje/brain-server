@@ -65,6 +65,33 @@
 //! refusal. A tolerance the caller supplies is a threshold the caller chose, and
 //! a threshold chosen by the thing being tested is not a threshold.
 //!
+//! ## The agreement column, and what its sign does and does not claim
+//!
+//! [`CellResult::agreement_units`] reports whether the scorer agreed with the
+//! frozen human verdict: `Some(SCALE_UNITS)` when it did, `Some(-SCALE_UNITS)`
+//! when it did not. That is the whole of it — **the sign is the report and the
+//! magnitude is constant**, so no gradient of "how much" is claimed and none can
+//! be read into it.
+//!
+//! **It is Cohen's κ's own convention** (`crate::census`'s corpus carries κ in
+//! signed ten-thousandths, negative meaning worse than chance), so the
+//! vocabulary is not new: a signed concordance over a binary judgement, in the
+//! scorer's units.
+//!
+//! **The pass boundary is the scorer's, never a number chosen here.** The rule
+//! is [`brain_engine_sdk::pure::qa_score::machine_pass`] — pass only at a
+//! perfect score — which the gold oracle already checks every corpus case
+//! against. Restating that rule as a threshold would be choosing a gate, and
+//! because both passing cases measure `10000` while every failing case measures
+//! below `9001`, **any boundary in `(9000, 10000]` reproduces this corpus
+//! perfectly**: a fitted gate and the recorded rule are indistinguishable on the
+//! only evidence available. So the predicate is called, not re-drawn.
+//!
+//! **It is reported, never gating.** The value reaches no verdict, no breach
+//! reduction, no findings row and no exit code. A single-rater concordance over
+//! seven cases is a report; the moment it blocks anything it is an unmeasured
+//! control wearing a measurement's name.
+//!
 //! ## An unmeasured cell is a REFUSAL, never a pass
 //!
 //! [`census`] refuses a cell that has no baseline entry. Without that, adding a
@@ -241,20 +268,21 @@ pub(crate) struct CorpusCase {
     /// stamped for a different scorer is measuring a different instrument, so
     /// this is carried rather than assumed equal.
     pub(crate) scorer_version: String,
-    /// The agreed human verdict. **Carried, never compared**: the only production
-    /// reference to it is the decode that copies it in here, and no reader
-    /// scores, thresholds, or gates on it.
+    /// The agreed human verdict. **Carried into the census, and read at exactly
+    /// one place** — [`verdicts`], which is the only production reader and hands
+    /// the census a per-cell map. Nothing scores, thresholds, or gates on it.
     ///
-    /// The report types below carry no verdict column, so the census emits no
-    /// agreement figure at all — the verdict is neither reproduced nor reported.
-    /// The mechanical check that the scorer still agrees with the frozen verdict
-    /// lives in the engine SDK's `qa_score` test module, which is a pin (it fails
-    /// a build) and not a runtime control.
+    /// The census reports the agreement it produces as
+    /// [`CellResult::agreement_units`] — signed, ten-thousandths, and **never
+    /// gating** — and reports no other figure derived from it. The mechanical
+    /// check that the scorer still agrees with the frozen verdict across the
+    /// whole corpus lives in the engine SDK's `qa_score` oracle module, which is
+    /// a pin (it fails a build) and not a runtime control.
     ///
-    /// **Reporting would be the ceiling even once a column existed.** A
-    /// single-rater, non-independent agreement measure over a corpus this size is
-    /// a report, not a control; it becomes a control only when multi-rater
-    /// calibration exists. Emitting one before then would dress a report up as a
+    /// **Reporting is the ceiling, and this column does not lower it.** A
+    /// single-rater, non-independent agreement measure over a corpus this size
+    /// is a report, not a control; it becomes a control only when multi-rater
+    /// calibration exists. Emitting one before then dresses a report up as a
     /// gate.
     pub(crate) human_pass: bool,
     pub(crate) artifacts: PackArtifacts,
@@ -320,6 +348,20 @@ pub(crate) struct CellResult {
     /// Signed movement from the baseline, in the same units. `None` when there
     /// is no baseline to move from.
     pub(crate) delta_units: Option<i32>,
+    /// Signed agreement between the scorer and the frozen human verdict, in the
+    /// scorer's own integer ten-thousandths: [`Some`] of `SCALE_UNITS` when the
+    /// two agree, of `-SCALE_UNITS` when they disagree.
+    ///
+    /// **Only the sign is information.** The magnitude is full scale either way,
+    /// so the emitted values cannot be misread as a strength of agreement — and
+    /// no strength is claimed, because the scorer's recorded pass rule is a
+    /// predicate and a gradient over it would be invented.
+    ///
+    /// `None` when the census refused the cell: no baseline to score it against,
+    /// or no case — and therefore no verdict — to compare it with. A defaulted
+    /// zero here would put a number nobody measured on a reviewer's screen, and
+    /// would read as the weakest possible agreement rather than as an absence.
+    pub(crate) agreement_units: Option<i32>,
 }
 
 /// The whole census: every cell's outcome, in sorted cell order.
@@ -386,17 +428,29 @@ impl Census {
 /// **`baseline` is the whole tolerance policy's only input.** There is no
 /// per-cell tolerance parameter because a per-cell tolerance is the thing
 /// `P57.2` refuses; accepting one here would make the refusal a comment.
-pub(crate) fn census(cells: &[Cell], baseline: &BTreeMap<String, i32>) -> Census {
+///
+/// **`verdicts` carries the frozen human verdict per cell id, and is joined by
+/// identity.** It is a third argument rather than a field on [`Cell`] because
+/// the cell is frozen at exactly an identity and a measurement: a third field
+/// there would be a bespoke band wearing a different name.
+pub(crate) fn census(
+    cells: &[Cell],
+    baseline: &BTreeMap<String, i32>,
+    verdicts: &BTreeMap<String, bool>,
+) -> Census {
     let mut results: Vec<CellResult> = cells
         .iter()
         .map(|cell| {
             let Some(base) = baseline.get(&cell.id).copied() else {
-                // An unmeasured cell is REFUSED, and the refusal is visible.
+                // An unmeasured cell is REFUSED, and the refusal is visible. It
+                // was never scored against anything, so it has no agreement to
+                // report either.
                 return CellResult {
                     id: cell.id.clone(),
                     verdict: CellVerdict::Unbaselined,
                     observed_units: cell.observed_units,
                     delta_units: None,
+                    agreement_units: None,
                 };
             };
             // Saturating throughout: a score outside the scale is a scorer bug,
@@ -414,6 +468,7 @@ pub(crate) fn census(cells: &[Cell], baseline: &BTreeMap<String, i32>) -> Census
                 verdict,
                 observed_units: cell.observed_units,
                 delta_units: Some(delta),
+                agreement_units: agreement_units(cell, verdicts),
             }
         })
         .collect();
@@ -429,6 +484,10 @@ pub(crate) fn census(cells: &[Cell], baseline: &BTreeMap<String, i32>) -> Census
             verdict: CellVerdict::Orphaned,
             observed_units: 0,
             delta_units: None,
+            // The corpus no longer carries this case, so there is no verdict to
+            // compare against — the same refusal as an unbaselined cell, for a
+            // different and equally sufficient reason.
+            agreement_units: None,
         })
         .collect();
     results.extend(orphans);
@@ -437,6 +496,39 @@ pub(crate) fn census(cells: &[Cell], baseline: &BTreeMap<String, i32>) -> Census
     // the row order a breach produces is reproducible.
     results.sort_by(|a, b| a.id.cmp(&b.id));
     Census { results }
+}
+
+/// The signed agreement for one cell, or `None` when it cannot be measured.
+///
+/// The verdict is joined **by cell id** and a cell with no entry is refused
+/// rather than defaulted: a cell nobody labelled must not acquire a verdict
+/// because a map lookup missed.
+///
+/// Concordance is decided by the scorer's own recorded pass rule, not by a
+/// boundary chosen here.
+///
+/// The copy below is named for what it holds rather than after the field it came
+/// from, on purpose: the reader-set scan counts word-bounded occurrences of that
+/// field's own name anywhere in the production region, comments included, so a
+/// local wearing the name — or a sentence explaining why it does not — would
+/// report reads that are not there.
+fn agreement_units(cell: &Cell, verdicts: &BTreeMap<String, bool>) -> Option<i32> {
+    let frozen_verdict = verdicts.get(&cell.id).copied()?;
+    let agreed =
+        brain_engine_sdk::pure::qa_score::machine_pass(cell.observed_units) == frozen_verdict;
+    Some(if agreed { SCALE_UNITS } else { -SCALE_UNITS })
+}
+
+/// The frozen human verdict per case id — the census's **one** production read
+/// of it.
+///
+/// Built by key so [`census`] joins verdicts to cells by identity: a key join,
+/// never a cross-product, so a duplicated or renamed case cannot inflate a
+/// count. Reading the verdict here and only here is what lets the reader-set
+/// pin hold: the decode carries it, this function consumes it, and no other
+/// production site in the tree may touch it.
+pub(crate) fn verdicts(cases: &[CorpusCase]) -> BTreeMap<String, bool> {
+    cases.iter().map(|c| (c.id.clone(), c.human_pass)).collect()
 }
 
 /// Decode one pack into corpus cases.
@@ -503,12 +595,17 @@ pub(crate) fn corpus() -> Result<Vec<CorpusCase>, String> {
     Ok(out)
 }
 
-/// Score every corpus case with the real scorer, producing the cells.
+/// Score every corpus case with the real scorer, producing the cells and the
+/// frozen verdict per cell id.
 ///
 /// This is the seam where the census touches the SDK, and it is deliberately the
 /// ONLY place: the comparison is pure arithmetic, and a census whose scorer call
 /// could be swapped per-cell is a census measuring two instruments.
-pub(crate) fn measure() -> Result<Vec<Cell>, String> {
+///
+/// **The verdict rides out with the cells because both come from one decode.**
+/// Decoding the corpus twice to recover it would be a second place the two
+/// could disagree.
+pub(crate) fn measure() -> Result<(Vec<Cell>, BTreeMap<String, bool>), String> {
     let cases = corpus()?;
     let mut cells = Vec::with_capacity(cases.len());
     for case in &cases {
@@ -518,7 +615,7 @@ pub(crate) fn measure() -> Result<Vec<Cell>, String> {
             observed_units: score.total_units,
         });
     }
-    Ok(cells)
+    Ok((cells, verdicts(&cases)))
 }
 
 /// Map a decoded pack's artifacts onto the SDK's scorer input, field-for-field.
@@ -565,6 +662,18 @@ mod tests {
         pairs.iter().map(|(k, v)| ((*k).to_string(), *v)).collect()
     }
 
+    /// The frozen verdict per case id, for the fixtures that carry one.
+    fn verdicts(pairs: &[(&str, bool)]) -> BTreeMap<String, bool> {
+        pairs.iter().map(|(k, v)| ((*k).to_string(), *v)).collect()
+    }
+
+    /// No verdict at all — what a drift-focused fixture carries when it has no
+    /// business asserting agreement. The census refuses the column rather than
+    /// defaulting it; the agreement tests below are where it is asserted.
+    fn no_verdicts() -> BTreeMap<String, bool> {
+        BTreeMap::new()
+    }
+
     #[test]
     fn the_census_scale_matches_the_scorer() {
         // The mirror is the thing that can silently rot: a rescored scorer would
@@ -591,11 +700,13 @@ mod tests {
         let at = census(
             &[cell("a", 9_000)],
             &baseline(&[("a", 9_000 + GLOBAL_TOLERANCE_UNITS)]),
+            &no_verdicts(),
         );
         assert_eq!(at.results[0].verdict, CellVerdict::Stable);
         let past = census(
             &[cell("a", 9_000)],
             &baseline(&[("a", 9_000 + GLOBAL_TOLERANCE_UNITS + 1)]),
+            &no_verdicts(),
         );
         assert_eq!(past.results[0].verdict, CellVerdict::Drifted);
     }
@@ -604,11 +715,16 @@ mod tests {
     fn drift_is_measured_in_both_directions() {
         // A scorer that starts OVER-scoring is as much a regression as one that
         // under-scores; a one-sided band would only ever catch half.
-        let up = census(&[cell("a", 9_000)], &baseline(&[("a", 9_000)]));
+        let up = census(
+            &[cell("a", 9_000)],
+            &baseline(&[("a", 9_000)]),
+            &no_verdicts(),
+        );
         assert_eq!(up.results[0].verdict, CellVerdict::Stable);
         let over = census(
             &[cell("a", 9_000 + GLOBAL_TOLERANCE_UNITS + 1)],
             &baseline(&[("a", 9_000)]),
+            &no_verdicts(),
         );
         assert_eq!(over.results[0].verdict, CellVerdict::Drifted);
         assert_eq!(
@@ -618,6 +734,7 @@ mod tests {
         let under = census(
             &[cell("a", 9_000 - GLOBAL_TOLERANCE_UNITS - 1)],
             &baseline(&[("a", 9_000)]),
+            &no_verdicts(),
         );
         assert_eq!(under.results[0].verdict, CellVerdict::Drifted);
         assert_eq!(
@@ -628,9 +745,20 @@ mod tests {
 
     #[test]
     fn an_unbaselined_cell_is_refused_and_never_a_pass() {
-        let out = census(&[cell("fresh", SCALE_UNITS)], &BTreeMap::new());
+        let out = census(
+            &[cell("fresh", SCALE_UNITS)],
+            &BTreeMap::new(),
+            &verdicts(&[("fresh", true)]),
+        );
         assert_eq!(out.results[0].verdict, CellVerdict::Unbaselined);
         assert_eq!(out.results[0].delta_units, None);
+        assert_eq!(
+            out.results[0].agreement_units, None,
+            "a cell with no baseline was never scored against anything, so it has no agreement \
+             to report. The verdict is right there in the map — refusing anyway is the point: an \
+             unmeasured cell must not acquire a figure because the data to compute one was \
+             incidentally present."
+        );
         assert!(
             !out.is_clean(),
             "a census carrying an unmeasured cell must not report clean. Otherwise adding a \
@@ -650,9 +778,16 @@ mod tests {
         let out = census(
             &[cell("kept", 1_000)],
             &baseline(&[("kept", 1_000), ("retired", 1_000)]),
+            &verdicts(&[("kept", false)]),
         );
         assert_eq!(out.orphaned().len(), 1);
         assert_eq!(out.orphaned()[0].id, "retired");
+        assert_eq!(
+            out.orphaned()[0].agreement_units,
+            None,
+            "an orphaned cell names a case the corpus no longer carries, so it has no verdict to \
+             agree or disagree with. Reporting a figure here would invent one from a cell id."
+        );
         assert!(
             !out.is_clean(),
             "a baseline entry with no corpus case means a watchdog was retired without anyone \
@@ -661,10 +796,165 @@ mod tests {
     }
 
     #[test]
+    fn a_concordant_case_reports_positive_agreement_and_a_discordant_one_negative() {
+        // The load-bearing half. Every case in the frozen corpus happens to
+        // agree with the scorer, so the corpus CANNOT tell a correct column
+        // from one that always answers "agreement" — these synthetic fixtures
+        // are the only thing that can, and they are the reason the corpus is
+        // not the evidence.
+        let agreed = census(
+            &[cell("a", SCALE_UNITS)],
+            &baseline(&[("a", SCALE_UNITS)]),
+            &verdicts(&[("a", true)]),
+        );
+        assert_eq!(agreed.results[0].agreement_units, Some(SCALE_UNITS));
+
+        // A perfect score against a human who said the run failed: the scorer
+        // disagrees, and the column must say so.
+        let disagreed = census(
+            &[cell("a", SCALE_UNITS)],
+            &baseline(&[("a", SCALE_UNITS)]),
+            &verdicts(&[("a", false)]),
+        );
+        assert_eq!(
+            disagreed.results[0].agreement_units,
+            Some(-SCALE_UNITS),
+            "a perfect score the human contradicted is disagreement, and a column that cannot \
+             report disagreement is a column that reports agreement unconditionally."
+        );
+
+        // And the mirror: an imperfect score against a human who said pass.
+        let lost = census(
+            &[cell("a", SCALE_UNITS - 1)],
+            &baseline(&[("a", SCALE_UNITS)]),
+            &verdicts(&[("a", true)]),
+        );
+        assert_eq!(lost.results[0].agreement_units, Some(-SCALE_UNITS));
+
+        // A low score against a human who said fail: they agree.
+        let low_but_right = census(
+            &[cell("a", 7_400)],
+            &baseline(&[("a", 7_400)]),
+            &verdicts(&[("a", false)]),
+        );
+        assert_eq!(low_but_right.results[0].agreement_units, Some(SCALE_UNITS));
+    }
+
+    #[test]
+    fn the_magnitude_is_the_concordance_and_not_the_score() {
+        // Two disagreements at WILDLY different scores, and two agreements at
+        // wildly different scores. Every one reads the same magnitude, so the
+        // number cannot be a re-expression of the score wearing agreement's
+        // name — and a reviewer comparing cells cannot read a strength of
+        // agreement into it that was never measured.
+        let out = census(
+            &[
+                cell("high_bad", SCALE_UNITS),
+                cell("low_bad", 7_400),
+                cell("high_ok", SCALE_UNITS),
+                cell("low_ok", 7_400),
+            ],
+            &baseline(&[
+                ("high_bad", SCALE_UNITS),
+                ("low_bad", 7_400),
+                ("high_ok", SCALE_UNITS),
+                ("low_ok", 7_400),
+            ]),
+            &verdicts(&[
+                ("high_bad", false),
+                ("low_bad", true),
+                ("high_ok", true),
+                ("low_ok", false),
+            ]),
+        );
+        let by_id = |id: &str| {
+            out.results
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap_or_else(|| panic!("cell {id} must be present"))
+                .agreement_units
+        };
+        assert_eq!(by_id("high_bad"), Some(-SCALE_UNITS));
+        assert_eq!(by_id("low_bad"), Some(-SCALE_UNITS));
+        assert_eq!(by_id("high_ok"), Some(SCALE_UNITS));
+        assert_eq!(by_id("low_ok"), Some(SCALE_UNITS));
+        assert_ne!(by_id("high_bad"), Some(0), "agreement is never zero-valued");
+    }
+
+    #[test]
+    fn agreement_is_reported_and_never_gates() {
+        // A census whose only cell CONTRADICTS the frozen human verdict, and
+        // sits inside tolerance. It is clean: nothing drifted. If disagreement
+        // could move a verdict, a breach, or the exit code, this would fail —
+        // and a single-rater measure over seven cases blocking a release is the
+        // unmeasured control the posture exists to prevent.
+        let out = census(
+            &[cell("a", SCALE_UNITS)],
+            &baseline(&[("a", SCALE_UNITS)]),
+            &verdicts(&[("a", false)]),
+        );
+        assert_eq!(out.results[0].agreement_units, Some(-SCALE_UNITS));
+        assert_eq!(
+            out.results[0].verdict,
+            CellVerdict::Stable,
+            "agreement must not reach the drift verdict"
+        );
+        assert!(
+            out.is_clean(),
+            "disagreement is a REPORT, not a breach: the cell did not move, so nothing regressed"
+        );
+        assert!(out.breaches().is_empty());
+        assert_eq!(out.total_drift_units(), 0);
+    }
+
+    #[test]
+    fn the_pass_boundary_is_the_scorers_and_the_corpus_agrees_on_every_case() {
+        // Measured, not assumed: the frozen corpus is unanimous with the
+        // scorer today. That is worth pinning for two reasons — it is the
+        // corpus's actual state, and it is WHY this round's discriminating
+        // fixtures have to be synthetic. A future corpus case that disagreed
+        // would flip this pin to RED, which is the census telling the operator
+        // the instrument and the humans have parted company.
+        let (cells, verdicts) = measure().expect("the corpus measures");
+        let out = census(&cells, &baseline_all(&cells), &verdicts);
+        let disagreements: Vec<&str> = out
+            .results
+            .iter()
+            .filter(|r| r.agreement_units == Some(-SCALE_UNITS))
+            .map(|r| r.id.as_str())
+            .collect();
+        assert!(
+            disagreements.is_empty(),
+            "the frozen corpus no longer agrees with the scorer on: {disagreements:?}. A \
+             disagreement is a finding for a human to adjudicate — never a number to tune."
+        );
+        assert!(
+            out.results.iter().all(|r| r.agreement_units.is_some()),
+            "every corpus case is baselined, so every one must carry an agreement figure"
+        );
+    }
+
+    /// The committed vector's shape for a set of cells: each cell baselined at
+    /// its own measurement, which is what makes the agreement census above a
+    /// census about concordance rather than about drift.
+    fn baseline_all(cells: &[Cell]) -> BTreeMap<String, i32> {
+        cells
+            .iter()
+            .map(|c| (c.id.clone(), c.observed_units))
+            .collect()
+    }
+
+    #[test]
     fn an_empty_census_is_not_clean() {
         // Vacuity: a census that measured nothing must never report success, or
         // a corpus that failed to load is indistinguishable from a good week.
-        assert!(!census(&[], &BTreeMap::new()).is_clean());
+        // It also reports no agreement: nothing measured, nothing claimed.
+        let out = census(&[], &BTreeMap::new(), &no_verdicts());
+        assert!(!out.is_clean());
+        assert!(
+            out.results.is_empty(),
+            "an empty census must emit no cell line, and therefore no agreement figure"
+        );
     }
 
     #[test]
@@ -699,8 +989,8 @@ mod tests {
             cell("gamma", 1_000),
         );
         let base = baseline(&[("alpha", 9_000), ("beta", 4_000), ("gamma", 1_000)]);
-        let forward = census(&[a.clone(), b.clone(), c.clone()], &base);
-        let reverse = census(&[c, b, a], &base);
+        let forward = census(&[a.clone(), b.clone(), c.clone()], &base, &no_verdicts());
+        let reverse = census(&[c, b, a], &base, &no_verdicts());
         assert_eq!(
             forward, reverse,
             "cell order must not change the census; an unstable order makes two censuses \
@@ -713,7 +1003,8 @@ mod tests {
                     cell("beta", 4_000),
                     cell("gamma", 1_000)
                 ],
-                &base
+                &base,
+                &no_verdicts()
             ),
             forward
         );
@@ -730,6 +1021,7 @@ mod tests {
         let out = census(
             &[cell("a", 9_100), cell("b", 3_900), cell("c", 10_000)],
             &baseline(&[("a", 9_000), ("b", 4_000), ("c", 1_000)]),
+            &no_verdicts(),
         );
         assert_eq!(out.total_drift_units(), 100 + 100 + 9_000);
     }
@@ -738,7 +1030,11 @@ mod tests {
     fn an_out_of_scale_score_drifts_rather_than_overflowing() {
         // A scorer returning a wild value is a scorer bug; the control must
         // REPORT it, not panic while computing the delta.
-        let out = census(&[cell("a", i32::MAX)], &baseline(&[("a", i32::MIN)]));
+        let out = census(
+            &[cell("a", i32::MAX)],
+            &baseline(&[("a", i32::MIN)]),
+            &no_verdicts(),
+        );
         assert_eq!(out.results[0].verdict, CellVerdict::Drifted);
         assert_eq!(out.results[0].delta_units, Some(i32::MAX));
     }
@@ -814,9 +1110,15 @@ mod tests {
 
     #[test]
     fn measuring_the_corpus_produces_one_cell_per_case_from_the_real_scorer() {
-        let cells = measure().expect("the corpus measures");
+        let (cells, verdicts) = measure().expect("the corpus measures");
         let cases = corpus().expect("the corpus decodes");
         assert_eq!(cells.len(), cases.len());
+        assert_eq!(
+            verdicts.len(),
+            cases.len(),
+            "every corpus case carries a frozen verdict, so the census's verdict map covers the \
+             corpus exactly"
+        );
         for (c, case) in cells.iter().zip(cases.iter()) {
             assert_eq!(c.id, case.id);
             assert!(

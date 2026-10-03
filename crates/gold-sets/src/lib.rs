@@ -84,6 +84,15 @@ pub struct GoldCase {
     #[serde(default)]
     pub evidence_refs: Vec<String>,
     /// Agreed human verdict: did the run pass quality?
+    ///
+    /// **Read in production by the drift census**, which joins it to the
+    /// scorer's own pass rule and reports the SIGN of the concordance — never a
+    /// magnitude of it, never a threshold, and never a gate. A cell the census
+    /// refuses reports no agreement at all rather than a default.
+    ///
+    /// This field was carried and never compared until that column landed. Both
+    /// states are real, and which one is in force is stated here rather than
+    /// inferred from a reader's absence.
     pub human_pass: bool,
     pub artifacts: CaseArtifacts,
 }
