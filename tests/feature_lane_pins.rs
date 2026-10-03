@@ -26,6 +26,8 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
+mod common;
+
 fn repo(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
 }
@@ -215,46 +217,10 @@ fn neural_embed_routes_through_the_budgeted_input() {
 
 /// Strip `//` and `/* */` comments, string-aware — a source pin that greps raw
 /// text can pass on a COMMENT naming the symbol.
+///
+/// The body lives in `tests/common/mod.rs`: four copies of this stripper
+/// existed and two were broken. **This copy was one of the two**, and measured
+/// **12 leaked comment lines** on `src/embed.rs`, the only file below it scans.
 fn code_only(src: &str) -> String {
-    let chars: Vec<char> = src.chars().collect();
-    let mut out = String::with_capacity(src.len());
-    let (mut in_str, mut in_chr, mut in_block) = (false, false, false);
-    let mut i = 0usize;
-    while i < chars.len() {
-        let c = chars[i];
-        let n = chars.get(i + 1).copied();
-        if in_block {
-            if c == '*' && n == Some('/') {
-                in_block = false;
-                i += 2;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-        if !in_str && !in_chr && c == '/' && n == Some('/') {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if !in_str && !in_chr && c == '/' && n == Some('*') {
-            in_block = true;
-            i += 2;
-            continue;
-        }
-        match c {
-            '"' if !in_chr => {
-                in_str = !in_str;
-                out.push(c);
-            }
-            '\'' if !in_str => {
-                in_chr = !in_chr;
-                out.push(c);
-            }
-            _ => out.push(c),
-        }
-        i += 1;
-    }
-    out
+    common::code_only(src)
 }

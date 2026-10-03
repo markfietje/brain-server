@@ -17,6 +17,22 @@
 
 use std::path::{Path, PathBuf};
 
+mod common;
+
+/// Strip `//` and `/* */` comments, string-aware.
+///
+/// A source pin that greps raw text can pass on a COMMENT naming the symbol —
+/// the exact false-pass R51 recorded. Matching is done against code only.
+///
+/// The body lives in `tests/common/mod.rs`, which **four copies of this
+/// stripper previously duplicated and two of them broke**. This one carried the
+/// lifetime desync in particular: it measured **14 leaked comment lines** on the
+/// two files below, so a pin built on it could scan a comment while believing it
+/// had not.
+fn code_only(src: &str) -> String {
+    common::code_only(src)
+}
+
 fn repo(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(rel)
 }
@@ -24,55 +40,6 @@ fn repo(rel: &str) -> PathBuf {
 fn read(rel: &str) -> String {
     let p = repo(rel);
     std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{} must exist: {e}", p.display()))
-}
-
-/// Strip `//` and `/* */` comments, string-aware.
-///
-/// A source pin that greps raw text can pass on a COMMENT naming the symbol —
-/// the exact false-pass R51 recorded. Matching is done against code only.
-fn code_only(src: &str) -> String {
-    let chars: Vec<char> = src.chars().collect();
-    let mut out = String::with_capacity(src.len());
-    let (mut in_str, mut in_chr, mut in_block) = (false, false, false);
-    let mut i = 0usize;
-    while i < chars.len() {
-        let c = chars[i];
-        let n = chars.get(i + 1).copied();
-        if in_block {
-            if c == '*' && n == Some('/') {
-                in_block = false;
-                i += 2;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-        if !in_str && !in_chr && c == '/' && n == Some('/') {
-            // to end of line
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if !in_str && !in_chr && c == '/' && n == Some('*') {
-            in_block = true;
-            i += 2;
-            continue;
-        }
-        match c {
-            '"' if !in_chr => {
-                in_str = !in_str;
-                out.push(c);
-            }
-            '\'' if !in_str => {
-                in_chr = !in_chr;
-                out.push(c);
-            }
-            _ => out.push(c),
-        }
-        i += 1;
-    }
-    out
 }
 
 /// **A correction to this round's own first draft, kept because the wrong

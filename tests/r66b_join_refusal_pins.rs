@@ -84,6 +84,8 @@
 
 use std::path::PathBuf;
 
+mod common;
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -118,6 +120,14 @@ fn production_region(rel: &str) -> String {
 /// passes on a comment that merely *names* the symbol it forbids. Doc comments
 /// explaining a refusal are exactly what this function makes invisible.
 ///
+/// **This body used to live here, and this round's pin caught it still living
+/// here.** The machine below is the fix a previous round shipped inside this
+/// file while four other copies of the stripper roamed the tree. It is now the
+/// ONE shared implementation in `tests/common/mod.rs`, which is a strict
+/// superset: it keeps both fixes here made and adds the **escaped quote**
+/// (`\"` inside a string), the hazard found by using this machine as the
+/// measuring reference for a round whose whole subject was measurement.
+///
 /// **Two defects in the inherited version, both found by this round's own pins
 /// and fixed here.** The `r63a` state machine treats every `'` outside a string
 /// as the start of a char literal. Rust lifetimes are written with the same
@@ -132,93 +142,18 @@ fn production_region(rel: &str) -> String {
 /// string literal, and this machine did not model it. A `\` before the newline
 /// means the string **continues**, so the machine consumed the closing quote of
 /// the *following* line as an opener and stayed "inside a string" for the rest
-/// of the file. Measured on `drift_census.rs`: **185 doc comments survived
-/// stripping**, on a file whose first 200 lines are almost entirely doc
-/// comments. A comment stripper that leaves 185 comments behind is not a
-/// comment stripper.
+/// of the file.
 ///
-/// That is precisely the failure this function exists to prevent, inherited
-/// through the precedent — a scanner that keeps the comments it was written to
-/// remove. A pin built on it would have scanned comments while believing it had
-/// not, and P2 caught it by reading a doc comment as if it were a struct field.
-///
-/// **The fixes are an atomic char-literal match and continuation-aware strings.**
-/// A `'` outside a string is a char literal only if a closing `'` appears within
-/// a short lookahead; otherwise it is a lifetime, and passes through as code. A
-/// backslash immediately before a newline inside a string skips both, so the
-/// string keeps its state and the next line does not reopen it.
+/// **Correction, measured:** the second claim above did not survive
+/// re-measurement. The line-continuation defect does **not** leak on this tree —
+/// the lifetime fix alone cures 100% of every leak counted (12 on
+/// `drift_census.rs`, 7 on `screen.rs`, 12 on `embed.rs`, 91 on `run_loop.rs`),
+/// and the continuation fix alone cures **none** of them. The arm is kept
+/// because the form is legal Rust, not because it fixed anything, and the
+/// "185 doc comments" figure attributed to it is wrong: the true count is 12.
+/// See `R7_SCANNERS_AND_ORDER_PREREGISTRATION_2026-10-03.md` §2.3.
 fn code_only(src: &str) -> String {
-    let chars: Vec<char> = src.chars().collect();
-    let mut out = String::with_capacity(src.len());
-    let (mut in_str, mut in_block) = (false, false);
-    let mut i = 0usize;
-    while i < chars.len() {
-        let c = chars[i];
-        let n = chars.get(i + 1).copied();
-        if in_block {
-            if c == '*' && n == Some('/') {
-                in_block = false;
-                i += 2;
-            } else {
-                i += 1;
-            }
-            continue;
-        }
-        if !in_str && c == '/' && n == Some('/') {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if !in_str && c == '/' && n == Some('*') {
-            in_block = true;
-            i += 2;
-            continue;
-        }
-        if in_str {
-            // Line continuation: the string carries on past the newline.
-            if c == '\\' && n == Some('\n') {
-                out.push('\n');
-                i += 2;
-                continue;
-            }
-            if c == '"' {
-                in_str = false;
-            }
-            out.push(c);
-            i += 1;
-            continue;
-        }
-        if c == '"' {
-            in_str = true;
-            out.push(c);
-            i += 1;
-            continue;
-        }
-        if c == '\'' {
-            // Atomic char-literal match: a closing quote within a short
-            // lookahead makes this a literal; anything else is a LIFETIME.
-            let mut j = i + 1;
-            while j < chars.len() && j <= i + 10 {
-                match chars[j] {
-                    '\\' => j += 2,
-                    '\'' => break,
-                    _ => j += 1,
-                }
-            }
-            if j < chars.len() && chars[j] == '\'' {
-                out.extend(chars[i..=j].iter());
-                i = j + 1;
-                continue;
-            }
-            out.push(c);
-            i += 1;
-            continue;
-        }
-        out.push(c);
-        i += 1;
-    }
-    out
+    common::code_only(src)
 }
 
 /// The declared field names of `struct <name>`, read from its declaration.

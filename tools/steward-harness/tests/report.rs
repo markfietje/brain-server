@@ -256,6 +256,18 @@ async fn mutations_default_does_not_count_as_a_declaration() {
 /// This exists because a comment that NAMES a symbol otherwise satisfies a
 /// predicate about CODE. The R51 lesson: a bare name-mention assertion
 /// false-passed on the very file whose gap the pin was closing.
+///
+/// **The char-literal arm here used to CORRUPT code rather than leak comments.**
+/// It advanced past `'` plus one character unconditionally, so a lifetime lost a
+/// letter: `&'static str` scanned as `&'tatic str`, `<'a>` as `<'>`, and even
+/// `'x'` as `'`. On the one file this scans that was exactly one damaged line.
+/// The sibling copy in `brain-server`'s test tree had the opposite failure — it
+/// leaked comments — so the two bugs were mirror images: one removed code, the
+/// other kept comments. **Both came from treating `'` as always opening a
+/// literal.**
+///
+/// Now a `'` is a char literal only if a closing `'` appears within a short
+/// lookahead; otherwise it is a lifetime and passes through as code.
 fn strip_comments(src: &str) -> String {
     let b: Vec<char> = src.chars().collect();
     let n = b.len();
@@ -340,17 +352,27 @@ fn strip_comments(src: &str) -> String {
             continue;
         }
         if c == '\'' {
+            // ATOMIC char-literal match: a closing quote within a short lookahead
+            // makes this a literal; anything else is a LIFETIME, and must pass
+            // through as code rather than swallow the character after it.
             let mut j = i + 1;
-            if j < n && b[j] == '\\' {
-                j += 2;
-            } else {
-                j += 1;
+            while j < n && j <= i + 10 {
+                match b[j] {
+                    '\\' => j += 2,
+                    '\'' => break,
+                    _ => j += 1,
+                }
             }
             if j < n && b[j] == '\'' {
-                j += 1;
+                out.push('\'');
+                for ch in &b[i + 1..=j] {
+                    out.push(*ch);
+                }
+                i = j + 1;
+                continue;
             }
-            out.push('\'');
-            i = j;
+            out.push(c);
+            i += 1;
             continue;
         }
         out.push(c);
