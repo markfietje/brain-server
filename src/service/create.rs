@@ -47,6 +47,15 @@
 //! a test in this module, so the clippy watchdog becomes a real gate again the
 //! moment any of them acquires a production caller — and a later round that
 //! silently gives promotion a caller will find these flags gone.
+//!
+//! **One item is no longer in that set.** `evaluate_disproof` had no production
+//! caller for as long as it existed — the falsification half of the loop could
+//! store a condition and never once read it back. It is now reached by
+//! [`sweep_disproofs`], which the `brain disproof` verb drives. That sweep is a
+//! **read**: it evaluates stored conditions against the claim's own subject and
+//! writes nothing, because a sweep that wrote its verdicts back would be a
+//! promotion path. The rest of the allow stands, and `evaluate_disproof` is the
+//! one name a reader should check before assuming it is still unreachable.
 
 // The loop ships inert; see the module header for which items have no
 // production caller and why that is the design rather than an omission.

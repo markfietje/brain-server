@@ -160,22 +160,6 @@ pub fn hash_subject(source: &str, org_id: &str, identity: &str) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Translate a [`CrmCase`] into the markdown doc ingested through `/ingest`.
-/// The URI is the stable `case_ref`-derived `crm://{source}/{org}/{id}` so
-/// unchanged re-syncs dedupe server-side.
-pub fn case_doc(c: &CrmCase) -> crate::connector::pipeline::ConnectorDoc {
-    use crate::connector::pipeline::ConnectorDoc;
-    ConnectorDoc {
-        uri: format!("crm://{}/{}/{}", c.source, c.org_id, c.case_id),
-        title: c.title.clone(),
-        markdown: c.body_markdown.clone(),
-        kind: "crm".to_string(),
-        // Customer conversations default private; min-necessary beats the
-        // pipeline's team default for CRM cases.
-        access_scope: "private",
-    }
-}
-
 // ── the crm_cases linkage store ──────────────────────────────────────────────
 
 /// Idempotent upsert keyed on `case_ref`. `run_id`, when `Some`, binds (or

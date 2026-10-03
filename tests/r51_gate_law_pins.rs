@@ -38,36 +38,53 @@ use std::path::PathBuf;
 /// amended casually is one that is failing quietly. If a refactor legitimately
 /// introduces a third mediated entry, it is added here *with its reason* and with a
 /// reachability argument — never silently.
+/// The production construction sites, keyed by **file + the enclosing item's
+/// NAME**, never by line number.
+///
+/// ## Why it is keyed by name, and why that matters
+///
+/// This register was line-keyed, and a line-keyed governance register has a
+/// failure mode worse than having no register: **it fires on edits that changed
+/// nothing it claims to measure.** Deleting ten lines of superseded dead code
+/// *above* a site moved that site's line, and the census pin demanded a
+/// governance amendment for a non-event.
+///
+/// R53a already recorded this exact tax once — *"AMENDED 2026-09-29 (R53a), line
+/// 639 → 656, and nothing else. The shift is purely additive documentation …
+/// No statement, no expression, no data path and no control-flow edge at the
+/// construction site changed"* — and had to write a paragraph proving the site had
+/// not moved in any way that mattered. **A pin that must be amended when the line
+/// moves is a pin whose amendments stop carrying information**, because a reader
+/// can no longer tell a real new spawn site from a reflow.
+///
+/// The governance claim was never about a line. It is about *which function
+/// constructs an unmediated loop*, and a name survives every edit above it. So the
+/// register keys the name, keeps the line only for the failure message, and a new
+/// spawn site still fails the pin — now because a genuinely new FUNCTION appears,
+/// which is the event the register exists to catch.
 const REGISTER: &[(&str, &str, &str)] = &[
     (
         "src/workflow/gdl.rs",
-        "2500",
-        "The parent engine, built inside `GdlDriver::new_with_proficiency` (declared \
-         :2482). `GdlDriver::new` (:2458) is only the L3-delegating wrapper. Inside the \
+        "new_with_proficiency",
+        "The parent engine, built inside `GdlDriver::new_with_proficiency`. \
+         `GdlDriver::new` is only the L3-delegating wrapper. Inside the \
          law: the GDL's screening is the phase machine ABOVE the loop (`parse_and_gate`, \
          the authority matrix, MAX_PHASE_ATTEMPTS), and the loop's own output is \
-         disposed at :3412 / :3683.",
+         disposed downstream of the loop.",
     ),
     (
         "src/agentloop/subagents.rs",
-        "656",
+        "delegate_owned_budgeted",
         "The production child-loop spawn inside `delegate_owned_budgeted`. Inside the \
          law by its DATA PATH: constructed with filtered tools (`spec.allowed_tools`), a \
          narrowed env (`narrowed_env`), an explicit budget (`Some(spec.token_budget)`, \
          not the `None` uncapped default), a turn cap and a `child:<name>:` prefix; its \
-         `SubagentOutcome::Completed { summary }` is consumed at gdl.rs:2694 and \
+         `SubagentOutcome::Completed { summary }` is consumed in gdl.rs and \
          disposed by `parse_and_gate`. \
          \
-         AMENDED 2026-09-29 (R53a), line 639 → 656, and nothing else. The shift is \
-         purely additive documentation and a required `class` argument on \
-         `ExchangeBudget::record`, both ABOVE this site in the file: R53a added the \
-         `record`/`mark_incomplete` doc comments (+23 lines) and the `use \
-         crate::decision_class::DecisionClass;` import (+1). No statement, no \
-         expression, no data path and no control-flow edge at the construction site \
-         changed — the census below re-derives from source on every run and reported \
-         exactly one site before and exactly one after, at the same construction. \
-         The register was NOT weakened: a new site would still fail this pin, and \
-         this amendment records a moved line, not an added one.",
+         KEYED BY NAME since the line-keyed register proved to be a liability: a \
+         documentation-only edit above either site moved its line and demanded a \
+         governance amendment that recorded no change of substance.",
     ),
 ];
 
@@ -218,7 +235,68 @@ fn brace_span(lines: &[String], start_idx: usize, from_col: usize) -> Option<usi
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct Site {
     file: String,
+    /// The enclosing top-level item's name — the stable identity of the site.
+    item: String,
+    /// Which construction this is **within** that item, 0-based.
+    ///
+    /// **This is load-bearing, and its absence was a real weakening.** Keying on
+    /// the name alone collapses two spawns inside one function into one entry, so
+    /// a second, unmediated spawn in an already-registered function passes the
+    /// census. Verified by planting exactly that: the name-keyed register went
+    /// GREEN against a live bypass. A site is therefore `item#ordinal`.
+    ordinal: usize,
+    /// Retained for the failure message only; never compared.
     line: usize,
+}
+
+impl Site {
+    /// The register's key form.
+    fn key(&self) -> String {
+        if self.ordinal == 0 {
+            self.item.clone()
+        } else {
+            format!("{}#{}", self.item, self.ordinal)
+        }
+    }
+}
+
+/// The top-level `fn`/`impl` item a line sits inside, or `"<module>"`.
+///
+/// **This is what makes the register reflow-proof.** Keyed on a line number, the
+/// register broke on an unrelated deletion ten lines above it — and a pin that
+/// fails on an edit that changed nothing it claims to measure trains a reader to
+/// amend it reflexively. The enclosing item's NAME is what the governance claim is
+/// actually about ("the parent engine", "the subagent child"), and a name does not
+/// move when code above it is added or removed.
+fn enclosing_item(lines: &[String], idx: usize) -> String {
+    for i in (0..=idx).rev() {
+        let t = lines[i].trim_start();
+        // `async fn` and `pub(crate) async fn` are ordinary top-level items here,
+        // so the qualifier list must cover them or the scan walks PAST the real
+        // function and reports whatever earlier item it lands on.
+        let rest = [
+            "pub fn ",
+            "pub(crate) fn ",
+            "fn ",
+            "pub async fn ",
+            "async fn ",
+            "pub(crate) async fn ",
+            "impl ",
+        ]
+        .iter()
+        .find_map(|kw| t.strip_prefix(kw));
+        if let Some(rest) = rest {
+            let name: String = rest
+                .trim_start()
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                return name;
+            }
+        }
+    }
+    "<module>".to_string()
 }
 
 /// Derive the production set from source, with both detectors required to agree.
@@ -245,6 +323,8 @@ fn derive_production_sites() -> BTreeSet<Site> {
         }
     }
     files.sort();
+    let mut per_item: std::collections::BTreeMap<(String, String), usize> =
+        std::collections::BTreeMap::new();
     for rel in files {
         let lines = strip_comments(&read_src(&rel));
         let a = detector_a_module_boundary(&lines);
@@ -258,8 +338,18 @@ fn derive_production_sites() -> BTreeSet<Site> {
             let in_b = b.iter().any(|(s, e)| ln >= *s && ln <= *e);
             // production only if BOTH detectors agree
             if !in_a && !in_b {
+                let item = enclosing_item(&lines, idx);
+                let n = per_item.entry((rel.clone(), item.clone())).or_insert(0);
+                let ordinal = *n;
+                *n += 1;
                 production.insert(Site {
                     file: rel.clone(),
+                    // The enclosing item's NAME plus its ordinal, not the line: a
+                    // register keyed on a line number breaks on any edit above it
+                    // and forces a governance amendment for a non-event, while a
+                    // name alone would hide a second spawn in one function.
+                    item,
+                    ordinal,
                     line: ln,
                 });
             }
@@ -273,13 +363,19 @@ fn derive_production_sites() -> BTreeSet<Site> {
 /// **I51.6 — the derived census equals the recorded register.**
 #[test]
 fn r51_gate_law_census_matches_the_register() {
+    // Keyed on (file, enclosing item NAME) — never on the line, which moves on
+    // any edit above the site and would demand a governance amendment for a
+    // reflow. The register's doc says why in full.
     let derived: BTreeSet<(String, String)> = derive_production_sites()
         .into_iter()
-        .map(|s| (s.file, s.line.to_string()))
+        .map(|s| {
+            let key = s.key();
+            (s.file, key)
+        })
         .collect();
     let registered: BTreeSet<(String, String)> = REGISTER
         .iter()
-        .map(|(f, l, _)| (f.to_string(), l.to_string()))
+        .map(|(f, item, _)| (f.to_string(), item.to_string()))
         .collect();
 
     assert_eq!(
@@ -291,7 +387,9 @@ fn r51_gate_law_census_matches_the_register() {
          only if its output is arbitrated by `parse_and_gate` before it can change durable \
          state — prove that, then amend the register WITH its justification. Amending the \
          register is a governance event. If the site is NOT inside the law, this is a live \
-         finding: a production spawn that bypasses the gate."
+         finding: a production spawn that bypasses the gate. \
+         NOTE: sites are keyed by enclosing ITEM NAME, so a line shift alone can never \
+         cause this failure."
     );
 }
 
@@ -313,15 +411,15 @@ fn r51_gate_law_census_is_not_vacuous() {
 /// without a reason is an incomplete entry.
 #[test]
 fn r51_gate_law_register_entries_carry_justifications() {
-    for (file, line, why) in REGISTER {
+    for (file, item, why) in REGISTER {
         assert!(
             why.len() > 40,
-            "register entry {file}:{line} has no substantive justification ({why:?}). \
+            "register entry {file}::{item} has no substantive justification ({why:?}). \
              Every entry records WHY the site is inside the gate law."
         );
         assert!(
             !why.contains("new\n"),
-            "register entry {file}:{line} justification must be a single paragraph"
+            "register entry {file}::{item} justification must be a single paragraph"
         );
     }
 }
@@ -470,6 +568,8 @@ fn r51_delegate_call_sites_are_the_gdl_recheck_seam() {
             }
             call_sites.push(Site {
                 file: rel.clone(),
+                item: enclosing_item(&lines, idx),
+                ordinal: 0,
                 line: ln,
             });
         }
@@ -604,18 +704,49 @@ fn r51_spawn_outcome_reaches_parse_and_gate_bounded_by_phase_attempts() {
 /// Deliberate, not accidental.
 #[test]
 fn r51_production_construction_sites_inject_no_hooks() {
-    for (file, line, _) in REGISTER {
+    for (file, item, _) in REGISTER {
         let lines = strip_comments(&read_src(file));
-        let ln: usize = line.parse().expect("register line is numeric");
-        let window: String = lines[ln.saturating_sub(1)..(ln + 14).min(lines.len())].join("\n");
+        // Locate the CONSTRUCTION by function, not by a recorded line: an edit
+        // anywhere in the file can no longer move this check onto other code.
+        let anchor = lines
+            .iter()
+            .position(|l| l.contains(&format!("fn {item}(")))
+            .unwrap_or_else(|| {
+                panic!("register names {file}::{item}, which no longer exists in the file")
+            });
+        // From the item's own opening line, find the FIRST `LoopDriver::new`
+        // that belongs to it: stop at the next top-level `fn`, so a sibling
+        // item's construction cannot stand in for this one's.
+        let mut construction: Option<usize> = None;
+        for (off, line) in lines.iter().enumerate().skip(anchor + 1) {
+            let t = line.trim_start();
+            if (t.starts_with("fn ") || t.starts_with("pub fn ") || t.starts_with("pub(crate) fn "))
+                && !t.starts_with("fn run_tests")
+                && off > anchor + 1
+                && !line.starts_with(' ')
+            {
+                break; // the next top-level item begins
+            }
+            if line.contains("LoopDriver::new") {
+                construction = Some(off);
+                break;
+            }
+        }
+        let Some(at) = construction else {
+            panic!("{file}::{item} is registered as a construction site but contains none");
+        };
+        // The construction's own argument list is what must carry the hooks —
+        // a `pass_through()` further down the function is a different call.
+        let tail = lines[at..(at + 20).min(lines.len())].join("\n");
         assert!(
-            window.contains("LoopHooks::pass_through()"),
-            "the production site {file}:{ln} must construct with `LoopHooks::pass_through()`. \
-             This is the I51.6c watch item: **`LoopHooks` are per-construction-site, not \
-             inherited.** If policy hooks are ever injected at one production site, they must \
-             be injected at EVERY site in this register — the gdl.rs engine AND the \
-             subagents.rs child — or the child silently bypasses hook policy. A register \
-             entry that omits the hooks argument is an incomplete entry."
+            tail.contains("LoopHooks::pass_through()"),
+            "the production site {file}::{item} must construct with \
+             `LoopHooks::pass_through()`. This is the I51.6c watch item: **`LoopHooks` are \
+             per-construction-site, not inherited.** If policy hooks are ever injected at one \
+             production site, they must be injected at EVERY site in this register — the \
+             gdl.rs engine AND the subagents.rs child — or the child silently bypasses hook \
+             policy. A register entry that omits the hooks argument is an incomplete entry. \
+             FOUND: {tail}"
         );
     }
 }

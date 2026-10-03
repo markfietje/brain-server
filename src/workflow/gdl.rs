@@ -2131,17 +2131,7 @@ pub(crate) fn plan_strip_with_law(case: &GdlCase, corroboration_ablated: bool) -
     lines.join("\n")
 }
 
-/// The phase instruction: strip first, then the phase task and its JSON
-/// contract, then (on retry) the named law violations to fix.
-pub(crate) fn phase_instruction(
-    phase: GdlPhase,
-    case: &GdlCase,
-    retry_errors: &[String],
-) -> String {
-    phase_instruction_with_law(phase, case, retry_errors, false)
-}
-
-/// [`phase_instruction`] under a selected corroboration law (the
+/// [`phase_instruction_with_law`] under a selected corroboration law (the
 /// registered eval arm C selects the 1-source threshold; production
 /// always passes `false`).
 pub(crate) fn phase_instruction_with_law(

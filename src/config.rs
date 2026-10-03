@@ -558,12 +558,6 @@ pub fn rbac_roleless_posture() -> Result<&'static str, String> {
     }
 }
 
-/// Boot-time validation for the this round posture. Unknown values refuse startup
-/// rather than silently degrading to the permissive default.
-pub fn validate_rbac_roleless_posture() -> Result<(), String> {
-    rbac_roleless_posture().map(|_| ())
-}
-
 /// Refuses boot when set but no token resolves: with `BRAIN_REQUIRE_AUTH=1`
 /// an unauthenticated start is a misconfiguration, not a posture.
 pub fn require_auth() -> Result<bool, String> {

@@ -135,17 +135,6 @@ pub(crate) fn summary_input(split: &CompactionSplit, policy: CompactionPolicy) -
         .collect()
 }
 
-/// The durable compaction event payload: the summary, the seq it compacts
-/// through, and where the verbatim tail starts.
-pub(crate) fn compaction_event_json(summary: &str, split: &CompactionSplit) -> String {
-    serde_json::json!({
-        "summary": summary,
-        "compacted_through_seq": split.head.last().map(|e| e.seq),
-        "tail_from_seq": split.tail.first().map(|e| e.seq),
-    })
-    .to_string()
-}
-
 pub(crate) const SUMMARY_CAP: usize = 16 * 1024;
 
 #[derive(serde::Deserialize)]
