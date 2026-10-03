@@ -351,7 +351,7 @@ const BANNED_CLAIMS: &[(&str, &str)] = &[
         "Every change is signed and recorded permanently",
     ),
     (
-        "MemorySteward-Overview.tex",
+        "docs/MemorySteward-Overview.tex",
         "Every change is signed and recorded permanently",
     ),
     (
@@ -381,9 +381,9 @@ fn r45_0_no_external_artifact_claims_ed25519_over_the_chain() {
     let artifacts = [
         "plans/PLAIN_LANGUAGE_PRODUCT_OVERVIEW.md",
         "plans/memorysteward-overview.tex",
-        "MemorySteward-Overview.tex",
+        "docs/MemorySteward-Overview.tex",
         "plans/memorysteward-engineers-ref.tex",
-        "MemorySteward-Engineers-Reference.tex",
+        "docs/MemorySteward-Engineers-Reference.tex",
         "docs/POSITIONING_MEMORYSTEWARD.md",
         "plans/PLAN_CREATE_LOOP_SENTINEL_MODEL_AND_EVIDENCE.md",
         "plans/PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md",
@@ -501,7 +501,7 @@ fn r45_0_corrected_sentence_present_in_every_listed_artifact() {
     // Artifacts that DESCRIBE the chain's mechanism must name the real one.
     for rel in [
         "plans/memorysteward-engineers-ref.tex",
-        "MemorySteward-Engineers-Reference.tex",
+        "docs/MemorySteward-Engineers-Reference.tex",
         "plans/IMPLEMENTATION_PLAN_R45_ONWARD_LOOP_AND_PRODUCTION_GAPS_2026-09-27.md",
     ] {
         let text = read_spine(rel);
@@ -517,7 +517,7 @@ fn r45_0_corrected_sentence_present_in_every_listed_artifact() {
     for rel in [
         "plans/PLAIN_LANGUAGE_PRODUCT_OVERVIEW.md",
         "plans/memorysteward-overview.tex",
-        "MemorySteward-Overview.tex",
+        "docs/MemorySteward-Overview.tex",
     ] {
         let text = read_spine(rel);
         assert!(
@@ -537,7 +537,7 @@ fn r45_0_corrected_sentence_present_in_every_listed_artifact() {
 fn r45_0_engineers_ref_known_limits_ceiling_row_is_retained() {
     for rel in [
         "plans/memorysteward-engineers-ref.tex",
-        "MemorySteward-Engineers-Reference.tex",
+        "docs/MemorySteward-Engineers-Reference.tex",
     ] {
         let text = read_spine(rel);
 
