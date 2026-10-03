@@ -933,7 +933,7 @@ fn restore_inner(
         // table on an unmigrated file = no holds).
         active_holds = conn
             .prepare(
-                "SELECT knowledge_id, reason, placed_by FROM legal_holds \
+                "SELECT knowledge_id, reason, held_by FROM legal_holds \
                   WHERE released_at IS NULL",
             )
             .and_then(|mut s| {
@@ -1224,14 +1224,17 @@ fn reapply_holds_and_disclose_resurrections(
     // success (a litigation freeze could lapse with a clean audit story).
     // Fail-closed law: the shortfall is disclosed loudly, never swallowed.
     let mut reapplied = 0usize;
-    for (kid, reason, placed_by) in active_holds {
+    for (kid, reason, held_by) in active_holds {
         // INSERT OR IGNORE: a hold row for the id may already exist in the
         // restored data (the backup predates the RELEASE, not the hold).
+        // The column names are the MIGRATED ones — `held_by`/`held_at`. The
+        // previous pair named columns this schema never had, so every insert
+        // failed and every restore silently dropped its holds.
         match conn.execute(
-            "INSERT OR IGNORE INTO legal_holds (knowledge_id, reason, placed_by, created_at) \
-             SELECT ?1, ?2, ?3, datetime('now') \
+            "INSERT OR IGNORE INTO legal_holds (knowledge_id, reason, held_by, held_at) \
+             SELECT ?1, ?2, ?3, ?4 \
              WHERE NOT EXISTS (SELECT 1 FROM legal_holds WHERE knowledge_id = ?1)",
-            rusqlite::params![kid, reason, placed_by],
+            rusqlite::params![kid, reason, held_by, chrono::Utc::now().timestamp()],
         ) {
             Ok(n) => reapplied += n,
             Err(e) => {
@@ -1349,9 +1352,15 @@ mod tests {
         make_db(&src, "held evidence").unwrap();
         {
             let conn = rusqlite::Connection::open(&src).unwrap();
+            // The MIGRATED `legal_holds` shape. This fixture previously declared
+            // `placed_by`/`created_at` — columns the schema never had — so the
+            // production read and insert, which named those same columns, failed
+            // on a real database while passing here. A fixture that restates the
+            // schema can only confirm itself.
             conn.execute(
-                "CREATE TABLE legal_holds(id INTEGER PRIMARY KEY, knowledge_id INTEGER, \
-                   reason TEXT, placed_by TEXT, created_at TEXT, released_at TEXT)",
+                "CREATE TABLE legal_holds(id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                   knowledge_id INTEGER NOT NULL, reason TEXT NOT NULL, held_by TEXT, \
+                   held_at INTEGER NOT NULL, released_at INTEGER)",
                 [],
             )
             .unwrap();
@@ -1365,8 +1374,9 @@ mod tests {
         {
             let conn = rusqlite::Connection::open(&dst).unwrap();
             conn.execute(
-                "CREATE TABLE legal_holds(id INTEGER PRIMARY KEY, knowledge_id INTEGER, \
-                   reason TEXT, placed_by TEXT, created_at TEXT, released_at TEXT)",
+                "CREATE TABLE legal_holds(id INTEGER PRIMARY KEY AUTOINCREMENT, \
+                   knowledge_id INTEGER NOT NULL, reason TEXT NOT NULL, held_by TEXT, \
+                   held_at INTEGER NOT NULL, released_at INTEGER)",
                 [],
             )
             .unwrap();
@@ -1376,8 +1386,8 @@ mod tests {
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO legal_holds(knowledge_id, reason, placed_by, created_at) \
-                 VALUES (1, 'litigation freeze', 'dpo', datetime('now'))",
+                "INSERT INTO legal_holds(knowledge_id, reason, held_by, held_at) \
+                 VALUES (1, 'litigation freeze', 'dpo', 0)",
                 [],
             )
             .unwrap();
