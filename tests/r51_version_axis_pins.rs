@@ -92,7 +92,8 @@ fn r51_knowledge_version_migration_is_additive_and_idempotent() {
 /// them to 1.32.22 for the disproof condition's six columns on `claims`, the
 /// scope round moved them to 1.32.23 for the seventh — `disproof_scope` — and
 /// the per-domain axis round moved them to 1.32.24 for
-/// `knowledge_domain_versions`). A test
+/// `knowledge_domain_versions`, and the model-citation-key round moved them to
+/// 1.32.25 for `delivery_traces`' two registry-key columns). A test
 /// that conflated the two would either rot on the ceiling or lose the history.
 #[test]
 fn r51_schema_stamp_moved_with_the_axis() {
@@ -102,14 +103,14 @@ fn r51_schema_stamp_moved_with_the_axis() {
         "the schema ceiling must move to 1.32.20 with the additive column."
     );
     assert!(
-        layout.contains("LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_24"),
+        layout.contains("LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_25"),
         "LATEST_KNOWN_SCHEMA must track the newest const, or a newer-schema database would \
          not be refused."
     );
     let m = read("src/migration.rs");
     assert!(
-        m.contains("'schema_version', '1.32.24'"),
-        "run_migration must stamp 1.32.24 — the stamp and the ceiling move together."
+        m.contains("'schema_version', '1.32.25'"),
+        "run_migration must stamp 1.32.25 — the stamp and the ceiling move together."
     );
 }
 

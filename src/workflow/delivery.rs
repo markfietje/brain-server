@@ -438,6 +438,19 @@ pub(crate) struct TraceRow {
     pub tier: String,
     pub actor: String,
     pub model_ref: Option<String>,
+    /// The citation's registry key, BOTH halves, as the resolver returned them.
+    ///
+    /// `model_ref` is the caller's key in the `rules:{id}` shape and the
+    /// registry's `id` is bare, so `model_ref` alone cannot express a join to
+    /// `decision_model_registry`. These two are the registry's own composite key.
+    ///
+    /// NOT folded into [`TraceRow::canonical_bytes`]: the id IS the digest over
+    /// that byte string, so folding them would re-derive every historical row's
+    /// address. The ceiling this leaves is real — the address does not commit to
+    /// the citation, so a citation rewritten in place is not caught by the replay
+    /// fold — and it is pinned as a ceiling where it is measured.
+    pub model_registry_id: Option<String>,
+    pub model_registry_version: Option<String>,
     pub policy_digest: Option<String>,
     pub config_digest: Option<String>,
     pub pipeline_version: String,
@@ -517,8 +530,9 @@ impl TraceRow {
     /// error at this boundary, the caller decides what it means.
     pub(crate) fn read_back(conn: &Connection, id: &str) -> Result<Option<Self>, DeliveryError> {
         conn.query_row(
-            "SELECT id, run_id, seq, stage, phase, status, tier, actor, model_ref, policy_digest, \
-             config_digest, pipeline_version, budget_digest, artifact_refs_json, attestation_root, \
+            "SELECT id, run_id, seq, stage, phase, status, tier, actor, model_ref, \
+             model_registry_id, model_registry_version, policy_digest, config_digest, \
+             pipeline_version, budget_digest, artifact_refs_json, attestation_root, \
              created_at FROM delivery_traces WHERE id = ?1",
             params![id],
             |r| {
@@ -532,13 +546,15 @@ impl TraceRow {
                     tier: r.get(6)?,
                     actor: r.get(7)?,
                     model_ref: r.get(8)?,
-                    policy_digest: r.get(9)?,
-                    config_digest: r.get(10)?,
-                    pipeline_version: r.get(11)?,
-                    budget_digest: r.get(12)?,
-                    artifact_refs_json: r.get(13)?,
-                    attestation_root: r.get(14)?,
-                    created_at: r.get(15)?,
+                    model_registry_id: r.get(9)?,
+                    model_registry_version: r.get(10)?,
+                    policy_digest: r.get(11)?,
+                    config_digest: r.get(12)?,
+                    pipeline_version: r.get(13)?,
+                    budget_digest: r.get(14)?,
+                    artifact_refs_json: r.get(15)?,
+                    attestation_root: r.get(16)?,
+                    created_at: r.get(17)?,
                 })
             },
         )
@@ -568,9 +584,9 @@ fn trace_next_seq(conn: &Connection, run_id: i64) -> Result<i64, DeliveryError> 
 fn write_trace(conn: &Connection, row: &TraceRow) -> Result<(), DeliveryError> {
     conn.execute(
         "INSERT INTO delivery_traces(id, run_id, seq, stage, phase, status, tier, actor, \
-         model_ref, policy_digest, config_digest, pipeline_version, budget_digest, \
-         artifact_refs_json, attestation_root, created_at) \
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+         model_ref, model_registry_id, model_registry_version, policy_digest, config_digest, \
+         pipeline_version, budget_digest, artifact_refs_json, attestation_root, created_at) \
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
         params![
             row.id,
             row.run_id,
@@ -581,6 +597,8 @@ fn write_trace(conn: &Connection, row: &TraceRow) -> Result<(), DeliveryError> {
             row.tier,
             row.actor,
             row.model_ref,
+            row.model_registry_id,
+            row.model_registry_version,
             row.policy_digest,
             row.config_digest,
             row.pipeline_version,
@@ -836,6 +854,8 @@ pub(crate) fn create_run(
         tier: tier_core_to_wire(tier).into(),
         actor: crate::workflow::ACTOR.into(),
         model_ref: None,
+        model_registry_id: None,
+        model_registry_version: None,
         policy_digest: req.policy_digest.map(str::to_string),
         config_digest: req.config_digest.map(str::to_string),
         pipeline_version: PIPELINE_VERSION.into(),
@@ -941,6 +961,12 @@ struct Citation {
     key: String,
     config_digest: String,
     artifact_digest: String,
+    /// The resolved row's own registry key. Carried from what
+    /// `resolve_for_execution` RETURNED, never re-derived from `key` by
+    /// stripping the `rules:` prefix — that is re-derivation, and it breaks the
+    /// moment a second bindable kind carries a different prefix.
+    registry_id: String,
+    registry_version: String,
 }
 
 /// Resolve a presented binding through the registry, in the run's own trace
@@ -985,6 +1011,8 @@ fn resolve_citation(
         key: binding.key.clone(),
         config_digest: binding.config_digest.clone(),
         artifact_digest,
+        registry_id: row.id.clone(),
+        registry_version: row.version.clone(),
     })
 }
 
@@ -1171,6 +1199,8 @@ pub(crate) fn advance(conn: &mut Connection, req: &Advance<'_>) -> Result<Advanc
         tier: tier_core_to_wire(tier).into(),
         actor: req.actor.to_string(),
         model_ref: citation.as_ref().map(|c| c.key.clone()),
+        model_registry_id: citation.as_ref().map(|c| c.registry_id.clone()),
+        model_registry_version: citation.as_ref().map(|c| c.registry_version.clone()),
         policy_digest: None,
         config_digest: citation.as_ref().map(|c| c.config_digest.clone()),
         pipeline_version: PIPELINE_VERSION.into(),
@@ -1382,6 +1412,8 @@ pub(crate) fn answer(conn: &mut Connection, req: &Answer<'_>) -> Result<Answered
         tier: tier_core_to_wire(tier).into(),
         actor: req.actor.to_string(),
         model_ref: None,
+        model_registry_id: None,
+        model_registry_version: None,
         policy_digest: None,
         config_digest: None,
         pipeline_version: PIPELINE_VERSION.into(),
@@ -1504,6 +1536,8 @@ pub(crate) fn gates(conn: &mut Connection, req: &Gates<'_>) -> Result<GateVerdic
         tier: tier_core_to_wire(tier).into(),
         actor: req.actor.to_string(),
         model_ref: None,
+        model_registry_id: None,
+        model_registry_version: None,
         policy_digest: None,
         config_digest: None,
         pipeline_version: PIPELINE_VERSION.into(),
@@ -1910,8 +1944,9 @@ pub(crate) fn read_run_traces(
     let mut stmt = conn
         .prepare(
             "SELECT id, run_id, seq, stage, phase, status, tier, actor, model_ref, \
-             policy_digest, config_digest, pipeline_version, budget_digest, \
-             artifact_refs_json, attestation_root, created_at \
+             model_registry_id, model_registry_version, policy_digest, config_digest, \
+             pipeline_version, budget_digest, artifact_refs_json, attestation_root, \
+             created_at \
              FROM delivery_traces WHERE run_id = ?1 ORDER BY seq LIMIT ?2",
         )
         .map_err(storage)?;
@@ -1927,13 +1962,15 @@ pub(crate) fn read_run_traces(
                 tier: r.get(6)?,
                 actor: r.get(7)?,
                 model_ref: r.get(8)?,
-                policy_digest: r.get(9)?,
-                config_digest: r.get(10)?,
-                pipeline_version: r.get(11)?,
-                budget_digest: r.get(12)?,
-                artifact_refs_json: r.get(13)?,
-                attestation_root: r.get(14)?,
-                created_at: r.get(15)?,
+                model_registry_id: r.get(9)?,
+                model_registry_version: r.get(10)?,
+                policy_digest: r.get(11)?,
+                config_digest: r.get(12)?,
+                pipeline_version: r.get(13)?,
+                budget_digest: r.get(14)?,
+                artifact_refs_json: r.get(15)?,
+                attestation_root: r.get(16)?,
+                created_at: r.get(17)?,
             })
         })
         .map_err(storage)?
@@ -3893,13 +3930,29 @@ mod tests {
         status: &str,
         artifact_digest: Option<&str>,
     ) {
+        seed_model_at(conn, id, "1", config_digest, status, artifact_digest)
+    }
+
+    /// The same seed at an EXPLICIT registry version. The version is a parameter
+    /// rather than a literal `'1'` so a fixture can pin a version that no
+    /// hard-coded value would coincidentally match — without which a pin
+    /// asserting "the version came from the resolver" passes even when the
+    /// writer substitutes a constant. That vacuity was MEASURED, not assumed.
+    fn seed_model_at(
+        conn: &Connection,
+        id: &str,
+        version: &str,
+        config_digest: &str,
+        status: &str,
+        artifact_digest: Option<&str>,
+    ) {
         // The registry's digests are BARE lowercase 64-hex (its own
         // `is_registry_lower_hex_digest` law), not `sha256:`-prefixed.
         conn.execute(
             "INSERT INTO decision_model_registry(id, version, kind, name, output_vocabulary, \
              artifact_digest, config_digest, calibration_ref, status, evaluation_refs, \
              proposed_by, approved_by, created_at, updated_at) \
-             VALUES (?1,'1',?2,'m',?3,?4,?5,NULL,?6,'[]','tester','tester',1,1)",
+             VALUES (?1,?7,?2,'m',?3,?4,?5,NULL,?6,'[]','tester','tester',1,1)",
             params![
                 id,
                 crate::workflow::registry::KIND_DETERMINISTIC_RULES,
@@ -3907,6 +3960,7 @@ mod tests {
                 artifact_digest,
                 config_digest,
                 status,
+                version,
             ],
         )
         .expect("seed a registry row");
@@ -4341,6 +4395,374 @@ mod tests {
         );
     }
 
+    /// The JOIN SUBSTRATE. A delivery trace records the model that acted as the
+    /// caller's key in the `rules:{id}` shape; the registry is keyed on the
+    /// composite `(id, version)` and its `id` is BARE. So `model_ref` alone can
+    /// never express a join to `decision_model_registry` — not for legacy rows,
+    /// not for new ones, for every row this build writes. These two columns are
+    /// the registry's own key, carried from what the resolver RETURNED.
+    ///
+    /// The load-bearing assertion is the JOIN ITSELF, read back out of storage:
+    /// a trace row joining the registry on `(model_registry_id,
+    /// model_registry_version)` must return exactly one row. A pin that only
+    /// asserted the two columns were populated would pass against a value that
+    /// joins to nothing.
+    #[test]
+    fn a_cited_trace_joins_the_registry_on_its_own_key() {
+        let mut conn = seed();
+        let digest = "b".repeat(64);
+        let config = "c".repeat(64);
+        seed_model_at(
+            &conn,
+            "mb-elastic",
+            "v7",
+            &config,
+            crate::workflow::registry::STATUS_PROMOTED,
+            Some(&digest),
+        );
+        let run = open(&mut conn, "bounded-auto");
+        let binding = ModelBinding {
+            key: "rules:mb-elastic".to_string(),
+            config_digest: config.clone(),
+        };
+        advance_with_model(&mut conn, run.run_id, 0, "design", Some(&binding))
+            .expect("the bound pass");
+
+        let (rid, rver): (String, String) = conn
+            .query_row(
+                "SELECT model_registry_id, model_registry_version FROM delivery_traces \
+                 WHERE model_ref IS NOT NULL",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("the cited trace row carries the registry key");
+        let (model_ref,): (String,) = conn
+            .query_row(
+                "SELECT model_ref FROM delivery_traces WHERE model_registry_id IS NOT NULL",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .expect("the cited row");
+
+        // THE ASSERTION THAT MATTERS, and it runs FIRST: the join is expressible
+        // and returns exactly one row. Read through the composite key, against
+        // the real registry. A pin that only asserted the two columns were
+        // populated would pass against a value that joins to nothing — which is
+        // why this leads rather than trailing the literal checks below.
+        let joined: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM delivery_traces t \
+                 JOIN decision_model_registry r \
+                   ON t.model_registry_id = r.id AND t.model_registry_version = r.version \
+                 WHERE t.model_ref IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the join runs");
+        assert_eq!(
+            joined, 1,
+            "a cited trace row joins the registry on (id, version) and the join is a KEY, \
+             not a cross-product — exactly one registry row answers"
+        );
+
+        // The pair is the registry's OWN key: bare id, and the version the
+        // resolver selected rather than a constant.
+        assert_eq!(rid, "mb-elastic", "the id is BARE — not the caller's key");
+        assert_eq!(
+            rver, "v7",
+            "the version the resolver selected, not a constant"
+        );
+
+        // And the counterfactual, which is the round's premise: the OLD column
+        // cannot express that join. This is why the two columns exist.
+        let via_model_ref: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM delivery_traces t \
+                 JOIN decision_model_registry r ON t.model_ref = r.id \
+                 WHERE t.model_ref IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the counterfactual join runs");
+        assert_eq!(
+            via_model_ref, 0,
+            "`model_ref` is the caller's `rules:`-prefixed key and the registry id is bare, \
+             so the pre-existing column CANNOT join — this is the blocker, measured, not asserted"
+        );
+
+        // `model_ref` is unchanged by this: it is on the wire and read by the
+        // agreement queue, so the redundancy is pinned rather than removed.
+        assert_eq!(
+            model_ref, "rules:mb-elastic",
+            "`model_ref` keeps the caller's key shape — it is a published field"
+        );
+    }
+
+    /// THE REDUNDANCY IS PINNED, NOT ACCIDENTAL. `model_ref` and
+    /// `model_registry_id` both name a model, so they can disagree — and when
+    /// they do, one of them is wrong. The registry key is carried from the
+    /// resolved row rather than derived by stripping the `rules:` prefix off the
+    /// caller's key, so this asserts the two agree on every real citation.
+    ///
+    /// Anti-vacuity: it reads the two columns off the SAME stored row through
+    /// the writer, not a string scan, so an unrelated earlier occurrence of the
+    /// same words cannot satisfy it.
+    #[test]
+    fn the_registry_id_is_the_bare_id_of_the_same_model_the_key_names() {
+        let mut conn = seed();
+        let digest = "b".repeat(64);
+        let config = "c".repeat(64);
+        seed_model(
+            &conn,
+            "mb-elastic",
+            &config,
+            crate::workflow::registry::STATUS_PROMOTED,
+            Some(&digest),
+        );
+        let run = open(&mut conn, "bounded-auto");
+        let binding = ModelBinding {
+            key: "rules:mb-elastic".to_string(),
+            config_digest: config.clone(),
+        };
+        advance_with_model(&mut conn, run.run_id, 0, "design", Some(&binding))
+            .expect("the bound pass");
+
+        let (model_ref, rid): (String, String) = conn
+            .query_row(
+                "SELECT model_ref, model_registry_id FROM delivery_traces \
+                 WHERE model_ref IS NOT NULL",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("the cited row");
+        // The relationship is asserted, not the literal: whichever key shape a
+        // future bindable kind uses, the id the trace stores is the registry's
+        // own id for the model its key names.
+        assert_eq!(
+            model_ref.strip_prefix("rules:"),
+            Some(rid.as_str()),
+            "the stored registry id must be the SAME model's id the caller's key names — \
+             a divergence means one of the two columns is wrong"
+        );
+    }
+
+    /// A pass with NO model binding stores NO registry key. The columns are
+    /// NULL, not empty and not a sentinel: NULL means "this trace predates or
+    /// declines citation tracking", and a fabricated value would date every
+    /// uncited trace to some model.
+    #[test]
+    fn an_uncited_trace_stores_no_registry_key() {
+        let mut conn = seed();
+        let run = open(&mut conn, "observe");
+        advance_with_model(&mut conn, run.run_id, 0, "design", None).expect("the unbound pass");
+
+        let cited: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM delivery_traces \
+                 WHERE model_registry_id IS NOT NULL OR model_registry_version IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count");
+        assert_eq!(
+            cited, 0,
+            "a pass with no binding stores NULL in both registry-key columns — never a \
+             placeholder that would look like a citation"
+        );
+    }
+
+    /// **A CEILING, asserted as measured.** `delivery_traces.id` is a content
+    /// address over `canonical_bytes`, and the registry-key columns are
+    /// deliberately NOT folded into it: doing so would re-derive every
+    /// historical row's id, which the replay gate reads as divergence and would
+    /// refuse promotion on every pre-existing run.
+    ///
+    /// The cost is real and this pin NAMES it: the address does not commit to
+    /// the citation, so rewriting the citation in place leaves `content_id`
+    /// unchanged and the replay fold does not see it. This is a stated limit of
+    /// the substrate, not a defect hidden behind a green test — the day it is
+    /// fixed, this pin fails and says what moved.
+    #[test]
+    fn the_ceiling_the_registry_key_leaves_outside_the_content_address_is_real() {
+        let mut conn = seed();
+        let digest = "b".repeat(64);
+        let config = "c".repeat(64);
+        seed_model(
+            &conn,
+            "mb-elastic",
+            &config,
+            crate::workflow::registry::STATUS_PROMOTED,
+            Some(&digest),
+        );
+        let run = open(&mut conn, "bounded-auto");
+        let binding = ModelBinding {
+            key: "rules:mb-elastic".to_string(),
+            config_digest: config.clone(),
+        };
+        advance_with_model(&mut conn, run.run_id, 0, "design", Some(&binding))
+            .expect("the bound pass");
+
+        let id: String = conn
+            .query_row(
+                "SELECT id FROM delivery_traces WHERE model_registry_id IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .expect("the cited row");
+
+        // Rewrite the citation OUT OF BAND, exactly as storage tampering would.
+        conn.execute(
+            "UPDATE delivery_traces SET model_registry_id = 'mb-TAMPERED' WHERE id = ?1",
+            params![id],
+        )
+        .expect("tamper");
+
+        // The address is UNCHANGED — this is the ceiling, demonstrated rather
+        // than described. A reader must not mistake the pin below for a
+        // guarantee that it would be caught.
+        let rebuilt = TraceRow::read_back(&conn, &id)
+            .expect("the row reads back")
+            .expect("the row exists");
+        assert_eq!(
+            rebuilt.content_id(),
+            id,
+            "CONFIRMS THE CEILING: the content address does not commit to the registry key, \
+             so an out-of-band citation rewrite is invisible to `content_id`. If this ever \
+             fails, the columns moved inside the digest and the replay fold covers them — \
+             re-read the migration's stamp note before celebrating"
+        );
+    }
+
+    /// The ADDITIVE law, exercised on a database that already has rows. A fresh
+    /// migration proves the columns are created; it does not prove they are
+    /// ADDED to a populated pre-column table without touching those rows. So
+    /// this walks the shape backwards: it migrates, **drops the two columns** to
+    /// reconstruct the previous shape exactly, writes real rows through the real
+    /// writer, and only then re-runs the migration.
+    ///
+    /// SQLite's `DROP COLUMN` is exactly the additive round's inverse, so what
+    /// is left is a populated table this release has to UPGRADE rather than
+    /// create — the case an additive round actually meets in production.
+    #[test]
+    fn the_registry_key_migration_upgrades_a_populated_pre_column_table() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        // Registration FIRST: `sqlite3_auto_extension` only reaches connections
+        // opened after it. Opening first yields a connection with no `vec0`, and
+        // this pin would then depend on whether some OTHER test in the binary had
+        // already registered — an order dependency, not a result.
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = Connection::open(dir.path().join("brain.db")).expect("open");
+        crate::migration::run_migration(&mut conn, 512).expect("first migration");
+
+        // Write the rows FIRST, through the real writer, then walk the shape
+        // backwards. The order matters: the writer names the registry-key
+        // columns, so a row cannot be produced on a table that has had them
+        // dropped. (An earlier cut of this pin dropped first and failed with
+        // "no column named model_registry_id" — the fixture was testing the
+        // wrong order.)
+        let digest = "b".repeat(64);
+        let config = "c".repeat(64);
+        seed_model_at(
+            &conn,
+            "mb-elastic",
+            "v7",
+            &config,
+            crate::workflow::registry::STATUS_PROMOTED,
+            Some(&digest),
+        );
+        let run = open(&mut conn, "bounded-auto");
+        let binding = ModelBinding {
+            key: "rules:mb-elastic".to_string(),
+            config_digest: config.clone(),
+        };
+        advance_with_model(&mut conn, run.run_id, 0, "design", Some(&binding))
+            .expect("the bound pass");
+
+        // Now back to the PREVIOUS shape: the two registry-key columns gone.
+        // The rows carry a citation, so the upgrade has to preserve `model_ref`
+        // while the new columns arrive NULL — "predates tracking", not erased.
+        conn.execute(
+            "ALTER TABLE delivery_traces DROP COLUMN model_registry_id",
+            [],
+        )
+        .expect("drop the id column");
+        conn.execute(
+            "ALTER TABLE delivery_traces DROP COLUMN model_registry_version",
+            [],
+        )
+        .expect("drop the version column");
+        let mut legacy = conn;
+        let before: i64 = count(&legacy, "SELECT COUNT(*) FROM delivery_traces");
+        assert_eq!(before, 2, "the run row and the cited phase row");
+        let (ref_before,): (Option<String>,) = legacy
+            .query_row(
+                "SELECT model_ref FROM delivery_traces WHERE model_ref IS NOT NULL",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .expect("the cited row, before the upgrade");
+        assert_eq!(
+            ref_before.as_deref(),
+            Some("rules:mb-elastic"),
+            "the row carries a real citation, so the upgrade has something to preserve"
+        );
+
+        // The upgrade.
+        crate::migration::run_migration(&mut legacy, 512).expect("re-run the migration");
+
+        let cols: i64 = legacy
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('delivery_traces') \
+                 WHERE name IN ('model_registry_id','model_registry_version')",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count the columns");
+        assert_eq!(cols, 2, "both columns are ADDED to the existing table");
+
+        let after: i64 = count(&legacy, "SELECT COUNT(*) FROM delivery_traces");
+        assert_eq!(
+            after, before,
+            "the upgrade preserves every row — an additive round rebuilds nothing, because a \
+             rebuild is the one operation that can lose rows under a crash"
+        );
+        let (kept_ref, id_after, ver_after): (String, Option<String>, Option<String>) = legacy
+            .query_row(
+                "SELECT model_ref, model_registry_id, model_registry_version \
+                 FROM delivery_traces WHERE model_ref IS NOT NULL",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .expect("the pre-existing cited row");
+        assert_eq!(
+            kept_ref, "rules:mb-elastic",
+            "the existing row's citation is untouched by the upgrade"
+        );
+        assert!(
+            id_after.is_none() && ver_after.is_none(),
+            "a row that predates the columns reads NULL in both — declared, never backfilled \
+             with a value that would falsely date it to a model"
+        );
+
+        // And the upgraded table is immediately usable: a NEW citation writes both.
+        let binding2 = ModelBinding {
+            key: "rules:mb-elastic".to_string(),
+            config_digest: config.clone(),
+        };
+        advance_with_model(&mut legacy, run.run_id, 1, "build", Some(&binding2))
+            .expect("a bound pass after the upgrade");
+        let (rid, rver): (String, String) = legacy
+            .query_row(
+                "SELECT model_registry_id, model_registry_version FROM delivery_traces \
+                 WHERE model_ref IS NOT NULL AND model_registry_id IS NOT NULL",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("the post-upgrade citation");
+        assert_eq!(rid, "mb-elastic", "the bare registry id");
+        assert_eq!(rver, "v7", "the resolved version");
+    }
+
     /// A6: a registry row that resolves but carries NO artifact digest is
     /// refused. The row exists, the name is real, and there is still nothing
     /// that says which bytes acted — so the citation is incomplete and the pass
@@ -4687,6 +5109,8 @@ mod tests {
         let row = listing["rows"][0].as_object().expect("a row object");
         for key in [
             "model_ref",
+            "model_registry_id",
+            "model_registry_version",
             "policy_digest",
             "config_digest",
             "budget_digest",
@@ -4701,9 +5125,10 @@ mod tests {
         }
         assert_eq!(
             row.len(),
-            16,
-            "the trace row carries exactly the sixteen declared columns, so the spec's closed \
-             property set is honest"
+            18,
+            "the trace row carries exactly the eighteen declared columns, so the spec's closed \
+             property set is honest (sixteen when the row carried no registry key; the \
+             model-citation round added the registry's two composite-key halves)"
         );
         // `attestation_root` is null before the first link — never a fabricated
         // address, which the spec says in prose.
@@ -4825,6 +5250,8 @@ mod tests {
             tier: "observe".into(),
             actor: "operator".into(),
             model_ref: None,
+            model_registry_id: None,
+            model_registry_version: None,
             policy_digest: None,
             config_digest: None,
             pipeline_version: PIPELINE_VERSION.into(),

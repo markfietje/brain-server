@@ -9658,6 +9658,8 @@ components:
           tier,
           actor,
           model_ref,
+          model_registry_id,
+          model_registry_version,
           policy_digest,
           config_digest,
           pipeline_version,
@@ -9679,6 +9681,21 @@ components:
         tier: { type: string, enum: [observe, propose, bounded-auto, delegated] }
         actor: { type: string }
         model_ref: { type: string, nullable: true }
+        model_registry_id:
+          type: string
+          nullable: true
+          description: >
+            The cited model's registry `id`, BARE (no `rules:` prefix), as the
+            resolver returned it — NOT derived from `model_ref`. `null` means the
+            trace carries no model citation.
+        model_registry_version:
+          type: string
+          nullable: true
+          description: >
+            The cited model's registry `version`, the second half of the
+            registry's composite key. Together with `model_registry_id` this is
+            the key that joins a trace to `decision_model_registry`. `null` means
+            the trace carries no model citation.
         policy_digest: { type: string, nullable: true }
         config_digest: { type: string, nullable: true }
         pipeline_version: { type: string }

@@ -17885,6 +17885,12 @@ mod r38_delivery {
             // of the table and not a runtime counter — a shape pin that does
             // not name it stops describing the table.
             "seq",
+            // the citation's registry key, BOTH halves: `model_ref` alone is the
+            // caller's `rules:`-prefixed key and cannot express a join to the
+            // composite-keyed registry. A shape pin that does not name them stops
+            // describing the table.
+            "model_registry_id",
+            "model_registry_version",
         ] {
             assert!(
                 trace_cols.iter().any(|c| c == col),
@@ -17991,12 +17997,12 @@ mod r38_delivery {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_24),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_25),
             "the migration literal and the ceiling const must agree on the current stamp"
         );
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.24",
+            "1.32.25",
             "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
              this binary cannot migrate"
         );
@@ -18733,12 +18739,12 @@ mod r40_attestations {
         // round; what moves is the ceiling, and it moves for both.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_24),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_25),
             "the ceiling const and the migration literal must move together"
         );
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.24",
+            "1.32.25",
             "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
              this binary cannot migrate"
         );
@@ -19534,12 +19540,14 @@ mod r41_replay {
         // The stamp moved, and moved with the table.
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.24",
-            "the release round is a schema round: the stamp moves with the table that earns it"
+            "1.32.25",
+            "the release round is a schema round: the stamp moves with the table that earns it. \
+             Later schema rounds re-pin the CURRENT stamp — the model-citation-key round moved \
+             it to 1.32.25"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_24),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_25),
         );
         // ...and the parity table the migration rehearsal walks carries the new
         // table: a rehearsal that came back with zero bindings would produce a
@@ -19983,13 +19991,13 @@ mod r42_authority_bindings {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.24",
+            "1.32.25",
             "the bindings stamp pin moves with the release round's stamp: each schema round \
              re-pins the CURRENT stamp, so a stale ceiling fails loudly here"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some("1.32.24"),
+            Some("1.32.25"),
             "what the migration stamps must be what the ceiling declares"
         );
     }
@@ -20863,7 +20871,7 @@ mod r42_authority_bindings {
             .find("CREATE TABLE IF NOT EXISTS delivery_bindings")
             .expect("the table DDL must exist in the migration's production region");
         let stamp_at = migration
-            .find("'schema_version', '1.32.24'")
+            .find("'schema_version', '1.32.25'")
             .expect("the stamp must move to the current schema round's stamp");
         assert!(
             ddl_at < stamp_at,
@@ -20872,7 +20880,7 @@ mod r42_authority_bindings {
         // The stamp's two arms stay in lockstep — the lockstep pin derives both
         // sides, and a half-edited stamp makes `refuse-newer` lie.
         assert!(
-            migration.contains("DO UPDATE SET value = '1.32.24'"),
+            migration.contains("DO UPDATE SET value = '1.32.25'"),
             "both arms of the schema_version upsert must move together"
         );
         // Rehearsal parity: the new table is walked by the migration rehearsal,
@@ -21093,21 +21101,24 @@ mod r43_releases {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.24",
-            "the release round is a schema round: the stamp moves with the table that earns it"
+            "1.32.25",
+            "the release round is a schema round: the stamp moves with the table that earns it. \
+             Each schema round re-pins the CURRENT stamp — the per-domain axis round left it at \
+             1.32.24, and the model-citation-key round moved it to 1.32.25 for the two registry-key \
+             columns on delivery_traces"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some("1.32.24"),
+            Some("1.32.25"),
         );
         let migration = src("src/migration.rs");
         assert!(
-            migration.contains("DO UPDATE SET value = '1.32.24'"),
+            migration.contains("DO UPDATE SET value = '1.32.25'"),
             "both arms of the schema_version upsert must move together"
         );
         let layout = src("src/storage_layout.rs");
         assert!(
-            layout.contains("is_newer_than_known(Some(\"1.32.24\"))"),
+            layout.contains("is_newer_than_known(Some(\"1.32.26\"))"),
             "the probe must move one ABOVE the new ceiling, or it silently tests Equal"
         );
     }
@@ -22194,18 +22205,20 @@ mod r44_outcomes {
         // tracks the CURRENT stamp rather than asserting the R44-era literal forever.
         // R57b moved it again for the trace citation's three nullable columns, R60
         // moved it again for the disproof condition's six columns on `claims`, the
-        // scope round moved it again for the seventh (`disproof_scope`), and the
-        // per-domain axis round moved it again for `knowledge_domain_versions`.
+        // scope round moved it again for the seventh (`disproof_scope`), the
+        // per-domain axis round moved it again for `knowledge_domain_versions`, and the
+        // model-citation-key round moved it again for `delivery_traces`' registry-key pair.
         assert!(
-            layout.contains("pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_24;")
-                && layout.contains("\"1.32.24\""),
+            layout.contains("pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_25;")
+                && layout.contains("\"1.32.25\""),
             "the schema stamp is the lockstep triple: LATEST_KNOWN_SCHEMA must name the \
              newest SCHEMA_VERSION_* const and that const must carry the same literal. R44 \
              shipped no stamp; R51 moved it to 1.32.20 for the additive knowledge_version \
              column, R57b moved it to 1.32.21 for the decision trace's model citation, \
              R60 moved it to 1.32.22 for the disproof condition's six additive columns on \
-             `claims`, the scope round moved it to 1.32.23 for the seventh, and the per-domain \
-             axis round moved it to 1.32.24 for the domain version table."
+             `claims`, the scope round moved it to 1.32.23 for the seventh, the per-domain \
+             axis round moved it to 1.32.24 for the domain version table, and the \
+             model-citation-key round moved it to 1.32.25 for the two registry-key columns."
         );
         let rehearse = src("src/bin/brain_migrate_rehearse.rs");
         assert!(

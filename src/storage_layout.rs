@@ -279,6 +279,16 @@ pub const SCHEMA_VERSION_V1_32_23: &str = "1.32.23";
 /// the `embedding_dim` stamp's `ON CONFLICT(key) DO UPDATE`. One additive
 /// table — no column dropped, none rebuilt.
 pub const SCHEMA_VERSION_V1_32_24: &str = "1.32.24";
+/// The delivery trace's model citation, as the registry's OWN key:
+/// `delivery_traces` gains `model_registry_id` / `model_registry_version`, named
+/// exactly as `decision_run_traces` and `decision_evaluation_runs` already name
+/// them, so a trace and a decision run join `decision_model_registry` with no
+/// translation layer. The existing `model_ref` is the CALLER's key in the
+/// `rules:{id}` shape and the registry's `id` is bare, so `model_ref` alone can
+/// never express the join; these two are written from what the resolver
+/// RETURNED, never re-derived. Two additive NULLable columns — no column
+/// dropped, none rebuilt, and neither inside the trace's content address.
+pub const SCHEMA_VERSION_V1_32_25: &str = "1.32.25";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
@@ -300,7 +310,7 @@ pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 /// Security posture: a source DB stamped NEWER than this is refused loudly
 /// ([`refuse_newer_schema`]) — migrating *down* would silently drop columns
 /// the newer release added, i.e. data loss dressed as a migration.
-pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_24;
+pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_25;
 
 /// Numeric dotted-version compare (std-only, no semver dependency).
 /// Non-numeric components are skipped (the `schema_ge` precedent in the
@@ -756,13 +766,14 @@ mod tests {
         // the citation round moved the ceiling to 1.32.21, so the probe moved to 1.32.22, and the
         // the disproof round moved the ceiling to 1.32.22, so the probe moved to 1.32.23, and the
         // the scope round moved the ceiling to 1.32.23, so the probe moved to 1.32.24, and the
-        // per-domain axis round moved the ceiling to 1.32.24, so the probe moved to 1.32.25.
+        // per-domain axis round moved the ceiling to 1.32.24, so the probe moved to 1.32.25, and the
+        // model-citation-key round moved the ceiling to 1.32.25, so the probe moved to 1.32.26.
         // A probe
         // pinned AT the ceiling silently tests `Equal`, not `Greater` — the assertion
         // would keep passing while a NEWER-schema database was blessed instead of
         // refused, which is the one failure this function exists to prevent.
-        assert!(is_newer_than_known(Some("1.32.25")));
-        assert!(!is_newer_than_known(Some("1.32.24")));
+        assert!(is_newer_than_known(Some("1.32.26")));
+        assert!(!is_newer_than_known(Some("1.32.25")));
         assert!(!is_newer_than_known(Some("1.32.9")));
         assert!(!is_newer_than_known(Some("1.28.9")));
     }

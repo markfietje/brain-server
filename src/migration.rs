@@ -3086,9 +3086,63 @@ pub fn run_migration_with_store_dim(
         [],
     )?;
 
+    // ── v1.32.25 "Ref": the model citation's REGISTRY KEY, both halves ────
+    // `delivery_traces.model_ref` is the single nullable TEXT a delivery run
+    // writes when it resolves a model citation, and it is written from the
+    // CALLER's key in the `rules:{id}` config-key shape. The model registry is
+    // keyed on the composite `(id, version)`, and its `id` is BARE — the
+    // resolver strips the prefix to get it. So the registry key a trace cites is
+    // not derivable from the column that records it: `model_ref` alone can never
+    // join to the registry, and the version it names is nowhere on the row.
+    //
+    // These two columns make the citation's registry key STORED rather than
+    // reconstructed. They are written from what the resolver RETURNED — never
+    // re-derived by stripping the prefix off `model_ref`, which is the re-
+    // derivation law the sibling citation columns were added under and which a
+    // second bindable kind would break.
+    //
+    // Names are the sibling table's names (`decision_run_traces` /
+    // `decision_evaluation_runs`), so a trace joins the registry with no
+    // translation layer. No foreign key: the house style declares none, and a
+    // composite FK would need the parent key rebuilt.
+    //
+    // Both NULLable with NO default — NULL means "predates citation tracking",
+    // and a DEFAULT would falsely date every historical row to a model. Guarded
+    // per column by `pragma_table_info`, so re-running is a no-op. No column is
+    // dropped and no table is rebuilt.
+    //
+    // DELIBERATELY NOT PART OF THE CONTENT ADDRESS. `delivery_traces.id` is a
+    // digest over the stored columns, and folding these two in would re-derive
+    // every historical row's id — which the replay gate reads as divergence and
+    // would refuse promotion on every pre-existing run. The ceiling this leaves
+    // is real: the address does not commit to the citation, so a citation
+    // rewritten in place is not detected by the replay fold. Pinned as a
+    // ceiling where it is measured.
+    for (col, def) in [
+        ("model_registry_id", "TEXT"),
+        ("model_registry_version", "TEXT"),
+    ] {
+        let present: bool = db
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*) FROM pragma_table_info('delivery_traces') WHERE name='{col}'"
+                ),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(
+                &format!("ALTER TABLE delivery_traces ADD COLUMN {col} {def}"),
+                [],
+            )?;
+        }
+    }
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.24')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.24';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.25')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.25';",
         [],
     )?;
 
