@@ -14,6 +14,11 @@
 //!
 //! Error `Display` carries the exact pre-move message text; the handler
 //! wraps it in `HandlerError::internal` unchanged.
+//!
+//! The per-domain knowledge-version axis (the publication bump + the
+//! current-version read) lives in the `brain-evolve-core` crate — same SQL,
+//! with the base version passed in as a parameter rather than read from
+//! config.
 
 use crate::service::review::GateError;
 
@@ -38,77 +43,6 @@ impl std::fmt::Display for KcsStateError {
             KcsStateError::Failed(m) => f.write_str(m),
         }
     }
-}
-
-/// Bump the domain of the article named by `article_id`, inside the CALLER'S
-/// transaction — the per-domain axis a case's `knowledge_version` is recorded
-/// against.
-///
-/// **The domain is resolved HERE, from the article's own `knowledge.domain`,
-/// and never accepted from the caller.** That is deliberate: the publish branch
-/// audits under the literal tenant `"global"`, which is an audit label and not a
-/// domain, so a caller-supplied domain would let one shared counter wear a
-/// per-domain name. Taking the article id alone makes that unrepresentable
-/// rather than merely discouraged — there is no argument to get wrong.
-///
-/// **Monotonic by construction, and by definition.** The KCS state machine has
-/// a BACKWARD edge — `retract` moves `published → approved` — so counting state
-/// transitions would be confidently wrong: a retraction would tell a reopened
-/// case its basis had moved when the world had in fact reverted. This therefore
-/// reads the CURRENT version and writes current+1, and callers must invoke it
-/// only on a publication, never on a retraction.
-///
-/// A domain with no row is at [`crate::config::KNOWLEDGE_BASE_VERSION`] (the
-/// pre-axis base), so the first publication of a domain writes 2 — the version
-/// that publication itself moved the basis to. This never returns the base
-/// version as a result of a bump.
-pub fn bump_article_knowledge_version(
-    conn: &Connection,
-    article_id: i64,
-    bumped_by: &str,
-    now: i64,
-) -> Result<i64, GateError> {
-    let domain: String = conn
-        .query_row(
-            "SELECT domain FROM knowledge WHERE id = ?1",
-            rusqlite::params![article_id],
-            |r| r.get(0),
-        )
-        .map_err(|e| GateError::Database(format!("article domain read failed: {e}")))?;
-    conn.execute(
-        "INSERT INTO knowledge_domain_versions(domain, version, bumped_at, bumped_by, bumped_article)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(domain) DO UPDATE SET
-             version        = knowledge_domain_versions.version + 1,
-             bumped_at      = ?3,
-             bumped_by      = ?4,
-             bumped_article = ?5",
-        rusqlite::params![
-            domain,
-            crate::config::KNOWLEDGE_BASE_VERSION + 1,
-            now,
-            bumped_by,
-            article_id
-        ],
-    )
-    .map_err(|e| GateError::Database(format!("domain version bump failed: {e}")))?;
-    Ok(current_domain_knowledge_version(conn, &domain))
-}
-
-/// A domain's CURRENT version, or the base version when it has no row.
-///
-/// A missing row is NOT version 0: zero would falsely date a never-published
-/// domain to "version zero" and make it comparable to the `NULL` sentinel that
-/// means "predates tracking". Cross-domain comparison is meaningless by
-/// construction; a case's stored version is comparable to its OWN domain's
-/// current version and to nothing else.
-pub fn current_domain_knowledge_version(conn: &Connection, domain: &str) -> i64 {
-    conn.query_row(
-        "SELECT version FROM knowledge_domain_versions WHERE domain = ?1",
-        rusqlite::params![domain],
-        |r| r.get::<_, i64>(0),
-    )
-    .unwrap_or(crate::config::KNOWLEDGE_BASE_VERSION)
 }
 
 /// The KCS article state CAS, inside the caller's tx: publish (state

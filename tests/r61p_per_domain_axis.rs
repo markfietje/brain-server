@@ -85,8 +85,14 @@ fn bump(conn: &Connection, domain: &str, article_id: i64) -> i64 {
         actual, domain,
         "fixture bug: article {article_id} is in {actual}, not {domain}"
     );
-    brain_server::service::gate::bump_article_knowledge_version(conn, article_id, "tester", 1_000)
-        .expect("bump")
+    brain_evolve_core::bump_article_knowledge_version(
+        conn,
+        article_id,
+        "tester",
+        1_000,
+        brain_server::config::KNOWLEDGE_BASE_VERSION,
+    )
+    .expect("bump")
 }
 
 /// **R61p.1 (red-proof target) — a publication bumps the axis.**
@@ -257,7 +263,11 @@ fn r61p_the_guard_is_not_vacuous() {
 
     // A domain nobody published stays absent — reading it is not a bump.
     assert_eq!(
-        brain_server::service::gate::current_domain_knowledge_version(&conn, "never-published"),
+        brain_evolve_core::current_domain_knowledge_version(
+            &conn,
+            "never-published",
+            brain_server::config::KNOWLEDGE_BASE_VERSION
+        ),
         brain_server::config::KNOWLEDGE_BASE_VERSION,
         "a domain with no row is at the BASE version, never 0 — 0 would falsely date it to \
          version zero and collide with the NULL 'predates tracking' sentinel"
@@ -288,12 +298,20 @@ fn r61p_a_missing_row_is_the_base_version_never_zero() {
             "{domain} has no row before its first publication"
         );
         assert_eq!(
-            brain_server::service::gate::current_domain_knowledge_version(&conn, domain),
+            brain_evolve_core::current_domain_knowledge_version(
+                &conn,
+                domain,
+                brain_server::config::KNOWLEDGE_BASE_VERSION
+            ),
             brain_server::config::KNOWLEDGE_BASE_VERSION,
             "{domain} reads as the base version"
         );
         assert_ne!(
-            brain_server::service::gate::current_domain_knowledge_version(&conn, domain),
+            brain_evolve_core::current_domain_knowledge_version(
+                &conn,
+                domain,
+                brain_server::config::KNOWLEDGE_BASE_VERSION
+            ),
             0,
             "zero is the forbidden sentinel"
         );
@@ -319,7 +337,11 @@ fn r61p_a_new_case_records_its_domains_current_version() {
             "troubleshoot",
             "{}",
             1i64,
-            brain_server::service::gate::current_domain_knowledge_version(&conn, "acme")
+            brain_evolve_core::current_domain_knowledge_version(
+                &conn,
+                "acme",
+                brain_server::config::KNOWLEDGE_BASE_VERSION
+            )
         ],
     );
     assert_eq!(run.expect("open_run"), 1);
@@ -337,7 +359,11 @@ fn r61p_a_new_case_records_its_domains_current_version() {
     );
 
     // A different domain is unaffected — the recorded value is its own domain's.
-    let other: i64 = brain_server::service::gate::current_domain_knowledge_version(&conn, "globex");
+    let other: i64 = brain_evolve_core::current_domain_knowledge_version(
+        &conn,
+        "globex",
+        brain_server::config::KNOWLEDGE_BASE_VERSION,
+    );
     assert_eq!(other, 1, "an unpublished domain's cases record the base");
 }
 
@@ -374,11 +400,11 @@ fn r61p_legacy_runs_are_null_not_zero() {
 fn r61p_nothing_branches_on_the_delta() {
     let gate = read("src/handlers/gate.rs");
     let state = read("src/workflow/state.rs");
-    let svc = read("src/service/gate.rs");
+    let core = read("crates/brain-evolve-core/src/lib.rs");
     for (name, src) in [
         ("handlers/gate.rs", &gate),
         ("state.rs", &state),
-        ("service/gate.rs", &svc),
+        ("brain-evolve-core/src/lib.rs", &core),
     ] {
         assert!(
             !src.contains("if delta") && !src.contains("if basis_moved"),
@@ -613,7 +639,7 @@ fn r61p_one_bump_implementation() {
          twice per publication."
     );
     assert_eq!(
-        read("src/service/gate.rs")
+        read("crates/brain-evolve-core/src/lib.rs")
             .lines()
             .filter(|l| l
                 .trim_start()
@@ -645,7 +671,7 @@ fn r61p_the_domain_is_never_caller_supplied() {
          shared counter wearing a per-domain name."
     );
 
-    let svc = read("src/service/gate.rs");
+    let svc = read("crates/brain-evolve-core/src/lib.rs");
     let sig = svc
         .lines()
         .skip_while(|l| !l.contains("pub fn bump_article_knowledge_version"))
@@ -660,5 +686,39 @@ fn r61p_the_domain_is_never_caller_supplied() {
     assert!(
         svc.contains("SELECT domain FROM knowledge WHERE id = ?1"),
         "the core must resolve the domain from the ARTICLE's own row"
+    );
+}
+
+/// **R5 — the crate is CONSUMED, not scaffolded (the R59 anti-dead-vertical
+/// law).** A `*-core` crate that nothing reaches is the R59 defect with a new
+/// name, and the round fails on it. Machine-checked both ways: the server's
+/// manifest declares the path edge, and cargo's OWN resolved graph
+/// (`cargo tree --invert`, run from the server root) names `brain-server`
+/// above the crate.
+#[test]
+fn r61p_the_evolve_core_is_consumed_not_scaffolded() {
+    let manifest = read("Cargo.toml");
+    assert!(
+        manifest.contains("brain-evolve-core = { path = \"crates/brain-evolve-core\" }"),
+        "the server must declare the brain-evolve-core path edge — this is the \
+         consumption the R59 law demands, and exactly what R5.1's red-proof \
+         removes"
+    );
+    let out = std::process::Command::new("cargo")
+        .args(["tree", "--invert", "brain-evolve-core"])
+        .current_dir(crate_root())
+        .output()
+        .expect("cargo tree must be runnable from the server root");
+    assert!(
+        out.status.success(),
+        "cargo tree --invert brain-evolve-core must succeed. stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let tree = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        tree.contains("brain-server"),
+        "cargo tree --invert brain-evolve-core must name brain-server as a consumer — \
+         a crate nothing reaches is the R59 dead-vertical defect with a new name. \
+         Tree:\n{tree}"
     );
 }

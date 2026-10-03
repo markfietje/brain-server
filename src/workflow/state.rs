@@ -244,7 +244,11 @@ pub(crate) fn open_run(
     state_json: &str,
     now: i64,
 ) -> rusqlite::Result<i64> {
-    let knowledge_version = crate::service::gate::current_domain_knowledge_version(conn, domain);
+    let knowledge_version = brain_evolve_core::current_domain_knowledge_version(
+        conn,
+        domain,
+        crate::config::KNOWLEDGE_BASE_VERSION,
+    );
     conn.execute(
         "INSERT INTO workflow_runs(domain, kind, state_json, state_revision, status, created_at, updated_at, knowledge_version)
          VALUES (?1, ?2, ?3, 0, 'active', ?4, ?4, ?5)",

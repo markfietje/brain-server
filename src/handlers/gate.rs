@@ -922,13 +922,27 @@ pub async fn approve_proposal(
             // resolves the article's own `knowledge.domain`, so no caller can hand
             // this a shared counter wearing a per-domain name.
             if action == "publish" {
-                crate::service::gate::bump_article_knowledge_version(
+                // The bump lives in `brain-evolve-core` (extracted verbatim
+                // from service::gate). The crate cannot name `GateError` (that
+                // would be a cycle), so the Database→Database mapping happens
+                // HERE — the standard extraction pattern. `base` is PASSED,
+                // never copied: the crate holds no base-version constant of its
+                // own.
+                brain_evolve_core::bump_article_knowledge_version(
                     &tx,
                     knowledge_id,
                     principal_to_owner(&principal.0).as_deref().unwrap_or("api"),
                     now_ts,
+                    crate::config::KNOWLEDGE_BASE_VERSION,
                 )
-                .map_err(|e| HandlerError::internal(e.to_string()))?;
+                .map_err(|e| {
+                    let gate = match e {
+                        brain_evolve_core::EvolveError::Database(m) => {
+                            crate::service::review::GateError::Database(m)
+                        }
+                    };
+                    HandlerError::internal(gate.to_string())
+                })?;
             }
             crate::audit::record_tenant(
                 &tx,

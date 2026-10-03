@@ -1,0 +1,14 @@
+[package]
+name = "brain-evolve-core"
+version = "1.29.2"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "The knowledge-version axis core: the per-domain version bump at publication and the current-version read a case's knowledge_version is recorded against. Extracted verbatim from the server's service::gate; the base version is a PARAMETER (the crate holds no copy) and the crate holds no DDL — the server's migration owns the table."
+publish = false
+
+[dependencies]
+# rusqlite ONLY, matching the version legal-rules-db pins in this workspace.
+# The server's root manifest locks the same 0.40.1 + bundled, so the path edge
+# adds one [[package]] entry to each lockfile and ZERO registry entries.
+rusqlite = { version = "0.40.1", features = ["bundled"] }

@@ -390,8 +390,10 @@ fn r48_adds_no_table_no_stamp_no_dependency() {
         .collect();
     assert_eq!(
         names.len(),
-        52,
-        "the dependency count is 52 — R48 adds no crate (found {}: {names:?})",
+        53,
+        "the dependency count is 53 — R48 added no crate; each later round that legitimately \
+         adds one re-pins the ceiling (the knowledge-version axis extraction moved it \
+         52 → 53 with the brain-evolve-core workspace path edge) (found {}: {names:?})",
         names.len()
     );
     // the round's completeness half: the guard must not pass on an empty round

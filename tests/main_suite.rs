@@ -20825,7 +20825,10 @@ mod r42_authority_bindings {
     /// the evidence file. (An earlier draft of this pin named specific crates
     /// and failed against the tree for flagging `reqwest`, which shipped long
     /// before this round — a pin that cannot distinguish "added now" from
-    /// "already here" is a pin that reports the wrong thing.)
+    /// "already here" is a pin that reports the wrong thing.) Re-pinned
+    /// 52 → 53 by the knowledge-version axis extraction (R5): brain-evolve-core
+    /// joins as a workspace path edge, rusqlite 0.40.1 already locked at this
+    /// root, so zero new registry edges.
     #[test]
     fn delivery_r42_adds_no_dependency() {
         let manifest = src("Cargo.toml");
@@ -20842,9 +20845,11 @@ mod r42_authority_bindings {
             .collect();
         assert_eq!(
             names.len(),
-            52,
-            "this round adds a table, two adapters and two routes using crates that are \
-             ALREADY dependencies; it must add none. New entries: {:?}",
+            53,
+            "the dependency ceiling is 53 — the knowledge-version axis extraction (R5) moved \
+             it from 52 by adding brain-evolve-core as a workspace path edge; a round that \
+             adds a crate moves this number, and the lockfile diff is the other half of the \
+             proof. Tail entries: {:?}",
             &names[45..]
         );
     }
@@ -21593,8 +21598,9 @@ mod r43_releases {
 
     // ── 7. the standing guards, restated for the new surface ────────────────
 
-    /// Zero new dependencies — the crate count is 51 registry crates plus the one
-    /// workspace path edge; the
+    /// Zero new dependencies — the crate count is 46 registry crates plus seven
+    /// workspace path edges (the knowledge-version axis extraction added the
+    /// seventh, re-pinning this ceiling 52 → 53); the
     /// lockfile half of the proof is the git diff in the evidence file.
     #[test]
     fn delivery_r43_adds_no_dependency() {
@@ -21613,8 +21619,9 @@ mod r43_releases {
             .collect();
         assert_eq!(
             names.len(),
-            52,
-            "the dependency count is 52 — the release round needs no new crate beyond the one workspace path edge \
+            53,
+            "the dependency count is 53 — the knowledge-version axis extraction (R5) moved the \
+             ceiling from 52 by adding brain-evolve-core as a workspace path edge \
              (found {names:?})"
         );
     }
@@ -22220,8 +22227,10 @@ mod r44_outcomes {
             .collect();
         assert_eq!(
             names.len(),
-            52,
-            "the dependency count is 52 — the read model needs no new crate beyond the one workspace path edge \
+            53,
+            "the dependency count is 53 — the knowledge-version axis extraction (R5) moved the \
+             ceiling from 52 by adding brain-evolve-core as a workspace path edge; the read \
+             model itself needs no new crate \
              (found {names:?})"
         );
         // The completeness half: the guard must not pass on an empty round.

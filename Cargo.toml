@@ -118,6 +118,14 @@ brain-delivery-core = { path = "crates/brain-delivery-core" }
 # carries both as members and must not move).
 brain-consensus-core = { path = "crates/brain-consensus-core" }
 brain-executor-core = { path = "crates/brain-executor-core" }
+# The knowledge-version axis core: the per-domain version bump at publication
+# and the current-version read a case's `knowledge_version` is recorded against
+# (the functions and their SQL moved verbatim from
+# service::gate). The BASE version stays in the server's config and is passed
+# as a parameter; the crate holds no copy and no DDL. Path edge only: rusqlite
+# 0.40.1 is already locked at this root, so this adds one [[package]] entry
+# and zero registry entries to the lockfile.
+brain-evolve-core = { path = "crates/brain-evolve-core" }
 # Core Embedding
 model2vec-rs = "0.3"
 # v1.28 "Caliber": the neural-tier runtime (BGE-M3 dense+sparse+colbert +

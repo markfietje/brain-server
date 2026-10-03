@@ -73,6 +73,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "brain-evolve-core"
+version = "1.29.2"
+dependencies = [
+ "rusqlite",
+]
+
+[[package]]
 name = "brain-executor-core"
 version = "1.27.29"
 dependencies = [

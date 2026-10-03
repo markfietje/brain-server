@@ -21,6 +21,7 @@ members = [
     "brain-executor-core",
     "brain-delivery-core",
     "brain-evidence-core",
+    "brain-evolve-core",
     "brain-troubleshoot-core",
     "legal-rules-db",
 ]
