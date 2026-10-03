@@ -162,6 +162,12 @@ impl RoutedCase {
 /// table would be a second way to declare a queue, and two ways is how a
 /// vocabulary drifts.
 ///
+/// **The queue id is the proposal's `content`.** The governed surface already has
+/// a column for the thing being proposed and this reads that one, rather than a
+/// JSON payload column that [`crate::service::review::insert_proposal`] does not
+/// write — a declaration could never be created, and this query would fail against
+/// every migrated database.
+///
 /// **This is the anti-invention seam.** There is no class→queue map anywhere in
 /// this module or the core behind it. A queue becomes routable when the taxonomy
 /// declares it, and a class without a declaration escalates to a human — which is
@@ -173,13 +179,26 @@ const QUEUE_DECLARATION_KIND: &str = "queue_declaration";
 /// a verdict for any case whose queue is declared. It bounds the receipt.
 const MAX_DECLARED_QUEUES: usize = 256;
 
+/// The shape a queue id must have to be usable as a destination.
+///
+/// **Bounded and closed on purpose.** A declaration is operator- or agent-authored
+/// text that has cleared the governed surface, and it names a queue a system will
+/// route real work to — so the read side refuses anything that is not a short
+/// graphic token. A queue id carrying whitespace, a newline or a control character
+/// is not a queue id, and reading it as one would put unfiltered text into a routing
+/// receipt.
+const MAX_QUEUE_ID_BYTES: usize = 64;
+
+fn queue_id_is_well_formed(id: &str) -> bool {
+    !id.is_empty() && id.len() <= MAX_QUEUE_ID_BYTES && id.bytes().all(|b| b.is_ascii_graphic())
+}
+
 fn declared_queues(conn: &Connection, domain: &str) -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT DISTINCT json_extract(payload_json, '$.queue')
+            "SELECT DISTINCT content
              FROM proposals
              WHERE domain = ?1 AND kind = ?2 AND status = 'approved'
-               AND json_extract(payload_json, '$.queue') IS NOT NULL
              ORDER BY 1 LIMIT ?3",
         )
         .map_err(|e| e.to_string())?;
@@ -191,7 +210,13 @@ fn declared_queues(conn: &Connection, domain: &str) -> Result<Vec<String>, Strin
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for row in rows {
-        out.push(row.map_err(|e| e.to_string())?);
+        let id = row.map_err(|e| e.to_string())?;
+        // A malformed declaration is not a queue. It is skipped rather than
+        // refused: the whole vocabulary is read here, and one bad row must not
+        // make every other declared queue unroutable.
+        if queue_id_is_well_formed(&id) && !out.contains(&id) {
+            out.push(id);
+        }
     }
     Ok(out)
 }
@@ -255,11 +280,17 @@ mod tests {
 
     fn conn() -> Connection {
         let c = rusqlite::Connection::open_in_memory().expect("in-memory");
+        // The REAL proposals schema, as `migration.rs` defines it. Building a
+        // fixture that invents a column is how a query against a column nothing
+        // writes ships green: the fixture stops testing the shipped shape.
         c.execute_batch(
             "CREATE TABLE proposals(
-                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                 domain TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL,
-                 payload_json TEXT NOT NULL DEFAULT '{}');
+                 id INTEGER PRIMARY KEY, kind TEXT NOT NULL DEFAULT 'fact',
+                 content TEXT NOT NULL, source TEXT, authority REAL,
+                 observed_at INTEGER, novelty REAL NOT NULL, conflict_with INTEGER,
+                 salience REAL NOT NULL DEFAULT 0.5,
+                 status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL,
+                 decided_at INTEGER, domain TEXT NOT NULL DEFAULT 'global');
              CREATE TABLE shifts(
                  id INTEGER PRIMARY KEY AUTOINCREMENT,
                  domain TEXT NOT NULL, site TEXT NOT NULL,
@@ -273,12 +304,13 @@ mod tests {
         c
     }
 
-    /// Declare a queue through the governed proposal surface.
+    /// Declare a queue through the governed proposal surface. The queue id IS
+    /// the proposal's content — the column the governed writer actually fills.
     fn declare(c: &Connection, domain: &str, queue: &str) {
         c.execute(
-            "INSERT INTO proposals(domain, kind, status, payload_json)
-             VALUES (?1, 'queue_declaration', 'approved', json_object('queue', ?2))",
-            rusqlite::params![domain, queue],
+            "INSERT INTO proposals(kind, content, novelty, status, created_at, domain)
+             VALUES ('queue_declaration', ?1, 0.5, 'approved', 0, ?2)",
+            rusqlite::params![queue, domain],
         )
         .expect("seed declaration");
     }
@@ -321,10 +353,21 @@ mod tests {
     #[test]
     fn an_unapproved_declaration_is_not_a_queue() {
         let c = conn();
+        c.execute_batch(
+            "CREATE TABLE IF NOT EXISTS shifts(
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 domain TEXT NOT NULL, site TEXT NOT NULL,
+                 tz TEXT NOT NULL DEFAULT 'UTC',
+                 start_epoch INTEGER NOT NULL, end_epoch INTEGER NOT NULL,
+                 overlap_minutes INTEGER NOT NULL DEFAULT 0,
+                 roster_json TEXT NOT NULL DEFAULT '[]',
+                 created_at INTEGER NOT NULL);",
+        )
+        .expect("schema");
         // The governance surface: a proposal nobody approved declares nothing.
         c.execute(
-            "INSERT INTO proposals(domain, kind, status, payload_json)
-             VALUES ('care', 'queue_declaration', 'pending', json_object('queue', 'Q-CARE-INTAKE'))",
+            "INSERT INTO proposals(kind, content, novelty, status, created_at, domain)
+             VALUES ('queue_declaration', 'Q-CARE-INTAKE', 0.5, 'pending', 0, 'care')",
             [],
         )
         .expect("seed");

@@ -67,16 +67,23 @@ fn the_routing_seam_routes_a_case_and_escalates_an_undeclared_one() {
     use brain_server::workflow::routing::RoutingClass;
 
     let conn = rusqlite::Connection::open_in_memory().expect("in-memory");
+    // The REAL proposals schema, as `migration.rs` defines it. A fixture that
+    // invents a column is a fixture that cannot catch a query against a column
+    // nothing writes — which is exactly how this seam shipped broken.
     conn.execute_batch(
         "CREATE TABLE proposals(
-             id INTEGER PRIMARY KEY AUTOINCREMENT,
-             domain TEXT NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL,
-             payload_json TEXT NOT NULL DEFAULT '{}');",
+             id INTEGER PRIMARY KEY, kind TEXT NOT NULL DEFAULT 'fact',
+             content TEXT NOT NULL, source TEXT, authority REAL,
+             observed_at INTEGER, novelty REAL NOT NULL, conflict_with INTEGER,
+             salience REAL NOT NULL DEFAULT 0.5,
+             status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL,
+             decided_at INTEGER, domain TEXT NOT NULL DEFAULT 'global');",
     )
     .expect("schema");
+    // The queue id IS the proposal's content.
     conn.execute(
-        "INSERT INTO proposals(domain, kind, status, payload_json)
-         VALUES ('care', 'queue_declaration', 'approved', json_object('queue', 'Q-CARE-INTAKE'))",
+        "INSERT INTO proposals(kind, content, novelty, status, created_at, domain)
+         VALUES ('queue_declaration', 'Q-CARE-INTAKE', 0.5, 'approved', 0, 'care')",
         [],
     )
     .expect("seed");
@@ -354,6 +361,164 @@ fn the_routing_seam_has_a_production_caller() {
          calls it. Either the caller is an orphan (dead code), or the dispatch entry is \
          missing. Both read identically to a deleted file."
     );
+}
+
+/// The seam's declaration query runs against the SHIPPED schema.
+///
+/// **This is the pin whose absence let a broken seam ship green.** The read query
+/// named `proposals.payload_json`, a column `migration.rs` never creates and
+/// `service::review::insert_proposal` never writes. It was invisible because every
+/// fixture that exercised the seam **invented the column** — so 3100+ tests agreed
+/// with each other and none of them agreed with a real database.
+///
+/// The seam is now driven here against the actual `migration.rs` column list, and
+/// the read must succeed and route. A fixture that restates the schema is a
+/// fixture that can only ever confirm itself.
+#[test]
+fn the_declaration_read_runs_against_the_shipped_schema() {
+    use brain_server::service::routing::{HUMAN_ESCALATION_QUEUE, route_case};
+    use brain_server::workflow::routing::RoutingClass;
+
+    // The columns `migration.rs` actually creates, read from the migration itself
+    // rather than restated here — a second copy is what this pin exists to refuse.
+    let migration = common::code_only(&read("src/migration.rs"));
+    let start = migration
+        .find("CREATE TABLE IF NOT EXISTS proposals")
+        .expect("the proposals table must be declared in the migration");
+    let body = &migration[start..];
+    // The statement ends at its OWN closing paren — the column list contains none,
+    // but slice to the terminator that closes the statement rather than the first
+    // one in the file. The `)` is INCLUDED: the DDL is applied as SQL.
+    let end = body
+        .find("\n         );\",")
+        .or_else(|| body.find("\n         );"))
+        .expect("the proposals DDL must close");
+    let ddl = format!("{})\n", &body[..end]);
+    // `domain` arrives by a later ALTER, not in the base DDL — so its ABSENCE
+    // here is the point, and asserting both halves keeps the fixture honest about
+    // which columns come from where.
+    assert!(
+        ddl.contains("content") && !ddl.contains("domain"),
+        "the proposals DDL shape moved: a base-DDL column set this fixture adds by ALTER has \
+         moved into (or out of) the base statement, and the ALTER list below is now wrong"
+    );
+
+    let conn = rusqlite::Connection::open_in_memory().expect("in-memory");
+    conn.execute_batch(&ddl)
+        .expect("the shipped DDL must apply");
+    for (col, def) in [
+        ("lint_json", "TEXT"),
+        ("domain", "TEXT NOT NULL DEFAULT 'global'"),
+    ] {
+        conn.execute(&format!("ALTER TABLE proposals ADD COLUMN {col} {def}"), [])
+            .expect("the additive columns the migration adds");
+    }
+    conn.execute(
+        "INSERT INTO proposals(kind, content, novelty, status, created_at, domain)
+         VALUES ('queue_declaration', 'Q-CARE-INTAKE', 0.5, 'approved', 0, 'care')",
+        [],
+    )
+    .expect("seed");
+
+    // The read must SUCCEED — before the fix this raised
+    // `no such column: payload_json` and the verb exited 1.
+    let routed = route_case(
+        &conn,
+        "care",
+        RoutingClass::BusinessProcess,
+        Some("Q-CARE-INTAKE"),
+        None,
+    )
+    .expect("the seam must read the shipped schema, not a fixture of its own imagining");
+    assert_eq!(routed.queue(), "Q-CARE-INTAKE");
+    assert!(!routed.is_escalated());
+    assert_eq!(routed.declared_queues, vec!["Q-CARE-INTAKE".to_string()]);
+
+    // And the escalation half, so the pin is not satisfied by a query that
+    // always answers "declared".
+    let escalated = route_case(
+        &conn,
+        "care",
+        RoutingClass::BusinessProcess,
+        Some("Q-NOT-DECLARED"),
+        None,
+    )
+    .expect("escalation path");
+    assert_eq!(escalated.queue(), HUMAN_ESCALATION_QUEUE);
+}
+
+/// A declaration that is not a queue id is not a queue.
+///
+/// The queue id is operator- or agent-authored text that cleared the governed
+/// surface, and it names a destination real work routes to — so the read side
+/// refuses anything that is not a short graphic token. Without this, a declaration
+/// carrying a newline or an unbounded string rides into the routing receipt.
+#[test]
+fn a_malformed_declaration_is_not_a_queue() {
+    use brain_server::service::routing::route_case;
+    use brain_server::workflow::routing::RoutingClass;
+
+    let conn = rusqlite::Connection::open_in_memory().expect("in-memory");
+    conn.execute_batch(
+        "CREATE TABLE proposals(
+             id INTEGER PRIMARY KEY, kind TEXT NOT NULL DEFAULT 'fact',
+             content TEXT NOT NULL, source TEXT, authority REAL,
+             observed_at INTEGER, novelty REAL NOT NULL, conflict_with INTEGER,
+             salience REAL NOT NULL DEFAULT 0.5,
+             status TEXT NOT NULL DEFAULT 'pending', created_at INTEGER NOT NULL,
+             decided_at INTEGER, domain TEXT NOT NULL DEFAULT 'global');",
+    )
+    .expect("schema");
+    for bad in [
+        "Q-CARE\nINJECTED",  // a newline splits a receipt line
+        "Q-CARE WITH SPACE", // not a token
+        "",                  // the empty string is not a destination
+        &"Q-".repeat(200),   // unbounded length
+    ] {
+        conn.execute(
+            "INSERT INTO proposals(kind, content, novelty, status, created_at, domain)
+             VALUES ('queue_declaration', ?1, 0.5, 'approved', 0, 'care')",
+            rusqlite::params![bad],
+        )
+        .expect("seed");
+    }
+
+    let routed = route_case(
+        &conn,
+        "care",
+        RoutingClass::General,
+        Some("Q-CARE-INTAKE"),
+        None,
+    )
+    .expect("routed");
+    assert!(
+        routed.declared_queues.is_empty(),
+        "malformed declarations entered the vocabulary: {:?}",
+        routed.declared_queues
+    );
+    assert!(
+        routed.is_escalated(),
+        "nothing was declared, so nothing routes"
+    );
+
+    // A well-formed declaration alongside the malformed ones still routes — one
+    // bad row must not make the whole vocabulary unreadable.
+    conn.execute(
+        "INSERT INTO proposals(kind, content, novelty, status, created_at, domain)
+         VALUES ('queue_declaration', 'Q-CARE-INTAKE', 0.5, 'approved', 0, 'care')",
+        [],
+    )
+    .expect("seed");
+    let routed = route_case(
+        &conn,
+        "care",
+        RoutingClass::General,
+        Some("Q-CARE-INTAKE"),
+        None,
+    )
+    .expect("routed");
+    assert_eq!(routed.declared_queues, vec!["Q-CARE-INTAKE".to_string()]);
+    assert!(!routed.is_escalated());
 }
 
 /// The class label is resolved, or refused — never defaulted.
