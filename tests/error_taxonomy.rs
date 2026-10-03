@@ -81,6 +81,9 @@ const KNOWN_ERRORS: &[(&str, &str, &str, &str)] = &[
         "service",
         "display",
     ),
+    // The routing seam's refusal. `service` category: every variant names a cause
+    // and none interpolates a stored verdict, so the Display is operator-safe.
+    ("RoutingError", "service/routing.rs", "service", "display"),
     ("WfmError", "bin_common/wfm_import.rs", "service", "display"),
     // The drift census's operator-facing error. `service` category: it is a
     // cadence job's failure contract, and every variant is a fixed-prefix

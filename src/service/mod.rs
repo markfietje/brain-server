@@ -79,6 +79,7 @@ pub mod register;
 pub mod reindex;
 pub mod retention;
 pub mod review;
+pub mod routing;
 pub mod suggest;
 pub mod ump_ops;
 pub mod webhook_ingest;
