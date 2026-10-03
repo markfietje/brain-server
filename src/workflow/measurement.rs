@@ -181,12 +181,8 @@ pub fn falsify_verdict(
     // actually fail: the pin reads the constant's own source text, so flipping it
     // turns that test red. A second, weaker copy of the claim in the decision path
     // would be decoration wearing a safety check's clothes.
-    match replay.refusal_reason() {
-        Some(reason) => FalsificationOutcome::Refused {
-            reason,
-            state_changed: false,
-        },
-        None => FalsificationOutcome::Fired {
+    replay.refusal_reason().map_or_else(
+        || FalsificationOutcome::Fired {
             row: PromotionDecisionRow {
                 subject: subject.to_string(),
                 replay,
@@ -194,7 +190,11 @@ pub fn falsify_verdict(
                 authorized_by: MEASUREMENT_ACTOR.to_string(),
             },
         },
-    }
+        |reason| FalsificationOutcome::Refused {
+            reason,
+            state_changed: false,
+        },
+    )
 }
 
 /// Whether a fired promotion left the decision row it was required to leave.

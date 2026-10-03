@@ -144,11 +144,12 @@ pub fn separation_n(input: &SeparationInput) -> Separation {
     let mut unpaired = 0usize;
     let mut pairs: Vec<(&'static str, bool, bool)> = Vec::new();
     for outcome in &input.skill {
-        match primitive_by_id.get(outcome.case_id) {
-            Some(&primitive_success) => {
-                pairs.push((outcome.case_id, outcome.success, primitive_success));
-            }
-            None => unpaired += 1,
+        // `if let` rather than a two-arm match: the miss arm is a counter bump,
+        // not a value, so there is nothing for a match to return.
+        if let Some(&primitive_success) = primitive_by_id.get(outcome.case_id) {
+            pairs.push((outcome.case_id, outcome.success, primitive_success));
+        } else {
+            unpaired += 1;
         }
     }
     // An id only in the primitive arm is equally unpaired.
