@@ -130,9 +130,12 @@ brain-evolve-core = { path = "crates/brain-evolve-core" }
 model2vec-rs = "0.3"
 # v1.28 "Caliber": the neural-tier runtime (BGE-M3 dense+sparse+colbert +
 # bge-reranker-v2-m3). Optional — only pulled by `neural-embed`/`rerank-tier`.
-# Pinned to 5.x; it exact-pins `ort = =2.0.0-rc.13`, so brain-server's `ort`
-# was bumped to rc.13 to unify the graph (above).
-fastembed = { version = "6.0.2", optional = true, default-features = false }
+# 2026-10-04 bump 6.0.2 → 7.1.0 (latest stable). The `ort` coupling that drove
+# the original pin is UNCHANGED across the major: fastembed 7.1.0 still
+# exact-pins `ort = =2.0.0-rc.13` (verified against the crates.io dependency
+# record), so brain-server's `ort` below stays where it is. Its `tokenizers`
+# floor rose to `^0.23.2`, which is why the `tokenizers` dep below moved too.
+fastembed = { version = "7.1.0", optional = true, default-features = false }
 
 # Database Stack. 2026-08-04 audit bump (v1.12.x "Harden"): rusqlite 0.38.0 →
 # 0.40.1 raises the bundled SQLite from 3.51.1 → 3.53.2 (security fixes:
@@ -141,7 +144,9 @@ fastembed = { version = "6.0.2", optional = true, default-features = false }
 # unused — the codebase uses raw-SQL SAVEPOINT (verified v1.1.2). r2d2_sqlite
 # 0.35.0 tracks rusqlite 0.40. sqlite-vec 0.1.9 (bug fixes; `sqlite3_vec_init`
 # FFI symbol unchanged).
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+# 2026-10-04: rusqlite 0.40.1 → 0.40.2 (patch; r2d2_sqlite 0.35.0's `^0.40`
+# requirement is satisfied unchanged, so the pool stack did not move).
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 sqlite-vec = "0.1.9"
 r2d2 = "0.8.10"
 r2d2_sqlite = "0.35.0"
@@ -150,7 +155,7 @@ r2d2_sqlite = "0.35.0"
 # `sse` feature: v1.17.3 "UMP" M2 `GET /ump/subscribe` (§3.8 change feed).
 axum = "0.8.9"
 tower-http = { version = "0.7", features = ["cors", "limit", "trace", "timeout", "catch-panic", "compression-full", "sensitive-headers", "request-id", "add-extension", "set-header", "fs" ] }
-tokio = { version = "1.53.0", features = ["full"] }
+tokio = { version = "1.53.2", features = ["full"] }
 # Cancellation for the agent loop: every await point in a loop turn selects
 # on a CancellationToken, and the token propagates to child work (the .69
 # TimeoutLayer lesson: cancellation must DROP cleanly, never leak a task).
@@ -158,20 +163,20 @@ tokio-util = { version = "0.7", default-features = false }
 
 # Serialization - Latest Releases
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.150"
+serde_json = "1.0.151"
 
 # Performance Utilities
 anyhow = "1.0.104"
-xxhash-rust = { version = "0.8.17", features = ["xxh3"] }
+xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 # Webhook HMAC-SHA256 verification (v0.9.7 "Guard"). Pure-Rust, no native deps.
 hmac = "0.13"
 sha2 = "0.11"
 # Constant-time comparison for bearer-token auth + audit hash-chain checks.
 # Already a transitive dep via sha2/hmac/aes-gcm; declaring it directly is free.
 # Prevents LLVM from short-circuiting a hand-rolled fold (the prior `ct_eq`).
-subtle = "2.6"
+subtle = "2.6.1"
 # Encrypted backup/restore (v0.9.7 "Guard"). Pure-Rust AES-256-GCM, no native deps.
-aes-gcm = "0.11"
+aes-gcm = "0.11.1"
 # v1.27.17 "Strongbox" (M1/F-08): memory-hard KDF for backup passphrases
 # (Argon2id, 64 MiB / t=3, p=1). Pure-Rust, no new transitive surface beyond
 # blake2/password-hash — both pass the cargo audit gate. 0.6 keeps
@@ -182,9 +187,9 @@ argon2 = "0.6"
 hex = "0.4"
 chrono = "0.4.45"
 dirs = "7.0.0"
-sysinfo = "0.39"
-zerocopy = { version = "0.8", features = ["derive"] }
-uuid = { version = "1.26", features = ["v4", "serde"] }
+sysinfo = "0.39.6"
+zerocopy = { version = "0.8.59", features = ["derive"] }
+uuid = { version = "1.27.0", features = ["v4", "serde"] }
 
 # Markdown parsing for structure-aware chunking (v0.9.4: closes the gap on
 # setext headings, indented code blocks, blockquotes, lists, tables, and other
@@ -205,15 +210,23 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # OpenTelemetry export (v1.20.7 "Telemetry" M1). ALL optional + feature-gated
 # behind the `otel` feature so the default build adds nothing. The `registry`
 # feature on tracing-subscriber is enabled only under `otel` (the OTLP layer
-# needs a `Registry` subscriber to attach spans). Versions: opentelemetry 0.32 /
-# opentelemetry_sdk 0.32.1 / opentelemetry-otlp 0.32 (the `SdkTracerProvider`
-# rename + `with_batch_exporter` builder) / tracing-opentelemetry 0.33
-# (context7-verified 2026-08-12). `reqwest-blocking-client` = the batch exporter
-# runs on its own thread, no tokio-runtime coupling (good for the Jetson core).
-opentelemetry = { version = "0.32.0", default-features = false, features = ["trace"], optional = true }
-opentelemetry_sdk = { version = "0.32.1", default-features = false, features = ["trace"], optional = true }
-opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"], optional = true }
-tracing-opentelemetry = { version = "0.33.0", default-features = false, optional = true }
+# needs a `Registry` subscriber to attach spans). Versions: opentelemetry 0.33 /
+# opentelemetry_sdk 0.33.0 / opentelemetry-otlp 0.33 / tracing-opentelemetry
+# 0.34 (context7 + upstream CHANGELOG verified 2026-10-04). `reqwest-blocking-client`
+# = the batch exporter runs on its own thread, no tokio-runtime coupling (good
+# for the Jetson core).
+#
+# 2026-10-04 bump 0.32 → 0.33 (the whole family moves TOGETHER: tracing-
+# opentelemetry 0.34 declares `opentelemetry = "^0.33.0"`, so a split bump
+# cannot resolve). The SDK 0.33.0 changelog is additive/bugfix only — no
+# breaking API change touches this seam. The three calls we make
+# (`SdkTracerProvider::builder().with_batch_exporter(..)`, the `TracerProvider`
+# trait's `.tracer(..)`, `global::set_tracer_provider`) are all unchanged
+# since the 0.28 `TracerProvider` → `SdkTracerProvider` rename.
+opentelemetry = { version = "0.33.0", default-features = false, features = ["trace"], optional = true }
+opentelemetry_sdk = { version = "0.33.0", default-features = false, features = ["trace"], optional = true }
+opentelemetry-otlp = { version = "0.33.0", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"], optional = true }
+tracing-opentelemetry = { version = "0.34.0", default-features = false, optional = true }
 
 
 # JWT/JWS verification + signing (v1.2.0 "AuthN"). Required on the server
@@ -223,7 +236,7 @@ tracing-opentelemetry = { version = "0.33.0", default-features = false, optional
 # primitives used both to verify and to sign. Context7-verified 2026-07-29:
 # v10 is current; API is `Validation::new(alg)` + `set_required_spec_claims`
 # + `validate_exp`/`validate_nbf` + `leeway`.
-jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "rust_crypto"] }
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["use_pem", "rust_crypto"] }
 # RSA key loading for JWT signing key rotation (v1.2.0 "AuthN" M5). Pure-Rust,
 # no system OpenSSL dep — consistent with the bundled philosophy. Already a
 # transitive dep of `jsonwebtoken` when `rust_crypto` is on; declared directly
@@ -236,11 +249,11 @@ rsa = { version = "=0.10.0-rc.18" }
 # `Uuid::new_v4()` — the comment previously said UUIDv7, the code never used
 # it. Corrected in audit G5, v1.11.0).
 # `getrandom` feature is the only one needed; `serde`/`v4` already on `uuid`.
-rand = "0.10"
+rand = "0.10.3"
 # Base64 URL-safe encoding for JWK fields (v1.2.0 "AuthN" M4: `/.well-known/jwks.json`).
 # Tiny, stable, already a transitive dep; declared directly so the JWKS emitter
 # doesn't silently break if a transitive consumer swaps backends.
-base64 = "0.23"
+base64 = "0.23.1"
 
 # Outbound HTTP (v1.15.0 "Observe" M3): the DSAR Art 19 onward-notification
 # webhook + the brain-connector-gh binary (M2.2). REQUIRED since v1.15.0 — the
@@ -250,7 +263,7 @@ base64 = "0.23"
 # `rusqlite`'s bundled philosophy) + `blocking` (sync client for the webhook).
 # `stream`: `Response::bytes_stream` for the outbound SSE provider adapter —
 # one feature on the EXISTING pinned dep, not a new dependency.
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "blocking", "stream"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "blocking", "stream"] }
 
 # UMP 1.0 integrity + identity (v1.17.3 "UMP Rollout", spec §2.8/§6.1/§6.2):
 # blake3 is the spec-MANDATED content hash; bs58 is did:key base58btc
@@ -258,10 +271,10 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls", "j
 # to the SSE stream for `subscribe` (§3.8); ed25519-dalek 2.2.0 signs/verifies
 # record integrity + capability tokens (§5.2) — already in Cargo.lock as a
 # transitive dep of jsonwebtoken, declared directly here.
-blake3 = "1"
-bs58 = "0.5"
-tokio-stream = { version = "0.1", features = ["sync"] }
-ed25519-dalek = "3"
+blake3 = "1.8.7"
+bs58 = "0.5.1"
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+ed25519-dalek = "3.0.0"
 # v1.27.17 "Strongbox" (M3/F-30): URL host parsing for the GitHub pagination
 # `Link` host pin. Already a transitive dep of reqwest; declared directly so
 # the pin doesn't silently break if a transitive consumer swaps backends.
@@ -277,20 +290,22 @@ url = "2"
 # `ort = =2.0.0-rc.13` (the neural/rerank tiers pull fastembed). The injection-
 # classifier's `Session` API is stable across rc.12/rc.13; re-verify on bump.
 ort = { version = "2.0.0-rc.13", optional = true, default-features = true }
-tokenizers = { version = "0.23", optional = true, default-features = true }
+# 0.23 → 0.23.2: fastembed 7.1.0's floor is `^0.23.2`, so this floor moves with
+# it rather than resolving two `tokenizers` in the graph.
+tokenizers = { version = "0.23.2", optional = true, default-features = true }
 # Loom's ordered fan-out engine (feature `loom`). Doc-comment on the feature
 # above carries the invariant + the version-verification date.
 rayon = { version = "1.12", optional = true }
 
 [dev-dependencies]
-tempfile = "3.27"
+tempfile = "3.27.0"
 # Router-level middleware tests (`Router::oneshot`). Already in the lock as an
 # axum dependency — declared here so tests can import the trait.
 tower = { version = "0.5", features = ["util"] }
 # Property-based testing (v1.3.0 Bedrock M6). Generates random inputs to test
 # invariants across input spaces. Used for chunker byte-range, RRF merge, and
 # validator idempotency properties. Benchmark score 91.11 (Context7-verified).
-proptest = "1.6"
+proptest = "1.11.0"
 
 [[bin]]
 name = "brain"
@@ -351,7 +366,7 @@ unsafe_op_in_unsafe_fn = "deny"
 missing_safety_doc = "deny"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-landlock = "0.4"
+landlock = "0.4.7"
 
 [profile.release.package."*"]
 opt-level = 2
