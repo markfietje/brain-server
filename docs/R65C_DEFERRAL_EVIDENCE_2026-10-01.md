@@ -84,8 +84,10 @@ Neither was anticipated by the plan. Both are the guards doing their job.
 
 ## 4 · Verification
 
-Full transcript: `target/r65-verify.log`, produced by `scripts/r65-verify-sweep.sh`
-(detached so it survives the terminal). The sweep runs its lanes **sequentially** —
+Full transcript: `target/r65-verify.log`, produced by `scripts/verification-sweep.sh`
+(renamed from `r65-verify-sweep.sh` on 2026-10-04 — the script names its subject,
+not the round that wrote it; the log it wrote keeps the old name and is left as-is).
+Detached so it survives the terminal. The sweep runs its lanes **sequentially** —
 parallel cargo on one target directory serialises on the cargo lock anyway, and separate
 target directories would force full rebuilds.
 
@@ -198,7 +200,7 @@ operator can make**, and one premise measured false:
 
 ```sh
 cd ~/Sites/brain-server && export RUSTFLAGS="-D warnings"
-bash scripts/r65-verify-sweep.sh          # detached; writes target/r65-verify.log
+bash scripts/verification-sweep.sh      # was r65-verify-sweep.sh; detached; writes target/r65-verify.log
 cargo test --features bench
 cargo test --all-targets
 cargo clippy --all-targets --features bench -- -D warnings

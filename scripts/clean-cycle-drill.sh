@@ -6,7 +6,7 @@
 set -uo pipefail
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-LOG=/tmp/r48-drill-$STAMP.log
+LOG=/tmp/clean-cycle-drill-$STAMP.log
 D=/home/mark/brain-demo
 B=/home/mark/brain-server/target/release/brain-server
 

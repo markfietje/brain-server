@@ -3,7 +3,7 @@
 # SAFE BY CONSTRUCTION: it shows you what it is about to do, runs the test
 # suite before touching the kernel, and refuses to commit if the suite is red.
 #
-#   bash commit-r48-r50.sh
+#   bash commit-loose-changes.sh
 #
 # Two repos:
 #   kernel  brain-server  — the openapi.yaml duplicate-key fix

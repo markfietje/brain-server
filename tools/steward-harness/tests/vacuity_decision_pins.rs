@@ -207,7 +207,7 @@ async fn the_two_arms_differ_only_by_declaration_not_by_fixture() {
 
 /// **The named false green, and the pin that keeps it named.**
 ///
-/// `tests/r52_behavioural.rs` `an_early_stop_leaves_the_remaining_work_queued`
+/// `tests/report_behavioural_pins.rs` `an_early_stop_leaves_the_remaining_work_queued`
 /// asserted `steps_executed < 5` and `remaining == 50 - steps_executed` and
 /// **named no stop reason**. When the vacuity stop first landed it went GREEN
 /// while its sibling `crank_stops_before_exhausting_the_budget` went RED.

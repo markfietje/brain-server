@@ -4,7 +4,7 @@
 > production consumer it was shipped without, and the one verification gap in
 > this programme's history closes. Theme: **a gate that could never fire, wired
 > to a path that can — and the fixture the measurement corrected on the way.**
-> The §0 sweep (`scripts/r65-verify-sweep.sh`, 15 lanes) **ran to completion for
+> The §0 sweep (`scripts/verification-sweep.sh`, 15 lanes) **ran to completion for
 > the first time ever**: **15/15 PASS, `SWEEP_EXIT=0`**, all-targets **2 989
 > passed / 0 failed** across 36 binaries, `crates/` 306, harness 44. Every named
 > gate had passed before at `dd5ecd95`; **no full run had ever finished**, so
@@ -1525,15 +1525,14 @@ brain status
   it; the SDK is built, kernel-consumed, and dependency-free by design.)
 - **The Steward-line implementation plans (1.27.32 → 1.27.42) live in
   `brain-steward-ip/plans/`** with the master `ROADMAP_1.27.x.md`. This repo
-  keeps **one** kernel-root plan:
-  `IMPLEMENTATION_PLAN_v1.27.31_AuditRepair.md` (public server audit work — the
-  audit-chain re-anchor, an operator-gated format change no private doc should
-  own). Every other `IMPLEMENTATION_PLAN_*` / `IMPLEMENTATION_ROADMAP_*` /
-  `ROADMAP.md` that used to sit here was **moved to
-  `brain-steward-ip/plans/archive/` on 2026-10-04** — see
-  `plans/archive/KERNEL_ROOT_PLANS.md` there for the provenance and the list.
-  They were never tracked by this repo (`.gitignore` 55–69), so the public tree
-  carried 222 root `.md` files while git held 16; the root is now 23.
+  keeps **no** kernel-root plan files: every `IMPLEMENTATION_PLAN_*`,
+  `IMPLEMENTATION_ROADMAP_*`, `ROADMAP.md`, `DESIGN_*`, `CLIENT_ROADMAP.md`,
+  `REALITY_CHECK.md`, `MARKETING_PLAN.md`, `TODO.md` and `USE_CASES.md` that
+  used to sit here was **moved to `brain-steward-ip/plans/archive/` on
+  2026-10-04** — see `plans/archive/KERNEL_ROOT_PLANS.md` and
+  `KERNEL_ROOT_NONPLAN.md` there for provenance and the list. None was ever
+  tracked (`.gitignore` 55–70), so the public tree carried 222 root `.md` files
+  while git held 16; the root is now 19, all of them real project docs.
   **Do not re-add one "for context"** — the private archive is the home, and
   `tests/external_claim_pins.rs` discovers the claim-sensitive ones by CONTENT
   rather than by path, so a copy here is not what any gate reads.
