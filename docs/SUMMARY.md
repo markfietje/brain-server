@@ -135,6 +135,7 @@
 - [The week runtime enforcement got a standard](./blog/21-runtime-enforcement-got-a-standard.md)
 - [Local judgment vs rented judgment](./blog/22-laya-vs-jev.md)
 - [The loop learned clinical discipline](./blog/23-healthcare-diagnostics-loop.md)
+- [Two frontends, one contract](./blog/24-two-frontends-one-contract.md)
 
 # Product site
 

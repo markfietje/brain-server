@@ -19,6 +19,7 @@ cites, the **deterministic** way brain-server implements it, and the **ceiling**
 - [Deterministic Consolidation](./12-consolidation.md), record-linkage duplicates/conflicts/stale-source sweep, reviewable not autonomous
 - [The Memory-Benchmark Landscape 2026](./13-benchmark-landscape-2026.md), LoCoMo / LongMemEval / BEAM, contested self-reported scores, and the reproducibility answer
 - [The Governed Diagnostic Loop](./14-governed-diagnostic-loop.md), law-cited phases, clinical process shape, local calibrated judgment, retrospective corpus
+- [UI Contract Parity](./15-ui-contract-parity.md), one invisible-class fixture across five consumers, byte-equality wire drift gate
 
 Every mechanism is a deterministic implementation of *specific* published
 techniques over a local store, no LLM in the retrieval loop, no data egress.
