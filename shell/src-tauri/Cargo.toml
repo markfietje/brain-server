@@ -2,8 +2,12 @@
 name = "brain-shell"
 version = "0.1.0"
 description = "The SvelteTauri shell's Rust core: system integration only — zero business logic (the kernel owns every rule)."
-edition = "2021"
-rust-version = "1.77.2"
+edition = "2024"
+# Tauri 2.12 states its MSRV policy as `stable - 3` (Context7, tauri-docs
+# blog/tauri-2.12). At the 2.12 bump the floor was 1.90; 1.99 is the current
+# stable and is this repo's floor everywhere else, so the shell matches the
+# rest of the tree rather than carrying its own lower number.
+rust-version = "1.99"
 license = "MIT"
 repository = "https://github.com/markfietje/brain-server"
 readme = "../README.md"
@@ -15,10 +19,10 @@ name = "brain_shell_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.7.1", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2.12.1", features = [] }
 
 [profile.release]
 codegen-units = 1
