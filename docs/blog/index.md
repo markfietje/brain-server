@@ -30,5 +30,7 @@ proof map.
 - [The loop learned clinical discipline](./23-healthcare-diagnostics-loop.md), *the 1.32.7 diagnostics loop and what it buys — v1.28.92*
 - [Two frontends, one contract](./24-two-frontends-one-contract.md), *shipping a second GUI while the first is still served — the parity fixtures and wire gate that make it safe*
 - [A gate that refuses everything is not a gate](./25-a-gate-that-refuses-everything.md), *anti-vacuity pins, and the red-proof that stayed green*
+- [Delete is a verb, not a promise](./26-delete-is-a-verb-not-a-promise.md), *four layers between deleting a row and deleting the bytes, and what SQLite keeps by default*
+- [Catch it on the way in, because it comes back every turn](./27-catch-it-on-the-way-in.md), *why the injection screen sits at the write seam, and what fail-open costs*
 
 Positions and one-liners live in the [media kit](../media-kit.md).

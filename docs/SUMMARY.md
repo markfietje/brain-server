@@ -108,6 +108,9 @@
 - [Deterministic Consolidation](./research/12-consolidation.md)
 - [Benchmark landscape 2026](./research/13-benchmark-landscape-2026.md)
 - [The Governed Diagnostic Loop](./research/14-governed-diagnostic-loop.md)
+- [UI Contract Parity](./research/15-ui-contract-parity.md)
+- [Durable Local-First State](./research/16-durable-local-first-state.md)
+- [The Two-Layer Injection Screen](./research/17-injection-screen.md)
 
 # Blog
 
@@ -137,6 +140,8 @@
 - [The loop learned clinical discipline](./blog/23-healthcare-diagnostics-loop.md)
 - [Two frontends, one contract](./blog/24-two-frontends-one-contract.md)
 - [A gate that refuses everything is not a gate](./blog/25-a-gate-that-refuses-everything.md)
+- [Delete is a verb, not a promise](./blog/26-delete-is-a-verb-not-a-promise.md)
+- [Catch it on the way in, because it comes back every turn](./blog/27-catch-it-on-the-way-in.md)
 
 # Product site
 
