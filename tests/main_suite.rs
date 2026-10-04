@@ -20791,19 +20791,34 @@ mod r42_authority_bindings {
     /// The Phase A gate note exists, in the spine, dated, and is what this
     /// round's egress claims rest on. The note is the DO's gate; a round that
     /// opens outbound egress without it has skipped a step, not saved one.
+    ///
+    /// Resolved across BOTH spine locations rather than pinned to one: closed
+    /// artifacts move to `plans/archive/` (2026-10-04 swept 180 of them), and a
+    /// hardcoded path turned that housekeeping into a red suite. The note is
+    /// closed, so it lives in the archive — but a future move must not be able
+    /// to silently discharge this gate.
     #[test]
     fn delivery_r42_gate_note_is_dated_and_pinned() {
-        let plan = format!(
-            "{}/../brain-steward-ip/plans/R42_ADAPTER_BOUNDARY_RE_AUDIT_2026-09-27.md",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let text = std::fs::read_to_string(&plan).unwrap_or_else(|e| {
+        const NOTE: &str = "R42_ADAPTER_BOUNDARY_RE_AUDIT_2026-09-27.md";
+        let spine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../brain-steward-ip/plans");
+        let mut found: Option<(std::path::PathBuf, String)> = None;
+        let mut searched = Vec::new();
+        for dir in [spine.clone(), spine.join("archive")] {
+            let candidate = dir.join(NOTE);
+            searched.push(candidate.display().to_string());
+            if let Ok(text) = std::fs::read_to_string(&candidate) {
+                found = Some((candidate, text));
+                break;
+            }
+        }
+        let (path, text) = found.unwrap_or_else(|| {
             panic!(
-                "the adapter-boundary re-audit note must exist at {plan}: {e}. The DO's gate \
-                 for this line's first outbound-egress round is discharged by the note, not by \
-                 this test."
+                "the adapter-boundary re-audit note must exist at one of {searched:?}. The DO's \
+                 gate for this line's first outbound-egress round is discharged by the note, not \
+                 by this test."
             )
         });
+        let _ = &path;
         assert!(
             text.contains("**Date:** 2026-09-27"),
             "the gate note must carry its date — an undated engineering verification is a \
