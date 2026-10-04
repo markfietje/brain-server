@@ -4,13 +4,28 @@ Brain Server's **server runtime is a single process** coupling a **retrieval
 engine**, an **embedding model**, a **knowledge graph**, and a **governance
 layer** behind a versioned HTTP API. Persistence and compute are local-first:
 the only store is an on-disk SQLite database (WAL + `vec0` + FTS5) and
-embeddings are computed in-process by the static `model2vec` model. The repo
-ships seven binaries from one workspace (`brain`, `mcp`, `bench`,
-`brain-migrate-rehearse`, `brain-connector-stub/-gh/-crm` — see `Cargo.toml`
-`[[bin]]`); the diagram below is the `brain-server` runtime. Outbound network
-egress exists and is pinned at the boundary: validated webhook/alert sends,
-the agent-loop provider HTTP client, OIDC/JWKS fetch, and the CRM connectors
+embeddings are computed in-process — the static `model2vec` model by default
+(the edge contract), with optional neural tiers behind feature flags (see
+[Retrieval engine](#retrieval-engine)).
+
+The server package builds **eight binaries**: `brain-server` (the runtime this
+page describes, `src/main.rs`) plus seven tools declared as `[[bin]]` in
+`Cargo.toml` — `brain`, `mcp`, `bench`, `brain-migrate-rehearse`,
+`brain-connector-stub`, `brain-connector-gh`, `brain-connector-crm`. The pure
+engine cores live in a **second workspace** (`crates/` — the delivery, evolve,
+engine-SDK, interview/care/consensus/executor/aftersales/evidence/troubleshoot
+cores, the gold-sets corpus, the fuzz harness and the legal-rule resolver);
+the channel bridge, the Signal gateway and the steward harness are separate
+packages under `tools/`. Outbound network egress exists and is pinned at the
+boundary: validated webhook/alert sends, the agent-loop provider HTTP client,
+OIDC/JWKS fetch, the CRM connectors, and the GitHub delivery read adapters
 (all behind the SSRF-hardened egress policy — see Governance layer).
+
+> **This page is measured against the tree.** Every path, count and constant
+> below was re-verified against the source on 2026-10-04; the private IP repo
+> carries a claim-verification script that re-checks paths, line references
+> and line counts mechanically. Correct this page when the tree moves — never
+> the other way round.
 
 ## How memory moves — four stages and a return path
 
@@ -36,22 +51,24 @@ the agent-loop provider HTTP client, OIDC/JWKS fetch, and the CRM connectors
 
 ### Where each stage is implemented
 
-Measured against the tree; re-run `plans/verify_claims.py` in the private IP repo after
-changing anything here.
+Measured against the tree; re-run the claim-verification script in the private
+IP repo after changing anything here.
 
 | Stage | Where it lives | Status |
 |---|---|---|
-| **Create** | `src/workflow/create.rs` + `src/workflow/create/` (6 modules) · routes under `/workflow/claim-*` | Built and wired. **Promotion is inert** — the promote route returns `promotion_disabled` in every configuration |
+| **Create** | `src/workflow/create.rs` + `src/workflow/create/` (9 modules) · six routes under `/workflow/claim-schemas` and `/workflow/claims*` | Built and wired. **Promotion is inert** — the promote route returns `promotion_disabled` in every configuration. The disproof condition is now stated at write time and evaluated at read time (`create/disproof.rs`) |
 | **Solve** | `src/workflow/gdl.rs`, `gdl_checkpoint.rs`, `gdl_eval.rs`, `src/agentloop/run_loop.rs` · entry `src/handlers/case_run.rs:224` | The most built — the agentic crank, checkpointed and digest-gated |
-| **Evolve** | `src/gate.rs`, `src/handlers/gate.rs`, `src/service/gate.rs`, `src/workflow/kcs.rs` | Built and wired — the human approval gate |
-| **Deflect** | `src/workflow/kcs.rs`, `src/workflow/scoreboard.rs` | Measurement and evidence: it records reuse and deflection. It does not yet act on what it finds |
-| **Operate** | no module — the return path is the one part of the ring with no implementation | The edges `Operate → Evolve` and `Operate → Create` exist as design, not as code |
-| **Deliver** | `crates/brain-delivery-core`, `src/workflow/delivery.rs` | Built and wired |
+| **Evolve** | `src/gate.rs`, `src/handlers/gate.rs`, `src/service/gate.rs`, `src/workflow/kcs.rs`, `crates/brain-evolve-core` | Built and wired — the human approval gate, plus a per-domain knowledge-version axis that bumps at publication |
+| **Deflect** | `src/workflow/kcs.rs`, `src/workflow/scoreboard.rs`, `src/workflow/drift_census.rs` | Measurement and evidence: reuse, deflection, and scorer-drift over a frozen gold corpus. It does not yet act on what it finds |
+| **Operate** | no module named Operate — and the return path is still the least-built part of the ring | The **first return-path code exists**: the ranked gap queue (`create/queue.rs`, built to be the `Operate → Create` edge) and the agreement/labeling machinery — but nothing yet drains a gap into claim creation end-to-end, and outcome attribution to specific knowledge remains design, not code |
+| **Deliver** | `crates/brain-delivery-core`, `src/workflow/delivery.rs`, `src/workflow/releases.rs` | Built and wired — core, persistence, reads, **and the release/promotion surface** (see The delivery loop) |
 
-**The consequence worth stating plainly:** the ring is drawn complete below, but in code
-`Solve` and `Evolve` carry the weight, `Deflect` observes, `Create` cannot yet promote,
-and `Operate` is unimplemented. The two edges that make a line into a cycle are the two
-that are missing.
+**The consequence worth stating plainly:** the ring below is drawn complete, but in
+code `Solve` and `Evolve` carry the weight, `Deflect` observes, `Create` cannot yet
+promote, and `Operate` has its first fragment — a queue that ranks gaps — without the
+edges that would make it a loop. The two edges that make a line into a cycle
+(`Operate → Evolve`, `Operate → Create`) are the two that are still not closed
+end-to-end.
 
 ```mermaid
 flowchart LR
@@ -64,9 +81,11 @@ flowchart LR
         A1["case opens"] --> A2["agentic crank:<br/>recall · reason · checkpoint"] --> A3["AskHuman when stuck"] --> A4["resolved + evidence"]
     end
     subgraph L2["LOOP 2 · EVOLVE (per pattern — days)"]
+        direction LR
         B1["captured article<br/>proposed FROM the case"] --> B2["human approves by digest"] --> B3["published to KB"] --> B4["reuse counted ·<br/>freshness reviewed"]
     end
     subgraph L3["LOOP 3 · DEFLECT (per corpus — weeks)"]
+        direction LR
         C1["published knowledge serves<br/>customers AND agents first"] --> C2["fewer repeat contacts"] --> C3["feedback + hot topics<br/>flag the gaps"] --> C1
     end
     subgraph LRET["OPERATE — the RETURN PATH, not a stage in the sequence"]
@@ -114,7 +133,8 @@ measurement.
 > *inside* the operational one, and neither is the business level — an Evolve publication
 > (days) is not "slow Solve". The nesting is what makes `reask` meaningful: a case
 > re-entering Solve later does so on a *moved* knowledge base, which is why the case record
-> carries `knowledge_version`.
+> carries `knowledge_version` — and since the per-domain knowledge-version axis shipped,
+> that version now bumps at every publication, per domain.
 
 Create takes what a case captures and what a gap flags, hypothesises and validates it,
 and hands a proposal to the gate. Solve never skips its human gate; Evolve exists only
@@ -215,7 +235,7 @@ happened to solve this one case. A case that was never approved into memory
 resolves that customer and teaches the next one nothing. The dotted edge is the
 part that compounds: the same problem, self-served, is `Deflect` working.
 
-#### The record layers on top (1.28.92)
+#### The record layers on top (v1.28.92)
 
 The loop's own rows ARE the request record; two preregistered record layers
 ride them additively — no new table, no migration:
@@ -292,24 +312,27 @@ deflects to self-service entirely — and the scoreboard proves which happened.
 ## The GDL case machine — Solve's deterministic core
 
 The crank above is driven by the **GDL case machine** (`src/workflow/gdl.rs`,
-9,871 lines; `gdl_checkpoint.rs`, 771; `gdl_eval.rs`, 1,191 — 11,833 total):
+11,127 lines; `gdl_checkpoint.rs`, 825; `gdl_eval.rs`, 1,191 — 13,143 total):
 the 7-phase governed troubleshooting loop
 `Intake → Triage → Hypothesize → Plan → Act → Verify → Handoff`
 (`GdlPhase::ALL` — forward-only, the machine never skips; a case that cannot
 satisfy a phase routes or escalates instead).
 
 The phase machine is deterministic Rust: the model proposes a phase artifact
-as JSON, a pure arbiter (`parse_and_gate`) decides, and a rejected artifact is
-retried bounded-then-routed — one original ask plus `MAX_PHASE_ATTEMPTS = 3`
-gate-error re-asks; exhausting them ROUTES the case (route, not resolve). The
-same law governs Deliver — a model proposes, only the gate disposes — where the
-arbiter is `brain-delivery-core`'s `promote` instead (see The delivery loop —
-the software axis).
+as JSON, a pure arbiter (`parse_and_gate` — no DB, no clock, no provider)
+decides, and a rejected artifact is retried bounded-then-routed — **three
+asks in total per phase: one original plus two corrective re-asks**
+(`MAX_PHASE_ATTEMPTS = 3` pins the *total*, not the re-ask count); exhausting
+them ROUTES the case (route, not resolve). The same law governs Deliver — a
+model proposes, only the gate disposes — where the arbiter is
+`brain-delivery-core`'s `promote` instead (see The delivery loop — the
+software axis).
 Persistence per phase-pass is ONE `WorkflowTx`: the phase's `workflow_steps`
 row (Act adds one sub-row per executed test-log row), the CAS run-state
 advance (with its own audit row), and one audit row per inserted step —
 all-or-nothing, hash-chained. The session narrative (instructions, artifacts,
-gate verdicts) rides the append-only `agent_session_events`; the plan strip
+gate verdicts) rides the append-only `agent_session_events` (append-only by
+the write API: rows are inserted, never mutated or reordered); the plan strip
 (`PLAN_STRIP_MAX_LINES = 24`) renders at the CONTEXT END of every phase
 instruction. The verify phase carries a 15-minute stability-window floor
 (`VERIFY_STABILITY_WINDOW_MIN = 15`).
@@ -327,11 +350,12 @@ Case-level invariants: the SLA clock arms at triage on a typed row (pinned
 P-class table — P1 3,600 / P2 14,400 / P3 86,400 / P4 604,800 seconds,
 literals pinned by test and preregistered); the unconditional human escape is
 honored at every phase boundary with exact replay; `justified_handoff_rate`
-rolls up from recorded soft-handoff rows (`SOFT_HANDOFF_THRESHOLD_PCT = 80`,
-unjustified revisits denied-and-audited). Deliberately out of scope: subagent
-fan-out, follow-the-sun handoff policy, provider code (the loopback fixture
-carries the tests), live routing claims, and auto-publish of anything captured
-— capture lands as proposals on the human review queue or not at all.
+rolls up from recorded soft-handoff rows (a per-mille ratio — there is
+deliberately no threshold constant governing it — and unjustified revisits
+are denied-and-audited). Deliberately out of scope: subagent fan-out,
+follow-the-sun handoff policy, provider code (the loopback fixture carries
+the tests), live routing claims, and auto-publish of anything captured —
+capture lands as proposals on the human review queue or not at all.
 
 ### Healthcare hardening (1.32.7 "Diagnostic Closure", R18)
 
@@ -406,8 +430,8 @@ flowchart LR
 
 > **The six names, enumerated.** The ring above carries four knowledge stages; this
 > section is the separate software loop. The split is **5 knowledge loops (four stages +
-> the return path) + 1 software loop** — see `PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md` §5.3 and
-> `docs/blueprint/02-SYSTEM_ARCHITECTURE.md` §2.2.
+> the return path) + 1 software loop** — the loop taxonomy is specified in the private
+> architecture programme (see Research basis for the published anchors this page uses).
 
 | Loop | Axis | Where it is on this page | What it does |
 |---|---|---|---|
@@ -416,48 +440,114 @@ flowchart LR
 | **Evolve** | Knowledge | `LOOP 2 · EVOLVE (per pattern — days)` | the case's captured proposal arrives here → human approves by digest → published to KB |
 | **Deflect** | Knowledge | `LOOP 3 · DEFLECT (per corpus — weeks)` | published knowledge serves customers AND agents first → fewer repeat contacts → gaps flagged |
 | **Operate** | Knowledge (the return path) | `OPERATE — the RETURN PATH` in the ring above | outcomes attributed to specific knowledge → improvements feed back into Evolve and Create |
-| **Deliver** | Software | this section, `D1`–`D5` | Scope · Design · Verify · Release · Operate — turns over *artifacts*, a different axis |
+| **Deliver** | Software | this section, `D1`–`D6` | Scope · Design · Build · Release · Operate · Done — turns over *artifacts*, a different axis |
 
 > **`D5 Operate` is the software lifecycle's phase 5** — observe, attribute, improve the
 > **delivered artifact**. It is not the knowledge `Operate` in the ring above, which
 > attributes outcomes to *knowledge*.
 
-**Its state today: a ratified decision core, and its first persistence.** The
-decision law ships as `crates/brain-delivery-core` — the closed autonomy-tier
-vocabulary, the phase machine, the promotion gate, the attestation predicate,
-the budget ledger, the replay comparator, and the release-status machine. That
-crate is **pure and total**: no clock, no store, no network, no provider, so it
-decides without a running host and deny always wins.
+**The decision law ships as a pure, total core.** `crates/brain-delivery-core`
+holds the closed autonomy-tier vocabulary, the phase machine, the promotion
+gate, the attestation predicate, the budget ledger, the replay comparator,
+and the release-status machine. That crate is **pure and total**: no clock,
+no store, no network, no provider (its dependencies are serde, serde_json and
+a SHA-2 implementation, nothing else), so it decides without a running host
+and **deny always wins**.
 
-It now has its first caller. The server consumes the crate and persists what it
-decides: **three** tables — `delivery_traces`, content-addressed `trc_<32 hex>`
-over each row's facts *and* its ordinal; `delivery_budgets` under a composite
-`(run_id, kind)` key; and `delivery_attestations`, the twelve-column signed
-chain added at schema `1.32.16` (the stamp is **`1.32.16`**, not `1.32.15` —
-`1.32.15` created the first two) — behind four `POST` routes
-(`/workflow/delivery/runs`, `/runs/{id}/advance`, `/runs/{id}/answer`, and
-`/runs/{id}/gates`). What is stored is now read back by three `GET` routes:
-`/runs/{id}/attestations` serves the signed chain, `/runs/{id}/replay-verify`
-re-derives each trace row's content address from its own stored columns and
-reports whether they agree, and `/runs/{id}/trace` serves the rows themselves in
-ordinal order, with the chain head read from storage rather than recomputed. The
-verdict and the listing ride one read, and a mismatch is DATA — the request
-succeeds and the reader is handed the diff — because a report that turned a
-finding into an error would tell them less than the finding does. Authorization
-is the run's own domain plus the `workflow` role, and the reads ask for Read
-rather than Write.
+**Persistence: five tables, and the release surface on top of them.**
 
-**Persistent is not the same as complete.** The reads are evidence, not
-enforcement: budgets are recorded but unenforced, and `blast_radius` is admitted
-by the kind `CHECK` while no production path consults it. Nor does the verdict
-bind a row to the signed chain — an attacker who edits a column *and* recomputes
-the address leaves no trace, so it is tamper **evidence** over stored bytes, and
-the chain is what binds. Unbuilt still are authority bindings and connectors,
-the release and promotion surface, and any derived read model. One gap is on the
-record: no route sets `pending_question`, so the answer route is exercisable
-only by writing run state directly. **This section describes a ratified
-decision, a shipped pure core, and the persistence with a first read back — not
-a complete runtime.**
+- `delivery_traces` (schema 1.32.15) — content-addressed `trc_<32 hex>` over
+  each row's canonical facts *and* its stored ordinal; at 1.32.25 the rows
+  also carry model-registry citation columns (`model_registry_id` /
+  `model_registry_version`) that sit **deliberately outside** the content
+  address — a rewritten citation is invisible to the replay fold, a disclosed
+  ceiling.
+- `delivery_budgets` (1.32.15) — composite `(run_id, kind)` key.
+- `delivery_attestations` (1.32.16) — the twelve-column **signed** chain
+  (signed by the host with the operator's Ed25519 key; the core itself never
+  signs — an unsigned or foreign-signer case is a refusal the *host* makes,
+  never a degraded mark from the core).
+- `delivery_bindings` (1.32.17) — authority bindings: which external system
+  of record answers for which authority kind, per domain, behind an `active`
+  consent lever. No write route exists; bindings are operator configuration.
+- `delivery_releases` (1.32.18) — the governed release: nine-value status
+  machine, three-way approval binding (subject / authority / state revision),
+  commit sha and environment.
+
+**The HTTP surface: seventeen route registrations across fifteen paths, plus
+one public webhook.** The four run POSTs (`/workflow/delivery/runs`,
+`/runs/{id}/advance`, `/runs/{id}/answer`, `/runs/{id}/gates`) and the reads
+(`/runs/{id}/attestations`, `/replay-verify`, `/trace`, `/steps`, `/runs/{id}`,
+`/runs`) carry the original contract: authorization is the run's own domain
+plus the `workflow` role, and reads ask for Read rather than Write. On top of
+those now sit the **release family** — `POST /workflow/delivery/releases`,
+`/releases/{id}/approve`, `/releases/{id}/promote`, `GET /releases` — the
+**`/due` crank**, `GET /bindings` (scoped to the queried domain) and
+`GET /outcomes` (the derived read model). Two posture details worth naming:
+the release family and `/due` **explicitly refuse agent principals**, and
+approve and promote are deliberately separate requests (anti-replay). The
+public inbound arm is `POST /webhooks/delivery/{kind}` — GitHub HMAC verified
+— which lands external observations as evidence.
+
+**`promote_release` is one transaction, and the gates run in a fixed refusal
+order** (`src/workflow/releases.rs:667`): the approver kill-switch (a revoked
+principal cannot approve), the approval-state-revision binding (the approval
+attaches to exactly the state it approved), authority-digest re-derivation
+(the binding's authority digest is recomputed, not trusted), **signature
+verification of the attestation chain before the gate runs**, tier agreement
+(every signed predicate's tier agrees with the run's granted tier), then
+`chain_defect`, then the **replay-determinism gate** — the trace is replayed
+and the re-derived stage digests compared against the recorded ones; a
+divergent or evidence-insufficient replay refuses with
+`replay_divergent` / `replay_insufficient_evidence`, an audit `Denied`, and
+**no state change** (the gate detects, it never repairs; an identical trace
+still reaches `allowed`) — and only then `brain_delivery_core::promote`, the
+one-hop-at-a-time status walk to `promoted`, the budget draws, and the mint
+of a durable delivery intent for the outbox. Every refusal in the chain is a
+typed `Denied` with the state untouched.
+
+**The reads are evidence, and one of them is now a read model.**
+`/runs/{id}/replay-verify` re-derives each trace row's content address from
+its own stored columns and reports whether they agree (plus an ordinal/order
+fold); the verdict and the listing ride one read, and a mismatch is DATA —
+the request succeeds and the reader is handed the diff — because a report
+that turned a finding into an error would tell them less than the finding
+does. `/runs/{id}/trace` serves the rows in ordinal order with the chain head
+read from storage rather than recomputed. `GET /outcomes` is the derived read
+model: change lead time, governed release cadence, change-fail rate
+(labelled `role: "control"`), approval→promotion elapsed, each against the
+run's own 90-day history — with typed insufficiency rather than a made-up
+number when the evidence is not there.
+
+**External authorities and systems of record stay external.** Git, CI, package
+registries, deploy targets, project-management trackers, and incident systems
+remain the systems of record for whatever they own. The first two connectors
+exist and are **read-only by construction**: GitHub `vcs` and `ci` adapters,
+pinned to their exact host, following no redirects, with no write verb
+anywhere in the adapter layer. They are consumed by the `/due` crank (three
+phases: select the due batch and verify intents with no network, resolve the
+binding and make one read-adapter call, mark the intent delivered) and by the
+inbound webhook's `reconcile_authority`, which turns landed observations into
+typed `Actual` / `Contradiction` evidence and is the only writer of a
+release's `verified_at`. This loop observes and attributes against external
+systems; it does not become their writer, and nothing it derives is a
+substitute for their own record.
+
+**Persistent is not the same as complete.** Budgets are recorded *and
+enforced at promotion* (the ledger is loaded from `delivery_budgets` into the
+pure gate, `BudgetExhausted` denies, and an allowed promotion draws its
+budgets in the same transaction) — but `blast_radius` is recorded under the
+kind `CHECK` and **no production path consults it**. The replay verdict does
+not bind a row to the signed chain — an attacker who edits a column *and*
+recomputes the address leaves no trace, so it is tamper **evidence** over
+stored bytes, and the chain (verified at promotion) is what binds. Adapter
+kinds for `registry` / `deploy` / `pm` / `incident` are declared but
+consumer-less; there is no rollback or failed release route; outcomes render
+incident and rework facts `insufficient` because nothing records them.
+**This section describes a ratified decision core, five tables, a
+release-and-promotion surface gated by signature and replay, two read
+connectors, a crank, and a read model — more than a persistence layer, less
+than a complete continuous-delivery runtime.**
 
 **The law sentence, extended to include it: a model proposes; only the gate
 disposes.** This is the generative/receptive division the knowledge-creation
@@ -467,63 +557,52 @@ machine's `parse_and_gate`. In D4 it is `promote`, a pure deny-wins function tha
 reads the run's **autonomy tier** and never the recorded trace mode — a trace that
 claims to be deterministic buys no authority it was not granted, and the two
 narrowest tiers propose and never promote. Two ceilings are structural, not
-incidental: the crate does not sign and does not verify signatures, so an unsigned
-or foreign-signer case is a refusal the **host** must make and never a degraded
-mark from the core; and autonomy only ever narrows, so no tier can widen what a
-principal may do.
-
-**External authorities and systems of record stay external.** Git, CI, package
-registries, deploy targets, project-management trackers, and incident systems
-remain the systems of record for whatever they own. This loop observes and
-attributes against them; it does not become their writer, and nothing it derives
-is a substitute for their own record.
+incidental: the crate does not sign and does not verify signatures (the host
+does both, and a refusal the host must make is never a degraded mark from the
+core); and autonomy only ever narrows, so no tier can widen what a principal
+may do — a tier is set at run creation and never reassigned.
 
 ---
 
-## What the roadmap adds — and what it deliberately does not
+## What the programme shipped — and what deliberately remains
 
-**No planned round changes the shape of this page.** R52 through R66 deepen what
-is here; they do not add a box, move an arrow, or redefine a stage. That is a
-design constraint, not an accident: the four stages and the return path are the
-vocabulary every later round is *written in*, so a round that redefined the shape
-would invalidate the fifteen that followed.
+The roadmap that produced the current tree ran as preregistered rounds
+(R51–R67). **The last column's banner in earlier versions of this page —
+"everything planned, not shipped" — is now history**: most of that
+programme landed between 2026-09-29 and 2026-10-04. This section states what
+shipped, what remains, and — because it matters most — what none of it did.
 
-**Everything in the last column below is PLANNED, NOT SHIPPED.** It is written here so
-the vocabulary a later round will be written in exists in one place, and so a reader can
-tell at a glance which parts of this page describe a running system and which describe
-an intention. Nothing below has been implemented; the plans live in the private IP repo.
-
-| Stage | Depth today (shipped) | What the roadmap adds (planned) | Human's role after |
+| Stage | Shipped in the programme | What deliberately remains | Human's role after |
 |---|---|---|---|
-| **Create** | six routes, **promotion inert** | R60 extracts the core; R54 attaches a disproof condition | approves every claim — the gate never opens itself |
-| **Solve** | the most built stage; skills routing ships | R52 makes the harness honest about what it decided; R53/R53a set a joint eval objective and instrument decision classes; **R65 adds per-class confidence→human deferral** | answers judgment calls; never decides whether an answer is *stored* |
-| **Evolve** | gate and publication built | R61 builds the core around **earned** autonomy — tiers that only widen when measurement has earned it | holds the widen decision; a tier can never widen itself |
-| **Deflect** | measurement only | R56 measures; R57 scores; R62 builds the core; **R66 closes the reuse edge that makes a template worth writing** | reviews what the scoreboard says is not working |
-| **Operate** | **design only — no code** | R55 binds skills to models; R58b binds them to gates; **R66 supplies one concrete edge** (front-line work → reusable procedure → measured reuse) | approves every binding; the corpus-wide path is the last to close |
-| **Deliver** | core + persistence + reads, four graduated tiers | R58 adds release gates; R63 enforces token binding | the promote gate is a human or a pre-earned tier, never the model |
+| **Create** | nine modules; the disproof condition stated at write time and evaluated at read time; the ranked, budgeted gap queue; the disproof representation on claims. **Promotion stays inert** (compile-time constant, no env var, no flag) | the promote route can never open itself; the out-of-sample false-promotion rate is **not yet measured** — a named non-claim | approves every claim — the gate never opens itself |
+| **Solve** | harness truthfulness (real stop conditions, not advisory); a joint eval objective that can refuse; decision classes instrumented; **the per-class confidence→human deferral seam** — a pure, total `decide_deferral` whose per-class table **ships empty** (every class defers to a human, fail-closed) | no class is auto-dispositioned; per-class reliability evidence accrues before any widening, and widening is a human act | answers judgment calls; never decides whether an answer is *stored* |
+| **Evolve** | `brain-evolve-core`, the per-domain knowledge-version axis (bumps at publication); the model-reference join on traces | **earned autonomy is not built** — tiers that would widen on measurement exist as design, not code | holds the widen decision; a tier can never widen itself |
+| **Deflect** | the drift census (frozen gold corpus, one global tolerance, breaches as hash-chained findings); the ranked gap queue with exploration quota, spend ceiling and kill condition | the reuse edge that would make a template worth writing is **not closed**; the scoreboard observes, it does not act | reviews what the scoreboard says is not working |
+| **Operate** | the first return-path code: the gap queue (the `Operate → Create` edge, built), the agreement/labeling machinery with κ, the model-ref join | **end-to-end outcome attribution** — nothing drains a ranked gap into claim creation; the `Operate → Evolve` edge is still design | approves every binding; the corpus-wide path is the last to close |
+| **Deliver** | the replay-determinism gate as a pure decision **and wired into the live release promotion**; the release/approve/promote surface with signature and tier gates; authority bindings; GitHub read connectors + inbound webhook; the `/due` crank; the outcomes read model; token binding (the `azp` claim is enforced — a token valid for the wrong application is refused) | `registry`/`deploy`/`pm`/`incident` adapters; a rollback route; `blast_radius` enforcement | the promote gate is a human or a pre-earned tier, never the model |
 
 Three of these are worth naming because they are the ones that could be mistaken
-for plans to hand the machine more authority than it has:
+for having handed the machine more authority than it has:
 
-- **R55's "earned autonomy" is earned by measurement, not by the model's opinion
-  of its own competence.** A tier widens when a falsification condition is
-  satisfied; the model proposing the work has no vote.
-- **R52 and R64 are about the harness being *truthful*** — a harness that
-  overstates what it decided is a correctness bug, not a style issue. Neither
-  grants the loop any new authority.
-- **R63 closes a live security finding** (a token valid for the wrong
-  application). It removes authority that should never have existed; it adds
-  none.
+- **The deferral seam shipped EMPTY on purpose.** `decide_deferral` is pure and
+  total, its per-class reliability table has zero entries, and every routing
+  class resolves to *human required* — the seam exists so that widening is a
+  measured, human-authorized act later, not so that anything is auto-dispositioned
+  today. It grants no authority; the routing class it reads explicitly "grants
+  no authority."
+- **The harness-truthfulness rounds are about the harness being *truthful*** —
+  a harness that overstates what it decided is a correctness bug, not a style
+  issue. Neither granted the loop any new authority.
+- **The token-binding round closed a live security finding** (a token valid
+  for the wrong application). It removed authority that should never have
+  existed; it added none.
 
-**The through-line.** Every round in the programme either (a) makes an existing
-decision verifiable, or (b) builds the next stage's core. None of them moves a
-decision from a human to a model. If a future round ever proposes that, it is
+**The through-line.** Every round in the programme either (a) made an existing
+decision verifiable, or (b) built the next stage's core. **None of them moved a
+decision from a human to a model.** If a future round ever proposes that, it is
 outside this plan and should be argued on its own merits rather than smuggled in
-as an increment.
-
-The sequencing, the dependencies, and the failure mode if the tail is cut are in
-`EXECUTION_ORDER_R51_R64_2026-09-28.md`. Per-round detail lives in each
-`IMPL_R*_…` plan.
+as an increment. Per-round detail, sequencing and dependencies live in the
+private IP repo's execution-order plans.
 
 ## Research basis
 
@@ -568,7 +647,7 @@ correction is a lifecycle stage, not a repair.
 **Why the harness is the safety surface — and the phantom-failure risk.** Recent
 work on autonomous agents argues that safety state must not reset between iterations:
 a monitor that forgets is not a monitor **[R6]**. That is the direct ancestor of the
-R51 gate-law pin — a census of every production loop-construction site, re-derived on
+gate-law pin — a census of every production loop-construction site, re-derived on
 every run, because a convention that is not re-checked decays exactly that way.
 
 The sharper warning is newer. Self-improving agent harnesses can **fabricate a
@@ -578,16 +657,19 @@ Lab* **[R7]**. This is not a hypothetical failure mode; it is what an optimising
 harness does by construction when its self-reports cannot be checked against the
 world.
 
-That risk is exactly why R51 preregistered its **doc-state fixtures from real git
-history before the predicate existed** (P51.3). A guard written in response to a
+That risk is exactly why the programme preregistered its **doc-state fixtures from
+real git history before the predicate existed**. A guard written in response to a
 remembered defect, with the defect supplied by the harness's own account of itself,
 is the phantom case. Deriving the trigger state from a committed ref means the guard
 answers to something that provably happened. The same discipline is why every pin
-here is red-first: **a pin that has never failed has not been tested**, and an
-untested pin is a guard against nothing.
+in this tree is red-first: **a pin that has never failed has not been tested**, and an
+untested pin is a guard against nothing. It is also why the replay gate's own
+acceptance proof required an anti-vacuity check: a gate that refuses everything
+proves nothing, and the first red-proof alone could not distinguish a working gate
+from an always-refuse one.
 
-The same argument drives R52 and R64, whose subject is **harness truthfulness**: a
-harness that overstates what it decided is a correctness bug, not a style issue.
+The same argument drives the harness-truthfulness rounds, whose subject is that
+a harness that overstates what it decided is a correctness bug, not a style issue.
 
 **Context handling is a first-class architectural concern, not plumbing.** Work
 scaling long autonomous research loops identifies four mechanisms that survive
@@ -624,8 +706,8 @@ flowchart TB
     subgraph PROC["brain-server — one process, one SQLite file"]
         direction TB
         H["Handlers (Axum)<br/>parse · authorize · spawn_blocking"]
-        R["Recall engine<br/>vector + BM25 → RRF k=60 → rerank"]
-        E["Static embeddings<br/>model2vec — in-process"]
+        R["Recall engine<br/>vector + BM25 + graph → RRF k=60<br/>(rerank: profile-gated tier)"]
+        E["Embeddings — in-process<br/>model2vec static (default) ·<br/>neural tiers (feature-gated)"]
         DB[("SQLite (WAL)<br/>vec0 · FTS5 · knowledge graph")]
         A["Audit log<br/>hash-chained"]
     end
@@ -646,6 +728,18 @@ a request enters the handlers, crosses the seam into a domain core, and lands in
 the one database file. The audit row and the mutation it describes commit or roll
 back together — there is no window in which one exists without the other.
 
+### The thin binary
+
+`main.rs` is **wiring only** — bootstrap → compose → serve — pinned at ≤ 300
+lines with no `#[cfg(test)]` region (the test mass lives in `tests/`). Route
+registrations live **only** under `src/server/router/**`, and
+`server::bootstrap` stays protocol-free (no axum types). Each clause is
+machine-checked by the spire gates in `src/spire_inventory.rs`
+(`route_registrations_live_only_under_router`,
+`bootstrap_stays_protocol_free`, `spire_inventory_freezes_the_thin_binary`).
+The one fenced exception is `src/bin/mcp.rs` — a separate binary's
+single-endpoint `/mcp` protocol edge, pinned at exactly one route site.
+
 ### Who may decide what
 
 Three tiers, and the boundary between them is a **capability the agent's token
@@ -663,7 +757,7 @@ advisory, and that the enforcement is a capability check the model cannot reach.
 |---|---|---|---|
 | **May decide** | how to investigate; which recall to run; when it is stuck | whether a proposal becomes memory; quarantine disposition; whether knowledge is wrong | whether a write is admitted at all; which capabilities exist |
 | **May not decide** | whether its own output is stored; whether a claim is true; whether a proposal is promoted | — | what the model *meant*; whether an artifact is good |
-| **Enforced by** | `can:["read","write","reject"]` on the `agent` preset role | approve/promote requires the `workflow` role, held only by an operator token | `BRAIN_WRITE_POSTURE`, the authz matrix, and the two-principal split |
+| **Enforced by** | `can:["read","write","reject"]` on the `agent` preset role | approve/promote requires the `workflow` role (delivery surfaces) or the `approve` capability (knowledge proposals), held only by an operator token | `BRAIN_WRITE_POSTURE`, the authz matrix, and the two-principal split |
 
 **The three hard human-approval points.** These are not configurable and no posture
 disables them:
@@ -673,10 +767,13 @@ disables them:
    disposes of it. The agent role has `reject` but never `approve` or `promote`,
    so it cannot dispose of its own work.
 2. **Quarantined content never auto-admits.** A screened write that trips the
-   blocklist lands in quarantine and waits for a person.
+   blocklist lands in quarantine and waits for a person (disposition is an
+   Admin-gated route; a quarantine flag that cannot be recorded aborts the
+   ingest rather than storing unflagged).
 3. **Delivery promotion is gated by an autonomy tier, not by confidence.** The
    arbiter reads the run's granted tier and never the trace's *claimed*
-   determinism; the two narrowest tiers propose and never promote.
+   determinism; the two narrowest tiers propose and never promote; the release
+   approve and promote routes refuse agent principals outright.
 
 **What the model may be asked to decide**, and what it may not:
 
@@ -688,14 +785,14 @@ disables them:
 | A draft article's content | ✅ | screen + fence | ✅ before it is memory |
 | Whether knowledge is *true* | — | — | ✅ — never the model's call |
 | Whether a published claim is now *wrong* | — | — | ✅ — and today this is a person noticing, not a system |
-| Whether a run may promote | — | autonomy tier | ✅ above the narrowest tiers |
+| Whether a run may promote | — | autonomy tier + signature + replay gate | ✅ above the narrowest tiers |
 
 The last two rows are the honest limit: **the system can be proposed to, screened,
 and gated, but it cannot decide that it was wrong.** That gap is the whole reason
-`Operate` exists as a design and not yet as code. It is also the gap the harness
-literature warns about from the other side: a self-improving harness that cannot
-check its own account against the world will confidently guard against failures
-that never happened **[R7]**.
+`Operate` exists as a design with a first fragment of code rather than a closed
+loop. It is also the gap the harness literature warns about from the other side: a
+self-improving harness that cannot check its own account against the world will
+confidently guard against failures that never happened **[R7]**.
 
 **The write posture, stated precisely.** `BRAIN_WRITE_POSTURE` is `open` by
 default (back-compatibility: write surfaces insert directly) or `review`, which
@@ -763,7 +860,8 @@ binding, PII masking) stays handler-side by contract — cores return stored
 bytes; the handler decides what a given reader sees. One disclosed
 exception: `GET /export` emits stored content verbatim (portability is the
 point; the `untrusted: true` label travels with the rows — see
-`docs/THREAT_MODEL.md` §5) — every rendered surface goes through the seam.
+`docs/THREAT_MODEL.md` §5b; another operator's personal rows still redact at
+this seam) — every rendered surface goes through the seam.
 
 ---
 
@@ -812,20 +910,26 @@ inflating it:
 **What does not exist, and is not coming by omission:** parallel children, peer-to-peer
 messaging, a blackboard, or any child-to-parent negotiation. A child returns exactly one
 typed outcome and has no way to ask the parent anything. `FuturesUnordered` and `join_all`
-appear nowhere in `src/` — there is no fan-out in the kernel at all. **If you are reading
-this expecting a general multi-agent system, this is the section that tells you it is not
-one** — it is a single-parent loop with one bounded, adversarial second opinion.
+appear nowhere in `src/` — there is no fan-out in the decision kernel at all. (The one
+disclosed exception is CPU-only and off the decision path: the opt-in `loom` tier runs
+rayon fan-out inside `spawn_blocking` for batch-ingest embedding and consolidate
+pre-processing, with the KNN loop deliberately serial and a pin holding that fused ranks
+are byte-identical with loom on or off.) **If you are reading this expecting a general
+multi-agent system, this is the section that tells you it is not one** — it is a
+single-parent loop with one bounded, adversarial second opinion.
 
 ### Autonomy is graduated on one axis, and the other axis has none
 
 The software lifecycle carries a **closed four-tier vocabulary** — `observe`, `propose`,
 `bounded-auto`, `delegated` — and the gate reads the run's **granted** tier, never the
-trace's *claimed* determinism. A trace that says "deterministic" buys no authority it was
-not granted.
+trace's *claimed* determinism. A trace that says "deterministic" buys no authority it
+was not granted.
 
 **The knowledge ring has no tiers at all.** The GDL runs at a fixed proficiency and its
-only narrowing is the write posture plus the phase machine above it. This asymmetry is
-real and worth stating rather than smoothing:
+only narrowing is the write posture plus the phase machine above it. The per-class
+confidence→deferral seam that shipped with the programme does not change this: its table
+is empty, every class defers, and the routing class it reads grants no authority. This
+asymmetry is real and worth stating rather than smoothing:
 
 | Axis | Graduated authority? | Why |
 |---|---|---|
@@ -852,18 +956,35 @@ that deserves an address:
 | The board builder | `crew::board_for_worktype(skills, required)` | the principals who should see this class, given their skills |
 | The write path | `crew::file_skills_proposal` → `apply_skills_change` | skills change **only by proposal, then approval** |
 | The read surface | `GET /ops/crew`, `GET /ops/skills`, `GET /ops/workload` | the roster and per-principal load |
-| The write surface | `POST /ops/skills` (**Write**) — file a proposal; the machine cannot apply its own |
+| The write surface | `POST /ops/skills` (**Write**) — file a proposal; the machine cannot apply its own | |
 
 **The invariant that makes this safe:** the routing table is **proposal-gated**. The
 system cannot write the table it is itself routed by — a skills change is a proposal like
 any other, and an operator disposes of it. Routing decides *who is asked*; it never
 decides anything.
 
-> **What does not exist yet, and is planned.** There is currently **no seam from a
-> confidence value to a human decision** — the classifier returns a confidence, thresholds
-> exist, and nothing joins them to a queue. Nor is there any front-line best-practice
-> template. Both are specified, with their research basis, in the roadmap below. Neither
-> has shipped, and this page does not pretend otherwise.
+**Beside the skills table there is now a routing core** (`src/workflow/routing.rs` +
+`src/service/routing.rs`), and its honesty is the point: it maps a case's routing class
+to a declared queue — **reading the class and discarding the confidence outright** —
+under an escalation law: an undeclared queue or a missing candidate escalates to the
+operations queue (`Q-OPS-ESCALATION`) rather than guessing; assignee selection returns
+**offers that structurally cannot assign** (there is no assignee field and no commit
+method — accepting an offer is a human act); and **no writer exists anywhere in the
+tree** for queue declarations, so today every case escalates. The seam's caller is an
+operator CLI verb, not an HTTP route. Escalation is the honest default until queue
+declarations have a governed writer.
+
+> **What exists now, and what still does not.** The confidence→human seam **exists**:
+> `POST /classify` returns a deferral receipt (`routing_class`, `outcome`,
+> `requires_human`) computed by a pure, total decision over class + confidence +
+> evidence count, and that decision is **carried on the run** (written to the session
+> log at intake, read back under strict parsing — a bare confidence with no evidence
+> count beside it is unrepresentable) and carried by delivery runs at creation. What
+> still does not exist: **any automatic disposition**. The per-class reliability table
+> is empty, every class resolves to *human required* (fail-closed), nothing joins a
+> confidence to a queue, and there is no front-line best-practice template. The
+> deferral evidence is accruing per class; widening is a measured, human-authorized
+> act that has not happened.
 >
 > The reason a confidence→human policy is *not* a single threshold is worth one line, since
 > it is the most likely wrong implementation: a global cutoff is the wrong instrument,
@@ -882,29 +1003,51 @@ Recall is **hybrid**: a vector leg and a lexical leg run concurrently on indepen
 pooled read connections and are fused.
 
 - **Vector leg** — `sqlite-vec` (`vec0`) KNN over embeddings. Embeddings are
-  computed in-process by the static `model2vec` model; vectors are int8/binary
-  quantized (4–32× smaller) for edge memory bounds.
+  computed in-process; vectors are int8/binary quantized (4–32× smaller) for
+  edge memory bounds. The default backend is the static `model2vec` model
+  (the edge/Jetson contract); the `neural-embed` feature adds ONNX tiers for
+  the `enterprise` (BGE-M3) and `desktop` (gte-base-en-v1.5) profiles, and
+  the `compact` profile uses a smaller static potion model. An unknown
+  profile value resolves to the edge default (the static model — the safe
+  tier), and the model ids are pinned literals shared by config and
+  embedder as a contract.
 - **Lexical leg** — SQLite FTS5 (BM25).
 - **Fusion** — Reciprocal Rank Fusion (`k = 60`), a deterministic, weight-free
-  merge.
-- **Expansion** — deterministic PRF (pseudo-relevance feedback) expands the query
-  when the top pass-1 result appears in **both** dense and lexical lists within a
-  bounded rank. It fires only on cross-retriever agreement, never on a fused score
-  threshold alone.
+  merge (equal fused scores tie-break deterministically on freshness, then
+  authority).
+- **Expansion** — deterministic PRF (pseudo-relevance feedback) expands the
+  query when the **quality estimator recommends it**: a multi-signal
+  recommendation over rank overlap, score gap, reciprocal rank and lexical
+  density (defaults in config: `agreement_min 2`, `gap_threshold 0.023`,
+  `confidence_threshold 0.6`, `rerank_threshold 0.85`). Expansion still
+  requires cross-retriever agreement (minimum top-list overlap) and never
+  fires on a fused-score threshold alone.
 - **Graph leg (on by default)** — Personalized PageRank over the knowledge graph
-  as a third RRF leg; `BRAIN_RECALL_GRAPH_ENABLED=false` or per-request
-  `graph=false` opts out.
+  as a third RRF leg (HippoRAG-2-style, bounded iterations and visit caps);
+  `BRAIN_RECALL_GRAPH_ENABLED=false` or per-request `graph=false` opts out.
+- **Rescue pass** — when the estimator says *clarify the query* and the graph
+  leg had not run, a complexity-gated second graph pass runs before the
+  engine gives up.
+- **Rerank tier** — a cross-encoder rerank stage exists behind the
+  `rerank-tier` feature (enterprise/desktop profiles; BYO ONNX model,
+  opt-in env); the default edge build ships RRF-only, and the rerank is a
+  no-op there by construction.
 
-Every result carries **provenance**: per-retriever ranks, the fused score, any
-expansion terms, and (optionally) a rerank score.
+The hit record carries per-retriever ranks and the fused score; the rendered
+per-hit provenance block (retriever ranks, expansion flag and term count,
+optional rerank score) appears when the request asks for `provenance=true`. When a
+`max_context_tokens` budget is set, the engine packs evidence by budgeted
+monotone submodular maximization (deterministic, with an
+`answer_in_context` diagnostic) rather than truncating a ranked list.
 
 ### Abstention
 
 When retrieval quality is too low to support a claim, `/recall` returns
 `{decision: "low_confidence", hits: []}` instead of top-1 garbage. This is driven
 by a calibrated multi-signal recommendation (rank overlap, gap, lexical density) —
-never a raw fused-score cutoff (the numeric thresholds in `src/search/quality.rs`
-gate the multi-signal recommendation, not the fused score itself).
+never a raw fused-score cutoff (the numeric thresholds gate the multi-signal
+recommendation, not the fused score itself; the defaults live beside the
+quality config and are consumed by `src/search/quality.rs`).
 
 ---
 
@@ -913,7 +1056,7 @@ gate the multi-signal recommendation, not the fused score itself).
 1. **Markdown / structured / memory** ingest arrives at a handler.
 2. Text is **chunked** with a CommonMark-aware splitter (heading-boundary splits,
    code-fence-safe, one chunk per `knowledge` row).
-3. Chunks are **embedded** by the static model and written to `vec0`.
+3. Chunks are **embedded** and written to `vec0`.
 4. Text is tokenized into FTS5.
 5. `[[relation::entity]]` links (and explicit entities/relations) build the
    **knowledge graph**.
@@ -927,7 +1070,10 @@ gate the multi-signal recommendation, not the fused score itself).
 Ingest is governed by a **write-back gate** (v1.14): a candidate can be scored
 (novelty via KNN, conflict via consolidation, salience via heuristics) and held in
 a proposal queue **without creating a `knowledge` row**. It becomes memory only via
-human approval.
+human approval. Screened writes that trip the always-on blocklist land in
+quarantine (stored, flagged, excluded from retrieval until a person disposes); an
+optional feature-gated ONNX classifier (layer 2) scores writes behind the
+blocklist, fail-open by declared posture.
 
 ---
 
@@ -935,19 +1081,19 @@ human approval.
 
 Entities and relationships live in `entities` / `relationships` tables with a
 four-timestamp bi-temporal model (`valid_at` / `invalid_at` + `created_at` /
-`superseded_at`; `valid_at`/`invalid_at` from v1.4.0, `superseded_at` +
-partial unique index v1.27.22 — `src/migration.rs`). `/graph/traverse` walks
-the graph (bounded to depth 4, ≤256 visited — `src/trace.rs` `MAX_HOPS` /
-`MAX_VISITED`) and, with `?explain=true`, returns **hop chains**
-(`A --works_at--> B --ceo_of--> C`) rather than a flat id string. The
-explanation is best-effort by construction (`src/graph_read.rs`
+`superseded_at`; `valid_at`/`invalid_at` from v1.4.0, `superseded_at` at
+v1.27.22 with the partial unique index at v1.27.25 — `src/migration.rs`).
+`/graph/traverse` walks the graph (bounded to depth 4, ≤256 visited —
+`src/trace.rs` `MAX_HOPS` / `MAX_VISITED`) and, with `?explain=true`, returns
+**hop chains** (`A --works_at--> B --ceo_of--> C`) rather than a flat id
+string. The explanation is best-effort by construction (`src/graph_read.rs`
 `build_explanation_paths`): the seed name and the leaf name ride the row,
 intermediate nodes surface as ids only — a consumer that needs an
 intermediate's name calls `/get/{id}`. Traversal visits only *current* edges
 — a rewritten edge whose `superseded_at` is set is skipped (a backdated
 correction no longer yields two live edges for one triple), and this
-current-belief predicate applies even with `?at`: traverse answers
-as-of queries over *current beliefs whose valid window contains `at`*, so a
+current-belief predicate applies even with `?at`: traverse answers as-of
+queries over *current beliefs whose valid window contains `at`*, so a
 superseded edge is never returned by traverse regardless of `?at`.
 
 Retire-never-delete holds in two different stores — do not conflate them:
@@ -965,9 +1111,10 @@ Retire-never-delete holds in two different stores — do not conflate them:
   `GET /graph/relationships/{id}/history`.
 
 Ceiling: vault markdown changed-file re-ingest *replaces* old chunks
-(`DELETE FROM knowledge WHERE source_path` before re-insert), so
-retire-never-delete holds for graph edges and consolidate-expired chunks, not
-the vault replace path.
+(`DELETE FROM knowledge WHERE source_path` before re-insert — a chunk under
+legal hold refuses the re-ingest with 409 instead), so retire-never-delete
+holds for graph edges and consolidate-expired chunks, not the vault replace
+path.
 
 ---
 
@@ -976,9 +1123,13 @@ the vault replace path.
 - **Append-only audit log** — a keyed HMAC-SHA256 hash chain. Each link is
   HMAC-SHA256 over the full current row *including* its stored `prev_hash`
   (8-field keyed link, length-prefixed so no separator can shift), with a
-  per-DB epoch and a pinned chain head (`schema_meta.audit_chain_head`,
-  `/audit/verify`); pre-v1.27.31 legacy epochs verify as legacy (v1.27.31).
-  Read events (recall/search/get) are opt-in.
+  per-DB epoch, a pinned chain head (`schema_meta.audit_chain_head`,
+  `/audit/verify`) and a chain key held beside the DB (a DB that needs a key
+  and has none fails closed rather than degrading); pre-v1.27.31 legacy
+  epochs verify as legacy (v1.27.31). Read events (recall/search/get) are
+  sampled-and-switchable: off by default in loopback mode, **on by default
+  under JWT auth**, with `BRAIN_AUDIT_READ_EVENTS` overriding either way and
+  a sampling rate beside it.
 - **Workflow governance** — governed runs on lineage events (branch-never-delete
   rewind), role-gated with audited transitions; the outcome scoreboard,
   monthly calibration signing, and since v1.28.34 the ISO 10002/10003
@@ -987,7 +1138,8 @@ the vault replace path.
   caps (over cap escalates exactly one level), national-body ADR packet per
   Reg. 2024/3228, goodwill ledger aggregating only audited remedies.
 - **Prompt-injection quarantine** — suspicious input is stored but excluded from
-  retrieval until reviewed.
+  retrieval until reviewed (the always-on blocklist; an optional feature-gated
+  ONNX classifier scores behind it).
 - **DSAR / GDPR** — locate → export → purge → chain-verifiable deletion
   certificate (`POST /dsar`), plus a queryable `/tombstones` registry.
 - **Calibrated abstention**, **span verification** (`/verify`), and **reviewable
@@ -1005,7 +1157,9 @@ the vault replace path.
   trickery (v1.20.3 / v1.20.27 / v1.28.72 / v1.28.86).
 - **Fail-closed bind + SSRF-hardened egress** — startup refuses a non-loopback
   bind without auth (v1.20.29); outbound webhook/alert calls follow no redirects
-  (v1.20.26).
+  and every outbound client resolves → validates against the IANA
+  special-purpose tables → pins its addresses (v1.20.26 / v1.28.69), with the
+  delivery read adapters pinned to their exact upstream hosts.
 
 ---
 
@@ -1018,7 +1172,8 @@ the vault replace path.
   search; relational tables for the knowledge graph, sources/revisions, and
   governance.
 - **Backup/restore** — AES-256-GCM encrypted, checksummed, excludes secret
-  contents (`src/backup.rs` `backup_excludes_secret_contents`).
+  contents (`src/backup.rs` `backup_excludes_secret_contents`); a restore
+  that cannot read its legal holds refuses instead of proceeding.
 
 ---
 
@@ -1032,8 +1187,6 @@ is visible (v1.28.80). True storage isolation is a separate deployment mode
 (`BRAIN_MULTI_DB`), not the default shim.
 Shipped as v1.0 "Domains" (see [Roadmap](./roadmap.md)); `included_global`
 mixing labeled since v1.28.80.
-
----
 
 ---
 
@@ -1082,7 +1235,7 @@ wrong, the correction is recorded rather than silently applied.
   importance of the human user in this process … the human actor gives the decisive
   steering impulse."* That is the published basis for "Who may decide what" below.
 
-**Agent harness safety — the R51–R64 line of work**
+**Agent harness safety — the gate-law and harness-truthfulness line of work**
 
 - **[R6]** "Safety Does Not Compose: Non-Decaying Loop State for Autonomous LLM
   Agents" (2026), arXiv:2608.27141. — persistent, non-decaying loop-level safety
