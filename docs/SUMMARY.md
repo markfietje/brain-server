@@ -112,6 +112,7 @@
 - [Durable Local-First State](./research/16-durable-local-first-state.md)
 - [The Two-Layer Injection Screen](./research/17-injection-screen.md)
 - [The Cited Work](./research/18-cited-work.md)
+- [The Standards Register](./research/19-standards-register.md)
 
 # Blog
 

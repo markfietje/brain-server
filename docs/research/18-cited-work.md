@@ -302,8 +302,8 @@ ceiling, and this note does not upgrade it by restating it.
 **It is not complete.** It covers the sources cited from `docs/research/` and
 `docs/blog/`. Compliance and threat-model documents cite standards and
 regulations (OWASP, NIST AI RMF, ISO 42001, SOC 2, GDPR, CRA) that belong in a
-standards register rather than a papers bibliography, and those live in
-`docs/COMPLIANCE.md` and `docs/THREAT_MODEL.md`.
+standards register rather than a papers bibliography; those are gathered,
+verified, and linked in [The Standards Register](./19-standards-register.md).
 
 **Two entries remain deliberately unlinked.** LongMemEval and BEAM are named in
 the benchmark note without canonical identifiers. Rather than guess, they are

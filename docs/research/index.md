@@ -23,6 +23,7 @@ cites, the **deterministic** way brain-server implements it, and the **ceiling**
 - [Durable Local-First State](./16-durable-local-first-state.md), Argon2id + AES-256-GCM parameters, the WAL durability envelope, and physical erasure ordering
 - [The Two-Layer Injection Screen](./17-injection-screen.md), mechanical tiers, a local classifier, quarantine as the usable middle state, and honest degradation
 - [The Cited Work](./18-cited-work.md), every source behind these mechanisms, summarized and linked
+- [The Standards Register](./19-standards-register.md), every framework and regulation cited, verified against the issuing body
 
 Every mechanism is a deterministic implementation of *specific* published
 techniques over a local store, no LLM in the retrieval loop, no data egress.
