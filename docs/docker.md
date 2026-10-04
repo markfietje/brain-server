@@ -15,8 +15,10 @@
 - Runtime: `debian:bookworm-slim`, non-root user `brain` (uid 1000),
   `read_only` rootfs + tmpfs, `cap_drop: ALL`, `no-new-privileges`.
 - Healthcheck: `curl /health` (the endpoint is always auth-exempt by design).
-- Loopback-safe default preserved: `BIND_HOST=127.0.0.1`; public binding
-  requires `BIND_PUBLIC=1` explicitly.
+- Loopback-safe default preserved: `BIND_HOST=127.0.0.1`; a `0.0.0.0` bind
+  without `BIND_PUBLIC` logs a loud warning (the opt-in is env *presence*), and
+  any non-loopback bind without auth refuses to start — the run/compose
+  examples below set both `BIND_PUBLIC=1` and a token.
 
 ## Build
 
@@ -42,7 +44,7 @@ State lives under `/data` in the container:
 | Path | Purpose |
 |---|---|
 | `/data/brain.db` | SQLite store (`BRAIN_DB_PATH`) |
-| `/data/keys/` | JWT signing/verification PEMs (`BRAIN_JWT_KEY_DIR`); the UMP operator Ed25519 key lives under `/data/ump/` (`BRAIN_UMP_KEY_DIR`) |
+| `/data/keys/` | JWT signing/verification PEMs (`BRAIN_JWT_KEY_DIR`) **and** the UMP operator Ed25519 key (`BRAIN_UMP_KEY_DIR`) — the image and compose point both key dirs at the same `/data/keys` volume |
 | `/data/auth-token` | opaque bearer token file (0600) |
 
 ## Compose (recommended)
@@ -58,8 +60,10 @@ See `docker-compose.yml` for the full service definition and
 ## Web client (optional)
 
 The Dioxus GUI is **not** built into the image (it is a separate crate served
-from `client/dist`). To serve the UI from the container, build the bundle
-(`client/deploy-web.sh`) and mount it:
+from `client/dist`). The SvelteKit + Tauri shell (`shell/`) is a separate
+frontend that can serve the same `/app` seat once built for that base path. To
+serve the UI from the container, build the bundle (`client/deploy-web.sh`) and
+mount it:
 
 ```yaml
     volumes:

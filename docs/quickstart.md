@@ -80,8 +80,13 @@ For structured data, `POST /ingest` accepts explicit entities and relations.
 
 ## 4. Review — the human-in-the-loop gate
 
-Write-back is human-gated by default. A candidate is **scored, not stored** — it becomes
-memory only when a human approves it:
+Write-back from **agents and auto-capture** is human-gated: those surfaces file
+a proposal, and a candidate is **scored, not stored** — it becomes memory only
+when a human approves it. (Honest scope: the *compiled* default of
+`BRAIN_WRITE_POSTURE` is `open` — direct operator/API writes to the six write
+endpoints insert immediately, screened but not gated; `review` is what
+`install-service.sh` provisions for new installs and what this quickstart's
+proposal example exercises.) A proposal:
 
 ```bash
 # Propose a fragment (scored; creates NO knowledge row)

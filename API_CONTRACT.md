@@ -29,10 +29,18 @@ API surface.
   sent to `POST /recall`. The legacy `GET /search` (flat `q`/`lex`/`source`) and
   `POST /add` remain functional but are **deprecated**.
 - **Deprecation signal.** Deprecated routes return an RFC 8594 `Deprecation`
-  header (e.g. `Deprecation: version="0.9.5"`). The header names the version in
+  header (`Deprecation: version="0.9.5"`). The header names the version in
   which the route entered deprecation, *not* the version it will be removed.
   Removal only happens on a major-version boundary, and only after a minimum of
   one minor release of overlap with the replacement route.
+  **Honest scope (measured against `router/mod.rs`):** the header layer wraps
+  the original v0.9.x application set — the legacy routes
+  (`/add`, `/search`, `/ingest/memory`) AND the core routes mounted beside them
+  (`/health`, `/health/db`, `/ready`, `/openapi.yaml`, `/stats`, `/version`,
+  `/audit`, `/audit/verify`, `/metrics`, `/`, the `/app` seat). Routes merged
+  after the layer (`/ingest/markdown` and everything from the later routers)
+  do NOT carry it. A `Deprecation` header on a healthy core route is an
+  over-application artifact, not a deprecation of that route.
 - **Migration mapping.**
   | Deprecated | Replacement |
   |---|---|
@@ -74,7 +82,7 @@ API surface.
 | `domain` | matches `^[a-z0-9][a-z0-9_-]{0,62}$` | `domain_invalid` |
 | entity/relation `name` | 1 ≤ len ≤ 100, `^[A-Za-z0-9 _-]+$` | `name_invalid` |
 | entity `type` | len ≤ 64 | `entity_invalid` |
-| relation `type` | 1 ≤ len ≤ 64, `^[a-z0-9_]+$` (snake_case) | `relation_invalid` |
+| relation `type` | optional `namespace:` prefix + base 1 ≤ len ≤ 62, `^([a-z]+:)?[a-z0-9_]+$` | `relation_invalid` |
 | arrays (`entities`/`relations`) | ≤ 200 each per request | `too_many_entities` / `too_many_relations` |
 
 > Domain names are **lowercase** by convention. The server normalizes to lowercase
@@ -406,7 +414,8 @@ security visibility.
 
 The shared response/error types live in `src/handlers/mod.rs`; the per-endpoint request
 types live alongside their handlers. Uses crates already in `Cargo.toml` (`serde`,
-`serde_json`, `axum 0.8`).
+`serde_json`, `axum 0.8`). `src/handlers/mod.rs` is AUTHORITATIVE; the block
+below is refreshed as of 1.29.2 and lists every field the structs carry today.
 
 ### `src/handlers/mod.rs` — shared types
 
@@ -434,6 +443,53 @@ pub struct RecallHit {
     /// Per-retriever ranks + fused score. Present only when `provenance=true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provenance: Option<crate::search::Provenance>,
+    /// Structured evidence (verbatim snippet window + line/heading span +
+    /// source link + highlight ranges), when the search computed one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<crate::search::Evidence>,
+    /// Bounded verbatim snippet (a window around the query terms).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
+    /// All recalled content is untrusted evidence (OWASP LLM01:2025) —
+    /// serialized `true` on every hit.
+    pub untrusted: bool,
+    /// Some(true) when the chunk participates in a `contradicts`/`supersedes`
+    /// link with another CURRENT chunk (a contested claim).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<bool>,
+    /// Deterministic stored confidence (0..1).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f32>,
+    /// `assertion_kind` (stated|observed|inferred).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assertion_kind: Option<String>,
+    /// Relevance tier (high|medium|low) derived from the fused score.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relevance: Option<&'static str>,
+    /// Some(true) when `expires_at` is past — only when the caller opted
+    /// into decayed results.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decayed: Option<bool>,
+    /// Stored-row provenance labels: `ingest_kind`
+    /// (memory/markdown/structured/manual/vault/connector), `memory_kind`
+    /// (the `node_kind` vocabulary), `lawful_basis` (Art 5/6), `region`
+    /// (residency stamp), `origin` (human/model/agent/operator/imported —
+    /// the write-side taint label; absent for legacy rows).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ingest_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lawful_basis: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    /// true when the source row was quarantined by the injection screen.
+    pub flagged: bool,
+    /// Source-authority tie-breaker (0..1), surfaced as a provenance label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authority: Option<f32>,
 }
 
 #[derive(Debug, Serialize)]
@@ -443,9 +499,16 @@ pub struct RecallResponse {
     pub domain: Option<String>,
     /// v1.13.3 "SourceFix": always present (empty when no hits).
     pub domains_searched: Vec<String>,
+    /// True when the global corpus was mixed into a domain-routed query
+    /// (the shim rescue leg) — always present, never silent.
+    pub included_global: bool,
     /// Per-stage retrieval telemetry. Present only when `provenance=true`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telemetry: Option<crate::search::SearchTelemetry>,
+    /// The audit row id for this recall's read event, when read-event audit
+    /// is enabled AND `?trace=true` was requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -458,6 +521,8 @@ pub struct IngestResponse {
     pub entities_added: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relations_added: Option<u32>,
+    // …plus further optional fields added since v1.0 (strict-posture
+    // disclosure et al.) — see `src/handlers/mod.rs` for the full set.
 }
 
 #[derive(Debug, Serialize)]
@@ -556,7 +621,10 @@ pub struct RelationInput {
 ```rust
 pub const DOMAIN_RE: &str = r"^[a-z0-9][a-z0-9_-]{0,62}$";
 pub const NAME_RE:   &str = r"^[A-Za-z0-9 _-]{1,100}$";
-pub const RELTYPE_RE: &str = r"^[a-z0-9_]{1,64}$";
+// Relation types carry an optional semantic namespace prefix
+// (`update:`, `supersedes:`, `contradicts:`, `causes:`) before the base
+// relation — single `:` separator, base stays snake_case, base 1..=62.
+pub const RELTYPE_RE: &str = r"^([a-z]+:)?[a-z0-9_]{1,62}$";
 
 pub const MAX_QUERY: usize     = 2_000;
 pub const MAX_TITLE: usize     = 500;
@@ -565,7 +633,8 @@ pub const MIN_LIMIT: u32       = 1;
 pub const MAX_LIMIT: u32       = 100;
 pub const MAX_ENTITIES: usize  = 200;
 pub const MAX_RELATIONS: usize = 200;
-pub const MAX_BODY: usize      = 2 * 1024 * 1024; // 2 MiB — defined but UNUSED; real body cap is the HTTP layer (MAX_REQUEST_SIZE = 1 MiB)
+// (a MAX_BODY constant no longer exists; the real body cap is the HTTP
+// layer — MAX_REQUEST_SIZE = 1 MiB)
 
 pub const DEFAULT_RECALL_LIMIT: u32   = 5;
 pub const DOMAIN_CONFIDENCE_THRESHOLD: f32 = 0.55;
@@ -699,9 +768,10 @@ snapshot exists as a backup the rehearsal tool can verify against, and as the
 physical source for any future operator-driven cutover. No data is moved out of
 `brain.db`; the v0.9.x install path is preserved byte-identical.
 
-**v1.0 deprecation policy.** The legacy `/add`, `/search`, `/ingest/memory`,
-and `/ingest/markdown` routes remain (with `Deprecation: version="0.9.5"`
-header). The primary write path is now `POST /ingest`; the primary read path is
+**v1.0 deprecation policy.** The legacy `/add`, `/search`, and `/ingest/memory`
+routes remain (with `Deprecation: version="0.9.5"` header; `/ingest/markdown`,
+merged after the header layer, does NOT carry it). The primary write path is now
+`POST /ingest`; the primary read path is
 `POST /recall`. A future major version may remove the legacy routes after a
 deprecation window of at least one minor cycle.
 

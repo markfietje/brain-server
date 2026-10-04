@@ -7,17 +7,22 @@ Management, …) are **configuration, not code** — bounded to the same
 
 ## The contract (fixed)
 
-Every CRM source, built-in or custom, normalizes to:
+Every CRM source, built-in or custom, normalizes to the `CrmCase` shape
+(`src/connector/crm/mod.rs`):
 
 | Field | Meaning |
 |---|---|
 | `source` | `"zendesk"` \| `"salesforce"` \| `"genesys"` \| your custom label |
+| `org_id` / `case_id` | the CRM organization/instance (tenant key) + the vendor's stable case id |
 | `case_ref` | stable `crm:{source}:{org}:{id}` — the run-linkage key |
-| `title`, `status` (`open`/`closed_solved`), `priority` | envelope |
+| `title`, `status` (`open`/`closed_solved`/`merged_away`), `priority` (optional, verbatim vendor string) | envelope. `merged_away` is the merged-ref state a vendor surfaces on ticket/case/workitem merges (see `merged_into`) |
 | `subject_ref` | salted SHA-256 of customer identity — never raw PII |
 | `updated_rev` | vendor revision marker (idempotency key input) |
+| `updated_at` | vendor last-update timestamp (ISO-8601), verbatim |
 | `body_markdown` | case description (untrusted; enters via proposals) |
 | `is_seed` / `is_not_seed` | optional structured symptom seeds |
+| `merged_into` | the SURVIVING case's vendor id when this ref was merged into another (`None` unless merged) |
+| `reopened` | `true` when a previously-closed workitem reopened (the re-ask source; Zendesk/Salesforce merges ride `merged_into` instead) |
 
 ## What ships today
 

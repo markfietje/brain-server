@@ -1,17 +1,26 @@
 # Roadmap
 
 Brain Server ships in small, verifiable, named releases. This page summarizes the
-journey to the current version and where it is going. The authoritative plan is
-[ROADMAP.md](https://github.com/markfietje/brain-server/blob/main/ROADMAP.md);
-the full per-version record is
-[CHANGELOG.md](./CHANGELOG.md).
+journey to the current version and where it is going. The full per-version record
+is [CHANGELOG.md](./CHANGELOG.md); the narrative history lives in
+[roadmap-and-release-history.md](./roadmap-and-release-history.md). (The former
+root-level `ROADMAP.md` plan file was never git-tracked and was moved to the
+private plans archive on 2026-10-04 — this page is the in-repo roadmap.)
 
 ---
 
 ## Current status
 
-**v1.28.x — the current server line (1.28.92 "Ledger").** Brain Server ships a Dioxus GUI (web + desktop + iOS +
-Android from one Rust codebase) on top of a mature server. The v1.28 line
+**v1.29.x — the current server line (1.29.2 "Engines", with the governed
+delivery line continuing unreleased on top).** Brain Server ships two operator
+GUIs over one HTTP API: the **Dioxus control surface** (`client/` — one Rust
+codebase, web + desktop) and the **SvelteKit + Tauri shell** (`shell/` — the
+active successor; a typed-wire SvelteKit SPA with a Tauri desktop core, its
+client generated from the kernel's `openapi.yaml`). `/app` serves whichever
+bundle `BRAIN_CLIENT_DIST` points at, and the default is still `client/dist`:
+the shell is CI-gated but not yet the served default, and `shell/README.md`
+freezes the Dioxus `client/` removal until the shell's parity gates pass.
+Mobile is a compile-smoke target only — no store submission has shipped. The v1.28 line
 built the governed loop, then turned it into an enterprise platform:
 1.28.15–1.28.35 ran the governed loop and closed the ISO 10002/10003
 complaint lifecycle with consent-first outreach; 1.28.36–1.28.45 added the
@@ -31,8 +40,13 @@ dormant-exec hardening, finished erasure, unconditional quarantine,
 third-pass close-out, and the Lockdown transport/approval/visibility
 controls; 1.28.81–1.28.92 kept closing (fix releases, the seventh-pass
 closures, Notary's off-host anchor + physical shred, Ledger's loop record
-layers + exec OS boundary). The server core (retrieval, graph, governance) is stable and heavily tested
-(2,188 tests across the workspace at HEAD — `scripts/badges.sh`).
+layers + exec OS boundary). **1.29.0–1.29.2 opened the governed delivery
+line**: the GDL boundary with governed decisions and model identity (the
+digest-pinned model registry), delivery persistence, and the engine executor
+the loop can actually call — with the bindings, governed-release (replay-gate
+promoted), and operate/delivery-read-model rounds continuing unreleased on
+top. The server core (retrieval, graph, governance) is stable and heavily tested
+(3,120 tests across the workspace at HEAD — `scripts/badges.sh`).
 
 ---
 
@@ -63,6 +77,7 @@ layers + exec OS boundary). The server core (retrieval, graph, governance) is st
 | **v1.28.81–1.28.85** | AgBOM + fix releases | AgBOM (live agent bill of materials, .81), Vigil (.82), Recall (.83), Quarterly (.84), SixthPass (.85) |
 | **v1.28.86–1.28.90** | Seventh-pass closures + service | Attrbane (.86, read-seam attribute tier), Ownerstamp (.87, owner stamps + crew seam), Clocktruth (.88), Bounded (.89), Refresh (.90, dependency service bump) |
 | **v1.28.91–1.28.92** | Evidence + the loop record | Notary (.91: off-host `brain anchor` / `--verify`, physical `brain shred`), Ledger (.92: the governed diagnostic loop through 1.32.7, disagreement corpus + account record layers, LAYA System-1 Phase 0, exec OS boundary) |
+| **v1.29.0–1.29.2** | The governed delivery line opens | 1.29.0: the GDL boundary, governed decisions, and model identity (digest-pinned model registry); 1.29.1 "Delivery persistence": the loop's storage plane; 1.29.2 "Engines": the executor the delivery loop can actually call |
 | **Planned research lane** | Red-team harness | End-to-end red-team harness (PipePoison-class write→retrieve→utilize chains), multimodal carrier screening (EXIF/OCR/QR per MMPIBench vectors), MCP OAuth Protected Resource Metadata on HTTP mode (2026-07-28 spec) |
 | **v2.0 "Cortex"** | Multi-team tenancy + authorization-state integrity | Tenancy plus EAL-class permission records bound to source events |
 
@@ -74,13 +89,14 @@ layers + exec OS boundary). The server core (retrieval, graph, governance) is st
 |---|---|
 | **v2.0 "Cortex"** | Multi-team tenancy — the first externally-pilotable release (consumes the v1.2 AuthN/AuthZ foundation) |
 | **v2.x** | Distributed revocation, limits/regions, federation |
-| **v3.x** | Sovereign + survive (resilience), federated deployments |
+| **v3.x** | Sovereign + survive (resilience), federated deployments — including per-tenant key isolation (SQLCipher + KMS, a `BRAIN_TENANT_KEY_FILE` per tenant), planned for v3.7 (see the residency panel in [deployment.md](./deployment.md)) |
 | **v4.0** | Sovereign standard |
 
-The v1.19–v1.28 intermediate milestones (profiles, regulated modes, roles,
+The v1.19–v1.29 intermediate milestones (profiles, regulated modes, roles,
 connectors, BPO operations, the hardening/correctness line, the four
 v1.28 lines, hardening through 1.28.80, the AgBOM/fix releases, the
-seventh-pass closures, and the Notary/Ledger evidence + loop record) are
+seventh-pass closures, the Notary/Ledger evidence + loop record, and the
+1.29 governed delivery line) are
 complete. Next: **v2.0 "Cortex"** —
 multi-team tenancy, the first externally-pilotable release. The plan is
 evidence-gated: work is only shipped
@@ -106,4 +122,5 @@ when it is verifiable and earned by a need, not speculation.
 
 - [Overview](./overview.md) — what Brain Server is and who it is for.
 - [API](./api.md) — the endpoint surface available today.
-- The authoritative [ROADMAP.md](https://github.com/markfietje/brain-server/blob/main/ROADMAP.md) and [CHANGELOG.md](./CHANGELOG.md).
+- The full per-version record: [CHANGELOG.md](./CHANGELOG.md) and
+  [roadmap-and-release-history.md](./roadmap-and-release-history.md).

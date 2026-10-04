@@ -36,12 +36,13 @@ worse than no stop at all. Match the binary, or let systemd do it.
 /usr/local/bin/brain-clean-cycle-check
 ```
 
-It prints `PASS` or `FAIL` and answers three things:
+It prints `PASS` or `FAIL` and answers four things:
 
 | Check | What a failure means |
 |---|---|
 | `PRAGMA integrity_check` | the store is structurally damaged — **stop and investigate** |
 | `PRAGMA journal_mode` | the volume silently cannot do WAL (see below) |
+| the audit-chain anchor (`brain anchor --db` recompute + diff) | the off-host anchor no longer matches the on-host state — possible behind-the-chain tampering |
 | the clean-shutdown stamp | the last process was **killed**, not stopped |
 
 It exits non-zero on any failure, so it can gate a start script or a health

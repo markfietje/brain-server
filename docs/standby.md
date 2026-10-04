@@ -7,7 +7,7 @@ automatic, and no page claims otherwise.
 
 ## Commands
 
-All three run against copies. They never touch the live database except to
+All four run against copies. They never touch the live database except to
 read from it.
 
 - `brain standby start --to <dir> [--interval-secs 30] [--passphrase-file PATH]`
@@ -15,6 +15,10 @@ read from it.
   newest WAL chunk encrypted, then write the signed manifest last. A cycle
   interrupted halfway heals on the next cycle. Three failed cycles in a row
   stop the loop. Interval minimum 5 seconds, default 30.
+- `brain standby ship --to <dir> [--passphrase-file PATH] [--db PATH]`
+  runs ONE cycle of the same order and exits — the timer/CronJob form, where
+  an operator scheduler owns the cadence. Cycle numbering resumes an
+  interrupted sequence.
 - `brain standby status [--to <dir>]` verifies the follower (signature over
   the exact manifest bytes plus artifact hashes) and prints cycle age,
   cycles behind, worst-case RPO, sizes, and integrity. Tampering exits 1.
@@ -28,7 +32,9 @@ read from it.
 `<dir>/base.v3` (encrypted base) plus `wal/NNNN.frame-chunk` files (one
 encrypted WAL copy per cycle) plus `manifest.json` with its detached
 `manifest.sig.json` (Ed25519, same convention as signed parcels). No
-unencrypted byte rests on the follower.
+unencrypted DATABASE byte rests on the follower — the manifest, its
+signature, and the base's SHA-256 sidecar are plaintext by design (they
+carry no database content; the signature is what tamper detection reads).
 
 ## Secrets
 

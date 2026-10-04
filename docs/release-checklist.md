@@ -11,7 +11,7 @@ steps 2 (no OpenAPI change).
 | 1 | `Cargo.toml` (+ `Cargo.lock`) | `version = "x.y.z"` bump for the released component (server or client). | `grep '^version' Cargo.toml` |
 | 2 | `openapi.yaml` | `version` + `x-api-version` stamps (server releases only; skip if the server version didn't move). | `grep -n 'x-api-version' openapi.yaml` |
 | 3 | `CHANGELOG.md` | `## [x.y.z]` entry describing the release, honest ceilings included. | `grep "^## \[x.y.z\]" CHANGELOG.md` |
-| 4 | `ROADMAP.md` | released-version header + the shipped row marked Shipped/Released. | `grep -n "Released version" ROADMAP.md` |
+| 4 | `docs/roadmap.md` | the current-status paragraph names the release. (The root-level `ROADMAP.md` was never git-tracked and moved to the private plans archive on 2026-10-04 — the in-repo roadmap is `docs/roadmap.md`.) | `grep -n "the current server line" docs/roadmap.md` |
 | 5 | `README` badges | version + test-count badges regenerated from the real build. | `scripts/badges.sh` |
 | 6 | `AGENTS.md` | header version note + the Agent entry recording the session. | read the entry you added |
 
@@ -48,7 +48,7 @@ tagged commit is green (fail-closed — the tag itself re-runs no tests, so
 that wait is the only automated bridge between "pushed main" and
 "shipped binaries"). These local gates are the pre-push redundancy, not a
 substitute for the wait. CI-side facts the releaser should know are current
-as of 1.28.92: the `audit` job runs the `cargo-audit` binary over every
+as of 1.29.2: the `audit` job runs the `cargo-audit` binary over every
 tracked lockfile (`.github/workflows/ci.yml`), and the conformance pack
 follows the two-door rule (explicit `GDL_R10_PACK_DIR` = fail-closed
 operator request; plain absence on CI = named skip — `src/handlers/case_run.rs`).
@@ -65,8 +65,8 @@ own completeness.
 
 ### SBOM scope (what the committed file does and does NOT cover)
 
-`sbom/brain-server-<version>.cdx.json` (1.28.92: **374 components** vs
-**523** `Cargo.lock` packages) covers the shipped runtime closure as
+`sbom/brain-server-<version>.cdx.json` (1.29.2: **365 components** vs
+**514** `Cargo.lock` packages) covers the shipped runtime closure as
 emitted by `cargo-cyclonedx`. **Spec version (v1.28.88):** the file is
 CycloneDX **1.5** — the ceiling of cargo-cyclonedx 0.5.9 (latest; it emits
 1.3/1.4/1.5 and reads no config file), pinned as `--spec-version 1.5` in
@@ -98,26 +98,29 @@ the API contract honest:
 | `/app/sw-register.js` | `core.rs:42-45` | static SW registration |
 
 Correction to the plan's "9": `/private` and `/webhooks/gh` appear ONLY
-in auth-middleware unit tests (`src/server/router/auth.rs:599-600,689,802`
-`stub` apps) — they are NOT production routes, so they are not
-router-only exclusions. Counted production set: 8.
+in auth-middleware unit tests (the `stub` apps in
+`src/server/router/auth.rs`'s `#[cfg(test)]` — e.g. `:758-760`) — they are
+NOT production routes, so they are not router-only exclusions. Counted
+production set: 8. (Line numbers here are verified-true at 1.29.2; re-grep
+before trusting them after a router edit.)
 
 ### Well-known wiring table (each route confirmed individually)
 
 | Route | Router registration | Handler |
 |---|---|---|
-| `/.well-known/openid-configuration` | `src/server/router/auth.rs:518` | `src/handlers/well_known.rs:24` |
-| `/.well-known/jwks.json` | `auth.rs:521` | `well_known.rs:30` |
-| `/.well-known/security.txt` | `auth.rs:523` | `well_known.rs:50` |
-| `/.well-known/ai-notice` | `auth.rs:527` | `well_known.rs:79` |
-| `/.well-known/ai-literacy` | `auth.rs:531` | `well_known.rs:97` |
-| `/.well-known/cop-notice` | `auth.rs:535` | `well_known.rs:113` |
+| `/.well-known/openid-configuration` | `src/server/router/auth.rs:678` | `src/handlers/well_known.rs:24` |
+| `/.well-known/jwks.json` | `auth.rs:681` | `well_known.rs:30` |
+| `/.well-known/security.txt` | `auth.rs:683` | `well_known.rs:50` |
+| `/.well-known/ai-notice` | `auth.rs:687` | `well_known.rs:79` |
+| `/.well-known/ai-literacy` | `auth.rs:691` | `well_known.rs:97` |
+| `/.well-known/cop-notice` | `auth.rs:695` | `well_known.rs:113` |
 | `/.well-known/ump.json` | `src/server/router/ump.rs:27` | `src/handlers/ump_ops.rs:1` (`capabilities`) |
 
 All 7 are also public-path listed (`route_guards.rs:19-40` `PUBLIC_PATHS`)
-and present in `openapi.yaml` (:3028 ump.json, :6854-:6990 the six; file
-8203 lines, `x-api-version: "1.21.0"` — unchanged across 1.28.80–92: every
-wire change in that span was additive, so the stamp correctly did not move).
+and present in `openapi.yaml` (ump.json + the six — grep the path to locate
+them; the file is re-measured per release, not assumed: at 1.29.2 it is
+10,928 lines, `x-api-version: "1.29.2"` — the 1.29.x delivery line moved the
+stamp).
 Standing rule: a new well-known route MUST land in all three places
 (router + `PUBLIC_PATHS` + openapi) or fail review.
 

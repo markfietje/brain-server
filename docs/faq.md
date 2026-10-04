@@ -11,7 +11,7 @@ A local-first governed decision and memory substrate for AI agents. It gives an 
 Yes — **zero per-query cost**. Recall uses a *static, local embedding model* and a deterministic pipeline. There is no LLM or embedding API charged on every read and write. Token accounting: **0 decision tokens, 0 embedding tokens.**
 
 **Where does my data live?**
-On your device. There is no cloud and no telemetry to third parties. Outbound HTTP is opt-in and off unless configured (an Art 19 DSAR webhook and an optional system-alert webhook).
+On your device. There is no cloud and no telemetry to third parties. Outbound HTTP is opt-in and off unless configured (an Art 19 DSAR webhook and an optional system-alert webhook, plus opt-in connectors and the GDL provider lane — see [architecture.md](./architecture.md)'s egress list).
 
 **What does it run on?**
 Anything Rust compiles to. It's designed for 4 GB ARM edge devices (Jetson Nano, Raspberry Pi 5, a mini PC), but it runs on any macOS/Linux host. (No power-draw figure is claimed — none measured.)
@@ -28,7 +28,7 @@ Ingest markdown with `POST /ingest/markdown`, structured data with `POST /ingest
 Call `POST /recall` with a `QueryDoc`, or use `brain query "..."`. See **[Retrieval & Recall](./retrieval-and-recall.md)**.
 
 **Is there a GUI?**
-Yes — a Dioxus web + desktop app served at `/app` (the `mobile` feature is a compile-smoke target only; no store submission has shipped). See the **[Client GUI](./client-gui.md)**.
+Yes — two GUIs. The **Dioxus control surface** (`client/`, web + desktop) is what `/app` serves by default; the **SvelteKit + Tauri shell** (`shell/`) is the successor under active development, over the same API. In both, `mobile` is a compile-smoke target only; no store submission has shipped. See the **[Client GUI](./client-gui.md)**.
 
 **Does it work with OpenClaw?**
 Yes — Brain Server is the memory backend for OpenClaw via a `kind: "memory"` plugin. See the **[OpenClaw Integration](./openclaw-integration.md)** page.
@@ -36,7 +36,7 @@ Yes — Brain Server is the memory backend for OpenClaw via a `kind: "memory"` p
 ## Capability
 
 **Does it use an LLM?**
-No. Retrieval, graph building, classification, and span verification are all **deterministic** — no LLM in the loop. Static embeddings via `model2vec`.
+Not in the retrieval hot path. Retrieval, graph building, classification, and span verification are all **deterministic** — static embeddings via `model2vec`, zero retrieval tokens. Honest scope: the governed workflow (GDL) has an opt-in model-driven provider lane (`BRAIN_GDL_PROVIDER_*`) whose every call is token-metered on `/metrics`; a deployment that never configures it runs the deterministic posture only.
 
 **Can it say "I don't know"?**
 Yes. **Calibrated abstention**: when retrieval quality is too low, `/recall` returns `{decision: "low_confidence", hits: []}` instead of top-1 garbage.

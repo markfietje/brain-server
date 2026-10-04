@@ -35,7 +35,7 @@ on the HTTP API or the client console.
 
 | Command | Purpose |
 |---|---|
-| `brain ingest-dir <path>` [`--dry-run`] [`--replace`] [`--source S`] [`--domain D`] | Ingest a vault directory |
+| `brain ingest-dir <path>` [`--dry-run`] [`--replace` \| `-r`] [`--source S`] [`--domain D`] | Ingest a vault directory (`-r` is the short alias of `--replace`) |
 | `brain reconcile <path>` [`--dry-run`] [`--kind vault`] | Sweep deleted sources |
 | `brain source-delete <id> [--yes]` | Retire a source (`--yes` skips the confirmation prompt) |
 
@@ -56,7 +56,7 @@ on the HTTP API or the client console.
 | `brain client dpa set <name> --retention R --deletion D --audit A --breach B --onward O --sub-sub S` | Set a client's DPA terms |
 | `brain client dsar <name> <subject> --action purge\|export\|both [--dry-run] [--yes]` | Run a per-client jurisdiction-aware DSAR. `--action` is REQUIRED (400-free refusal without it — the old silent purge default is gone); purge/both prompt with the subject digest unless `--yes` |
 | `brain client hold add <name> <id> [<id> ...] --reason R` \| `list <name>` | Add a per-client legal hold; list holds. (Release lives on the HTTP API — `POST /legal-hold/{id}/release` — there is no CLI release verb) |
-| `brain client qa list <name>` \| `coach <name> <id> --note N [--flag]` | Supervisor QA queue + coaching note (v1.27.8, Admin) |
+| `brain client qa list <name>` \| `coach <name> <id> [--note N] [--flag]` | Supervisor QA queue + coaching note (v1.27.8, Admin). Note and flagged are both optional |
 | `brain client end <name> [--purge\|--return] [--dataset D] [--yes]` | Terminate a client: purge-or-return + archive + certificate |
 
 ## Self-correction & maintenance
@@ -68,7 +68,7 @@ on the HTTP API or the client console.
 | `brain procedure <title>` [`--step "title: content"` …] [`--domain D`] | Ingest a root + ordered steps in one transaction |
 | `brain classify "<text>"` | Deterministic keyword categorization |
 | `brain evaluate <decision_id>` `--var name=value` … | Evaluate a stored decision rule |
-| `brain eval` [`--floor r5=0.85 r10=0.9`] | Run the frozen recall-eval harness (always compiled into `brain`) |
+| `brain eval` [`--floor r5=0.85 r10=0.9`] [`--safety-violations N`] | Run the frozen recall-eval harness (always compiled into `brain`). `--safety-violations` declares the caller-counted safety term of the joint admission (the harness never invents it) |
 
 ## Connectors
 
@@ -114,7 +114,7 @@ on the HTTP API or the client console.
 | `brain ump import <file>` | Import a UMP export |
 | `brain ump keygen [--dir PATH]` | Generate the UMP operator (Ed25519) signing key |
 | `brain parcel export --domain <d> [--since <ts>] --out <file>` | Export approved knowledge rows as a signed parcel (quarantined rows never leave) |
-| `brain parcel import --file <file> --domain <d> [--expected-signer <did>]` | Verify + import a parcel; rows land as pending proposals, never direct writes |
+| `brain parcel import --file <file> --domain <d> --expected-signer <did>` | Verify + import a parcel; rows land as pending proposals, never direct writes. `--expected-signer` is shown unbracketed because the SERVER refuses without it (`400 signer_required`) — an optional-looking flag would document a call that cannot succeed |
 | `brain parcel ledger [--domain <d>]` | Show the parcel crossing ledger |
 
 ## Personal assistant & compliance register (v1.28.42+)
@@ -141,6 +141,7 @@ step. There is NO hot failover and NO RPO=0 claim anywhere.
 | Command | Purpose |
 |---|---|
 | `brain standby start --to <dir>` `[--interval-secs 30]` `[--passphrase-file PATH]` | Long-running shipper: per cycle a PASSIVE wal_checkpoint, then the encrypted base via the backup v3 writer, the WAL chunk (same v3 encryption — no plaintext at rest), and the signed manifest (written last). An interrupted cycle self-heals on the next one. |
+| `brain standby ship --to <dir>` `[--passphrase-file PATH]` `[--db PATH]` | ONE ship cycle then exit — the timer/CronJob form (an operator scheduler owns the cadence; the binary never loops). Same per-cycle order as `start`, cycle numbering resumes an interrupted sequence. |
 | `brain standby status [--to <dir>]` | Integrity self-check of the follower: verifies the manifest's Ed25519 signature and recomputes artifact hashes — any tamper or torn cycle FAILS (exit 1). Prints cycle, age, cycles behind, and `rpo_max = interval + checkpoint lag`. |
 | `brain standby promote-check --from <dir>` `[--passphrase-file PATH]` `[--expected-signer DID]` | THE DRILL: restores the follower into a temp dir (the shipped restore path), replays the WAL chunk, runs `PRAGMA integrity_check`, and prints measured RTO plus computed RPO. Exit code gates. |
 
@@ -167,9 +168,9 @@ credential — the trust boundary is the operator's.
 |---|---|
 | `brain anchor` [`--db PATH`] | Prints the deterministic state fingerprint (audit chain head + knowledge content census + row counts) — record the line OFF-HOST (paper, password manager, second machine). Read-only, audited by nothing on purpose: the anchor's own audit row would move the chain head it just fingerprinted; the off-host copy IS the evidence. Run per domain DB. |
 | `brain anchor --verify "<recorded line>"` [`--db PATH`] | Recomputes and diffs against a recorded line. ANY state change since the record trips it — legitimate writes too (the audit chain explains those); what it uniquely catches is a moved knowledge census on a chain that still verifies: business-row tamper behind the chain, the class no in-tree verifier detected (seventh pass, R7-08). |
-| `brain census` [`--db PATH`] | The **drift census**: re-scores the FROZEN gold corpus and diffs every cell against the committed baseline (`evals/R57_DRIFT_BASELINE.json`) under ONE global tolerance (500 units of 10000). A breach writes a hash-chained `findings` row (`source=drift_census`) and **exits non-zero**; a clean pass writes nothing at all and exits 0. Externally cron-driven on purpose — there is NO in-process scheduler, because a shipper running inside the server it measures is a correlated failure. A cell with no baseline is reported and makes the run non-clean rather than passing: a watchdog nobody has watched is not a watchdog. |
+| `brain census` [`--db PATH`] | The **drift census**: re-scores the FROZEN gold corpus and diffs every cell against the committed baseline (`evals/R57_DRIFT_BASELINE.json`) under ONE global tolerance (500 units of 10000). A breach writes a hash-chained `findings` row (`source=drift_census`) and **exits non-zero**; a clean pass writes nothing at all and exits 0. Externally cron-driven on purpose — there is NO in-process scheduler, because a shipper running inside the server it measures is a correlated failure. A cell with no baseline is **reported loudly** (the unbaselined/orphaned counts print with their names) — honest ceiling: only a tolerance breach changes the exit code today; the library's own `is_clean` law (`breaches == 0 && unbaselined == 0 && orphaned == 0`) is stricter than the CLI gate, so read the printed counts, not just the exit code. |
 | `brain census --print-baseline` | Emits the measured vector in the committed baseline's exact shape. Re-anchoring is a **deliberate, diffable act**: commit the result with a message saying WHY the scores moved. A baseline that drifts without a reason in the log is a census that has stopped measuring. Needs no database. |
-| `brain shred --db PATH --yes` | The operator-invoked physical residue drop after a logical purge. `--yes` is REQUIRED (there is no interactive prompt — the refusal without it is deliberate). Steps: `secure_delete=ON` (readback asserted) → `wal_checkpoint(TRUNCATE)` → `VACUUM` (rebuild from live pages only) → `wal_checkpoint(TRUNCATE)` → `integrity_check`, evidenced by one hash-chained `forget` audit row. Freelist reads back 0. Does NOT touch filesystem copies, `<db>.bak` snapshots, standby follower chunks, or SSD wear-leveling — printed on every run. Run per domain DB, ideally in a quiet moment (VACUUM holds the writer). |
+| `brain shred [--db PATH] --yes` | The operator-invoked physical residue drop after a logical purge. `--yes` is REQUIRED (there is no interactive prompt — the refusal without it is deliberate); `--db` is optional and defaults to `BRAIN_DB_PATH`/the default DB. Steps: `secure_delete=ON` (readback asserted) → `wal_checkpoint(TRUNCATE)` → `VACUUM` (rebuild from live pages only) → `wal_checkpoint(TRUNCATE)` → `integrity_check`, evidenced by one hash-chained `forget` audit row. Freelist reads back 0. Does NOT touch filesystem copies, `<db>.bak` snapshots, standby follower chunks, or SSD wear-leveling — printed on every run. Run per domain DB, ideally in a quiet moment (VACUUM holds the writer). |
 
 ## Examples
 

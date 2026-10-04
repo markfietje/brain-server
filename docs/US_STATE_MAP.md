@@ -1,4 +1,4 @@
-# US State AI Map - Operator Runbook (v1.28.88)
+# US State AI Map - Operator Runbook (re-verified against 1.29.2)
 
 Scope: brain-server is a single-node loopback-first memory component. It does not train frontier models, does not make consequential decisions by itself, and serves no UI to consumers. Most US duties fall on the deployer / operator for their use case. This file lists what the component gives you live, and what you must still do.
 
@@ -116,5 +116,5 @@ Operator process (verify per state you operate in):
 - [ ] NYC bias audit hired yearly with published summary (LL144).
   No component substitutes for the independent auditor.
 - [ ] Dates re-checked quarterly against primary sources (legislature
-  pages, AG offices, CPPA). This file is dated 2026-09-11; statutes and
+  pages, AG offices, CPPA). This file is dated 2026-09-14; statutes and
   stays move.

@@ -46,15 +46,26 @@ nobody has demonstrated.
 > to enable promotion is one with a **named owner**, made against a published
 > measurement, and not a runtime preference.
 >
-> **The inertness has two independent encodings, and they are not related by any
-> pin.** The route hardcodes its refusal as a string literal and never calls
-> `promote()`, and the constant `PROMOTION_ENABLED` is read only inside
-> `promote()`. The consequence is that flipping the constant to `true` would
-> change no behaviour and turn no test red. The behaviour is correct and
-> *stronger* than a constant alone (a literal cannot be flipped by a build),
-> but the two are separate, and a reader looking for one switch will find two
-> mechanisms that neither constrains. `PROMOTION_ENABLED` is a statement of
-> intent; the route's literal is the enforcement.
+> **The inertness has two independent encodings — and both are now pinned.**
+> The route hardcodes its refusal as a string literal and never calls
+> `promote()`, and the constant `PROMOTION_ENABLED` is read inside `promote()`
+> (plus one dead-code alias in `src/workflow/measurement.rs`). Flipping the
+> constant to `true` today **turns tests red**: `promote.rs`'s own battery
+> asserts the constant's value and the Disabled outcome for every actor, and
+> three external source-text pins (`tests/create_loop_pins.rs`,
+> `tests/measurement_config_pins.rs`, `tests/drift_census_pins.rs`) read the
+> literal `const PROMOTION_ENABLED: bool = false;` — the pin inspects the
+> constant's own source text, so a flip fails the suite rather than sailing
+> through. The route's literal remains the *enforcement* and the constant the
+> *statement of intent*, but a reader looking for one switch now finds two
+> mechanisms that the pins hold together.
+>
+> **Scope note, so the inert claim is not over-read:** this non-claim is about
+> the CLAIM promote route. A *different* promotion path — the delivery
+> release act, `POST /workflow/delivery/releases/{id}/promote` — is live and
+> gated by the replay-determinism gate (see
+> [model-governance.md](./model-governance.md)). "Promotion is disabled" here
+> means claim promotion, not every promote verb on the server.
 
 > **Gap detection has NO RELIABLE PUBLISHED DETECTION METHOD.** No published
 > technique reliably answers "what does this knowledge base not know". The
@@ -148,10 +159,13 @@ curl -X POST localhost:8765/workflow/claims/clm_0001/promote -H "Authorization: 
 The **refusal stream**. A run in which refusals occurred and no refusal metric
 moved is a **failed run**, not a quiet week: a gate whose refusals are
 invisible to monitoring is a gate that has already lost. The corpus of planted
-adversarial claims is the standing regression surface — it replays against a
-*copy* of the live database on a schedule, and a member that reaches
-`ratified` or `recall_visible = 1` is a release-blocking failure rather than a
-warning.
+adversarial claims is the standing regression surface — it is a compile-time
+corpus (`src/workflow/create/corpus.rs`) exercised by its own unit battery and
+by source-text membership pins (membership floored at 12; the suite fails if a
+member disappears). Honest ceiling: there is **no scheduled replay runner** and
+no live-database copy step — the corpus runs where the test suite runs, so a
+member that would reach `ratified` or `recall_visible = 1` fails the suite
+rather than a watchdog.
 
 Two of that corpus's members target **cleanup** rather than admission, because
 the residue operators leave behind is a separate failure surface from the things

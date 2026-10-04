@@ -35,9 +35,10 @@ Brain Server is configured entirely through **environment variables** — there 
 | `BRAIN_JWT_ISSUER` | — | Enables **JWT mode** when set + keys loaded. URL of the issuer (verified against the `iss` claim). |
 | `BRAIN_JWT_KEY_DIR` | `~/.config/brain-server/keys/` | Directory holding JWT signing key PEMs (mode 0700; private keys 0600). |
 | `BRAIN_JWT_AUDIENCE` | `brain-server` | Expected `aud` claim value. |
+| `BRAIN_JWT_AZP` | — | Per-application `azp` binding when `BRAIN_JWT_AUDIENCE` is tenant-wide: binds the token to one named application (the OIDC `azp` claim), so an audience shared across apps still admits only the app this deployment trusts. Present but blank **refuses boot** (fail-closed); rejections surface on `/metrics` as `brain_jwt_azp_rejected_total`. |
 | `BRAIN_PUBLIC_BASE_URL` | — | Public base URL for OIDC discovery. **Never** inferred from `Host`. |
 | `BRAIN_UMP_KEY_DIR` | `~/.config/brain-server/ump/` | Directory holding the UMP operator Ed25519 signing key (distinct from the JWT key dir). |
-| `BRAIN_TRUST_PROXY` | off | When set, trust `X-Forwarded-For` from the named proxy for real-IP + rate-limit accounting. Off by default so a spoofed header can't bypass rate limits. |
+| `BRAIN_TRUST_PROXY` | off | Truthy flag (`1\|true\|yes\|on`): when set, trust the `X-Forwarded-For` header for real-IP + rate-limit accounting. There is no proxy-naming vocabulary — any other value parses as OFF. Off by default so a spoofed header can't bypass rate limits. |
 
 ## GDL provider profile (R35)
 
@@ -57,6 +58,28 @@ After authentication, domain `Write`, and the GDL-local `workflow` role checks, 
 A provider failure after GDL admission is recorded as a terminal, non-retryable `gdl_provider_failed` outcome: the first launch returns HTTP 503 with that stable code, and a later launch against the same run returns HTTP 409 with the same code without replaying provider work. Provider bodies, bearer values, secret paths, and secret-bearing URLs are not persisted or logged. The provider client is constructed at the authenticated launch boundary; no provider client is stored in `AppState`, and this round adds no public recovery API.
 
 The least-privilege `workflow-operator` role can be granted through the public role contract. It carries `workflow` only; the `agent` preset remains without `workflow`, and role-less or unknown-role JWTs remain denied.
+
+## Delivery bindings (R61)
+
+The delivery loop's standing authority over external systems is a server-owned
+bindings profile — the structural sibling of the GDL provider profile above:
+complete-or-absent, resolved and **validated at boot**, and never selected by a
+request. Consent to an external authority is given by configuring a binding
+here and withdrawn by setting `active = 0` on its row — a request can never
+create or widen an authority.
+
+| Variable | Description |
+|---|---|
+| `BRAIN_DELIVERY_BINDINGS` | JSON array of binding descriptors (≤ 64 KiB, no control characters). Each entry needs `domain` (≤ 100 chars), `target_kind` (from the closed `TARGET_KINDS` vocabulary), `target_ref` (≤ 200 chars), `endpoint` (validated to the exact API host at boot — an operator typo must not become a bearer sent somewhere else), and `secret_file_name` (a FILE NAME, never a path — a separator refuses, so a configured value cannot escape the root). A `capabilities` string is optional; missing = the read-only default (reads, no intents), never a wildcard. |
+| `BRAIN_DELIVERY_BINDINGS_SECRET_ROOT` | Absolute directory per-binding secret file names resolve against; root-confined by the reader on every use. Required when `BRAIN_DELIVERY_BINDINGS` is set. |
+
+Absent `BRAIN_DELIVERY_BINDINGS` = no bindings (the default posture). A partial,
+empty, oversized, or otherwise invalid profile **refuses bootstrap** with a
+fixed `delivery bindings configuration is invalid or incomplete` error that
+carries no configured value — an operator's target ref and secret name must not
+ride a boot log. Capabilities parse with refusal and endpoints pass the API-host
+assertion before the profile is stored, so boot provisions from the same value
+it validated.
 
 ## Retrieval & expansion
 
@@ -176,8 +199,8 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `BRAIN_SIGNAL_WEBHOOK_SECRET_FILE` / `BRAIN_KB_FEEDBACK_SECRET_FILE` | — | Per-surface HMAC secrets (Signal gateway; KB feedback relay). |
 | `BRAIN_STANDBY_DIR` | `~/.local/share/brain-server/standby` | Warm-standby follower directory (`brain standby start/status/promote-check`). |
 | `BRAIN_CAPACITY_TARGET` | `jetson` (conservative) | The capacity envelope tier. ONLY the literal `desktop` selects the desktop envelope; unset, empty, and unknown values all resolve to `jetson` (fail-closed to the smaller envelope). Also gates the loom CPU-parallelism tier. |
-| `BRAIN_RSS_RESTART` | — | RSS watchdog restart threshold (breach → graceful self-restart request). |
-| `BRAIN_CONNECTOR_CONFIG_DIR` | platform config dir | Connector config dir; included in backups. |
+| `BRAIN_RSS_RESTART` | — | RSS watchdog opt-in (boolean `1\|true\|yes\|on`): when set, a breach of the capacity envelope's `max_rss_mib` on two consecutive samples makes the process `exit(1)` so the supervisor restarts it; default (unset) is log-only. The threshold itself is the envelope's `CAPACITY_MAX_RSS_MIB`, not this var. |
+| `BRAIN_CONNECTOR_CONFIG_DIR` | `$HOME/.config/brain-server/connectors` | Connector config dir (same literal path on every platform); included in backups. |
 | `BRAIN_AUDIT_CHAIN_KEY` / `_FILE` | — | Key for the hmac256 audit-chain epoch (absent = SHA-256 links; keyed chains refuse to write without the key). |
 | `BRAIN_AUDIT_SIGNING_KEY` / `_FILE` | — | Art.12 decision-record signing key. |
 | `BRAIN_BACKUP_PASSPHRASE_FILE` | — | Backup/restore passphrase for `brain backup`/`restore` (the `--passphrase-file` flag reads the same seam; a passphrase is REQUIRED — no unencrypted backup exists). Note: the inline `BRAIN_BACKUP_PASSPHRASE` env is read only by the `brain-migrate-rehearse` helper binary, not by `brain backup`/`restore`. |
@@ -188,7 +211,7 @@ and no `BRAIN_REDACT_PII` knob (removed v1.20.19).
 | `BRAIN_LEGAL_DB_PATH` | — (unset) | The curated legal-rules DB file the `/legal/rules` diff reads. UNSET by default: the legal route refuses NAMED (`legal_db_unconfigured`) and everything else is unaffected. When set, the file is opened READ-ONLY per request (no restart needed after a DPO import) and never written by the server. See `docs/legal-db-import.md` for the DPO import procedure. |
 | `MCP_TRANSPORT` / `MCP_HTTP_PORT` / `MCP_HTTP_ADDR` / `MCP_HTTP_TOKEN` | stdio | The MCP binary's transport: stdio (default) or Streamable HTTP + SSE. See docs/mcp.md. |
 | `PACKING_WEIGHTS` | built-in | Evidence-packing weight overrides (advanced). |
-| `BRAIN_STEWARD_BIN` | — | Override the workflow-crank harness binary. MUST be an ABSOLUTE path (relative refuses; PATH is never consulted) or the binary lives beside the kernel. |
+| `BRAIN_STEWARD_BIN` | — | Override the workflow-crank harness binary. TWO seams read it: the **server-side crank** (`resolve_harness_bin`) requires an ABSOLUTE path — relative refuses (`steward_bin_relative`), PATH is never consulted, and the fallback is the binary beside the kernel; the **CLI crank** (`brain workflow crank`) accepts the override verbatim, then falls back to the binary beside `brain`, then to PATH. Point the override at an absolute path and both seams behave identically. |
 
 > **The source of truth** for every tunable is `src/config.rs` and the owning modules named above (`src/server/bootstrap.rs`, `src/capacity.rs`, `src/search/`, `src/bin/mcp.rs`) in the repository.
 

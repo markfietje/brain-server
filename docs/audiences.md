@@ -10,7 +10,7 @@ memory substrate for AI agents**. This page maps the product's **shipped**
 capabilities to the **concrete people and teams** who use them, so you can tell
 at a glance whether it fits your job — and exactly what you'd get.
 
-Every claim below is **reverse-checked against the current source** (v1.28.62): a
+Every claim below is **reverse-checked against the current source** (v1.29.2): a
 "Shipped" row names a real route, role preset, or test that exists in this
 repository today. "Planned" means a documented roadmap ceiling. Nothing here is a
 promise dressed as a feature — the honest ceiling is stated plainly at the end,
@@ -54,7 +54,7 @@ roadmap the product is building toward, not its current single-node form.
 In plain terms:
 
 - **What it is:** your own private memory server for an AI agent — no cloud, no
-  embedding API fees, no telemetry. One Rust binary (v1.28.62) + one SQLite file.
+  embedding API fees, no telemetry. One Rust binary (v1.29.2) + one SQLite file.
 - **What it costs to run:** local static embeddings (model2vec), so recall costs
   **zero embedding tokens and zero decision tokens**; fits a Jetson/Raspberry Pi.
 - **What it gives an agent:** deterministic hybrid recall (vector + full-text +
@@ -105,7 +105,7 @@ DSAR, PII, human-gated writes); the *shared-tenant packaging* is the planned par
 | **Managed-service / shared-services support** | Standardized knowledge across internal teams with per-team scope | Domains + centroid routing, per-agent opt-in, chat-type gating | **Shipped** |
 
 **Try it (10 minutes, single node):** `brain-server` + `brain ingest-dir` a
-handful of past resolutions, then `brain recall "how did we fix the onboarding
+handful of past resolutions, then `brain query "how did we fix the onboarding
 issue"` and `brain get <id>` to pull the source chunk. Approve a captured fact
 through the proposal queue to see the human write-gate in action.
 
@@ -133,13 +133,13 @@ memory.
 
 | Who you are | What you need | What Brain Server gives you | Status |
 |---|---|---|---|
-| **OpenClaw users** | Deterministic memory in the memory slot, zero token cost | Native `kind: "memory"` plugin (autoRecall / autoCapture / Proposal), plugin 0.4.7 | **Shipped** |
+| **OpenClaw users** | Deterministic memory in the memory slot, zero token cost | Native `kind: "memory"` plugin (autoRecall / autoCapture / Proposal), plugin 0.6.11 | **Shipped** |
 | **Agent / LLM developers** | A self-hosted memory store with standard contracts | Open HTTP API, **MCP** binary, OpenAPI, **UMP 1.0 L3** | **Shipped** |
 | **MCP-adopting teams (2026)** | A memory backend that speaks the **current stateless MCP** | The `mcp` binary implements **MCP 2026-07-28**: stateless, `server/discover`, per-request `_meta`, `ttlMs`/`cacheScope` — no `initialize` handshake | **Shipped** |
 | **Edge / privacy-first agent builders** | Memory on-device, no embedding API | Local static `model2vec`, offline, bounded RSS (default 512 MiB) | **Shipped** |
 | **Agent platforms & ISVs** | A memory backend to embed without lock-in | Standard-based (UMP, MCP, open HTTP), self-hostable | **Shipped** |
 
-**Try it:** `brain recall "…"` from the CLI, or point any MCP-capable host at the
+**Try it:** `brain query "…"` from the CLI, or point any MCP-capable host at the
 `mcp` binary (it implements the 2026-07-28 stateless spec out of the box). See
 [`docs/mcp.md`](./mcp.md) for the exact install + a working request.
 
@@ -280,7 +280,7 @@ Not yet. Per-domain isolation is shipped; **multi-team tenancy is the v2.0
   incl. **§7 the erasure procedure** (the documented, audited path a BPO/QA/Admin
   follows to delete memory).
 - **[MCP](./mcp.md)** — the current stateless MCP server + install.
-- **[OpenClaw integration](./openclaw-integration.md)** — the plugin (0.4.7) and
+- **[OpenClaw integration](./openclaw-integration.md)** — the plugin (0.6.11) and
   its token-resolution ladder.
 - **[Roadmap](./roadmap.md)** — the v2.0 "Cortex" trajectory this map points at.
 - **[BENCHMARKS](./BENCHMARKS.md)** — the recall numbers behind the "in numbers"

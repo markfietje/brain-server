@@ -58,9 +58,11 @@ and inserting your rows directly:
 
 - schema + seed (Rust): `legal_rules_db::db::create_schema(&conn)` then
   `legal_rules_db::db::seed(&conn, "your-dpo-id", now)`.
-- schema only (SQL): the five `CREATE` statements live in
-  `crates/legal-rules-db/src/db.rs` (`create_schema`) — copy them verbatim; the FTS5 index
-  (`rules_fts`) must be kept in step with `jurisdiction_rules` (the seed paths do this; if
+- schema only (SQL): the six statements of the `create_schema` batch live in
+  `crates/legal-rules-db/src/db.rs` — four `CREATE TABLE`, the FTS5 virtual
+  table (`rules_fts`), and `idx_jurisdiction_rules_order`; copy the whole
+  batch verbatim. The FTS5 index
+  must be kept in step with `jurisdiction_rules` (the seed paths do this; if
   you insert rows via raw SQL, also
   `INSERT INTO rules_fts(rowid, body, source_ref) SELECT id, body, source_ref FROM
   jurisdiction_rules` and afterwards `INSERT INTO rules_fts(rules_fts) VALUES('rebuild');`).

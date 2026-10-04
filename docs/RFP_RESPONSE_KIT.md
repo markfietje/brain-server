@@ -1,6 +1,6 @@
 # RFP Response Kit — brain-server
 
-**Applies to:** brain-server 1.28.92 · **Last updated:** 2026-09-22
+**Applies to:** brain-server 1.29.2 · **Last updated:** 2026-10-04
 
 A two-to-three page map from common enterprise RFP sections to the concrete
 brain-server features that satisfy them, so a procurement response can cite
@@ -86,7 +86,7 @@ file (`COMPLIANCE.md`), threat model (`THREAT_MODEL.md`), security map
 | Observability | `/health` (incl. hardening + capacity), `/metrics`, structured audit | `COMPLIANCE.md` §6.1 |
 | Capacity / performance | Capacity envelopes (`/health`), `bench --envelope` ship gate | v0.9.9, `BENCHMARKS.md` |
 | Disaster recovery | Pre-migration `VACUUM INTO` snapshots (chmod 0600), import/export, migration rehearsal tool | `docs/deployment.md`, v1.16.7 |
-| Documentation | Wiki (22 pages) + `docs/` (public) + engineering docs (technical file, spec, contract) | `README.md` §Docs |
+| Documentation | `docs/` site (the single documentation source — the wiki was retired 2026-08-12) + engineering docs (technical file, spec, contract) | `README.md` §Docs |
 
 ## 4.5 Competitive positioning — governance over leaderboard
 

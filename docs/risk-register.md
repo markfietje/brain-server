@@ -14,7 +14,7 @@
 | R-06 | Token replay / algorithm confusion (S) | Low | High | `ALLOWED_ALGS` whitelist before key lookup (RS256/RS384/RS512/ES256/ES384/EdDSA, `none`/HS*/PS* rejected), `(jti,iss)` denylist on EVERY request (per-request, zero staleness — v1.28.85), refresh-chain reuse detection burns family | brain-server | Low — no staleness window; unavailability fails closed |
 | R-07 | Channel/out forgery, steering laundering (S/T) | Low | High | `RESERVED_OUTBOX_TOPICS` at `enqueue_child` → `400 topic_reserved`, `post_steering` is `approve`-role gated + args truth (X-W1/X-L1, Wardline + Truthglass) | brain-server | Low |
 | R-08 | Image/beacon exfiltration (I) | Low | High | Doc-mode images default OFF + operator allowlist, favicon proxy default OFF, `data:` ≤64 KiB (Shutter); markdown refs stripped at read seam | brain-server + operator (allowlist is trust) | Low (doc-mode), Medium (bare URLs linkified-but-inert by contract) |
-| R-09 | Supply-chain / transitive dep (T) | Low | High | `cargo audit` in CI, pinned `Cargo.lock`, SBOM per release (CycloneDX), minimal optional features; `rsa 0.9.10` Marvin accepted with local-daemon model | brain-server | Low — Marvin is documented ignore |
+| R-09 | Supply-chain / transitive dep (T) | Low | High | `cargo audit` in CI, pinned `Cargo.lock`, SBOM per release (CycloneDX), minimal optional features; Marvin (`rsa` crate, RUSTSEC-2023-0071): the pinned direct dep is `rsa = "=0.10.0-rc.18"` (still the affected line, per THREAT_MODEL — no fixed release exists anywhere as of the 2026-08-04 verification; `jsonwebtoken` 11 rides the same disposition), accepted with the local-daemon timing model; a 0.9.10 copy survives only transitively | brain-server | Low — Marvin is documented ignore |
 | R-10 | Denial of service — burst / vector query (D) | Medium | Medium | Per-IP tiered rate limiting (per-tenant buckets are NOT shipped — the shared-bucket gap is X-A10's accepted residual), capacity envelopes (507 on ingest, reads never blocked), per-token/byte HTTP limits, `MAX_NOTES_PER_RUN=1000` | brain-server + reverse proxy | Low (loopback), Medium (shared loopback bucket X-A10 until per-principal) |
 | R-11 | Encryption at rest (I) | Low | High | No app-level encryption at rest; operator LUKS/FileVault is the layer — standing statement: DB + `.bak` PLAINTEXT on primary, encryption law covers follower only; SQLCipher per-tenant keys v3.7 horizon | operator | Medium until v3.7 |
 | R-12 | Unwarranted erasure / litigation hold miss (R) | Low | High | DSAR / `/purge` are Admin-only, explicit + tombstoned + audited; `legal_holds` freezes every erasure path (`409 legal_hold_active`, deferred `held_ids` on cert) | brain-server | Low |
@@ -29,4 +29,9 @@
 
 **Traceability:** every row above maps to a `THREAT_MODEL.md` STRIDE entry and/or an `AUDIT.md` finding. Keep this file in sync — `CONTACT_CENTER_STANDARDS.md` and `COMPLIANCE.md` §6.1 point here as the Art 9 / ISO 42001 Clause 6.1 evidence.
 
-*Next review trigger: any STRIDE change, any AUDIT ledger add/close, or the Loop line (v1.32.x) landing.*
+*Next review trigger: any STRIDE change, any AUDIT ledger add/close. (The
+"Loop line (v1.32.x) landing" trigger has FIRED — the Loop shipped through
+1.32.7 in v1.28.92 and the 1.29.x line continues it — and the review was
+performed in the v1.28.92–v1.29.2 window: no new register row, no disposition
+change; this note replaces the standing trigger, whose condition no longer
+distinguishes anything.)*

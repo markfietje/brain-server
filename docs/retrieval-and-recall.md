@@ -4,7 +4,7 @@ This page explains **how Brain Server finds the right memory** — the retrieval
 
 ## The retrieval pipeline
 
-Recall is **hybrid**: two retrieval legs run concurrently and are merged.
+Recall is **hybrid with a graph leg**: the vector and lexical legs run concurrently, the graph leg runs with them by default, and all three are merged.
 
 ```
       query
@@ -66,12 +66,14 @@ PRF (pseudo-relevance feedback) expands the query with related terms — but onl
 
 ## Structured query (`QueryDoc`)
 
-`POST /recall` takes a structured query document:
+`POST /recall` takes a structured query document (the request struct in
+`src/handlers/recall.rs` is `RecallRequest`; there is no `q`/`k` alias — a
+body with those keys fails deserialization):
 
 ```json
 {
-  "q": "blueberry alternative",
-  "k": 5,
+  "query": "blueberry alternative",
+  "limit": 5,
   "sources": ["memory", "vault"],
   "provenance": true,
   "graph": false
@@ -81,6 +83,10 @@ PRF (pseudo-relevance feedback) expands the query with related terms — but onl
 - **Lexical control** — a `LexSpec` with terms, quoted phrases, exclusions (`-"..."`), and exact code paths.
 - **Filters** — `source`/`sources` (ingest kind: `memory` · `markdown` · `structured` · `manual` · `vault`), `since` (ISO timestamp), `domain`, `min_relevance`, `include_decayed`.
 - **Provenance** — per-retriever ranks, fused score, expansion terms.
+- **Context packing** — `max_context_tokens` re-ranks the hit set by budgeted
+  monotone **submodular maximization** (`src/search/packing.rs`): evidence is
+  packed to maximize coverage under the caller's token budget rather than
+  truncated by score order.
 
 ## Provenance
 

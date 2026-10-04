@@ -5,7 +5,7 @@ personal AI assistant gateway. The integration is a TypeScript plugin
 (`@markfietje/brain-server-openclaw`) that lives in `plugin/` and calls the Rust server over
 **loopback HTTP**. It plugs into OpenClaw's **memory slot** (`kind: "memory"`).
 
-**Plugin version:** the in-tree package is at **0.6.10**. It is published as
+**Plugin version:** the in-tree package is at **0.6.11**. It is published as
 `@markfietje/brain-server-openclaw` (npm) (the openclaw monorepo ships it under
 `extensions/brain-server`, in sync with the `plugin/` tree). Per-version behavior lives in
 `plugin/CHANGELOG.md`; the server-side releases each version rides on are itemized in
@@ -15,8 +15,8 @@ default-pinning, 0.4.7 drift reconciliation + hardening, 0.5.0 the Team Bridge, 
 strip-set parity sync, 0.6.0 the origin labels, 0.6.1 the manifest schema
 declaration for `untrustedOrigins`, 0.6.2 the fail-closed token ladder plus
 origin pinning, 0.6.3 the multiline-token refusal plus redirect re-pin plus
-chat-gated mirrors, 0.6.4 the deny-default bridge gate, 0.6.5–0.6.10 later
-hardening rounds — see the Security model below and `plugin/CHANGELOG.md`).
+chat-gated mirrors, 0.6.4 the deny-default bridge gate, 0.6.5–0.6.11 later
+hardening/diagnostics rounds — see the Security model below and `plugin/CHANGELOG.md`).
 
 The remembered, searchable, erased facts all live in the Rust brain-server. The plugin is a **thin
 TypeScript shim**: it implements the OpenClaw SDK contract (hooks, tools, config, gating) and
@@ -559,7 +559,8 @@ settings without restarting the gateway.
   from hit bodies (a recalled chunk cannot forge the close), and `formatRecallContext` drops any
   hit not explicitly tagged `untrusted === true` (fail-safe → empty injection if none qualify).
 - **Provenance inside the fence** (v1.27.12 / plugin 0.4.3): each hit renders a deterministic
-  `[src: · mk: · lb: · reg:]` line (source / memory kind / lawful basis / region) inside the
+  `[src: · mk: · lb: · reg:]` line (source / memory kind / lawful basis / region; a fifth
+  `origin:` segment renders when the hit carries one, plugin 0.6.0+) inside the
   untrusted block; labels pass through `sanitizeForBlock` and are never trusted as instructions —
   attribution is displayed, not asserted.
 - **Markdown-ref strip** (v1.20.27): the plugin also strips markdown image/link references, so a

@@ -1,6 +1,29 @@
 # Client GUI
 
-Brain Server ships with a **Dioxus control surface** (`client/`) — a single Rust codebase that runs as a **web app, desktop app, iOS app, and Android app**. It gives operators a visual, accessible surface for everything the API and CLI can do. The web build is served by the server at `/app`.
+Brain Server has **two** operator GUIs over the same HTTP API.
+
+- **`client/` — the Dioxus control surface (Rust).** A single Rust codebase
+  running as a **web app and a desktop app**, with 16 routed panels. This is
+  the bundle the server serves at `/app` today (`BRAIN_CLIENT_DIST` defaults
+  to `client/dist`). Its `mobile` feature is a compile-smoke target only — no
+  store submission has shipped.
+- **`shell/` — the SvelteKit + Tauri shell (the active successor).** A
+  typed-wire SvelteKit SPA with a Tauri desktop core, built on its own CI
+  workflow (`shell.yml`: lint, strict type-check, unit tests, byte-stable
+  generated client, strict CSP build, dependency audit, Tauri fmt/clippy/audit
+  and build, plus a Playwright e2e against a real loopback kernel). Its API
+  client is **generated from the kernel's `openapi.yaml`**, and CI byte-compares
+  a regeneration against the committed output, so contract drift is a red build.
+  It ships 8 routes today (`/`, `/overview`, `/recall` + trace, `/search`,
+  `/decisions` + detail, `/models`).
+
+**Which one is live:** `/app` serves one bundle, chosen by `BRAIN_CLIENT_DIST`
+(default `client/dist`). The Dioxus client's removal is **frozen until the
+shell's parity gates pass** — see `shell/README.md`. So the Dioxus client is
+what ships today and the SvelteKit + Tauri shell is what is being built toward.
+
+Everything below documents the Dioxus client (`client/`), which is the surface
+currently served.
 
 ## What the GUI provides
 
@@ -67,11 +90,18 @@ See `client/a11y-checklist.md` in the repo for the manual VoiceOver/NVDA checkli
 ./deploy-web.sh
 ```
 
-The web build ships as a PWA with an offline shell (the service worker caches only the shell + assets, never the API). The desktop / mobile builds use the same codebase.
+The web build ships as a PWA with an offline shell (the service worker caches only the shell + assets, never the API). The desktop build uses the same codebase.
+
+For the SvelteKit + Tauri shell, `pnpm build` emits a static SPA into
+`shell/build/`. It is built root-absolute (`/_app/...`), so serving it from the
+`/app` seat needs a base-path build first; run it as its own origin (or as the
+Tauri desktop app) as-is. See `shell/README.md` for the build, CI, and
+security posture.
 
 ## Next steps
 
 - **[Complete Operator Console](./client-complete-console.md)** — the 12-panel v1.17.6→v1.17.8 line in detail.
+- **`shell/README.md`** (in the repo) — the SvelteKit + Tauri successor shell: run/build commands, the generated-wire drift gate, and its security posture.
 - **[Installation](./deployment.md)** — serving the GUI at `/app`.
 - **[API Reference](./api.md)** — the API the GUI talks to.
 - **[Security](./security.md)** — how the GUI authenticates (JWT pairs, silent refresh).

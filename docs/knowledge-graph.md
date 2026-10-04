@@ -4,15 +4,19 @@ Brain Server extracts and maintains a **knowledge graph** — entities and the r
 
 ## How the graph is built
 
-The graph is built from two sources:
+The graph is built from four sources:
 
-1. **Markdown link syntax** — `[[relation::entity]]` links in ingested markdown create directed relationships. For example:
+1. **Markdown link syntax (legacy annotations)** — `[[relation::entity]]` links in ingested markdown create directed relationships. For example:
    ```markdown
    Bignay is [[alternative_to::blueberry]]. It has [[has_property::antioxidants]].
    ```
-   This creates the entities `blueberry` and `antioxidants` and the relationships `bignay --alternative_to--> blueberry` and `bignay --has_property--> antioxidants`.
+   This creates the entities `blueberry` and `antioxidants` and the relationships `bignay --alternative_to--> blueberry` and `bignay --has_property--> antioxidants`. (The ingest code itself calls these annotations the *legacy* form.)
 
-2. **Explicit structured ingest** — `POST /ingest` accepts explicit `entities` and `relations`, so the caller controls the graph schema.
+2. **Markdown frontmatter** — `tags` in a note's frontmatter create `tagged_with` edges, and `aliases` create `alias_of` edges (these are exactly the taxonomy edges the graph leg's noise-aware weighting dampens, below).
+
+3. **The deterministic linker** — during markdown ingest, verb-pattern extraction and heading hierarchy (`part_of` from nested headings) add edges with no configuration (`src/linker.rs`).
+
+4. **Explicit structured ingest** — `POST /ingest` accepts explicit `entities` and `relations`, so the caller controls the graph schema.
 
 Entities and relationships live in `entities` / `relationships` tables with a
 **four-timestamp bi-temporal model** (v1.27.22): `valid_at` / `invalid_at`

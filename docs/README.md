@@ -208,5 +208,7 @@ These are the source-of-truth technical records referenced throughout this guide
 - **SECURITY.md** / **THREAT_MODEL.md** — security posture and threat analysis.
 - **COMPLIANCE.md** — compliance mapping and governance controls.
 - **BENCHMARKS.md** — measured latency / recall / RSS figures.
-- **ROADMAP.md** — the full release chain and plan.
-- **CHANGELOG.md** — per-version release notes.
+- **CHANGELOG.md** — per-version release notes. (The former root `ROADMAP.md`
+  was never git-tracked and moved to the private plans archive on 2026-10-04;
+  the in-repo roadmap is [docs/roadmap.md](./roadmap.md) and the narrative
+  history is [docs/roadmap-and-release-history.md](./roadmap-and-release-history.md).)

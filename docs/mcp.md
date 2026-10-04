@@ -86,7 +86,7 @@ The tool list (verified from `src/bin/mcp.rs` `method_tools_list`):
 |---|---|---|
 | `brain_search` | `POST /recall` (hybrid) | Hybrid semantic + lexical search; `query`, `limit`, `phrases`, `exclude`, `code`, `sources`, `source`, `since`, `intent`, `provenance` |
 | `brain_recall` | `POST /recall` | Deterministic end-to-end recall (embed → hybrid); alias of `brain_search` — both tools lower into the same shared `/recall` body builder, so both accept the same fields (`query`, `limit`, `domain`, `source`, `since`, `intent`, `provenance`, …). `limit` 1..100 |
-| `brain_ingest` | `POST /ingest` | Write a memory; accepts `content`, optional `title`, `source`, explicit `entities[]`/`relations[]`, `domain` |
+| `brain_ingest` | `POST /ingest` (structured) / `POST /ingest/markdown` / `POST /ingest/memory` | Write a memory; accepts `content`, optional `title`, `source`, explicit `entities[]`/`relations[]`, `domain`. Endpoint is chosen by payload shape: entities/relations → `/ingest`; `title` without them → `/ingest/markdown`; bare content → `/ingest/memory` |
 | `ump.capabilities` | `GET /ump/capabilities` | UMP 1.0 negotiation: conformance level, kinds, bindings, retrieval signals, `max_recall`, `writable`, `audit` |
 | `ump.remember` | `POST /ump/remember` | Store a UMP memory record |
 | `ump.get` | `GET /ump/memory/{id}` | Read one record by id (integrity re-verified; others' rows §2.7-redacted) |
@@ -125,7 +125,7 @@ printf '%s\n' \
 
 | Surface | Transport | Tools |
 |---|---|---|
-| **AMCP binary (`mcp`)** | JSON-RPC 2.0 / stdio **or Streamable HTTP + SSE** (`/mcp`) | `brain_search`, `brain_recall`, `brain_ingest`, `ump.*` |
+| **MCP binary (`mcp`)** | JSON-RPC 2.0 / stdio **or Streamable HTTP + SSE** (`/mcp`) | `brain_search`, `brain_recall`, `brain_ingest`, `ump.*` |
 | **OpenClaw plugin** | loopback HTTP | `memory_recall`, `memory_store`, `memory_verify`, `memory_get`, `memory_graph_*`, `memory_procedure_*`, `memory_decision_evaluate` |
 | **HTTP API** | HTTP/JSON | Everything in the [API reference](./api.md) |
 
@@ -156,10 +156,22 @@ Contract (single endpoint `/mcp`, stateless):
 | `POST /mcp` with a notification (no `id`) | `202 Accepted`, no body |
 | `GET` / `DELETE /mcp` | `405` — this server is stateless and never initiates messages |
 
-Security posture (fail-closed): binds loopback unless told otherwise;
-`MCP_HTTP_TOKEN` turns on a bearer gate checked **before any parsing**; bodies
-are capped at the 1 MiB stdio bound (`413`); non-JSON content types are
-refused `415`.
+Security posture (fail-closed): binds loopback unless told otherwise
+(`MCP_HTTP_ADDR` / `MCP_HTTP_PORT` select the address and port); a non-loopback
+bind without `MCP_HTTP_TOKEN` **refuses to boot**; `MCP_HTTP_TOKEN` turns on a
+bearer gate checked **before any parsing**; bodies are capped at the 1 MiB
+stdio bound (`413`); non-JSON content types are refused `415`. Three further
+HTTP-mode controls:
+
+- **Per-peer rate limit** — a fixed-window limiter (240 requests/minute per
+  peer) answers `429 rate limited` before dispatch.
+- **DNS-rebinding Origin gate** — a browser `Origin` header naming a
+  non-loopback host is refused `403 origin refused` (the rebinding class:
+  a hostile page on another origin driving your loopback MCP).
+- **Fenced results** — every tool result is wrapped in the
+  `BRAIN_UNTRUSTED_CONTEXT` fence before it reaches the host's model context,
+  and upstream error bodies never reach the LLM (they go to stderr only) —
+  a failing server cannot inject instructions through an error string.
 
 > **Honest ceiling — legacy mode is process-global.** Under stdio the
 > single-parent trust model made this safe: one client owns the process, and

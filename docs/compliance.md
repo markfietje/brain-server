@@ -1,6 +1,8 @@
 # Compliance
 
-> Coverage current through v1.28.80 (2026-09-11).
+> Coverage current through v1.29.2 (2026-09-26) — the 1.29.x governed
+> model-identity line (digest-pinned model registry, decision-run/evaluation
+> records) rides the same compliance evidence base. Root mirror: [COMPLIANCE.md](../COMPLIANCE.md).
 
 Brain Server is a single-node, loopback-first memory component for an AI system.
 This page summarizes its compliance posture for buyers and procurement. It is a
@@ -127,7 +129,7 @@ real rows behind it. The row-by-row depth for each lives in
 | Framework | Posture |
 |---|---|
 | **ISO/IEC 42001** | AI management-system posture documented; algorithmic-risk controls (abstention, human-in-the-loop write-back) |
-| **NIST AI RMF** | Govern / Map / Measure / Manage controls across the retrieval lifecycle. *Mid-revision note (L7-06): AI RMF 1.0 is under formal revision — the input window closes 2026-09-16; re-check the revision status at the next compliance review and re-map if the frame restructures.* |
+| **NIST AI RMF** | Govern / Map / Measure / Manage controls across the retrieval lifecycle. *Mid-revision note (L7-06): AI RMF 1.0's revision input window closed 2026-09-16 with no restructuring published as of this stamp (re-verified 2026-10-04) — the 1.0 frame still governs; re-check at the next compliance review and re-map if the frame restructures.* |
 | **SOC 2** | Audit log, access control, encryption-at-rest (backup), change control |
 | **EU AI Act** | Art 12/26(6) logging posture; Art 50 origin metadata note + `/.well-known/ai-notice` disclosure; Art 4 literacy playbook ([AI_LITERACY.md](./AI_LITERACY.md)). **AI Act clocks:** Art 50 transparency duties apply from **2026-08-02** (general application, Art 113 — verified against the act text 2026-09-12); the **2026-12-02** reg_watch row is the LEGACY-system grace END for systems placed on the market before Aug 2026 — not the start (four-month transitional period, Regulation (EU) 2026/1744 recital 38). Deployers of systems placed on the market from Aug 2026 owe the duties NOW. **Deployer horizons from the same amending regulation (recital 40; no component duty moves):** Annex III high-risk obligations apply from **2027-12-02**, Annex I (embedded in regulated products) from **2028-08-02** — the L7-04 docs stamp; this component's Art 50 posture is unchanged by the amendment. |
 | **Singapore MGF for Agentic AI** | VOLUNTARY framework — buyer evidence, not a duty. IMDA + AI Verify Foundation published 2026-01-22, updated 2026-05-20; the primary document maps governance onto Four dimensions (assess and bound the risks upfront; make humans meaningfully accountable; implement technical controls; end-user enablement — the secondary "five dimensions" grouping is a grouping variance). This repo's evidence for it: the OS-boundary sandbox (v1.28.92 — risk bounding + technical controls), the human escape routes (accountability), and the per-case `law_version` stamp with the DPO quarterly diff (traceability). |

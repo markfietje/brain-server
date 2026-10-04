@@ -45,7 +45,7 @@ Brain Server is configured through environment variables (all resolved in
 
 | Variable | Default | Description |
 |---|---|---|
-| `BIND_HOST` | `127.0.0.1` | Bind address; `0.0.0.0` refused unless `BIND_PUBLIC=1` |
+| `BIND_HOST` | `127.0.0.1` | Bind address. `0.0.0.0` without `BIND_PUBLIC` logs a loud warning and still binds (the opt-in is env *presence* — any value counts); an unparseable host without `BIND_PUBLIC` refuses boot; any non-loopback bind with no auth configured refuses boot |
 | `BIND_PORT` | `8765` | Listen port |
 | `BRAIN_DB_PATH` | `~/.openclaw/workspace/brain.db` | SQLite database path |
 | `CORS_ORIGINS` | `http://localhost:3000,http://localhost:8080` | CORS allowlist (scheme included) |
@@ -98,10 +98,12 @@ bearer values, secret paths, and secret-bearing URLs are not emitted.
 
 ## Security posture in deployment
 
-- **Loopback-safe by default** — refuses `0.0.0.0` unless `BIND_PUBLIC=1`. In
-  addition (v1.20.29) the server **fails closed on startup**: a non-loopback bind
-  with no auth configured (no bearer token, no JWT keys) refuses to start, so an
-  unauthenticated superuser API is never exposed off the loopback.
+- **Loopback-safe by default** — binding `0.0.0.0` without `BIND_PUBLIC` logs a
+  loud warning (the opt-in is env *presence*); an unparseable host without
+  `BIND_PUBLIC` refuses boot. In addition (v1.20.29) the server **fails closed
+  on startup**: a non-loopback bind with no auth configured (no bearer token,
+  no JWT keys) refuses to start, so an unauthenticated superuser API is never
+  exposed off the loopback.
 - **Two auth modes**:
   - **Opaque bearer** (default): `AUTH_TOKEN` / `AUTH_TOKEN_FILE`, constant-time
     compare, multiple tokens for rotation.
@@ -186,7 +188,11 @@ If a recall result, review item, or audit row looks planted:
 
 ### Classifier operations (v1.20.3, layer 2)
 
-The optional ONNX classifier is off by default; when enabled:
+The optional ONNX classifier is **auto-on** (v1.28.71 "Pores"): unset or `on`
+loads it when the default artifact resolves at
+`~/.config/brain-server/models/injection-classifier/{model.onnx,tokenizer.json}`
+(absent artifact → `absent`, not an error); only an explicit
+`BRAIN_INJECTION_CLASSIFIER=off` disables it. When loaded:
 
 - **FPR calibration** — watch the quarantine rate (`/audit` `quarantined` rows;
   the client Security panel surfaces the flag count). Tune
@@ -276,14 +282,32 @@ record the timings in the runbook.
 
 ## The client GUI
 
-The Dioxus control surface (`client/`) runs as a web app served by the server at
-`/app`, and as a desktop / mobile app. It gives operators a visual surface for
-review, recall, security, subjects (DSAR), audit, and health.
+Two GUIs ship over the same API:
+
+- **Dioxus control surface** (`client/`) — runs as a web app served by the
+  server at `/app`, and as a desktop app. **This is the default bundle**
+  (`BRAIN_CLIENT_DIST` → `client/dist`).
+- **SvelteKit + Tauri shell** (`shell/`) — the active successor: a typed-wire
+  SvelteKit SPA with a Tauri desktop core, generated against `openapi.yaml`.
+
+The Dioxus `client/` removal is frozen until the shell's parity gates pass.
 
 ```bash
 # In the client/ directory — build the web bundle, then deploy it
 ./deploy-web.sh
 ```
+
+To serve the shell at the same seat instead, point the dist at its build output
+(`pnpm build` → `shell/build/`):
+
+```bash
+BRAIN_CLIENT_DIST=shell/build ./target/release/brain-server
+```
+
+⚠️ **Caveat:** the shell's current build is **root-absolute** (`/_app/...`), while
+the `/app` seat serves under a `/app` prefix, so its assets do not resolve from
+that mount today. Serving it at `/app` needs a base-path build first; serving it
+as its own origin works as-is.
 
 See [Client GUI](./client-gui.md).
 
@@ -570,7 +594,9 @@ audit chain and fail-closed gates.
 `deploy/tiers/t1.env`, `deploy/tiers/t2.env`, `deploy/tiers/t3.env`,
 `deploy/tiers/t4.env` — that CI boots as part of the tier-smoke matrix, and a
 meta-test (`guide_and_profiles_never_drift`) fails if a profile sets a key
-this guide does not document (or vice versa). Copy the profile into your
+this guide does not document. (The reverse — a key this guide documents that no
+profile sets — is not covered by the meta-test; the matrix below marks such
+keys "unset".) Copy the profile into your
 service environment and add only site-specific values (`BRAIN_DB_PATH`,
 `BIND_PORT`, auth material).
 
@@ -590,7 +616,7 @@ service environment and add only site-specific values (`BRAIN_DB_PATH`,
 | `BRAIN_AUDIT_READ_EVENTS` | off (loopback default) | `on` | `on` | `on` | shared surfaces get read-audited once more than one person uses them |
 | `BRAIN_MULTI_DB` | unset | unset | `1` | `1` | domain-per-campaign databases at site scale |
 | `BRAIN_MAX_DOMAIN_DBS` | unset | unset | `16` | `64` | explicit cap under the bounds law; size to your domain count |
-| `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED` | `0` | `0` | `1` | `1` | replay-hard webhook intake for first-party senders at site scale |
+| `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED` | unset (off) | unset (off) | `1` | `1` | replay-hard webhook intake for first-party senders at site scale (T1/T2 profiles leave the key unset rather than set it to `0` — same off behavior) |
 | `BRAIN_OTEL_ENABLED` | unset | unset | optional | `1` | instrumented decision cores for multi-region ops visibility |
 | `BRAIN_TRUST_PROXY` | unset | unset | optional | `1` | set only when TLS terminates on a trusted proxy chain |
 

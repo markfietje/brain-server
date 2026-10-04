@@ -1,6 +1,6 @@
 # CRA Evidentiary Kit
 
-> Coverage current through v1.28.80 (2026-09-11; reporting duties live since
+> Coverage current through v1.29.2 (2026-09-26; reporting duties live since
 > 2026-09-11 — see the [reporting runbook](./cra-reporting-runbook.md)).
 
 > v1.20.10 "Proof" — an assembly of already-shipped evidence for the EU Cyber
@@ -28,6 +28,7 @@ writes `dist/cra-kit/`:
 | `SECURITY.md` | repo | reporting path + supported-versions window |
 | `SUPPORT.md` | repo | support statement + update guidance + no-SLA honesty |
 | `deployment.md` | `docs/deployment.md` | how the product is deployed/updated |
+| `COMPLIANCE.md` | repo | the framework mapping the kit's controls answer to |
 | `CRA_MANIFEST.json` | generated | SHA-256 index of every artifact (integrity pin) |
 
 Idempotent: re-running rebuilds from the same sources, so hashes are stable for

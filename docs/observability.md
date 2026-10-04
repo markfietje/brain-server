@@ -16,7 +16,7 @@ This page is verified against `src/server/router/core.rs` (the `/metrics`,
 ## Metrics (`GET /metrics`)
 
 Prometheus text exposition, **auth-gated** (a `Read` principal is required —
-a `403` with the reason keeps the non-JSON contract). All twelve series,
+a `403` with the reason keeps the non-JSON contract). All eighteen series,
 verified from source:
 
 | Series | Kind | Meaning |
@@ -26,13 +26,19 @@ verified from source:
 | `brain_pool_in_use{domain}` | gauge | Connections currently checked out, per domain DB. |
 | `brain_pool_idle{domain}` | gauge | Connections parked in the pool, per domain DB. |
 | `brain_pool_timeouts_total` | counter | Acquire attempts that hit the pool timeout (visible contention). |
-| `brain_busy_errors_total` | counter | SQLite `SQLITE_BUSY` errors returned to callers. |
+| `brain_busy_errors_total` | counter | SQLite `SQLITE_BUSY` errors observed at the governed-write BEGIN sites (the workflow lane's `WorkflowTx::begin` + the lane's BEGIN IMMEDIATE). |
 | `brain_wal_pages_pending{domain}` | gauge | WAL frames not yet checkpointed, per domain DB — the write-pressure gauge. Snapshot semantics: the PRAGMA runs on the `/health/db` cold path; a scrape reports the last snapshot, and a domain with no `/health/db` read has no series. |
 | `brain_lock_wait_micros_p50` | gauge | p50 of contended mutex/RwLock acquire waits (Headroom telemetry; try_lock fast paths read zero clock). |
 | `brain_lock_wait_micros_p95` | gauge | p95 of the same histogram (fixed-bucket edges, no histograms crate). |
-| `brain_db_busy_total` | counter | Busy-handler sleeps on the write path. |
-| `brain_capacity_status` | gauge | `1`=ok, `2`=warning, `3`=exceeded (mirrors the capacity envelope). |
+| `brain_db_busy_total` | counter | `SQLITE_BUSY` events surfaced at the audit-tx settle seam (`busy_timeout` burn-through — not busy-handler sleeps on the whole write path). |
+| `brain_capacity_status` | gauge | `0`=unknown (capacity could not be measured), `1`=ok, `2`=warning, `3`=exceeded (mirrors the capacity envelope). |
 | `brain_audit_chain_ok` | gauge | `1` = audit chain verifies, `0` = tamper detected. |
+| `brain_delivery_intents_pending` | gauge | Delivery-intent rows not yet delivered, per domain — non-zero reads as "awaiting its `/due` crank". |
+| `brain_delivery_untrusted_rows_pending` | gauge | Delivered rows still carrying the untrusted-content marker, per domain. |
+| `brain_jwt_azp_rejected_total` | counter | JWTs rejected by the `BRAIN_JWT_AZP` per-application binding. |
+| `brain_model_calls_total{class}` | counter | Model calls by class (`open_generate` / `classify` / `encode`; all three classes emit, zeros included). |
+| `brain_model_tokens_total{class}` | counter | Tokens processed by class. |
+| `brain_model_incomplete_total{class}` | counter | Truncated/incomplete model responses by class. |
 
 Formulas, sources, and citations for every series live in the metrics
 dictionary (`docs/metrics.md`, the "Server telemetry series" section).
@@ -59,10 +65,14 @@ An append-only, hash-chained audit ledger records ingest, approvals, denials,
 auth failures, read events (opt-in), purges, and DSARs. Content is never stored
 in the chain — only hashes (SHA-256 since v1.20.25).
 
-- **`GET /audit`** — recent audit rows (Admin; `?since=` and `?principal=`
-  filters are URL-addressable).
+- **`GET /audit`** — recent audit rows (Admin). URL-addressable filters:
+  `?kind=` (audit kind), `?tenant=`, `?limit=`, `?offset=` (bounded paging;
+  there is no `?since=` or `?principal=` parameter — those would be silently
+  ignored).
 - **`GET /audit/verify`** — fresh, authoritative full-chain integrity check
-  (Admin). Returns `{ ok: bool }`.
+  (Admin). Returns `{ ok: bool, domains: { <name>: bool } }` — the per-domain
+  breakdown is deliberate, so a failing domain is named rather than a single
+  opaque `false`.
 - **`POST /ump/audit`** / **`GET /ump/audit/verify`** — the UMP reference audit
   facility over the same chain.
 
@@ -102,10 +112,10 @@ tracing::instrument(...))]`; additional decision spans (`gate.edit`,
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /health` | Liveness (always auth-exempt). |
-| `GET /health/db` | Database reachability. |
-| `GET /ready` | Readiness. |
-| `GET /stats` | Operational counters. |
+| `GET /health` | Liveness (always auth-exempt). Returns `{status, version}`. |
+| `GET /health/db` | Database reachability + operating posture (Read: reduced `{status, version, db_ok}`; full body Admin). |
+| `GET /ready` | Readiness — `{status: OK\|NOT_READY, webhook_signing, gdl_provider}`. |
+| `GET /stats` | Operational counters (accepts `?domain=` for per-domain scoping). |
 | `GET /version` | Server version. |
 
 ## Alerting

@@ -19,9 +19,9 @@ another's answers while still being one installation to run, back up, and audit.
 
 - **Name domains by the work, not the person.** `engineering` and `support`
   scale as people join; `mark` and `jess` don't.
-- **Scope a recall to a domain** (`domain: "engineering"` in `/recall`, or
-  `brain query "<q>" --domain engineering`) so you don't get cross-topic
-  answers.
+- **Scope a recall to a domain** (`domain: "engineering"` in the `/recall`
+  request body — the API field; the CLI has no `--domain` flag on
+  `brain query`) so you don't get cross-topic answers.
 - **Retrieval auto-routes** by per-domain centroids and only falls back across
   domains on a confident miss — so a shared store still gives topic-correct
   answers.

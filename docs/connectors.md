@@ -13,7 +13,8 @@ A connector is a supervised ingester. It fetches items from an external system
 and feeds them through the **same** source + immutable-`revision` pipeline the
 manual ingest paths use — so connector-loaded content carries full provenance,
 participates in the knowledge graph and hybrid recall, and is reconciled like any
-other source. The `connector` ingest kind is recorded on every chunk.
+other source. The connector's `source_path` (`github://…`) keys the source row,
+and reconciliation sweeps it under kind `github`.
 
 A **supervisor** process owns the lifecycle: register → authenticate → sync →
 reconcile → report. The operator sees and controls it; nothing runs
@@ -84,14 +85,21 @@ The `brain connect`/`sync`/`connector-status` commands in the main `brain`
 binary are always compiled (they delegate to the server / connector binary as
 appropriate); only the standalone connector binary needs the feature.
 
-## The `connector` ingest kind
+## How connector chunks are stamped (the honest version)
 
-Chunks loaded by a connector are tagged with the `connector` ingest kind
-(alongside `github`, `web`, …), are stamped `imported` **origin** (per
-`gate::origin_for_source`), and receive a confidence ×0.9 discount — the same
-"imported content is trusted less than a human-authored manual fact" rule that
-applies to other imported paths. See **[Memory lifecycle](./memory-lifecycle.md)**
-for the origin mapping.
+The GitHub connector posts to `POST /ingest/markdown`, and that handler stamps
+the chunk's `source` column as `markdown` — the chunk-level ingest-kind
+vocabulary is `memory | markdown | structured | manual | vault`, and there is
+no `connector` chunk kind. Connector provenance lives one level up, in the
+**sources** row (kind `github`, keyed by the `github://…` `source_path`) and
+the revision lineage. Chunks are stamped `imported` **origin** (per
+`gate::origin_for_source` — anything that is not `manual`/`memory` is
+imported). The confidence ×0.9 "unverified external source" discount
+(`gate::confidence`) keys on the SOURCE STRING containing
+`connector`/`github`/`web` — which a `markdown`-stamped chunk does not carry,
+so connector chunks do **not** receive the ×0.9 factor under the current
+wiring; the imported-origin label is what carries the trust signal today.
+See **[Memory lifecycle](./memory-lifecycle.md)** for the origin mapping.
 
 ## Reconciliation
 
@@ -131,10 +139,18 @@ Custom CRMs (Freshdesk, ServiceNow, JSM): [connector-crm-custom.md](./connector-
 
 ## Honest ceiling
 
-- Only `kind=github` is implemented (the CLI rejects any other kind with
-  "other connectors land in v0.9.7+"). GitHub **issues** are the concrete
+- **Registry vs runnable binary.** The connector-kind registry
+  (`CONNECTOR_KINDS`: `github`, `crm-salesforce`, `crm-hubspot`, `slack`,
+  `email-imap`, `jira`, `linear`, `notion`, `hris-readonly`, `ehr-readonly`)
+  is open for registration (`POST /connectors/register`, profile-gated by
+  family), but only `kind=github` has a runnable binary — the CLI names the
+  shipped kinds and points at the GitHub connector as the working backfill
+  template rather than quoting a version. GitHub **issues** are the concrete
   backfill; the connector contract (`src/connector/mod.rs` +
   `src/connector/supervisor.rs`) is designed to be extensible to other kinds.
+  The inbound channel-bridge sibling (`tools/channel-bridge`,
+  `/webhooks/channel/{kind}`) is documented in
+  [deployment](./deployment.md).
 - It pulls issues via App auth over the GitHub REST API; it does not sync
   arbitrary repository content, PRs, or code.
 - The CRM connectors are pull-only intake — there is no CRM **writeback**

@@ -8,8 +8,8 @@ Security Cheat Sheets, OWASP Transport Layer Security Cheat Sheet.
 
 **Verify, don't trust:** every security claim below is mapped to the release
 that shipped it and the exact live `curl`/`brain` command that proves it in
-[`trust/proof-map.md`](trust/proof-map.md) (scripted walk-through:
-[`trust/reproduce.md`](trust/reproduce.md)).
+[`trust/proof-map.md`](docs/trust/proof-map.md) (scripted walk-through:
+[`trust/reproduce.md`](docs/trust/reproduce.md)).
 
 ---
 
@@ -17,12 +17,12 @@ that shipped it and the exact live `curl`/`brain` command that proves it in
 
 | Version | Supported          | Notes |
 | ------- | ------------------ | ----- |
-| 1.28.x  | :white_check_mark: | Current — governed workflow + hostcall mediations + Lockdown transport/approval/visibility controls (through 1.28.92 "Ledger", the exec-OS-boundary + dual-gate + GDL release) |
-| 1.27.x  | :white_check_mark: | Previous minor — security fixes only (ends at the AuditRepair re-anchor line) |
-| < 1.27  | :x:                | Unsupported — upgrade before exposing beyond loopback |
+| 1.29.x  | :white_check_mark: | Current — the governed delivery line: model identity (digest-pinned model registry), delivery persistence, the engine executor, the replay-gate-promoted release act |
+| 1.28.x  | :white_check_mark: | Previous minor — security fixes only (through 1.28.92 "Ledger": governed workflow + hostcall mediations + Lockdown transport/approval/visibility controls, the exec-OS-boundary + dual-gate + GDL release) |
+| < 1.28  | :x:                | Unsupported — upgrade before exposing beyond loopback |
 
-**Support window.** The current minor (`1.28.x`) and the previous minor
-(`1.27.x`) receive fixes; older lines receive nothing — the audit-chain format
+**Support window.** The current minor (`1.29.x`) and the previous minor
+(`1.28.x`) receive fixes; older lines receive nothing — the audit-chain format
 changed in 1.27.31 (`--re-audit` re-anchor), so pre-1.27.31 deployments are a
 different evidence regime, not a supported target. There is no fixed
 end-of-life date; any line's deprecation is announced at least one minor
@@ -620,7 +620,7 @@ client's connection-pool TTL remains the documented webhook ceiling.
 
 The 2026 enterprise zero-trust-for-AI posture, written against what actually
 ships. Control-by-control mapping to the two 2026 OWASP agentic frameworks is in
-[`OWASP_AGENTIC_2026.md`](OWASP_AGENTIC_2026.md); this section states
+[`OWASP_AGENTIC_2026.md`](docs/OWASP_AGENTIC_2026.md); this section states
 the posture itself.
 
 - **Workload identity.** brain-server principals are JWT (`sub`/`jti`) or the

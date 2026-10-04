@@ -10,13 +10,16 @@ without its dictionary entry. All rates are **integer ten-thousandths**
 money is cents.
 
 **Machine-readable twin:** [`metrics/metrics.json`](../metrics/metrics.json)
-(schema-versioned, `scorer_version`-stamped) mirrors every entry below with
-the full attribute set structured — name · formula · unit · source
-table.column · window · inclusion/exclusion · citation · tier availability.
-Two meta-tests pin the twins together:
-`every_scoreboard_field_has_a_dictionary_entry` (docs ↔ code ↔ JSON names)
-and `every_entry_source_table_exists_in_schema` (every lineage table exists in
-`src/migration.rs`). Benchmarks are quoted as reference points, never claims.
+(schema-versioned, `scorer_version`-stamped) mirrors every **scoreboard /
+report-cadence** entry below with the full attribute set structured — name ·
+formula · unit · source table.column · window · inclusion/exclusion · citation ·
+tier availability. The 18 "Server telemetry series" rows further down are
+doc-only rows and have no JSON twin. Two meta-tests pin the twins together:
+`every_scoreboard_field_has_a_dictionary_entry` (code → docs and code → JSON,
+with a partial docs → code reverse check on `_units` rows and five allowlisted
+names) and `every_entry_source_table_exists_in_schema` (every lineage table
+exists in `src/migration.rs`). Benchmarks are quoted as reference points, never
+claims.
 
 **Tier availability:** every metric here is available on every deployment tier
 (T1 solo → T4 global) — tiers are config, not forks; no metric is gated behind
@@ -121,18 +124,18 @@ aggregation remains Parcels federation). Gauges are scrape-time snapshots.
 
 | Series | Type | Definition | Source |
 |---|---|---|---|
-| `brain_rss_mib` | gauge | Process resident set in MiB — the same measurement `/health` reports, NOT whole-host memory | `http_limit::process_rss_mib` |
+| `brain_rss_mib` | gauge | Process resident set in MiB — the same measurement the `/health/db` **capacity block** reports (`capacity.rss_mib`; `/health` itself returns only `{status, version}`), NOT whole-host memory | `http_limit::process_rss_mib` |
 | `brain_pool_connections` | gauge | Global pool connection counts by `state` label (`idle`/`busy`) | `r2d2::Pool::state()` at scrape |
 | `brain_pool_in_use` | gauge | Per-domain pool connections in use (`connections − idle`) — the pool-saturation signal under the concurrent bench | `r2d2::Pool::state()` per registered domain |
 | `brain_pool_idle` | gauge | Per-domain pool idle connections | `r2d2::Pool::state()` per registered domain |
 | `brain_pool_timeouts_total` | counter | Pool checkouts that timed out (r2d2 `get()` failure) — counted at the existing handler error seam (`HandlerError::db_down`) and the workflow lane's checkout arm; zero cost on success paths | `concurrency::CONCURRENCY` |
 | `brain_busy_errors_total` | counter | SQLITE_BUSY-family errors observed at the governed-write BEGIN sites (`WorkflowTx::begin` + the workflow lane's `BEGIN IMMEDIATE`) — write contention after the 5 s `busy_timeout` burn, counted where the error arm already propagates | `concurrency::CONCURRENCY` |
 | `brain_wal_pages_pending` | gauge | WAL frames not yet checkpointed, per domain (`log − checkpointed` from the PASSIVE checkpoint row). The PRAGMA runs ONLY inside `/health/db` (cold path); `/metrics` reports the last snapshot — absent domains have no snapshot yet | `/health/db` WAL sweep → `concurrency::CONCURRENCY` |
-| `brain_delivery_intents_pending` | gauge | Delivery-family outbox rows sitting `pending` with no reader, per domain. They are undrained BY DESIGN (the release act belongs to the promote gate, which does not exist yet), so a non-zero value is the EXPECTED steady state and not an alarm. It exists so a LOST intent is distinguishable from one that has not yet been promoted | `connector::delivery::pending_intent_census` at scrape |
+| `brain_delivery_intents_pending` | gauge | Delivery-family outbox rows sitting `pending`, per domain — non-zero reads as "awaiting its crank": the `/due` crank (`POST /workflow/delivery/due`) drains them in bounded batches, so a value that never falls between cranks is the alarm, not the value itself. It exists so a LOST intent is distinguishable from one not yet cranked | `connector::delivery::pending_intent_census` at scrape |
 | `brain_delivery_untrusted_rows_pending` | gauge | Delivery-family outbox rows sitting `pending` whose idempotency key is NOT a kernel `ddl-intent-` mint, per domain. Unlike the intent gauge, a non-zero value is NOT expected: it means the reserved topic root was written without the minter | same census, classified through `delivery_intents::intent_kind` |
-| `brain_lock_wait_micros_p50` | gauge | Bucket-quantile (lower edge, µs) of contended lock-acquire waits across the instrumented request-path `Mutex`/`RwLock` holders (token store, rate limiter, replay cache, audit chain keys, domain registry, embed/rerank/screen models, the workflow lane, …). Only CONTENDED acquires are recorded (`try_lock` fast path costs nothing), so `0` = no contention observed, never "gauge wired off". The value is a histogram bucket lower edge over the fixed µs edges in `concurrency::LOCK_WAIT_BUCKET_EDGES_US` — a deterministic read, not an interpolated percentile; moving an edge is a dictionary-visible change | `concurrency::CONCURRENCY.lock_wait_histogram()` |
+| `brain_lock_wait_micros_p50` | gauge | Bucket-quantile (lower edge, µs) of contended lock-acquire waits across the instrumented request-path `Mutex`/`RwLock` holders (token store, rate limiter, replay cache, audit chain keys, domain registry, embed/rerank/screen models, …). Only CONTENDED acquires are recorded (`try_lock` fast path costs nothing), so `0` = no contention observed, never "gauge wired off". Honest scope: the workflow lane's mutex is NOT wait-instrumented (a plain `lock()`), and neither are the mcp binary, the connector token cache, nor the scrape-path locks. The value is a histogram bucket lower edge over the fixed µs edges in `concurrency::LOCK_WAIT_BUCKET_EDGES_US` — a deterministic read, not an interpolated percentile; moving an edge is a dictionary-visible change | `concurrency::CONCURRENCY.lock_wait_histogram()` |
 | `brain_lock_wait_micros_p95` | gauge | The p95 twin of `brain_lock_wait_micros_p50` — same histogram, same edges, same contended-only recording | `concurrency::CONCURRENCY.lock_wait_histogram()` |
-| `brain_capacity_status` | gauge | Capacity posture: 1=ok 2=warning 3=exceeded | `capacity::classify` |
+| `brain_capacity_status` | gauge | Capacity posture: 0=unknown (the capacity could not be measured, e.g. pool exhausted), 1=ok, 2=warning, 3=exceeded | `capacity::classify` |
 | `brain_audit_chain_ok` | gauge | 1 = every registered domain's audit chain verifies; 0 = tamper detected (TTL-cached; authoritative answer on `/audit/verify`) | `audit::verify_chain` |
 | `brain_db_busy_total` | counter | SQLITE_BUSY events surfaced at the audit seam specifically (audit-tx settle failures after busy_timeout burn-through) — the narrower audit-seam twin of `brain_busy_errors_total` | `audit::busy_hits()` |
 | `brain_jwt_azp_rejected_total` | counter | Access tokens REFUSED because their RFC 7519 §4.1.3 `azp` claim was absent or named a different application (the token-intent / confused-deputy class). Only ever non-zero when `BRAIN_JWT_AZP` is configured, so a rising series is a positive statement that the control is live and biting; `0` is ambiguous between "not configured" and "nothing refused", and the **boot line** (P63.2 disclosure) is what states the posture, not this series. Mints from `/auth/refresh` carry the verified `azp` forward, so rotation cannot trip this | `auth::jwt::azp_rejections()` |

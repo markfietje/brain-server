@@ -105,6 +105,14 @@ The same philosophy extends across the write surface:
   tampered content, a re-ingest, a different render path — is rejected with
   `409` inside the approval transaction. A decision can never bless content
   that would appear differently in context.
+- **Second-eyes quorum (`BRAIN_APPROVAL_QUORUM=2`, the Lockdown line)** — on
+  the generic promote path, a second DISTINCT principal must approve before
+  the row moves: the first approval parks the row (`200 {status:
+  "pending_second"}`), a second approval by the SAME principal refuses
+  (`409 quorum_same_principal`), and the quorum never silently degrades to one.
+- **Exploratory runs never promote** — a proposal born from an exploratory
+  decision run is permanently non-promotable (`400 exploratory_mode_not_promotable`):
+  an experiment's output must never leak into the store as if it were a finding.
 - **Consolidation** (`/consolidate/propose`) detects duplicates, contradictions, stale
   sources, and near-duplicates, and **proposes** resolutions. Applying them
   (`/consolidate/apply`, `/consolidate/undo`) is a human call.
@@ -129,15 +137,20 @@ the design refuses to hand to the machine.
 In practice this means:
 
 - The agent's surface is **read + propose**: `memory_recall` / `memory_get` / `memory_verify` /
-  `memory_graph_entity`, and `memory_store` (which, in the default `captureMode: "proposal"`,
-  submits to the review queue rather than writing).
+  `memory_graph_entity` / `memory_graph_traverse`, and `memory_store` (which, in the default `captureMode: "proposal"`,
+  submits to the review queue rather than writing). Behind the default-off
+  `proposalTools` flag the plugin also exposes `memory_proposal_list` /
+  `memory_proposal_decide` — the one sanctioned deviation from "agents only
+  propose", operator-opt-in.
 - The plugin's `memory_forget` tool was **removed in v1.20.25** — an agent can no longer
   hard-delete memory autonomously. (The server `DELETE /memory/{id}` route is untouched; only
   the *agent-facing tool* was taken away.)
 - **Erasure is performed by a human** through the operator console and the HTTP API, both of
   which call the audited `DELETE /memory/{id}` / `POST /purge` / DSAR paths. (The `brain` CLI's
-  only delete surface is `brain source-delete <id>`, which sweeps a whole source and tombstones
-  it; chunk-level erasure stays console/API.)
+  chunk-level delete surface is `brain source-delete <id>`, which sweeps a whole source and tombstones
+  it; chunk-level erasure stays console/API. Client-scoped purges exist on the CLI via
+  `brain client dsar --action purge` / `brain client end --purge`, and `brain shred` drops the
+  physical residue after a logical purge.)
 
 So the full authority model, stated plainly:
 
@@ -183,7 +196,8 @@ and every surface maps to one of the four conditions. Four surfaces do the heavy
 
 ### Review panel — the write-back queue (`/review`)
 
-The default landing page and the heart of the human-in-the-loop job. Each card is built to
+The heart of the human-in-the-loop job (the app's landing page is Overview —
+`/review` is its own route one keystroke away). Each card is built to
 make *comprehensibility* real:
 
 - **Scoring breakdown** — novelty, conflict, and salience, shown as numbers with their
@@ -383,7 +397,7 @@ WHAT is being removed, and why?
    │           → RELEASE (admit) or DELETE (purge) the quarantined chunk
    │
    └─ A SOURCE / import (not individual memories)
-         └─► Operator: `brain source-delete <id>`  (the CLI's only delete surface)
+         └─► Operator: `brain source-delete <id>`  (the CLI's chunk-level delete surface)
 ```
 
 ### The steps, path by path
@@ -408,8 +422,11 @@ path and the one to use when a customer or a client's customer asks for erasure.
 the content out of memory. The Admin either **releases** it (admit after review) or **deletes**
 it (purge). The safety decision is visible and overridable.
 
-**Path E — a source / import (operator).** `brain source-delete <id>` is the **only** CLI
-delete surface. It removes a source and its association; it is not a memory-content eraser.
+**Path E — a source / import (operator).** `brain source-delete <id>` is the
+CLI's **chunk-level** delete surface. It removes a source and its association; it
+is not a memory-content eraser. (Client-scoped purges ride `brain client dsar
+--action purge` / `brain client end --purge`; `brain shred` drops physical
+residue after a logical purge — both human-invoked, both audited.)
 
 ### Why the friction exists (the justification)
 

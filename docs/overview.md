@@ -4,7 +4,7 @@
 
 Brain Server is a **deterministic decision and memory substrate for teams and their AI agents**.
 
-It is one Rust binary that stores what a team knows — past resolutions, runbooks, KB articles, decisions, customer context — and both *recalls* it and supports the structured decisions that depend on it **the same way every time**, on the operator's own hardware: private, offline-capable, no per-query cost on the hot path, and with a human gate on everything that becomes permanent state.
+It is one Rust binary that stores what a team knows — past resolutions, runbooks, KB articles, decisions, customer context — and both *recalls* it and supports the structured decisions that depend on it **the same way every time**, on the operator's own hardware: private, offline-capable, no per-query cost on the hot path, and a human gate on everything an **agent** writes into permanent state (direct operator/API writes are screened and audited, and can be gated too — see `BRAIN_WRITE_POSTURE`).
 
 The core idea is simple: **recall that never has to think, and decisions that leave a trace**. Instead of asking a language model whether to recall, and instead of paying an embedding API on every read and write, Brain Server uses a static, local embedding model and a deterministic retrieval pipeline. Permanent writes and configuration changes remain under explicit human control, and every significant action lands on a tamper-evident audit chain.
 
@@ -90,9 +90,13 @@ Ships as a `kind: "memory"` plugin occupying the memory slot, with per-agent opt
 and group/channel exclusions for data-leakage prevention.
 
 ### ⑥ Human-gated write-back — meaningful control, not a rubber stamp
-Nothing becomes permanent memory by default. A captured fragment is **scored, not
+Agent-captured fragments never become permanent memory unreviewed. A captured
+fragment is **scored, not
 stored** (`POST /ingest/proposal`), and enters the store only after a human approves it —
-optionally superseding the chunk it contradicts. The control room (Review panel, Memory
+optionally superseding the chunk it contradicts. (Honest scope: the *compiled*
+default of `BRAIN_WRITE_POSTURE` is `open` for direct operator/API writes —
+screened and audited but not proposal-gated; `review` is the installer's
+new-install default and gates all six agent-facing write surfaces.) The control room (Review panel, Memory
 Operations panel with live SLA clocks + gate health, Agent Memory Register) is built to
 make the operator a *critical evaluator*: raw evidence, sourcing prompt, and screen
 verdict on every card, with every decision written to a tamper-evident audit chain. See

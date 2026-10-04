@@ -19,7 +19,7 @@ Sources: <https://csrc.nist.gov/pubs/ir/8547/final> ·
 
 | Algorithm | Where (the real call sites) | What it protects | HNDL verdict | Swap path |
 |---|---|---|---|---|
-| Ed25519 | `ump_integrity` (record sigs §6.1), agent cards (`workflow/mesh.rs` provision/verify), parcels + standby manifests (`sign_manifest_bytes`), provenance marks (`provenance.rs`), capability tokens (`mint_capability_token`), `brain key sign` | Identity + integrity of UMP records, cards, parcels, standby manifests, boundary artifacts, tokens | NOT HNDL-exposed (integrity/authenticity, not confidentiality). The exposure is harvest-now-FORGE-later: a recorded signature must stay unforgeable for the artifact's whole evidentiary life (audit/DSAR evidence = years). | `did:key` multicodec prefix (below) + the dual-sign transition in `### UMP signatures` |
+| Ed25519 | `ump_integrity` (record sigs §6.1), agent cards (`workflow/mesh.rs` provision/verify), parcels + standby manifests (`sign_manifest_bytes`), provenance marks (`provenance.rs`), capability tokens (`mint_capability_token`), the UMP operator key (`operator.ed25519`, rotated by `brain key rotate`) | Identity + integrity of UMP records, cards, parcels, standby manifests, boundary artifacts, tokens | NOT HNDL-exposed (integrity/authenticity, not confidentiality). The exposure is harvest-now-FORGE-later: a recorded signature must stay unforgeable for the artifact's whole evidentiary life (audit/DSAR evidence = years). | `did:key` multicodec prefix (below) + the dual-sign transition in `### UMP signatures` |
 | HMAC-SHA256 | audit hash-chain links + hmac256 epoch (`audit/mod.rs`), Standard-Webhooks verify (`webhook.rs`), GitHub webhook verify, case-status tokens (`workflow/case_status.rs`), channels (`workflow/channels.rs`), observe series | Tamper-evidence of the audit chain; webhook authenticity; unguessable public status refs | NOT HNDL-exposed (verdicts, not secrets to decrypt). Grover halves effective strength to ~128 bits — comfortably above any near-term quantum margin. | New HMAC type alias in `webhook.rs` + `audit` epoch flip (the `--re-audit` re-anchor machinery already versioned the chain format) |
 | SHA-256 | manifest digests (`kb.rs::manifest_json`, parcels), card signature message (`mesh.rs::sha256_hex`), provenance wrapper (`provenance::signed_message`), subject hashing (`outreach::hash_subject`) | Content-addressing, signatures' digest messages, one-way subject pseudonyms | NOT HNDL for pseudonyms (one-way by construction — no decrypt-later risk at any quantum speedup). Collision margin halves (~128 bits) — fine for digests of this size/life. | Digest-string conventions are isolated in the two `sha256_hex` helpers; a SHA-384/SHA3 bump is a typed swap per site |
 | BLAKE3 | UMP record content hashes (`ump_integrity::record_hash` — the spec §2.8 mandated algorithm) | UMP content-addressed ids (`urn:ump:…`) | NOT HNDL (ids, not secrets). | The UMP spec owns this choice — a change is a spec revision + `content_hash_string` re-version, not a site-by-site migration |
@@ -63,8 +63,8 @@ Landing ML-DSA is therefore:
 2. **Whitelist:** add the algorithm to `ALLOWED_ALGS` in `auth/jwt.rs` —
    the ONE gate every token passes. The OWASP posture is unchanged: only
    the documented IdP's algorithm joins; `HS*`/`none` stay forbidden.
-3. **Verifier:** if `jsonwebtoken` v10 gains the algorithm, this is a
-   one-line `Algorithm` variant. If not, the two-phase design already
+3. **Verifier:** when `jsonwebtoken` (the repo pins v11) gains the algorithm, this is a
+   one-line `Algorithm` variant. If it does not, the two-phase design already
    gives the seam: `decode_header`'s alg field routes ML-DSA tokens to a
    dedicated verify fn (the same whitelist-then-key order, ML-DSA
    verification library beside the crate). The OWASP cheat-sheet contract

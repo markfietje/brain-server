@@ -36,8 +36,12 @@ proxy SSO also covers SAML without building it into the server.
                     └───── OIDC login / token exchange ─────┘
 ```
 
-- The proxy is the only host-exposed service. Brain Server binds inside the
-  compose network (`brain-server:8765`), never published to the host.
+- The proxy is the only service the *internet* should see. Brain Server is
+  published on the **host loopback only** — `docker-compose.yml` maps
+  `127.0.0.1:8765:8765` unconditionally, so the API stays reachable from the
+  host machine but not from other machines. Remove that `ports:` mapping (or
+  switch it to `expose:`) if you want the server reachable only inside the
+  compose network under the SSO profile.
 - `BIND_HOST=0.0.0.0` + `BIND_PUBLIC=1` are set **inside the container only**
   (required to be reachable from the proxy); the host port mapping stays
   `127.0.0.1` — see `docker-compose.yml`.
@@ -65,8 +69,10 @@ To make brain-server validate the IdP's tokens itself:
 
 1. Set `BRAIN_JWT_ISSUER` to the IdP issuer (e.g. the Entra v2.0 issuer).
 2. Export the IdP's public signing key(s) as PEM into `./data/keys` (the
-   `BRAIN_UMP_KEY_DIR` volume). Key rotation at the IdP means adding the new
-   PEM; the server picks up key-dir changes on reload.
+   `BRAIN_JWT_KEY_DIR` volume — JWT verification reads it). Key rotation at
+   the IdP means adding the new PEM; the server picks up key-dir changes on
+   reload. (`BRAIN_UMP_KEY_DIR` is a different seam — the UMP operator
+   Ed25519 key — which compose happens to point at the same `/data/keys`.)
 
 This gives per-request AuthZ + audit without the proxy doing token surgery.
 Opaque bearer mode remains the simpler default: the proxy authenticates, and

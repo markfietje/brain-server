@@ -239,8 +239,11 @@ See [Features](./features.md) and the API reference.
 Erasure is **human-only and Admin-scoped**. Every delete path (DSAR subject
 purge, Data-panel purge, quarantine delete) writes a tombstone + a SHA-256 audit
 row, and there is no agent-callable delete. Chunk-level erasure is a console /
-HTTP-API action; the CLI's only delete surface is `brain source-delete <id>`,
+HTTP-API action; the CLI's chunk-adjacent delete surface is `brain source-delete <id>`,
 which sweeps a whole source and tombstones it — it is not a per-memory eraser.
+(Client-scoped erasure does exist on the CLI: `brain client dsar --action purge`
+and `brain client end --purge`; physical residue after a logical purge is
+`brain shred`.)
 Follow the documented procedure in [Human in the loop §7](./human-in-the-loop.md#7-the-erasure-procedure).
 
 ---

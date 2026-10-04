@@ -12,7 +12,7 @@ machine-readable contract is at **`GET /openapi.yaml`** at runtime and
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/` · `/app/*` | The Dioxus console SPA, served from `BRAIN_CLIENT_DIST` when built and mounted (static asset surface — the JSON API routes are unaffected) |
+| GET | `/` · `/app/*` | The operator GUI SPA, served from `BRAIN_CLIENT_DIST` when built and mounted (static asset surface — the JSON API routes are unaffected). The default bundle is the Dioxus client (`client/`); the SvelteKit + Tauri shell (`shell/`) is a successor GUI over the same API, not yet the served default |
 | GET | `/health` | Liveness probe (minimal `{status, version}`; detail on `/health/db`) |
 | GET | `/ready` | Readiness probe for load balancers; includes the redacted `gdl_provider` posture (`disabled`, `configured`, or `invalid`; invalid is `NOT_READY`) |
 | GET | `/health/db` | Admin-gated detail (v1.28.70: the full body — capacity, pool, hardening, model, otel, DPO, concurrency, durability — is operator telemetry); a Read credential gets the reduced probe `{status, version, db_ok}`; Read-only dashboards add the admin credential for the full body |
@@ -84,7 +84,7 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/ingest/proposal` · `/proposals/{id}/approve[?supersedes=N][&digest=...]` · `/reject` · `/proposals/{id}/edit` | Human-in-the-loop write-back (v1.14). Since v1.27.12 `approve` is bound to the bytes the reviewer saw: the `digest` (SHA-256 of the read-canonical review form, as served by `GET /proposals` — field `content_digest`) is **required** (`400 digest_required` when absent) and any drift → `409`. Since v1.28.74 accepts optional `origin_context: "channel"` — stamps the proposal's source `channel-capture` (the review-queue badge the operator approves against; the promoted row carries the origin). Caravel: kind `channel/template` is proposal-only — content is the JSON packet `{tenant, conversation_ref, template, body}`; approving CASes it approved and dispatches the governed send in ONE tx (window + consent + approved proposal all verified kernel-side; business-initiated cold contact additionally opens its `care/case`). Replay-safe: a decided id returns `{moved:false}`, never a second send. If the kernel's own gates refuse after the human decision, the refusal is audited and reported (`{moved:true, enqueued:false, reason}` or 409 with nothing written) |
+| POST | `/ingest/proposal` · `/proposals/{id}/approve[?supersedes=N][&digest=...]` · `/reject` · `/proposals/{id}/edit` | Human-in-the-loop write-back (v1.14). Since v1.27.12 `approve` is bound to the bytes the reviewer saw: the `digest` (SHA-256 of the read-canonical review form, as served by `GET /proposals` — field `content_digest`) is **required** (`400 digest_required` when absent) and any drift → `409`. `approve` demands the `approve` capability and `reject` the `reject` capability (in addition to the write gate). Since v1.28.74 accepts optional `origin_context: "channel"` — stamps the proposal's source `channel-capture` (the review-queue badge the operator approves against; the promoted row carries the origin). Caravel: kind `channel/template` is proposal-only — content is the JSON packet `{tenant, conversation_ref, template, body}`; approving CASes it approved and dispatches the governed send in ONE tx (window + consent + approved proposal all verified kernel-side; business-initiated cold contact additionally opens its `care/case`). Replay-safe: a decided id returns `{moved:false}`, never a second send. If the kernel's own gates refuse after the human decision, the refusal is audited and reported (`{moved:true, enqueued:false, reason}` or 409 with nothing written) |
 | POST | `/ingest/proposal` (kind `registry_lifecycle`) | Proposal-only lifecycle intent. `content` is the exact serialized `{action,id,version,row_digest,row}`: `action` is `promote\|retire`, `id` and `version` identify the row, `row_digest` comes from the single-row detail response, and `row` is the exact current `RegistryRow`. Creation makes no status/knowledge change (no registry status transition and no knowledge/vector write); only the existing human approval gate disposes it. Non-empty `evaluation_refs` are refused. This is not a generic signature record and does not make `evaluated` reachable |
 | GET | `/proposals?status=&domain=` · `/decayed` | Approval queue + decayed review. Each row is a `ProposalView` (`content` = read-canonical form, `content_digest` = SHA-256 the approve verb binds to, v1.27.12; v1.28.53 "Triage": rows carry their `domain` label + optional `title`, and `?domain=` scopes the queue — the read gate checks the REQUESTED domain, fail-closed 403 for a foreign one; approve/reject/edit re-check the ROW's domain before the CAS, so a foreign-domain proposal is never decided by a caller its domain never answered for) |
 | POST | `/consolidate/propose` · `/apply` · `/undo` | Reviewable consolidation, supersession, undo |
@@ -112,9 +112,9 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/export` | Portable JSON export |
-| POST | `/purge` | Hard, audited deletion by id or owner |
+| POST | `/purge` | Hard, audited deletion by id or owner (demands the `purge` capability) |
 | DELETE | `/memory/{id}` | Hard, audited deletion of one chunk (human-only erasure; the agent tool was removed v1.20.25) |
-| POST | `/dsar` | Locate → export → purge → deletion certificate (supports `dry_run` footprint preview). Since v1.28.87 every content write is owner-stamped — the acting principal's `sub`, or the fixed `loopback` label for opaque-mode (no-principal) writes — so the locate covers operator-authored ingests; pre-.87 rows with a NULL owner stay stamp-blind by declaration (F7-02) |
+| POST | `/dsar` | Locate → export → purge → deletion certificate (supports `dry_run` footprint preview). The **export** arm requires the `dsar_export` capability. Since v1.28.87 every content write is owner-stamped — the acting principal's `sub`, or the fixed `loopback` label for opaque-mode (no-principal) writes — so the locate covers operator-authored ingests; pre-.87 rows with a NULL owner stay stamp-blind by declaration (F7-02) |
 | GET | `/dsar` | DSAR ledger (admin, newest-first, per-row deadline) |
 | GET | `/tombstones?subject=&since=` | Deletion registry |
 | GET | `/dsar/{id}/certificate` | Re-fetch certificate + live chain check |
@@ -130,7 +130,7 @@ fields are the `/recall`-specific ones — `q`/`k` are the `GET /search` equival
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/domains` | Create a domain pool (200 = existed, 201 = created; body `{name}`) |
+| POST | `/domains` | Create a domain pool (200 = existed, 201 = created; body `{name, created, multi_db}`) |
 | GET | `/domains` | List known domains (single global pool when multi-db is off) |
 | DELETE | `/domains/{name}?confirm=<name>` | Delete a domain + all its data (echo-confirm guard, `global` protected) |
 | POST | `/domains/{name}/vacuum` | `VACUUM` one domain pool (returns `{name, vacuumed: true}`) |
@@ -185,9 +185,10 @@ packs do not ride the envelope.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/legal-hold` · `/legal-hold/{id}/release` · GET `/legal-holds` | Per-domain legal holds; held ids are frozen (purge/DSAR defer) |
-| POST | `/breach` · `/breach/{id}/event` · `/breach/{id}/close` | Breach-notification workflow (open / append event / close) |
-| GET | `/breaches` · `/breaches/{id}` | Breach register + detail |
+| POST | `/legal-hold` · GET `/legal-holds` | Per-domain legal holds; held ids are frozen (purge/DSAR defer). Both Admin. |
+| POST | `/legal-hold/{id}/release` | Release a hold — Admin **plus the DPO role** (an asymmetry on purpose: releasing a hold is a privacy decision, not just an ops one) |
+| POST | `/breach` · `/breach/{id}/event` · `/breach/{id}/close` | Breach-notification workflow (open / append event / close) — all Admin **plus the DPO role** |
+| GET | `/breaches` · `/breaches/{id}` | Breach register + detail — Admin **plus the DPO role** |
 | GET | `/workflow/scoreboard` | Workflow outcome/efficiency scoreboard over recent runs (DPO/admin; rates in integer ten-thousandths, fail-closed audit linkage). Since v1.28.62 carries the ASI09 approval-fatigue telemetry: `review_independence_risk` (0\|1, the client detector's verdict server-side), `approval_uniformity_ratio` (integer ten-thousandths), `review_decisions_window` — parity-pinned to the console's rubber-stamp arithmetic |
 | GET | `/workflow/reflection/corpus?since=&limit=&partition=all\|train\|holdout` | The de-identified disagreement-corpus export (DPO/admin dual gate; audited per call). Bounded page (1..=500), every row carries its frozen train/holdout partition (pure function of the run id over a pinned constant — stable across exports), identifiers render as content digests, excerpts pass the read-seam sanitizer with unconditional PII masking; the raw case input never exports |
 | POST | `/workflow/calibration/sign` | Monthly human-signed workflow calibration gate (DPO/admin; one signature per calendar month, audited) |
@@ -235,8 +236,8 @@ packs do not ride the envelope.
 | POST | `/workflow/delivery/runs/{id}/advance` (R40 additions) | The pass now also signs an **attestation link** and appends it to the run's chain, in the SAME transaction (step row → CAS → trace row → link → proposal seam → session log → audit last), and the trace row's `attestation_root` names the chain head. An optional `model` (`{key, config_digest}`) names the registry row the pass executed under: the server resolves it, and the signed predicate carries the row's **artifact digest**, so a model name with no bytes behind it is `409 delivery_model_digest_missing`; the registry refusals are four distinct codes (`delivery_model_not_registered` / `delivery_model_not_promoted` / `delivery_model_retired` / `delivery_model_digest_missing`). **Key posture, fail-closed:** a pass REFUSES with `409 delivery_attestation_refused` when the host has no usable operator key — an absent key and a refused one are different causes of the same code, and neither ever degrades into an unsigned link. A run on a keyless host therefore never advances past its admission. `delivery_traces` also gained a stored `seq` ordinal, so every `trc_` id is re-addressed once (consumer-affecting). |
 | POST | `/workflow/claim-schemas` | **Author a claim schema — a human artifact, forever.** Only a human principal may write one, and a self-authored schema is refused at ADMISSION rather than warned about. The body is `{domain, version, body}` where `body` is the TYPED slot document (predicate, type, disjointness class, bounds) — JSON Schema is deliberately not used: a schema document is a syntax contract, and the contradiction arithmetic needs a disjointness class, which JSON Schema can express only as a comment. The stored `authored_by` is mapped from the typed principal kind INSIDE the service core, so no request body can name its own author; the table's `CHECK` is a tripwire on the write path and NOT an identity proof. `201 {domain, version, body_digest, authored_by, authored}`. The budget consequence is real: one human artifact per domain, recurring forever (Write on global + the `workflow` role, human principal only). |
 | POST | `/workflow/claims` | Propose a claim. A claim is a TYPED tuple — `{claim_id, domain, subject, predicate, object}` — against a ratified schema, so a free-text proposal cannot mint one. Every slot must be filled: a slot that defaulted its way to ratified is the same failure in a narrower column. The claim lands `pending`, invisible to every recall surface. `201 {claim_id, status, created_by}` (Write on global + the `workflow` role; audited). |
-| GET | `/workflow/claims?limit=` | **The gated claim read — the loop's only reader.** Joins on `status='ratified' AND recall_visible=1`, the same two columns the database fence protects, so a bypassed trigger and an unreachable row are two independent locks on one fact. The surface has no parameter that could reach unratified material, so it cannot be asked for any. `{claims: [...], limit}`, bounded 1..=50 default 20, newest-first, every emitted field through the read seam (Read on global; audited). |
-| GET | `/workflow/claims/{id}` | Read one claim for the promotion screen — the ONE surface besides the service core that may see a claim that is not yet ratified, which is why it is a separate operation rather than a flag on the gated read. Authorization precedes the lookup, so an absent id is probe-blind (Read on global; audited). |
+| GET | `/workflow/claims?limit=` | **The gated claim read — the loop's only reader.** Joins on `status='ratified' AND recall_visible=1`, the same two columns the database fence protects, so a bypassed trigger and an unreachable row are two independent locks on one fact. The surface has no parameter that could reach unratified material, so it cannot be asked for any. `{claims: [...], limit}`, bounded 1..=50 default 20, newest-first, every emitted field through the read seam (Read on global **+ the `workflow` role**; audited). |
+| GET | `/workflow/claims/{id}` | Read one claim for the promotion screen — the ONE surface besides the service core that may see a claim that is not yet ratified, which is why it is a separate operation rather than a flag on the gated read. Authorization precedes the lookup, so an absent id is probe-blind (Read on global **+ the `workflow` role**; audited). |
 | POST | `/workflow/claims/{id}/verify` | Run the gate. Six deterministic checks in a fixed order — shape, bounds, referential, citation resolvability, contradiction, premise discipline — each a pure function over rows: no model, no score, no threshold, no judgement tie-break. Citation resolution is delegated to the byte-range resolver over ADMITTED bytes, never a live substring match. **The response carries the verdict and a CLOSED refusal code and never the failing byte offset, the adjacent text, or which evidence item was at fault** — a location hint handed back to a generator turns the gate into an oracle it can be searched against, so the detailed diagnostic goes to the audit chain and the promotion screen only (Write on global + the `workflow` role; audited). |
 | POST | `/workflow/claims/{id}/promote` | **DISABLED — the loop ships inert.** The route exists, is authorized, is audited, and returns `{claim_id, status: "refused", reason: "promotion_disabled"}` in EVERY configuration, for every actor, whether or not a token was presented. A deterministic gate's honesty is a MEASURED property, not an architectural one, and no long-run out-of-sample figure has been published; promotion stays disabled until one exists and has a NAMED OWNER. The switch is a compile-time constant with no environment variable and no flag behind it. The attempt is audited whether or not it succeeds, because a promotion path that only records its successes is one whose refusals are invisible (Write on global + the `workflow` role). |
 | GET | `/workflow/runs/{id}` · `/workflow/runs/{id}/steps` · `/workflow/runs/{id}/suggestions` | Run row (state sanitized at the read seam), steps, retrieval-backed suggestions (Read on the run's domain). Since v1.28.72 the **suggestions** response carries `evidence_recorded: true\|false` — the KCS evidence side-effect fires only for callers holding Write on the domain AND the `workflow` role (Read-only callers get the body unchanged, nothing recorded) |
@@ -277,7 +278,7 @@ packs do not ride the envelope.
 | GET | `/ops/authz/explain?route=&method=` | R47: the gate row for a route PATTERN plus **the caller's own** verdict and a closed reason (`allow`/`defer`/`deny` with `route_ungated`, `method_not_permitted`, `capability_deny_only`, `no_principal`, `public_path`, `presentation_gated`). Deliberately refuses a `?roles=` set (`400 authz_explain_role_set_refused`) — it will never answer "what would another role get" — and answers a probe-blind `404` for a route with no gate row. Echoes the `BRAIN_RBAC_ROLELESS_POSTURE` in force (Admin on `global`) |
 | POST | `/workflow/runs/{id}/delegations` | Mesh delegation `{to_principal, task}`: the target's card is verified FIRST (unknown/tampered refuses `400 agent_unknown` / `card_tampered`, nothing written); then row + `delegation/request` lineage event (ids+actors only, never task content) + audit in ONE tx. Task screened like notes; per-run ceiling refuses `409 delegations_full` (Write on the run's domain) |
 | GET | `/workflow/runs/{id}/delegations?limit=&offset=` | The run's delegation view: chronological work orders with state (`requested`/`completed`) and results, every string on the read seam, bounded page (Read on the domain) |
-| POST | `/workflow/runs/{id}/delegations/{delegation_id}/result` | The delegatee's exactly-once result `{result}` — screened, CAS `requested → completed` in one tx with the `delegation/result` child lineage event + audit; non-delegatees refuse `400 not_delegatee`, replays refuse `409 result_already_submitted` (Write on the run's domain) |
+| POST | `/workflow/runs/{id}/delegations/{delegation_id}/result` | The delegatee's exactly-once result `{result}` — screened, CAS `requested → completed` in one tx with the `delegation/result` child lineage event + audit; non-delegatees refuse `400 not_delegatee`, replays refuse `409 conflict` ("this delegation already returned its result") (Write on the run's domain) |
 | POST | `/workflow/runs/{id}/answer` | The AskHuman closer: digest-bound to the live `pending_question`, appends `answers[]`, clears the question, CAS — one tx; Write + approve role gate |
 | GET | `/workflow/runs/{id}/steering?since=` | Drain the advisory steering outbox (Read on the run's domain) |
 | POST | `/workflow/plugins/mount` | UI-plugin mount/unmount evidence (Art 12 record-keeping): server verifies the claimed bundle SHA-256 against the boot manifest before writing the audited row (`409` on uncertified bytes) |
@@ -423,8 +424,14 @@ no brain credentials — pinned by `relay_holds_no_brain_credentials`).
 ## Versioning & deprecation
 
 - Every response carries `X-Api-Version`.
-- `POST /add` and `GET /search` are deprecated (migrate to `/ingest` + `/recall`)
-  and emit an RFC 8594 `Deprecation` header.
+- `POST /add`, `GET /search`, and `/ingest/memory` are deprecated (migrate to
+  `/ingest` + `/recall`) and emit an RFC 8594 `Deprecation: version="0.9.5"`
+  header. Honest scope: the header rides the entire legacy router application —
+  the deprecated routes AND the core routes mounted beside them
+  (`/health`, `/health/db`, `/ready`, `/openapi.yaml`, `/stats`, `/version`,
+  `/audit`, `/audit/verify`, `/metrics`, `/`, and the `/app` console seat) —
+  not just the three deprecated paths. A `Deprecation` header on a healthy
+  core route is noise, not a deprecation.
 - The written contract ([API_CONTRACT.md](./API_CONTRACT.md)) states the
   stability promise and the deprecation policy.
 
@@ -436,7 +443,8 @@ no brain credentials — pinned by `relay_holds_no_brain_credentials`).
   domains, ump, backup/restore, key management, and more (see
   [CLI reference](./cli-reference.md)).
 - **`mcp` binary** — search/recall/ingest exposed as MCP tools for agent clients.
-- **Dioxus client** — the visual control surface served at `/app`.
+- **Dioxus client** (`client/`) — the visual control surface served at `/app` today.
+- **SvelteKit + Tauri shell** (`shell/`) — the successor GUI over the same API; builds to a static SPA for the same `/app` seat.
 
 ---
 

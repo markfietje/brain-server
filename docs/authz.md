@@ -9,12 +9,14 @@ in this server. Do not read the word "tenant" in this document as isolation.
 ## What runs, and where in the chain
 
 ```
-security_headers → rate_limit → jwt_auth → opaque_auth → **rbac** → Timeout → CatchPanic → handler
+security_headers → rate_limit → jwt_auth → opaque_auth → **rbac** → CatchPanic → Timeout → handler
 ```
 
 `.layer()` applies **bottom-to-top**: a *later* source line runs *earlier* at
-request time. The RBAC layer is therefore registered between the CatchPanic and
-the opaque-auth layers in `router/mod.rs` so that it runs *after*
+request time — so `TimeoutLayer` (the earlier line in `router/mod.rs`) runs
+*inside* `CatchPanicLayer`, and a handler timeout surfaces as a caught panic
+boundary response, not an opaque connection drop. The RBAC layer is therefore
+registered after the CatchPanic line in `router/mod.rs` so that it runs *after*
 authentication. Getting this wrong is silent — a layer above the auth layers
 never sees a `Principal` and decides on every request without one — so the
 ordering is pinned **by line number**, not by a comment
@@ -120,6 +122,31 @@ outlive its justification quietly.
 obvious argument for pinning this as intended is that `workflow` is the same
 class. It is not. `CAN_ACTIONS` names `workflow`, and `workflow-operator`
 grants it. Two in-tree comments claimed otherwise and were wrong.
+
+## The thirteen fixed presets (`src/role.rs::PRESETS_RAW`)
+
+Seeded `INSERT OR IGNORE` at migration (operator edits survive a re-migration),
+parse-validated by `all_presets_parse_and_validate`:
+
+| Preset | Shape |
+|---|---|
+| `admin` | Full control: every scope, every action (incl. `admin`, `purge`), all tools |
+| `solo` | SMB owner: the `admin` action set over all data, every panel (the simplest default) |
+| `agent` | Front-line worker: own private memory only, `read`/`write`/`reject`, UMP recall/get/feedback tools |
+| `workflow-operator` | Governed workflow execution without administrative or publication authority: `can:["workflow"]` only |
+| `supervisor` | Call-center lead: sees their agents' rows, approves/rejects their queue, can export (DSAR) but not purge |
+| `qa-specialist` | Reads agent work + calibrates; cannot approve or purge |
+| `clinician` | Min-necessary PHI: own private memory, read/write, no review |
+| `dpo` | DSARs: read + `dsar_export` + calibrate, no routine write |
+| `recruiter` | Per-candidate private memory + team pools, uses the review queue |
+| `controller` | Daily operational control: broad actions incl. `purge`, retention enforcement |
+| `exec` | Read-only dashboards, no write or destructive actions |
+| `client-auditor` | A client's compliance login: READ-ONLY on exactly one client domain (the min-necessary wedge) |
+| `bpo-ops` | Read-only capacity/connector/queue/breach board across all clients |
+
+The capability vocabulary (`CAN_ACTIONS`) is: `read`, `write`, `approve`,
+`reject`, `calibrate`, `release_quarantine`, `dsar_export`, `purge`, `admin`,
+`workflow` — and NOT `publish`.
 
 ## The posture knob
 
