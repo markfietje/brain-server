@@ -20,9 +20,11 @@ an engineering practice, not a named algorithm. The honest, citable framing is:
   *chunk-then-retrieve* the standard unit.
 - **Chunking-strategy trade-offs** (fixed-size vs. structure-aware) are surveyed
   in Gao et al. (2023), *Retrieval-Augmented Generation for Large Language
-  Models: A Survey*, arXiv:2312.10997.
+  Models: A Survey*,
+  [arXiv:2312.10997](https://arxiv.org/abs/2312.10997).
 - **Hierarchical organization** appears in RAPTOR (Sarthi et al., 2024, ICLR)
-  and GraphRAG (Edge et al., 2024, arXiv:2404.16130), which summarize/embed
+  and GraphRAG (Edge et al., 2024,
+  [arXiv:2404.16130](https://arxiv.org/abs/2404.16130)), which summarize/embed
   clustered or hierarchical text, a related lineage, though neither is
   "markdown chunking" per se.
 

@@ -20,7 +20,9 @@ giving the store a push channel?**
   memory* synthesizing higher-level abstractions, the canonical "memory as a
   first-class agent component" architecture.
 - **MemGPT / Letta**, Packer, Wooders, Lin, et al. (2023), *MemGPT: Towards
-  LLMs as Operating Systems*, arXiv:2310.08560 (**preprint**, cite honestly).
+  LLMs as Operating Systems*,
+    [arXiv:2310.08560](https://arxiv.org/abs/2310.08560) (**preprint**, cite
+    honestly).
   OS-style virtual-context paging between main and external context. The
   relevant lesson (cited in `src/handlers/suggest.rs`): *anticipatory memory
   must be reviewable*, nothing is silently injected.

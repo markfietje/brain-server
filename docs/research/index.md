@@ -22,14 +22,19 @@ cites, the **deterministic** way brain-server implements it, and the **ceiling**
 - [UI Contract Parity](./15-ui-contract-parity.md), one invisible-class fixture across five consumers, byte-equality wire drift gate
 - [Durable Local-First State](./16-durable-local-first-state.md), Argon2id + AES-256-GCM parameters, the WAL durability envelope, and physical erasure ordering
 - [The Two-Layer Injection Screen](./17-injection-screen.md), mechanical tiers, a local classifier, quarantine as the usable middle state, and honest degradation
+- [The Cited Work](./18-cited-work.md), every source behind these mechanisms, summarized and linked
 
 Every mechanism is a deterministic implementation of *specific* published
 techniques over a local store, no LLM in the retrieval loop, no data egress.
-The 2026 survey wave (arXiv 2512.13564, 2603.07670, 2605.06716, 2602.06052)
+The 2026 survey wave ([arXiv:2512.13564](https://arxiv.org/abs/2512.13564),
+2603.07670, 2605.06716, 2602.06052)
 taxonomizes exactly this design space; the graph-memory direction this repo
-ships (04/05) is institutionalized by arXiv 2602.05665, and the deterministic
+ships (04/05) is institutionalized by
+[arXiv:2602.05665](https://arxiv.org/abs/2602.05665), and the deterministic
 conflict-resolution posture (01/12) is independently argued for by Memanto
-(arXiv 2606.01435). A full method-by-method audit is maintained in the project's research
+([arXiv:2606.01435](https://arxiv.org/abs/2606.01435)). Every external source cited
+across these notes is gathered, summarized, and linked in
+[The Cited Work](./18-cited-work.md). A full method-by-method audit is maintained in the project's research
 records.
 The [proof map](../trust/proof-map.md) ties each to a shipped release and a live
 `curl`/`brain` verification.

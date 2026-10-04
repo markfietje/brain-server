@@ -12,10 +12,13 @@ never got a graph chance at all.
 
 ## The references
 
-- **GAAMA** (arXiv:2603.27910), **hub dampening** `w_ij · min(1, θ/deg(i))`
+- **GAAMA** ([arXiv:2603.27910](https://arxiv.org/abs/2603.27910)), **hub
+  dampening** `w_ij · min(1, θ/deg(i))`
   tames mega-hubs; **edge-type weights** separate taxonomy from semantics.
-- **MemORAI** (arXiv:2605.01386), static-type weighting.
-- **"Use Graph When It Needs"** (arXiv:2602.03578), complexity-gated
+- **MemORAI** ([arXiv:2605.01386](https://arxiv.org/abs/2605.01386)),
+  static-type weighting.
+- **"Use Graph When It Needs"**
+  ([arXiv:2602.03578](https://arxiv.org/abs/2602.03578)), complexity-gated
   activation: engage the graph leg precisely when the estimator says it helps.
 
 ## The implementation (v1.12.0 "Discern")

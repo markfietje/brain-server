@@ -11,7 +11,8 @@ and bounded so a dense graph cannot blow the budget.
 
 ## The reference
 
-**arXiv:2607.00339 (TRACE)**, hierarchical nodes + typed edges + validity-aware
+**[arXiv:2607.00339](https://arxiv.org/abs/2607.00339) (TRACE)**, hierarchical
+nodes + typed edges + validity-aware
 traversal. The reasoning chain is a first-class artifact, not a side effect.
 
 ## The implementation

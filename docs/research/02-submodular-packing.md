@@ -12,7 +12,8 @@ budget.
 
 ## The reference
 
-**arXiv:2607.00725**, budgeted monotone submodular maximization with lazy
+**[arXiv:2607.00725](https://arxiv.org/abs/2607.00725)**, budgeted monotone
+submodular maximization with lazy
 greedy, achieving the classic **(1 − 1/e) optimality bound**, shown to gain
 +5.1 F1 on HotpotQA. The objective rewards coverage and penalizes redundancy;
 a diversity gate keeps the set from collapsing onto one cluster.

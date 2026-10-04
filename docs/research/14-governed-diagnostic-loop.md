@@ -30,22 +30,25 @@ cannot argue with, in deterministic Rust, with every refusal citing its law.
   without a law-clean closure artifact, reflexive closure refused). Cited
   as process shape, not as a diagnostic instrument — the code enforces
   that closure *happens with evidence*, never what the diagnosis *is*.
+  <https://doi.org/10.17226/21894>
 - **Structured handoff.** Starmer et al., *Changes in Medical Errors after
   Implementation of a Handoff Program*, NEJM 2014 (the I-PASS study):
   sender-owned illness-severity / patient-summary / action-list /
   situation-awareness / synthesis sections, assembled — never synthesized —
   by the sender. The loop's `ipass_facts` renders sender-owned sections
   only; the C3 escalated case lands exactly one pre-filled offer draft,
-  HITL-gated.
+  HITL-gated. <https://doi.org/10.1056/NEJMsa1403936>
 - **Triage acuity.** Gilboy et al., *Emergency Severity Index, v4* (AHRQ),
   and Mackway-Jones et al., *Emergency Triage* (the Manchester system):
-  banded acuity with wait windows. The loop ports the *shape* — MTS-style
+  banded acuity with wait windows. <https://www.ahrq.gov/priority/safety/esi/>
+  The loop ports the *shape*, MTS-style
   bands (RED/ORANGE/YELLOW/GREEN/BLUE) plus ESI 1–5, at least one required
   at triage exit (T4), closed sets (T15/T16) — while keeping acuity a
   MONITOR beside the authoritative P-class SLA (`advertised_sla` takes the
   tighter of the two, never the looser).
 - **Calibrated confidence.** Guo, Pleiss, Sun & Weinberger, *On Calibration
-  of Modern Neural Networks*, ICML 2017: predicted probabilities need
+  of Modern Neural Networks*, ICML 2017
+  (<https://arxiv.org/abs/1706.04599>): predicted probabilities need
   temperature fitting against held-out data (ECE) before anyone acts on
   them. The System-1 port implements exactly this — entropy confidence,
   temp buckets, hand-computable ECE with a NaN-means-no-measure law —

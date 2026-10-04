@@ -11,9 +11,12 @@ snippet the server fabricates).
 
 ## The reference
 
-- **Pseudo-Relevance Feedback (PRF)**, the classical Rocchio/expansion idea:
-  use the top pass-1 results to expand the query. The lesson from v0.9.x: the
-  gate must be **reachable**, not decorative.
+- **Pseudo-Relevance Feedback (PRF)**, the classical expansion idea: use the
+  top pass-1 results to expand the query. The standard formulation is Lavrenko &
+  Croft (2001), *Relevance-Based Language Models* (SIGIR/IJCAI), whose RM3 is
+  the variant usually meant by "classic PRF", on the language-modeling
+  retrieval of Ponte & Croft (1998). <https://www.ijcai.org/Proceedings/01/Papers/129.pdf>
+  The lesson from v0.9.x: the gate must be **reachable**, not decorative.
 - **Faithful evidence**, the "with_snippet" invariant: a snippet is a verbatim
   substring of the source, and highlights are byte-offset ranges *within* it.
 

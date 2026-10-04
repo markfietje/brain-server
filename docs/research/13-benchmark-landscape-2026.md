@@ -10,12 +10,18 @@ memory abilities), and **BEAM**, and a widely-cited Letta experiment showed a
 burden of proof on every specialized memory architecture: *what exactly does
 your complexity buy?*
 
-*The reference.* LoCoMo (Snap Research, ACL 2024, arXiv:2402.17753) for the
+*The reference.* LoCoMo (Snap Research, ACL 2024,
+[arXiv:2402.17753](https://arxiv.org/abs/2402.17753)) for the
 multi-session evaluation shape; LongMemEval and BEAM for the 2026 standard
 triad; the 2026 landscape writeups (Mem0's state-of-memory roundup; Letta's
 filesystem-baseline study; third-party comparison tables) for the
-score-controversy finding. The 2026 survey wave (arXiv 2512.13564, 2603.07670,
-2605.06716, 2602.06052) gives the taxonomy the per-category scores map onto.
+score-controversy finding. The 2026 survey wave ([arXiv:2512.13564](https://arxiv.org/abs/2512.13564),
+2603.07670, 2605.06716, 2602.06052) gives the taxonomy the per-category scores map onto.
+
+**An honest gap.** LongMemEval and BEAM are named here as the 2026 standard triad
+without canonical identifiers. Rather than guess at a citation, both are flagged as
+**owed** in the [cited-work bibliography](./18-cited-work.md), and the planned
+public harness below is where their identifiers should land.
 
 *The deterministic way brain-server implements it.* The repo does **not**
 self-report on these benchmarks yet, and that is the honest position until

@@ -22,15 +22,18 @@ rank-based method and stores vectors in a space-efficient quantized form.
   outperforming individual systems and Condorcet/CombMNZ on TREC + LETOR.
   Brain Server uses the same constant `RRF_K = 60` (`src/search/mod.rs:31`),
   the standard value from the paper.
+  <https://dl.acm.org/doi/10.1145/582415.582418>
 - **BM25 (lexical leg).** Robertson, S. E., & Zaragoza, H. (2009). *The
   Probabilistic Relevance Framework: BM25 and Beyond.* Foundations and Trends
   in IR 3(4). Brain Server's lexical leg is SQLite **FTS5** with BM25 ranking.
+  <https://doi.org/10.1561/1500000019>
 - **Product / scalar quantization (vector leg).** Jégou, H., Douze, M., &
   Schmid, C. (2011). *Product Quantization for Nearest Neighbor Search.* IEEE
   TPAMI 33(1). Brain Server stores vectors in **int8 and binary** quantized
   form in a `vec0` table (`vec_quantize_int8(…,'unit')` +
   `vec_quantize_binary(…)`), trading a little precision for 4–32× smaller
   storage and faster scans, the same quantization family PQ belongs to.
+  <https://doi.org/10.1109/TPAMI.2010.57>
 
 ## The implementation
 
@@ -60,9 +63,11 @@ rank-based method and stores vectors in a space-efficient quantized form.
 - Structure-aware chunking is an **engineering practice**, not a single citable
   algorithm. The RAG framing that made chunk-then-retrieve standard is Lewis,
   Perez, Piktus, et al. (2020), *Retrieval-Augmented Generation for
-  Knowledge-Intensive NLP Tasks* (NeurIPS 2020); chunking-strategy trade-offs
+  Knowledge-Intensive NLP Tasks* (NeurIPS 2020,
+  <https://arxiv.org/abs/2005.11401>); chunking-strategy trade-offs
   are surveyed in Gao et al. (2023), *Retrieval-Augmented Generation for Large
-  Language Models: A Survey* (arXiv:2312.10997). Brain Server's heading-aware
+  Language Models: A Survey*
+  ([arXiv:2312.10997](https://arxiv.org/abs/2312.10997)). Brain Server's heading-aware
   splitter is its own choice, benchmarked against fixed-size in
   `src/chunker.rs` tests.
 
