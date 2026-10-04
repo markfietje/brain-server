@@ -18,7 +18,7 @@ libfuzzer = ["dep:libfuzzer-sys"]
 
 [dependencies]
 brain-engine-sdk = { path = "../brain-engine-sdk", features = ["harness-kernel"] }
-libfuzzer-sys = { version = "0.4", optional = true }
+libfuzzer-sys = { version = "0.4.13", optional = true }
 
 [lints.rust]
 unsafe_code = "forbid"

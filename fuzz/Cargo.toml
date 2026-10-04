@@ -8,9 +8,9 @@ edition = "2024"
 cargo-fuzz = true
 
 [dependencies]
-libfuzzer-sys = "0.4"
+libfuzzer-sys = "0.4.13"
 brain-server = { path = ".." }
-serde_json = "1"
+serde_json = "1.0.151"
 
 # The fuzz targets live in `fuzz/fuzz_targets/`. Each is a separate binary that
 # libFuzzer drives. Run with:
