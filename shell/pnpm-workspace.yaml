@@ -17,5 +17,5 @@ allowBuilds:
   # functional depends on it.
   es5-ext: false
 minimumReleaseAgeExclude:
-  - bits-ui@2.19.3
+  - bits-ui@2.19.3 || 2.19.5
   - cn@0.4.0
