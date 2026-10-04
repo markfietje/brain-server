@@ -46,21 +46,50 @@ pub struct RbacMiddlewareState {
 
 /// this round 's RBAC evaluation middleware.
 ///
-/// **What it enforces** (the full, honest list): a matched, non-public route
-/// with no row in the shared gate table is refused as `route_ungated` — this is
-/// the round's reason for existing, because coverage stops being a claim about
-/// a test and becomes a property of the running server; the agent principal
-/// class is refused on Admin rows by class; and a capability in the frozen
-/// deny-only class is a permanent refusal.
+/// **What it enforces — the full and verified list.** A matched, non-public
+/// route with no row in the shared gate table is refused as `route_ungated`.
+/// That is this layer's reason for existing, because coverage stops being a
+/// claim about a test and becomes a property of the running server. This is
+/// the ONLY denial the middleware can produce on the production path (see the
+/// ceilings below), and it is enforced.
+///
+/// **The two arms that are NOT enforced, stated as ceilings rather than
+/// claims.** An earlier version of this doc listed three enforced properties.
+/// Two were unreachable, and the prose outlived the code that made them so:
+///
+///   * *"the agent principal class is refused on Admin rows by class"* — the
+///     oracle has NO agent arm. Its absence is deliberate and documented at
+///     `src/authz/policy.rs:205-220`: two `authz_matrix` rows measured the
+///     agent posture and broke (an Admin row returns 200 with the legacy
+///     soft-deny shape, not 403), so reproducing it here would mean shipping a
+///     SECOND copy of a test-side list — the second-opinion surface the
+///     closed-oracle decision exists to prevent, and the copy would be wrong
+///     on the first route nobody classified. The agent class IS still refused,
+///     by the handlers, which the matrix pins across every gated row.
+///   * *"a capability in the frozen deny-only class is a permanent refusal"* —
+///     unreachable on the production path because the sole production
+///     constructor hardcodes `required_capability: ""`
+///     (`src/authz/gates.rs:167`). The arm exists at `policy.rs:221` and is
+///     correct; nothing constructs a `Gate` that can reach it.
 ///
 /// **What it does NOT enforce, and why:** the per-route capability and the
 /// scope action stay with the handler's own `authorize` / `authorize_role`
-/// (the defence-in-depth rule's inner gate). The capability cannot move here — the KCS publish gate
-/// is conditional on a request BODY field inside a route carrying two other
-/// gates, and a middleware keyed on `(MatchedPath, Method)` cannot see a body.
-/// The action axis already agrees with the handlers by construction, since the
-/// authz matrix pins every table row to the `authorize()` literal its handler
-/// actually calls.
+/// (the defence-in-depth rule's inner gate). The capability cannot move here —
+/// the KCS publish gate is conditional on a request BODY field inside a route
+/// carrying two other gates, and a middleware keyed on `(MatchedPath, Method)`
+/// cannot see a body.
+///
+/// **On the action axis, precisely.** The oracle reads `public`,
+/// `permits_method`, `required_capability` and `principal` — it does NOT read
+/// `required_action`. The authz matrix pins every table row to the
+/// `authorize()` literal its handler actually calls, which substantiates
+/// HANDLER-SIDE agreement (the handler enforces the action the row declares);
+/// it does NOT make this middleware enforce the action. `required_action` is
+/// read today only by `GET /ops/authz/explain`, so that endpoint reports the
+/// required action next to a verdict the action never influenced. Making the
+/// oracle enforce the action is a design decision with a second-opinion
+/// surface this repo has already reasoned about and declined; the wire-side
+/// disclosure is deferred, not forgotten.
 ///
 /// **The one fail-open-shaped branch, and it is a DEFERRAL not a pass.** Three
 /// states hand the request on without this layer ruling: a public path (the

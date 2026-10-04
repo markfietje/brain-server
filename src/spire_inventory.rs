@@ -58,9 +58,9 @@ const ROUTER_SITES_FLOOR: usize = 255;
 /// proptests, the merge determinism pin, and the metrics-dictionary parity
 /// test earned the raise; 1,221 at the Headroom open — the durability
 /// envelope pins, the fail-closed resolver pins, the lock-wait histogram
-/// pins, the limiter-purity + token-swap pins, and the write-discipline
-/// gate trio earned the raise). (The needle counts doc-comment literals
-/// too — a deliberate substring lock, measured the same way every time.)
+/// limiter-purity + token-swap pins, and the write-discipline
+/// gate trio earned the raise). (The needle no longer counts doc-comment
+/// literals — it strips comments first. See [`strip_rust_comments`].)
 /// 1,221 → 1,228 at the Loom open: the seven loom pins (fail-closed parse,
 /// thread cap, the Jetson resolution matrix, fan-out order, the pool-vs-
 /// serial pin, the proptest order invariant, `loom_preserves_fused_ranks`).
@@ -202,6 +202,610 @@ fn count_needle(hay: &str, needle: &str) -> usize {
     hay.matches(needle).count()
 }
 
+/// Blank every `#[cfg(test)]`-annotated item.
+///
+/// The Architecture Law exempts test regions from the STRUCTURAL counter
+/// (test fixtures legitimately open in-memory databases), so the guard needs
+/// to know where those regions end. This is the second consumer of the
+/// string-aware lexer below, and it lives beside
+/// [`strip_rust_comments`] so all source-lexing in the tree is ONE
+/// implementation (`dup_guard` fires on a second `src/` definition).
+///
+/// Item extents are found two ways, because `#[cfg(test)]` annotates two
+/// shapes in this tree:
+///   * a braced item — `mod tests { … }` — matched with a string-aware
+///     brace counter (an unbalanced brace inside a string literal would
+///     otherwise truncate the region and put production back under test);
+///   * a `;`-terminated item — `struct TestProvider(…);`, `let provider = …;`
+///     — which has no braces at all.
+///
+/// Unclosed regions extend to EOF rather than silently vanishing.
+pub(crate) fn blank_cfg_test_regions(src: &str) -> String {
+    let b = src.as_bytes();
+    let n = b.len();
+    let mut out: Vec<u8> = Vec::with_capacity(n);
+    let mut i = 0usize;
+
+    while i < n {
+        if b[i] == b'"' || (b[i] == b'r' && raw_string_end(b, i).is_some()) {
+            // Never start a region match inside a string literal.
+            let end = if b[i] == b'"' {
+                plain_string_end(b, i).unwrap_or(i + 1)
+            } else {
+                raw_string_end(b, i).unwrap_or(i + 1)
+            };
+            out.extend_from_slice(&b[i..end]);
+            i = end;
+            continue;
+        }
+        if b[i..].starts_with(b"#[cfg(test)]") {
+            let region_end = cfg_test_item_end(b, i + "#[cfg(test)]".len());
+            out.extend(
+                b[i..region_end]
+                    .iter()
+                    .map(|c| if *c == b'\n' { b'\n' } else { b' ' }),
+            );
+            i = region_end;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8(out).expect("blanking preserves UTF-8")
+}
+
+/// The end of the item an attribute annotates, starting just past it.
+fn cfg_test_item_end(b: &[u8], from: usize) -> usize {
+    let n = b.len();
+    let mut j = from;
+    while j < n {
+        // Skip whitespace.
+        if b[j].is_ascii_whitespace() {
+            j += 1;
+            continue;
+        }
+        // A further attribute (`#[derive(…)]`, `#[cfg(not(test))]`).
+        if b[j..].starts_with(b"#[") {
+            match bracketed_end(b, j) {
+                Some(end) => {
+                    j = end;
+                    continue;
+                }
+                None => return n,
+            }
+        }
+        // A braced item: brace-match to the close.
+        if b[j] == b'{' {
+            return matching_brace_end(b, j).map_or(n, |e| e + 1);
+        }
+        // A `;`-terminated item (tuple struct, `let` binding).
+        if b[j] == b';' {
+            return j + 1;
+        }
+        // Anything else: scan forward for the first `{` or `;`.
+        let mut k = j;
+        while k < n && b[k] != b'{' && b[k] != b';' {
+            k += 1;
+        }
+        if k >= n {
+            return n;
+        }
+        return if b[k] == b'{' {
+            matching_brace_end(b, k).map_or(n, |e| e + 1)
+        } else {
+            k + 1
+        };
+    }
+    n
+}
+
+/// The index just past the `]` closing the attribute starting at `j`.
+fn bracketed_end(b: &[u8], j: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut k = j;
+    while k < b.len() {
+        match b[k] {
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(k + 1);
+                }
+            }
+            b'"' => k = plain_string_end(b, k)? - 1,
+            b'\'' => {
+                if let Some(e) = scan_char_literal(b, k) {
+                    k = e - 1;
+                }
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    None
+}
+
+/// The index of the `}` matching the `{` at `open`, string-aware.
+fn matching_brace_end(b: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = open;
+    while i < b.len() {
+        match b[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            b'"' => i = plain_string_end(b, i)? - 1,
+            b'\'' => {
+                if let Some(e) = scan_char_literal(b, i) {
+                    i = e - 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                i = b[i..]
+                    .iter()
+                    .position(|c| *c == b'\n')
+                    .map_or(b.len(), |p| i + p);
+                continue;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let mut d = 1usize;
+                let mut j = i + 2;
+                while j < b.len() && d > 0 {
+                    if b[j..].starts_with(b"/*") {
+                        d += 1;
+                        j += 2;
+                    } else if b[j..].starts_with(b"*/") {
+                        d -= 1;
+                        j += 2;
+                    } else {
+                        j += 1;
+                    }
+                }
+                i = j - 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// End (exclusive) of a plain `"…"` string starting at `i`, escapes honoured.
+fn plain_string_end(b: &[u8], i: usize) -> Option<usize> {
+    let mut j = i + 1;
+    while j < b.len() {
+        match b[j] {
+            b'\\' => j += 2,
+            b'"' => return Some(j + 1),
+            b'\n' => return None,
+            _ => j += 1,
+        }
+    }
+    None
+}
+
+/// End (exclusive) of a raw string (`r"…"`, `r#"…"#`, `br##"…"##`) at `i`.
+fn raw_string_end(b: &[u8], i: usize) -> Option<usize> {
+    let mut j = if b[i] == b'r' { i + 1 } else { i + 2 };
+    let mut hashes = 0usize;
+    while b.get(j) == Some(&b'#') {
+        hashes += 1;
+        j += 1;
+    }
+    if b.get(j) != Some(&b'"') {
+        return None;
+    }
+    let mut k = j + 1;
+    while k < b.len() {
+        if b[k] == b'"' {
+            let mut h = 0usize;
+            while b.get(k + 1 + h) == Some(&b'#') {
+                h += 1;
+            }
+            if h == hashes {
+                return Some(k + 1 + h);
+            }
+        }
+        k += 1;
+    }
+    None
+}
+
+/// The stripper's own fixtures.
+///
+/// **Anti-vacuity is the whole design constraint here.** Every defect the
+/// naive form had pushed the count DOWN, so a stripper that "works" and a
+/// stripper that swallows the file look identical from the floor — both are
+/// under-reporting. So this pin asserts BOTH directions: prose is removed,
+/// *and* real code survives it. The `real code survives` half is the one a
+/// broken stripper fails.
+#[test]
+fn r68_stripper_is_string_aware_and_loses_no_code() {
+    let needle = |s: &str| strip_rust_comments(s).matches("#[test]").count();
+
+    // ── prose is removed (the gaming path the floor must not have) ────────
+    assert_eq!(
+        needle("//! a doc comment mentioning #[test]\nlet x = 1;"),
+        0
+    );
+    assert_eq!(needle("// a line comment with #[test]\nlet x = 1;"), 0);
+    assert_eq!(needle("/* a block comment with #[test] */\nlet x = 1;"), 0);
+
+    // ── the three measured naive-form defects ─────────────────────────────
+    // `'"'` is a char literal that IS a double quote: mis-reading it as a
+    // string opener swallowed ~20 kB of real code.
+    assert_eq!(
+        needle("let c = '\"';\n#[test]\nfn survives_the_quote_char() {}"),
+        1,
+        "a char literal that IS a double quote must not open a string"
+    );
+    // A bare `r"…"` (no b/c prefix) is a raw string.
+    assert_eq!(
+        needle("let s = r\"a \\\" quoted body\";\n#[test]\nfn survives_bare_raw() {}"),
+        1,
+        "a bare r\"…\" raw string must be recognised without a b/c prefix"
+    );
+    // Raw strings at ANY hash count, with and without a byte prefix. NOTE the
+    // honest scope: this stripper removes COMMENTS, not string CONTENT — a
+    // `#[test]` written inside a literal is still counted, exactly as the raw
+    // needle counted it. What is asserted here is the DELIMITING: if the
+    // scanner mis-parsed the raw string it would run on and blank everything
+    // after it, taking the trailing real attribute with it.
+    assert_eq!(
+        needle("let s = r#\"{\"a\":\"#[test]\"}\"#;\n#[test]\nfn survives_raw_hash() {}"),
+        2,
+        "the raw string's contents survive AND the real attribute after it is still counted \
+         — a mis-delimited raw string swallows the rest of the file and reports 1"
+    );
+    assert_eq!(
+        needle("let s = br##\"x\"##;\n#[test]\nfn survives_bare_raw_hash() {}"),
+        1
+    );
+    // Escaped char literals need their own scan (`'\''` closes at byte 4).
+    assert_eq!(
+        needle("let c = '\\n';\nlet d = '\\'';\n#[test]\nfn survives_escapes() {}"),
+        1
+    );
+
+    // ── nested block comments (Rust allows them; a flat scanner stops early) ──
+    // The attribute sits INSIDE the outer comment, past the inner `*/`. A flat
+    // scanner ends the comment at the first `*/` and counts this attribute —
+    // so this case fails exactly when nesting is not handled.
+    assert_eq!(
+        needle("/* /* nested */ still #[test] comment */ let x = 1;"),
+        0,
+        "the inner */ must not end the outer comment"
+    );
+
+    // ── ANTI-VACUITY: real code must SURVIVE. A stripper that swallowed the
+    // file would pass every assertion above. ────────────────────────────────
+    assert_eq!(
+        needle("#[test]\nfn the_only_real_attribute() {}"),
+        1,
+        "a real #[test] attribute must survive stripping — a stripper that \
+         blanks everything would make every other case here vacuously true"
+    );
+    // Lifetimes are not char literals and must not open one. With 137 units
+    // of headroom a swallowed `tests/` file is a loud breach, but only if
+    // the code survives to be counted at all.
+    assert_eq!(
+        needle("fn f<'a>(x: &'a str) -> &'static str {\n#[test]\nfn g() {}\n}"),
+        1,
+        "a lifetime must not be read as a char literal opening a string"
+    );
+    // Escapes inside a plain string. Discriminating: a scanner that treated
+    // `\"` as a terminator would end the string early, count the interior
+    // attribute as CODE, then re-open a string at the closing quote and
+    // swallow the real attribute after it — reporting 1. Correct handling
+    // reports 2 (the interior is preserved content, the trailing one is code).
+    assert_eq!(
+        needle("let s = \"esc \\\" and #[test] inside\";\n#[test]\nfn h() {}"),
+        2,
+        "an escaped quote must not terminate the string early"
+    );
+    // A `\\` escape, likewise: it consumes the following byte, so a following
+    // quote is content rather than a terminator.
+    assert_eq!(
+        needle("let s = \"back \\\\#[test] slash\";\n#[test]\nfn i() {}"),
+        2
+    );
+    // Line count is preserved so a stripped diagnostic still points at the
+    // right line.
+    let src = "// one\nlet a = 1;\n/* two\nthree */\nlet b = 2;\n";
+    assert_eq!(
+        strip_rust_comments(src).lines().count(),
+        src.lines().count(),
+        "stripping must preserve line numbering"
+    );
+    // The full-tree measurement this pin's subject exists for.
+    assert_eq!(
+        needle("#[tokio::test]\nasync fn t() {}\n#[test]\nfn u() {}"),
+        1,
+        "only the plain #[test] counts; the tokio twin rides outside the needle"
+    );
+}
+
+/// `#[cfg(test)]` region blanking, on the two shapes this tree actually uses.
+///
+/// A region finder that returns the WRONG extent is the dangerous failure:
+/// a truncated region puts production code back under the test exemption,
+/// which is fail-OPEN on a guard meant to fail closed. So each case asserts
+/// what survives, not just what disappears.
+#[test]
+fn r68_cfg_test_region_blanking_covers_both_item_shapes() {
+    let direct = |s: &str| s.matches(".execute_batch(").count();
+
+    // A braced item — the ordinary `mod tests { … }` shape.
+    let src = "fn prod() {}\n#[cfg(test)]\nmod tests {\n    fn t() { let _ = c.execute_batch(\"x\"); }\n}\nfn after() {}\n";
+    let blanked = blank_cfg_test_regions(src);
+    assert_eq!(
+        direct(&blanked),
+        0,
+        "the test module's call must be blanked"
+    );
+    assert!(
+        blanked.contains("fn prod()") && blanked.contains("fn after()"),
+        "PRODUCTION code on both sides of the region must survive — a region \
+         finder that truncated early would leave the test body live"
+    );
+    assert_eq!(
+        blanked.lines().count(),
+        src.lines().count(),
+        "line numbering must survive"
+    );
+
+    // A `;`-terminated item — a tuple struct with no braces at all. The
+    // `case_run.rs` shape.
+    let stmt =
+        "#[cfg(test)]\npub(crate) struct TestProvider(pub Arc<dyn LlmProvider>);\nfn prod2() {}\n";
+    let blanked = blank_cfg_test_regions(stmt);
+    assert!(
+        blanked.contains("fn prod2()"),
+        "code after a `;` item must survive"
+    );
+
+    // An unbalanced brace inside a string literal must NOT truncate the
+    // region — this is the case that makes a naive brace counter fail open.
+    let tricky = "#[cfg(test)]\nmod tests {\n    let s = \"{\";\n    let _ = c.execute_batch(\"x\");\n}\nfn after3() {}\n";
+    assert_eq!(
+        direct(&blank_cfg_test_regions(tricky)),
+        0,
+        "a brace inside a string literal must not end the test region early"
+    );
+
+    // A `#[cfg(not(test))]` twin must NOT be blanked — it is production in
+    // test builds and the opposite of an exemption.
+    let twin = "#[cfg(not(test))]\nfn real() { let _ = c.execute_batch(\"x\"); }\n";
+    assert_eq!(
+        direct(&blank_cfg_test_regions(twin)),
+        1,
+        "#[cfg(not(test))] is not a test region and must keep its code"
+    );
+
+    // A second attribute between the cfg and the item.
+    let derived = "#[cfg(test)]\n#[derive(Clone)]\nstruct S(u8);\nfn prod4() {}\n";
+    assert!(blank_cfg_test_regions(derived).contains("fn prod4()"));
+
+    // An attribute inside a string literal must not open a region.
+    let quoted =
+        "let s = \"#[cfg(test)] mod tests {}\";\nfn prod5() { let _ = c.execute_batch(\"x\"); }\n";
+    assert_eq!(
+        direct(&blank_cfg_test_regions(quoted)),
+        1,
+        "a cfg(test) inside a string literal must not blank production code"
+    );
+}
+
+/// The string-aware Rust comment stripper.
+///
+/// The floor counters above were raw substring locks: a `#[test]` written
+/// inside a doc comment satisfied them, so ~137 deletions could hide behind
+/// prose. This makes the `#[test]` needle structural without re-baselining
+/// (`CRATE_TEST_FLOOR` stays 2_758; headroom survives at 137).
+///
+/// **Why string-aware, and not a line-wise stripper.** Every defect in the
+/// naive form pushed the count DOWNWARD, which makes a broken stripper look
+/// *safe* — the failure mode is silent under-reporting, never a false
+/// alarm. Three were measured during planning:
+///   * `'"'` (a char literal that IS a double quote) mis-parsed as a string
+///     opener swallowed ~20 kB of real code after `src/gate.rs:600`;
+///   * a bare `r"…"` went unrecognised because the detector demanded a
+///     `b`/`c` prefix (`src/hostcalls.rs:1158+`);
+///   * escaped char literals (`'\n'`, `'\''`) needed a *required* closing
+///     quote, so an unterminated one ran away to EOF.
+///
+/// So: `//` to EOL, `/* */` NESTED, `"…"` with escapes, raw strings at ANY
+/// `#` count (`r"…"`, `r#"…"#`, `r##"…"##`) with or without a `b`/`c`
+/// prefix, and `'"'` as the char literal it is. Lifetimes (`'a`,
+/// `'static`) are NOT literals and must not open one.
+///
+/// Newlines are preserved so line numbers survive into any diagnostic; every
+/// other removed byte becomes a space, keeping byte offsets stable.
+pub fn strip_rust_comments(src: &str) -> String {
+    let b = src.as_bytes();
+    let n = b.len();
+    let mut out: Vec<u8> = Vec::with_capacity(n);
+    let mut i = 0usize;
+
+    // Copy a removed span as blanks, keeping newlines so line numbers hold.
+    macro_rules! blank {
+        ($from:expr, $to:expr) => {
+            for k in $from..$to {
+                out.push(if b[k] == b'\n' { b'\n' } else { b' ' });
+            }
+        };
+    }
+
+    while i < n {
+        let c = b[i];
+
+        // ── line comment ────────────────────────────────────────────────
+        if c == b'/' && b.get(i + 1) == Some(&b'/') {
+            let start = i;
+            while i < n && b[i] != b'\n' {
+                i += 1;
+            }
+            blank!(start, i);
+            continue;
+        }
+
+        // ── block comment (NESTED — Rust allows it) ──────────────────────
+        if c == b'/' && b.get(i + 1) == Some(&b'*') {
+            let start = i;
+            let mut depth = 1usize;
+            i += 2;
+            while i < n && depth > 0 {
+                if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                    depth += 1;
+                    i += 2;
+                } else if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            blank!(start, i);
+            continue;
+        }
+
+        // ── raw string, with or without a b/c prefix ─────────────────────
+        // `r"…"`, `r#"…"#`, `br#"…"##`, `cr##"…"##` at ANY hash count.
+        let raw_at = if c == b'r' {
+            Some(i + 1)
+        } else if (c == b'b' || c == b'c') && b.get(i + 1) == Some(&b'r') {
+            Some(i + 2)
+        } else {
+            None
+        };
+        if let Some(mut j) = raw_at {
+            let start = i;
+            let mut hashes = 0usize;
+            while b.get(j) == Some(&b'#') {
+                hashes += 1;
+                j += 1;
+            }
+            if b.get(j) == Some(&b'"') {
+                let mut k = j + 1;
+                let mut end = None;
+                while k < n {
+                    if b[k] == b'"' {
+                        let mut h = 0usize;
+                        while b.get(k + 1 + h) == Some(&b'#') {
+                            h += 1;
+                        }
+                        if h == hashes {
+                            end = Some(k + 1 + h);
+                            break;
+                        }
+                    }
+                    k += 1;
+                }
+                if let Some(end) = end {
+                    out.extend_from_slice(&b[start..end]);
+                    i = end;
+                    continue;
+                }
+                // Unterminated: consume to EOF rather than falling through
+                // and letting a later `"` open a phantom string.
+                out.extend_from_slice(&b[start..n]);
+                i = n;
+                continue;
+            }
+            // Not a raw string after all (`r` as an identifier) — fall
+            // through and let the byte be copied one at a time.
+        }
+
+        // ── byte/c string prefix, then a plain string ────────────────────
+        let plain_at = if c == b'"' {
+            Some(i)
+        } else if (c == b'b' || c == b'c') && b.get(i + 1) == Some(&b'"') {
+            Some(i + 1)
+        } else {
+            None
+        };
+        if let Some(q) = plain_at {
+            let start = i;
+            let mut j = q + 1;
+            let mut end = None;
+            while j < n {
+                match b[j] {
+                    b'\\' => j += 2,
+                    b'"' => {
+                        end = Some(j + 1);
+                        break;
+                    }
+                    // An unterminated string stops at EOL: running to EOF
+                    // would blank the rest of the file (the `'"'` defect).
+                    b'\n' => break,
+                    _ => j += 1,
+                }
+            }
+            let end = end.unwrap_or(j.min(n));
+            out.extend_from_slice(&b[start..end]);
+            i = end;
+            continue;
+        }
+
+        // ── byte/c char prefix, then a char literal ──────────────────────
+        // Char literal — and `'"'` specifically, which must NOT open a string.
+        let char_at = if c == b'\'' {
+            Some(i)
+        } else if (c == b'b' || c == b'c') && b.get(i + 1) == Some(&b'\'') {
+            Some(i + 1)
+        } else {
+            None
+        };
+        // A `None` here is a LIFETIME (`'a`, `'static`): the quote is copied
+        // alone below so it cannot open a phantom string on the next pass.
+        if let Some(q) = char_at
+            && let Some(end) = scan_char_literal(b, q)
+        {
+            out.extend_from_slice(&b[i..end]);
+            i = end;
+            continue;
+        }
+
+        out.push(c);
+        i += 1;
+    }
+    // Every byte copied came from `b`, so this is always valid UTF-8.
+    String::from_utf8(out).expect("stripping comments preserves UTF-8")
+}
+
+/// If `b[q]` (a `'`) opens a char literal, return the index just past its
+/// closing quote. `None` for a lifetime (`'a`), which is not a literal.
+///
+/// Handles the two shapes that broke the naive form: `'"'` (the literal IS a
+/// double quote — it must not open a string) and `'\n'` / `'\''` (escapes,
+/// where the closing quote is not simply the third byte).
+fn scan_char_literal(b: &[u8], q: usize) -> Option<usize> {
+    let n = b.len();
+    match b.get(q + 1) {
+        // Escaped body: scan to the next unescaped `'`.
+        Some(b'\\') => {
+            let mut j = q + 2;
+            while j < n {
+                match b[j] {
+                    b'\\' => j += 2,
+                    b'\'' => return Some(j + 1),
+                    // An escaped body running past EOL is not a literal.
+                    b'\n' => return None,
+                    _ => j += 1,
+                }
+            }
+            None
+        }
+        // Single unescaped byte: `'x'`.
+        Some(_) if b.get(q + 2) == Some(&b'\'') => Some(q + 3),
+        _ => None,
+    }
+}
+
 /// Lines from the (unique) `#[cfg(test)]\nmod tests {` boundary, inclusive,
 /// to EOF — the region the Spire Line dismantled. Returns `None` once the
 /// region is gone; the thin-binary pin below asserts it stays gone.
@@ -290,9 +894,16 @@ fn spire_inventory_freezes_the_thin_binary() {
         "spire: src+tests walk found only {} files — the tree walker is broken",
         files.len()
     );
+    // The `#[test]` needle strips comments first, so a doc-comment mention
+    // can no longer satisfy the floor. The floor is
+    // NOT re-baselined — 13 of the raw 2_908 live in comments, so the
+    // stripped truth is 2_895 and the headroom is a real 137.
     let total_tests = files
         .iter()
-        .map(|p| count_needle(&std::fs::read_to_string(p).unwrap_or_default(), "#[test]"))
+        .map(|p| {
+            let text = std::fs::read_to_string(p).unwrap_or_default();
+            count_needle(&strip_rust_comments(&text), "#[test]")
+        })
         .sum::<usize>();
 
     let mut breaches: Vec<String> = Vec::new();

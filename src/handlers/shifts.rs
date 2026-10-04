@@ -157,45 +157,45 @@ pub async fn post_ops_shift(
     let domain_resp = domain.clone();
     let site_resp = site.clone();
     let id: Result<i64, HandlerError> = tokio::task::spawn_blocking(move || {
-        let conn = pool
+        let mut conn = pool
             .get()
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
-        // Validation + write + audit ride one tx: a refused shift writes nothing.
-        conn.execute_batch("BEGIN IMMEDIATE")
+        // Validation + write + audit ride one tx: a refused shift writes
+        // nothing. The hand-rolled BEGIN IMMEDIATE / COMMIT / ROLLBACK became
+        // the RAII `WorkflowTx`, which closes three defects at once —
+        //   * the ROLLBACK error was discarded with `let _ =`;
+        //   * a PANIC inside the closure unwound past the rollback and
+        //     returned an OPEN TRANSACTION to the pool, where the next
+        //     borrower inherits it;
+        //   * `note_busy_error` contention telemetry was lost, because
+        //     `execute_batch("BEGIN IMMEDIATE")` does not pass through the
+        //     choke point every other governed transition uses.
+        let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn)
             .map_err(|e| HandlerError::internal(format!("{e}")))?;
-        let outcome = (|| {
-            let draft = shifts::ShiftDraft {
-                domain: &domain,
-                site: &site,
-                tz: &tz,
-                start_epoch: start,
-                end_epoch: end,
-                overlap_minutes: overlap,
-                roster: &roster,
-            };
-            let id = shifts::insert_shift(&conn, &draft).map_err(shift_err)?;
-            crate::audit::record_tenant(
-                &conn,
-                crate::audit::AuditKind::Workflow,
-                actor.trim(),
-                &format!("shift:{id}"),
-                crate::audit::AuditStatus::Ok,
-                "shifts/create",
-                &domain,
-            );
-            Ok(id)
-        })();
-        match outcome {
-            Ok(id) => {
-                conn.execute_batch("COMMIT")
-                    .map_err(|e| HandlerError::internal(format!("{e}")))?;
-                Ok(id)
-            }
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK");
-                Err(e)
-            }
-        }
+        let draft = shifts::ShiftDraft {
+            domain: &domain,
+            site: &site,
+            tz: &tz,
+            start_epoch: start,
+            end_epoch: end,
+            overlap_minutes: overlap,
+            roster: &roster,
+        };
+        let id = shifts::insert_shift(tx.tx(), &draft).map_err(shift_err)?;
+        crate::audit::record_tenant(
+            tx.tx(),
+            crate::audit::AuditKind::Workflow,
+            actor.trim(),
+            &format!("shift:{id}"),
+            crate::audit::AuditStatus::Ok,
+            "shifts/create",
+            &domain,
+        );
+        // `commit` returns the last inserted rowid; the id above is the
+        // authoritative one (the audit row and the draft write can move it).
+        tx.commit()
+            .map_err(|e| HandlerError::internal(format!("{e}")))?;
+        Ok(id)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("{e}")))?;

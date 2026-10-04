@@ -75,25 +75,21 @@ pub async fn remember(
             if declared != &owner {
                 // authorize()-style consent denials on the UMP
                 // surface must be audited like any other authz denial
-                // (COMPLIANCE.md §3.5 promised this; it never happened). Fresh
-                // connection, best-effort — a missing audit log must not fail
-                // the request. Detail carries only the declared owner (it is
-                // the handler's own identity assertion, not a secret).
-                match rusqlite::Connection::open(crate::config::brain_db_path()) {
-                    Ok(audit_conn) => {
-                        if !crate::service::ump_ops::record_forbidden_scope(
-                            &audit_conn,
-                            &owner,
-                            declared,
-                        ) {
-                            tracing::warn!(
-                                "forbidden_scope audit record failed: owner={owner} declared={declared}"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("forbidden_scope audit connection failed: {e}");
-                    }
+                // (COMPLIANCE.md §3.5 promised this; it never happened).
+                // Best-effort — a missing audit log must not fail the
+                // request. The core acquires the connection (a handler may
+                // not open one), and the posture is unchanged. Detail
+                // carries only the declared owner (it is the handler's own
+                // identity assertion, not a secret).
+                if !crate::service::ump_ops::record_forbidden_scope_at_db(
+                    &crate::config::brain_db_path(),
+                    &owner,
+                    declared,
+                ) {
+                    tracing::warn!(
+                        "forbidden_scope audit not recorded: owner={owner} declared={declared} \
+                         (connection or audit write failed)"
+                    );
                 }
                 return Err(HandlerError::bad_request_with(
                     "forbidden_scope",

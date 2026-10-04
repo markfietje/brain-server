@@ -80,6 +80,7 @@ pub mod reindex;
 pub mod retention;
 pub mod review;
 pub mod routing;
+pub mod snapshot_probe;
 pub mod suggest;
 pub mod ump_ops;
 pub mod webhook_ingest;
@@ -150,6 +151,127 @@ mod pins {
         n
     }
 
+    /// R68 "Silence" (F8-01) — the STRUCTURAL counter.
+    ///
+    /// [`count_sql_statements`] recognises four keyword openers and is
+    /// therefore blind to every other SQL shape: `PRAGMA`, `VACUUM`,
+    /// `BEGIN`/`COMMIT`/`ROLLBACK`, `REPLACE INTO`, `ATTACH`, `CREATE`,
+    /// `ALTER`, `DROP` — and to the whole rusqlite *method* surface. Ten
+    /// production violations were live under `src/handlers/` while that
+    /// counter reported zero (measured: `Connection::open`, `PRAGMA
+    /// integrity_check`, `VACUUM`, `BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK`).
+    ///
+    /// **A keyword extension is the wrong instrument**, and this is measured
+    /// rather than assumed: a keyword scan over comment-stripped handler
+    /// source yields 25 production hits of which only 10 are real — the other
+    /// 15 are ordinary Rust method calls (`h.update(`, `policy.insert(`,
+    /// `headers_mut().insert(`). A guard that false-fires 15 times per run
+    /// is a guard that gets deleted.
+    ///
+    /// **So this counts CALL SHAPES**, including the `(`. That is what makes
+    /// it immune to the false-firing class above while still catching a
+    /// statement handed to a rusqlite method as a literal. It needs no
+    /// comment stripper to be correct: comment-stripping changes the DIRECT
+    /// hit count in `src/handlers` by exactly zero (raw 19 == stripped 19),
+    /// because these tokens cannot be produced by prose — which is also why
+    /// this does not weaken the deliberate "comment residue counts too"
+    /// self-pin on the keyword counter above.
+    ///
+    /// Case-sensitive by construction: `Connection::open(` is a Rust path,
+    /// not prose.
+    fn count_direct_db_calls(source: &str) -> usize {
+        const TOKENS: &[&str] = &[
+            "Connection::open(",
+            "Connection::open_in_memory(",
+            "Connection::open_with_flags(",
+            ".execute_batch(",
+            ".execute(",
+            ".query_row(",
+            ".query_row_and_then(",
+            ".query_map(",
+            ".prepare(",
+            ".prepare_cached(",
+        ];
+        TOKENS
+            .iter()
+            .map(|t| source.matches(t).count())
+            .sum::<usize>()
+    }
+
+    /// R68 "Silence" (F8-01) — the structural counter's own fixtures.
+    ///
+    /// **Anti-vacuity is the load-bearing half.** Every fixture here is a
+    /// real violation shape EXCEPT the two negatives, and those two are the
+    /// only assertions that can distinguish "detects violations" from
+    /// "always fires". A guard whose fixtures are all positive is a guard
+    /// that cannot tell a clean handler from a dirty one.
+    #[test]
+    fn r68_direct_db_call_counter_detects_call_shapes() {
+        // ── the ten production shapes, one per token class ───────────────
+        assert_eq!(count_direct_db_calls(r#"conn.execute_batch("VACUUM;")"#), 1);
+        assert_eq!(count_direct_db_calls("rusqlite::Connection::open(p)?"), 1);
+        assert_eq!(
+            count_direct_db_calls(r#"conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?"#),
+            1
+        );
+        assert_eq!(
+            count_direct_db_calls(r#"conn.execute_batch("BEGIN IMMEDIATE")"#),
+            1
+        );
+        assert_eq!(count_direct_db_calls(r#"conn.execute_batch("COMMIT")"#), 1);
+        assert_eq!(
+            count_direct_db_calls("let Ok(conn) = rusqlite::Connection::open(&path) else {"),
+            1
+        );
+        assert_eq!(
+            count_direct_db_calls("rusqlite::Connection::open_in_memory().unwrap()"),
+            1
+        );
+        // A write-shaped statement the keyword counter cannot see.
+        assert_eq!(
+            count_direct_db_calls(r#"conn.execute("REPLACE INTO knowledge VALUES (?1)", [])"#),
+            1,
+            "REPLACE INTO is invisible to the keyword counter — the shape the audit named"
+        );
+
+        // ── ANTI-VACUITY: the negatives. These MUST be zero. ──────────────
+        assert_eq!(
+            count_direct_db_calls(r#"h.update(b"|")"#),
+            0,
+            "an ordinary Rust method call must not be read as a database call — this is \
+             the false-firing class a keyword extension would trip 15 times per run"
+        );
+        assert_eq!(
+            count_direct_db_calls("policy.insert(k, d)"),
+            0,
+            "`insert` is a keyword-counter token AND a common method name; the call \
+             shape is what separates them"
+        );
+        assert_eq!(
+            count_direct_db_calls("headers_mut().insert(name, value);"),
+            0
+        );
+        assert_eq!(count_direct_db_calls(""), 0);
+
+        // ── prose cannot produce a call shape (the 0-delta measurement) ───
+        assert_eq!(
+            count_direct_db_calls(
+                "// the snapshot runs PRAGMA integrity_check via VACUUM INTO\nlet x = 1;"
+            ),
+            0,
+            "comment prose must not count — this is why the structural counter needs no \
+             comment stripper to be correct"
+        );
+        // The doc comments at govern.rs:14-15 / :353-354 name these shapes in
+        // prose; they must not trip the guard. Pinned on the literal shape.
+        assert_eq!(
+            count_direct_db_calls(
+                "/// inspect every `VACUUM INTO` `.bak` snapshot:\n/// 0600 mode, `PRAGMA integrity_check`"
+            ),
+            0
+        );
+    }
+
     /// v1.28.52 "Cornerstone" — the enforcing flip. The Foundation Line
     /// began by FREEZING the handler-side debt (v1.28.46 "Plumb": a per-file
     /// baseline at 445 statements across 29 files — regressions failed,
@@ -161,9 +283,30 @@ mod pins {
     /// approve family, and the export read). With nothing left to compare
     /// against, the baseline table and the allowlist machinery are DELETED:
     /// ANY counted statement in ANY file under `src/handlers/` — production
-    /// source, test fixture, or comment residue — fails. The walk is
-    /// recursive so a future subdirectory cannot quietly escape the law.
-    /// The file-count sanity below refuses a vacuous pass (the lipstyk
+    /// source, test fixture, or comment residue — fails.
+    ///
+    /// **R68 "Silence" (F8-01) — this guard now runs TWO counters, because
+    /// one was blind.** The keyword counter alone reported `ok` while TEN
+    /// production violations were live under `src/handlers/`: the four openers
+    /// it knows are not the SQL a handler actually reaches for. The second
+    /// counter ([`count_direct_db_calls`]) matches CALL SHAPES, so it sees
+    /// `PRAGMA`, `VACUUM`, `BEGIN`/`COMMIT`/`ROLLBACK`, `REPLACE INTO` and
+    /// the whole rusqlite method surface, while leaving ordinary Rust method
+    /// calls (`h.update(`, `policy.insert(`) alone.
+    ///
+    /// **The two-tier scope, stated honestly:**
+    ///   * **Production regions are held to BOTH counters.** No direct
+    ///     rusqlite surface, no SQL opener, no exception.
+    ///   * **`#[cfg(test)]` regions are exempt from the STRUCTURAL counter
+    ///     only** — a test fixture legitimately opens an in-memory database,
+    ///     and there is no shared test-DB helper in `src/` to migrate them to
+    ///     (measured: `pub test_db` / `test_conn` return zero matches), so
+    ///     that migration is a design decision with a real compatibility
+    ///     surface, not a mechanical move. Test regions remain held to the
+    ///     KEYWORD counter, so an `INSERT` in a fixture still fails.
+    ///
+    /// The walk is recursive so a future subdirectory cannot quietly escape
+    /// the law, and the file-count sanity refuses a vacuous pass (the lipstyk
     /// lesson: a guard that scans nothing must not smile).
     #[test]
     fn no_sql_in_handlers_enforced() {
@@ -192,14 +335,26 @@ mod pins {
         let mut violations: Vec<String> = Vec::new();
         for f in &files {
             let text = std::fs::read_to_string(f).expect("handler file must be readable");
+            let display = format!("/{}", f.strip_prefix(&dir).unwrap_or(f).to_string_lossy());
+            // Counter 1 — keyword openers over the WHOLE file: production
+            // source, test fixture, and comment residue (Cornerstone's scope,
+            // unchanged).
             let n = count_sql_statements(&text);
             if n > 0 {
-                let display = f
-                    .strip_prefix(&dir)
-                    .unwrap_or(f)
-                    .to_string_lossy()
-                    .into_owned();
-                violations.push(format!("  src/handlers{display}: {n} statement matches"));
+                violations.push(format!(
+                    "  src/handlers{display}: {n} SQL statement matches (keyword counter)"
+                ));
+            }
+            // Counter 2 — direct rusqlite CALL SHAPES over PRODUCTION regions
+            // only (R68: `#[cfg(test)]` items are blanked first).
+            let direct =
+                count_direct_db_calls(&crate::spire_inventory::blank_cfg_test_regions(&text));
+            if direct > 0 {
+                violations.push(format!(
+                    "  src/handlers{display}: {direct} direct rusqlite call matches \
+                     (structural counter — Connection::open / execute_batch / execute / \
+                     query_row / query_map / prepare, in production source)"
+                ));
             }
         }
         assert!(
@@ -207,8 +362,9 @@ mod pins {
             "SQL-inventory VIOLATION — handlers are protocol adapters ONLY; ALL SQL, \
              bounds/caps, FK-children ordering, and invariants live in a domain \
              core (`src/workflow/*`, `src/service/*`) taking `&Connection` / \
-             `WorkflowTx`. Write the core first, then the handler:
-{}",
+             `WorkflowTx`. Write the core first, then the handler. A handler that \
+             must open its OWN connection (a per-domain file, a `.bak` snapshot) \
+             still gets a core — the core opens it, the handler calls the core:\n{}",
             violations.join("\n")
         );
     }

@@ -185,6 +185,25 @@ pub(crate) fn record_forbidden_scope(
     .is_some()
 }
 
+/// Acquire the connection HERE, then call the core above.
+///
+/// Why: the handler opened its own connection to reach this function, which
+/// put a rusqlite surface in a protocol adapter. The posture is unchanged and
+/// deliberate — a fresh connection, best-effort, because a missing audit log
+/// must never fail the request — so the open moves without the semantics
+/// moving. The caller keeps BOTH warn branches: `false` here means the audit
+/// row was not written, which is exactly the case the operator must see.
+pub(crate) fn record_forbidden_scope_at_db(
+    db_path: &std::path::Path,
+    principal_sub: &str,
+    declared_owner: &str,
+) -> bool {
+    let Ok(conn) = Connection::open(db_path) else {
+        return false;
+    };
+    record_forbidden_scope(&conn, principal_sub, declared_owner)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;

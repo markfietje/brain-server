@@ -1,6 +1,145 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R2 "Consumer"** — the replay gate gets the
+> Current release (unreleased): **R68 "Silence"** — the first of the five
+> `docs/audit8/08-design-grid-remediation-gates.md` §9.3 releases. Theme:
+> **the machine checks under-delivered** — three guards/pins passed while their
+> subject was violated, or asserted a property they could not fail. Findings
+> **F8-01** (HIGH), **F8-02** (HIGH), **F8-05** (MEDIUM) from
+> [`docs/audit8/`](docs/audit8/README.md). **No runtime authorization behaviour
+> changes**: `git diff src/authz/policy.rs` is **empty**, and the authz half is
+> prose plus pins.
+>
+> **(1) The Architecture Law's SQL guard was blind, and ten production
+> violations were live under it.** `count_sql_statements` recognised exactly
+> four keyword openers (`select` / `insert` / `update` / `delete … from`) and
+> was structurally blind to `PRAGMA`, `VACUUM`, `BEGIN`/`COMMIT`/`ROLLBACK`,
+> `REPLACE INTO`, and the whole rusqlite method surface. The guard reported
+> `ok` the entire time. **RED-FIRST, recorded:** extending the guard *before*
+> migrating anything made it fail naming exactly **10** violations across four
+> files — `domains.rs` ×2, `govern.rs` ×4, `shifts.rs` ×3, `ump_ops.rs` ×1 —
+> matching the audit's census (which named 2; a full scan found 10). The audit's
+> suggested fix — deny any direct rusqlite surface — is **refused as stated**:
+> a keyword extension over comment-stripped handler source yields **25**
+> production hits of which only **10** are real and **15** are ordinary Rust
+> method calls (`h.update(`, `policy.insert(`, `headers_mut().insert(`). A
+> guard that false-fires 15 times per run gets deleted. **So the counter is
+> STRUCTURAL — it matches CALL SHAPES including the `(`.** That is what makes
+> it both sensitive and silent-on-clean-Rust, and it needs **no comment
+> stripper** to be correct (comment-stripping changes the DIRECT hit count in
+> `src/handlers` by exactly **0**: raw 19 == stripped 19), so the deliberate
+> "comment residue counts too" self-pin on the keyword counter is untouched and
+> `count_sql_statements` is **byte-identical**. All ten sites now live in cores:
+> `domains_admin::file_domain_counts_at`, the post-delete `VACUUM`,
+> `ump_ops::record_forbidden_scope_at_db`, and the new
+> `service/snapshot_probe`. The `#[cfg(test)]` exemption is **structural-counter
+> only**, and test regions remain held to the keyword counter.
+>
+> **(2) The highest-value fix is one the guard found by accident: `shifts`'**
+> **hand-rolled transaction.** `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK` became
+> the RAII `WorkflowTx`, closing **three** defects in one move — the discarded
+> ROLLBACK error (`let _ =`, forbidden by the fail-closed law), a **panic
+> unwinding past the rollback and returning an OPEN TRANSACTION to the pool**,
+> and the lost `note_busy_error` contention telemetry the raw `execute_batch`
+> bypassed. The `VACUUM` migration closed a fourth instance of the same law:
+> `let _ = conn.execute_batch("VACUUM;")` is now a `tracing::warn!`.
+>
+> **(3) A security improvement, disclosed.** The snapshot probe's own doc
+> comment called it "Read-only — it never creates or mutates a snapshot", but
+> `Connection::open` does **not** set `SQLITE_OPEN_READ_ONLY`, so it opened
+> every `.bak` read-**WRITE**. The new core opens `SQLITE_OPEN_READ_ONLY |
+> SQLITE_OPEN_URI`, so a probe can no longer alter the evidence it reports on.
+> The round's §9 named this as the only irreversible risk ("if `integrity_check`
+> refuses a read-only handle, revert that one line") — **measured, it does
+> not**: the new pins prove a real fixture passes `integrity_check` on the
+> read-only handle, so no revert was needed.
+>
+> **(4) `CRATE_TEST_FLOOR` is no longer gameable, and was NOT re-baselined.**
+> Ten `#[test]` written inside a doc comment satisfied the floor. The needle now
+> strips comments first, via a **string-aware** stripper (`strip_rust_comments`):
+> `//`, **nested** `/* */`, `"…"` with escapes, raw strings at ANY `#` count
+> (`r"…"`, `r#"…"#`, `br##"…"##`) with or without a `b`/`c` prefix, and `'"'` as
+> the char literal it is. **Every defect in the naive form pushed the count
+> DOWNWARD** — a broken stripper looks *safe* — so the pin asserts BOTH
+> directions (prose removed AND real code surviving), and the anti-vacuity case
+> is a fixture that must count **1**. **RED-PROOF, recorded:** a planted
+> 10-attribute doc comment moved the raw needle by **+11** and the stripped
+> needle by **+0**; reverted. **The floor stays `2 758`** — headroom was 137,
+> so raising it would have spent the guard's budget on a measurement.
+>
+> **(5) The second-order hazard was worse than the round claimed.** The prompt
+> said `tests/rbac_evaluation_pins.rs:802-810` re-implemented the *unstripped*
+> needle and reported 2 908 against the spire pin's 2 895 — a 24-unit
+> disagreement. True, and it is worse: that file **contains the literal
+> `"#[test]"` it counts**, so the counter inflated the number it validated.
+> The needle is now built from parts. **The prompt's preferred fix (option a,
+> "make the spire helper `pub`") is IMPOSSIBLE and was not attempted.**
+> `spire_inventory` is `#[cfg(test)] pub mod`, so it does not exist in the lib an
+> integration test links against — visibility is not the blocker, the `cfg` is.
+> A second `src/` definition would fire `dup_guard`. So the copy lives in the
+> test crate and **the two are pinned to agree** (`r68_both_counters_measure_the_
+> same_tree`), which is what makes the duplication defensible.
+>
+> **(6) F8-02: the authz prose is now true, and the pin is no longer
+> self-asserting.** The middleware claimed three enforced properties; **two were
+> unreachable in production** — the agent-class arm (deliberately removed; two
+> matrix rows measured the agent posture and broke, see `policy.rs:205-220`) and
+> the deny-only capability arm (dead because the sole production constructor
+> hardcodes `required_capability: ""`, `gates.rs:167`). The
+> **opposite-direction** overclaim is corrected too: the authz matrix pins
+> each row to the handler's `authorize()` literal, which substantiates
+> **handler-side** agreement and does **not** make the *oracle* enforce the
+> action. `r47_gate_rows_read_their_declared_action` used `gate_for` as its own
+> oracle — delete every enforcement use of `required_action` and it stayed
+> green. It now reads its expectation from the **`AUTHZ_GATES` table literal**,
+> and a new behavioural pin drives the production-shaped `Gate` through
+> `decide_gate_verdict` with a real `Principal::agent_loopback()` and asserts
+> the verdict is **not** a `Deny` — green today, **RED the moment someone adds
+> the agent arm without updating the doc**, which is the drift F8-02 names.
+>
+> **Spire at ship:** lib **2 310** passed / 0 failed / 2 ignored;
+> `main_suite` **329**; `crates/` green; harness green; `badges.sh --selfcheck`
+> clean; `env-truth.sh` / `docs-truth.sh` (LOW=17, pre-existing) /
+> `check-doc-links.py` clean; **`cargo audit` clean** (514 deps); clippy clean
+> on bench, default, otel, crates and **all six feature lanes**; `lipstyk-gate`
+> **0 findings**; `main.rs` 124≤300, router routes 258≥255, coverage 217≥214,
+> authz rows 203≥203. **The floor was NOT raised: `CRATE_TEST_FLOOR` is
+> unchanged at `2 758`** (measured **2 934** stripped — headroom 137 → **176**,
+> of which +39 is this round's own fixture strings, disclosed as a ceiling in
+> the CHANGELOG rather than absorbed by re-baselining; **10** real `#[test]`
+> attributes added). **Zero new dependency edges: all three `Cargo.lock` files
+> byte-identical**; `src/migration.rs`, `openapi.yaml`, `route_guards.rs` and
+> `src/authz/policy.rs` all **0 diff**.
+>
+> **Known pre-existing, NOT fixed here (§6, each measured).**
+> `tests/no_engagement_name.rs` fails at the baseline commit — **proven** by
+> running it in a pristine worktree of `d11326c5`, where it fails identically;
+> this is the only red in the suite and it is not R68's. `shell/src/lib/api/
+> schema.d.ts` is stale against `openapi.yaml` (drift gate already red).
+> `AGENTS.md`'s own header figures disagree with measurement (claims needle
+> 3 069, measured 2 908) — that is `R8-01`, assigned to **R72**, and one theme
+> per release means it is **not** re-baselined here.
+>
+> **§0 note — the prompt's baseline was stale and was re-verified rather than
+> carried.** The prompt pins `7dc6cb47` with `M AUDIT.md` + `?? docs/audit8/`;
+> actual HEAD was **`d11326c5`**, which had committed the audit8 report as its
+> own docs-only commit (what §6.2 anticipated). Every §1 figure was
+> **re-measured** and all matched: floors `2 758` / 255 / 214 / 200, 52 handler
+> files, 8 router files, raw needle **2 908**, DIRECT hits **19** (10
+> production), stripped needle **2 895**, headroom **137**.
+>
+> **What did NOT ship, stated plainly.** Not the `/ops/authz/explain`
+> disclosure field (blocked by the shell drift above; named the next round's
+> first wire item). Not end-to-end pins for the two unreachable deny reasons —
+> they would assert a fiction; they are machine-pinned as ceilings instead. Not
+> `ROUTER_SITES_FLOOR` hardening (measured 258 raw == 258 stripped; gameable in
+> principle, no honest lever this round). Not the 16 `cfg(test)` handler sites
+> (no shared test-DB helper exists; a design decision, not a move). **No
+> runtime authorization change.** Not F8-08 (erasure) — that is **R69**, and it
+> is the highest-severity item still open. Not F8-03/04/06/07/09/10 (**R70**),
+> K8-* (**R71**, the openclaw fork), R8-01/02/03, S8-11, L8-*, P8-01, K8-15
+> (**R72**).
+>
+> Predecessor: **R2 "Consumer"** — the replay gate gets the
 > production consumer it was shipped without, and the one verification gap in
 > this programme's history closes. Theme: **a gate that could never fire, wired
 > to a path that can — and the fixture the measurement corrected on the way.**

@@ -4,6 +4,98 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## Unreleased — R68 "Silence"
+
+### Release notes
+
+**The machine checks under-delivered. Three guards/pins passed while their subject
+was violated, or asserted a property they could not fail.**
+
+F8-01 (HIGH), F8-02 (HIGH), F8-05 (MEDIUM) from `docs/audit8/`. **No runtime
+authorization behaviour changes** — the authz half is prose and pins only, and
+`src/authz/policy.rs` is diff-empty.
+
+**Fixed**
+
+- **`no_sql_in_handlers_enforced` now runs a second, STRUCTURAL counter.** The
+  keyword counter recognised exactly four statement openers (`select` /
+  `insert` / `update` / `delete … from`) and was blind to `PRAGMA`, `VACUUM`,
+  `BEGIN`/`COMMIT`/`ROLLBACK`, `REPLACE INTO`, and the entire rusqlite method
+  surface — **while ten production violations were live under `src/handlers/`**
+  and the guard reported `ok`. The new counter matches CALL SHAPES
+  (`Connection::open(`, `.execute_batch(`, `.query_row(`, …), which is what
+  makes it see those shapes without false-firing on `h.update(` /
+  `policy.insert(`. A keyword extension would have false-fired 15 times per run
+  (measured) — the wrong instrument.
+- **All ten sites migrated** into service cores: the per-domain census open
+  (`domains_admin::file_domain_counts_at`), the post-delete `VACUUM` — which
+  also stops discarding its error with `let _ =`, forbidden by the
+  fail-closed law — the UMP consent-denial audit open (`ump_ops::
+  record_forbidden_scope_at_db`), the snapshot probe (new core), and
+  `shifts`' hand-rolled transaction.
+- **`shifts` transaction: three defects closed at once.** The hand-rolled
+  `BEGIN IMMEDIATE` / `COMMIT` / `ROLLBACK` became the RAII `WorkflowTx`, which
+  discards the ROLLBACK error, returns an **open transaction to the pool** when
+  a panic unwinds past the rollback, and bypasses `note_busy_error`
+  contention telemetry.
+- **The snapshot probe now opens READ-ONLY.** `Connection::open` does not set
+  `SQLITE_OPEN_READ_ONLY`, so a surface whose own doc comment said "Read-only —
+  it never creates or mutates a snapshot" was opening every `.bak`
+  read-**write**. It is now `SQLITE_OPEN_READ_ONLY | SQLITE_OPEN_URI`, and a
+  probe can no longer alter the evidence it reports on. Measured: the
+  `PRAGMA integrity_check` works on the read-only handle, so the rollback
+  contingency in the round's §9 was not needed.
+- **`CRATE_TEST_FLOOR` is no longer gameable.** Ten `#[test]` written inside a
+  doc comment satisfied the floor; the needle now strips comments first.
+  **Red-proof:** a planted 10-attribute doc comment moved the raw needle by
+  **+11** and the stripped needle by **+0**. The floor is **NOT** re-baselined
+  (still `2 758`) — 137 units of real headroom survived, so raising it would
+  have spent the guard's budget on a measurement.
+- **The authz middleware's prose is now true.** It claimed three enforced
+  properties; **two were unreachable in production** (the agent-class arm was
+  deliberately removed — see `policy.rs:205-220`; the deny-only capability arm
+  is dead because the sole production constructor hardcodes
+  `required_capability: ""`). The opposite-direction overclaim is corrected too:
+  the authz matrix pins handler-side agreement, it does not make the *oracle*
+  enforce the action.
+- **The self-asserting authz pin is replaced.** `r47_gate_rows_read_their_
+  declared_action` used `gate_for` as its own oracle, so it proved the action
+  column survives the *parse* and could not fail if enforcement was never
+  wired. It now reads its expectation from the `AUTHZ_GATES` table literal.
+
+**Ceilings recorded, not hidden**
+
+- `DenyReason::MethodNotPermitted` and `CapabilityDenyOnly` are **unreachable in
+  production** (`gates.rs:163` `MethodPolicy::Any`, `:167`
+  `required_capability: ""`). They are now machine-pinned as ceilings: a future
+  constructor that populates either field fails a pin, so the note cannot go
+  stale silently.
+- `/ops/authz/explain` reports `required_action` next to a verdict the action
+  never influenced. The endpoint does not disclose this. **Deferred** — the
+  shell's `schema.d.ts` is already stale against `openapi.yaml`, and touching
+  the contract now would entangle two unrelated drifts.
+- `#[cfg(test)]` handler regions are **exempt from the structural counter only**.
+  Test fixtures legitimately open in-memory databases and there is no shared
+  test-DB helper in `src/` to migrate them to (measured: `pub test_db` /
+  `test_conn` return zero matches), so that migration is a design decision, not
+  a mechanical move. Test regions remain held to the keyword counter.
+- The comment stripper removes COMMENTS, not string *contents*: a `#[test]`
+  inside a string literal still counts. The round's own fixture pins carry
+  those literals, which is why the measured count rose +39 while only **10**
+  real test attributes were added — a ceiling, disclosed rather than absorbed
+  by re-baselining.
+
+**Not shipped:** the `/ops/authz/explain` disclosure field; end-to-end pins for
+the two unreachable deny reasons; `ROUTER_SITES_FLOOR` hardening; the 16
+`cfg(test)` handler sites; any change to runtime authorization; F8-08 (erasure,
+the highest-severity item still open); F8-03/04/06/07/09/10; K8-*; R8-01/02/03,
+S8-11, L8-*, P8-01, K8-15.
+
+**Pre-existing, not fixed here:** `tests/no_engagement_name.rs` fails at the
+baseline commit — **proven** by running it in a pristine worktree of `d11326c5`,
+where it fails identically. `shell/src/lib/api/schema.d.ts` is stale against
+`openapi.yaml` (drift gate already red before this round).
+
 ## Unreleased — R50 "Create"
 
 ### Release notes

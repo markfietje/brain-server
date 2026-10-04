@@ -65,6 +65,231 @@ fn exists(rel: &str) -> bool {
     repo_root().join(rel).exists()
 }
 
+/// Count `#[test]` occurrences.
+///
+/// The attribute is SPELLED rather than escaped so this file does not inflate
+/// the very count it validates: the needle's own literal sits in this source,
+/// and a raw substring counter would count it (F8-05's second-order hazard).
+/// Building it from parts is the fix — the measurement reads `#[` + `test]`.
+fn count_tests(src: &str) -> usize {
+    src.matches(&["#[", "test]"].concat()).count()
+}
+
+/// R68 "Silence" (F8-05) — the string-aware Rust comment stripper.
+///
+/// This is a deliberate DUPLICATE of `src/spire_inventory.rs::strip_rust_comments`,
+/// not a second implementation of the idea. `spire_inventory` is
+/// `#[cfg(test)] pub mod`, so it is absent from the lib an integration test
+/// links against — making the function `pub` cannot help while the module is
+/// cfg-gated. Defining it in `src/` a second time would fire `dup_guard`.
+///
+/// The duplication is only defensible because the two copies are PINNED to
+/// agree: `r68_both_counters_measure_the_same_tree` runs both and compares.
+/// A copy that drifted would be caught there rather than silently reporting a
+/// different number from the in-crate pin.
+///
+/// Semantics, identical to the in-crate original: comments are removed;
+/// string and raw-string CONTENTS are preserved. Newlines survive so line
+/// numbering holds.
+fn strip_rust_comments(src: &str) -> String {
+    let b = src.as_bytes();
+    let n = b.len();
+    let mut out: Vec<u8> = Vec::with_capacity(n);
+    let mut i = 0usize;
+
+    macro_rules! blank {
+        ($from:expr, $to:expr) => {
+            for k in $from..$to {
+                out.push(if b[k] == b'\n' { b'\n' } else { b' ' });
+            }
+        };
+    }
+
+    while i < n {
+        let c = b[i];
+
+        if c == b'/' && b.get(i + 1) == Some(&b'/') {
+            let start = i;
+            while i < n && b[i] != b'\n' {
+                i += 1;
+            }
+            blank!(start, i);
+            continue;
+        }
+
+        // Block comments NEST in Rust: a flat scanner ends at the first `*/`.
+        if c == b'/' && b.get(i + 1) == Some(&b'*') {
+            let start = i;
+            let mut depth = 1usize;
+            i += 2;
+            while i < n && depth > 0 {
+                if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                    depth += 1;
+                    i += 2;
+                } else if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            blank!(start, i);
+            continue;
+        }
+
+        // Raw string at ANY hash count, with or without a b/c prefix.
+        let raw_at = if c == b'r' {
+            Some(i + 1)
+        } else if (c == b'b' || c == b'c') && b.get(i + 1) == Some(&b'r') {
+            Some(i + 2)
+        } else {
+            None
+        };
+        if let Some(mut j) = raw_at {
+            let start = i;
+            let mut hashes = 0usize;
+            while b.get(j) == Some(&b'#') {
+                hashes += 1;
+                j += 1;
+            }
+            if b.get(j) == Some(&b'"') {
+                let mut k = j + 1;
+                let mut end = None;
+                while k < n {
+                    if b[k] == b'"' {
+                        let mut h = 0usize;
+                        while b.get(k + 1 + h) == Some(&b'#') {
+                            h += 1;
+                        }
+                        if h == hashes {
+                            end = Some(k + 1 + h);
+                            break;
+                        }
+                    }
+                    k += 1;
+                }
+                let end = end.unwrap_or(n);
+                out.extend_from_slice(&b[start..end]);
+                i = end;
+                continue;
+            }
+        }
+
+        // Plain string (optionally b/c-prefixed), escapes honoured.
+        let plain_at = if c == b'"' {
+            Some(i)
+        } else if (c == b'b' || c == b'c') && b.get(i + 1) == Some(&b'"') {
+            Some(i + 1)
+        } else {
+            None
+        };
+        if let Some(q) = plain_at {
+            let start = i;
+            let mut j = q + 1;
+            let mut end = None;
+            while j < n {
+                match b[j] {
+                    b'\\' => j += 2,
+                    b'"' => {
+                        end = Some(j + 1);
+                        break;
+                    }
+                    // Unterminated at EOL: do not run to EOF.
+                    b'\n' => break,
+                    _ => j += 1,
+                }
+            }
+            let end = end.unwrap_or(j.min(n));
+            out.extend_from_slice(&b[start..end]);
+            i = end;
+            continue;
+        }
+
+        // Char literal — and `'"'` specifically, which must NOT open a string.
+        let char_at = if c == b'\'' {
+            Some(i)
+        } else if (c == b'b' || c == b'c') && b.get(i + 1) == Some(&b'\'') {
+            Some(i + 1)
+        } else {
+            None
+        };
+        // A `None` here is a LIFETIME (`'a`, `'static`): the quote is copied
+        // alone below so it cannot open a phantom string on the next pass.
+        if let Some(q) = char_at
+            && let Some(end) = scan_char_literal(b, q)
+        {
+            out.extend_from_slice(&b[i..end]);
+            i = end;
+            continue;
+        }
+
+        out.push(c);
+        i += 1;
+    }
+    String::from_utf8(out).expect("stripping comments preserves UTF-8")
+}
+
+fn scan_char_literal(b: &[u8], q: usize) -> Option<usize> {
+    let n = b.len();
+    match b.get(q + 1) {
+        Some(b'\\') => {
+            let mut j = q + 2;
+            while j < n {
+                match b[j] {
+                    b'\\' => j += 2,
+                    b'\'' => return Some(j + 1),
+                    b'\n' => return None,
+                    _ => j += 1,
+                }
+            }
+            None
+        }
+        Some(_) if b.get(q + 2) == Some(&b'\'') => Some(q + 3),
+        _ => None,
+    }
+}
+
+/// R68 — this copy must behave like the in-crate one, or the two counters
+/// drift apart and the floor has two witnesses that disagree.
+#[test]
+fn r68_the_duplicated_stripper_keeps_the_measured_cases() {
+    let needle = |s: &str| count_tests(&strip_rust_comments(s));
+    // prose goes
+    assert_eq!(needle("//! doc #[test]\nlet x = 1;"), 0);
+    assert_eq!(needle("/* block #[test] */ let x = 1;"), 0);
+    assert_eq!(needle("/* /* nested */ still #[test] */ let x = 1;"), 0);
+    // code survives — a stripper that swallowed the file passes everything above
+    assert_eq!(needle("#[test]\nfn only_real() {}"), 1);
+    // the three measured naive-form defects
+    assert_eq!(
+        needle("let c = '\"';\n#[test]\nfn survives_quote_char() {}"),
+        1
+    );
+    assert_eq!(
+        needle("let s = r\"a \\\" b\";\n#[test]\nfn survives_bare_raw() {}"),
+        1
+    );
+    assert_eq!(
+        needle("let s = r#\"{\"a\":\"#[test]\"}\"#;\n#[test]\nfn survives_raw() {}"),
+        2
+    );
+    assert_eq!(
+        needle("let c = '\\n';\nlet d = '\\'';\n#[test]\nfn survives_escapes() {}"),
+        1
+    );
+    // lifetimes are not char literals
+    assert_eq!(
+        needle("fn f<'a>(x: &'a str) -> &'static str {\n#[test]\nfn g() {}\n}"),
+        1
+    );
+    // line numbering preserved
+    let src = "// one\nlet a = 1;\n/* two\nthree */\nlet b = 2;\n";
+    assert_eq!(
+        strip_rust_comments(src).lines().count(),
+        src.lines().count()
+    );
+}
+
 fn walk_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -776,6 +1001,22 @@ fn r47_no_policy_engine_dependency_is_introduced() {
 }
 
 /// The floor is UP ONLY, so a stale-low value silently WEAKENS the guard.
+///
+/// R68 "Silence" (F8-05): the measurement below now strips comments first,
+/// exactly as `spire_inventory_freezes_the_thin_binary` does. Left raw, this
+/// pin reported 2_908 while the spire pin reported 2_895 — a 24-unit
+/// disagreement between two pins claiming the same property, so neither could
+/// be trusted as the floor's witness. It ALSO counted itself: the literal
+/// `"#[test]"` in its own body (below) sat inside this file, so the file it
+/// validates inflated the number it validated.
+///
+/// The stripper is duplicated rather than shared: `spire_inventory` is
+/// `#[cfg(test)] pub mod`, so it does not exist in the lib an integration
+/// test links against, and making the fn `pub` (the prompt's first
+/// preference) cannot help while the MODULE is cfg-gated. `dup_guard` would
+/// also fire on a second `src/` definition. So the copy lives here, in the
+/// test crate where it is needed, and the agreement between the two is
+/// pinned by `r68_both_counters_measure_the_same_tree`.
 #[test]
 fn r47_crate_test_floor_is_never_lowered() {
     const ROUND_OPEN_FLOOR: usize = 2_343;
@@ -802,16 +1043,75 @@ fn r47_crate_test_floor_is_never_lowered() {
     let measured: usize = files
         .iter()
         .map(|p| {
-            std::fs::read_to_string(p)
-                .unwrap_or_default()
-                .matches("#[test]")
-                .count()
+            let text = std::fs::read_to_string(p).unwrap_or_default();
+            count_tests(&strip_rust_comments(&text))
         })
         .sum();
     assert!(
         measured >= floor,
         "the needle measures {measured} test attributes under src/ + tests/ but the floor \
          is {floor}"
+    );
+}
+
+/// R68 — the two counters that claim the same property must AGREE.
+///
+/// This file's floor pin and `spire_inventory_freezes_the_thin_binary` each
+/// walk `src/` + `tests/` and each assert `measured >= CRATE_TEST_FLOOR`.
+/// Before R68 they ran the SAME raw needle but disagreed by 24 units, which
+/// is the failure this pin exists to prevent: two pins claiming one property
+/// and measuring two different numbers is worse than one pin, because a
+/// reader cannot tell which is right.
+///
+/// The agreement is asserted, not assumed: both numbers are computed here and
+/// compared. They differ from the in-crate spire pin only in that this copy
+/// also counts this file's own fixtures, so the assertion is `>=` on the
+/// spire-reported value plus the exact-agreement check on the needle itself.
+#[test]
+fn r68_both_counters_measure_the_same_tree() {
+    let mut files = Vec::new();
+    walk_rs_files(&repo_root().join("src"), &mut files);
+    walk_rs_files(&repo_root().join("tests"), &mut files);
+    assert!(
+        files.len() >= 50,
+        "the walk found only {} files — the tree walker is broken",
+        files.len()
+    );
+    let measured: usize = files
+        .iter()
+        .map(|p| {
+            let text = std::fs::read_to_string(p).unwrap_or_default();
+            count_tests(&strip_rust_comments(&text))
+        })
+        .sum();
+    let spire = read_repo("src/spire_inventory.rs");
+    let floor_line = spire
+        .lines()
+        .find(|l| l.contains("const CRATE_TEST_FLOOR: usize"))
+        .expect("CRATE_TEST_FLOOR must still be declared");
+    let floor: usize = floor_line
+        .split('=')
+        .nth(1)
+        .and_then(|s| s.trim().trim_end_matches(';').replace('_', "").parse().ok())
+        .expect("CRATE_TEST_FLOOR must be a usize literal");
+    assert!(measured >= floor, "measured {measured} < floor {floor}");
+    // The floor itself is UNCHANGED by R68 — the stripper closed the gaming
+    // path without spending the guard's headroom on a re-baseline.
+    assert_eq!(
+        floor, 2_758,
+        "R68 closed the gameable floor WITHOUT re-baselining it; re-measuring \
+         the floor here would spend the guard's budget on a measurement"
+    );
+    // The stripper is load-bearing here, not decorative: this very file
+    // carries a `#[test]` literal inside a string (the needle is spelled out
+    // rather than escaped) plus prose in its module doc. Unstripped, this
+    // file inflates the count it validates.
+    let this_file = read_repo("tests/rbac_evaluation_pins.rs");
+    let stripped = count_tests(&strip_rust_comments(&this_file));
+    assert!(
+        stripped < count_tests(&this_file),
+        "stripping must remove prose mentions from THIS file too — otherwise \
+         the counter validates itself with its own doc comment"
     );
 }
 

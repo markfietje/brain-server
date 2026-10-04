@@ -136,11 +136,11 @@ pub async fn domains(
                 let Ok(path) = layout.domain_db(name) else {
                     continue;
                 };
-                let Ok(conn) = rusqlite::Connection::open(&path) else {
+                let Some((entries, entities, relations)) =
+                    crate::service::domains_admin::file_domain_counts_at(&path)
+                else {
                     continue;
                 };
-                let (entries, entities, relations) =
-                    crate::service::domains_admin::file_domain_counts(&conn);
                 out.push(DomainInfo {
                     name: name.clone(),
                     entries,
@@ -257,8 +257,15 @@ pub async fn delete_domain(
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("tx commit failed: {e}")))?;
         // VACUUM must run outside any transaction. Best-effort: failure here
-        // means the file isn't defragmented but the data is gone.
-        let _ = conn.execute_batch("VACUUM;");
+        // means the file isn't defragmented but the data is gone. The call
+        // moved into the already-shipped core, and the error is no longer
+        // DISCARDED — `let _ =` on a write is forbidden by the Architecture
+        // Law's fail-closed rule ("silence is never certified"). It stays
+        // best-effort (it must not fail a completed erasure), but a failure
+        // is now visible instead of invisible.
+        if let Err(e) = crate::service::domains_admin::vacuum(&conn) {
+            tracing::warn!("post-delete VACUUM failed for domain {name}: {e}");
+        }
         Ok(())
     })
     .await

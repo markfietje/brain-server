@@ -172,6 +172,8 @@ pub fn gate_for(route: &str) -> Option<crate::authz::policy::Gate> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::policy::Action;
+    use crate::authz::policy::{DenyReason, Verdict, decide_gate_verdict};
 
     #[test]
     fn r47_the_deny_only_class_is_frozen_and_named() {
@@ -202,14 +204,126 @@ mod tests {
     /// `/stats` is a `Read` row and `/audit` is `Admin` — both measured from
     /// the table, because a pin that assumed the wrong one would have passed on
     /// a table it never looked at.
+    ///
+    /// R68 "Silence" (F8-02) — **the oracle is now INDEPENDENT.** This pin
+    /// previously used `gate_for` as its own oracle: it read `required_action`
+    /// back out of the constructor that had just written it, so it proved the
+    /// action column survives the PARSE and could not fail if enforcement was
+    /// never wired. Deleting every enforcement use of `required_action` left
+    /// it green — the exact drift F8-02 names.
+    ///
+    /// It now reads the expectation from [`AUTHZ_GATES`] — the table literal,
+    /// which is the source of truth — and cross-checks the parse against it.
+    /// `tests/main_suite.rs::authz_gates_cover_every_non_public_route` already
+    /// pins table-to-route coverage, so this stays a parse pin rather than
+    /// duplicating that one; what is NEW is that the expected value is read
+    /// from the table rather than from the thing under test.
     #[test]
     fn r47_gate_rows_read_their_declared_action() {
-        let stats = gate_for("/stats").expect("/stats is gated");
-        assert_eq!(stats.required_action, Action::Read);
-        assert!(!stats.public);
+        let expect = |route: &str| -> Action {
+            let raw = AUTHZ_GATES
+                .iter()
+                .find(|(p, _)| *p == route)
+                .map(|(_, a)| *a)
+                .unwrap_or_else(|| panic!("{route} must be a row in AUTHZ_GATES"));
+            match RowAction::parse(raw).expect("every row parses") {
+                RowAction::Public => Action::Read,
+                RowAction::Read => Action::Read,
+                RowAction::Write => Action::Write,
+                RowAction::Admin => Action::Admin,
+            }
+        };
 
-        let audit = gate_for("/audit").expect("/audit is gated");
-        assert_eq!(audit.required_action, Action::Admin);
-        assert!(!audit.public);
+        for route in ["/stats", "/audit"] {
+            let gate = gate_for(route).unwrap_or_else(|| panic!("{route} is gated"));
+            assert_eq!(
+                gate.required_action,
+                expect(route),
+                "{route}: the parsed action must equal the TABLE's row, read independently \
+                 of gate_for"
+            );
+            assert!(
+                !gate.public,
+                "{route} is a gated row, so it must not be marked public"
+            );
+        }
+    }
+
+    /// R68 (F8-02) — the agent-vs-Admin truth, asserted BEHAVIOURALLY against
+    /// the real oracle.
+    ///
+    /// `src/server/router/auth.rs` used to claim the middleware "refuses the
+    /// agent principal class on Admin rows by class". The oracle has no agent
+    /// arm, so that claim was false while the prose survived the code change
+    /// that made it false. This pin drives the production-shaped `Gate`
+    /// through `decide_gate_verdict` with an `AgentLoopback` principal and
+    /// asserts the verdict is **not** a `Deny`.
+    ///
+    /// **This pin is GREEN today and goes RED the moment someone adds the
+    /// agent arm without updating the doc** — which is precisely the drift
+    /// that produced F8-02. It is a doc/code agreement pin, not a policy
+    /// endorsement: whether the agent class *should* be refused here is an
+    /// open design question (see `policy.rs:205-220` for why the arm was
+    /// deliberately removed), and this pin refuses the doc and the code
+    /// disagreeing — nothing more.
+    #[test]
+    fn r68_the_oracle_makes_no_agent_class_refusal_and_the_doc_says_so() {
+        let gate = gate_for("/audit").expect("/audit is an Admin row");
+        assert_eq!(gate.required_action, Action::Admin, "measured, not assumed");
+        // The REAL agent principal, built by the production constructor — not
+        // a hand-rolled stand-in. A synthetic principal could differ from the
+        // one the middleware actually sees, which is precisely the class of
+        // self-assertion this pin exists to remove.
+        let agent = crate::auth::policy::Principal::agent_loopback();
+        assert_eq!(
+            agent.kind,
+            crate::auth::policy::PrincipalKind::AgentLoopback,
+            "the constructor under test must build the class it claims"
+        );
+        let verdict = decide_gate_verdict(Some(&agent), &gate, "GET");
+        assert!(
+            !verdict.is_deny(),
+            "the oracle denies an AgentLoopback principal on an Admin row. If the agent arm \
+             was added on purpose, the doc at src/server/router/auth.rs must be updated in \
+             the SAME commit — and this pin updated with it, because a doc claiming a \
+             refusal the oracle does not make is the F8-02 defect in its original form."
+        );
+    }
+
+    /// R68 (F8-02) — the two `DenyReason` arms that CANNOT fire in production.
+    ///
+    /// Both are unreachable because the sole production constructor hardcodes
+    /// the field away (`MethodPolicy::Any` at `:163`, `required_capability: ""`
+    /// at `:167`). Pinned here so the ceiling is a machine-checked FACT rather
+    /// than a claim in a round note: if a future constructor populates either
+    /// field, this fails and the note must be corrected in the same commit.
+    #[test]
+    fn r68_the_two_unreachable_deny_reasons_are_pinned_as_ceilings() {
+        let gate = gate_for("/audit").expect("/audit is gated");
+        assert_eq!(
+            gate.method_policy,
+            crate::authz::policy::MethodPolicy::Any,
+            "a method-keyed row would make DenyReason::MethodNotPermitted reachable — \
+             update the ceiling note in the same commit"
+        );
+        assert!(
+            gate.required_capability.is_empty(),
+            "a non-empty capability would make DenyReason::CapabilityDenyOnly reachable — \
+             update the ceiling note in the same commit"
+        );
+        // And the arms themselves are still correct when constructed directly,
+        // which is the honest scope: they are unreachable, not wrong.
+        let mut method_gated = gate;
+        method_gated.method_policy = crate::authz::policy::MethodPolicy::Only(&["POST"]);
+        assert!(matches!(
+            decide_gate_verdict(None, &method_gated, "GET"),
+            Verdict::Deny(DenyReason::MethodNotPermitted)
+        ));
+        let mut cap_gated = gate;
+        cap_gated.required_capability = "publish";
+        assert!(matches!(
+            decide_gate_verdict(None, &cap_gated, "GET"),
+            Verdict::Deny(DenyReason::CapabilityDenyOnly)
+        ));
     }
 }

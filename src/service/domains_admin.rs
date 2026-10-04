@@ -77,6 +77,7 @@
 
 use rusqlite::Connection;
 use std::collections::HashMap;
+use std::path::Path;
 
 /// One census row: the plain (non-wire) form the handler maps onto its
 /// `DomainInfo` JSON 1:1.
@@ -190,6 +191,22 @@ pub(crate) fn file_domain_counts(conn: &Connection) -> (i64, i64, i64) {
         .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
         .unwrap_or(0);
     (entries, entities, relations)
+}
+
+/// The census for ONE domain file, opening and closing the connection HERE.
+///
+/// Why a core owns the open: the per-domain file is not the pooled
+/// connection, so the handler cannot borrow one — it has to open its own.
+/// That made the handler the only place in the tree doing so, which is the
+/// shape the Architecture Law forbids. The open is storage, so it lives with
+/// the storage; the handler keeps its `let … else { continue }` shape and
+/// never names a rusqlite surface.
+///
+/// Failure is `None` rather than a partially-filled row, so the caller's
+/// `continue` stays exactly as it was pre-move.
+pub(crate) fn file_domain_counts_at(path: &Path) -> Option<(i64, i64, i64)> {
+    let conn = Connection::open(path).ok()?;
+    Some(file_domain_counts(&conn))
 }
 
 /// The create/warm probe: a store with zero knowledge rows is NEW (201) —

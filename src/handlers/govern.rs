@@ -398,6 +398,13 @@ pub async fn snapshot_status(
 }
 
 /// Check one `.bak` snapshot file. Returns a JSON status object with `ok`.
+///
+/// The connection open, the `PRAGMA`, and the chain verification live in
+/// [`crate::service::snapshot_probe`], which opens the snapshot READ-ONLY —
+/// the pre-move `Connection::open` was read-WRITE on a surface this
+/// function's own doc called read-only. The duplicated `#[cfg(unix)]` /
+/// `#[cfg(not(unix))]` arms now differ ONLY in whether the mode bits are
+/// checked; everything else is one call.
 fn check_snapshot(p: &std::path::Path) -> serde_json::Value {
     let name = p
         .file_name()
@@ -405,31 +412,7 @@ fn check_snapshot(p: &std::path::Path) -> serde_json::Value {
         .unwrap_or("?")
         .to_string();
     let (exists, size, mode_ok, integrity_ok, chain_ok) =
-        (|| -> Result<(bool, u64, bool, bool, bool), rusqlite::Error> {
-            let meta = std::fs::metadata(p)
-                .map_err(|_| rusqlite::Error::InvalidParameterName("missing".into()))?;
-            let size = meta.len();
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = meta.permissions().mode() & 0o777;
-                let mode_ok = mode == 0o600;
-                let conn = rusqlite::Connection::open(p)?;
-                let integrity: String =
-                    conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-                let chain_ok = crate::audit::verify_chain(&conn);
-                Ok((true, size, mode_ok, integrity == "ok", chain_ok))
-            }
-            #[cfg(not(unix))]
-            {
-                let conn = rusqlite::Connection::open(p)?;
-                let integrity: String =
-                    conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-                let chain_ok = crate::audit::verify_chain(&conn);
-                Ok((true, size, true, integrity == "ok", chain_ok))
-            }
-        })()
-        .unwrap_or((false, 0, false, false, false));
+        crate::service::snapshot_probe::snapshot_integrity(p, cfg!(unix));
 
     serde_json::json!({
         "file": name,
