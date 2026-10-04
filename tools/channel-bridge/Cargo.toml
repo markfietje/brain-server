@@ -7,39 +7,39 @@ description = "Governed-edge channel bridges (WhatsApp/Slack/Teams) for brain-se
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "time", "signal", "fs"], default-features = false }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "time", "signal", "fs"], default-features = false }
 
 axum = { version = "0.8.9", features = ["macros", "json"] }
 
 # TLS is REQUIRED here: the bridge dials graph.facebook.com directly (the
 # only edge in the fleet with an outbound HTTPS platform dependency).
-reqwest = { version = "0.13.4", features = ["json", "rustls"], default-features = false }
+reqwest = { version = "0.13.5", features = ["json", "rustls"], default-features = false }
 
 # Slack Socket Mode: the bridge DIALS OUT over WSS — no inbound listener.
 tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
-futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+futures-util = { version = "0.3.34", default-features = false, features = ["sink", "std"] }
 
 # Teams: Bot Framework activity JWTs (RS256) verified against the
 # login.botframework.com JWKS. aws_lc_rs is the crypto backend; aws-lc-rs
 # is already in the tree via rustls, so this adds no new build weight.
-jsonwebtoken = { version = "11", default-features = false, features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11.1.0", default-features = false, features = ["aws_lc_rs"] }
 
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 
-anyhow = "1"
-uuid = { version = "1", features = ["v4"] }
-chrono = { version = "0.4" }
-base64 = "0.23"
-hmac = "0.13"
-sha2 = "0.11"
-clap = { version = "4", features = ["derive"] }
+anyhow = "1.0.104"
+uuid = { version = "1.27.0", features = ["v4"] }
+chrono = { version = "0.4.45" }
+base64 = "0.23.1"
+hmac = "0.13.0"
+sha2 = "0.11.0"
+clap = { version = "4.6.7", features = ["derive"] }
 
 [dev-dependencies]
-tempfile = "3"
+tempfile = "3.27.0"
 
 # ── Hardening policy (house style, mirrors signal-gateway) ────────────────
 # Deny every runtime-panic vector we own; unsafe stays compile-forbidden.
