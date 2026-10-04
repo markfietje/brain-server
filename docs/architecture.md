@@ -762,18 +762,44 @@ advisory, and that the enforcement is a capability check the model cannot reach.
 **The three hard human-approval points.** These are not configurable and no posture
 disables them:
 
-1. **Nothing enters memory without a human.** Under `BRAIN_WRITE_POSTURE=review`
-   the agent-facing write surfaces emit a digest-bound *proposal*; an operator
-   disposes of it. The agent role has `reject` but never `approve` or `promote`,
-   so it cannot dispose of its own work.
-2. **Quarantined content never auto-admits.** A screened write that trips the
-   blocklist lands in quarantine and waits for a person (disposition is an
-   Admin-gated route; a quarantine flag that cannot be recorded aborts the
-   ingest rather than storing unflagged).
-3. **Delivery promotion is gated by an autonomy tier, not by confidence.** The
-   arbiter reads the run's granted tier and never the trace's *claimed*
-   determinism; the two narrowest tiers propose and never promote; the release
-   approve and promote routes refuse agent principals outright.
+1. **Under the `review` posture, nothing enters memory without a human.** The agent-facing
+   write surfaces emit a digest-bound *proposal*; an operator disposes of it. The agent role
+   has `reject` but never `approve` or `promote`, so it cannot dispose of its own work.
+   ⚠️ **This holds only under `review`.** The default is `open`, which inserts durable memory
+   directly — see "The write posture" below.
+2. **Quarantined content never auto-admits.** A screened write that trips the blocklist is
+   stored **flagged** and excluded from retrieval (a quarantined ingest writes no vector);
+   it waits for a person, and the disposition route is Admin-gated. Quarantine is a
+   `flagged` column on the row, not a separate store.
+3. **Delivery promotion is gated by an autonomy tier, not by confidence.** The arbiter reads
+   the run's granted tier and never the trace's *claimed* determinism; the two narrowest
+   tiers propose and never promote; the release approve and promote routes refuse agent
+   principals outright.
+
+**The capability vocabulary is closed, and it is ten entries** (`CAN_ACTIONS`, `src/role.rs`):
+
+```
+read · write · approve · reject · calibrate · release_quarantine · dsar_export · purge · admin · workflow
+```
+
+The agent preset holds `["read", "write", "reject"]`. The omitted six are operator- or
+service-side and each gates a real route — `calibrate` (agreement), `release_quarantine`
+(disposition), `dsar_export`, `purge`, `admin`, `workflow`. A role carrying any item outside
+this list is **rejected at write time** (`Role::validate`), and the only production writer of
+the roles table is the handler that calls it.
+
+**⚠️ A KNOWN DEFECT, disclosed rather than absorbed: `publish` is unsatisfiable.**
+KCS article publication is gated on the `publish` capability, but `publish` is **not** in
+`CAN_ACTIONS`. No production path can therefore store a role holding it, so
+`authorize_role(.., "publish")` denies **every principal that has roles — including the
+`admin` preset** — and passes principals that have none. **KCS article publication is
+impossible for every role-bearing principal today.** The fix is minting `publish` into
+`CAN_ACTIONS`; it is not fixed here because the vocabulary is frozen for this round. The
+finding is carried in `src/authz/gates.rs` with its own pins.
+
+**⚠️ An undisclosed default worth knowing: `BRAIN_RBAC_ROLELESS_POSTURE` defaults to
+`pass`.** A principal holding no role bypasses every `authorize_role` gate. Role gates bind by
+default only if the operator sets this to `deny`.
 
 **What the model may be asked to decide**, and what it may not:
 

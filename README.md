@@ -246,13 +246,20 @@ The human-facing desktop client is a **Tauri + SvelteKit application** consuming
 ```mermaid
 flowchart TD
     GUI["Tauri + SvelteKit<br/>Human Control Plane"]
-    GUI -->|"HTTP / WebSocket"| Server["brain-server<br/>single authority"]
+    GUI -->|"HTTP / SSE"| Server["brain-server<br/>single authority"]
 
     classDef gui fill:#efdbff,stroke:#a371f7,color:#1f2328
     classDef srv fill:#dbe9ff,stroke:#1f6feb,color:#1f2328
     class GUI gui
     class Server srv
 ```
+
+> **Transport note.** Streaming is **SSE** (`text/event-stream` on the `/events` routes).
+> There is no WebSocket endpoint in this server — `axum` is declared without its `ws`
+> feature and no upgrade handler is registered.
+>
+> A second GUI also exists: the Dioxus client in `client/` (web, desktop, iOS, Android),
+> retained pending Svelte parity. Both are protocol clients; neither is a backend.
 
 The client is deliberately **not a second backend**.
 
@@ -285,9 +292,21 @@ flowchart TD
     class Q warn
 ```
 
-The important boundary is that **agent capture and durable memory are different states**.
+**This lifecycle is the `review` posture, not the default.** `BRAIN_WRITE_POSTURE` defaults to
+`open` for back-compatibility, and under `open` the write surfaces **insert durable memory
+directly** — the proposal and approval steps above are bypassed. Set
+`BRAIN_WRITE_POSTURE=review` to put agent-facing writes through the gate. Unknown values are
+refused at startup.
 
-Human promotion is explicit and digest-bound.
+Under either posture:
+
+- **Agent capture and durable memory are different states.**
+- **Quarantine is a flag, not a separate store.** Suspect content is still written, then marked
+  `flagged` and excluded from retrieval (a quarantined ingest writes no vector).
+- **Where the proposal path is used, promotion is digest-bound** — approval fails closed with
+  `409` if the content changed since it was displayed.
+
+See `docs/architecture.md` §"Who may decide what" for the capability vocabulary behind the gate.
 
 ---
 
@@ -386,10 +405,16 @@ flowchart TD
 
 Decision models remain **replaceable components behind a common contract**.
 
-Possible local models include classifiers, scorers, rerankers, and specialized typed-decision models.
+The pipeline **ships and is wired to a live route** (`POST /workflow/decision-runs`), running all
+eight stages in this order with digest-bound traces and a replay-diff surface. Two honest
+qualifiers on the words in the diagram:
 
-> [!NOTE]
-> This architecture is intentionally future-facing; the current release remains focused on the governed memory and retrieval substrate.
+- **"Local Decision Model"** is a seam, and the only implementation the route can load today is a
+  deterministic **rules table**. A learned model is expressible in the type system but has no
+  in-tree implementation.
+- **"Optional Re-ranking"** is a stable candidate re-order, not a cross-encoder: *"no learned
+  reranker exists on this path."* The cross-encoder (`bge-reranker-v2-m3`) is in **retrieval**,
+  behind both a `rerank-tier` feature gate and a runtime `BRAIN_RERANK_ENABLED` flag.
 
 ---
 
