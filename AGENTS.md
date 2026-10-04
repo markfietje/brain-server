@@ -1523,10 +1523,20 @@ brain status
   plus the five `*-core` engines) are PUBLIC, REAL code — measured 2026-09-15.
   (The old "scaffolds stay public while empty" claim was stale — do not repeat
   it; the SDK is built, kernel-consumed, and dependency-free by design.)
-- **The Steward-line implementation plans (1.27.32 → 1.27.42) also live in
-  `brain-steward-ip/plans/`** with the master `ROADMAP_1.27.x.md`; this repo
-  keeps only `IMPLEMENTATION_PLAN_v1.27.31_AuditRepair.md` (public server
-  audit work) + the shipped-release plans.
+- **The Steward-line implementation plans (1.27.32 → 1.27.42) live in
+  `brain-steward-ip/plans/`** with the master `ROADMAP_1.27.x.md`. This repo
+  keeps **one** kernel-root plan:
+  `IMPLEMENTATION_PLAN_v1.27.31_AuditRepair.md` (public server audit work — the
+  audit-chain re-anchor, an operator-gated format change no private doc should
+  own). Every other `IMPLEMENTATION_PLAN_*` / `IMPLEMENTATION_ROADMAP_*` /
+  `ROADMAP.md` that used to sit here was **moved to
+  `brain-steward-ip/plans/archive/` on 2026-10-04** — see
+  `plans/archive/KERNEL_ROOT_PLANS.md` there for the provenance and the list.
+  They were never tracked by this repo (`.gitignore` 55–69), so the public tree
+  carried 222 root `.md` files while git held 16; the root is now 23.
+  **Do not re-add one "for context"** — the private archive is the home, and
+  `tests/external_claim_pins.rs` discovers the claim-sensitive ones by CONTENT
+  rather than by path, so a copy here is not what any gate reads.
 
 ---
 
