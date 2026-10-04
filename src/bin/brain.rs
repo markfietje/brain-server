@@ -616,6 +616,7 @@ const VALUE_FLAGS: &[&str] = &[
     "breach",
     "checkpoint",
     "code",
+    "claim-id",
     "config",
     "confirm",
     "dataset",

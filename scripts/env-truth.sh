@@ -46,6 +46,7 @@ PINNED_CALLSITES=(
   "BRAIN_CASE_STATUS_KEY|secrets-ladder derive: src/secrets.rs format!(\"BRAIN_{NAME}_KEY\") <- crate::secrets::resolve(\"case_status\") at src/workflow/case_status.rs:97"
   "BRAIN_CASE_STATUS_KEY_FILE|secrets-ladder derive: src/secrets.rs format!(\"BRAIN_{NAME}_KEY_FILE\") <- the same resolve call"
   "BRAIN_SERVER_AUTH_TOKEN|external consumer: openclaw-host env substitution for the plugin authToken (docs/deployment.md:629); writer src/bin/brain.rs:3918"
+  "BRAIN_JWT_AZP|runtime-derived name: src/config.rs:489 JWT_AZP_ENV const <- std::env::var(JWT_AZP_ENV) at src/config.rs:495 (resolve for auth::jwt::check_azp)"
 )
 
 # Arm 3 — declared non-knobs: names the contract docs themselves state are
@@ -53,6 +54,25 @@ PINNED_CALLSITES=(
 # name was never a knob, so a forward-tracking row would be fiction.
 DECLINED_NON_KNOBS=(
   "BRAIN_MODEL_PROFILE|docs/configuration.md:55 declares it not a config key; appears only inside a re-embed hint string (src/server/bootstrap.rs:212)"
+)
+
+# Arm 4 — REMOVED knobs: names that WERE live configuration once and are gone.
+# A forward-tracking ROADMAP row would be the same fiction as for a non-knob —
+# the knob is never coming back, so "planned" would be a lie. The docs keep
+# the negative claim (a reader must be told the knob does not exist), so the
+# gate owes it an evidence-backed arm instead of rule 2. Each entry NAME|evidence.
+REMOVED_KNOBS=(
+  "BRAIN_REDACT_PII|docs/configuration.md declares it removed in v1.20.19; redaction is architectural (kernel screen + read seam), never env-gated"
+)
+
+# Arm 5 — installer-script knobs: read by scripts/install-service.sh /
+# deploy/install.sh, which sit outside the src|crates|client|tools trees the
+# code-shape regex walks. Documented so operators can find them; consumed by
+# the pinned external process named in the evidence.
+INSTALLER_KNOBS=(
+  "BRAIN_RELEASE_PUBKEY|minisign release-artifact verification gate, read by scripts/install-service.sh:85-95 (fail-closed when set without a signature)"
+  "BRAIN_NO_COMPLIANCE_PACK|skips the compliance-pack install, read by scripts/install-service.sh:47-49"
+  "BRAIN_FORCE|overwrite guard for the Linux appliance installer, read by deploy/install.sh:35"
 )
 
 # Arm 1: the code shape. Implemented only when the NAME sits on an
@@ -74,6 +94,12 @@ implemented() {
   for entry in "${DECLINED_NON_KNOBS[@]}"; do
     if [[ "${entry%%|*}" == "$name" ]]; then
       echo "note: '$name' declared non-knob: ${entry#*|}" >&2
+      return 0
+    fi
+  done
+  for entry in "${REMOVED_KNOBS[@]}" "${INSTALLER_KNOBS[@]}"; do
+    if [[ "${entry%%|*}" == "$name" ]]; then
+      echo "note: '$name' owned by evidence arm: ${entry#*|}" >&2
       return 0
     fi
   done
@@ -164,11 +190,15 @@ while IFS= read -r name; do
       ok_doc=1
     fi
   done < <(rg -n --no-heading "$name" "$REPO/docs/configuration.md" "$REPO/docs/deployment.md" 2>/dev/null || true)
+  # The forward tracker is the living roadmap WHEREVER IT LIVES: the root
+  # ROADMAP.md moved to the private plans archive on 2026-10-04, so the
+  # in-repo tracker is docs/roadmap.md. Both are read when both exist.
   while IFS= read -r rline; do
     if printf '%s' "$rline" | rg -qi 'Loop|roadmap|planned|future|v[23]\.'; then
       if ! printf '%s' "$rline" | rg -qi 'shipped'; then ok_roadmap=1; fi
     fi
-  done < <(rg -n --no-heading "$name" "$REPO/ROADMAP.md" 2>/dev/null || true)
+  done < <({ rg -n --no-heading "$name" "$REPO/ROADMAP.md" 2>/dev/null || true
+             rg -n --no-heading "$name" "$REPO/docs/roadmap.md" 2>/dev/null || true; })
   if [[ "$ok_doc" == "1" && "$ok_roadmap" == "1" ]]; then continue; fi
   echo "ERR: '$name' documented but unimplemented (zero code hits). mentions:${where:- none}" >&2
   [[ "$ok_doc" == "0" ]] && echo "     missing: same-line removed/roadmap qualifier in docs" >&2

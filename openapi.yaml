@@ -6778,7 +6778,7 @@ paths:
         "401": { description: Not authenticated }
         "403": { description: Not authorized }
         "404": { description: Delegation or run not found }
-        "409": { description: result_already_submitted }
+        "409": { description: 'conflict — "this delegation already returned its result"' }
   /workflow/runs/{id}/answer:
     post:
       summary: Answer a pending AskHuman question (Write + approve role gate)
