@@ -29,5 +29,6 @@ proof map.
 - [Local judgment vs rented judgment](./22-laya-vs-jev.md), *the System-1 port is Laya, not Jev — v1.28.92*
 - [The loop learned clinical discipline](./23-healthcare-diagnostics-loop.md), *the 1.32.7 diagnostics loop and what it buys — v1.28.92*
 - [Two frontends, one contract](./24-two-frontends-one-contract.md), *shipping a second GUI while the first is still served — the parity fixtures and wire gate that make it safe*
+- [A gate that refuses everything is not a gate](./25-a-gate-that-refuses-everything.md), *anti-vacuity pins, and the red-proof that stayed green*
 
 Positions and one-liners live in the [media kit](../media-kit.md).

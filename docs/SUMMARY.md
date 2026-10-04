@@ -136,6 +136,7 @@
 - [Local judgment vs rented judgment](./blog/22-laya-vs-jev.md)
 - [The loop learned clinical discipline](./blog/23-healthcare-diagnostics-loop.md)
 - [Two frontends, one contract](./blog/24-two-frontends-one-contract.md)
+- [A gate that refuses everything is not a gate](./blog/25-a-gate-that-refuses-everything.md)
 
 # Product site
 

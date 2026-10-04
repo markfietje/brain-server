@@ -1,7 +1,7 @@
 # The Governed Diagnostic Loop: law-cited phases, clinical process shape, local calibrated judgment
 
-**File:** `src/workflow/gdl.rs` (case machine, 9,871 lines) ·
-`src/workflow/gdl_checkpoint.rs` (journal contract, 771) ·
+**File:** `src/workflow/gdl.rs` (case machine, 11,127 lines) ·
+`src/workflow/gdl_checkpoint.rs` (journal contract, 825) ·
 `src/workflow/gdl_eval.rs` (A/B/C runner, 1,191) ·
 `src/workflow/decide/{lang,router,sequence,calibration,presets}.rs` (System-1 pure port) ·
 `src/workflow/reflection.rs` (retrospective corpus) ·
@@ -99,9 +99,14 @@ de-identified under a dual gate with frozen train/holdout partitions.
   (no such knob exists today).
 - **Local judgment is ungated potential until 1.32.8 stamps.** Phase 0 is
   pure math with 134 tests and no callers; base checkpoints are weak
-  zero-shot (36% business cited vs 73% hosted); the `score` primitive is
-  quarantined on strict scaling; inference, preload, pilots, and the
-  temperature fit are all ahead — the lane stamps on operator-labeled
+  zero-shot, measured at **0.362** on typed decisions against a **0.318**
+  random baseline, so near-chance rather than usable. A separate figure that
+  circulates as "73%" is a *video-reported* result for a different model on
+  Banking77, and the same source records our candidate collapsing to 0.425
+  there once choices exceed roughly twenty options. Fine-tuned accuracy
+  (0.766) exists only on the benchmark's own train split. The `score` primitive
+  is quarantined on strict scaling; inference, preload, pilots, and the
+  temperature fit are all ahead, and the lane stamps on operator-labeled
   proof, not before.
 - **The corpus is retrospective-only by proof, useful-only by future
   work.** Capture cannot perturb resolution (pinned), but no training run
