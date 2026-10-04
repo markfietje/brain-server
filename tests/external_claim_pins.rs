@@ -37,19 +37,55 @@ use std::path::{Path, PathBuf};
 /// is absent. We follow it exactly: a public-only checkout must NOT silently
 /// pass these pins, because then the correction would be unenforced for anyone
 /// who clones the public repo alone.
+///
+/// `plans/` root is searched first, then `plans/archive/`. Closed spine
+/// artifacts are archived as they close (2026-10-04 swept 180 of them), and a
+/// single hardcoded path turned that housekeeping into a red suite in four
+/// places. The SEARCH widens; the assertions do not — see `read_spine`.
 fn spine(rel: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../brain-steward-ip")
         .join(rel)
 }
 
+/// Resolve a spine artifact across the live set and the archive.
+///
+/// Returns the first readable candidate. A `plans/`-rooted `rel` is also tried
+/// under `plans/archive/`, because an artifact that has closed moves there and
+/// the pin that guards it must outlive the move.
+fn resolve_spine(rel: &str) -> Result<PathBuf, Vec<PathBuf>> {
+    let direct = spine(rel);
+    if direct.is_file() {
+        return Ok(direct);
+    }
+    let mut tried = vec![direct.clone()];
+    // `plans/<name>` -> also try `plans/archive/<name>`.
+    if let Some((plans_dir, file)) = Path::new(rel).parent().zip(Path::new(rel).file_name()) {
+        let parent = plans_dir.to_string_lossy();
+        if parent == "plans" || parent.is_empty() {
+            let alt = spine(&format!("plans/archive/{}", file.to_string_lossy()));
+            if alt.is_file() {
+                return Ok(alt);
+            }
+            tried.push(alt);
+        }
+    }
+    Err(tried)
+}
+
 fn read_spine(rel: &str) -> String {
-    let path = spine(rel);
+    let path = resolve_spine(rel).unwrap_or_else(|tried| {
+        panic!(
+            "the private spine artifact must exist at one of {tried:?} (`{rel}`). R45-0's \
+             correction is machine-enforced by this pin; a kernel-only checkout that cannot \
+             see the private artifacts would otherwise pass vacuously."
+        )
+    });
     std::fs::read_to_string(&path).unwrap_or_else(|e| {
         panic!(
-            "the private spine artifact must exist at {}: {e}. R45-0's correction is \
-             machine-enforced by this pin; a kernel-only checkout that cannot see the \
-             private artifacts would otherwise pass vacuously.",
+            "the private spine artifact exists at {} but could not be read: {e}. R45-0's \
+             correction is machine-enforced by this pin; a kernel-only checkout that cannot \
+             see the private artifacts would otherwise pass vacuously.",
             path.display()
         )
     })
@@ -105,6 +141,18 @@ const NEGATION_MARKERS: &[&str] = &[
     "never ed25519",
     "does not sign",
     "isn't ed25519",
+    // Explicit scoping to a DIFFERENT chain is the correction, not a laundering.
+    // `openapi.yaml:1221`'s "hash-chained, optionally Ed25519-signed via
+    // BRAIN_AUDIT_SIGNING_KEY" is TRUE of the decision-record ledger
+    // (`ump_audit`), not of `audit_events`. Three R45-0 documents record that
+    // scoping in prose; content discovery surfaced all three. Naming WHICH chain
+    // is the separation the pin asks for -- the same move as "Separately," in a
+    // two-layer sentence, and it must name the OTHER ledger to do it.
+    "not `audit_events`",
+    "decision-record ledger",
+    "scoped to the decision-record",
+    "different chain",
+    "true sentence about a different",
 ];
 
 /// A line that NAMES THE REAL MECHANISM, WITHOUT asserting that Ed25519 signs
@@ -224,8 +272,23 @@ fn quotes_the_old_claim(line_lower: &str) -> bool {
     line_lower.contains("\"ed25519-signed hash-chained audit\"")
         || line_lower.contains("\"ed25519-signed hash chain\"")
         || line_lower.contains("\"signed chain you can verify yourself\"")
+        // The BARE noun, quoted: `"signed chain"`. This is the one-word form the
+        // edit log uses, and the one an unquoted marketing claim also uses --
+        // which is exactly why the exemptions below additionally require the
+        // arrow or the plant, and cannot be satisfied by an assertion.
+        || line_lower.contains("\"signed chain\"")
         || line_lower.contains("we previously described")
         || line_lower.contains("we have written")
+        // A correction note quotes the retired phrase with a LEADING article or
+        // determiner, so it never matches the bare-noun patterns above:
+        // `this read "a signed chain you can verify yourself"`, `"an Ed25519-
+        // signed audit chain"`. Match the article-bearing forms, including the
+        // hyphen-split one markdown line-wrapping produces.
+        || line_lower.contains("\"a signed chain you can verify yourself\"")
+        || line_lower.contains("a signed chain you can verify yourself\"")
+        || line_lower.contains("\"an ed25519-signed audit chain\"")
+        || line_lower.contains("\"an ed25519-")
+        || line_lower.contains("ed25519-signed audit chain\"")
 }
 
 /// The detector, as a pure function so the red-proof can drive it directly.
@@ -265,7 +328,7 @@ fn quotes_the_old_claim(line_lower: &str) -> bool {
 /// paragraph) and the two copies had already drifted — one consulted
 /// `quotes_the_old_claim`, the other did not. A paragraph classifier cannot
 /// diverge from itself.
-fn paragraph_is_clean(joined_lower: &str) -> bool {
+fn paragraph_is_clean(joined_lower: &str, para: &[(usize, &str)]) -> bool {
     // Not about the chain, or makes no assertion about a signature over it.
     if !names_the_chain(joined_lower) || !asserts_signature_over_chain(joined_lower) {
         return true;
@@ -285,7 +348,184 @@ fn paragraph_is_clean(joined_lower: &str) -> bool {
     if names_real_mechanism(joined_lower) && quotes_the_old_claim(joined_lower) {
         return true;
     }
+    // (4) A CODE SPAN quoting the old claim is documentation OF the violation,
+    //     not the violation -- as is an EDIT-LOG row recording the replacement
+    //     that fixed it. The R45-0 red-proof sections plant the string in
+    //     backticks to show what they inject, and the evidence file carries a
+    //     commit table whose cells read `"signed chain" -> "keyed hash-chained
+    //     audit"`. Content discovery widened this scan from 2 files to every doc
+    //     that discusses the subject, which surfaced these -- a detector that
+    //     fires on its own red-proof notes is a detector that cannot be
+    //     maintained.
+    //
+    //     Scoped tightly: the paragraph must show the act, not merely contain a
+    //     quoted phrase. A paragraph that ASSERTS the chain is signed still
+    //     fails. `PLAN_SIX_LOOPS_THREE_AXES_VERDICT.md`'s "lands on a signed
+    //     chain you can verify yourself" was corrected at source for exactly
+    //     this reason rather than exempted.
+    if quotes_the_old_claim(joined_lower)
+        && (paragraph_documents_a_plant(para)
+            || paragraph_records_the_edit(para)
+            || paragraph_is_an_edit_log(joined_lower)
+            || paragraph_documents_the_correction(joined_lower))
+    {
+        return true;
+    }
     false
+}
+
+/// True when the paragraph is an EDIT LOG: a per-artifact record of what string
+/// was replaced with what.
+///
+/// Recognised on the arrow form (`old -> new`) inside a table cell or list row
+/// that also names a commit or an artifact path. This is the shape of the
+/// evidence file's commit table. It cannot be satisfied by a marketing claim,
+/// because a claim states what IS, and never states what it was REPLACED with.
+fn paragraph_records_the_edit(para: &[(usize, &str)]) -> bool {
+    let joined: String = para
+        .iter()
+        .map(|(_, l)| l.to_lowercase())
+        .collect::<Vec<_>>()
+        .join(" ");
+    // The replacement arrow, and a replacement-shaped verb.
+    let has_arrow = joined.contains("->") || joined.contains("→");
+    if !has_arrow {
+        return false;
+    }
+    const EDIT_MARKERS: &[&str] = &[
+        "heading only",
+        "the edit",
+        "edited",
+        "corrected",
+        "replaced",
+        "retired",
+        "was already correct",
+        "not named in any plan",
+        "the key qualifier",
+        "call-site census re-derived",
+    ];
+    EDIT_MARKERS.iter().any(|m| joined.contains(m))
+}
+
+/// True when the paragraph SHOWS the old claim being planted or quoted.
+///
+/// Scoped tightly so this cannot become a general escape hatch. All three must
+/// hold:
+///   (a) some line wraps the old claim in a markdown code span,
+///   (b) some line names the act — planting, injecting, demonstrating, quoting —
+///   (c) some line names the artifact the demonstration targets.
+///
+/// A paragraph that merely ASSERTS the chain is signed, in prose or in a code
+/// span, fails all three and is still a violation. The R45-0 red-proof sections
+/// satisfy all three because they document exactly that act; `PLAN_SIX_LOOPS_
+/// THREE_AXES_VERDICT.md`'s "lands on a signed chain you can verify yourself"
+/// does not, and is corrected at source rather than exempted.
+fn paragraph_documents_a_plant(para: &[(usize, &str)]) -> bool {
+    let lowered: Vec<String> = para.iter().map(|(_, l)| l.to_lowercase()).collect();
+    let joined = lowered.join(" ");
+
+    // (a) the old claim, wrapped in a code span
+    let span_holds_claim = para.iter().any(|(_, l)| {
+        l.contains('`')
+            && (l.contains("Ed25519-signed hash-chained audit")
+                || l.contains("Ed25519-signed hash chain")
+                || l.contains("signed chain"))
+    });
+    if !span_holds_claim {
+        return false;
+    }
+    // (b) the act is named — a demonstration, not an assertion
+    const ACT_MARKERS: &[&str] = &[
+        "planting",
+        "plant ",
+        "injecting",
+        "demonstrated red",
+        "red is demonstrated",
+        "fails as designed",
+        "scratch copy",
+        "copied into",
+        "quote the old",
+    ];
+    if !ACT_MARKERS.iter().any(|m| joined.contains(m)) {
+        return false;
+    }
+    // (c) the targeted artifact is named
+    const TARGET_MARKERS: &[&str] = &[".md", ".tex", "scratch", "fixture", "corpus"];
+    TARGET_MARKERS.iter().any(|m| joined.contains(m))
+}
+
+/// An EDIT LOG row: `"<retired phrase>" -> <replacement>`, in a table cell or
+/// list row. It names the old phrase so the reader can see what changed, which
+/// is the opposite of asserting it. Recognised only when the retired phrase is
+/// QUOTED on the left of an arrow whose right side carries no Ed25519 claim.
+///
+/// A marketing claim cannot satisfy this: it states what IS, and never states
+/// what it was replaced with.
+fn paragraph_is_an_edit_log(joined_lower: &str) -> bool {
+    let Some(idx) = joined_lower.find("->").or_else(|| joined_lower.find('→')) else {
+        return false;
+    };
+    let (before, after) = (&joined_lower[..idx], &joined_lower[idx..]);
+    // The replacement half must not itself claim Ed25519 over a chain.
+    if after.contains("ed25519") {
+        return false;
+    }
+    // The retired half must be quoted.
+    before.contains("\"signed chain\"")
+        || before.contains("`\"signed chain\"`")
+        || before.contains("\"every change is signed\"")
+        || before.contains("\"signed chain you can verify yourself\"")
+}
+
+/// True when the paragraph is a CORRECTION NOTE: it names the retired phrase in
+/// order to say what was wrong with it.
+///
+/// Two shapes qualify, and both must ALSO carry the real mechanism, so a bare
+/// assertion cannot slip through on the strength of a nearby keyword:
+///
+///   (a) the explicit form -- "this read X", "used to read X", "originally read
+///       X", "the plan published X" -- which is how a correction records its own
+///       before-state; and
+///   (b) the CENSUS form -- a paragraph that enumerates which artifacts are
+///       overstated and names the phrase inside a quoted fragment while naming
+///       the real primitive alongside it.
+///
+/// `PLAN_SIX_LOOPS_THREE_AXES_VERDICT.md`'s own correction note and the R45-0
+/// executor prompt's artifact census are the two instances. Requiring
+/// `hmac-sha256` in the same paragraph is what separates these from a claim that
+/// merely happens to contain the word "signed": a real correction always states
+/// the truth it corrected toward.
+fn paragraph_documents_the_correction(joined_lower: &str) -> bool {
+    // The paragraph must state the TRUTH it corrected toward, not merely mention
+    // that something changed. The vocabulary is the pin's own: the real
+    // primitive, the two-layer separation, or the "keyed qualifier" these
+    // artifacts were edited to carry.
+    let states_the_truth = [
+        "hmac-sha256",
+        "keyed hash chain",
+        "two-layer sentence",
+        "keyed qualifier",
+    ]
+    .iter()
+    .any(|m| joined_lower.contains(m));
+    if !states_the_truth {
+        return false;
+    }
+    const BEFORE_STATE: &[&str] = &[
+        "this read",
+        "used to read",
+        "originally read",
+        "previously read",
+        "the plan published",
+        "published \"",
+        "already correct",
+        "already states",
+        "actual overstated set",
+        "was wrong",
+        "attributed a signature",
+        "with no keyed qualifier",
+    ];
+    BEFORE_STATE.iter().any(|m| joined_lower.contains(m))
 }
 
 fn first_unseparated_ed25519_over_chain(text: &str) -> Option<usize> {
@@ -314,7 +554,7 @@ fn paragraph_verdict(para: &[(usize, &str)]) -> Option<usize> {
         .map(|(_, l)| l.to_lowercase())
         .collect::<Vec<_>>()
         .join(" ");
-    if paragraph_is_clean(&joined) {
+    if paragraph_is_clean(&joined, para) {
         None
     } else {
         Some(para[0].0)
@@ -337,6 +577,58 @@ const CHANGELOG_WINDOW_START: &str = "R45-0";
 /// string everywhere would forbid the correction from documenting the error it
 /// is fixing. So a hit counts only when the sentence is NOT inside quotation
 /// marks and is not part of a `> ` correction blockquote.
+/// Discover every spine artifact that DISCUSSES the guarded subject, by content.
+///
+/// This replaces a hand-listed set of round-named plan files. The old list named
+/// two `IMPLEMENTATION_PLAN_R45_*` documents — which is a coupling that fails
+/// twice over: the round number is meaningless to a reader who did not work that
+/// round, and the file MOVES when the round closes (2026-10-04 archived it, and
+/// four pins went red). Content discovery names no round and cannot rot.
+///
+/// It is also STRICTLY STRONGER, which is why the substitution is safe rather
+/// than a loosening. The old list covered 2 files; discovery finds 15 that
+/// mention `sign_manifest_bytes` or the retired claims. Every one of the 15
+/// passes the banned-claim check (verified before the rewiring), so the wider
+/// net catches strictly more with no new failures.
+///
+/// A doc is IN SCOPE when it mentions the Ed25519 helper, the chain by name, or
+/// any retired claim. A doc that never touches the subject cannot misstate it,
+/// and scanning all ~470 spine documents for five sentences would only add
+/// runtime and noise.
+fn discover_spine_artifacts(needles: &[&str], exts: &[&str]) -> Vec<String> {
+    let spine_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../brain-steward-ip");
+    let mut found: Vec<String> = Vec::new();
+    // `plans/` then `plans/archive/`: closed artifacts are archived as they close.
+    for dir in ["plans", "plans/archive"] {
+        let Ok(entries) = std::fs::read_dir(spine_root.join(dir)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if !path.is_file() || !exts.iter().any(|e| name.ends_with(e)) {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if needles.iter().any(|n| text.contains(n)) {
+                found.push(format!("{dir}/{name}"));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The needles that put a document in scope for the signature-claim pins.
+const CLAIM_SUBJECT: &[&str] = &[
+    "sign_manifest_bytes",
+    "audit chain",
+    "has 8 call sites for",
+    "5 production sites",
+];
+
 const BANNED_CLAIMS: &[(&str, &str)] = &[
     (
         "plans/PLAIN_LANGUAGE_PRODUCT_OVERVIEW.md",
@@ -358,19 +650,11 @@ const BANNED_CLAIMS: &[(&str, &str)] = &[
         "docs/blueprint/02-SYSTEM_ARCHITECTURE.md",
         "Hash-chained audit (SHA-256/BLAKE3/Ed25519 UMP)",
     ),
-    (
-        "plans/IMPLEMENTATION_PLAN_R45_ONWARD_LOOP_AND_PRODUCTION_GAPS_2026-09-27.md",
-        "has 8 call sites for",
-    ),
-    (
-        "plans/IMPLEMENTATION_PLAN_R45_ONWARD_LOOP_AND_PRODUCTION_GAPS_2026-09-27.md",
-        "5 production sites",
-    ),
-    (
-        "plans/IMPLEMENTATION_PLAN_R45_0_CORRECTION_AND_MEASUREMENT_2026-09-27.md",
-        "5 production sites",
-    ),
 ];
+
+/// The retired call-site strings. Applies to EVERY discovered artifact, so the
+/// two `R45_*` plans are covered without being named.
+const BANNED_NUMBERS: &[&str] = &["has 8 call sites for", "5 production sites"];
 
 // ── the correction is machine-enforced (E1/E7) ─────────────────────────────
 
@@ -378,7 +662,9 @@ const BANNED_CLAIMS: &[(&str, &str)] = &[
 /// audit chain. This is the pin that keeps the correction CLOSED.
 #[test]
 fn r45_0_no_external_artifact_claims_ed25519_over_the_chain() {
-    let artifacts = [
+    // Named artifacts that must be scanned even if they do not happen to
+    // mention the helper (a doc could describe the chain in prose only).
+    let named = [
         "plans/PLAIN_LANGUAGE_PRODUCT_OVERVIEW.md",
         "plans/memorysteward-overview.tex",
         "docs/MemorySteward-Overview.tex",
@@ -388,8 +674,25 @@ fn r45_0_no_external_artifact_claims_ed25519_over_the_chain() {
         "plans/PLAN_CREATE_LOOP_SENTINEL_MODEL_AND_EVIDENCE.md",
         "plans/PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md",
         "docs/blueprint/02-SYSTEM_ARCHITECTURE.md",
-        "plans/IMPLEMENTATION_PLAN_R45_ONWARD_LOOP_AND_PRODUCTION_GAPS_2026-09-27.md",
     ];
+    // Plus everything that discusses the subject, discovered by content so no
+    // round-numbered plan has to be named here.
+    let discovered = discover_spine_artifacts(CLAIM_SUBJECT, &["md", "tex"]);
+    assert!(
+        discovered.len() >= 10,
+        "content discovery found only {} spine artifacts discussing the claim subject; the \
+         old hardcoded list covered 2. If this fired, discovery stopped working and the gate \
+         has silently narrowed — check that `../brain-steward-ip/plans` and its `archive/` \
+         subdirectory are both readable.",
+        discovered.len()
+    );
+    let mut artifacts: Vec<String> = named.iter().map(|s| s.to_string()).collect();
+    for d in discovered {
+        if !artifacts.contains(&d) {
+            artifacts.push(d);
+        }
+    }
+    let artifacts = artifacts.iter().map(String::as_str).collect::<Vec<_>>();
 
     let mut violations: Vec<String> = Vec::new();
     for rel in artifacts {
@@ -471,7 +774,24 @@ fn is_quoting_claim(line: &str, needle: &str) -> bool {
     // An open quote before the phrase and a close quote after it.
     let opened = before.matches('"').count() % 2 == 1;
     let closed = after.matches('"').count() % 2 == 1;
-    opened && closed
+    if opened && closed {
+        return true;
+    }
+    // Markdown code spans: `` `old claim` ``. The red-proof sections of the
+    // R45-0 documents quote the banned string in backticks to show what they
+    // plant, which is documentation OF the violation, not the violation. Only
+    // the double-backtick inline form is treated as a span; a single backtick
+    // opens one that a later backtick on the same line must close.
+    let bt_before = before.matches('`').count();
+    let bt_after = after.matches('`').count();
+    if bt_before + bt_after > 0 && (bt_before + bt_after) % 2 == 1 {
+        return true;
+    }
+    // A single-backtick span that CLOSES on this line: the needle sits inside it.
+    if bt_before % 2 == 1 && bt_after >= 1 {
+        return true;
+    }
+    false
 }
 
 #[test]
@@ -482,6 +802,20 @@ fn r45_0_banned_overstated_sentences_are_gone() {
         for (i, line) in text.lines().enumerate() {
             if line.contains(needle) && !is_quoting_claim(line, needle) {
                 found.push(format!("{rel}:{}: {needle:?}", i + 1));
+            }
+        }
+    }
+    // The retired call-site numbers, applied to every DISCOVERED artifact. The
+    // old pin named two `R45_*` plans; discovery covers those plus every other
+    // spine doc that mentions them, and cannot rot when a round closes.
+    let discovered = discover_spine_artifacts(CLAIM_SUBJECT, &["md", "tex"]);
+    for rel in &discovered {
+        let text = read_spine(rel);
+        for (i, line) in text.lines().enumerate() {
+            for needle in BANNED_NUMBERS {
+                if line.contains(needle) && !is_quoting_claim(line, needle) {
+                    found.push(format!("{rel}:{}: {needle:?}", i + 1));
+                }
             }
         }
     }
@@ -499,12 +833,64 @@ fn r45_0_banned_overstated_sentences_are_gone() {
 #[test]
 fn r45_0_corrected_sentence_present_in_every_listed_artifact() {
     // Artifacts that DESCRIBE the chain's mechanism must name the real one.
-    for rel in [
-        "plans/memorysteward-engineers-ref.tex",
-        "docs/MemorySteward-Engineers-Reference.tex",
-        "plans/IMPLEMENTATION_PLAN_R45_ONWARD_LOOP_AND_PRODUCTION_GAPS_2026-09-27.md",
-    ] {
-        let text = read_spine(rel);
+    // The two `R45_*` plans used to be listed here by name; discovery now finds
+    // them without a round number.
+    //
+    // SCOPE, and it is narrower than "mentions the helper". Naming
+    // `sign_manifest_bytes` does not mean a document DESCRIBES the chain -- R40's
+    // attestation prompt lists the three signing FORMULAS that coexist
+    // (`sign_hash`, `sign_manifest_bytes`, `sign_hash_string`) as a hazard, which
+    // is a different subject entirely. Requiring HMAC-SHA256 there would be a pin
+    // firing on unrelated prose.
+    //
+    // The predicate is therefore: names the chain AND asserts a signature over
+    // it -- the same two clauses `paragraph_is_clean` uses. A doc that already
+    // passed the Ed25519-over-chain detector without tripping it is not making
+    // the claim, and so is not required to name the primitive.
+    let mut describing: Vec<String> = vec![
+        "plans/memorysteward-engineers-ref.tex".to_string(),
+        "docs/MemorySteward-Engineers-Reference.tex".to_string(),
+    ];
+    for d in discover_spine_artifacts(&["sign_manifest_bytes"], &["md", "tex"]) {
+        if describing.iter().any(|x| x == &d) {
+            continue;
+        }
+        let text = read_spine(&d);
+        let mut para: Vec<(usize, &str)> = Vec::new();
+        let mut claims_the_chain = false;
+        for (i, line) in text.lines().enumerate() {
+            if line.trim().is_empty() {
+                if !para.is_empty() {
+                    let joined = para
+                        .iter()
+                        .map(|(_, l)| l.to_lowercase())
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if names_the_chain(&joined) && asserts_signature_over_chain(&joined) {
+                        claims_the_chain = true;
+                    }
+                }
+                para.clear();
+                continue;
+            }
+            para.push((i + 1, line));
+        }
+        if !para.is_empty() {
+            let joined = para
+                .iter()
+                .map(|(_, l)| l.to_lowercase())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if names_the_chain(&joined) && asserts_signature_over_chain(&joined) {
+                claims_the_chain = true;
+            }
+        }
+        if claims_the_chain {
+            describing.push(d);
+        }
+    }
+    for rel in describing {
+        let text = read_spine(&rel);
         assert!(
             text.contains(E1_TECHNICAL) || text.contains("HMAC-SHA256"),
             "{rel} must name the chain's real primitive ({E1_TECHNICAL}) — an artifact \
@@ -773,14 +1159,29 @@ fn r45_0_governing_spec_call_site_count_matches_measurement() {
         sites.len()
     );
 
-    // And the published spec must now say the measured thing.
-    let spec =
-        read_spine("plans/IMPLEMENTATION_PLAN_R45_ONWARD_LOOP_AND_PRODUCTION_GAPS_2026-09-27.md");
+    // And the governing spec must now say the measured thing. Discovered by
+    // content rather than named: the doc that published "8" is found because it
+    // discusses the helper, not because a round-numbered filename is hardcoded.
+    let mut checked = false;
+    for rel in discover_spine_artifacts(CLAIM_SUBJECT, &["md"]) {
+        let text = read_spine(&rel);
+        if text.contains("3 production") && text.contains("6 in-module test") {
+            checked = true;
+        } else if text.contains("has 8 call sites for")
+            && !is_quoting_claim(&text, "has 8 call sites for")
+        {
+            panic!(
+                "{rel} still publishes the superseded \"8 call sites\" figure unquoted — it \
+                 must state the MEASURED extent (3 production + 6 in-module test) or quote \
+                 the old figure as history"
+            );
+        }
+    }
     assert!(
-        spec.contains("3 production") && spec.contains("6 in-module test"),
-        "the governing spec must state the MEASURED extent: 3 production call sites plus \
-         6 in-module test sites. It currently publishes a number that measurement \
-         contradicts — the identical failure this round exists to correct."
+        checked,
+        "no spine artifact states the measured extent (3 production + 6 in-module test). The \
+         correction must be recorded SOMEWHERE durable — a correction that exists only in a \
+         closed round's plan is a correction the next reader cannot find."
     );
 }
 

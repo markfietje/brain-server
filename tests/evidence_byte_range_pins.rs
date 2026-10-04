@@ -229,7 +229,11 @@ fn test_fn_names(src: &str) -> BTreeSet<String> {
 /// that silently stops covering looks exactly like coverage" failure the R45-0
 /// file names at `tests/r45_0_claim_pins.rs:1105-1109`.
 fn battery_census() -> BTreeSet<String> {
-    let mut names = test_fn_names(&read_repo("tests/r46_evidence_pins.rs"));
+    // `file!()` rather than a literal: this file was renamed
+    // `r46_evidence_pins.rs` -> `evidence_byte_range_pins.rs` on 2026-10-04, and
+    // a hardcoded sibling path would have thrown on the first rename — or worse,
+    // scanned a stale copy and reported a census that no longer matched the tree.
+    let mut names = test_fn_names(&read_repo(file!()));
     for f in crate_all_sources() {
         let text = std::fs::read_to_string(&f)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", f.display()));
@@ -888,7 +892,7 @@ fn r46_the_create_loop_boundary_is_now_owned_by_its_own_suite() {
     // and these assertions both name the retired pin, so a substring ban would
     // fire on the very text that documents the retirement — the first version
     // of this pin did exactly that, which is a pin that can never be green.
-    let retired = read_repo("tests/r46_evidence_pins.rs");
+    let retired = read_repo(file!());
     let still_defined = retired
         .lines()
         .filter(|l| l.trim_start().starts_with("fn "))
@@ -910,7 +914,33 @@ fn r46_the_create_loop_boundary_is_now_owned_by_its_own_suite() {
         "the retired pin's name must leave the pin census too, or the census counts a pin \
          that no longer exists"
     );
-    let owner = read_repo("tests/r50_create.rs");
+    // The owner of the create-loop boundary. Located by CONTENT rather than by
+    // the round-scoped filename it was born with (`r50_create.rs`, renamed to
+    // `create_loop_pins.rs` on 2026-10-04) — same reason as `file!()` above: a
+    // pin that names a sibling by path breaks on rename and reports a verdict
+    // about a file that no longer exists.
+    //
+    // Scoped to the KERNEL's `tests/` on purpose: `crate_all_sources()` walks
+    // `crates/brain-evidence-core/`, which is a different crate entirely.
+    let tests_dir = repo_root().join("tests");
+    let owner = std::fs::read_dir(&tests_dir)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", tests_dir.display()))
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .find_map(|p| {
+            std::fs::read_to_string(&p).ok().filter(|t| {
+                t.contains("create_evidence_resolution_is_r46_owned_and_not_reimplemented")
+            })
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "no file under tests/ defines \
+                 `create_evidence_resolution_is_r46_owned_and_not_reimplemented` — the pin that \
+                 positively asserts the create loop consumes the verifier instead of \
+                 re-deriving its arithmetic has gone missing"
+            )
+        });
     assert!(
         owner.contains("create_evidence_resolution_is_r46_owned_and_not_reimplemented"),
         "the boundary this pin used to hold is now asserted, positively, by the round that \

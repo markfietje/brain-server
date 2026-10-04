@@ -20800,7 +20800,8 @@ mod r42_authority_bindings {
     #[test]
     fn delivery_r42_gate_note_is_dated_and_pinned() {
         const NOTE: &str = "R42_ADAPTER_BOUNDARY_RE_AUDIT_2026-09-27.md";
-        let spine = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../brain-steward-ip/plans");
+        let spine =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../brain-steward-ip/plans");
         let mut found: Option<(std::path::PathBuf, String)> = None;
         let mut searched = Vec::new();
         for dir in [spine.clone(), spine.join("archive")] {

@@ -132,10 +132,18 @@ fn ttr_is_undefined_because_no_resolution_event_is_recorded() {
     // This file is excluded explicitly: it necessarily names the tokens it
     // forbids. Excluding the pin rather than the needle keeps the needle
     // strict — a second pin that spelled it differently would slip through.
+    //
+    // Matched on `file!()` rather than a hardcoded name. The pin was renamed
+    // `r57_census_pins.rs` -> `drift_census_pins.rs` on 2026-10-04 (test filenames
+    // should name their subject, not the round that wrote them), and a literal
+    // here silently stopped excluding anything: the pin then scanned ITSELF and
+    // failed on its own needles. A self-exclusion that depends on a rename
+    // surviving is not an exclusion.
+    let this_file = file!();
     let real: Vec<&str> = hits
         .iter()
         .map(|h| h.as_str())
-        .filter(|h| !h.starts_with("tests/r57_census_pins.rs"))
+        .filter(|h| !h.starts_with(this_file))
         .collect();
     assert!(
         real.is_empty(),
