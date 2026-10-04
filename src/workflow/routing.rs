@@ -96,7 +96,10 @@ pub enum RoutingClass {
     Vendor,
     Assessment,
     Infrastructure,
-    DellSupport,
+    /// The SUBJECT-MATTER pool. Named vendor-neutrally here; the wire label is
+    /// [`crate::procedural::subject_matter_label`], so this tree carries no
+    /// engagement name while a deployment keeps the label it persisted.
+    SubjectMatter,
     General,
 }
 
@@ -112,7 +115,7 @@ impl RoutingClass {
         Self::Vendor,
         Self::Assessment,
         Self::Infrastructure,
-        Self::DellSupport,
+        Self::SubjectMatter,
         Self::General,
     ];
 
@@ -126,7 +129,7 @@ impl RoutingClass {
             Self::Vendor => "vendor",
             Self::Assessment => "assessment",
             Self::Infrastructure => "infrastructure",
-            Self::DellSupport => "dell_support",
+            Self::SubjectMatter => crate::procedural::subject_matter_label(),
             Self::General => "general",
         }
     }

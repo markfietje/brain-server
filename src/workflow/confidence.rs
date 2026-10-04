@@ -67,7 +67,8 @@ pub enum RoutingClass {
     Vendor,
     Assessment,
     Infrastructure,
-    /// The subject-matter pool: the case is about Dell/EMC infrastructure.
+    /// The subject-matter pool: the case is about a named vendor's on-premise
+    /// hardware estate.
     ///
     /// **Grants no authority.** `decide_deferral` consults `measured_reliability`,
     /// which is empty for every class today, so this variant defers exactly as
@@ -76,7 +77,7 @@ pub enum RoutingClass {
     /// known class, and an unmodelled label degrades to `HumanUnmeasured` —
     /// safe, but a SILENT degradation. When a reliability is ever measured for a
     /// subject-matter class, it is measured here, on its own evidence.
-    DellSupport,
+    SubjectMatter,
     /// The classifier's own abstain label.
     General,
     /// A label this build does not recognise. Absence of evidence is not evidence of
@@ -94,14 +95,18 @@ impl RoutingClass {
         RoutingClass::Vendor,
         RoutingClass::Assessment,
         RoutingClass::Infrastructure,
-        RoutingClass::DellSupport,
+        RoutingClass::SubjectMatter,
         RoutingClass::General,
         RoutingClass::HumanUnmeasured,
     ];
 
     /// The stable wire/label form. A **compatibility surface**: downstream routing reads
     /// these strings, so they are frozen the way `DecisionClass::as_str` is.
-    pub const fn as_str(self) -> &'static str {
+    ///
+    /// Not a `const fn`: the subject-matter label is deployment-configurable
+    /// (`BRAIN_SUBJECT_MATTER_LABEL`) so a domain deployment keeps the label it
+    /// has already persisted while this public tree names no engagement.
+    pub fn as_str(self) -> &'static str {
         match self {
             RoutingClass::Technology => "technology",
             RoutingClass::BusinessProcess => "business_process",
@@ -110,16 +115,19 @@ impl RoutingClass {
             RoutingClass::Vendor => "vendor",
             RoutingClass::Assessment => "assessment",
             RoutingClass::Infrastructure => "infrastructure",
-            RoutingClass::DellSupport => "dell_support",
+            RoutingClass::SubjectMatter => crate::procedural::subject_matter_label(),
             RoutingClass::General => "general",
             RoutingClass::HumanUnmeasured => "human_unmeasured",
         }
     }
 
     /// Resolve a classifier label to a class. An unrecognised label is
-    /// [`RoutingClass::HumanUnmeasured`], never a guess at the nearest neighbour — a
-    /// typo must not be silently mapped onto a class that then earns authority.
+    /// [`RoutingClass::HumanUnmeasured`], never a guess at the nearest neighbour —
+    /// a typo must not be silently mapped onto a class that then earns authority.
     pub fn from_label(label: &str) -> Self {
+        if label == crate::procedural::subject_matter_label() {
+            return RoutingClass::SubjectMatter;
+        }
         match label {
             "technology" => RoutingClass::Technology,
             "business_process" => RoutingClass::BusinessProcess,
@@ -128,7 +136,6 @@ impl RoutingClass {
             "vendor" => RoutingClass::Vendor,
             "assessment" => RoutingClass::Assessment,
             "infrastructure" => RoutingClass::Infrastructure,
-            "dell_support" => RoutingClass::DellSupport,
             "general" => RoutingClass::General,
             _ => RoutingClass::HumanUnmeasured,
         }

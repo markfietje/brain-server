@@ -138,7 +138,7 @@ fn the_wiring_holds_no_domain_to_queue_table() {
         "Vendor",
         "Assessment",
         "Infrastructure",
-        "DellSupport",
+        "SubjectMatter",
         "General",
     ] {
         let arm = format!("RoutingClass::{variant}");

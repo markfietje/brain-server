@@ -343,6 +343,13 @@ name = "brain-connector-crm"
 path = "src/bin/brain-connector-crm.rs"
 required-features = ["connector-crm"]
 
+# A TEST-ONLY classifier probe. The subject-matter lexicon is deployment-supplied
+# and cached in a OnceLock, so proving it fires AND is inert needs two processes.
+# Separate binary rather than a `brain` verb so the shipped CLI gains nothing.
+[[bin]]
+name = "classify-probe"
+path = "src/bin/classify_probe.rs"
+
 [profile.release]
 # v1.28.5 "Groundwork" (M6): opt-level "z" (size-minimal) → 2 (speed) — the
 # release binary is now an in-process vector store; the bench binary measures
