@@ -31,7 +31,7 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 <p align="center">
 
   <a href="#verification-and-evidence">
-    <img alt="2325 tests passed" src="https://img.shields.io/badge/tests-2325%20passed-brightgreen.svg">
+    <img alt="3120 tests passed" src="https://img.shields.io/badge/tests-3120%20passed-brightgreen.svg">
   </a>
   <a href="docs/universal-memory-protocol.md">
     <img alt="UMP 1.0 L3 verified" src="https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg">
@@ -193,11 +193,12 @@ Deletion therefore has a verifiable record.
 
 Agents and operators do not need the same authority.
 
-Scoped principals can be restricted to capabilities such as:
-
-- `recall`
-- `store`
-- `propose`
+Scoped principals are restricted to the role capability vocabulary —
+`read`, `write`, `approve`, `reject`, `calibrate`, `release_quarantine`,
+`dsar_export`, `purge`, `admin`, `workflow` (`src/role.rs`) — plus tool-level
+scopes: the ship-with `agent` preset carries `read`/`write`/`reject` and only
+the `ump.recall`/`ump.get`/`ump.feedback` tools, and `BRAIN_MCP_SCOPE=read`
+denies every MCP write verb.
 
 Operator credentials remain separate from agent credentials.
 
@@ -464,7 +465,9 @@ cargo build --release --features bench
 | Bind address | `127.0.0.1:8765` (loopback) |
 
 > [!IMPORTANT]
-> The server refuses a public bind unless explicitly enabled.
+> A `0.0.0.0` bind without `BIND_PUBLIC` set logs a loud warning and still binds;
+> the server hard-**refuses** an unparseable host without `BIND_PUBLIC`, and any
+> non-loopback bind with no auth configured (fail-closed loopback guard).
 
 ---
 
