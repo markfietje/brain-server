@@ -972,3 +972,98 @@ follow-through on the residual-risk review, not an audit's findings).
 | Ceiling narrowing | DSAR physical residue: logical purge leaves purged bytes in freelist/WAL page images (disclosed on every certificate); strict-profile domains cover only their own run's deletes | MED (privacy posture) | **NARROWED v1.28.91 "Notary"** — `brain shred`: secure_delete=ON (readback asserted) → wal_checkpoint(TRUNCATE) → VACUUM → second TRUNCATE → integrity_check → one hash-chained `forget` row; freelist reads back 0; `shred_removes_deleted_row_residue` proves the marker greppable pre-shred (fixture teeth) and absent from main AND wal post-shred; `shred_writes_forget_evidence_and_keeps_chain_verifiable`. Residual ceilings (printed per run): filesystem copies, `.bak`, standby chunks, SSD wear-leveling; VACUUM needs ~DB-size free disk |
 | CI gap closure | "Tests run on x86_64 only; shipped aarch64 binaries never executed by CI; keep the local Jetson smoke before fleet deploys" | LOW (Known Issues, open) | **CLOSED 2026-09-15 as NOT-APPLICABLE** — operator disposition: no Jetson deployment exists and brain-server is not installed on any aarch64 host; the advisory's precondition (fleet deploys) is absent. Reopen trigger: the first aarch64 fleet deployment (then: an ARM-hosted CI test lane, not the manual smoke) |
 | Ride-alongs | CodeQL #74 (cleared pre-release, `b695c77`); K7-01/02/04 FINAL disposition docs | LOW/INFO | CodeQL fix rode main ahead of this release (assert-message taint hygiene); the K7 final disposition (no upstream PRs; procedural compensating controls) is recorded in THREAT_MODEL §5b + the seventh-pass register row above |
+
+---
+
+## 2026-10-04 — v1.29.2 eighth-pass full-spectrum audit (F8/D8/R8/P8/K8/S8/L8/T8)
+
+Report: **[`docs/audit8/`](audit8/README.md)** (9 files). Scope: brain-server v1.29.2 HEAD
+`e9c71919` × openclaw fork `1d2d29b22` (0 behind / **90** ahead, plugin 0.6.10). Fresh eyes —
+prior reports not read.
+
+**Note on the brief's framing.** The commission described this as the fourth pass at
+`v1.28.82 "Vigil"`, 2026-09-12. Measured: HEAD is **v1.29.2 / `e9c71919`**, schema **1.32.25**,
+today is **2026-10-04**; the fourth-, fifth- and seventh-pass reports are already committed. The
+target report path was also already occupied, so this pass writes to `docs/audit8/` rather than
+overwriting a colleague's work. The "gap ledger zero" claim the brief asked me to attack had
+**already been retracted** upstream at v1.28.87 → "balanced (4 known residuals with owners)", with
+a gate enforcing the wording (`grep -rn "gap ledger zer[o]" CHANGELOG.md docs/` → 0 hits).
+
+### Findings + dispositions
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| F8-01 | `no_sql_in_handlers_enforced` counts only `select`/`insert`/`update`/`delete…from`, so it is blind to `PRAGMA`/`VACUUM`/`REPLACE` — and **two live violations sit in the tree** (`handlers/govern.rs:417-419`, `handlers/domains.rs:261`). **Proven by execution**: the guard returns `ok` with both present | **HIGH** | **OPEN — R68 "Silence"**. Invert the guard to deny any direct rusqlite surface in `src/handlers/**`; migrate the two violations into `src/service/`. Red-first: plant `PRAGMA`/`VACUUM INTO`/`REPLACE INTO` → guard must fail |
+| F8-08 | DSAR certifies `completed` while an **approved proposal's full text survives** — the sweep is `DELETE FROM proposals WHERE content LIKE '%subject%'`, and a proposal's body almost never contains its owner's identity. **Drill-proven** on a fresh DB | **HIGH** | **OPEN — R69 "Erasure"**. Delete proposals by the approved chunk ids the erasure just removed (the join the authors rejected is reachable from the owner-attributed knowledge row — **no migration needed**). Red-first: approve → purge owner → assert zero surviving rows |
+| F8-02 | The RBAC oracle `decide_gate_verdict` **never reads `required_action`**; its doc claims two enforcement properties the only production constructor makes unreachable (`MethodPolicy::Any`, `required_capability: ""`). The one pin covering it is self-asserting | **HIGH** | **OPEN — R68.** Correct `router/auth.rs:49-54` to say "coverage only" and replace the self-asserting pin. `ponytail:` does **not** change runtime authorization — the authors reasoned about the second-opinion surface and declined deliberately |
+| F8-03 | 30 s `TimeoutLayer` returns 408 while the abandoned `spawn_blocking` write still commits (tokio's blocking pool is not cancellable). No idempotency key, no request-id receipt; the post-commit `VACUUM` is swallowed with `let _ =` | **HIGH** | **OPEN — R70.** Move the deadline inside the closure (the `hostcalls.rs` pattern) so writes refuse to begin |
+| F8-04 | `sanitize_log_value` has **one** production call site (`router/memory.rs:1956`); 14 tests exercise it, none asserts coverage. Unsanitised bypasses at `handlers/recall.rs:571` and `handlers/webhooks.rs:71,570` | MED | **OPEN — R70.** `LogValue` newtype + a pin failing request-derived interpolation in `src/handlers/**` |
+| F8-05 | `CRATE_TEST_FLOOR` is a raw `#[test]` substring count with ~146 units of slack and no comment-stripping. **The other four spire guards are NOT gameable** — each carries a genuine self-pin (verified) | MED | **OPEN — R68.** Count with the existing comment-stripping scanner |
+| F8-06 | `/webhooks/` is exempt from authN *and* authZ by prefix, with no HMAC-enforcement pin. All six routes do verify and fail closed — this is an **unenforced convention, not a live hole** | MED | **OPEN — R70.** Explicit `WEBHOOK_PATHS` const + a pin that every webhook route's body verifies |
+| F8-10 | `BIND_PORT` is `.parse().unwrap_or(8765)` — a malformed value **silently binds the live port**. Found live during this audit's own drill | LOW | **OPEN — R70.** Refuse boot on a malformed value; every other env knob here fails closed |
+| F8-07 | `IPV4_DENY` omits `224.0.0.0/4` (IPv6 multicast **is** present) and `192.88.99.0/24`; `::a.b.c.d` not normalised | LOW | **OPEN — R70** |
+| F8-09 | DSAR roster sweep uses `.flatten()`, dropping row-mapping errors and under-counting the certificate; its adjacent branch fails closed on the same class | LOW | **OPEN — R70** |
+| K8-01 | Fork `wrapUntrustedToolText` skips its envelope on a **substring of attacker-controlled content** — one line in any file disables it on four untrusted seams | **HIGH** | **OPEN — R71 (fork repo)**. Anchored-regex strip, copying the shape at `web-search-output.ts:114-115` |
+| K8-02 | `link-reader-content.ts` bypasses `remoteImageHosts` entirely — **upstream-owned, zero fork diff**, so it sits outside the fork's hardening | **HIGH** | **OPEN — R71**. Route it through `markdown-image-gate.ts` |
+| K8-03 | The markdown-image strip regex misses reference-style images and raw `<img src=…>` — **the canonical EchoLeak vector** | MED-HIGH | **OPEN — R71** |
+| K8-04 | All three gateway pre-handshake toggles **default off** (436 lines of new security code inert by default); the only compensating control is an advisory Doctor note | MED-HIGH | **DECISION, not a patch** — either default on for non-loopback binds, or record as a **declared non-claim** (this repo's own idiom) |
+| K8-05 / K8-06 | `BRAIN_MCP_PINS_ACK=1` is an env ack an agent can set itself; catalog pins **silently no-op** when `agentDir` is unthreaded | MED | **OPEN — R71** |
+| K8-07 | Four-way typebox drift (1.3.26 / 1.3.27 / 1.3.30 / 1.3.33) — `--frozen-lockfile` cannot pass despite a commit claiming it does | MED | **OPEN — R71** |
+| K8-11 | The **Node-runtime update path is checksum-only, not signature-verified** (`install-cli.sh:1254-1264`; no gpg/cosign anywhere). The macOS appcast **is** Ed25519-signed | LOW | **OPEN — R71.** Split verdict recorded explicitly: app binary signed, runtime bootstrap not |
+| K8-15 | A fork-built macOS app consumes **upstream's** appcast — so fork builds auto-update to upstream releases, silently discarding 90 commits | INFO | **DISCLOSED — R72.** Note in the fork docs |
+| S8-01 | `signal-gateway`: the bind guard and auth guard are independent `if`s, so `SIGNAL_GATEWAY_ALLOW_REMOTE=1` with no token serves **send/enumerate/SSE unauthenticated** on a public interface | MED-HIGH | **OPEN — R70.** Make auth a function of the bind (re-assert loopback in the `None` arm) |
+| S8-05 | Plugin `resolveConfig` is a bare type assertion; its Typebox schema is used **only as a type source**. `autoCapture: "false"` (string) resolves **truthy** — auto-capture turns ON when the operator wrote "false" | MED | **OPEN — R71-adjacent.** Validate at the boundary. *Reachability depends on host schema enforcement — an outstanding cross-tree check* |
+| S8-06 | Client export seam: `{body:?}` emits Rust `Debug` (`\u{2028}` is **not a valid JS escape**) — live export corruption; plus a **latent** unescaped-JS sink with no reachable attacker input today | MED | **OPEN — R70.** `serde_json::to_string` — already demonstrated at `client/src/panels/mod.rs:66` |
+| S8-07 | 6 of 13 `crates/` members are unconsumed islands (two whole dead chains). Gold fixtures **are** SHA-256 pinned | MED | **OPEN — wire or delete** |
+| S8-09 | The release gate is documentary: `release.sh:54` prints *"or push a tag manually at your own judgement"* and `release.yml` re-runs no CI on tag push. Remote hygiene **fail-safe** (public push URL `DISABLED`) | LOW-MED | **OPEN — R72.** Re-assert green CI on `github.sha` |
+| R8-01 | `AGENTS.md:1418` "2,818 passed at HEAD 7001e478" — measured **3122** at `e9c71919`. 304 stale | FALSE | **OPEN — R72.** Re-baseline; stop hand-typing it |
+| R8-02 | `docs/AUDIT.md:22,25` disposition G3/G6/G7 to `IMPLEMENTATION_PLAN_v1.11.0_HippoRAG.md` — **that file does not exist** (moved to the private repo). An auditor following the register finds nothing, and the link checker cannot see it | FALSE | **OPEN — R72**. *(This very register row is the fix's neighbour — verify on close.)* |
+| R8-03 | `badges.sh` selfcheck **cannot detect test-count drift at all** — it greps only for the string `"not selfcheck-verified"` | FALSE | **OPEN — R72.** Verify the count or stop calling it a drift check |
+| L8-01 | **CT CART general duties went live 2026-10-01** — three days ago — and `US_STATE_MAP.md:45` still files them under "Scheduled". The repo asserted this duty, set its own clock, never re-armed it | **HIGH** | **OPEN — R72**. *(Statute text UNVERIFIED — `cga.ct.gov` unreachable)* |
+| L8-02 | `/.well-known/ai-notice` is framed as "the Art 50 disclosure itself", but Art 50(5) requires disclosure **at first interaction**. Component scope is *correct*; the claim shape is not | **HIGH** | **OPEN — R72.** Relabel as deployer-side disclosure **input** |
+| L8-03 | `reg_watch.rs` cites *recital 38* for the 2026-12-02 Art 50(2) transitional; the operative provision is **Article 111(4)**. A wrong citation on a constant a **green CI pin** depends on | MED | **OPEN — R72** |
+| L8-04 | The CRA runbook's reporting channel points at a manufacturer identity in `SUPPORT.md` — which **does not exist** (32 lines, no identity). Art 14 live 23 days | MED-HIGH | **OPEN — R72.** State the applicability question, then populate or mark N/A |
+| L8-05 | The federal row omits **EO 14409** (2 Jun 2026) and **EO 14434** (29 Sep 2026) | MED | **OPEN — R72** |
+| L8-06 | `US_STATE_MAP.md` is 20 days stale against its own quarterly cadence; the check could not be run (NCSL Cloudflare) | MED | **OPEN — R72** |
+| L8-07 | Two OWASP edition dates wrong **and self-contradictory inside `COMPLIANCE.md`** (`:11` 2025-12-10 vs `:354` 2025-12-09; publisher says Dec 9). *The repo has a machine-checked calendar and these two dates are hand-typed* | LOW | **OPEN — R72** |
+| L8-11 | **No export-control analysis on model weights** — could not reach BIS/ECFR | UNKNOWN | **OPEN — genuinely unknown, not a clean bill of health** |
+| P8-01 | The invisible-Unicode set is pinned for **two of four trees** (plugin fixture only). I hand-diffed all four: **currently correct**, all drift additive and fail-safe — but the property is unowned | MED | **OPEN — R72.** Emit one canonical fixture with three consumers; assert `canonical ⊆ implementation`, **never exact equality** (the fork legitimately carries extras and exact equality would teach contributors to narrow the sets) |
+| D8-01 | **The fork is the largest unmanaged risk and it is not in this repo.** 5 HIGH silent-regression rows; `hooks.ts` (24 upstream commits) drops any upstream-added field via an `as TResult` cast **and compiles clean** | Strategic | **OPEN — R71.** An owned generated fixture beats more fork code |
+| D8-02 | **Enforcement is the uniform weak link** — 3 of the top 10 are guards passing while violated. The pattern: the repo writes gates and attacks them lightly | Strategic | **OPEN — R68.** Process fix: a gate-law register row per guard carrying its own red-proof |
+
+### Verified HELD (the honest good news)
+
+The **anti-vacuity sweep found ZERO genuinely vacuous pins.** Every suspicious shape was defended —
+`soft_handoff_threshold_is_not_decorative` (absence pin, defended three ways),
+`sql_statement_counter_still_fires` (exemplary, 10 cases incl. the negative), the read-seam fixture
+pins, `handler_body_ignores_comments_naming_the_symbol`. The `exec_spawn_carries_kill_on_drop`
+lesson was learned. Four of the five spire guards are **not** gameable.
+
+**Drill-verified live** (fresh DB, port 18765, live DB SHA-256 identical before/after):
+write-time screen + human-in-the-loop enforced · read seam stripped the tag block, welded script,
+image-exfil URL, `onerror` and bidi override · `untrusted: true` carried · digest-bound approval
+rejected a wrong digest with 409 and **replay returned 404, never double-applied**. The forged
+host-fence tags that survive the server are neutralized downstream by the fork's ZWSP-split merge
+seam — defence-in-depth verified, not assumed.
+
+**Sixteen claims HELD** against direct attack, including provenance marks (behavioural pins, not
+string matching), revocation reach including mid-stream SSE, `alg:none`/HS* rejected before key
+lookup, and the audit-chain ceiling stated precisely rather than overclaimed.
+
+### Gates — all executed at `e9c71919`
+
+Full suite **3122 passed / 0 failed / 3 ignored** · clippy bench/default/otel exit 0 · fmt + client
+fmt exit 0 · crates **308/0** · steward-harness **44/0** · lipstyk **exit 0** (verified against a
+real code base after it **correctly refused** to pass vacuously on the docs-only HEAD) · badges
+selfcheck · env-truth · doc-links (404 resolve) · docs-truth · **`cargo audit` exit 0 on all four
+lockfiles** (one yanked-crate warning, `yoke-derive 0.8.3` in the Tauri shell).
+
+### Carry-forward ceilings (this pass)
+
+- **The fork's red-proofs were not executed** — every "test that fails on deletion" cell is derived
+  by reading tests, not by deleting the hardening. Largest gap in the report.
+- **11 regulatory items unverified**, including the CRA Art 14 clocks — the repo's most-cited legal
+  claim. Each has a named next check in `docs/audit8/06-regulatory-matrix.md` §7.8.
+- **Concurrency is the weakest dimension** — no lock-ordering cycle analysis over the ~19 Mutex/RwLock
+  sites; FTS/vec bloat, metric cardinality and single-mutex inference behaviour unmeasured.
+- No live surface touched; no file in either repository modified.
