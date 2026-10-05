@@ -214,9 +214,15 @@ pub fn app(state: Arc<AppState>) -> Router {
     // the compliance pack merges after the shared cap like the chain did
     .merge(compliance::pack_router())
     // Inner layers (closest to handler)
+    //
+    // F8-03: the duration now comes from the shared constant rather than an
+    // inline literal, so the handler-side write budget (which refuses work it
+    // cannot finish before this deadline) is derived from the SAME number. A
+    // handler that guessed 30s and a middleware set to 20s would look right in
+    // both files and be wrong at runtime.
     .layer(TimeoutLayer::with_status_code(
         axum::http::StatusCode::REQUEST_TIMEOUT,
-        StdDuration::from_secs(30),
+        StdDuration::from_secs(crate::config::REQUEST_TIMEOUT_SECS),
     ))
     .layer(CatchPanicLayer::new())
     // the RBAC evaluation middleware.

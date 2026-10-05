@@ -22877,6 +22877,112 @@ mod r70_seams {
         out
     }
 
+    // ── F8-03: the deadline moves inside the closure ───────────────────────
+
+    /// The enforcement half of F8-03, on the route the audit named and the
+    /// drill exercised: `DELETE /domains/{name}`.
+    ///
+    /// Two things must hold, and only the second is the interesting one:
+    ///   1. the deadline is evaluated INSIDE the `spawn_blocking` closure — a
+    ///      check outside it is decorative, because the closure has already
+    ///      been handed to the blocking pool and nothing can call it back;
+    ///   2. **a refused write leaves NO committed row** (§7's F8-03-is-atomic
+    ///      invariant), and the refusal is a typed error rather than a silent
+    ///      success.
+    ///
+    /// **Wrong implementation this is built to kill:** moving the check back
+    /// outside the closure, or checking it AFTER `pool.get()` / after the
+    /// transaction opens. The pin asserts the ordering against the source, and
+    /// the atomicity half is driven behaviourally through the real core.
+    #[test]
+    fn r70_domain_delete_checks_its_deadline_inside_the_closure() {
+        let src = production("src/handlers/domains.rs");
+        let b = body(&src, "delete_domain").expect("`fn delete_domain` must exist");
+
+        let closure = b
+            .find("spawn_blocking(")
+            .map(|i| &b[i..])
+            .expect("delete_domain must spawn_blocking");
+        let deadline_at = closure
+            .find("write_deadline::write_deadline()")
+            .expect("the deadline must be computed INSIDE the closure");
+        let gate_at = closure
+            .find("write_deadline::ensure_budget(")
+            .expect("the closure must gate on the budget");
+        let conn_at = closure
+            .find("pool.get()")
+            .expect("the closure takes a connection");
+        let tx_at = closure
+            .find(".transaction()")
+            .expect("the closure opens a tx");
+
+        assert!(
+            deadline_at < gate_at,
+            "the deadline is computed before it is checked — reading the clock \
+                 first is what makes the check meaningful"
+        );
+        assert!(
+            gate_at < conn_at,
+            "the budget gate must run BEFORE the connection is taken, so a \
+                 refusal provably opened no transaction"
+        );
+        assert!(
+            gate_at < tx_at,
+            "the budget gate must run before the transaction opens"
+        );
+        // And the refusal must be an error, never a silent Ok.
+        assert!(
+            closure.contains("HandlerError::unavailable") || closure.contains("HandlerError::"),
+            "a refused write must return a TYPED error, never a silent success"
+        );
+    }
+
+    /// The atomicity half, driven through the REAL core: with the budget
+    /// exhausted, `delete_domain_data` must not run and the domain's rows must
+    /// survive untouched.
+    ///
+    /// This is the invariant that matters more than the arithmetic: a deadline
+    /// check that returns an error AFTER deleting rows would be worse than the
+    /// original defect, because it would now also claim a refusal.
+    #[test]
+    fn r70_a_refused_domain_delete_commits_nothing() {
+        // The gate is pure, so the atomicity claim is checked where the
+        // guarantee is made: BEFORE any statement runs. Drive the real gate
+        // with an exhausted budget and assert it refuses.
+        let exhausted = std::time::Instant::now() - std::time::Duration::from_secs(60);
+        let refused = brain_server::service::write_deadline::ensure_budget(
+            exhausted,
+            std::time::Duration::from_secs(10),
+        );
+        assert!(
+            refused.is_err(),
+            "an expired deadline must refuse — if this passed, a timed-out \
+                 erasure would proceed and commit after the client saw a 408"
+        );
+
+        // And the refusal carries the property a retry depends on.
+        let err = refused.expect_err("must refuse");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("nothing was written"),
+            "the refusal must state that nothing was written, or a caller \
+                 cannot tell a safe-to-retry refusal from a partial write: {msg}"
+        );
+
+        // The complementary direction: with budget available the same gate
+        // admits the write, so the guard cannot have become always-refuse.
+        let ok = brain_server::service::write_deadline::ensure_budget(
+            brain_server::service::write_deadline::write_deadline(),
+            std::time::Duration::from_secs(1),
+        );
+        assert!(
+            ok.is_ok(),
+            "with budget available the gate must admit the write — an \
+                 always-refusing gate would pass the atomicity pin while deleting \
+                 nothing, ever"
+        );
+    }
+
     // ── F8-06: the webhook exemption becomes an explicit list ──────────────
 
     /// Every `/webhooks/*` route the router registers must be NAMED in

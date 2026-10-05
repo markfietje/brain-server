@@ -9,6 +9,27 @@ pub const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const MAX_REQUEST_SIZE: usize = 1024 * 1024;
 pub const MAX_QUERY_LENGTH: usize = 2000;
 
+/// The request deadline the router's `TimeoutLayer` enforces, in seconds.
+///
+/// **F8-03: named, so the handler-side budget cannot drift from it.** This was
+/// a bare `StdDuration::from_secs(30)` written inline in the layer stack; a
+/// write handler that wants to refuse work it cannot finish has to know the
+/// number the middleware will actually apply, and two literals in two files is
+/// exactly how they diverge silently.
+pub const REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// The margin a write handler holds back from [`REQUEST_TIMEOUT_SECS`] so its
+/// refusal has time to travel back to the client.
+///
+/// The window is the problem F8-03 names: `TimeoutLayer` drops the handler
+/// future at the deadline, but a `spawn_blocking` closure is NOT cancellable —
+/// dropping the join handle runs the closure to completion and it COMMITS. A
+/// write that starts too close to the deadline is therefore abandoned
+/// mid-flight: the client sees a 408, the row lands anyway, and a retry
+/// double-commits. Refusing to BEGIN unless there is enough budget left is the
+/// only posture that keeps the two facts consistent.
+pub const WRITE_DEADLINE_MARGIN_SECS: u64 = 5;
+
 /// max distinct client-IP buckets the rate limiter tracks
 /// before evicting the oldest 25%. Bounds memory against an attacker cycling
 /// spoofed `X-Forwarded-For` values. ponytail: in-process LRU — multi-instance

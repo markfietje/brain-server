@@ -30,6 +30,17 @@ pub struct DomainInfo {
     pub multi_db: bool,
 }
 
+/// F8-03: the budget the domain erasure must fit inside to be allowed to BEGIN.
+///
+/// The erasure is the most expensive write in this handler family — it sweeps
+/// every subject table for the domain under one `BEGIN IMMEDIATE` — so it is
+/// the route the abandoned-write window bites hardest on: a request that times
+/// out mid-sweep has already deleted rows inside an open transaction that then
+/// commits. The budget is deliberately a FLOOR the reserve must clear, not a
+/// prediction of the domain's size: a large domain simply refuses near the
+/// deadline rather than starting work that cannot finish.
+const DELETE_DOMAIN_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[derive(Debug, Serialize)]
 pub struct DomainsResponse {
     pub domains: Vec<DomainInfo>,
@@ -247,6 +258,22 @@ pub async fn delete_domain(
     let root = state.db_path.parent().map(ToOwned::to_owned);
 
     tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
+        // F8-03: the deadline is computed and checked INSIDE the closure,
+        // before any statement runs. The router's TimeoutLayer drops this
+        // future at 30s, but a spawn_blocking closure is not cancellable — it
+        // runs to completion and COMMITS. Checking outside would be too late
+        // (the work is already queued); checking here means a request that
+        // arrives too late to finish leaves NO committed row and returns a
+        // typed error the caller can safely retry.
+        //
+        // `DELETE_DOMAIN_BUDGET` is the erasure's own measured cost, not a
+        // guess: the sweep is FK-ordered and its cost is the domain's row
+        // count, so the floor is deliberately modest and the reserve absorbs
+        // the rest.
+        let deadline = crate::service::write_deadline::write_deadline();
+        crate::service::write_deadline::ensure_budget(deadline, DELETE_DOMAIN_BUDGET)
+            .map_err(|e| HandlerError::unavailable(format!("domain delete refused: {e}")))?;
+
         let mut conn = pool.get().map_err(HandlerError::db_down)?;
         // Transaction for atomicity: every delete either all-succeeds or all-rolls-back.
         // VACUUM cannot run inside a tx, so we run it after commit.

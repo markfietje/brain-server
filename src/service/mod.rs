@@ -84,6 +84,7 @@ pub mod snapshot_probe;
 pub mod suggest;
 pub mod ump_ops;
 pub mod webhook_ingest;
+pub mod write_deadline;
 #[cfg(test)]
 mod pins {
     use std::path::Path;
