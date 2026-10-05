@@ -17748,6 +17748,145 @@ mod scrim {
         );
     }
 
+    /// The test-count badge drift guard EXISTS and COMPARES. `--selfcheck`
+    /// cannot afford the full `cargo test` the comparison needs, so the
+    /// comparison lives in `--verify-count` — and the thing this pin exists to
+    /// stop is a `--verify-count` that is present but does not compare (which
+    /// would read as enforcement while catching nothing).
+    ///
+    /// **Red-first, and the recorded proof is the finding:** with the badge at
+    /// 3120 and the build deriving 3156, `--selfcheck` exited **0** — a green
+    /// gate on a lie. The pre-fix script's `test_count()` was unreachable from
+    /// the selfcheck path (it sat below its `exit 0`), so no comparison was
+    /// physically possible.
+    ///
+    /// Driven BEHAVIOURALLY through `BRAIN_TEST_COUNT`, the injection seam the
+    /// script exposes so this costs milliseconds instead of a 3-minute compile
+    /// — and so the arm is tested by running it, not by string-scanning it.
+    #[test]
+    fn r72_verify_count_compares_the_badge_against_the_build() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let script = repo.join("scripts/badges.sh");
+        let run = |count: &str| -> std::process::Output {
+            std::process::Command::new("bash")
+                .arg(&script)
+                .arg("--verify-count")
+                .env("BRAIN_TEST_COUNT", count)
+                .current_dir(repo)
+                .output()
+                .expect("bash runs badges.sh")
+        };
+        // The number the committed badge presents.
+        let presented: u32 = {
+            let readme = std::fs::read_to_string(repo.join("README.md")).expect("README readable");
+            let badge_line = readme
+                .lines()
+                .find(|l| l.contains("badge/tests-"))
+                .expect("README presents a tests badge");
+            let tail = badge_line
+                .split("badge/tests-")
+                .nth(1)
+                .expect("badge carries a number");
+            tail.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .expect("badge number is numeric")
+        };
+
+        // Agrees → passes. This is the arm that must not be always-refuse.
+        let ok = run(&presented.to_string());
+        assert!(
+            ok.status.success(),
+            "a badge matching the derived count must PASS — an always-refusing \
+             guard would satisfy every drift assertion while detecting nothing \
+             (stderr: {})",
+            String::from_utf8_lossy(&ok.stderr)
+        );
+
+        // Differs → fails, and names BOTH numbers so an operator can act.
+        let drifted = run(&(presented + 1).to_string());
+        assert!(
+            !drifted.status.success(),
+            "a badge that differs from the derived count must FAIL"
+        );
+        let msg = String::from_utf8_lossy(&drifted.stderr);
+        assert!(
+            msg.contains(&presented.to_string()) && msg.contains(&(presented + 1).to_string()),
+            "the drift message names both the badge's number and the derived one, \
+             or an operator cannot act on it: {msg}"
+        );
+
+        // And the seam cannot be used to make a wrong badge pass: the injected
+        // value is the DERIVED side, so passing a number equal to a wrong badge
+        // makes the compare succeed by construction — which is why the unset
+        // path derives the real count rather than trusting the environment.
+        let script_text = std::fs::read_to_string(&script).expect("badges.sh readable");
+        assert!(
+            script_text.contains("if [[ -n \"${BRAIN_TEST_COUNT:-}\" ]]"),
+            "the injection seam must be an explicit, bounded branch"
+        );
+        assert!(
+            script_text.contains("( cd \"$REPO\" && cargo test --features bench,migrate"),
+            "the UNSET path must still derive the count from a real cargo test — \
+             the seam must not replace the derivation"
+        );
+    }
+
+    /// `--selfcheck` must not CLAIM to check the test count, and the badge must
+    /// say so next to itself.
+    ///
+    /// The pre-fix arm was a whole-file `grep -q "not selfcheck-verified"`, which
+    /// a sentence 28 lines below the badge satisfied — so the badge could be
+    /// arbitrarily wrong (it was: 3120 vs 3156) while the guard stayed green.
+    /// The check is now scoped to the badge's own `<p>` block, so the same bytes
+    /// in a distant paragraph no longer satisfy it.
+    #[test]
+    fn r72_selfcheck_does_not_overclaim_the_test_count() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let script = std::fs::read_to_string(repo.join("scripts/badges.sh")).expect("badges.sh");
+        let readme = std::fs::read_to_string(repo.join("README.md")).expect("README");
+
+        // The disclaimer is scoped, not whole-file: the extraction must be
+        // bounded by the badge's enclosing block.
+        assert!(
+            script.contains("awk") && script.contains("inside"),
+            "the badge disclaimer must be read from a SCOPED region, not the \
+             whole file — a whole-file grep is satisfied by unrelated prose"
+        );
+        assert!(
+            script.contains("blocks >= 2"),
+            "the scope must terminate at the end of the badge's block so it \
+             cannot grow without the check noticing"
+        );
+
+        // The README actually carries the disclaimer inside that scope today.
+        // Anti-vacuity: this asserts a real, present fact — delete the note and
+        // it fails.
+        let badge_line_no = readme
+            .lines()
+            .position(|l| l.contains("badge/tests-"))
+            .expect("README has a tests badge");
+        let window: String = readme
+            .lines()
+            .skip(badge_line_no)
+            .take(24)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            window.contains("--verify-count"),
+            "the README must point at --verify-count within ~24 lines of the \
+             badge, so a reader who sees the badge sees how it is checked"
+        );
+
+        // The honest admission stays: selfcheck does NOT compare the count.
+        assert!(
+            script.contains("Does NOT compare the test count"),
+            "the script header must keep stating that --selfcheck does not \
+             compare the count — the split is the honesty of this fix"
+        );
+    }
+
     /// The installer writes review for NEW installs only:    /// The installer writes review for NEW installs only: the insert is
     /// guarded by an absent-posture check, and the unconditional remove
     /// (which stomped operator-set values on every re-run) is gone.

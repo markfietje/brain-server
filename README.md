@@ -50,6 +50,11 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 
 <p align="center">
 
+*The test-count badge above is derived by `scripts/badges.sh`, not hand-typed. The lightweight
+`--selfcheck` path does NOT machine-compare it (that needs a full `cargo test`);
+`scripts/badges.sh --verify-count` is the arm that does.*
+
+<p align="center">
   <a href="Cargo.toml"><img alt="Rust 2024" src="https://img.shields.io/badge/Rust-2024-orange?logo=rust"></a>
   <a href="Cargo.toml"><img alt="Axum 0.8" src="https://img.shields.io/badge/Axum-0.8-6b4bff.svg"></a>
   <a href="#what-it-provides"><img alt="SQLite FTS5 and sqlite-vec" src="https://img.shields.io/badge/SQLite-FTS5%20%2B%20sqlite--vec-1f6feb.svg"></a>
@@ -59,7 +64,9 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 
 </p>
 
-*Version, test-count, UMP, and SBOM values are derived by `scripts/badges.sh`; the test-count badge is not selfcheck-verified by the lightweight `--selfcheck` path. CI and release badges are live GitHub signals; stack badges link to the in-repo manifests and docs.*
+*Version, UMP, and SBOM values are derived by `scripts/badges.sh` and are machine-checked by
+`--selfcheck`. CI and release badges are live GitHub signals; stack badges link to the in-repo
+manifests and docs.*
 
 <p align="center">
 

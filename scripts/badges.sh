@@ -2,27 +2,82 @@
 # Derive the README's dynamic badge values from the real build, so the badges
 # are facts, not hand-typed claims. A release-time tool, like scripts/sbom.sh.
 #
-#   scripts/badges.sh            → print the version/test/UMP/SBOM badge block
-#   scripts/badges.sh --selfcheck→ verify the derivations + the release
-#                                  checklist's six-artifact completeness
-#                                  (exits nonzero on any drift)
+#   scripts/badges.sh              → print the version/test/UMP/SBOM badge block
+#   scripts/badges.sh --selfcheck  → CHEAP. The derivations that need no cargo
+#                                    run: version↔README, the UMP gate, the
+#                                    release-checklist's six-artifact
+#                                    completeness, the committed SBOM, and the
+#                                    test badge's pointer to --verify-count.
+#                                    Does NOT compare the test count (see below).
+#   scripts/badges.sh --verify-count → SLOW (one full `cargo test`). Compares the
+#                                    DERIVED test count against the README badge
+#                                    and exits non-zero on drift.
 #
 # It never fabricates a number it did not measure: version is read from
 # Cargo.toml, the test count from an actual `cargo test` run, the SBOM flag
 # from the on-disk CycloneDX file.
+#
+# ── Why the count is split across two modes ───────────────────────────────
+# The count needs a full `cargo test --features bench,migrate` run (~3 min), so
+# folding that compare into `--selfcheck` would turn every lightweight call —
+# ci.yml and scripts/verification-sweep.sh both invoke it on every push — into a
+# multi-minute job, and a gate nobody runs is a convention, which is the defect
+# this split exists to remove. `--selfcheck` therefore does not CLAIM to check
+# the count, and `--verify-count` exists so something can actually do it.
+#
+# `BRAIN_TEST_COUNT` is the injection seam: when set, the derived count is read
+# from it instead of running cargo. It exists so the compare can be pinned
+# BEHAVIOURALLY in milliseconds (tests/main_suite.rs) instead of by
+# string-scanning this script, and so CI can pass a count it already derived.
+# It is not a way to make the guard pass: an unset run derives the real number.
 set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 version()      { sed -n 's/^version = "\(.*\)"/\1/p' "$REPO/Cargo.toml" | head -1; }
 client_version(){ sed -n 's/^version = "\(.*\)"/\1/p' "$REPO/client/Cargo.toml" | head -1; }
 test_count()   {
+  if [[ -n "${BRAIN_TEST_COUNT:-}" ]]; then
+    printf '%s' "$BRAIN_TEST_COUNT"
+    return
+  fi
   ( cd "$REPO" && cargo test --features bench,migrate -- \
       --skip handlers::case_run::conformance::gdl_conformance_pack_run \
       --skip workflow::sandbox::tests::realized_paths_law_pinned_against_symlinked_temp 2>&1 ) \
     | grep -Eo '[0-9]+ passed' | awk '{ s+=$1 } END { print s+0 }'
 }
 
+# The number the README badge presents, or empty when it presents none.
+# Scoped to the badge line itself (not a whole-file grep) so the disclaimer and
+# the number can never be satisfied by unrelated text elsewhere in the file.
+readme_test_badge() {
+  grep -oE 'badge/tests-[0-9]+' "$1" 2>/dev/null | head -1 | grep -oE '[0-9]+' || true
+}
+
 VERSION="$(version)"
+# Hoisted: both the `--verify-count` compare and the `--selfcheck` arms below
+# read it, and `--selfcheck` is entered first, so an assignment inside either
+# arm would be unreachable from the other.
+README="$REPO/README.md"
+
+if [[ "${1:-}" == "--verify-count" ]]; then
+  # The REAL count comparison, kept out of --selfcheck only because it costs a
+  # full cargo test run. Everything cheap has already been checked by
+  #    already did; this answers the one question it cannot: does the number the
+  #    README presents match the build?
+  DERIVED="$(test_count)"
+  PRESENTED="$(readme_test_badge "$README")"
+  if [[ -z "$PRESENTED" ]]; then
+    echo "ERR: README presents no tests-<N> badge, so there is nothing to compare against the derived $DERIVED" >&2
+    exit 1
+  fi
+  if [[ "$PRESENTED" != "$DERIVED" ]]; then
+    echo "ERR: README test-count badge drifts from the build — badge says $PRESENTED, the run derives $DERIVED." >&2
+    echo "     Fix: run scripts/badges.sh and paste its output into the README badge block." >&2
+    exit 1
+  fi
+  echo "OK  README test-count badge matches the build ($DERIVED)"
+  exit 0
+fi
 
 if [[ "${1:-}" == "--selfcheck" ]]; then
   # 1. badges derive the version from the real build, not a stored claim.
@@ -34,19 +89,41 @@ if [[ "${1:-}" == "--selfcheck" ]]; then
   # 2. the README carries the DERIVED version, not a stale hand-typed one
   #    (v1.28.65 lesson: the version badge sat two releases behind while
   #    selfcheck passed — nothing compared README to the derivation).
-  README="$REPO/README.md"
   if ! grep -q "badge/version-${CARGO_VERSION}-blue.svg" "$README"; then
     echo "ERR: README version badge drifts from Cargo.toml '$CARGO_VERSION' — run scripts/badges.sh and paste the block" >&2
     exit 1
   fi
-  # The test-count badge can't be verified without a full cargo run; the
-  # release checklist carries that step instead. What selfcheck CAN verify is
-  # that the README does not PRESENT the count as selfcheck-verified: the
-  # badge line must carry the explicit `not selfcheck-verified` disclaimer
-  # (v1.28.87 derive-or-drop — a drifted count passes the number, but the
-  # number is openly labeled unverified with its authoritative source).
-  if ! grep -q "not selfcheck-verified" "$README"; then
-    echo "ERR: README test-count claim lacks the 'not selfcheck-verified' disclaimer — run scripts/badges.sh and paste the block" >&2
+  # The test-count badge cannot be compared here without a full cargo run, so
+  # --selfcheck does NOT claim to verify it (see the header). What it CAN do —
+  # and now does, scoped to the badge line rather than the whole file — is
+  # refuse to let the count drift silently UNLABELLED: the badge's own line must
+  # carry the `not selfcheck-verified` disclaimer (v1.28.87 derive-or-drop).
+  # Scoping matters: a whole-file grep was satisfied by a disclaimer in a
+  # paragraph 28 lines below the badge, so the badge could be arbitrarily wrong
+  # while the guard stayed green.
+  BADGE_LINE="$(grep -n 'badge/tests-' "$README" | head -1 || true)"
+  if [[ -z "$BADGE_LINE" ]]; then
+    echo "ERR: README has no tests badge to verify — expected a badge/tests-<N> image" >&2
+    exit 1
+  fi
+  # The disclaimer must name the BADGE, and its scope is the badge's own
+  # `<p align="center">` block plus the prose that immediately follows it —
+  # not the whole file (a whole-file grep was satisfied by a sentence 28 lines
+  # away, so the badge could be arbitrarily wrong while the guard stayed green)
+  # and not the single `<img>` line either (an HTML attribute is the wrong home
+  # for the claim). The enclosing block is the unit that actually contains both,
+  # and it is bounded by the NEXT `<p align=` or EOF so the scope cannot grow
+  # without the check noticing.
+  BADGE_BLOCK="$(awk '
+    /badge\/tests-/ { inside=1 }
+    inside && /^<p align=/ { blocks++ }
+    inside && blocks >= 2 { exit }
+    inside { print }
+  ' "$README")"
+  if ! grep -q "verify-count" <<<"$BADGE_BLOCK"; then
+    echo "ERR: README's test-count badge block does not say the count is NOT machine-checked here —" \
+         "--selfcheck cannot compare it (that needs a full cargo test), so the badge must point at" \
+         "the arm that does: scripts/badges.sh --verify-count" >&2
     exit 1
   fi
   # UMP level derives from the CI conformance gate, not from a literal in
