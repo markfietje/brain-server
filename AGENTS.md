@@ -1,7 +1,276 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R68 "Silence"** — the first of the five
+> Current release (unreleased): **R70 "Seams"** — the **third** of the five
 > `docs/audit8/08-design-grid-remediation-gates.md` §9.3 releases. Theme:
+> **the cheap enforcement wins — six seams where the machine was right for the
+> wrong reason, or right by luck.** Findings **F8-03** (HIGH), **F8-04**,
+> **F8-06** (MEDIUM), **F8-07**, **F8-09**, **F8-10** (LOW) from
+> [`docs/audit8/`](docs/audit8/README.md). **No authz change**:
+> `git diff src/authz/` is **empty**, no new route, no wire field, no new
+> dependency edge, no schema change (**1.32.26** unchanged).
+>
+> **(1) Every §1 premise was re-measured, and TWO of the round's own claims were
+> wrong — which is the round's first finding.** All six §1 figures matched (raw
+> needle **2 957**, stripped **2 941**, lib **2 319**, 52 handler files, schema
+> **1.32.26**), and F8-03's `VACUUM` half is confirmed **already closed by R68**
+> (`domains.rs:266` is `if let Err(e) = …`, not `let _ =`) — so it was **not
+> re-fixed**, exactly as the note warned. But (a) the prompt's suggested reuse of
+> `spire_inventory::strip_rust_comments` is **IMPOSSIBLE and was not attempted**:
+> it is `pub fn`, but `spire_inventory` is `#[cfg(test)] pub mod`
+> (`src/lib.rs:346`), so it does not exist in the lib an integration test links
+> against — the `cfg` is the blocker, not visibility. The F8-04 pin therefore
+> lives in `tests/main_suite.rs` and reuses the two existing **test-side** house
+> lexers (`strip_line_comments` / `strip_cfg_test_regions`); **no second `src/`
+> stripper was written and `dup_guard` is untouched**. And (b) **F8-09's
+> reachability claim was wrong in the direction that matters**: the note predicted
+> the row-mapping arm unreachable because `TEXT` affinity coerces every storage
+> class, and that is true for `INTEGER` and `REAL` but **FALSE for `BLOB`**
+> (verified against SQLite directly). So the honest **behavioural** pin was
+> available after all. Had the premise been carried — or the note's suggested
+> `42`/`1.5` fixtures used, which coerce to `'42'` — the pin would have been
+> **green before the fix** while proving the arm that was not changed. It now
+> asserts `typeof(roster_json) == 'blob'` as a **precondition**.
+>
+> **(2) F8-04: the log seam is unskippable, and the guard found THREE offenders
+> the audit did not name.** `sanitize_log_value` had **one** production call site
+> and fourteen tests, **none** asserting any call site USES it — a seam nothing
+> forces through is a convention. The guard found **eight** request/config-derived
+> sites before any was fixed, across five files: `recall.rs` `{domain}`,
+> `domains.rs` `{name}`, `webhooks.rs` ×2, `mod.rs` `error = %message`,
+> `observe.rs` `{url}`, `ump_ops.rs` `owner`/`declared`. The fix is a `LogValue`
+> newtype beside the seam whose **only** constructor is `sanitize_log_value`: no
+> `From<&str>`, no `From<String>`, no `Deref`, no `Default`, private field — each
+> pinned, because any one re-opens the hole. The scan reads **both** value-carrying
+> syntaxes (`{ident}` placeholders **and** `%ident`/`?ident` structured fields),
+> because the `webhooks.rs` offender is the field form and a placeholder-only scan
+> would have passed it; multi-line invocations are scanned whole. The remaining 31
+> sites are exempt **by category**, justified in code, with the integer-id set a
+> **closed list rather than a shape** — a shape rule would have exempted exactly
+> the request-derived names (`name`, `domain`, `path`, `url`, `owner`).
+>
+> **(3) F8-06: the prefix rule is gone, and the pin caught a fail-open
+> regression this round nearly shipped.** `path.starts_with("/webhooks/")`
+> exempted whatever landed under `/webhooks/`, including any future route — not a
+> live hole (all six verify and fail closed) and precisely an **unenforced
+> convention**. Replaced with `WEBHOOK_PATHS` naming all six. **The three
+> `is_public_path` call sites DISAGREE:** `auth.rs:129` passes axum's
+> `MatchedPath` (the TEMPLATE, `/webhooks/{kind}`) while `:277`/`:549` pass
+> `req.uri().path()` (the CONCRETE path, `/webhooks/github`). A `contains()` on
+> the template list would have exempted the template and **refused every real
+> request — silently disabling all six webhooks.** `is_webhook_path` matches
+> segment-wise instead. The pin then caught **two fail-open bugs in the first
+> draft**: `split('/')` on `{kind}` never equals the literal `"{kind}"`, and a
+> stale list entry would keep exempting a path nothing serves — so both
+> directions are checked against the **router** (the authority), never the list
+> against itself.
+>
+> **(4) F8-03 (the surviving half): the deadline moves INSIDE the closure.**
+> `TimeoutLayer` drops the handler future at 30 s, but a `spawn_blocking`
+> closure is **not cancellable** — it runs to completion and **COMMITS**, so the
+> client sees a 408 while the row lands anyway and a retry double-commits. A
+> check *outside* the closure is **decorative**: the work is already queued and
+> nothing can call it back. `src/service/write_deadline.rs` reads the clock **at
+> the moment work starts** and refuses before any statement runs, on
+> `DELETE /domains/{name}` — the gate is the closure's **first** statement,
+> before `pool.get()`, so a refusal provably took no connection and opened no
+> transaction. The 30 s is now `config::REQUEST_TIMEOUT_SECS` with
+> `WRITE_DEADLINE_MARGIN_SECS` held back, so handler and middleware cannot drift.
+>
+> **(5) F8-10 and F8-07, both measured rather than assumed.** `BIND_PORT` was
+> `.parse().unwrap_or(8765)`: a typo bound **the production port** with no
+> diagnostic. It now reuses the `WRITE_POSTURE` shape (absent = default; only
+> present-and-invalid refuses; empty = unset), so **no deployment changes
+> behaviour**. A throwaway probe (since deleted) established what `u16::from_str`
+> actually does: `abc`/`65536`/`-1`/`""` all fail to parse, and **`0` parses
+> successfully** — so a parse-only fix would **not** have closed the finding,
+> since port 0 binds a kernel-chosen ephemeral port that changes every restart.
+> `876` is deliberately **not** a refusal (a valid `u16`; refusing every
+> "surprising" number would invent policy the audit did not ask for). F8-07's
+> harder half: `to_ipv4_mapped()` unwraps **only** `::ffff:0:0/96` (confirmed
+> against the std source — bytes 10..12 == `0xff,0xff`), **not** the
+> IPv4-**compatible** `::/96`, so `::169.254.169.254` was **ADMITTED** while the
+> v4 table sat fully present and never consulted. **Normalised, not "add a
+> row"** — a row refuses the `::/96` block; normalisation subjects the embedded
+> v4 to the **whole** v4 table and names the real reason. `::` and `::1` are
+> deliberately not embeddings.
+>
+> **Spire at ship:** lib **2 325** passed / 0 failed / 2 ignored (baseline 2 319,
+> **+6**); full suite **green**; `crates/` green; harness green; `cargo fmt`
+> clean; clippy clean on **bench, default, otel, `crates/`** and **all six**
+> feature lanes; `lipstyk-gate` **0 findings**; `badges.sh --selfcheck` clean;
+> `env-truth.sh` clean; `docs-truth.sh` **LOW=17 (pre-existing, unmoved)**;
+> `check-doc-links.py` clean (404 links); **`cargo audit` clean** (514 deps);
+> shell gate **82 passed / 18 files** incl. the drift gate, `tsc` clean. `main.rs`
+> 124≤300, router routes 258≥255, coverage 217≥214, authz rows 203≥200. **The
+> floor was NOT raised: `CRATE_TEST_FLOOR` is unchanged at `2 758`** (measured
+> **2 954** stripped — headroom 183 → **196**; raw **2 970**). Raw and stripped
+> moved by the **same +13**, so this round added **no** fixture-string inflation
+> (the raw−stripped gap is unchanged at 16 and belongs to the baseline). **Zero
+> new dependency edges: all `Cargo.lock` files byte-identical**; `src/authz/`
+> **0 diff**; `openapi.yaml` and `shell/src/lib/api/schema.d.ts` **0 diff** this
+> round so no regeneration was owed; **no new `OPENAPI_ROUTES`/`PUBLIC_PATHS`
+> row**. R69's `no_sql_in_handlers_enforced` green.
+>
+> **Red-first: all eight pins were proven ABLE TO FAIL**, and **two caught real
+> defects in this round's own first draft** — which is what writing them was for.
+> The load-bearing one is **#8**: keeping the F8-03 gate but moving it one line
+> down, after `pool.get()`, is exactly the "machine checks under-delivered" shape
+> and **a presence-only guard would have passed it**. #4/#5 caught the `::/96`
+> normalisation and the two v4 rows (reverting each admits the address). #7 caught
+> `.flatten()` returning `Ok(SweepReport { crew_rows: 0, .. })` where a refusal was
+> required. One house gate fired on this round's own code
+> (`comments_never_reference_versions_plans_audit_ids` rejected the finding labels
+> in fifteen source comments) and was fixed at the root — labels dropped,
+> reasoning kept.
+>
+> **What did NOT ship, stated plainly.** **Not** the write **idempotency/
+> receipt registry** or the per-route openapi ceiling annotations — a wire
+> contract and a new table, the next decision. **Named residual:** a write that
+> *starts* within budget and is then killed **mid-commit** (crash, not timeout)
+> is still uncovered. **Not** F8-03's `VACUUM` half (**R68 closed it**). **Not**
+> every DB-touching handler — the deadline lands on the named route plus the
+> shared helper, and the ~50 unreached `spawn_blocking` write handlers in
+> `src/handlers/**` are **named as a residual, not silently skipped**. **Not**
+> F8-01 (R69). **Not** K8-* (**R71**, a different repository; K8-04 needs a
+> *decision*). Not R8-01/02/03, S8-11, L8-01/05/06/07, P8-01, K8-15 (**R72**).
+> **No runtime authorization change.** **No migration is added, so this round has
+> no irreversible risk.**
+>
+> Predecessor: **R69 "Erasure"** — the second of the five §9.3 releases. Theme:
+> **a compliance certificate can certify an erasure that did not happen** — the
+> DSAR erasure deleted the memories it could attribute to a subject and left the
+> approved proposals behind them, because its only reach into `proposals` was a
+> literal `content LIKE '%subject%'` and a candidate body almost never contains
+> its owner's identity. Finding **F8-08** (HIGH, drill-proven) from
+> [`docs/audit8/`](docs/audit8/README.md). **No authz change**:
+> `git diff src/authz/` is **empty**, no new route, no wire field, no new
+> dependency edge.
+>
+> **(1) The §9.3 plan's prescribed fix was IMPOSSIBLE as written, and the tree
+> won.** The plan said *"carry the approved chunk ids the erasure just deleted
+> and delete their proposals by `id IN (…)` — the proposal that produced a
+> memory is reachable from the memory."* Reproduced by hand at `1c00c83a`,
+> **there is no id to carry**: `knowledge` carries no proposal ref (base
+> `CREATE TABLE` + every `ALTER TABLE knowledge ADD COLUMN`); neither
+> `promote_chunk_insert` (`service/gate.rs:186-208`) nor `kcs_draft_insert`
+> (`:87-116`) binds one; `cas_proposal_approved` (`service/review.rs`) records
+> none; no linking table exists; and the two tables share no hash column
+> (`proposals` has **no** `content_hash`). Option (a), the audit chain, was
+> **measured** closed first: `audit_events` has no later `ALTER`, and both
+> `target_hash` and `detail_hash` are SHA-256 digests — **a hash is not
+> reversible**, so the raw proposal id cannot be recovered from the chain.
+>
+> **(2) So the fix is a schema migration, and it contradicts the audit's "no
+> migration is needed" note — which was right about that reasoning and wrong
+> about the schema.** `proposals.promoted_chunk_id INTEGER`, schema **1.32.25 →
+> 1.32.26**: additive, NULLable, `pragma_table_info`-guarded. **The proposal is
+> the row extended; `knowledge` gains nothing**, so the FK-children maps in
+> `service/dsar.rs:25-44` and `service/purge.rs:10`/`:29` stay accurate — and the
+> migration comment says so explicitly, because a reader will look for a map
+> entry that legitimately does not exist.
+>
+> **(3) The edge is a SEPARATE write beside the CAS, not a CAS parameter.**
+> `cas_proposal_approved` has **seven** call sites and four promote nothing, so a
+> NULL `promoted_chunk_id` is the correct recorded state there. `record_promoted_chunk`
+> rides the caller's approve tx. Wired into the two arms that create a memory:
+> the generic promote, and the KCS draft — which deliberately records **no** edge
+> for `KIND_LINK_ONLY`, because that arm reuses an existing article and a
+> fabricated edge is exactly the kind of lie this round exists to remove.
+>
+> **(4) The erasure arm erases those proposals by id, in the caller's tx, after
+> the knowledge purge** so it walks the chunks genuinely deleted. The
+> `content LIKE` arm is **KEPT**: removing it would *reduce* erasure coverage for
+> subjects whose text genuinely appears in a proposal. The IN-list is chunked at
+> **900**, under a **measured** ceiling — this crate's bundled SQLite prepares
+> 32,766 bound params and refuses 32,767 ("too many SQL variables"), measured
+> with a throwaway probe that was then deleted. The count goes to `tracing`,
+> **not** the certificate JSON: §2 keeps the round off the wire, and a
+> certificate field nothing consumes is a field no one verifies.
+>
+> **(5) Red-first, and red TWICE.** The §3 pin failed before the fix
+> (`left: 1, right: 0`, the proposal still present, with both anti-vacuity
+> assertions above it passing so the fixture was known-real), and the red-proof
+> was **re-run on the finished fixture** by disabling the arm — which failed
+> identically. Six further tests from §4.4, and **four planted mutants were all
+> killed** (wrong column, chunking removed, swallowed delete error, arm
+> disabled). **Two tests could not fail** under the first mutant run and were
+> **rewritten rather than kept**: their fixtures did not collide proposal ids
+> with purged chunk ids, so an arm keyed on the wrong column passed them. The
+> chunking test needed the same treatment — at 925 ids it passed with the
+> chunking removed, so its fixture now spans the measured 32,766 ceiling.
+>
+> **Spire at ship:** lib **2 319** passed / 0 failed / 2 ignored (baseline 2 310,
+> **+7**); `main_suite` **329**; `crates/` **308**; harness **44**; default
+> all-targets **3 013**; clippy clean on bench, default, otel, `crates/` and
+> **all six** feature lanes; `cargo fmt --check` clean; lipstyk **0 findings**;
+> `badges.sh --selfcheck` clean; `env-truth.sh` clean; `docs-truth.sh` LOW=**17**
+> (pre-existing); `check-doc-links.py` clean (404 links); **`cargo audit` clean**
+> (514 deps); `main.rs` 124≤300, router routes 258≥255, coverage 217≥214, authz
+> rows 203≥200. **The floor was NOT raised: `CRATE_TEST_FLOOR` is unchanged at
+> `2 758`** (measured **2 941** stripped, headroom 137 → **183**; raw needle
+> 2 957, and the raw−stripped delta is this round's fixture strings, disclosed
+> here rather than absorbed by re-baselining). **Zero new dependency edges: all
+> `Cargo.lock` files byte-identical**; `openapi.yaml`, `route_guards.rs` and
+> `src/authz/` all **0 diff**. R68's `no_sql_in_handlers_enforced` still green.
+>
+> **Known pre-existing, NOT fixed here.** `tests/no_engagement_name.rs` fails —
+> **re-verified at the baseline this round** by stashing the entire diff and
+> re-running it there, where it fails identically; it is the only red in the
+> suite and it is not R69's. One **intermittent** flake appeared during
+> validation and is **not** R69's: `handlers::webhooks::inbound_signal_becomes_
+> screened_steering` sets a process-global env var without taking an env lock
+> (the class `config.rs` guards with `TOKEN_ENV_LOCK`/`IP_ENV_LOCK`), raced once
+> across three runs, and passed on three subsequent full-suite runs; R69's diff
+> does not touch that file. `shell/src/lib/api/schema.d.ts` is stale against
+> `openapi.yaml` (§6.1 of the prompt) — which is precisely why R69 adds no wire
+> field. `AGENTS.md`'s own header figures disagree with measurement (that is
+> `R8-01`, assigned to **R72**, and one theme per release means it is **not**
+> re-baselined here).
+>
+> **§7 note — both "known pre-existing" items above were closed AFTER R69's own
+> scope, by a separate follow-up. Stated here so the header does not outlive its
+> debunking.** (1) `tests/no_engagement_name.rs` was **not** a content leak: the
+> pin scans git-TRACKED files and flagged **itself**, on the two `NAMES`
+> literals it must hold to police the vocabulary. That is a structural
+> false-positive, and it made the suite's only red permanently unreadable as
+> "pre-existing noise". Fixed by exempting the pin's own file — **named** in
+> `ALLOWED_FILES`, never a blanket skip — plus an anti-vacuity assertion that
+> fails if the vocabulary ever leaves the file, so the exemption cannot rot
+> into a silent pass. **Proven non-vacuous:** planting the name in
+> `src/storage_layout.rs` makes the pin fail. (2) The webhooks flake is closed
+> by a `tokio::sync::Mutex` fence around `BRAIN_SIGNAL_WEBHOOK_SECRET_FILE`,
+> with **two** deterministic red-proof tests — the natural race fired ~1 run in
+> several, which is not evidence a fence works. Measured: **20/20 green** with
+> the fence, **20/20 red** with it bypassed, and the mutant still passes the
+> original signal test. `tokio::sync::Mutex` rather than `std::sync::Mutex`
+> because the guard is held across `.await` (clippy's `await_holding_lock`
+> correctly refuses the `std` form), and **non-reentrant/FIFO** — an early
+> version acquired it twice in one test and deadlocked.
+>
+> **§0 note — the prompt's baseline was stale and was re-verified rather than
+> carried.** The prompt pins schema **1.32.24**; measured at `1c00c83a` it is
+> **1.32.25**, and the prompt's `is_newer_than_known(Some("1.32.26"))` probe was
+> *already in the tree* — i.e. the prompt was written against the 1.32.24
+> ceiling and the tree had moved twice since. Every other §1 figure was
+> re-measured and matched: floors `2 758` / 255 / 214 / 200, 52 handler files,
+> raw needle **2 954**, stripped needle **2 934**, headroom **137**.
+>
+> **The largest residual, named.** Historical approved proposals keep a NULL
+> edge and are **not** retro-linked: a proposal approved before this release
+> promoted a memory that may be purged tomorrow, and the correspondence was
+> never stored, so the erasure reaches it only if the subject's string happens to
+> appear in its body. Backfilling by inferring the edge from `content` would be
+> the substring match this round exists to stop trusting.
+>
+> **What did NOT ship, stated plainly.** **Not** the §9.3 fix as specified (it is
+> impossible). **Not** a certificate wire field (blocked by the shell drift).
+> **Not** an owner column on `proposals` — declined by the audit, and the edge
+> belongs on the proposal→chunk correspondence, not on a subject attribution
+> proposals do not carry. **Not** F8-03/04/06/07/09/10 (**R70**), K8-* (**R71**,
+> the openclaw fork), R8-01/02/03, S8-11, L8-*, P8-01, K8-15 (**R72**).
+> **No runtime authorization change.**
+>
+> Predecessor: **R68 "Silence"** — the first of the five §9.3 releases. Theme:
 > **the machine checks under-delivered** — three guards/pins passed while their
 > subject was violated, or asserted a property they could not fail. Findings
 > **F8-01** (HIGH), **F8-02** (HIGH), **F8-05** (MEDIUM) from
