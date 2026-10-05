@@ -4,6 +4,203 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## Unreleased — R75 "Greenlight"
+
+### Release notes
+
+**The tree `main` actually ships must pass the gates that guard it.** `main` was
+**red** at R74's tip on two independent jobs plus the badge drift gate — not
+because anything was mid-edit, but because the committed tree had carried a
+defect that a green local run had been hiding. Theme: **a shippable tree, not
+an edited one.** Findings closed: **S8-01**; registered: **S8-02**, **S8-04**.
+No authz change; schema **1.32.26** unchanged.
+
+### Two red jobs, and they were unrelated to each other
+
+**(1) `openapi.yaml` carried a duplicate `operationId` at HEAD.** `verifyClaim`
+was bound **twice** — `:1525` on `/verify` and `:9163` on
+`/workflow/claims/{id}/verify` — and `shell/tests/registry-contract.test.ts`
+hard-fails on Redocly's `operation-operationId-unique` rule ("Every operation
+must have a unique `operationId`"). **Verified at the committed HEAD** with
+`git show HEAD:openapi.yaml`, not merely in the working tree.
+
+**(2) The shell `cmp` gate exited 1**, because `shell/src/lib/api/schema.d.ts`
+was stale against the spec. Same root cause as (1): the wire contract moved and
+the generated artifact and the spec were not moved with it.
+
+**(3) The badge drift gate was red at 3158 against a derived 3160.** The
+committed README carried `3158 tests passed`; the derivation said **3160**.
+
+### The archaeology, and the prompt that lied about it
+
+`docs/EXECUTION_PROMPT_R70_Seams.md:323-325` states the duplicate-`operationId`
+defect was "**already fixed** in R69's follow-up (`verifyClaim` →
+`verifyClaimGate`)" and instructs a reader who finds it still duplicated to
+assume "you are on a stale tree."
+
+**It was never committed.** `git log -S'verifyClaimGate' -- openapi.yaml`
+returns **nothing** — zero commits, ever. The prompt asserted a fix to a defect
+that was still live three releases later, and would have sent the next executor
+to re-verify their own checkout instead of fixing the file. The rename exists
+only in the working tree until R75.
+
+### S8-01, and the half of it the finding had right
+
+The bind guard and auth guard are now **one decision**: `resolve_api_auth`
+(`tools/signal-gateway/src/lib.rs:42`) makes the credential a function of the
+address, so `Ok(None)` — unauthenticated serving — is reachable **only** on
+loopback. Ten behavioural tests in
+`tools/signal-gateway/tests/s8_01_bind_coupled_auth.rs` drive the production
+function, and a new `signal-gateway-gate` CI job runs them. That job exists
+because the crate's tests previously ran in **no** workflow at all — which is
+precisely how "a path or import refactor could drop one without failing any
+test" stayed true.
+
+### Spire at ship — and the caveat that outranks it
+
+**The complete verification suite has now run and everything is green**, but the
+figures are recorded **with their sources**, because a number nobody diffed against
+a measurement is the exact defect this round exists to remove. **No count here is
+hand-typed.** The README badge is **machine-derived** by
+`scripts/badges.sh --verify-count` (exit 0, `OK README test-count badge matches the
+build (3160)`), and that command — not this paragraph — is the authority for it.
+
+`cargo test --features bench` → exit 0, **3 150 passed / 0 failed / 3 ignored**
+across 48 result lines. That and the badge's **3 160** are **not** a disagreement:
+the badge derives over the wider `bench,migrate` lane, so the two count different
+sets. `cargo fmt --all -- --check` exit 0; `cargo clippy --all-targets --features
+bench -- -D warnings` exit 0; `cargo test --all-targets` (default features) exit 0.
+`crates/`, `steward-harness`, `channel-bridge` (**39 passed**) and `signal-gateway`
+(**35 passed** = 5 lib + 20 pre-existing + 10 new) all exit 0. All **seven** feature
+lanes clippy-clean (`compliance-pack`, `multivec`, `injection-classifier`,
+`neural-embed`, `loom`, `rerank-tier`, `otel`). The spire floors printed exactly:
+`main.rs 124≤300 · region absent · main routes 0=0 · router routes 258≥255 · crate
+tests 2958≥2758 · coverage rows 217≥214 · authz rows 203≥200`.
+
+Scripted gates: `badges.sh --selfcheck` exit 0; `env-truth.sh` exit 0;
+`docs-truth.sh` exit 0 with **LOW=17 (pre-existing, unmoved)** and **0 HIGH /
+0 MED**; `check-doc-links.py` exit 0 (405 links resolve); `lipstyk-gate.sh` exit 0;
+`cargo audit --file Cargo.lock` exit 0 (514 deps, 0 vulnerabilities). Shell: the
+`openapi-typescript` regeneration + `cmp` exit 0 with **0 bytes differ** — the gate
+R75 was opened to fix; `pnpm test` **82 tests / 18 files** with
+`drift-gate.test.ts` and `registry-contract.test.ts` both PASS; `pnpm check` 0
+errors; `tsc --noEmit` clean; `pnpm lint` clean; `pnpm build` ok with CSP injected
+and **no `'unsafe-inline'`**; `pnpm audit --prod --audit-level high` reports no
+known vulnerabilities.
+
+**Two lanes were NOT run, and nothing here should be read as covering them.**
+`client-gate` was **not** run — `client/` is untouched by this diff, and
+`AGENTS.md` scopes that lane to client changes. Shell E2E (`pnpm test:e2e`) was
+**not** run — it needs a Tauri build this environment does not provide. Both are
+named absences, not passes.
+
+**The caveat that outranks every green above: these were measured over the WORKING
+TREE, not over committed HEAD.** Per R74's own lesson, a green number measured
+over a dirty tree is not a property of HEAD — and this tree carries exactly the
+uncommitted wire and CI work this round produces. So this section records **what
+was measured**; it does **not** claim `main` is green. That claim belongs to the
+commit, and must be re-derived at the tagged SHA with
+`scripts/badges.sh --verify-count`.
+
+### Named residual — two stale lockfiles (PRE-EXISTING, not fixed here)
+
+**`tools/channel-bridge/Cargo.lock` and `tools/signal-gateway/Cargo.lock` are
+stale against their own committed `Cargo.toml` manifests.** Measured, not inferred:
+`channel-bridge` locks `tokio` **1.53.1** against a manifest asking **1.53.2**,
+`clap` **4.6.6** vs **4.6.7**, `reqwest` **0.13.4** vs **0.13.5**, `uuid` **1.26.0**
+vs **1.27.0**, `jsonwebtoken` **11.0.0** vs **11.1.0**; `signal-gateway` locks
+`tokio` 1.53.1, `clap` 4.6.6, `reqwest` 0.13.4, `uuid` **1.25.0** vs **1.27.0**.
+
+The consequence is measured too: `cargo metadata --locked` **fails on both**
+(exit **101**, `cannot update the lock file … because --locked was passed`). And
+because both CI gates — `channel-bridge-gate`, and this round's new
+`signal-gateway-gate` — invoke cargo **without** `--locked`, the runner
+**silently regenerates the lockfile and reports green against versions that are not
+the committed tree**. Reproducibility is lost with no red signal, and the new job
+inherits the property.
+
+**This is a pre-existing property of HEAD, not something this round introduced:**
+no `Cargo.toml` and no `Cargo.lock` appears anywhere in this round's diff.
+**Deliberately NOT fixed here** — re-locking is a dependency change this round
+avoided on purpose, and the remedy is a **decision, not a patch**: either re-lock
+and commit, or add `--locked` and let CI fail loudly until someone re-locks.
+**Named residual.**
+
+**What did NOT ship.** **Not** S8-02 (`valet-relay`'s `/alert` sink verifies
+the HMAC correctly and never checks that `ts` is recent) and **not** S8-04
+(`signal-gateway/src/ratelimit.rs` is a dead module, so `POST /v2/send` has no
+request-rate control) — both are **registered in `AUDIT.md`, both unfixed.**
+**Not** S8-05, which is re-routed off R71 because the defective file is
+**in this repo** (`plugin/src/config.ts:234-235`). **Not** the K8-*/D8-01 fork
+rows (R71, a different repository) or the L8-* external acts. **No new
+dependency edge beyond the signal-gateway crate's own**, and no migration.
+
+---
+
+## Unreleased — R74 "Dirty"
+
+### Release notes
+
+**A green suite that does not describe the committed tree is not evidence of
+anything.** R74 shipped two commits (`15964613`, `50406b29`) and **no round
+notes at all**. What they found is recorded here for the first time: **six
+suites failed at committed HEAD**, and the reason matters more than the fix —
+**every green figure reported for R69, R70, R72 and R73 was measured over a
+dirty working tree.** No authz change; schema **1.32.26** unchanged.
+
+### Two distinct root causes, not one
+
+**CLASS A — schema-version drift (5 suites).** `src/` carries **1.32.26** (R69's
+`proposals.promoted_chunk_id` migration, `src/migration.rs:3188`), while five
+cross-round re-pins still asserted **1.32.25**. Every repair is a pure literal
+re-pin — same assert, same operator, same operand shape — across
+`tests/agreement_path_pins.rs`, `tests/clean_cycle_pins.rs`,
+`tests/per_domain_axis_pins.rs`, `tests/rbac_evaluation_pins.rs` and
+`tests/version_axis_pins.rs`. **No assertion was softened and no test was
+removed.** The refuse-newer probe moved **with** the ceiling rather than being
+left stale: `src/storage_layout.rs:786-787` probes `1.32.27` against a `1.32.26`
+ceiling, strictly greater, so it still exercises *Greater* rather than silently
+testing *Equal* — the exact failure mode its own message names.
+
+**CLASS B — a self-flagging pin (1 suite, unrelated to the schema).**
+`tests/no_engagement_name.rs` scans **git-TRACKED** files, so it always flagged
+**itself**, on the two `NAMES` literals it must hold to police the vocabulary.
+That made the control permanently red — and worse, trained everyone to read it
+as pre-existing noise instead of a failure.
+
+### The second commit: a tautology, twice over
+
+The exemption added by the first commit carried an anti-vacuity check to prove
+it was not a blanket pass. **It could not fail.**
+
+```rust
+NAMES.iter().all(|n| own.contains(n))
+```
+
+is `x ∈ S` with `x` drawn from `S`: `own` **is** this file and `NAMES` is built
+from literals in it, so the assertion holds for **every possible value of
+`NAMES`**. Proven by the decisive mutation — replacing the whole vocabulary with
+a token occurring nowhere in the tree left the pin **fully green, policing
+nothing**. A first rewrite failed identically: the shared matcher finds the
+literals on the `const NAMES` declaration line, so the declaration satisfied the
+check meant to police the declaration. What is worth checking is a **use**, not
+a declaration; the arm now requires an occurrence *elsewhere* in the file.
+
+The same commit fixed a **latent hang**: `occurrences()` looped forever on an
+empty name, because `str::find("")` returns `Some(0)` and `end == start`.
+Unreachable behind the hand-written literal, but a function whose contract is
+"return the occurrences" must not be able to hang.
+
+### What did NOT ship
+
+**Not** the wire change — `openapi.yaml` (`verifyClaim` → `verifyClaimGate`) and
+the regenerated `shell/src/lib/api/schema.d.ts` were **explicitly deferred**,
+because they are a wire-contract change and need their own decision. That deferral
+is what made the tree red at R74's tip and became **R75**. No schema change, no
+new dependency edge.
+
+---
+
 ## Unreleased — R70 "Seams"
 
 ### Release notes
