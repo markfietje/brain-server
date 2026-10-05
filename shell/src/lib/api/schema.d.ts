@@ -4390,7 +4390,7 @@ export interface paths {
          * Run the gate over a claim (Write on global plus the `workflow` role; audited)
          * @description The gate is six deterministic checks in a fixed order, each a pure function over rows: shape, bounds, referential, citation resolvability, contradiction, and premise discipline. No model, no score, no threshold, no tie-break by judgement — and that is the design, because if any gate authority derived from model judgement then more proposals would make the gate strictly worse. Citation resolution is delegated to the byte-range evidence resolver over ADMITTED bytes, never over a live substring match. The response carries the verdict and a CLOSED refusal code. It never carries the failing byte offset, the adjacent text, or which evidence item was at fault: a location hint handed back to a generator turns the gate into an oracle it can be searched against. The detailed diagnostic goes to the audit chain and the promotion screen only.
          */
-        post: operations["verifyClaim"];
+        post: operations["verifyClaimGate"];
         delete?: never;
         options?: never;
         head?: never;
@@ -4602,6 +4602,10 @@ export interface components {
             tier: "observe" | "propose" | "bounded-auto" | "delegated";
             actor: string;
             model_ref: string | null;
+            /** @description The cited model's registry `id`, BARE (no `rules:` prefix), as the resolver returned it — NOT derived from `model_ref`. `null` means the trace carries no model citation. */
+            model_registry_id: string | null;
+            /** @description The cited model's registry `version`, the second half of the registry's composite key. Together with `model_registry_id` this is the key that joins a trace to `decision_model_registry`. `null` means the trace carries no model citation. */
+            model_registry_version: string | null;
             policy_digest: string | null;
             config_digest: string | null;
             pipeline_version: string;
@@ -13434,7 +13438,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description result_already_submitted */
+            /** @description conflict — "this delegation already returned its result" */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -16382,7 +16386,7 @@ export interface operations {
             };
         };
     };
-    verifyClaim: {
+    verifyClaimGate: {
         parameters: {
             query?: never;
             header?: never;

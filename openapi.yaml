@@ -9160,7 +9160,7 @@ paths:
         item was at fault: a location hint handed back to a generator turns
         the gate into an oracle it can be searched against. The detailed
         diagnostic goes to the audit chain and the promotion screen only.
-      operationId: verifyClaim
+      operationId: verifyClaimGate
       security: [{ bearerAuth: [] }]
       parameters:
         - name: id
