@@ -138,10 +138,27 @@ def main() -> int:
     for f in sorted(DOCS.glob("*.md")):
         if SEALED.search(f.name):
             continue
-        for m in re.finditer(r"`?src/([A-Za-z0-9_/\.]+\.rs):(\d+)", read(f)):
-            if not (ROOT / "src" / m.group(1)).exists():
+        # A `path.rs:NN` citation that resolves to a real file.
+        #
+        # The leading backtick is REQUIRED and the leading path is captured
+        # WHOLE (including a `client/` or `tools/` prefix). The previous form
+        # was `\`?src/(...)`, whose optional backtick meant there was no
+        # boundary before `src/`, so the regex matched the tail of a correctly
+        # written `client/src/download.rs:35`, threw the `client/` segment
+        # away, and then tested `ROOT/src/download.rs` — reporting a perfectly
+        # valid citation as a MED "does not exist". The boundary was invisible
+        # in the diagnostic because the message re-printed only the truncated
+        # path.
+        #
+        # RED-PROOF: the six findings this round introduced were all correctly
+        # prefixed citations the gate rejected. With the backtick required and
+        # the prefix captured, they resolve and disappear; a genuinely wrong
+        # citation (`src/nope.rs:1`) still fails.
+        for m in re.finditer(r"`((?:[a-z-]+/)*src/[A-Za-z0-9_/\.]+\.rs):(\d+)", read(f)):
+            rel = m.group(1)
+            if not (ROOT / rel).exists():
                 add("MED", f"docs/{f.name}",
-                    f"references src/{m.group(1)}:{m.group(2)}, which does not exist")
+                    f"references {rel}:{m.group(2)}, which does not exist")
 
     if verbose:
         add("INFO", "—", f"{len(routes)} routes · {len(spec_paths)} openapi paths · "

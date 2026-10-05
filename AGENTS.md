@@ -1,9 +1,161 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R72 "Truth"** — the **fifth and last** of the five
-> `docs/audit8/08-design-grid-remediation-gates.md` §9.3 releases. Theme:
-> **a number nobody diffed against a measurement** — the failure this file's own
-> header records as having occurred six times. Findings **R8-01, R8-02, R8-03**,
+> Current release (unreleased): **R73 "Receipts"** — the round after the five
+> `docs/audit8/08-design-grid-remediation-gates.md` §9.3 releases (R68–R70 shipped
+> here, R71 is the fork, R72 shipped). Theme: **the register disagrees with the
+> code.** Findings **S8-06**, **S8-09**, **L8-02**, **L8-03**, and the
+> **F8-01…F8-10 register drift** from
+> [`docs/audit8/`](docs/audit8/README.md). **No authz change**, no new route, **no
+> wire change**, no new dependency edge, no schema change (**1.32.26** unchanged).
+>
+> **(1) The register was THREE RELEASES stale, and every one of the ten rows was
+> wrong in the same direction.** `AUDIT.md:996-1005` filed all ten F8-* findings as
+> `OPEN — R68/R69/R70` — naming the rounds that had already shipped them — while
+> **all ten are closed in code**. Verified by reading the fixing code, not the
+> commit subjects: F8-01 a second structural counter (`count_direct_db_calls`,
+> `service/mod.rs:183`); F8-02 an independent pin (`gates.rs:222`); F8-03
+> `write_deadline.rs` as the closure's first statement (`domains.rs:275-277`); F8-04
+> `LogValue` (`memory.rs:294`) at nine call sites; F8-05 `strip_rust_comments`
+> **used** by the counter (`spire_inventory.rs:905`); F8-06 `WEBHOOK_PATHS` with the
+> prefix gone; F8-07 both rows and `ipv4_compatible` (`webhook.rs:395,516`); F8-08
+> `promoted_chunk_id` + chunked IN-delete; F8-09 the roster arm; F8-10
+> `resolve_bind_port` refusing port 0. **Every mismatch said OPEN for something
+> closed — not one row claimed OPEN for a genuinely-open item.** Each is now
+> stamped with **what the code does**, and six rows record where the audit itself
+> was wrong (F8-04 found **eight** log sites not two; F8-06's fix would have
+> **disabled all six webhooks** had the template/concrete-path mismatch not been
+> caught; F8-07's `::169.254.169.254` was a **live admission**; F8-08 needed a
+> migration the audit said was unnecessary; F8-09's "unreachable" arm was reachable
+> because a **BLOB survives TEXT affinity**; F8-03 was two findings and the VACUUM
+> half was already closed by R68).
+>
+> **(2) F8-02 is recorded as PARTIALLY CLOSED, and saying why is the point.** The
+> prose was corrected and the self-asserting pin replaced, but
+> `decide_gate_verdict` still does not read `required_action` (`policy.rs:198-229`)
+> and both dead `DenyReason` arms remain. The audit offered two remedies and
+> **neither was taken**, by deliberate decision on second-opinion-surface grounds.
+> Writing a flat CLOSED would **misrepresent a declined design decision as a fix** —
+> the same defect the finding was filed about.
+>
+> **(3) S8-06 was a real injection sink sitting directly above an `eval`, and BOTH
+> of its halves were latent — the audit filed one as "live export corruption".**
+> `safe_filename` refused traversal, separators and control chars but let `'`
+> through, and the web arm spliced it raw into `a.download='{safe}'`. Measured:
+> it returned `Some("x';alert(1)__.json")` and the emitted script carried
+> `a.download='x';alert(1)//.json';`. Latent because all three call sites pass a
+> literal or `i64`-derived name — **one call-site edit from live.** The quote is now
+> REFUSED (not escaped): a name the browser cannot accept as a download attribute
+> is not a safe one, and an anti-always-refuse pin covers the real callers. The
+> body moved from `{body:?}` to `serde_json::to_string` — the helper
+> `client/src/panels/mod.rs` already uses for this job, rather than a second
+> hand-rolled escaper.
+>
+> **(4) CORRECTED MID-ROUND, and the correction is recorded because the first draft
+> was wrong twice over.** The initial pin asserted U+2028/U+2029 must not appear raw
+> in the JS, on the premise they are invalid string content. **They are not** —
+> ES2019's JSON-superset proposal made them legal (verified in Node v24/V8 13.6:
+> parses to length 3, no `SyntaxError`), and `serde_json` emits them raw. The pin
+> was **red against its own fix**. The hazard that DOES remain is the **legacy
+> octal escape**: `Debug` writes NUL as `\0`, so a following digit becomes `\05`,
+> which JS reads as octal (`"nul\05"` → length 4 in Node). Separately, extracting
+> `download_script` so the pins could drive the real builder made it **dead code
+> on the host bin target** (`-D warnings` refused the build); it is now
+> `cfg(any(wasm32, test))`, and `cargo check --target wasm32-unknown-unknown`
+> proves the real caller still compiles.
+>
+> **(5) L8-03: the pin that looked like it guarded the constant CANNOT fail on a
+> miscitation — which is why the correction alone would have repeated the defect.**
+> `reg_watch.rs:79` cited *recital 38* (explanatory, confers no obligation) as the
+> basis for the 2026-12-02 horizon; the operative provision is **Article 111(4)**.
+> `ai_act_art50_marking_deliverable` asserts the DATE, the provenance surface and
+> two date strings — it never read the comment, so it stayed green on a wrong legal
+> instrument. **Proven:** reverting only the comment leaves that pin passing. The
+> new `art50_transitional_cites_an_operative_provision_not_a_recital` reads the
+> file's **own source**, slices the comment to the constant, and asserts the
+> operative cite is present, the recital is not stated as *granting* the period, the
+> provenance is recorded, and `docs/compliance.md` does not repeat the defect.
+> **PROVENANCE LABELLED, NOT LAUDED:** no EUR-Lex fetch is reachable from a build
+> and Context7 carries no AI Act coverage, so the article number is recorded
+> **audit-asserted, not source-verified** — in the code, the doc, and as an
+> assertion. Only the citation's *kind* was corrected; the date was independently
+> confirmed and is unchanged.
+>
+> **(6) A gate was itself wrong, and the round found it by tripping it.** Writing
+> the R73 receipts doc introduced **six new `docs-truth` MED** findings — all of them
+> for *correctly prefixed* citations like `client/src/download.rs:35`. The cause was
+> `scripts/docs-truth.py`'s regex: `` `?src/(...) `` — the **optional** backtick left
+> no boundary before `src/`, so the pattern matched the tail of `client/src/…`,
+> discarded the `client/` segment, and tested `ROOT/src/download.rs`. The
+> diagnostic re-printed only the truncated path, which is why it looked like my
+> citations were wrong. Fixed by requiring the backtick and capturing the whole
+> path. **Anti-vacuity:** a probe doc with two genuinely non-existent paths still
+> produces exactly two MED findings — the checker is more precise, not more
+> permissive.
+>
+> **(7) S8-09 was ALREADY CLOSED and the audit read it backwards.** `release.sh:54`'s
+> "push a tag manually" sits inside the **`gh`-MISSING refusal branch, followed by
+> `exit 1`**, and `git blame` shows the guard (`a0eae553`) *introduced* it — it is
+> the cause, not an escape. `release.sh:57-88` refuses unless the run is
+> `completed` + `success`, and `release.yml:253-299` is the in-workflow backstop for
+> a manual `git tag`. Reclassified rather than re-fixed, with the residual recorded:
+> the manual-tag sentence is still printed, and "public push URL DISABLED" is a
+> **local git-config fact not observable from the tree**, so it is recorded, never
+> pinned.
+>
+> **(8) L8-02 closed as a CLAIM, not a duty.** `COMPLIANCE.md` said the server
+> "serves the Art 50 disclosure **itself**" and a deployer could "close the
+> model-origin transparency loop" by pointing at the URL. Art 50(5) requires
+> disclosure **at first interaction** — a duty at the deployer's own UI seam, because
+> only the deployer knows when a user's first interaction happens. Reworded to an
+> **input the deployer builds the notice from**, with an explicit "what this
+> component does NOT discharge". **No wire change:** `build_ai_notice` keeps its
+> seven fields, because a `disclosure_timing` field would not discharge the duty
+> anyway — named as a residual.
+>
+> **Spire at ship:** lib **2 326** passed / 0 failed / 2 ignored; `main_suite` **339**
+> passed / 0 failed / 1 ignored; client **245** passed; full suite **green**;
+> `crates/` green; harness green; `cargo fmt --check` clean; clippy clean on **bench
+> and client**; `badges.sh --selfcheck` clean; `env-truth.sh` clean;
+> `docs-truth.sh` **LOW=17 (pre-existing, unmoved), MED 6 → 0**;
+> `check-doc-links.py` clean (405 links). Raw needle **2 974**, stripped **2 958**
+> (gap 16, unchanged). **The floor was NOT raised: `CRATE_TEST_FLOOR` is unchanged
+> at `2 758`** (headroom 200). **Zero new dependency edges: all `Cargo.lock` files
+> byte-identical**; `src/authz/` **0 diff**; `openapi.yaml` and
+> `shell/src/lib/api/schema.d.ts` **0 diff this round**; `src/migration.rs` **0 diff**;
+> schema **1.32.26**. R70's seven pins and R72's two still green.
+>
+> **Red-first, and four of the pins caught defects in this round's own first draft.**
+> The S8-06 pins were proven red by reverting the production change (three of four;
+> the pre-existing traversal test stayed green through the revert, so the reds are
+> attributable to the change and not a weakened harness). The L8-03 pin was proven red
+> by reverting only its comment — **and the anti-vacuity control proved the finding**,
+> because the pre-existing pin stayed green on the miscitation. The register pin was
+> proven by reverting the `F8-10` row to `OPEN`, which fires the **per-id arm** rather
+> than an earlier assertion. Three defects were caught this way: the U+2028
+> over-strict assertion; the register pin's `.find` matching the **first of seven**
+> identical table headers (so it read all seven, and its `rows.len() >= 30` floor
+> passed at both 73 and 38 rows — **it could not detect the very scope bug it
+> existed to catch**); and a status vocabulary with no word for `K8-04`, which is
+> filed as a DECISION rather than a patch.
+>
+> **What did NOT ship, stated plainly.** **Not** the openclaw fork's K8-01…K8-15 or
+> D8-01 (**R71**, a different repository; K8-04 needs a **decision**). **Not** L8-05
+> (the federal EOs — a single uncorroborated source, and Context7 has no federal EO
+> coverage, so writing them would be an **unsupported legal claim**), **not**
+> L8-06's quarterly refresh (an external act), **not** L8-07's Aug 3/4 half (seven
+> repo sources carry `2026-08-04` with a DOI and a prior live fetch, against one
+> unsourced audit claim). **Not** L8-04 or L8-11 (external: a deployer identity; BIS/
+> ECFR). **Not** S8-01, S8-05, S8-07 or D8-02 — genuinely open, genuinely out of
+> this round's theme, and now **re-routed with a reason** rather than left pointing
+> at a round that never owned them. **Not** F8-02's *enforcement*: the oracle still
+> does not read `required_action`, and that decline is recorded accurately rather
+> than reversed. **Not** a `disclosure_timing` wire field. **No migration**, so **no
+> irreversible risk in this round**.
+>
+> Predecessor: **R72 "Truth"** — the fifth and last of the five §9.3 releases.
+> Theme: **a number nobody diffed against a measurement** — the failure this file's
+> own header documents as having occurred six times. Findings **R8-01, R8-02,
+> **R8-03**,
 > **S8-11**, **L8-01** (HIGH), **L8-06**, **L8-07**, **P8-01** from
 > [`docs/audit8/`](audit8/README.md). **No authz change**, no new route, no new
 > dependency edge, no schema change (**1.32.26** unchanged).
@@ -83,8 +235,10 @@
 > `2026-08-04` backed by a DOI and a prior live fetch, against one unsourced
 > audit claim — a DOI-backed claim is not swapped for an unsourced one.
 >
-> **Spire at ship:** lib **2 327** passed / 0 failed / 2 ignored (baseline 2 325,
-> **+2**); full suite **green**; `crates/` green; harness green; `cargo fmt`
+> **Spire at ship:** lib **2 325** passed / 0 failed / 2 ignored (baseline 2 325,
+> **+0** — the round's two pins live in `tests/main_suite.rs`, not the lib);
+> `main_suite` **338** passed / 0 failed / 1 ignored; full suite **green**;
+> `crates/` green; harness green; `cargo fmt`
 > clean; clippy clean on **bench**; `badges.sh --selfcheck` clean;
 > `env-truth.sh` clean; `docs-truth.sh` **LOW=17 (pre-existing, unmoved)**;
 > `check-doc-links.py` clean (404 links); `cargo audit` clean across **8**

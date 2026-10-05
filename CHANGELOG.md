@@ -201,6 +201,164 @@ and this note.
 
 ---
 
+## Unreleased — R73 "Receipts"
+
+### Release notes
+
+**The register disagrees with the code.** All ten F8-* dispositions in
+`AUDIT.md` still read `OPEN — R68/R69/R70`, naming the rounds that had
+already shipped them, while **all ten are closed in code**. The register
+lagged three releases: an auditor reading only `AUDIT.md` would have
+re-triaged ten fixed findings, and a new contributor would have re-fixed
+code that already works.
+
+Two findings that the register *could* see but did not enforce are now
+enforced too: a filename gate that let a quote through directly above an
+`eval`, and a citation a green pin could not fail on.
+
+**No authz change**, no new route, **no wire change**, no new dependency
+edge, no schema change (**1.32.26** unchanged).
+
+### The register
+
+Each F8-* row is now stamped with **what the code does**, verified by
+reading the fixing code rather than the commit subject. Six rows record
+where the audit was itself wrong, because that is part of the same defect:
+
+| Row | The audit said | Measured |
+|---|---|---|
+| **F8-04** | two unsanitised log sites | **eight** |
+| **F8-06** | replace a prefix rule | that would have **disabled all six webhooks** — the three `is_public_path` call sites disagree on template vs concrete path |
+| **F8-07** | `::/96` "not normalised" | `::169.254.169.254` was a **live admission** — the v4 table sat present and never consulted |
+| **F8-08** | "no migration needed" | one was needed (`proposed_chunk_id` → `promoted_chunk_id`) |
+| **F8-09** | the arm is unreachable | reachable — a **BLOB survives TEXT affinity**, so a shape pin would have been green before the fix |
+| **F8-03** | one finding | two; the `VACUUM` half was already closed by R68 |
+
+**F8-02 is recorded as PARTIALLY CLOSED, and that is the point.** The
+prose was corrected and the self-asserting pin replaced, but the oracle
+still does not read `required_action` and both dead `DenyReason` arms
+remain. The audit offered two remedies and **neither was taken**, by
+deliberate decision on second-opinion-surface grounds. A flat `CLOSED`
+would misrepresent a declined design decision as a fix.
+
+### S8-06 — a quote in a filename, sitting above an `eval`
+
+`safe_filename` refused traversal, separators and control characters but
+let a single quote through, and the web arm spliced the result raw into
+`a.download='{safe}'`. Measured: `safe_filename("x';alert(1)//.json")`
+returned `Some("x';alert(1)__.json")` and the emitted script carried
+`a.download='x';alert(1)//.json';` — the quote ends the literal and the
+rest lands in statement position.
+
+**Both halves were latent, not live**, which is worth stating rather than
+overstating: all three call sites pass a literal or `i64`-derived name,
+and all three bodies are `serde_json` re-serialisations. It is one
+call-site edit from live.
+
+The quote is **refused**, not escaped — a name the browser cannot accept
+as a download attribute is not a safe one — with an anti-always-refuse pin
+covering the real callers. The body moved from `{body:?}` to
+`serde_json::to_string`, the helper `client/src/panels/mod.rs` already
+uses for this job.
+
+**Corrected mid-round.** The first pin asserted U+2028/U+2029 must not
+appear raw, on the premise they are invalid JS string content. **They are
+not** — ES2019's JSON-superset proposal made them legal (verified in Node
+v24: parses to length 3), and `serde_json` emits them raw. The pin was red
+against its own fix. The hazard that does remain is the **legacy octal
+escape**: `Debug` writes NUL as `\0`, so `\05` becomes U+0005 in JS.
+
+### L8-03 — a citation a green pin could not fail on
+
+`reg_watch.rs` cited *recital 38* — explanatory, conferring no
+obligation — as the basis for the 2026-12-02 horizon. The operative
+provision is **Article 111(4)**.
+
+The reason this mattered beyond a stale comment: the pin that looked like
+it guarded the constant **cannot fail on a miscitation**. It asserts the
+date, the provenance surface, and two date strings in the docs — it never
+read the comment. **Proven:** reverting only the comment leaves it green.
+The new pin reads the file's own source, slices the comment to the
+constant, and asserts the operative cite is present, the recital is not
+stated as *granting* the period, and the provenance is recorded.
+
+**Provenance labelled, not laundered:** no EUR-Lex fetch is reachable from
+a build and Context7 carries no AI Act coverage, so the article number is
+recorded **audit-asserted, not source-verified** — in the code, in the doc,
+and as an assertion. Only the citation's *kind* was corrected; the date was
+independently confirmed and is unchanged.
+
+### Two more rows corrected
+
+- **S8-09 was already closed and the audit read it backwards.** The manual
+  tag push sits inside the `gh`-MISSING refusal branch, followed by
+  `exit 1`, and `git blame` shows the guard *introduced* it.
+- **S8-06's file:line was wrong** (`client/src/download.rs:35`, not
+  `panels/mod.rs:66` — which is the remedy pattern), and **S8-01/S8-06 were
+  routed to a round that never owned them.**
+- **L8-02** closed as a *claim*: the well-known notice is an **input** the
+  deployer builds the first-interaction disclosure from. **No wire change**
+  — `build_ai_notice` keeps its seven fields, because a
+  `disclosure_timing` field would not discharge the duty anyway.
+
+### A gate was itself wrong
+
+Writing this round's receipts introduced **six new `docs-truth` MED**
+findings — all for *correctly prefixed* citations like
+`client/src/download.rs:35`. `scripts/docs-truth.py`'s regex was
+`` `?src/(...) ``: the **optional** backtick left no boundary before
+`src/`, so it matched the tail of `client/src/…`, discarded the `client/`
+segment, and tested `ROOT/src/download.rs`. The diagnostic re-printed only
+the truncated path, which is why it looked like the citations were wrong.
+Fixed by requiring the backtick and capturing the whole path.
+**Anti-vacuity:** a probe doc with two genuinely non-existent paths still
+produces exactly two MED findings — the checker is more precise, not more
+permissive.
+
+### Spire at ship
+
+lib **2 326** passed / 0 failed / 2 ignored; `main_suite` **339** passed /
+0 failed / 1 ignored; client **245** passed; full suite **green**;
+`crates/` green; harness green; `cargo fmt --check` clean; clippy clean on
+**bench and client**; `badges.sh --selfcheck` clean; `env-truth.sh` clean;
+`docs-truth.sh` **LOW=17 (pre-existing, unmoved), MED 6 → 0**;
+`check-doc-links.py` clean (405 links). Raw needle **2 974**, stripped
+**2 958** (gap 16, unchanged). **The floor was NOT raised:
+`CRATE_TEST_FLOOR` is unchanged at `2 758`** (headroom 200). **Zero new
+dependency edges: all `Cargo.lock` files byte-identical**; `src/authz/` **0
+diff**; `openapi.yaml` and `shell/src/lib/api/schema.d.ts` **0 diff**;
+`src/migration.rs` **0 diff**; schema **1.32.26**.
+
+**Red-first.** The S8-06 pins were proven red by reverting the production
+change (three of four; the pre-existing traversal test stayed green
+through the revert). The L8-03 pin was proven red by reverting only its
+comment — **and the anti-vacuity control proved the finding**, because the
+pre-existing pin stayed green on the miscitation. The register pin was
+proven by reverting the `F8-10` row, which fires the **per-id arm** rather
+than an earlier assertion.
+
+**Four pins caught defects in this round's own first draft:** the
+U+2028 over-strict assertion; `download_script` becoming dead code on the
+host bin target; the register pin's `.find` matching the **first of seven**
+identical table headers — with a `rows.len() >= 30` floor that passed at
+both 73 and 38 rows, so it **could not detect the very scope bug it
+existed to catch**; and a status vocabulary with no word for `K8-04`,
+which is filed as a DECISION rather than a patch.
+
+### What this round does NOT ship
+
+- **Not** the fork's K8-01…K8-15 or D8-01 (**R71**); K8-04 needs a
+  **decision**, not a patch.
+- **Not** L8-05, L8-06's refresh, or L8-07's Aug half — all three need
+  primary sources this environment cannot reach. **Deferred, not closed.**
+- **Not** L8-04 or L8-11 — external (a deployer identity; BIS/ECFR).
+- **Not** S8-01, S8-05, S8-07, D8-02 — genuinely open, genuinely out of
+  this round's theme, now **re-routed with a reason**.
+- **Not** F8-02's *enforcement*; the decline is recorded, not reversed.
+- **No migration is added, so there is no irreversible risk in this round.**
+
+---
+
 ## Unreleased — R72 "Truth"
 
 ### Release notes
