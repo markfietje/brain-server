@@ -23,6 +23,7 @@ Run these before tagging — the tree is only "released" when every one passes:
 cargo test --features bench,migrate      # the real test count badges.sh reports
 cargo clippy --all-targets --features bench,migrate -- -D warnings
 cargo fmt --check
+scripts/badges.sh --verify-count         # the REAL test-count comparison
 scripts/badges.sh --selfcheck            # version + checklist completeness guards
 ```
 
@@ -57,9 +58,20 @@ operator request; plain absence on CI = named skip — `src/handlers/case_run.rs
 
 `scripts/badges.sh` derives the version from `Cargo.toml` and the test count
 from an actual `cargo test` run, so the README badge can never drift from the
-build (the 665-vs-659 drift this release fixed). Paste its output into the
-README badge block; `--selfcheck` guards the derivations + this checklist's
-own completeness.
+build. Paste its output into the README badge block.
+
+**Two modes, and the difference matters.** `--selfcheck` is the cheap path and
+runs on every CI push: it re-derives the version, checks the README against it,
+requires the committed SBOM, and requires the test badge's own block to point at
+`--verify-count`. It deliberately does **not** compare the test NUMBER — that
+needs a full compile, and a gate too slow to run is a convention. `--verify-count`
+is the arm that compares, and it costs one full `cargo test --features
+bench,migrate` run; CI invokes it in the `lint-test` job for that reason.
+
+This split exists because the count was previously unchecked by anything: the
+badge read 3 120 while the build derived 3 156, and every gate stayed green.
+That gap is why `--verify-count` exists, not because the count is hard to
+derive.
 
 ## Honest scope: SBOM + OpenAPI + well-known (v1.28.87 docs-truth)
 
@@ -144,7 +156,7 @@ surface: add it to `ingest_write_sites_route_through_screen`.
 | `install-service.sh` | Build + install binaries, launchd plist, strips macOS provenance xattr. | deployment.md / AGENTS.md |
 | `release.sh` | Tag + publish; blocks on green CI for the tagged SHA. | this page / AGENTS.md |
 | `release-sign.sh` | Sign release artifacts (also signs `brain kb build` tarballs). | cli-reference.md (kb) |
-| `badges.sh` | Regenerate README badges from the real build; `--selfcheck` drift guard. | this page |
+| `badges.sh` | Regenerate README badges from the real build; `--verify-count` is the test-count drift guard, `--selfcheck` the cheap derivations + completeness. | this page |
 | `env-truth.sh` | Docs-vs-code env-var truth gate (tiers live, docs qualified + Loop-tracked). | this page |
 | `sbom.sh` | SBOM generation for CRA/security docs. | cra.md |
 | `cra-kit.sh` | CRA evidentiary kit generator. | cra.md |

@@ -201,6 +201,115 @@ and this note.
 
 ---
 
+## Unreleased — R72 "Truth"
+
+### Release notes
+
+**A number nobody diffed against a measurement.** The failure this repo's own
+header documents as having occurred **six times**, found once more — in the gate
+that exists to catch it. Eight findings; **three of the audit's premises were
+wrong**, which is the round's first result. **No authz change**, no new route, no
+new dependency edge, no schema change (**1.32.26** unchanged).
+
+### The finding that mattered: a green gate that could not fail
+
+`scripts/badges.sh --selfcheck` was described as a drift guard. It was not: it
+grepped for the string `"not selfcheck-verified"` and nothing else, and the
+derivation function sat **below** the selfcheck path's own `exit 0`, so the
+comparison was physically unreachable from that path.
+
+**Red-first, recorded.** The README badge read **3 120** while the build derived
+**3 156**. `--selfcheck` exited **0**. A planted `999999` also passed. A control
+planted *version* drift (`version-0.0.1`) correctly **failed** — proving the exit
+path was live and that the missing count arm was the only defect, rather than a
+broken gate that fails for unrelated reasons.
+
+Fixed by splitting the modes by cost, which is also the honest shape:
+
+| Mode | Cost | What it does |
+|---|---|---|
+| `--selfcheck` | ~0.1 s | version↔README, UMP gate, checklist completeness, committed SBOM, and the badge block's pointer to `--verify-count`. **Does not compare the count**, and says so. |
+| `--verify-count` | ~4 min (one full `cargo test`) | Compares the derived count against the README badge and exits non-zero on drift, naming both numbers. |
+
+The cheap path could not carry the compare: `ci.yml` and
+`verification-sweep.sh` both invoke it on every push, and a gate too slow to run
+is the same unenforced-convention defect a second time. `--verify-count` is
+wired into `ci.yml`'s `lint-test` job; the cost is one extra full compile there,
+**measured and stated in the step's comment**.
+
+**A second defect surfaced while fixing the first.** The disclaimer arm was a
+whole-file grep, satisfied by a sentence **28 lines below** the badge — so the
+badge could be arbitrarily wrong while the guard stayed green. It is now scoped
+to the badge's own block, and the disclaimer was moved next to the badge it
+describes. **Proven non-vacuous:** the same bytes relocated to a distant
+paragraph still satisfy the old grep and now fail the guard.
+
+**The gate then caught this round's own first re-baseline.** The badge was
+re-pasted as 3 157 from a run in which the `docs_truth` badge pin was still
+failing, and therefore counted as `failed` rather than `passed`. Fixing it added
+exactly one test; the derive said **3 158** and `--verify-count` refused the
+badge. Corrected, then re-verified.
+
+### The other seven findings
+
+- **S8-11** — the lockfile claim. "All three `Cargo.lock` files" was false, and
+  the audit's replacement number (**eight**) is *also* wrong: there are **8 on
+  disk / 7 tracked**, because `fuzz/Cargo.lock` is gitignored. Eight is a
+  working-tree figure a CI checkout never sees. The three historical rows now say
+  "all tracked".
+- **R8-02** — one dead reference, not two, and the audit's stated reason was also
+  wrong (`check-doc-links.py` *does* walk `docs/`; the reference was invisible
+  because it was bare backtick text, not a `](…)` link). Repointed to the private
+  archive by prose — deliberately not a markdown link, which would newly expose
+  it to a checker that cannot resolve a private path.
+- **L8-01 (HIGH)** — the CT CART general duties (Oct 1 2026) had passed and were
+  still filed under "Scheduled". Corrected, with the scope stated in the file:
+  the date arithmetic is provable from the repo, the **statute text is not**.
+- **L8-06** — the map's quarterly refresh. The audit's framing was too strong:
+  quarterly from 2026-09-14 is not due until **2026-12-14**. The map now
+  discloses that the pass has not run and why, and the status date is
+  **deliberately not re-stamped** — bumping it would claim a verification that
+  never happened.
+- **L8-07** — the OWASP Agentic date reconciled to **2025-12-09** across two files,
+  labelled a repo-internal reconciliation rather than a publisher-verified fact.
+- **R8-01** — the hand-typed count in `AGENTS.md` is gone; the line now names
+  `--verify-count` and carries no number, so it cannot go stale unremarked.
+- **P8-01** — premise **refuted**: four in-repo fixture lanes, not two. `client/`
+  consumes the canonical fixture cross-tree and runs in CI. The real residual —
+  the plugin's lane runs in no workflow here, and cannot, because
+  `plugin/package.json` has no `scripts` block and depends on `workspace:*` — is
+  recorded as R71's.
+
+### Spire at ship
+
+lib **2 325** passed / 0 failed / 2 ignored (baseline 2 325, **+2** — the two new
+pins are in `main_suite`); full suite **green**; `crates/` green; harness green;
+`cargo fmt --check` clean; clippy clean on **bench**; `badges.sh --selfcheck`
+clean; `env-truth.sh` clean; `docs-truth.sh` **LOW=17 (pre-existing, unmoved)**;
+`check-doc-links.py` clean (404 links); **`cargo audit` clean across 8
+lockfiles**. Raw needle **2 972**, stripped **2 956** (raw−stripped gap
+unchanged at 16). **`CRATE_TEST_FLOOR` unchanged at `2 758`.** Zero new
+dependency edges: **all `Cargo.lock` files byte-identical**; `src/authz/` **0
+diff**; `src/migration.rs` **0 diff**; schema **1.32.26**.
+
+### What this round does NOT ship
+
+- **Not L8-05** — the two federal EOs. Unverifiable from this environment: the
+  EOs appear only in the register that cites them, and Context7 carries no
+  federal EO coverage. Writing them would be an unsupported legal claim about a
+  live instrument.
+- **Not L8-06's quarterly refresh** — an external act (NCSL + legislature pages).
+- **Not L8-07's Aug 3/4 correction** — seven repo sources carry `2026-08-04`
+  backed by a DOI and a prior live fetch, against one unsourced audit claim.
+- **Not a CI job for the plugin's fixture lane** — `workspace:*` cannot resolve
+  outside the openclaw workspace. That lane is R71's.
+- **Not L8-02** (re-scoped out of this round) and **not S8-09** (open; the release
+  gate's documentary manual-tag escape is a separate decision).
+- **No authz or runtime-authorization change. No migration.** No irreversible
+  risk in this round.
+
+---
+
 ## Unreleased — R69 "Erasure"
 
 ### Release notes

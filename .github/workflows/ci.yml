@@ -61,6 +61,28 @@ jobs:
       - name: test (--features bench)
         # The bench feature gates the bench binary + its 4 unit tests.
         run: cargo test --all-targets --features bench
+      - name: test-count badge drift gate
+        # The one comparison `--selfcheck` cannot afford: it needs a real
+        # `cargo test --features bench,migrate` run, which is why the cheap
+        # path only checks that the badge LABELS itself unverified rather than
+        # comparing the number. Without this step the badge can drift by
+        # hundreds and stay green — which it did (3 120 vs a derived 3 156).
+        #
+        # COST, measured and stated: this re-derives the count, so it adds one
+        # more full compile+run to this job on top of the two above (~4 min).
+        # It is here rather than in a cheaper job because the derivation
+        # feature set is `bench,migrate`, which no other job runs — there is
+        # no existing run to reuse, and comparing the `--features bench`
+        # result against a `bench,migrate` badge would be a different claim.
+        #
+        # `--no-fail-fast` so ONE failing test does not collapse the sum into a
+        # misleading total: the job above already failed, and this step must
+        # still report what the count actually was.
+        run: BRAIN_TEST_COUNT="$(cargo test --features bench,migrate --no-fail-fast -- \
+              --skip handlers::case_run::conformance::gdl_conformance_pack_run \
+              --skip workflow::sandbox::tests::realized_paths_law_pinned_against_symlinked_temp 2>&1 \
+              | grep -Eo '[0-9]+ passed' | awk '{ s+=$1 } END { print s+0 }')" \
+             bash scripts/badges.sh --verify-count
       - name: README badge + release-checklist drift gate
         # The badges are DERIVED (scripts/badges.sh reads Cargo.toml and the
         # build), but nothing ran the comparison, so a release could bump the
@@ -71,8 +93,9 @@ jobs:
         # `--selfcheck` is the lightweight path: it re-derives the version and
         # compares it to the README, requires the committed
         # `sbom/brain-server-<version>.cdx.json`, and requires the test-count
-        # badge to carry its `not selfcheck-verified` disclaimer so a count
-        # that cannot be proven here is never presented as proven.
+        # badge's OWN block to point at `--verify-count` — so a count this
+        # path cannot prove is never presented as proven. It deliberately does
+        # NOT compare the number; the step above does.
         run: bash scripts/badges.sh --selfcheck
       - name: docs-truth + env-truth gates
         # Two doc-vs-code gates that lived in-tree and were wired to no

@@ -1,7 +1,108 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R70 "Seams"** — the **third** of the five
+> Current release (unreleased): **R72 "Truth"** — the **fifth and last** of the five
 > `docs/audit8/08-design-grid-remediation-gates.md` §9.3 releases. Theme:
+> **a number nobody diffed against a measurement** — the failure this file's own
+> header records as having occurred six times. Findings **R8-01, R8-02, R8-03**,
+> **S8-11**, **L8-01** (HIGH), **L8-06**, **L8-07**, **P8-01** from
+> [`docs/audit8/`](audit8/README.md). **No authz change**, no new route, no new
+> dependency edge, no schema change (**1.32.26** unchanged).
+>
+> **(1) THREE of the audit's eight premises were WRONG, and that is the round's
+> first finding.** Every figure was re-measured at `c36f5840` rather than
+> transcribed, and the tree won three:
+>
+> - **R8-01's fix value was stale.** The audit prescribed re-baselining the
+>   hand-typed test count to **3 122** — measured at `e9c71919`, eleven commits
+>   before this row was written. Applying it would have shipped a stale number
+>   in place of a stale number. It also cited `AGENTS.md:1418`, which is
+>   unrelated prose; the real line was **1826**. **3 122 was not written anywhere.**
+> - **R8-02 was ONE dead reference, not two**, and its stated *reason* was also
+>   wrong: `check-doc-links.py` **does** walk `docs/` (and `docs/AUDIT.md` is a
+>   symlink to the root file). The real reason it was invisible is that the
+>   checker only matches markdown-link syntax `](…)` and the reference was bare
+>   backtick text in a table cell.
+> - **P8-01's premise is REFUTED.** There are **four** in-repo fixture lanes, not
+>   two — `client/src/main.rs:2965` consumes the canonical fixture cross-tree and
+>   **runs in CI** (`client-gate`), which the audit missed. Its proposed remedy
+>   would have **duplicated working cross-tree consumption**.
+>
+> **S8-11's replacement number is wrong too, in the same way:** the audit says
+> re-baseline to eight, but there are **8 on disk / 7 tracked** (`fuzz/Cargo.lock`
+> is gitignored). "Eight" is a working-tree figure a CI checkout never sees.
+>
+> **(2) R8-03 was a LIVE green gate that could not fail.** `--selfcheck` claimed
+> to be a drift guard but grepped only for the string `"not selfcheck-verified"`;
+> the derivation sat **below** the selfcheck path's own `exit 0`, so the
+> comparison was physically unreachable. **RED-FIRST, recorded:** the badge read
+> 3 120 against a derived 3 156 and selfcheck exited **0** — a green gate on a
+> lie — and a planted `999999` also passed, while a control planted *version*
+> drift correctly failed, proving the exit path was live and the missing arm was
+> the only defect. Fixed by splitting the modes by cost: `--selfcheck` stays cheap
+> and now declares what it does NOT check, while **`--verify-count`** re-derives
+> and refuses on drift, wired into `ci.yml`'s `lint-test` job.
+>
+> **(3) A second defect surfaced while fixing the first, and the house gate caught
+> two more of my own.** The disclaimer arm was a **whole-file** grep satisfied by
+> a sentence 28 lines below the badge, so the badge could be arbitrarily wrong
+> while green; it is now scoped to the badge's own block, proven non-vacuous (the
+> same bytes at a distance still pass the old grep and now fail). Separately: a
+> pre-existing gate at `src/docs_truth.rs:115` requires the literal
+> `not selfcheck-verified` in README — **not visible from the prompt** — and
+> rewriting the sentence without it turned the lib suite red; the disclosure was
+> restored and only the surrounding comment updated. Finally, `--verify-count`
+> caught its own first re-baseline: the badge was set to 3 157 from a run where
+> the `docs_truth` pin was still failing (and therefore counted as `failed`, not
+> `passed`); fixing it added exactly one test and the derive said 3 158.
+>
+> **(4) S8-11's real defect was not the sentence.** `scripts/verification-sweep.sh`
+> ran bare `cargo audit`, which covers the **ROOT LOCKFILE ONLY** — so the local
+> gate was the **weaker** of the two, on exactly the surface this finding is
+> about: RUSTSEC-2026-0285 (rustls, 0.23.43 → 0.23.45) landed in the `tools/*`
+> trees, which the root lockfile never saw. `ci.yml` already looped over every
+> lockfile; the sweep now mirrors it. Non-vacuity proven: **8** distinct scans,
+> each with its own dependency count, all clean.
+>
+> **(5) L8-01 (HIGH) is a bookkeeping correction, and its scope is stated IN THE
+> FILE.** The CT CART general duties (Oct 1 2026) had passed and were still filed
+> under "Scheduled" — the repo asserted this duty, set its own clock, and never
+> re-armed it. Moved to the live clause; the checklist re-tenced. But the date
+> arithmetic is provable from the repo while the **statute text remains
+> UNVERIFIED** (`cga.ct.gov` unreachable), so no legal conclusion was added, and
+> **no `reg_watch.rs` constant**: the deliverable is deployer-side notice copy the
+> server cannot observe, and a pin asserting an artifact it cannot see is theatre.
+>
+> **(6) Three items were DEFERRED with a reason, and none is closed.** **L8-05**
+> (two federal EOs) is unverifiable from this environment — the EOs appear only
+> in the register that cites them, and Context7 carries no federal EO coverage;
+> writing them would be an **unsupported legal claim about a live instrument**.
+> **L8-06**'s quarterly refresh is an **external act**; the map now says the pass
+> has not run and why, and the status date is **deliberately NOT re-stamped**
+> because bumping it would claim a verification that never happened.
+> **L8-07**'s Aug 3/4 half is **not** changed: seven repo sources carry
+> `2026-08-04` backed by a DOI and a prior live fetch, against one unsourced
+> audit claim — a DOI-backed claim is not swapped for an unsourced one.
+>
+> **Spire at ship:** lib **2 327** passed / 0 failed / 2 ignored (baseline 2 325,
+> **+2**); full suite **green**; `crates/` green; harness green; `cargo fmt`
+> clean; clippy clean on **bench**; `badges.sh --selfcheck` clean;
+> `env-truth.sh` clean; `docs-truth.sh` **LOW=17 (pre-existing, unmoved)**;
+> `check-doc-links.py` clean (404 links); `cargo audit` clean across **8**
+> lockfiles; shell gate **82 passed / 18 files**, `tsc` clean. **The floor was
+> NOT raised: `CRATE_TEST_FLOOR` is unchanged at `2 758`.** **Zero new dependency
+> edges: all `Cargo.lock` files byte-identical**; `src/authz/` **0 diff**;
+> `src/migration.rs` **0 diff**; schema **1.32.26**. `docs-truth.sh` LOW is
+> **unchanged at 17**. R70's seven pins all still green.
+>
+> **What did NOT ship, stated plainly.** **Not** L8-05, **not** L8-06's refresh,
+> **not** L8-07's Aug half, **not** any K8-* (R71, a different repository), **not**
+> a CI job for the plugin's fixture lane (its `package.json` has no `scripts`
+> block and depends on `workspace:*`, which cannot resolve outside the openclaw
+> workspace — that lane is R71's). **L8-02 is explicitly re-scoped OUT of R72**
+> and **S8-09 remains open** — neither was in this round's scope and the register
+> says so rather than leaving them looking addressed.
+>
+> Predecessor: **R70 "Seams"** — the third of the five §9.3 releases. Theme:
 > **the cheap enforcement wins — six seams where the machine was right for the
 > wrong reason, or right by luck.** Findings **F8-03** (HIGH), **F8-04**,
 > **F8-06** (MEDIUM), **F8-07**, **F8-09**, **F8-10** (LOW) from
@@ -1891,8 +1992,9 @@ scripts/lipstyk-gate.sh
 # any primary brain-server binary is missing.
 
 # README badges — NEVER hand-type them; regenerate from the real build:
-scripts/badges.sh                         # prints version/test/UMP/SBOM badge block
-scripts/badges.sh --selfcheck             # drift + release-checklist completeness guard
+scripts/badges.sh                         # prints the version/test/UMP/SBOM badge block
+scripts/badges.sh --verify-count          # the REAL count compare (one full cargo test, ~4 min)
+scripts/badges.sh --selfcheck             # CHEAP gate: version↔README, UMP, checklist, SBOM
 # (derives version from Cargo.toml, test count from cargo test --features bench,migrate)
 
 # Install + restart launchd service (also installs CLI binaries, strips macOS provenance xattr)
