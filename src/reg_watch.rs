@@ -76,11 +76,23 @@ fn stamped_application_date() -> String {
 /// content — legacy-system grace ends 2 Dec 2026.
 /// Source: Regulation (EU) 2024/1689 Art 50(2) as amended by Regulation
 /// (EU) 2026/1744 (the "Digital Omnibus on AI" package; adopted 8 Jul 2026,
-/// OJ L 24.7.2026, in force 27 Jul 2026): recital 38 grants a four-month
-/// transitional period for systems placed on the market before 2 Aug 2026 —
-/// i.e. through 2 Dec 2026. The pre-1.28.88 comment cited the C(2026) 4935
-/// guidelines as the horizon's legal basis; the amending regulation is the
-/// instrument (L7-04; OJ number confirmed 2026-09-14).
+/// OJ L 24.7.2026, in force 27 Jul 2026). The transitional period is the
+/// OPERATIVE provision Article 111(4) — a recital is explanatory and confers
+/// no obligation, so an earlier version of this comment citing "recital 38"
+/// as the legal basis was citing the wrong kind of instrument (and nothing
+/// read it: the pin below asserted the DATE, never the citation, so it stayed
+/// green on a wrong cite). Recital 38 remains the RECITED REASON; Art 111(4)
+/// is what the obligation rests on. The pre-1.28.88 comment cited the
+/// C(2026) 4935 guidelines as the horizon's legal basis; the amending
+/// regulation is the instrument (OJ number confirmed 2026-09-14).
+///
+/// PROVENANCE OF "Article 111(4)": audit-asserted, NOT source-verified. No
+/// EUR-Lex fetch is reachable from a build, and Context7 carries no AI Act
+/// coverage, so the operative-cite correction is recorded on the eighth-pass
+/// audit's authority rather than on a re-read of the OJ text. The DATE was
+/// independently confirmed at the time (2026-09-14) and is unchanged by this
+/// edit — only the citation's KIND is corrected. A session with primary
+/// source access should confirm the article number and amend this line.
 /// DEPLOYER horizons from the same regulation (recital 40; no component duty
 /// moves — tracked in docs, not in code): Annex III high-risk obligations
 /// apply from 2 Dec 2027, Annex I (embedded in regulated products) from
@@ -292,6 +304,81 @@ fn ai_act_application_clock_recorded() {
         "docs/compliance.md must state BOTH AI Act dates: general application \
          (2026-08-02) and the legacy-grace horizon (2026-12-02) — December alone \
          misreads as the start"
+    );
+}
+
+/// The Art 50 transitional period rests on an **operative provision**, not a
+/// recital.
+///
+/// **Why this pin exists at all.** `ai_act_art50_marking_deliverable` asserts
+/// the DATE (2026-12-02), the provenance surface, and two date strings in
+/// `docs/compliance.md` — but it never read the comment block, so it was green
+/// while that block cited *recital 38* as the legal basis. A recital is
+/// explanatory and confers no obligation, so the constant's most load-bearing
+/// claim was unguarded: the exact "machine checks under-delivered" shape this
+/// repository keeps finding. The correction is recorded on the eighth-pass
+/// audit's authority (audit-asserted, not source-verified — no EUR-Lex fetch is
+/// reachable from a build), so the pin's job is to keep the KIND of instrument
+/// correct, which is checkable, and not to pretend the article number was
+/// re-verified here.
+///
+/// **What it kills:** restoring the recital as the stated basis. Read from the
+/// file's OWN source rather than a copy, so editing the pin and the comment
+/// together cannot make it vacuous.
+#[test]
+fn art50_transitional_cites_an_operative_provision_not_a_recital() {
+    let source = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/reg_watch.rs"),
+    )
+    .expect("src/reg_watch.rs must exist — this pin reads its own source");
+
+    // The block that justifies AI_ACT_ART50_MARKING: from its doc comment to
+    // the constant itself, so a cite added elsewhere in the file cannot satisfy
+    // this by accident.
+    let start = source
+        .find("AI Act Art 50 transparency")
+        .expect("the Art 50 marking doc comment must exist");
+    let block = &source[start..];
+    let end = block
+        .find("const AI_ACT_ART50_MARKING")
+        .expect("the constant must follow its doc comment");
+    let block = &block[..end];
+
+    assert!(
+        block.contains("Article 111(4)"),
+        "the transitional period must be cited to its OPERATIVE provision \
+         (Article 111(4)) — a recital confers no obligation"
+    );
+    // A recital may still be named, but only as the REASON, never as the
+    // basis. This is the assertion that goes red on the pre-fix wording.
+    assert!(
+        !block.contains("recital 38 grants"),
+        "\"recital 38 grants …\" states the recital as the source of the \
+         obligation, which is the defect — cite recital 38 as the reason if at \
+         all, and Art 111(4) as the instrument"
+    );
+    // …and the provenance must be stated, so the correction never hardens into
+    // a claim of first-party verification it has not had.
+    assert!(
+        block.contains("PROVENANCE") && block.to_lowercase().contains("not source-verified"),
+        "the corrected citation must record that it is audit-asserted rather \
+         than source-verified — no EUR-Lex fetch is reachable from a build. \
+         (Matched case-insensitively: the prose uses emphasis caps, and a \
+         case-sensitive probe would forbid the exact sentence it wants.)"
+    );
+
+    // The docs restate the same claim, so it is pinned there too. A code-only
+    // fix would leave `docs/compliance.md` asserting the wrong kind of
+    // instrument while the constant's own comment reads correctly.
+    let compliance = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/compliance.md"),
+    )
+    .expect("docs/compliance.md must exist");
+    assert!(
+        !compliance.contains("recital 38 grants"),
+        "docs/compliance.md still states that recital 38 GRANTS the transitional \
+         period — the same defect one file over. Naming it as the recited \
+         REASON is fine and intended; citing it as the obligation is not."
     );
 }
 
