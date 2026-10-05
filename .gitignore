@@ -107,6 +107,23 @@ docs/DOC_ACCURACY_AUDIT_PROMPT.md
 EXECUTION_PROMPT_*.md
 audit-chain.key
 
+# R76: the ZCode tool's ignore file is a LOCAL tool config, and its content is by
+# construction an inventory of what must NOT be published — it names private
+# repositories and the private-asset paths they hold. It was tracked, which made
+# that inventory shippable with any release tag. Untracked (kept on disk, where
+# the tool still reads it); nothing in the tree or the gates depends on it.
+# NOTE the trap this sits next to: adding a path here does nothing for an
+# ALREADY-TRACKED file, so this entry only holds because `git rm --cached`
+# removed it from the index.
+.zcodeignore
+
+# NOTE: `evals/` is deliberately NOT ignored. Its JSON overlay names a private
+# repository's gold pack, but `tests/dd_adjudication_pins.rs` `include_str!`s it
+# and `tests/drift_census_pins.rs` reads `R57_DRIFT_BASELINE.json` at runtime —
+# ignoring either would break a fresh clone's build and suite. The private repo
+# NAME is scrubbed in place instead (`<private-repo>`), and
+# tests/drift_census_pins.rs pins that it stays scrubbed.
+
 # dep-research scratch (crate extraction) — never commit
 .depcheck/
 

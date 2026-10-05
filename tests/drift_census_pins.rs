@@ -1127,3 +1127,105 @@ fn the_baseline_is_a_ordered_map_so_a_census_is_reproducible() {
     );
     let _ = BTreeMap::<String, i32>::new();
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R76 — a tracked file must not NAME an unpublished repository.
+//
+// Release tags are published to the PUBLIC repo (`scripts/release.sh` pushes the
+// tag to `public`; `main` deliberately stays private). A tag carries its
+// commit's whole ancestry, so anything a release commit names becomes public.
+// That is how `evals/DD_ADJUDICATED_ROWS_2026-10-03.json` came to carry the
+// name of the private repository holding its source gold pack.
+//
+// The overlay cannot simply be untracked: `tests/dd_adjudication_pins.rs`
+// `include_str!`s it, so removing it breaks the build. Hence the scrub-in-place,
+// and hence this pin — a redaction with no test is a comment.
+//
+// Two properties this pin must have, or it is theatre:
+//
+// 1. The needle is assembled at COMPILE time from two halves, because this file
+//    scans itself. A literal here would trip the pin it defines, and the fix
+//    ("delete the pin") is exactly what would be tempting.
+// 2. The walk is RECURSIVE. A one-level scan missed `docs/audit8/`, which is
+//    where the audit trail for this very finding lives.
+//
+// Deliberately NARROW. The Steward repo name is NOT on this list and must not be
+// added: it is already in six tracked files that predate R76 (so it is not a
+// secret this pin could protect), AND `tests/external_claim_pins.rs` resolves it
+// as a live sibling checkout and PANICS when absent. Renaming it here would
+// break the suite and buy nothing.
+#[test]
+fn no_tracked_file_names_an_unpublished_repository() {
+    /// The unpublished repositories, as compile-time halves so this file does
+    /// not contain what it forbids.
+    const UNPUBLISHED: &[&str] = &[concat!("brain-", "consultancy")];
+
+    fn scan(dir: &Path, needles: &[&str], hits: &mut Vec<String>, root: &Path, depth: usize) {
+        if depth > 4 {
+            return;
+        }
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            if p.is_dir() {
+                // Build output and vendored trees carry copies of everything.
+                if matches!(
+                    name.as_ref(),
+                    "target" | "node_modules" | "dist" | ".git" | "presage-store"
+                ) {
+                    continue;
+                }
+                scan(&p, needles, hits, root, depth + 1);
+                continue;
+            }
+            // Binary/non-UTF8 files are not prose and cannot carry a repo name
+            // in a reviewable way; skipping them keeps this a text pin.
+            let Ok(src) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            for needle in needles {
+                if src.contains(needle) {
+                    hits.push(p.strip_prefix(root).unwrap_or(&p).display().to_string());
+                }
+            }
+        }
+    }
+
+    let root = repo_root();
+    let mut hits = vec![];
+    for dir in [
+        "evals", "docs", "src", "tests", "scripts", "tools", "crates", "client", "shell", "deploy",
+        "plugin",
+    ] {
+        scan(&root.join(dir), UNPUBLISHED, &mut hits, &root, 0);
+    }
+    for f in [
+        ".gitignore",
+        "README.md",
+        "CHANGELOG.md",
+        "AGENTS.md",
+        "AUDIT.md",
+        "SECURITY.md",
+        "THREAT_MODEL.md",
+    ] {
+        let p = root.join(f);
+        if let Ok(src) = std::fs::read_to_string(&p) {
+            for needle in UNPUBLISHED {
+                if src.contains(needle) {
+                    hits.push(f.to_owned());
+                }
+            }
+        }
+    }
+
+    assert!(
+        hits.is_empty(),
+        "tracked file(s) name an unpublished repository: {hits:?}. Release tags ship to the PUBLIC \
+         repo, so a name written into a tracked file is published with the next release. Replace \
+         it with `<private-repo>`; if the file must not be tracked at all, `git rm --cached` it — \
+         a `.gitignore` line alone does nothing for an already-tracked path."
+    );
+}

@@ -1,7 +1,7 @@
 {
   "overlay_id": "DD_ADJUDICATED_ROWS_2026-10-03",
   "decision": "D-D",
-  "source_pack": "brain-consultancy/evals/classifier_gold_set/classifier_gold_set.json",
+  "source_pack": "<private-repo>/evals/classifier_gold_set/classifier_gold_set.json",
   "source_pack_sha256": "2bd6b5b0c4dc1675fc77a960d4c643ad03b83baaadefd28e5b95626512c07916",
   "reviewer_id": "simulated-sme-chat-2026-10-03",
   "simulated": true,
@@ -11,7 +11,8 @@
     "human_pass is NOT written by this overlay - it remains the operator's frozen judgment.",
     "This does not amend the frozen gold corpus.",
     "This does not discharge D-6 and creates no kappa.",
-    "The single-rater ceiling stands."
+    "The single-rater ceiling stands.",
+    "The source pack lives in a PRIVATE repository. Its name is withheld here (the `<private-repo>` placeholder) because this overlay is a TRACKED file and release tags are published to the public repo; the sha256 above is what ties the overlay to the pack without naming where the pack lives. Pinned by tests/drift_census_pins.rs (no tracked file may name an unpublished repository)."
   ],
   "rows": [
     {
