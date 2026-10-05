@@ -51,6 +51,39 @@ fn tracked_files() -> Vec<String> {
         .collect()
 }
 
+/// The word-bounded, case-insensitive occurrence test. Split out so the
+/// anti-vacuity check below can run the SAME matcher over this file with
+/// the exemption bypassed — a check that re-reads its own source cannot
+/// fail, which is the defect this replaces.
+fn occurrences(text: &str, names: &[&str]) -> Vec<String> {
+    let mut hits = Vec::new();
+    let lowered = text.to_lowercase();
+    for (line_no, line) in lowered.lines().enumerate() {
+        for name in names {
+            if name.is_empty() {
+                // `str::find("")` returns `Some(0)` forever and `end == start`,
+                // so the loop below would never advance. Not reachable with the
+                // hand-written NAMES literal, but a function whose contract is
+                // "return the occurrences" must not be able to hang.
+                continue;
+            }
+            let mut from = 0usize;
+            while let Some(offset) = line[from..].find(name) {
+                let start = from + offset;
+                let end = start + name.len();
+                let before_ok = start == 0 || !line.as_bytes()[start - 1].is_ascii_alphanumeric();
+                let after_ok = end >= line.len() || !line.as_bytes()[end].is_ascii_alphanumeric();
+                if before_ok && after_ok {
+                    hits.push(format!("{}: {name}", line_no + 1));
+                    break;
+                }
+                from = end;
+            }
+        }
+    }
+    hits
+}
+
 #[test]
 fn the_engagement_name_does_not_appear_in_tracked_files() {
     // Case-insensitive, word-bounded: `embellish` must not trip it, and neither
@@ -78,25 +111,8 @@ fn the_engagement_name_does_not_appear_in_tracked_files() {
         };
         scanned += 1;
 
-        let lowered = text.to_lowercase();
-        for (line_no, line) in lowered.lines().enumerate() {
-            for name in NAMES {
-                // Word-bounded on both sides.
-                let mut from = 0usize;
-                while let Some(offset) = line[from..].find(name) {
-                    let start = from + offset;
-                    let end = start + name.len();
-                    let before_ok =
-                        start == 0 || !line.as_bytes()[start - 1].is_ascii_alphanumeric();
-                    let after_ok =
-                        end >= line.len() || !line.as_bytes()[end].is_ascii_alphanumeric();
-                    if before_ok && after_ok {
-                        offenders.push(format!("{rel}:{}: {name}", line_no + 1));
-                        break;
-                    }
-                    from = end;
-                }
-            }
+        for hit in occurrences(&text, &NAMES) {
+            offenders.push(format!("{rel}:{hit}"));
         }
     }
 
@@ -105,20 +121,47 @@ fn the_engagement_name_does_not_appear_in_tracked_files() {
         "sanity: only {scanned} files scanned — a walk that reads almost nothing \
          would pass this pin without inspecting anything"
     );
-    // ANTI-VACUITY for the exemption above. This file is exempt so it can hold
-    // the vocabulary; if the vocabulary were ever moved out (or the literals
-    // renamed), the exemption would silently become a blanket pass over a file
-    // that no longer needs it — so assert the pin is still genuinely scanning
-    // the file it exempts, by confirming the literals it exempts itself for are
-    // actually present in its own source.
+    // ANTI-VACUITY for the exemption above. This file is exempt from the scan
+    // so it can hold the vocabulary; if the vocabulary is ever moved out, the
+    // exemption would silently become a blanket pass over a file that no
+    // longer needs it.
+    //
+    // The check must observe a USE of the vocabulary, not its DECLARATION.
+    // Two earlier versions failed exactly here, and both were proven green
+    // under the decisive mutation (replace the vocabulary with a token that
+    // occurs nowhere in the tree):
+    //   * `NAMES.iter().all(|n| own.contains(n))` — `own` is this file and
+    //     `NAMES` is built from literals in it, so it is `x ∈ S` with `x` drawn
+    //     from `S`: true by construction, unfalsifiable.
+    //   * `!occurrences(&own, &NAMES).is_empty()` — the matcher finds the
+    //     literals on the `const NAMES … = ["…"];` line itself, so the
+    //     declaration satisfied the check that was meant to police the
+    //     declaration.
+    //
+    // So: a self-hit must exist at a line OTHER than the one declaring it.
+    // The declaration line is excluded structurally, not by line number.
     let own = std::fs::read_to_string("tests/no_engagement_name.rs")
         .expect("this pin must be able to read its own source");
+    let decl_line = own
+        .lines()
+        .position(|l| l.contains("const NAMES:"))
+        .expect("the vocabulary declaration must be locatable in this source");
+    let uses = occurrences(&own, &NAMES)
+        .into_iter()
+        .filter(|hit| {
+            !hit.split_once(": ")
+                .and_then(|(n, _)| n.parse::<usize>().ok())
+                .is_some_and(|n| n == decl_line + 1)
+        })
+        .count();
     assert!(
-        NAMES.iter().all(|n| own.contains(n)),
-        "this file is exempt from the scan so it can hold the vocabulary — but the \
-         vocabulary is gone ({NAMES:?} absent from this source). The exemption has \
-         become a blanket pass over a file that no longer needs it; remove it from \
-         ALLOWED_FILES deliberately."
+        uses > 0,
+        "this file is exempt from the scan so it can hold the vocabulary, but the \
+         only occurrences of {NAMES:?} in it are its own `const NAMES` declaration \
+         (line {}) — there is no USE to justify the exemption. Either the \
+         vocabulary was moved out, or this file no longer needs to be exempt; \
+         remove it from ALLOWED_FILES deliberately.",
+        decl_line + 1
     );
     assert!(
         offenders.is_empty(),
