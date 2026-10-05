@@ -380,6 +380,21 @@ const IPV4_DENY: &[(u32, u8, &str)] = &[
     (0xC612_0000, 15, "benchmarking 198.18/15"),
     (0xC633_6400, 24, "documentation 198.51.100/24"),
     (0xCB00_7100, 24, "documentation 203.0.113/24"),
+    // F8-07, the two missing rows. Both are IANA special-purpose, and both
+    // were absent while the v6 table already carried their multicast twin
+    // (`ff00::/8`) — the asymmetry is what made the omission visible.
+    //   * `224.0.0.0/4` is IPv4 multicast (RFC 5771). It sits directly below
+    //     the `240/4` reserved row that was already present, so the table had
+    //     a hole in the middle of its own numbering. Local control traffic
+    //     (SSDP `239.255.255.250`, mDNS `224.0.0.251`) and, on some networks,
+    //     an IGMP-capable target — none of it a public egress destination.
+    //   * `192.88.99.0/24` is the 6to4 relay anycast prefix (RFC 7526,
+    //     deprecated by RFC 7526 errata / reserved by the IANA registry). It
+    //     is adjacent to the `192.88.99.0/24` documentation space historically
+    //     used for 6to4 relay anycast and is a transition mechanism that can
+    //     carry a routable v4 inside its bits.
+    (0xE000_0000, 4, "multicast 224/4"),
+    (0xC058_6300, 24, "6to4-relay-anycast 192.88.99/24"),
     (0xFFFF_FFFF, 32, "broadcast 255.255.255.255"),
     (0xF000_0000, 4, "reserved 240/4"),
 ];
@@ -450,11 +465,30 @@ pub fn validate_public_addrs(
         let class = match sa.ip() {
             IpAddr::V4(ip) => ipv4_denied(ip),
             IpAddr::V6(ip) => {
-                // An IPv4-mapped IPv6 (::ffff:a.b.c.d) routes to the embedded
-                // v4 — validate it with the v4 table or the v6 rows never see
-                // the private embed (the ::ffff:169.254.169.254 pin).
-                ip.to_ipv4_mapped()
-                    .map_or_else(|| ipv6_denied(ip), ipv4_denied)
+                // An IPv4-embedded IPv6 reaches its embedded v4 — validate it
+                // with the v4 table or the v6 rows never see the private embed.
+                //
+                // F8-07: `to_ipv4_mapped()` unwraps ONLY the IPv4-MAPPED
+                // prefix `::ffff:0:0/96` (it matches bytes 10..12 == 0xff,0xff
+                // — verified against the std source, which is why the
+                // IPv4-COMPATIBLE form `::a.b.c.d` (prefix `::/96`) used to
+                // fall through to `ipv6_denied` UNNORMALISED and be ADMITTED:
+                // `IPV6_DENY` carries NAT64, 6to4, Teredo and discard rows but
+                // no `::/96` row, so `::169.254.169.254` — the cloud-metadata
+                // address in IPv4-compatible form — resolved clean.
+                //
+                // NORMALISE, not merely "add a row". The two are different
+                // guarantees and the difference matters: a deny row refuses
+                // the `::/96` block itself, whereas normalisation subjects the
+                // embedded v4 to the WHOLE v4 table — so a future v4 row is
+                // inherited here for free, and the class label an operator
+                // sees names the real reason ("link-local/cloud-metadata")
+                // rather than a generic "ipv4-compatible" shrug.
+                if let Some(v4) = ip.to_ipv4_mapped().or_else(|| ipv4_compatible(ip)) {
+                    ipv4_denied(v4)
+                } else {
+                    ipv6_denied(ip)
+                }
             }
         };
         if let Some(class) = class {
@@ -466,6 +500,35 @@ pub fn validate_public_addrs(
         }
     }
     Ok(addrs.to_vec())
+}
+
+/// The embedded IPv4 of an IPv4-**COMPATIBLE** address (`::a.b.c.d`, prefix
+/// `::/96`) — the deprecated form RFC 4291 §2.5.6 defines, and the one
+/// `to_ipv4_mapped` deliberately does NOT unwrap (std deprecated
+/// `to_ipv4` for conflating the two, and `to_ipv4_mapped` is the surviving
+/// half).
+///
+/// Deliberately excludes the degenerate values that are not really
+/// embeddings: `::` and `::1` are the unspecified address and the loopback,
+/// both already denied by `IPV6_DENY`'s first two rows with the right label.
+/// Mapping `::1` to `0.0.0.1` would refuse it as "this-network 0.0.0.0/8",
+/// which is true but says nothing useful to an operator.
+fn ipv4_compatible(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    // The embedded v4 lives in the LAST four octets (bytes 12..16). Bytes
+    // 0..12 must be zero — that is the `::/96` prefix. (Getting this wrong
+    // reads bytes 8..12 and embeds `0.0.0.x` for every compatible address,
+    // which the `0.0.0.0/8` row then refuses with a useless label; the
+    // class-label assertions in `r70_ipv4_compatible_form_is_normalised_into_
+    // the_v4_table` are what caught it.)
+    let [a, b, c, d, e, f, g, h, _, _, _, _, m, n, o, p] = ip.octets();
+    if a != 0 || b != 0 || c != 0 || d != 0 || e != 0 || f != 0 || g != 0 || h != 0 {
+        return None;
+    }
+    // `::` and `::1` are not embeddings — keep their v6 labels.
+    if m == 0 && n == 0 && o == 0 && (p == 0 || p == 1) {
+        return None;
+    }
+    Some(Ipv4Addr::new(m, n, o, p))
 }
 
 /// The cloud-metadata hostnames (the OWASP metadata table) refused before
@@ -1115,6 +1178,25 @@ mod tests {
             ("198.19.255.255", "benchmarking 198.18/15"),
             ("198.51.100.7", "documentation 198.51.100/24"),
             ("203.0.113.9", "documentation 203.0.113/24"),
+            // F8-07: the two missing IANA rows (multicast, 6to4 relay anycast).
+            // The multicast row's v6 twin (`ff00::/8`) was already present,
+            // which is what made the v4 omission visible.
+            ("224.0.0.1", "multicast 224/4"),
+            ("239.255.255.250", "multicast 224/4"),
+            ("224.0.0.251", "multicast 224/4"),
+            ("192.88.99.1", "6to4-relay-anycast 192.88.99/24"),
+            ("192.88.99.255", "6to4-relay-anycast 192.88.99/24"),
+            // F8-07: the IPv4-COMPATIBLE form (`::a.b.c.d`, prefix `::/96`).
+            // `to_ipv4_mapped()` unwraps ONLY `::ffff:0:0/96`, so before the
+            // normalisation these reached the v6 table unnormalised and were
+            // ADMITTED — including the cloud-metadata address. The class label
+            // is the embedded v4's, which is the point of normalising rather
+            // than adding a deny row.
+            ("::169.254.169.254", "link-local/cloud-metadata 169.254/16"),
+            ("::10.0.0.1", "private 10/8"),
+            ("::192.168.1.77", "private 192.168/16"),
+            ("::127.0.0.1", "loopback 127/8"),
+            ("::100.64.0.1", "cgnat 100.64/10"),
             ("240.0.0.0", "reserved 240/4"),
             ("255.254.255.254", "reserved 240/4"),
             ("255.255.255.255", "broadcast 255.255.255.255"),
@@ -1175,11 +1257,103 @@ mod tests {
             // A MAPPED PUBLIC v4 is still admitted — the normalization must
             // not over-refuse (the pinned complement to the embed refusals).
             "[::ffff:8.8.8.8]:443",
+            // The COMPATIBLE twin of that complement. Without this case the
+            // `::/96` normalisation could over-refuse in the other direction:
+            // a blanket "deny ::/96" row would have passed every refusal above
+            // while breaking a legitimate public destination.
+            "[::8.8.8.8]:443",
+            "[::1.1.1.1]:443",
+            // F8-07: the two new rows must not over-reach their neighbours.
+            // `224/4` starts at 224, so 223.x and the rest of 223/8 stay
+            // admissible; `192.88.99/24` is exactly one /24, so its neighbours
+            // stay admissible too.
+            "223.255.255.255:443",
+            "192.88.98.1:443",
+            "192.88.100.1:443",
         ] {
             let sa: SocketAddr = ok.parse().unwrap();
             validate_public_addrs("sink.test", &[sa])
                 .unwrap_or_else(|e| panic!("{ok} must be admitted: {e}"));
         }
+    }
+
+    /// F8-07: the IPv4-COMPATIBLE normalisation, pinned SEPARATELY from the
+    /// table above because it is a different kind of guarantee.
+    ///
+    /// **The gap this closes.** `to_ipv4_mapped()` unwraps only
+    /// `::ffff:0:0/96`. The IPv4-compatible form `::a.b.c.d` therefore
+    /// reached `ipv6_denied` unnormalised, and `IPV6_DENY` had no `::/96`
+    /// row — so `::169.254.169.254`, the cloud-metadata address in its
+    /// compatible form, was ADMITTED. `::10.0.0.1` and `::192.168.1.77` were
+    /// too. The v4 table was fully present and simply never consulted.
+    ///
+    /// **Why normalise rather than add a deny row.** They are different
+    /// guarantees. A row refuses the `::/96` block; normalisation subjects the
+    /// embedded v4 to the WHOLE v4 table, so a v4 row added tomorrow is
+    /// inherited here for free, and the refusal names the real reason
+    /// ("link-local/cloud-metadata 169.254/16") instead of a generic label.
+    /// The class-label assertions below are what distinguish the two
+    /// implementations — a blanket row would refuse these addresses but label
+    /// them differently, and that is the observable difference.
+    ///
+    /// **The degenerate values are NOT embeddings.** `::` and `::1` must keep
+    /// their own v6 labels rather than being reported as `0.0.0.1`, so the
+    /// cases assert the exact string.
+    #[test]
+    fn r70_ipv4_compatible_form_is_normalised_into_the_v4_table() {
+        // Each compatible-form address must carry the embedded v4's class.
+        for (compatible, class) in [
+            ("::169.254.169.254", "link-local/cloud-metadata 169.254/16"),
+            ("::10.0.0.1", "private 10/8"),
+            ("::192.168.1.77", "private 192.168/16"),
+            ("::172.16.5.5", "private 172.16/12"),
+            ("::100.64.0.1", "cgnat 100.64/10"),
+        ] {
+            let ip: std::net::IpAddr = compatible
+                .parse()
+                .unwrap_or_else(|_| panic!("literal {compatible}"));
+            let sa = SocketAddr::new(ip, 443);
+            let err = validate_public_addrs("sink.test", &[sa])
+                .expect_err(&format!("{compatible} must be refused"));
+            match err {
+                EgressRefused::PrivateAddr { addr, class: c, .. } => {
+                    assert_eq!(addr, ip, "{compatible} reports the ORIGINAL address");
+                    assert_eq!(
+                        &c, class,
+                        "{compatible} must be refused as its EMBEDDED v4's class — \
+                         a generic `::/96` deny row would fail this"
+                    );
+                }
+                other => panic!("{compatible}: wrong refusal {other:?}"),
+            }
+        }
+
+        // The degenerate values keep their v6 labels (they are the unspecified
+        // address and the loopback, not embeddings of 0.0.0.0 / 0.0.0.1).
+        for (addr_str, class) in [("::", "unspecified ::"), ("::1", "loopback ::1")] {
+            let ip: std::net::IpAddr = addr_str.parse().expect("literal");
+            let err = validate_public_addrs("sink.test", &[SocketAddr::new(ip, 443)])
+                .expect_err("degenerate addresses must be refused");
+            match err {
+                EgressRefused::PrivateAddr { class: c, .. } => {
+                    assert_eq!(&c, class, "{addr_str} keeps its v6 label");
+                }
+                other => panic!("{addr_str}: wrong refusal {other:?}"),
+            }
+        }
+
+        // A compatible form carrying a PUBLIC v4 stays admissible — the
+        // normalisation must not over-refuse.
+        for ok in ["[::8.8.8.8]:443", "[::1.1.1.1]:80"] {
+            let sa: SocketAddr = ok.parse().expect("literal");
+            validate_public_addrs("sink.test", &[sa])
+                .unwrap_or_else(|e| panic!("{ok} must be admitted: {e}"));
+        }
+
+        // And a genuinely public v6 is untouched by the whole mechanism.
+        let pubv6: SocketAddr = "[2606:4700::1111]:443".parse().expect("literal");
+        validate_public_addrs("sink.test", &[pubv6])
+            .unwrap_or_else(|e| panic!("a public v6 must be admitted: {e}"));
     }
 
     /// `metadata_ip_refused` — the metadata literal AND the two OWASP
