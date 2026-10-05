@@ -106,8 +106,14 @@ mod pins {
 
         // The test-count badge cannot be derived inside a unit test (it needs a
         // full cargo run), so this pins the SHAPE rather than the number, and
-        // `scripts/badges.sh --selfcheck` owns the number in CI. Asserting a
-        // literal here would be the hand-maintenance this test replaces.
+        // `scripts/badges.sh --verify-count` owns the number — it re-derives the
+        // count with the same feature set this script's callers use and refuses
+        // on drift. `--selfcheck` deliberately does NOT, because the comparison
+        // costs a full compile and it runs on every push.
+        //
+        // Asserting a literal number here would be exactly the hand-maintenance
+        // this test replaces; what it DOES pin is the disclosure: a count this
+        // file cannot prove must never read as proven.
         assert!(
             readme.contains("img.shields.io/badge/tests-"),
             "the README test-count badge vanished"

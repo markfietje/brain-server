@@ -61,9 +61,9 @@ README="$REPO/README.md"
 
 if [[ "${1:-}" == "--verify-count" ]]; then
   # The REAL count comparison, kept out of --selfcheck only because it costs a
-  # full cargo test run. Everything cheap has already been checked by
-  #    already did; this answers the one question it cannot: does the number the
-  #    README presents match the build?
+  # full cargo test run. --selfcheck has already checked everything cheap; this
+  # answers the one question it cannot: does the number the README presents
+  # match the build?
   DERIVED="$(test_count)"
   PRESENTED="$(readme_test_badge "$README")"
   if [[ -z "$PRESENTED" ]]; then
