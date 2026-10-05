@@ -247,13 +247,27 @@ pub(crate) fn sweep_subject(
     )?;
     let mut stmt =
         tx.prepare("SELECT id, roster_json FROM shifts WHERE roster_json LIKE ?1 ESCAPE '\\'")?;
+    // F8-09: the row-mapping arm failed OPEN — `.flatten()` DROPPED every row
+    // whose `r.get()` failed, so a cell this code could not read was silently
+    // skipped and the erasure reported a `crew_rows` count that excluded it.
+    // A DSAR certificate is a claim about what was erased; a row it could not
+    // read must not be counted as never having matched.
+    //
+    // It now maps to `DsarError::Database`, which is the SAME posture the
+    // corrupt-cell arm four lines below already takes ("erasure refused"). One
+    // posture inside one function is the whole finding: two failure shapes, two
+    // answers, one of them a silent under-count.
     let rostered: Vec<(i64, String)> = stmt
         .query_map(
             rusqlite::params![crate::workflow::kcs::like_contains_pattern(subject)],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?
-        .flatten()
-        .collect();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| {
+            DsarError::Database(format!(
+                "shifts roster row unreadable; erasure refused: {e}"
+            ))
+        })?;
     drop(stmt);
     for (id, json) in rostered {
         let Ok(roster) = serde_json::from_str::<Vec<String>>(&json) else {
@@ -877,5 +891,94 @@ mod tests {
         assert_eq!(survivors(literal), 0, "the literal subject run is erased");
         assert_eq!(survivors(underscore), 1, "`axb` must NOT match `a_b%`");
         assert_eq!(survivors(widened), 1, "`ab` must NOT match `a_b%`");
+    }
+
+    /// F8-09: BOTH failure shapes inside `sweep_subject` yield
+    /// `DsarError::Database`. The corrupt-JSON arm already did; the
+    /// row-MAPPING arm silently dropped the row instead.
+    ///
+    /// **The fixture is chosen from a MEASUREMENT, not a guess.** The round
+    /// note predicted this arm was unreachable, on the grounds that
+    /// `roster_json TEXT` affinity coerces every storage class to text so
+    /// `r.get::<_, String>()` cannot fail. That is true for INTEGER and REAL
+    /// and **false for BLOB** — verified against SQLite directly:
+    ///
+    /// ```text
+    /// INSERT INTO shifts VALUES(1,42),(2,1.5),(3,x'414243');
+    /// SELECT id, typeof(roster_json) FROM shifts;
+    ///   1 | text      2 | text      3 | blob
+    /// ```
+    ///
+    /// So a BLOB `roster_json` is the reachable case and `r.get::<_, String>()`
+    /// genuinely fails on it. The fixture therefore stores a BLOB — writing
+    /// `42` or `1.5` instead would be silently coerced to `'42'`, the row
+    /// would fail the OTHER arm, and this pin would be GREEN BEFORE THE FIX
+    /// while proving the arm that was not changed. That is the R69 lesson: a
+    /// fixture that does not discriminate is worse than no fixture.
+    #[test]
+    fn r70_roster_row_mapping_failure_fails_closed_like_the_corrupt_cell() {
+        let (pool, _tmp) = db();
+        let mut conn = pool.get().unwrap();
+        // A BLOB roster that STILL MATCHES the subject LIKE pattern — the row
+        // must be reached by the query, then fail while being read.
+        // `x'6a616e65'` is ASCII "jane"; the LIKE sees the raw bytes.
+        conn.execute(
+            "INSERT INTO shifts(domain, site, tz, start_epoch, end_epoch, overlap_minutes,
+                                roster_json, created_at)
+             VALUES ('acme', 'hq', 'UTC', 1, 2, 0, x'6a616e65', 1)",
+            [],
+        )
+        .expect("seed a BLOB roster row");
+        let stored: String = conn
+            .query_row(
+                "SELECT typeof(roster_json) FROM shifts WHERE id = 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            stored, "blob",
+            "PRECONDITION: the fixture must actually be a BLOB, or the pin \
+             exercises the wrong arm and is green before the fix"
+        );
+
+        let tx = conn.transaction().unwrap();
+        let err = sweep_subject(&tx, "jane").expect_err(
+            "an unreadable roster row must REFUSE the erasure, not be skipped \
+             — skipping it under-counts `crew_rows` and certifies an erasure \
+             that skipped a row",
+        );
+        match &err {
+            DsarError::Database(m) => assert!(
+                m.contains("roster"),
+                "the refusal names the table it could not read: {m}"
+            ),
+            other => panic!("wrong error variant: {other:?}"),
+        }
+        // Dropped, not committed: nothing may be certified from this run.
+        drop(tx);
+
+        // The two arms must AGREE. This is the "one posture inside one
+        // function" assertion, driven through the arm that was already
+        // correct — so it cannot be vacuous, and the two cannot drift apart
+        // again.
+        let (pool2, _t2) = db();
+        let mut conn2 = pool2.get().unwrap();
+        conn2
+            .execute(
+                "INSERT INTO shifts(domain, site, tz, start_epoch, end_epoch, overlap_minutes,
+                                roster_json, created_at)
+             VALUES ('acme', 'hq', 'UTC', 1, 2, 0, '[\"jane\",', 1)",
+                [],
+            )
+            .unwrap();
+        let tx2 = conn2.transaction().unwrap();
+        let corrupt =
+            sweep_subject(&tx2, "jane").expect_err("a corrupt roster cell must refuse the erasure");
+        assert!(
+            matches!(corrupt, DsarError::Database(_)),
+            "both failure shapes must yield the SAME variant, so the two arms \
+             cannot drift apart again: got {corrupt:?}"
+        );
     }
 }
