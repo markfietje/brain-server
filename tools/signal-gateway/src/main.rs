@@ -30,6 +30,7 @@ mod state;
 mod validation;
 
 use config::Config;
+use signal_gateway::{remote_bind_allowed, resolve_api_auth};
 use state::AppState;
 
 #[derive(Parser)]
@@ -101,20 +102,28 @@ async fn main() -> Result<()> {
                 .address
                 .parse()
                 .context("server.address must be ip:port")?;
-            if !addr.ip().is_loopback()
-                && std::env::var("SIGNAL_GATEWAY_ALLOW_REMOTE").as_deref() != Ok("1")
-            {
+            if !addr.ip().is_loopback() && !remote_bind_allowed() {
                 anyhow::bail!(
                     "refusing to bind {} (not loopback) without SIGNAL_GATEWAY_ALLOW_REMOTE=1",
                     addr
                 );
             }
 
-            let app = if let Some(token) = &config.server.auth_token {
+            let auth_token = resolve_api_auth(
+                addr,
+                config.server.auth_token.clone(),
+                remote_bind_allowed(),
+            )
+            .map_err(|reason| anyhow::anyhow!("refusing to serve on {addr}: {reason}"))?;
+
+            let app = if let Some(token) = auth_token {
                 info!("API auth: bearer token required");
-                api::create_router_with_auth(state, Some(token.clone()))
+                api::create_router_with_auth(state, Some(token))
             } else {
-                info!("API auth: NONE (loopback-only posture)");
+                // The loopback posture, and `resolve_api_auth` has just proved
+                // it: reaching `Ok(None)` off-loopback is impossible. Say that
+                // rather than restating the old unguarded claim.
+                info!("API auth: NONE — served on loopback only (enforced above)");
                 api::create_router(state)
             };
             let listener = tokio::net::TcpListener::bind(addr).await?;
