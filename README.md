@@ -31,7 +31,7 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 <p align="center">
 
   <a href="#verification-and-evidence">
-    <img alt="3158 tests passed" src="https://img.shields.io/badge/tests-3158%20passed-brightgreen.svg">
+    <img alt="3160 tests passed" src="https://img.shields.io/badge/tests-3160%20passed-brightgreen.svg">
   </a>
   <a href="docs/universal-memory-protocol.md">
     <img alt="UMP 1.0 L3 verified" src="https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg">
