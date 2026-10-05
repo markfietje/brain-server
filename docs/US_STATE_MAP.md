@@ -4,6 +4,26 @@ Scope: brain-server is a single-node loopback-first memory component. It does no
 
 Status date: 2026-09-14. Verify dates against primary sources before a filing. No comprehensive federal AI law as of this date.
 
+> **Refresh cadence — BLOCKED, and deliberately NOT re-stamped.** The map's own
+> instruction is a quarterly pass over NCSL + legislature pages (see "the other
+> ~40 states" below). The pass due after 2026-09-14 **has not been run**: NCSL
+> was unreachable (Cloudflare-blocked) from the build environment. The status
+> date above therefore still reads 2026-09-14 **on purpose** — bumping it would
+> claim a verification that never happened, which is the "a number shipped
+> without anyone diffing it against a measurement" failure this repo exists to
+> prevent. Next due: **2026-12-14**.
+>
+> What DID happen without the network: the CT CART general-duty date (Oct 1
+> 2026) had already passed and was still filed under "Scheduled", so the filing
+> is corrected above. That is arithmetic against a date this repo already
+> asserted — not a fresh legislative check, and not a substitute for one.
+>
+> Also unverified from this environment, and therefore absent from the table
+> rather than guessed: the two 2026 federal Executive Orders cited in the
+> eighth-pass audit (EO 14409, EO 14434). No primary federal source is
+> reachable from a build, and an unreached instrument must not be written into
+> a deployer-facing register. See `AUDIT.md` (L8-05).
+
 ## Common live evidence (all states)
 
 - Recall trace: `POST /recall?trace=true` + `GET /recall/{id}/trace` - what chunks, scores, abstention, scope, principal, domains.
@@ -42,7 +62,18 @@ Watchlist (no deployer duty yet): Virginia HB2094 vetoed 2025 (expect 2027 reint
 
 ## Status snapshot (2026-09-14) — live now vs scheduled
 
-Live and enforceable today: federal TAKE IT DOWN criminal §2 (from enactment 2025-05-19) + FTC 48h removal enforcement (§3, from 2026-05-19), TX TRAIGA, CA SB53/AB2013, CA SB942 (provider tier), CA SB 243 chatbot baseline + OR SB 1546, UT SB149, IL HB3773, NYC LL144, TN ELVIS Act, FL deepfake/election rules. Scheduled: CT general duties Oct 1 2026; IL SB315 eff Jan 1 2027 (audit duties Jan 2028) + CA ADMT business compliance + CO SB26-189 + CO HB26-1263 + GA SB 540 operative duties Jan 1 2027 (GA Jul 1 2027); CT AEDT duties Oct 1 2027; CA risk-assessment filings Apr 1 2028. Watch with counsel: CO stay scope (SB24-205 stay vs SB26-189), CA SB 1119 operative dates, any federal preemption ruling.
+Live and enforceable today: federal TAKE IT DOWN criminal §2 (from enactment 2025-05-19) + FTC 48h removal enforcement (§3, from 2026-05-19), TX TRAIGA, CA SB53/AB2013, CA SB942 (provider tier), CA SB 243 chatbot baseline + OR SB 1546, UT SB149, IL HB3773, NYC LL144, TN ELVIS Act, FL deepfake/election rules, **CT CART Act general duties (Oct 1 2026 — the date has passed; moved out of "Scheduled" 2026-10-05)**. Scheduled: IL SB315 eff Jan 1 2027 (audit duties Jan 2028) + CA ADMT business compliance + CO SB26-189 + CO HB26-1263 + GA SB 540 operative duties Jan 1 2027 (GA Jul 1 2027); CT AEDT duties Oct 1 2027; CA risk-assessment filings Apr 1 2028. Watch with counsel: CO stay scope (SB24-205 stay vs SB26-189), CA SB 1119 operative dates, any federal preemption ruling.
+
+> **Scope of the CT correction — bookkeeping only.** The date arithmetic is
+> provable from this repo: it asserted Oct 1 2026, and that date is in the past.
+> Moving the entry from "Scheduled" to "Live" corrects this document's own filing
+> of its own date. It is **not** a legal conclusion about what CT PA 26-15
+> requires — the statute text remains UNVERIFIED (`cga.ct.gov` unreachable from
+> the build environment), and the deployer-side obligation (checkout/HR notice
+> copy) is one the server cannot observe, so it gets no `src/reg_watch.rs`
+> deliverable pin. A pin asserting an artifact the server cannot see would be
+> theatre; the honest machine-checked shape here would be a date-only WATCH,
+> which is less than what already exists.
 
 ## The other ~40 states: narrow deepfake / election bucket
 
@@ -106,7 +137,8 @@ Operator process (verify per state you operate in):
   runs `POST /dsar {action: purge}` with a named owner and a clock
   (TX, FL, TN, election windows).
 - [ ] Disclosure copy live. AI-use notices in high-risk flows (UT),
-  hiring notices (IL), checkout/HR notices (CT Oct 2026), candidate
+  hiring notices (IL), **checkout/HR notices (CT — in force since Oct 1
+  2026, so this is a CURRENT duty, not a scheduled one)**, candidate
   AEDT notices (NYC 10 business days, CT Oct 2027).
 - [ ] Opt-out and human review paths exist in your app (CA ADMT, CO).
   The server provides the evidence; the buttons live in your surface.

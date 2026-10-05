@@ -7,8 +7,23 @@ stay, the addendum extends them).
 
 | Framework | Edition | Published | Canonical source |
 |---|---|---|---|
-| **GenAI LLM Top 10 2026** | LLM01–LLM10 | 2026-08-04 | `GenAI-Security-Project/GenAI-LLM-Top10` `2026/final` |
-| **Top 10 for Agentic Applications 2026** | ASI01–ASI10 | 2025-12-10 | OWASP Agentic Applications project |
+| **GenAI LLM Top 10 2026** | LLM01–LLM10 | 2026-08-04 | `GenAI-Security-Project/GenAI-LLM-Top10` `2026/final` (DOI `10.5281/zenodo.22109015`) |
+| **Top 10 for Agentic Applications 2026** | ASI01–ASI10 | 2025-12-09 | OWASP Agentic Applications project |
+
+> **Provenance of the two dates above, stated because they are hand-typed.**
+>
+> - **2025-12-09** for the Agentic edition is a REPO-INTERNAL RECONCILIATION, not a
+>   publisher-verified fact: this file previously said `2025-12-10` while
+>   `COMPLIANCE.md` and `docs/MEMGHOST_MITIGATION.md` both said `2025-12-09`. The
+>   majority and the audit agree on the 9th, so the odd file was corrected to match.
+>   The publisher page is **not reachable from a build**, so this is the best
+>   available reading and is labelled as such rather than asserted as verified.
+> - **2026-08-04** for the LLM edition is left **unchanged** deliberately. Seven
+>   sources in this repo carry it, backed by a live fetch recorded at
+>   `docs/SECURITY_AUDIT_20260912_FOURTH_PASS.md:119` ("REAL and EXACT", with the
+>   DOI above). An audit leg proposed 2026-08-03 with no source in the tree; a
+>   DOI-backed claim is not swapped for an unsourced one. Resolving it needs a
+>   fetch against the publisher, not a repository edit.
 
 This is the buyer/auditor artifact: every control carries a **status** — `Shipped
 vX.Y` (with the exact feature), or `Ceiling v2.x` (a documented residual-risk

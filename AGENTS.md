@@ -375,7 +375,7 @@
 > unchanged at `2 758`** (measured **2 934** stripped — headroom 137 → **176**,
 > of which +39 is this round's own fixture strings, disclosed as a ceiling in
 > the CHANGELOG rather than absorbed by re-baselining; **10** real `#[test]`
-> attributes added). **Zero new dependency edges: all three `Cargo.lock` files
+> attributes added). **Zero new dependency edges: all tracked `Cargo.lock` files
 > byte-identical**; `src/migration.rs`, `openapi.yaml`, `route_guards.rs` and
 > `src/authz/policy.rs` all **0 diff**.
 >
@@ -459,7 +459,7 @@
 > **50/53 and exiting non-zero**, from three pre-existing drifted figures in
 > files R2 never touched; re-baselined to measured truth with the movement
 > **attributed, not absorbed** (see below). **Zero new dependency edges: all
-> three `Cargo.lock` files byte-identical**, `src/migration.rs` and
+> tracked `Cargo.lock` files byte-identical**, `src/migration.rs` and
 > `openapi.yaml` and `route_guards.rs` all **0 diff**. `cargo audit` clean over
 > the root lockfile. Diff: `releases.rs` +336, `replay_gate.rs` +33/−6.
 >
@@ -573,8 +573,8 @@
 > fixed at the root (`expect_used` denied in library code, restructured into a
 > `let-else` returning the same Negative, which also removed a duplicate bounds
 > check; and 42 unformatted hunks → `cargo fmt`). **Zero new dependency edges:
-> all three `Cargo.lock` files byte-identical.** `cargo audit` clean over all
-> three audited workspaces. All six frozen gold fixtures hash-verified
+> all tracked `Cargo.lock` files byte-identical.** `cargo audit` clean over every
+> audited workspace in that round. All six frozen gold fixtures hash-verified
 > **IDENTICAL** to `6dcfff13`. Preregistered before any code at `6182f47`,
 > evidence after at `b7b829c`, shipped at `7001e478`.
 >
@@ -1823,7 +1823,12 @@ p95` (bucket-quantile edges, no histograms crate); poison postures
  cargo build --release --features bench --bin brain-server --bin brain --bin mcp --bin bench
 
 # Tests + quality gates (always run with --features bench — the bench binary is feature-gated)
-cargo test --features bench                                  # current count: scripts/badges.sh (2,818 passed at HEAD 7001e478, 2026-09-30)
+# Do NOT hand-type the count. `scripts/badges.sh` derives it and writes the README
+# badge; `scripts/badges.sh --verify-count` re-derives and REFUSES on drift. A
+# number pasted here is a number nobody diffed against a measurement — the exact
+# failure this file's own header documents, repeated. (It happened: the old
+# comment here carried a count pinned to a commit twelve releases back.)
+cargo test --features bench                                  # count: scripts/badges.sh --verify-count
 cargo clippy --all-targets --features bench -- -D warnings   # zero warnings enforced
 cargo fmt --check
 
