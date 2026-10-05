@@ -18061,7 +18061,7 @@ mod scrim {
             }
         }
 
-        const SHIPPED_ROUNDS: [&str; 7] = ["R68", "R69", "R70", "R72", "R73", "R74", "R75"];
+        const SHIPPED_ROUNDS: [&str; 8] = ["R68", "R69", "R70", "R72", "R73", "R74", "R75", "R76"];
         for (id, disposition) in &rows {
             let declared = declared_disposition(disposition);
             let claims_open = declared.contains("OPEN");
@@ -18087,7 +18087,7 @@ mod scrim {
         // global rule would either fail on them or force an exception.
         for id in [
             "F8-01", "F8-02", "F8-03", "F8-04", "F8-05", "F8-06", "F8-07", "F8-08", "F8-09",
-            "F8-10", "S8-06", "S8-09", "L8-02", "L8-03", "S8-01",
+            "F8-10", "S8-06", "S8-09", "L8-02", "L8-03", "S8-01", "S8-02", "S8-04",
         ] {
             let row = rows.iter().find(|(i, _)| i == id).unwrap_or_else(|| {
                 panic!("register row `{id}` must exist in the eighth-pass table")

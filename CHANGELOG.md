@@ -4,6 +4,112 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## Unreleased — R76 "Cadence"
+
+### Release notes
+
+**The two messaging edges never asked *when* or *how often*.** `valet-relay`
+verified *who* signed an alert (HMAC, constant-time) but never asked whether
+the signature was still current, so a captured envelope replayed forever.
+`signal-gateway` owned a rate limiter it never called, so `POST /v2/send` — an
+outbound primitive driving the live identity's websocket — had no
+request-rate control at all. One fix per edge, both red-first, both now wired to
+CI that actually runs them. Findings closed: **S8-02**, **S8-04**. **No authz
+change; no route change; schema 1.32.26 unchanged; zero new dependency edges.**
+
+### S8-02 — freshness at the alert sink
+
+`freshTimestamp` (`tools/valet-relay/relay.js`) admits a `webhook-timestamp`
+only within **±300 s**, and is now the second gate in `verifyAlert`. The
+constant is a mirrored law, not a chosen knob: the spec's reference
+`TOLERANCE_IN_SECONDS = 5 * 60`, and the kernel's own
+`WEBHOOK_REPLAY_SECS` (`src/config.rs:892-896`) plus
+`WEBHOOK_TS_FUTURE_SKEW_SECS` (`src/webhook.rs:41-45`), which `enqueue_ts`
+enforces together in one `if` (`src/webhook.rs:267-275`). No env var — this
+repo's env-truth gate treats an undocumented knob as a finding.
+
+**The header parses two ways, and that is the fix rather than a nicety.** The
+Standard Webhooks spec defines epoch seconds; the kernel's alert sink actually
+sends `chrono::Utc::now().to_rfc3339()` (`src/alert.rs:510`). An epoch-only
+parser `NaN`s on **every** genuine envelope — a green suite over a fix that
+rejects all legitimate traffic. So: all-digits → epoch, otherwise RFC3339.
+
+**Id-dedup is DECLINED BY DECISION.** The producer sets `ts` once and retries up
+to three times with the **same** `delivery_id` (`src/alert.rs:508-535`), so a
+receiver-side id-dedup would trade a duplicate alert for a silently lost one
+whenever the response was lost *after* the forward. The spec's idempotency-key
+advice governs a receiver's processing; this relay's processing is a Signal
+send, and that must not be deduped. `the same id and ts is admitted twice` pins
+the decision so a future reader cannot "helpfully" add a Set.
+
+18 clock-injected tests in `tools/valet-relay/relay.test.js` (zero dependencies,
+`node --test`), including a real end-to-end run: a loopback sink stands in for
+signal-cli, the relay is spawned as a child process, a fresh envelope must
+reach `/v2/send` and a replayed one must get 401 with no forward. **All 18 fail
+against the unfixed relay**; with only the freshness line mutated away, 7 fail
+while the MAC guarantees still pass.
+
+**CI:** a new `valet-relay-gate` job runs `node --test tools/valet-relay/
+*.test.js` on every push. The relay's tests previously ran in **no** workflow —
+the other half of this finding. Testability required wrapping the bind, the poll
+timer and the self-test in `require.main === module`; behaviour when run as a
+process is unchanged.
+
+### S8-04 — the limiter, wired rather than deleted
+
+The finding offered a dilemma — call the limiter from the router, or delete it.
+Both halves were false. It is now on the request path: `apply_rate_limit`
+(`tools/signal-gateway/src/lib.rs`) is a `from_fn` layer closing over a cloned
+`RateLimiter` (an `Arc` inside, so all instances share one budget), generic over
+router state — no `AppState` change, no `with_state` coupling.
+
+**The layering is the substance, not a detail.** `main.rs` wraps the **finished**
+router, after `.with_state(...)` and after the auth `match`, so the limit is
+outermost. In the tokenless loopback posture there is no auth layer at all, so a
+layer placed inside `create_router_with_auth` would sit inside only one of its
+two arms and leave the unauthenticated flood unbounded exactly where the operator
+chose the loosest posture. A pinned e2e test proves the order over a real socket:
+401s inside the budget, 429 outside it. Refusal is a bare `429` with
+`RETRY-AFTER: 60` and an empty body — nothing request-derived in the reply or
+the single `debug!` line.
+
+**Global keying; per-IP declined by decision.** The server is `axum::serve(
+listener, app)` with no `ConnectInfo`, and under this crate's posture every
+client is `127.0.0.1` anyway, so per-IP discrimination would read as control
+while being an illusion; behind a proxy it collapses to one address regardless.
+The limiter stays generic over its key, so per-IP is a call-site change.
+
+**The module moved and lost its alibi.** `mod ratelimit;` is gone from
+`main.rs`; the limiter is `pub mod ratelimit` in the lib target, so the binary
+and the integration tests share one definition rather than the binary compiling
+a private copy. The blanket `#![allow(dead_code)]` is gone — with the honest
+caveat that this does **not** make rustc police deadness (once `pub` in a lib
+target, every `pub` item is externally reachable). The structural pin is what
+holds the line.
+
+**The clock seam is the real find.** `admit_at(key, now)` lets the window
+*drain*, which the old single `Instant::now()` call site made unrepresentable:
+the old suite could prove a budget fills up and never that it empties. The
+constants (100 / 60) are now named in the lib so prod and tests cannot drift —
+the values `create_rate_limiter()` hardcoded before, **named, not chosen**.
+`remaining` and `reset` were **dropped**: nothing consumed them, and an admin
+`reset` for an in-memory limiter with no admin endpoint is speculative API.
+
+19 tests in `tools/signal-gateway/tests/s8_04_rate_limit_wired.rs` — behavioural,
+end-to-end over a real loopback socket, and structural. **Red-proof:** deleting
+the `apply_rate_limit(app,` line (the exact defect) fails 2 tests; making the
+layer never refuse fails 5. The e2e client is a hand-rolled `TcpStream` HTTP/1.1
+GET rather than `reqwest`: reqwest 0.13 resolves `rustls-no-provider`, so
+`Client::new()` panics unless a rustls crypto provider is installed, which needs
+`rustls` as a *direct* dependency — a new dependency edge, refused.
+
+**Residuals, stated not absorbed.** A burst of 100 still reaches Signal; the SSE
+long-poll on `/api/v1/events` draws from the same budget as `/v2/send`;
+`max_sends_per_second` in config.yaml is a **concurrency** cap (5 in-flight), not
+a rate limit — recorded, not renamed, since renaming a config key is a breaking
+config-surface change; 100/60 are not operator-tunable; and a within-window
+replay at the relay still fires once more (bounded: 5 minutes).
+
 ## Unreleased — R75 "Greenlight"
 
 ### Release notes

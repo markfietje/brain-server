@@ -1,6 +1,66 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R75 "Greenlight"** — the round after R74, whose two
+> Current release (unreleased): **R76 "Cadence"**.
+> Predecessor: **R75 "Greenlight"** — the round whose two commits shipped with
+> no round notes at all. R76 theme: **the two messaging edges never asked *when*
+> or *how often*.** Closed **S8-02** (alert-sink freshness) and **S8-04** (the
+> limiter was a dead module). **No authz change**, no route change, no schema
+> change (**1.32.26** unchanged), and **zero new dependency edges** — both
+> `tools/*/Cargo.lock` files stay byte-identical, so R75's lockfile decision is
+> not re-opened.
+>
+> **(1) S8-02 — the obvious fix would have rejected every legitimate envelope.**
+> The Standard Webhooks spec defines `webhook-timestamp` as epoch seconds; the
+> kernel's alert sink actually signs with `chrono::Utc::now().to_rfc3339()`
+> (`src/alert.rs:510`). An epoch-only freshness parser `NaN`s on all real
+> traffic — a green suite over a fix that refuses every genuine alert. So
+> `freshTimestamp` parses **both**: all-digits → epoch, otherwise RFC3339 via
+> `Date.parse`. The `±300 s` two-sided tolerance is a *mirrored* law (spec
+> reference `TOLERANCE_IN_SECONDS = 5 * 60`; kernel `WEBHOOK_REPLAY_SECS` and
+> `WEBHOOK_TS_FUTURE_SKEW_SECS`, enforced together in `enqueue_ts`), and
+> deliberately **not** an env var.
+>
+> **(2) S8-02 — id-dedup is DECLINED, and the reason is in the producer.**
+> `src/alert.rs:508-535` sets `ts` once and retries up to three times with the
+> **same** `delivery_id`. A receiver-side id-dedup would swap a duplicate alert
+> for a *silently lost* one whenever the response was lost after the forward.
+> `the same id and ts is admitted twice — retries must not be eaten` pins the
+> decision so the next reader cannot "helpfully" add a Set.
+>
+> **(3) S8-04 — the limiter's deadness was a REFACTOR artefact, not a design
+> choice.** `main.rs`'s `mod ratelimit;` compiled a *private copy* the
+> integration tests could not reach, and `#![allow(dead_code)]` made it compile
+> silently. The module is now `pub mod ratelimit` in the lib target. **Honest
+> caveat:** removing that blanket does **not** make rustc police deadness —
+> once `pub` in a library target every `pub` item is externally reachable. The
+> structural pin in `tests/s8_04_rate_limit_wired.rs` is what actually holds the
+> line, and it is why deleting the `apply_rate_limit(app,` wrap fails a test.
+>
+> **(4) S8-04 — the layering is the security content.** `apply_rate_limit` wraps
+> the **finished** router, after `.with_state(...)` and after the auth `match`,
+> so the limit is outermost. In the tokenless loopback posture there is no auth
+> layer at all: a layer placed inside `create_router_with_auth` would sit
+> inside only one of its two arms and leave the unauthenticated flood unbounded
+> exactly where the operator chose the loosest posture. Pinned over a real
+> socket — 401s inside the budget, 429 outside it.
+>
+> **(5) Two executor traps, both hit and both recorded.** (a) `reqwest` **is** a
+> dependency of `signal-gateway`, but `Client::new()` **panics** in 0.13 —
+> it resolves `rustls-no-provider`, and installing a crypto provider needs
+> `rustls` as a *direct* dep, i.e. a new dependency edge. The e2e harness is a
+> hand-rolled `TcpStream` HTTP/1.1 GET instead. (b) The plan's "evict empty
+> per-key vecs" is **unfirable as written**: a key that is refused while empty
+> requires `max_requests == 0`, so the code would have been dead. What actually
+> bounds the map is a **sweep** of keys whose newest entry has expired, run on
+> the next request. Both were caught because the tests were written first.
+>
+> **Red-first, both edges.** All 18 JS tests fail against the unfixed relay.
+> Deleting the rate-limit wrap fails 2 Rust tests; making the layer never refuse
+> fails 5.
+
+---
+
+> **R75 "Greenlight"** — the round after R74, whose two
 > commits shipped with **no round notes at all**. Theme: **the tree `main` actually
 > ships must pass the gates that guard it.** Closed **S8-01**; registered **S8-02**
 > and **S8-04**; re-routed **S8-05**. **No authz change**, no schema change
