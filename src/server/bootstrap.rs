@@ -1211,7 +1211,7 @@ pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
 /// Resolve `BIND_PORT`, refusing a malformed value instead of silently
 /// binding the production port.
 ///
-/// **F8-10.** This was `.parse().unwrap_or(8765)`: a typo (`BIND_PORT=876`,
+/// This was `.parse().unwrap_or(8765)`: a typo (`BIND_PORT=876`,
 /// `abc`) bound **the production port** with no diagnostic at all. A
 /// fail-open default on a bind address is the wrong direction — an operator
 /// who set the variable believes they chose something, and the process
@@ -1364,7 +1364,7 @@ pub(crate) fn enforce_loopback_bind_guard(
 mod tests {
     use super::*;
 
-    /// F8-10: a present-and-malformed `BIND_PORT` refuses boot; absent keeps
+    /// A present-and-malformed `BIND_PORT` refuses boot; absent keeps
     /// the 8765 default.
     ///
     /// **Wrong implementation this pin is built to kill:** restoring
@@ -1391,7 +1391,7 @@ mod tests {
         //
         // NOTE, measured rather than assumed: `876` is a VALID u16 and parses
         // cleanly, so it is NOT a refusal case — it binds port 876, which is a
-        // legitimate (if unintended) choice. The F8-10 finding is about values
+        // legitimate (if unintended) choice. The finding is about values
         // that CANNOT be a port, where `.unwrap_or(8765)` silently substituted
         // the production port. A guard that refused every "surprising" number
         // would be inventing policy the audit did not ask for.

@@ -1,4 +1,4 @@
-//! The write deadline — F8-03's enforcement half.
+//! The write deadline — the enforcement half of the abandoned-write window.
 //!
 //! **The defect.** The router wraps every route in a 30 s `TimeoutLayer`
 //! (`server/router/mod.rs`). At the deadline that layer DROPS the handler
@@ -19,7 +19,7 @@
 //! which is the part a caller can retry safely. It does NOT make a write
 //! atomic with respect to a crash, and it does NOT add an idempotency key —
 //! that is a wire contract and a new table, deliberately out of this round's
-//! scope. The remaining residual is named in the R70 note.
+//! scope. The remaining residual is named in the release note.
 //!
 //! **Precedent.** The shape follows `workflow/hostcalls.rs:535-575`, which
 //! computes its budget INSIDE the spawned work and refuses to exceed it rather

@@ -11,7 +11,7 @@ pub const MAX_QUERY_LENGTH: usize = 2000;
 
 /// The request deadline the router's `TimeoutLayer` enforces, in seconds.
 ///
-/// **F8-03: named, so the handler-side budget cannot drift from it.** This was
+/// **Named, so the handler-side budget cannot drift from it.** This was
 /// a bare `StdDuration::from_secs(30)` written inline in the layer stack; a
 /// write handler that wants to refuse work it cannot finish has to know the
 /// number the middleware will actually apply, and two literals in two files is
@@ -21,7 +21,7 @@ pub const REQUEST_TIMEOUT_SECS: u64 = 30;
 /// The margin a write handler holds back from [`REQUEST_TIMEOUT_SECS`] so its
 /// refusal has time to travel back to the client.
 ///
-/// The window is the problem F8-03 names: `TimeoutLayer` drops the handler
+/// The window is the problem this margin exists for: `TimeoutLayer` drops the handler
 /// future at the deadline, but a `spawn_blocking` closure is NOT cancellable —
 /// dropping the join handle runs the closure to completion and it COMMITS. A
 /// write that starts too close to the deadline is therefore abandoned

@@ -380,7 +380,7 @@ const IPV4_DENY: &[(u32, u8, &str)] = &[
     (0xC612_0000, 15, "benchmarking 198.18/15"),
     (0xC633_6400, 24, "documentation 198.51.100/24"),
     (0xCB00_7100, 24, "documentation 203.0.113/24"),
-    // F8-07, the two missing rows. Both are IANA special-purpose, and both
+    // Two IANA special-purpose rows, both missing before this change:
     // were absent while the v6 table already carried their multicast twin
     // (`ff00::/8`) — the asymmetry is what made the omission visible.
     //   * `224.0.0.0/4` is IPv4 multicast (RFC 5771). It sits directly below
@@ -468,7 +468,7 @@ pub fn validate_public_addrs(
                 // An IPv4-embedded IPv6 reaches its embedded v4 — validate it
                 // with the v4 table or the v6 rows never see the private embed.
                 //
-                // F8-07: `to_ipv4_mapped()` unwraps ONLY the IPv4-MAPPED
+                // `to_ipv4_mapped()` unwraps ONLY the IPv4-MAPPED
                 // prefix `::ffff:0:0/96` (it matches bytes 10..12 == 0xff,0xff
                 // — verified against the std source, which is why the
                 // IPv4-COMPATIBLE form `::a.b.c.d` (prefix `::/96`) used to
@@ -1178,7 +1178,7 @@ mod tests {
             ("198.19.255.255", "benchmarking 198.18/15"),
             ("198.51.100.7", "documentation 198.51.100/24"),
             ("203.0.113.9", "documentation 203.0.113/24"),
-            // F8-07: the two missing IANA rows (multicast, 6to4 relay anycast).
+            // The two previously-missing IANA rows (multicast, 6to4 relay anycast).
             // The multicast row's v6 twin (`ff00::/8`) was already present,
             // which is what made the v4 omission visible.
             ("224.0.0.1", "multicast 224/4"),
@@ -1186,7 +1186,7 @@ mod tests {
             ("224.0.0.251", "multicast 224/4"),
             ("192.88.99.1", "6to4-relay-anycast 192.88.99/24"),
             ("192.88.99.255", "6to4-relay-anycast 192.88.99/24"),
-            // F8-07: the IPv4-COMPATIBLE form (`::a.b.c.d`, prefix `::/96`).
+            // The IPv4-COMPATIBLE form (`::a.b.c.d`, prefix `::/96`).
             // `to_ipv4_mapped()` unwraps ONLY `::ffff:0:0/96`, so before the
             // normalisation these reached the v6 table unnormalised and were
             // ADMITTED — including the cloud-metadata address. The class label
@@ -1263,7 +1263,7 @@ mod tests {
             // while breaking a legitimate public destination.
             "[::8.8.8.8]:443",
             "[::1.1.1.1]:443",
-            // F8-07: the two new rows must not over-reach their neighbours.
+            // The two new rows must not over-reach their neighbours.
             // `224/4` starts at 224, so 223.x and the rest of 223/8 stay
             // admissible; `192.88.99/24` is exactly one /24, so its neighbours
             // stay admissible too.
@@ -1277,7 +1277,7 @@ mod tests {
         }
     }
 
-    /// F8-07: the IPv4-COMPATIBLE normalisation, pinned SEPARATELY from the
+    /// The IPv4-COMPATIBLE normalisation, pinned SEPARATELY from the
     /// table above because it is a different kind of guarantee.
     ///
     /// **The gap this closes.** `to_ipv4_mapped()` unwraps only

@@ -30,7 +30,7 @@ pub struct DomainInfo {
     pub multi_db: bool,
 }
 
-/// F8-03: the budget the domain erasure must fit inside to be allowed to BEGIN.
+/// The budget the domain erasure must fit inside to be allowed to BEGIN.
 ///
 /// The erasure is the most expensive write in this handler family — it sweeps
 /// every subject table for the domain under one `BEGIN IMMEDIATE` — so it is
@@ -258,7 +258,7 @@ pub async fn delete_domain(
     let root = state.db_path.parent().map(ToOwned::to_owned);
 
     tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
-        // F8-03: the deadline is computed and checked INSIDE the closure,
+        // The deadline is computed and checked INSIDE the closure,
         // before any statement runs. The router's TimeoutLayer drops this
         // future at 30s, but a spawn_blocking closure is not cancellable — it
         // runs to completion and COMMITS. Checking outside would be too late
@@ -291,7 +291,7 @@ pub async fn delete_domain(
         // best-effort (it must not fail a completed erasure), but a failure
         // is now visible instead of invisible.
         if let Err(e) = crate::service::domains_admin::vacuum(&conn) {
-            // F8-04: `name` is the request's path segment, so it rides the
+            // `name` is the request's path segment, so it rides the
             // `LogValue` newtype rather than the log line raw.
             tracing::warn!(
                 "post-delete VACUUM failed for domain {}: {e}",

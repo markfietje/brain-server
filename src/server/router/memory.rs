@@ -276,7 +276,7 @@ pub(crate) fn sanitize_log_value(v: &str) -> String {
 /// **Why a newtype.** `sanitize_log_value` had a single production call site
 /// and fourteen tests — none of which asserted that any call site USES it. A
 /// seam nothing is forced through is a convention, and conventions are what a
-/// future author silently violates; that is F8-04. Wrapping the sanitised text
+/// future author silently violates. Wrapping the sanitised text
 /// in a type whose ONLY constructor is [`sanitize_log_value`] makes the safe
 /// path the only path: a handler cannot interpolate a raw request-derived
 /// identifier into a log line without either naming this type or giving up the

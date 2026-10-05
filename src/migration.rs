@@ -3140,9 +3140,53 @@ pub fn run_migration_with_store_dim(
         }
     }
 
+    // ── v1.32.26 "Edge": the proposal→chunk correspondence, STORED ────────
+    // The DSAR erasure deletes the memories it can attribute to a subject
+    // (`knowledge.owner`) plus their `derived_from` descendants — but the
+    // approved PROPOSAL that produced each of those memories has no owner
+    // column and carries no proposal ref on the chunk, so the erasure's only
+    // reach into `proposals` was `content LIKE '%subject%'`. A candidate body
+    // almost never contains its owner's identity, so the proposal's raw
+    // plaintext (possibly PII about the subject) survived a certificate reading
+    // `completed` — the drill-proven erasure gap this column closes.
+    //
+    // The correspondence therefore has to be RECORDED where it is created: at
+    // approve time, beside the shared decision CAS. One additive NULLable
+    // INTEGER on `proposals` — `knowledge` gains NOTHING, so every FK-children
+    // map that describes the `knowledge` parent delete stays accurate.
+    //
+    // NULL means "this approval promoted nothing" and is the correct state for
+    // the four approve branches that produce no chunk (registry lifecycle,
+    // outreach consent, campaign/follow-up, channel template). No foreign key:
+    // the house style declares none here, and the edge is read and written only
+    // inside the approve tx and the erasure tx.
+    //
+    // Guarded by `pragma_table_info`, so re-running is a no-op. No column is
+    // dropped and no table is rebuilt. `src/service/purge.rs` already deletes
+    // proposals by `conflict_with`; this column is the OTHER direction and is
+    // not a declared child, so that map is unchanged — stated here because a
+    // reader will look for it.
+    {
+        let col = "promoted_chunk_id";
+        let present: bool = db
+            .query_row(
+                &format!("SELECT COUNT(*) FROM pragma_table_info('proposals') WHERE name='{col}'"),
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap_or(0)
+            > 0;
+        if !present {
+            db.execute(
+                &format!("ALTER TABLE proposals ADD COLUMN {col} INTEGER"),
+                [],
+            )?;
+        }
+    }
+
     db.execute(
-        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.25')
-         ON CONFLICT(key) DO UPDATE SET value = '1.32.25';",
+        "INSERT INTO schema_meta(key, value) VALUES ('schema_version', '1.32.26')
+         ON CONFLICT(key) DO UPDATE SET value = '1.32.26';",
         [],
     )?;
 

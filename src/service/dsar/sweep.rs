@@ -247,7 +247,7 @@ pub(crate) fn sweep_subject(
     )?;
     let mut stmt =
         tx.prepare("SELECT id, roster_json FROM shifts WHERE roster_json LIKE ?1 ESCAPE '\\'")?;
-    // F8-09: the row-mapping arm failed OPEN — `.flatten()` DROPPED every row
+    // The row-mapping arm failed OPEN — `.flatten()` DROPPED every row
     // whose `r.get()` failed, so a cell this code could not read was silently
     // skipped and the erasure reported a `crew_rows` count that excluded it.
     // A DSAR certificate is a claim about what was erased; a row it could not
@@ -893,7 +893,7 @@ mod tests {
         assert_eq!(survivors(widened), 1, "`ab` must NOT match `a_b%`");
     }
 
-    /// F8-09: BOTH failure shapes inside `sweep_subject` yield
+    /// BOTH failure shapes inside `sweep_subject` yield
     /// `DsarError::Database`. The corrupt-JSON arm already did; the
     /// row-MAPPING arm silently dropped the row instead.
     ///

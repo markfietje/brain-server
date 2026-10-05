@@ -55,7 +55,7 @@ pub const PUBLIC_PATHS: &[&str] = &[
 /// over the raw body — GitHub and the channel bridges cannot present a brain
 /// bearer token, and inventing one for them would defeat the point).
 ///
-/// **F8-06: this list is EXPLICIT where it was `path.starts_with("/webhooks/")`.**
+/// **This list is EXPLICIT where it was `path.starts_with("/webhooks/")`.**
 /// The prefix rule exempted every route under `/webhooks/` from authN + authZ,
 /// including any route added there in future — so the exemption was a
 /// convention nobody was forced to honour, and a handler registered at

@@ -215,7 +215,7 @@ pub fn app(state: Arc<AppState>) -> Router {
     .merge(compliance::pack_router())
     // Inner layers (closest to handler)
     //
-    // F8-03: the duration now comes from the shared constant rather than an
+    // The duration now comes from the shared constant rather than an
     // inline literal, so the handler-side write budget (which refuses work it
     // cannot finish before this deadline) is derived from the SAME number. A
     // handler that guessed 30s and a middleware set to 20s would look right in

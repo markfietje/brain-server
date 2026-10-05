@@ -367,7 +367,7 @@ impl HandlerError {
         static INCIDENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let id = INCIDENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let message = message.into();
-        // F8-04: this driver string embeds SQL text, constraint names and
+        // This driver string embeds SQL text, constraint names and
         // filesystem paths — some of them request-derived — so it rides the
         // `LogValue` newtype. The incident id beside it is a u64.
         tracing::error!(incident = id, error = %crate::server::router::memory::LogValue::new(&message), "internal error");

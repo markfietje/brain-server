@@ -30,6 +30,13 @@
 //!   `recall_traces.audit_id` (soft refs, no declared FK) → explicit
 //!   DELETEs above; `tombstones.knowledge_id` is a soft ref BY DESIGN (the
 //!   registry outlives the row);
+//! - `proposals.promoted_chunk_id` is the OTHER direction — the proposal points
+//!   at the chunk, not the chunk at the proposal — so it is **not** a child of
+//!   this delete and is deliberately absent from the statements above. The DSAR
+//!   erasure reads that column (`service::dsar::purge_promoted_proposals`) to
+//!   delete the proposal behind a memory it is purging. A non-DSAR purge leaves
+//!   the edge pointing at a deleted chunk, which reads as NULL-at-the-target
+//!   and matches nothing — disclosed, never silently followed;
 //! - `case_articles.knowledge_id`, `kcs_translations.knowledge_id` →
 //!   declared NO ACTION, NOT cleared here (pre-existing ceiling, documented
 //!   honestly): purging a chunk that carries a case article or a knowledge

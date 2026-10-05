@@ -685,6 +685,28 @@ pub(crate) fn cas_proposal_approved(
     )
 }
 
+/// Bind the proposal→chunk correspondence for an approval that PROMOTED a
+/// memory, so a later erasure of that memory can reach the proposal behind it
+/// by id. A separate write beside [`cas_proposal_approved`], NOT a new
+/// CAS parameter: the non-promoting approve branches have no chunk at all, and
+/// a NULL `promoted_chunk_id` is the correct recorded state for them — the CAS
+/// signature is shared by all seven call sites and widening it would force a
+/// meaningless argument into four of them.
+///
+/// Runs inside the caller's approve transaction, so an approval that rolls
+/// back records no edge. Returns the number of proposals stamped (0 when the
+/// proposal row is already gone).
+pub(crate) fn record_promoted_chunk(
+    conn: &Connection,
+    proposal_id: i64,
+    chunk_id: i64,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "UPDATE proposals SET promoted_chunk_id = ?1 WHERE id = ?2",
+        params![chunk_id, proposal_id],
+    )
+}
+
 /// The translation-approval CAS. Quirk preserved verbatim from the pre-move
 /// handler: this one branch stamps `decided_at = datetime('now')` (a SQL-side
 /// clock) instead of the bound unix-second param every other branch uses.

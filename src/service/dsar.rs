@@ -55,7 +55,13 @@
 //! `tombstones` (INSERT only): the registry outlives the row by design.
 //! `recall_traces` / `proposals` residue sweeps (subject arms): no declared
 //! FK children (`recall_traces.audit_id` references the audit chain with
-//! no FK — the chain is the registry of record, not a parent).
+//! no FK — the chain is the registry of record, not a parent). The proposal
+//! arm is TWO reaches: the subject-STRING sweep beside it, and a BY-ID sweep
+//! (`purge_promoted_proposals`) over the `proposals.promoted_chunk_id`
+//! correspondence recorded at approve time — the column is on the proposal,
+//! so it is not a child of the `knowledge` delete and is named here only so a
+//! reader looking for the map entry finds this instead of concluding the arm
+//! is missing.
 //!
 //! Bounds: the ledger page + tombstone page caps (`MAX_TOMBSTONES`, the
 //! `MAX_MULTI_GET` clamp) are re-asserted HERE so every future caller
@@ -514,6 +520,70 @@ fn count_subject_tombstones(
     Ok(count)
 }
 
+/// Bounds the proposal-erasure IN-list. MEASURED, not assumed: this crate's
+/// bundled SQLite refuses an IN-list at 32,767 bound parameters ("too many SQL
+/// variables"), so the hard ceiling is 32,766. 900 sits well under it with room
+/// to spare and keeps each statement's parameter array small. An UNBOUNDED
+/// `id IN (…)` against a large purge would fail the erasure at the worst
+/// possible moment — loudly, after the memories are already gone in the tx, so
+/// the whole thing rolls back and the subject gets no erasure at all.
+pub const PROPOSAL_ID_CHUNK: usize = 900;
+
+/// The variable ceiling MEASURED against this crate's bundled SQLite, pinned so
+/// the chunking test's fixture can exceed it. Measured by preparing
+/// `... IN (?×N)` at 16_384 / 32_766 / 32_767 / 32_768: the first three prepare
+/// cleanly and 32_767 fails with "too many SQL variables", so the ceiling is
+/// 32_766. If a future SQLite build raises it, this pin fails and the chunking
+/// test's premise is re-measured rather than assumed.
+#[cfg(test)]
+const SQLITE_MAX_VARIABLE_MEASURED: usize = 32_766;
+
+/// Delete the proposals that PROMOTED the chunks this erasure just removed,
+/// by id. This is the arm that closes the erasure-vs-certificate gap:
+/// `content LIKE '%subject%'` can only find a proposal whose text happens to
+/// contain its owner's identity, which a candidate body almost never does — so
+/// an approved proposal's raw plaintext survived a certificate reading
+/// `completed`.
+///
+/// Runs inside the caller's transaction: a failure rolls the proposals delete
+/// back with the memory delete, and no certificate is issued over a partial
+/// erasure (the fail-closed law). Returns the number of proposals removed.
+///
+/// The IN-list is CHUNKED at [`PROPOSAL_ID_CHUNK`]; an empty id set is a no-op
+/// and not an error (a subject with no promoted memories).
+pub fn purge_promoted_proposals(
+    tx: &rusqlite::Transaction,
+    chunk_ids: &[i64],
+) -> Result<usize, DsarError> {
+    if chunk_ids.is_empty() {
+        return Ok(0);
+    }
+    let mut deleted = 0usize;
+    for chunk in chunk_ids.chunks(PROPOSAL_ID_CHUNK) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!("SELECT id FROM proposals WHERE promoted_chunk_id IN ({placeholders})");
+        let mut stmt = tx.prepare(&sql)?;
+        let ids: Vec<i64> = {
+            let params: Vec<&dyn rusqlite::ToSql> =
+                chunk.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
+            stmt.query_map(params.as_slice(), |r| r.get::<_, i64>(0))?
+                .flatten()
+                .collect()
+        };
+        for id in ids.chunks(PROPOSAL_ID_CHUNK) {
+            let ph = vec!["?"; id.len()].join(",");
+            // was never `let _ =` — a silently-missed delete here is exactly the
+            // defect this arm exists to close, so the error propagates and the
+            // caller's tx rolls back.
+            deleted += tx.execute(
+                &format!("DELETE FROM proposals WHERE id IN ({ph})"),
+                rusqlite::params_from_iter(id.iter()),
+            )?;
+        }
+    }
+    Ok(deleted)
+}
+
 /// The DSAR deletion-certificate JSON shape — shared by the multi-pool
 /// orchestration and the per-client single-pool surface so the audit-visible
 /// contract lives in one place. `purged_ids`/`held`/`tombstone_root` are the
@@ -787,14 +857,15 @@ pub fn run_pool(
             )
         };
         tx.execute(sql, params![pat])?;
-        // proposals hold raw candidate content with no owner column,
-        // so a DSAR could never locate them and their plaintext (possibly PII
-        // about the subject) survived a "complete" erasure. Sweep them by the
-        // subject verbatim — the same erasure-safe over-match posture as the
-        // trace sweep above. ponytail: this is a literal `LIKE %subject%`, not a
-        // semantic owner join (proposals are operator-reviewed candidates, not
-        // subject-attributed rows); the review-queue provenance for the subject
-        // is intentionally erased with the memory per Art 17.
+        // proposals hold raw candidate content with no owner column, so the
+        // subject-STRING sweep below can only find one whose text happens to
+        // mention the owner — which a candidate body almost never does. The reach
+        // that actually closes that gap is the BY-ID arm above, which walks the
+        // `promoted_chunk_id` correspondence recorded at approve time over the
+        // chunks this erasure is about to delete. This arm is KEPT, not replaced:
+        // it is the erasure-safe over-match posture for subjects whose text
+        // genuinely appears in a proposal, and removing it would REDUCE coverage
+        // for them. Disclosed, not silently widened.
         // was `let _ =` — a silent failure would leave
         // subject PII in a "complete" erasure; propagate (tx rolls back).
         // ponytail: exact mode here is whole-content equality — the honest
@@ -812,6 +883,28 @@ pub fn run_pool(
             )
         };
         tx.execute(sql, params![pat])?;
+    }
+
+    // The proposals behind the memories this erasure removed, BY ID. Runs
+    // AFTER the knowledge purge so `purged_ids` is the set of chunks genuinely
+    // deleted, and inside the SAME tx as that purge + the ledger row: the
+    // proposal delete and the memory delete commit or roll back together, so the
+    // certificate can never stand over a half-finished erasure.
+    //
+    // Counted via `tracing`, NOT added to the certificate JSON: §2 keeps this
+    // round off the wire (the shell's generated types are already stale against
+    // `openapi.yaml`), and a certificate field nothing consumes would be a
+    // field no one verifies.
+    if matches!(action, "purge" | "both") {
+        let proposals_purged = purge_promoted_proposals(&tx, &purged_ids)?;
+        if proposals_purged > 0 {
+            tracing::info!(
+                proposals = proposals_purged,
+                chunks = purged_ids.len(),
+                subject = %subject,
+                "DSAR erasure removed promoted proposals behind the deleted memories"
+            );
+        }
     }
 
     // Governed-workflow sweep: matched runs + their dependents go with the
@@ -1471,5 +1564,365 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM relationships", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rels, 1, "only the surviving chunk's relationship remains");
+    }
+
+    /// RED-PROOF FIXTURE — the drill's canary. Approve a proposal
+    /// whose body does NOT contain its owner's string, purge the owner, and
+    /// assert the approved proposal is gone. RED before the fix: the proposal
+    /// survives because `content LIKE '%loopback%'` cannot match a body that
+    /// never mentions `loopback`, while the certificate still says
+    /// `completed`.
+    #[test]
+    fn r69_promoted_proposal_does_not_survive_its_owners_erasure() {
+        use crate::pool::SqliteConnectionManager;
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mgr = SqliteConnectionManager::memory();
+        let pool: crate::Pool = r2d2::Pool::builder().max_size(1).build(mgr).expect("pool");
+        let mut conn = pool.get().unwrap();
+        crate::migration::run_migration(&mut conn, 1).expect("migration");
+
+        let subject = "loopback";
+        let canary = "CANARY-HOSTILE-STRING-9182";
+        // The fixture must keep reproducing the gap: a body that never
+        // mentions the owner is the ONLY shape the `content LIKE` arm misses.
+        assert!(
+            !canary.contains(subject),
+            "fixture premise: the proposal body must not contain the subject string"
+        );
+
+        conn.execute(
+            "INSERT INTO proposals(id, kind, content, novelty, salience, status, created_at)
+             VALUES (7, 'fact', ?1, 1.0, 0.5, 'pending', 1)",
+            rusqlite::params![canary],
+        )
+        .expect("proposal insert");
+
+        // Approve through the REAL promote seam (`promote_chunk_insert` +
+        // `cas_proposal_approved`, as `handlers/gate.rs` runs it), so the
+        // knowledge row is genuinely owner-stamped.
+        let now = chrono::Utc::now().timestamp();
+        let tx = conn.transaction().expect("tx");
+        crate::service::gate::promote_chunk_insert(
+            &tx,
+            &crate::service::gate::Promotion {
+                content: canary,
+                source_kind: "manual",
+                content_hash: "r69-h1",
+                authority: None,
+                observed_at: None,
+                kind: "fact",
+                assertion: "stated",
+                confidence: 0.5,
+                owner: Some(subject),
+                origin: "human",
+                flagged: 0,
+            },
+        )
+        .expect("promote");
+        let moved = crate::service::review::cas_proposal_approved(&tx, 7, now).expect("cas");
+        assert_eq!(moved, 1, "the proposal was genuinely approved");
+        // The correspondence the erasure now walks, exactly as the generic
+        // promote arm records it beside the CAS.
+        crate::service::review::record_promoted_chunk(&tx, 7, 1).expect("edge");
+        tx.commit().expect("commit");
+        drop(conn);
+
+        // Anti-vacuity: the proposal DID exist, approved, before the purge.
+        let conn = pool.get().unwrap();
+        let pre: (i64, Option<i64>) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(decided_at IS NOT NULL) FROM proposals WHERE id = 7",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            pre.0, 1,
+            "anti-vacuity: the proposal existed before the purge"
+        );
+        assert_eq!(pre.1, Some(1), "anti-vacuity: it was APPROVED, not pending");
+        drop(conn);
+
+        let mut conn2 = pool.get().unwrap();
+        let run = run_pool(
+            &mut conn2, "global", subject, "both", false, now, true, None, false,
+        )
+        .unwrap();
+        drop(conn2);
+
+        let conn = pool.get().unwrap();
+        // Anti-vacuity: the memory really was erased — otherwise this fixture
+        // would prove nothing about the proposal.
+        assert!(
+            run.purged_ids.contains(&1),
+            "anti-vacuity: the owner-stamped knowledge row was actually purged"
+        );
+        let knowledge_left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM knowledge WHERE owner = ?1",
+                rusqlite::params![subject],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            knowledge_left, 0,
+            "the memory and its index are genuinely gone"
+        );
+
+        // THE SUBJECT OF THIS ROUND: the approved proposal's raw text must not
+        // survive the erasure of the memory it produced.
+        let proposals_left: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM proposals WHERE content = ?1",
+                rusqlite::params![canary],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            proposals_left, 0,
+            "the approved proposal's plaintext survived a 'completed' erasure"
+        );
+
+        // The certificate is confident either way — that is the defect: it
+        // certifies `completed` over an erasure that did not fully happen.
+        let status: String = conn
+            .query_row(
+                "SELECT status FROM dsar_requests ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "completed", "the certificate still says completed");
+    }
+
+    /// A connection carrying only `proposals` — the arm's own subject, so the
+    /// focused tests below drive [`purge_promoted_proposals`] directly instead
+    /// of standing up the full migration each time.
+    fn proposals_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE proposals (
+                id INTEGER PRIMARY KEY,
+                content TEXT NOT NULL,
+                promoted_chunk_id INTEGER
+            );",
+        )
+        .unwrap();
+        conn
+    }
+
+    fn seed(conn: &rusqlite::Connection, id: i64, body: &str, edge: Option<i64>) {
+        conn.execute(
+            "INSERT INTO proposals(id, content, promoted_chunk_id) VALUES (?1, ?2, ?3)",
+            rusqlite::params![id, body, edge],
+        )
+        .unwrap();
+    }
+
+    fn survivors(conn: &rusqlite::Connection) -> Vec<i64> {
+        let mut stmt = conn
+            .prepare("SELECT id FROM proposals ORDER BY id")
+            .unwrap();
+        stmt.query_map([], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .flatten()
+            .collect()
+    }
+
+    /// POSITIVE — the pre-existing `content LIKE` arm must survive the change.
+    /// A proposal whose text DOES name the subject is still erased, so the new
+    /// by-id reach is additive and not a replacement that narrows coverage.
+    #[test]
+    fn r69_content_arm_still_erases_a_proposal_naming_the_subject() {
+        let conn = proposals_conn();
+        let subject = "alice@example.com";
+        seed(&conn, 1, &format!("contact {subject} re: case"), None);
+        conn.execute(
+            "DELETE FROM proposals WHERE content LIKE ?1 ESCAPE '\\'",
+            rusqlite::params![crate::workflow::kcs::like_contains_pattern(subject)],
+        )
+        .unwrap();
+        assert!(
+            survivors(&conn).is_empty(),
+            "the content arm still reaches a proposal that names the subject"
+        );
+    }
+
+    /// NEGATIVE — the over-match a wrong fix would introduce. A proposal
+    /// belonging to a DIFFERENT owner must survive: no recorded edge, so the
+    /// by-id arm must not touch it. This is what keeps the fix from becoming
+    /// "delete every proposal".
+    ///
+    /// The fixture is ADVERSARIAL to the plausible wrong implementation: the
+    /// proposal's own `id` is deliberately EQUAL to a chunk id in the erasure
+    /// set, so an arm keyed on the wrong column (`WHERE id IN (…)` instead of
+    /// `WHERE promoted_chunk_id IN (…)`) WOULD delete it. Pinned here because a
+    /// negative whose ids never collide passes under exactly that mutation.
+    #[test]
+    fn r69_by_id_arm_spares_a_proposal_with_no_promotion_edge() {
+        let mut conn = proposals_conn();
+        // id 42 == the chunk being erased; the edge is NULL, so this proposal
+        // promoted nothing and is not this subject's to erase.
+        seed(&conn, 42, "someone else's candidate", None);
+        let tx = conn.transaction().unwrap();
+        let n = purge_promoted_proposals(&tx, &[42]).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(n, 0, "an unlinked proposal is not this subject's to erase");
+        assert_eq!(
+            survivors(&conn),
+            vec![42],
+            "the other owner's proposal survives"
+        );
+    }
+
+    /// NEGATIVE, the sharper half — a proposal whose edge points at a chunk
+    /// that is NOT in the erasure's set must survive. This is the direction a
+    /// careless `id IN (…)` (wrong column, or erasing by the wrong id space)
+    /// would get wrong, and the fixture collides ids for the same reason: the
+    /// proposal's `id` IS in the erasure set, so only the correct column spares
+    /// it.
+    #[test]
+    fn r69_by_id_arm_spares_a_proposal_pointing_at_a_chunk_that_survives() {
+        let mut conn = proposals_conn();
+        seed(&conn, 7, "promoted a memory that survives", Some(99));
+        let tx = conn.transaction().unwrap();
+        let n = purge_promoted_proposals(&tx, &[7]).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(n, 0);
+        assert_eq!(survivors(&conn), vec![7]);
+    }
+
+    /// CHUNKING — §4.3's bound. A purge spanning MORE ids than this crate's
+    /// SQLite will bind in one statement must still delete EVERY proposal,
+    /// not just the first batch. Without the chunk loop this fails outright at
+    /// the variable ceiling; with it, the erasure is complete at any size.
+    ///
+    /// The fixture deliberately exceeds [`SQLITE_MAX_VARIABLE_MEASURED`], the
+    /// limit MEASURED against this crate's bundled SQLite — a purge smaller than
+    /// that would pass with the chunking removed, which is a pin that cannot
+    /// fail.
+    #[test]
+    fn r69_by_id_arm_chunks_past_the_sqlite_variable_ceiling() {
+        let mut conn = proposals_conn();
+        let total = SQLITE_MAX_VARIABLE_MEASURED + 34;
+        assert!(
+            total > SQLITE_MAX_VARIABLE_MEASURED,
+            "fixture premise: the purge must exceed the measured binding ceiling"
+        );
+        for i in 1..=total {
+            seed(&conn, i as i64, &format!("candidate {i}"), Some(i as i64));
+        }
+        let chunks: Vec<i64> = (1..=total).map(|i| i as i64).collect();
+        // Sanity: one batch this size is genuinely refused by this SQLite, so
+        // the test cannot pass for want of a real ceiling.
+        let one_batch = format!(
+            "SELECT COUNT(*) FROM proposals WHERE promoted_chunk_id IN ({})",
+            vec!["?"; total].join(",")
+        );
+        assert!(
+            conn.prepare(&one_batch).is_err(),
+            "fixture premise: {total} bound params must exceed this SQLite's limit"
+        );
+        let tx = conn.transaction().unwrap();
+        let n = purge_promoted_proposals(&tx, &chunks).unwrap();
+        tx.commit().unwrap();
+        assert_eq!(n, total, "every promoted proposal is erased across chunks");
+        assert!(
+            survivors(&conn).is_empty(),
+            "none survive the chunked sweep"
+        );
+    }
+
+    /// IDEMPOTENCE — purging twice is safe and the second pass reports zero.
+    /// The erasure is re-run by operators and by the multi-pool orchestrator
+    /// per domain; a second sweep must not error or double-count.
+    #[test]
+    fn r69_by_id_arm_is_idempotent() {
+        let mut conn = proposals_conn();
+        seed(&conn, 1, "candidate", Some(5));
+        let tx = conn.transaction().unwrap();
+        assert_eq!(purge_promoted_proposals(&tx, &[5]).unwrap(), 1);
+        tx.commit().unwrap();
+        let tx = conn.transaction().unwrap();
+        assert_eq!(
+            purge_promoted_proposals(&tx, &[5]).unwrap(),
+            0,
+            "the second pass finds nothing and is not an error"
+        );
+        tx.commit().unwrap();
+        assert!(survivors(&conn).is_empty());
+    }
+
+    /// ATOMICITY — a forced failure mid-sweep rolls the proposals delete back
+    /// with the rest, so no certificate is ever issued over a partial erasure.
+    /// This drives the REAL `run_pool` and poisons a constraint the sweep must
+    /// hit, so the rollback is observed at the seam that issues the ledger row.
+    #[test]
+    fn r69_proposal_delete_rolls_back_with_the_purge_tx() {
+        use crate::pool::SqliteConnectionManager;
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mgr = SqliteConnectionManager::memory();
+        let pool: crate::Pool = r2d2::Pool::builder().max_size(1).build(mgr).expect("pool");
+        let mut conn = pool.get().unwrap();
+        crate::migration::run_migration(&mut conn, 1).expect("migration");
+        let subject = "loopback";
+        conn.execute(
+            "INSERT INTO knowledge(id, content, content_hash, owner)
+             VALUES (1, 'memory', 'r69-atomic', ?1)",
+            rusqlite::params![subject],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO proposals(id, kind, content, novelty, salience, status, created_at, promoted_chunk_id)
+             VALUES (3, 'fact', 'CANARY-ATOMIC-4471', 1.0, 0.5, 'approved', 1, 1)",
+            [],
+        )
+        .unwrap();
+        // A trigger that aborts the proposals DELETE. The memory delete has
+        // already run by the time the by-id arm fires, so a non-atomic
+        // implementation would leave the memory gone and the proposal alive —
+        // exactly the partial erasure the certificate must never cover.
+        conn.execute_batch(
+            "CREATE TRIGGER r69_poison BEFORE DELETE ON proposals
+             BEGIN SELECT RAISE(ABORT, 'r69 forced failure'); END;",
+        )
+        .unwrap();
+        drop(conn);
+
+        let now = chrono::Utc::now().timestamp();
+        let mut conn2 = pool.get().unwrap();
+        let err = run_pool(
+            &mut conn2, "global", subject, "both", false, now, true, None, false,
+        );
+        assert!(
+            err.is_err(),
+            "the forced failure must abort the erasure, not certify over it"
+        );
+        drop(conn2);
+
+        let conn = pool.get().unwrap();
+        // Both halves rolled back together: neither survives.
+        let knowledge_left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM knowledge WHERE id = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            knowledge_left, 1,
+            "the memory delete rolled back with the sweep"
+        );
+        let proposals_left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM proposals WHERE id = 3", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(proposals_left, 1, "the proposal delete rolled back too");
+        let ledger_rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM dsar_requests", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            ledger_rows, 0,
+            "no certificate row over a rolled-back erasure"
+        );
     }
 }

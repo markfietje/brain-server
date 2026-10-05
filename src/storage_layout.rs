@@ -289,6 +289,16 @@ pub const SCHEMA_VERSION_V1_32_24: &str = "1.32.24";
 /// RETURNED, never re-derived. Two additive NULLable columns — no column
 /// dropped, none rebuilt, and neither inside the trace's content address.
 pub const SCHEMA_VERSION_V1_32_25: &str = "1.32.25";
+/// The proposal→chunk correspondence, STORED: `proposals.promoted_chunk_id`,
+/// the single NULLable INTEGER written at approve time beside the shared
+/// decision CAS. Before it, the DSAR erasure's only reach into `proposals` was
+/// a literal `content LIKE '%subject%'`, and a candidate body almost never
+/// contains its owner's identity — so an approved proposal's plaintext
+/// survived a certificate reading `completed`. NULL means the approval
+/// promoted nothing. `knowledge` gains nothing, so the FK-children maps of the
+/// `knowledge` parent delete are unchanged. One additive NULLable column — no
+/// column dropped, none rebuilt, no foreign key declared.
+pub const SCHEMA_VERSION_V1_32_26: &str = "1.32.26";
 
 pub const SCHEMA_VERSION_V1_17_3: &str = "1.17.3";
 pub const SCHEMA_VERSION_V1_9_0: &str = "1.9.0";
@@ -310,7 +320,7 @@ pub const SCHEMA_VERSION_V0_9_9: &str = "0.9.9";
 /// Security posture: a source DB stamped NEWER than this is refused loudly
 /// ([`refuse_newer_schema`]) — migrating *down* would silently drop columns
 /// the newer release added, i.e. data loss dressed as a migration.
-pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_25;
+pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_26;
 
 /// Numeric dotted-version compare (std-only, no semver dependency).
 /// Non-numeric components are skipped (the `schema_ge` precedent in the
@@ -767,13 +777,14 @@ mod tests {
         // the disproof round moved the ceiling to 1.32.22, so the probe moved to 1.32.23, and the
         // the scope round moved the ceiling to 1.32.23, so the probe moved to 1.32.24, and the
         // per-domain axis round moved the ceiling to 1.32.24, so the probe moved to 1.32.25, and the
-        // model-citation-key round moved the ceiling to 1.32.25, so the probe moved to 1.32.26.
+        // model-citation-key round moved the ceiling to 1.32.25, so the probe moved to 1.32.26, and the
+        // proposal-edge round moved the ceiling to 1.32.26, so the probe moved to 1.32.27.
         // A probe
         // pinned AT the ceiling silently tests `Equal`, not `Greater` — the assertion
         // would keep passing while a NEWER-schema database was blessed instead of
         // refused, which is the one failure this function exists to prevent.
-        assert!(is_newer_than_known(Some("1.32.26")));
-        assert!(!is_newer_than_known(Some("1.32.25")));
+        assert!(is_newer_than_known(Some("1.32.27")));
+        assert!(!is_newer_than_known(Some("1.32.26")));
         assert!(!is_newer_than_known(Some("1.32.9")));
         assert!(!is_newer_than_known(Some("1.28.9")));
     }

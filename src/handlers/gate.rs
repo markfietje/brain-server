@@ -1381,7 +1381,13 @@ pub async fn approve_proposal(
             } else {
                 "linked"
             };
+            // `KIND_LINK_ONLY` reuses an EXISTING article and creates no memory,
+            // so it records NO correspondence; the other three kinds draft a new
+            // row and bind it. Tracked explicitly so a link-only approval cannot
+            // claim an edge it did not create.
+            let promoted: Option<i64>;
             let chunk_id = if crate::workflow::kcs::KIND_LINK_ONLY == kind {
+                promoted = None;
                 article.ok_or_else(|| {
                     HandlerError::bad_request(
                         "kcs_article_missing",
@@ -1429,6 +1435,7 @@ pub async fn approve_proposal(
                     &embedding.iter().flat_map(|f| f.to_le_bytes()).collect::<Vec<u8>>(),
                 )
                 .map_err(|e| HandlerError::internal(e.to_string()))?;
+                promoted = Some(new_id);
                 new_id
             };
             crate::service::gate::case_article_link(&tx, &case_ref, chunk_id, action, now_ts)
@@ -1450,6 +1457,14 @@ pub async fn approve_proposal(
                 return Err(HandlerError::conflict(format!(
                     "proposal {id} was already decided by a concurrent action"
                 )));
+            }
+            // The KCS arm promotes a NEW draft row, so the correspondence is
+            // recorded. `KIND_LINK_ONLY` reuses an existing article and creates
+            // nothing — a NULL edge is the correct state for it, which is why
+            // this is driven by `promoted` rather than by `chunk_id`.
+            if let Some(promoted_id) = promoted {
+                crate::service::review::record_promoted_chunk(&tx, id, promoted_id)
+                    .map_err(|e| HandlerError::internal(e.to_string()))?;
             }
             tx.commit()
                 .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;
@@ -1591,6 +1606,13 @@ pub async fn approve_proposal(
                 "proposal {id} was already decided by a concurrent action"
             )));
         }
+
+        // The generic promote ALWAYS creates the chunk above, so the
+        // proposal→chunk correspondence is recorded for it — this is the edge
+        // the DSAR erasure uses to reach the proposal behind a deleted memory.
+        // Same tx as the CAS, so a rolled-back approval records none.
+        crate::service::review::record_promoted_chunk(&tx, id, chunk_id)
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
 
         tx.commit()
             .map_err(|e| HandlerError::internal(format!("commit failed: {e}")))?;

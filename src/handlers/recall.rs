@@ -569,12 +569,12 @@ pub async fn run_recall(
                     per_domain.push((domain.clone(), rs));
                 }
                 Err(e) => {
-                    // F8-04: `domain` is the request-derived domain key, so it
+                    // `domain` is the request-derived domain key, so it
                     // rides the `LogValue` newtype — a crafted control character
                     // in it would otherwise forge an entry in the operator's log.
                     tracing::warn!(
                         "per-domain recall failed ({}): {e:#}",
-                        crate::server::router::memory::LogValue::new(&domain)
+                        crate::server::router::memory::LogValue::new(domain)
                     );
                 }
             }

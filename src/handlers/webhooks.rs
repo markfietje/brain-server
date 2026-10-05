@@ -69,7 +69,7 @@ fn load_webhook_secret() -> Option<Vec<u8>> {
             // Fail closed like the auth token file: a group/world-accessible
             // secret is refused (None) rather than trusted.
             if crate::auth::check_secret_permissions(std::path::Path::new(&secret_path)).is_err() {
-                // F8-04: the secret's PATH is operator-config-derived, so it
+                // The secret's PATH is operator-config-derived, so it
                 // rides the `LogValue` newtype — the diagnostic is worth
                 // keeping, and an unsanitised path in it could forge a log entry.
                 tracing::warn!(path = %crate::server::router::memory::LogValue::new(&secret_path),
