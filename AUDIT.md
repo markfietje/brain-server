@@ -1070,3 +1070,74 @@ lockfiles** (one yanked-crate warning, `yoke-derive 0.8.3` in the Tauri shell).
 - **Concurrency is the weakest dimension** — no lock-ordering cycle analysis over the ~19 Mutex/RwLock
   sites; FTS/vec bloat, metric cardinality and single-mutex inference behaviour unmeasured.
 - No live surface touched; no file in either repository modified.
+
+## 2026-10-06 — Ninth-pass full-spectrum audit (F9/S9/P9/K9/D9/L9/R9/T9/W9)
+
+Executed at `ea286449` (R76 tip) over `docs/SECURITY_AUDIT_20261006_NINTH_PASS.md` —
+six parallel arms (server core, satellites, Mode-B claims, fork, regulatory, 2026
+landscape) plus an orchestrator-owned live drill (fresh DBs, ports 18976–18978) and
+three EXECUTE-LATER probes run to completion. The drill **overrode a static verdict
+twice**: R9-01 (filed WEAKENED statically, REFUTED live — the approve digest binds raw
+drift the reviewer cannot see, fail-closed), and the orchestrator's own first recall
+check (vacuous on 0 hits, caught and re-run). 29 finding rows; no HIGH in the server
+core — the HIGH sits in the fork's packaging.
+
+| ID | Finding | Sev | Disposition |
+|---|---|---|---|
+| K9-01 | Fork-built macOS app **auto-updates back to upstream binaries**: `package-mac-app.sh:114-115` defaults `SPARKLE_FEED_URL` + `SPARKLE_PUBLIC_ED_KEY` to upstream's, baked into Info.plist — a Sparkle update replaces the entire fork hardening stack behind normal update UX. Upstream-owned file, invisible to the rebase table | **HIGH** | **OPEN — fork lane.** Refuse to package on a diverged tree while the feed names upstream, or ship a fork-signed feed |
+| F9-01 | `/ops/agents/revoke {"principal":"loopback"}` → `{"known":true,"revoked":true}` while the **operator bearer is structurally unreachable by the kill-switch** (drill: recall/proposals/quarantine/valet all 200 after the revoke; `src/server/router/auth.rs:613` operator arm consults nothing — the twokeys agent arm `:615-640` and JWT path `:332-353` both do). A leaked operator token is unkilable from inside short of restart; the success response lies during incident response | MED-HIGH | **OPEN — R77.** F4-S-01 pattern: loud refusal for the opaque superuser (+ THREAT_MODEL row naming rotation as the operator remedy) |
+| F9-02 | Quarantine visibility asymmetry (drill): structured `/ingest` response says only `status:"created"` — no verdict field — and `/recall` discloses no withheld count; `/quarantine` is the only discovery surface. The proposal schema carries `screen_verdict`; this path does not | MED-LOW | **OPEN — UNROUTED** (wire-contract addition needs its own decision) |
+| R9-02 | `style=` (CSS `url()` fetch) and `ping=` (click beacon) **survive the read seam verbatim with full attacker URLs** (drill-confirmed; `src/gate.rs:699-704` URL list closed at 7 names, neither matches `on[a-z]+`). Latent — no in-tree renderer dereferences; one downstream-renderer edit from live (the S8-06 class) | MED-LOW | **OPEN — R78.** Add both to the swept-attribute set + pin planting `url(https://…)` |
+| S9-01 | `tools/channel-bridge` + `tools/signal-gateway` locks **still stale** (`cargo metadata --locked` exit 101 both; tokio/clap/reqwest/uuid/jsonwebtoken pairs) and their CI lanes re-lock **silently** — signal-gateway's can move `presage` `branch="main"` at its current head: CI green over unreviewed code. Note: `--no-deps` form passes — the sweep must use the full form | MED | **OPEN — R79.** Re-lock + commit, add `--locked` to both lanes, pin presage by `rev` |
+| S9-02 | signal-gateway live `RecipientCache` (`signal/worker.rs:31`) unbounded, logs phone→UUID PII at INFO (`:39`), and `POST` cache-seed accepts arbitrary phone→UUID silently — while the bounded twin (`cache.rs`, cap 4096) is **dead code**: the remedy exists in-tree and the production path doesn't use it | MED | **OPEN — R80.** Wire the bounded cache, delete the dead twin, demote PII operands, gate/audit the seed endpoint |
+| S9-06 | S8-05 amplified: a string-typed `agents`/`allowedChatIds` degrades the plugin allowlists to **substring matching** (`plugin/src/gating.ts:49-58,66-70` — `agents:"ops-agent-1"` admits any substring agent); `autoRecallTopK:"5"` fails every recall. `openclaw.plugin.json` now declares a typed `configSchema`, so exploitability hinges on host-side validation this repo cannot observe | MED | **OPEN — R81** (was S8-05, re-routed). Per-field typecheck at the cast site, mirroring the two arms that already validate |
+| W9-02 | `memory_get` tool-name **collision** between the brain extension (`plugin/src/tools.ts:449`) and memory-core in the same openclaw host — registration-order shadowing (OWASP confused-deputy family; the 2026-07-28 MCP spec still provides no tool-definition integrity) | MED | **OPEN — fork lane.** Namespace `brain_memory_*` both sides |
+| K9-02 | Typebox five-surface drift; committed fork lockfile internally inconsistent (manifest 1.3.27 / importer 1.3.30 / catalog 1.3.33-only) — `--frozen-lockfile` fails at HEAD; the uncommitted edit repairs one split and leaves manifest≠lock | MED | **OPEN — fork lane** (K8-07, worse) |
+| K9-03 | `link-reader-content.ts` `<img>` pipeline never consults `remoteImageHosts` — the last ungated auto-fetch surface (K8-02 elevated: every other surface is now gated) | MED | **OPEN — fork lane** |
+| S9-03 | signal-gateway `config.yaml` (carries `auth_token`) is the **only secret file without the 0600 law** (`config/mod.rs:108-117` reads without a permission check; bridge/relay/store all enforce) | LOW-MED | **OPEN — R80** |
+| T9-02 | `docs/security.md:10-11` claims the server **refuses** to bind `0.0.0.0` without `BIND_PUBLIC=1` — drill-proven FALSE: warn-and-bind (`bootstrap.rs:1124-1131`), `/ready` 200 on the LAN interface; `docs/configuration.md:9` states the true behavior (the tree's two docs disagree) | FALSE claim | **OPEN — R77.** One-line docs truth fix |
+| T9-01 | The execution charter's own §1 baseline was 8+ releases stale (pinned v1.28.82/2026-09-12; measured R76/2026-10-05) and its requested deliverable filename collides with the existing FOURTH_PASS report | LOW | **CLOSED — this audit** (re-measured baseline; deliverable renamed NINTH_PASS) |
+| T9-03 | SECURITY.md's own stamp policy ("moves in the same commit as any security-relevant claim") violated by R76: two security controls shipped with SECURITY.md still 2026-09-25 and THREAT_MODEL still "through v1.28.92" | LOW | **OPEN — R77** (stamp + §5b rows ride the next security commit) |
+| T9-04 | Register citation drift: S8-04 row cites `main.rs:129` for the wrap; actual `tools/signal-gateway/src/main.rs:143` | LOW | **OPEN — R77** |
+| F9-S-01 | `/legal-holds?reason=` builds `LIKE '%needle%'` with no `ESCAPE` (`src/legal_hold.rs:231,243`): `?reason=%` matches everything, two full-table scans per request; the house fence `like_contains_pattern` exists unused here | LOW | **OPEN — R77** |
+| F9-S-02 | `pinned_hostcall_client` (`src/workflow/hostcalls.rs:189-230`) is not single-flight — concurrent first calls each resolve DNS and diverge from the pin map; the path also applies no IANA table (disclosed posture: the operator allowlist is the anchor) | LOW | **OPEN — UNROUTED** (rides the next egress-touching round) |
+| F9-S-03 | The egress send seam (`src/webhook.rs:692-702`) has the same double-resolution shape — both resolutions pass `validate_public_addrs`, so the only consequence is pin divergence | INFO | **DISCLOSED** (same single-flight fix as F9-S-02) |
+| F9-S-04 | Workload-identity census: every inter-component seam is a static long-lived shared secret; only HTTP session JWTs are bounded (24 h). Corroborates F9-01 + W9-03 | INFO | **OPEN — UNROUTED** (minimum: THREAT_MODEL ceiling row, rides R77's docs pass) |
+| S9-04 | signal-gateway `BrainClient` follows redirects (`brain.rs:169-174`); the signed webhook headers re-send cross-origin — channel-bridge codified `Policy::none()` as law, the twin diverges | LOW | **OPEN — R80** |
+| S9-05 | valet-relay inbound dedup key uses time-of-forward (`relay.js:218`), so a retained envelope re-polled in a later second gets a fresh id and re-posts; the Rust twin derives from the message's own timestamp (`brain.rs:157-159`) | LOW | **OPEN — R80** (adjacent to S8-02, different direction — the alert-sink closure itself holds) |
+| S9-08 | Mode posture: main `brain.db`, the pre-migration `VACUUM INTO` backup (`bootstrap.rs:604`) and marker are **0644** while the snapshot/standby/temps families are 0600/0700 (drill-measured; no THREAT_MODEL row is false — the 0600 claims are family-scoped) | LOW | **OPEN — R80** |
+| W9-01 | OTLP span attributes are the one outbound lane without the markdown-ref strip (`src/otel.rs:23-25`) — EchoLeak-class parity residue; no in-tree collector dereferences | LOW | **OPEN — R78** |
+| W9-04 | `untrustedOrigins:"exclude"` filters **auto-inject only** — the `memory_recall` tool always returns tainted hits, labeled (`plugin/src/format.ts:119-125`); the knob's security meaning is narrower than its name | LOW | **OPEN — R81** (extend exclude to the tool path; default byte-identical) |
+| W9-05 | Rule-of-Two tension in the openclaw host (plugin parses untrusted JSON in the process holding provider keys) is real, mitigated, and **undocumented as such** | LOW | **OPEN — UNROUTED** (THREAT_MODEL ceiling row) |
+| S9-07 | The plugin's security pins execute **nowhere in this repository**: ci.yml touches `plugin/src` only via lipstyk static scanning; `shell.yml` watches the fixture twin (`plugin/fixtures/invisible-classes.json`) but not the code twin — a `plugin/src/format.ts` edit lands on `main` with zero tests run here | INFO | **OPEN — fork lane** (R71's vitest lane owns execution; the fixture/code asymmetry is the new evidence) |
+| R9-03 | The S8-04 structural pins are **text-bound** (match the literal `apply_rate_limit(app,`; an env-conditioned wrap satisfies every test while disabling production) — the presence-only-guard class | LOW | **OPEN — UNROUTED** (D8-02's gate-law register would own the red-proof column) |
+| R9-04 | `reg_watch.rs:250-270` wiring check is file-granular over four Art 50 classes in one file — removing one class's seal leaves the pin green; the behavioral provenance meta-test is the actual guard | LOW | **OPEN — UNROUTED** (same D8-02 umbrella) |
+| R9-05 | `CRATE_TEST_FLOOR`'s needle walks `src/`+`tests/` only — tools/, crates/, client/, shell/, plugin/ test mass invisible (documented; per-crate CI lanes mitigate) | INFO | **DISCLOSED** — documented scope, unchanged |
+| R9-01 | *Filed statically as WEAKENED ("digest binds canonical, not stored bytes"), **REFUTED by the live drill**: both the markdown-ref edit and the invisible-only edit moved the digest and the stale-digest approve 409'd — the digest is stricter than the displayed view (fail-closed)* | — (refuted) | **CLOSED — REFUTED-BY-DRILL** — no fix owed; recorded in the ninth-pass report §4 as the pass's methodology result |
+| L9-01 | The repo carries **two mutually exclusive pins for CETS 225 entry-into-force**: `AUDIT.md:943` says 2025-11-01; `src/reg_watch.rs:142` + `docs/compliance.md:136` pin 2025-09-01. CoE primary 403 today; unresolved | MED-LOW | **OPEN — R77** (one date carried; the contradiction named until a primary is reachable) |
+| L9-04 | `docs/compliance.md:351-353` claims "LLM Top 10 **2026** (2026-08-04) … **LLM09** Vector/Embedding" — the canonical page still presents 2025 as latest, and in 2025 Vector/Embedding is **LLM08**; a 2026 edition exists (news 2026-09-01) with unconfirmed numbering. Date or numbering is wrong | LOW | **OPEN — R77** |
+| L9-05 | `docs/compliance.md:355` "Agentic Top 10 launched 2025-12-09" — the standalone list page 404s; ASI06 exists as a workstream name; formal launch unconfirmed | LOW | **OPEN — R77** |
+| L9-03 | EOs 14409 (FR 2026-06-05) and 14434 (FR 2026-10-02) were filed "unverifiable" in `docs/US_STATE_MAP.md:21-25` — both now FR-verified; rows addable with cites | LOW | **OPEN — R77** (map rows + dated addendum) |
+| L9-15 | L8-11 export-controls UNKNOWN partially filled: no BIS model-weights rule found in the 2026-10-06 Federal Register sweep (chip/chokepoint rulemaking continues) — a measured fact, not a clean bill | LOW | **OPEN — R77** (row moves UNKNOWN → measured) |
+| L9-16 | CT CART PA 26-15 general duties went **live 2026-10-01** on date arithmetic alone — cga.ct.gov is connection-dead, so the statute text has still never been read | LOW | **OPEN — UNROUTED** (external act; carried open with the failed-fetch evidence) |
+| L9-02 | Art 111(4) provenance upgraded: reg_watch's open question answered against the consolidated text (2026-10-06; OJ text still unread) | INFO | **CLOSED — this audit** (provenance label upgrade; no code change) |
+| L9-07 | sbom 1.5 ceiling **confirmed** — cargo-cyclonedx 0.5.9 (latest, 2026-03-19) still documents "1.3, 1.4 or 1.5" while the CycloneDX spec is at 1.7.2 | INFO | **CLOSED — this audit** (pin confirmed correct; no action until upstream) |
+| L9-08 | NIST AI RMF revision **confirmed underway** (White House AI Action Plan; no 1.1 published) — the compliance footnote's re-check trigger is armed | INFO | **CLOSED — this audit** (footnote stands, now affirmatively armed) |
+| L9-09 | MCP 2026-07-28 claim in `docs/compliance.md:335` verified verbatim — and the spec has since removed sessions and added `server/discover`; a re-map of the repo's MCP surface is advisable | INFO | **CLOSED — this audit** (claim verified; re-map noted as advisory) |
+| L9-10 | CRA Art 14 clocks re-verification **blocked** (EUR-Lex bot-wall; Commission 403) — the 2026-09-14 verification stands, unrepeatable from this environment | INFO | **DISCLOSED** (blocked, not refuted; stamp stays 2026-09-14) |
+
+**Re-verified this pass, still open, unchanged:** S8-07 (islands — corrected census:
+**3** genuinely unconsumed: aftersales, care, interview; troubleshoot HAS a consumer in
+steward-harness), F8-02 enforcement decline, F8-03 idempotency residual, D8-02
+gate-law register, K8-01 (sharper — the substring skip also disables
+`sanitizeExternalContentText`: invisible-strip AND image-strip off at once on
+read/exec/transcript), K8-03 (shared by the MCP path), K8-05/06 (narrowed), K8-11
+(split; node lane same-origin checksum), D8-01, L8-04/05/06/07/11.
+
+**Drill-verified HELD (no rows owed):** read-seam neutralization (tag block, nested +
+mixed-case welds, `onerror`, markdown weld, bidi — live wire diff); quarantine
+list/release; digest-bound approve + replay refusal (404, no double-promote, count
+2→3 once); parcels tamper → 400 `signer_mismatch`; DSAR purge reaching promoted
+proposals (proposals→0) with zero db+wal residue and backup retention matching the
+certificate's own caveat; suggest `untrusted:true` + `provenance.reason:anticipated`;
+`/auth/refresh` 404 `jwt_unavailable` in opaque mode (posture fact).

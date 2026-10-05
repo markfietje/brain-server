@@ -17934,7 +17934,15 @@ mod scrim {
         let start = register
             .rfind(HEADER)
             .expect("the eighth-pass findings table header must exist in AUDIT.md");
-        let table = &register[start..];
+        // The slice must stop at the next section heading: a later audit
+        // appends its OWN register table under a new `## ` heading, and an
+        // unbounded tail absorbs it (the ninth pass made this concrete —
+        // 39 rows became 67 and the floor fired). One table per slice.
+        let tail = &register[start..];
+        let table = match tail.find("\n## ") {
+            Some(end) => &tail[..end],
+            None => tail,
+        };
 
         // Rows shaped `| <ID> | <finding> | <severity> | <disposition> |`.
         let mut rows: Vec<(String, String)> = Vec::new();
@@ -18099,6 +18107,84 @@ mod scrim {
                  row still says OPEN. A stale register sends the next reader \
                  to re-fix working code. Disposition: {}",
                 &row.1[..row.1.len().min(160)]
+            );
+        }
+
+        // NINTH-PASS TABLE (2026-10-06): the same law and the same arms, its
+        // own slice. The header differs (`ID`/`Sev`, not `#`/`Severity`) so
+        // `rfind(HEADER)` above cannot see it — the law is EXTENDED to the
+        // new table, not dodged by it.
+        const HEADER9: &str = "| ID | Finding | Sev | Disposition |";
+        let start9 = register
+            .rfind(HEADER9)
+            .expect("the ninth-pass findings table header must exist in AUDIT.md");
+        let tail9 = &register[start9..];
+        let table9 = match tail9.find("\n## ") {
+            Some(end) => &tail9[..end],
+            None => tail9,
+        };
+        let mut rows9: Vec<(String, String)> = Vec::new();
+        for line in table9.lines() {
+            let mut cells = line.splitn(4, '|');
+            let (Some(_), Some(id), Some(_), Some(disposition)) =
+                (cells.next(), cells.next(), cells.next(), cells.next())
+            else {
+                continue;
+            };
+            let id = id.trim();
+            let is_id = !id.is_empty()
+                && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && id.contains('-')
+                && id.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+            if is_id {
+                rows9.push((id.to_string(), disposition.to_string()));
+            }
+        }
+        assert!(
+            rows9.len() >= 20 && rows9.len() < 50,
+            "parsed {} rows from the ninth-pass table — the slice is wrong",
+            rows9.len()
+        );
+        assert!(
+            rows9.iter().any(|(i, _)| i == "F9-01") && rows9.iter().any(|(i, _)| i == "K9-01"),
+            "the sliced ninth-pass table does not carry its anchor ids (F9-01, K9-01)"
+        );
+        let mut by_id9: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for (id, _) in &rows9 {
+            *by_id9.entry(id.as_str()).or_insert(0) += 1;
+        }
+        let dups9: Vec<(&str, usize)> = by_id9
+            .iter()
+            .filter(|(_, count)| **count > 1)
+            .map(|(id, count)| (*id, *count))
+            .collect();
+        assert!(
+            dups9.is_empty(),
+            "these ninth-pass ids appear more than once: {dups9:?}"
+        );
+        for (id, disposition) in &rows9 {
+            assert!(
+                STATUSES.iter().any(|s| disposition.contains(s)),
+                "ninth-pass register row `{id}` carries no recognised \
+                 disposition keyword. Disposition: {}",
+                &disposition[..disposition.len().min(120)]
+            );
+        }
+        for (id, disposition) in &rows9 {
+            let declared = declared_disposition(disposition);
+            let claims_open = declared.contains("OPEN");
+            let named: Vec<&str> = SHIPPED_ROUNDS
+                .iter()
+                .copied()
+                .filter(|r| declared.contains(&format!("OPEN — {r}")))
+                .collect();
+            assert!(
+                !(claims_open && !named.is_empty()),
+                "`{id}` is OPEN but names a round that already shipped \
+                 ({}) — say UNROUTED, or name the round that will. \
+                 Disposition: {}",
+                named.join(", "),
+                &disposition[..disposition.len().min(160)]
             );
         }
     }
