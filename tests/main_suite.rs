@@ -17887,6 +17887,148 @@ mod scrim {
         );
     }
 
+    /// The audit register must not claim a finding is OPEN when the shipped
+    /// code closes it.
+    ///
+    /// **Why this pin exists.** R73 found the eighth-pass register three
+    /// releases stale: all ten F8-* rows still read `OPEN — R68/R69/R70`,
+    /// naming the rounds that had already shipped them, while every one was
+    /// verified closed in code. An auditor reading only the register would have
+    /// re-triaged ten fixed findings — and, worse, a *new* contributor would
+    /// have re-fixed code that is already correct.
+    ///
+    /// **What this pin does and does not check.** It cannot verify that any
+    /// claim in the register is TRUE — that is what the disposition prose and
+    /// the per-finding pins are for. What it checks is the narrower, mechanical
+    /// property that made this drift invisible: **a row must not assert `OPEN`
+    /// for a finding whose own text describes behaviour the tree no longer has.**
+    /// It reads the register through the repository (not a cached index —
+    /// `docs/AUDIT.md` is a symlink to this file), and it requires every
+    /// finding id in the eighth-pass table to carry a disposition keyword, so a
+    /// row cannot quietly lose its status.
+    ///
+    /// **Wrong implementation this is built to kill:** stamping the ten rows
+    /// by hand this round and having the eleventh drift back later. The list is
+    /// a CLOSED set of ids verified against the tree at R73 — a new finding id
+    /// is not automatically in violation, but a row with no disposition at all
+    /// is.
+    #[test]
+    fn r73_register_rows_carry_a_disposition() {
+        let register = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("AUDIT.md"),
+        )
+        .expect("AUDIT.md must exist — it is the eighth-pass disposition register");
+
+        // SCOPE: only the eighth-pass table. `AUDIT.md` carries SEVEN tables with
+        // this same header row (first-pass at line 18, then 260, 697, 783,
+        // 855, 926, and the eighth-pass at 994), and they have different
+        // column meanings — the first-pass one glues an id to its title and
+        // its 4th column is not a disposition. The first draft used `.find`,
+        // which returned line 18 and therefore read all seven; the red it
+        // produced on a `X-A3b` row is what exposed that.
+        //
+        // `rfind` takes the LAST occurrence, which is the eighth-pass table
+        // (the audit's own tables are appended newest-last in this file).
+        const HEADER: &str = "| # | Finding | Severity | Disposition |";
+        let occurrences = register.matches(HEADER).count();
+        let start = register
+            .rfind(HEADER)
+            .expect("the eighth-pass findings table header must exist in AUDIT.md");
+        let table = &register[start..];
+
+        // Rows shaped `| <ID> | <finding> | <severity> | <disposition> |`.
+        let mut rows: Vec<(String, String)> = Vec::new();
+        for line in table.lines() {
+            let mut cells = line.splitn(4, '|');
+            let (Some(_), Some(id), Some(_), Some(disposition)) =
+                (cells.next(), cells.next(), cells.next(), cells.next())
+            else {
+                continue;
+            };
+            let id = id.trim();
+            // A bare finding id: `F8-01`, never `F-I1 write gate not exclusive`.
+            let is_id = !id.is_empty()
+                && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && id.contains('-')
+                && id.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+            if is_id {
+                rows.push((id.to_string(), disposition.to_string()));
+            }
+        }
+        // ANTI-VACUITY, and the floor that actually discriminates. The first
+        // draft's floor was `>= 30`, which passed at BOTH 73 rows (all seven
+        // tables) and 38 rows (the eighth-pass table alone) — so it could not
+        // detect the very scope bug it needed to. This asserts both a floor
+        // and that the slice is the LAST table, not the first.
+        assert!(
+            occurrences >= 2,
+            "AUDIT.md should hold several register tables sharing this header; \
+             found {occurrences}. If the file was restructured, this pin's \
+             scope must be re-derived."
+        );
+        assert!(
+            rows.len() >= 30 && rows.len() < 60,
+            "parsed {} rows — the eighth-pass table alone is expected to hold \
+             around three to four dozen. A much larger number means the slice \
+             escaped its table again.",
+            rows.len()
+        );
+        // The table we sliced must be the one that carries the eighth-pass
+        // ids — that is the substantive check, and it is what `.find` failed.
+        assert!(
+            rows.iter().any(|(i, _)| i == "F8-10") && rows.iter().any(|(i, _)| i == "K8-01"),
+            "the sliced table does not carry the eighth-pass ids (F8-10, \
+             K8-01) — the scope is wrong"
+        );
+
+        // Every row states a status. This is the property that was silently
+        // wrong for ten rows: they stated one, but the wrong one.
+        //
+        // `DECISION` is a status too: K8-04 is filed as needing a decision
+        // rather than a patch, so its row legitimately carries no
+        // closed/open word. Excluding it would have made the pin red on a
+        // correct row, which is the over-strict failure this repo keeps
+        // finding.
+        const STATUSES: [&str; 6] = [
+            "CLOSED",
+            "PARTIALLY CLOSED",
+            "ALREADY CLOSED",
+            "OPEN",
+            "DISCLOSED",
+            "DECISION",
+        ];
+        for (id, disposition) in &rows {
+            assert!(
+                STATUSES.iter().any(|s| disposition.contains(s)),
+                "register row `{id}` carries no recognised disposition keyword \
+                 — an auditor cannot tell whether it is fixed. Disposition: \
+                 {}",
+                &disposition[..disposition.len().min(120)]
+            );
+        }
+
+        // The rows this round stamped: each must now say closed. Written as an
+        // explicit list rather than "nothing anywhere says OPEN", because the
+        // K8-* rows are legitimately OPEN (the fork is a different repo) and a
+        // global rule would either fail on them or force an exception.
+        for id in [
+            "F8-01", "F8-02", "F8-03", "F8-04", "F8-05", "F8-06", "F8-07", "F8-08", "F8-09",
+            "F8-10", "S8-06", "S8-09", "L8-02", "L8-03",
+        ] {
+            let row = rows.iter().find(|(i, _)| i == id).unwrap_or_else(|| {
+                panic!("register row `{id}` must exist in the eighth-pass table")
+            });
+            assert!(
+                !row.1.contains("OPEN"),
+                "`{id}` is verified closed in the tree (R73 re-measured each \
+                 one against the code, not a commit subject) but its register \
+                 row still says OPEN. A stale register sends the next reader \
+                 to re-fix working code. Disposition: {}",
+                &row.1[..row.1.len().min(160)]
+            );
+        }
+    }
+
     /// The installer writes review for NEW installs only:    /// The installer writes review for NEW installs only: the insert is
     /// guarded by an absent-posture check, and the unconditional remove
     /// (which stomped operator-set values on every re-run) is gone.

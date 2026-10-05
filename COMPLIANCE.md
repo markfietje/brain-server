@@ -499,15 +499,34 @@ Art 5 prohibited practices and GPAI provider obligations (Art 66), not to the
 Art 50 transparency line. Do not conflate the tiers when quoting this
 posture.
 
-**Machine-readable disclosure.** The server also serves the Art 50 disclosure
-itself at `GET /.well-known/ai-notice` (public, no auth) — a JSON document
-with `art_50: true`, the human-readable disclosure that stored content may be
-AI-generated, the `origin_metadata` fields a consumer can read per row
-(`source` / `origin` / `assertion_kind` / `confidence`),
-`effective_date: 2026-08-02`, and `jurisdiction: EU AI Act Article 50
-(Regulation (EU) 2024/1689)`. A deployer can point a consumer or auditor at
-the URL and at an `/export` bundle to close the model-origin transparency loop
-without pasting a policy.
+**Machine-readable disclosure — an INPUT, not the disclosure itself.** The
+server serves a machine-readable statement at `GET /.well-known/ai-notice`
+(public, no auth): `art_50: true`, the human-readable text that stored content
+may be AI-generated, the `origin_metadata` fields a consumer can read per row
+(`source` / `origin` / `assertion_kind` / `confidence`), `effective_date:
+2026-08-02`, and `jurisdiction: EU AI Act Article 50 (Regulation (EU)
+2024/1689)`.
+
+**What this component does NOT discharge.** Art 50(5) requires the
+information to be provided **at the time of the first interaction** — a
+per-interaction duty that lives at the deployer's own UI seam, because only
+the deployer knows when a user's first interaction happens. A static JSON
+document served from a well-known path is therefore an **input the deployer
+uses to build that disclosure**, not a substitute for it. A deployer can
+point a consumer or auditor at this URL and at an `/export` bundle to
+support an origin-transparency claim, and must still surface the notice in
+the surface the end user actually interacts with.
+
+**Scope, honestly stated.** The component posture is correct and complete for
+what it can observe: the notice, the origin metadata, the stamped dates and
+the jurisdiction are all served and machine-readable. **No deployer-side
+first-interaction surface exists in this repository, and none is claimed** —
+it belongs to the integrating application, not to a memory backend. The
+well-known document's own field set is unchanged (`art_50` and the
+`disclosure` text describe the component's capability, not a completed
+disclosure); a `disclosure_timing` field was considered and **not** added,
+because it would be a wire change that would not discharge the deployer's
+duty anyway.
 
 ### 7.1 EU AI Act Code of Practice marker (v1.17.1 M6)
 
