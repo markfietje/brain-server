@@ -4,9 +4,12 @@
 + Cheat Sheet Series (Context7-verified 2026-07-26), NIST SP 800-63B (digital
 identity), NIST SP 800-207 (zero-trust architecture).
 
-**Coverage current through:** v1.28.92 (2026-09-22). The v1.28.63–.75
-hardening line (§5b) is folded in; per-release detail lives in `CHANGELOG.md`
-and the close-out in `docs/AUDIT.md`.
+**Coverage current through:** R77 (2026-10-06), which folds in the R68–R76
+remediation programme and the ninth-pass closures. The v1.28.63–.75 hardening
+line (§5b) is folded in; per-release detail lives in `CHANGELOG.md` and the
+close-out in `docs/AUDIT.md`. (Stamp moved here by R77 — the T9-03 finding
+was that R75/R76 shipped security controls with this stamp and SECURITY.md's
+still at older dates, violating the same-commit law both files declare.)
 **Stamp policy:** every release that moves a security-relevant row in this
 file moves this stamp in the same commit — staleness is self-declaring by the
 version gap (do not trust a stamp N releases behind HEAD).
@@ -403,6 +406,9 @@ controls below are the threat-model-relevant additions, in ship order:
 | Bulk-read exfiltration via record layers (I) | The two bulk-read surfaces added with the record layers — disagreement-corpus export (`GET /workflow/reflection/corpus`) and account listing (`GET /accounts`) — both require the Admin scope AND the DPO role, land a global audit row per call (principal, filter, row count), and answer bounded pages only. Corpus exports de-identify at the seam through a synthetic scope-less reader (unconditional PII masking — no caller's clearance can bypass it); rows carry their frozen train/holdout partition so a bleed is checkable | v1.28.92 "Ledger" |
 | Agent mints loop obligations or account rows (E) | The machine-refusal law at surface AND core: handoff decision, back-referral return, pipeline stage change, and account archive all REQUIRE a `decision_ref` (`400 decision_ref_required` / `decision_ref_invalid`), screened and bounded 1..=256; role gates refuse the agent class before any row is written; account link/pipeline rows are agent-denied end to end | v1.28.92 "Ledger" |
 | Fork update-chain delivery unsigned end-to-end (K7-01/02/04) | **ACCEPTED RISK — operator final call 2026-09-15: no upstream PRs filed.** The four unsigned links (npm self-update trusts registry metadata — SRI proves tarball-vs-metadata, not the signer; Node tarball + `SHASUMS256.txt` both same-origin `nodejs.org`, no GPG; git install never `verify-tag`; Sparkle appcast EdDSA verifies against no shipped `SUPublicEDKey`) stay as disclosed. Rationale: single-operator local-first deployment — every channel except npm requires compromising nodejs.org/GitHub/a CDN, and the npm channel (transitive-maintainer takeover, the event-stream class) is gated by the operator's own lockfile-diff review at update time. Compensating controls, procedural: (1) every update run is a HITL gate — diff the lockfile/manifest before accepting (the discipline that caught K7-03); (2) never run updates from untrusted networks; (3) on Node runtime updates, manually `gpg --verify SHASUMS256.txt.sig` against Node's pinned release key; (4) never deploy the `fly.toml` sample as-is; the macOS Sparkle path is not this deployment's surface. Re-examine if the fork ever ships to third parties (K5-05 npm provenance joins the cluster) or upstream hardens the chain (inherited free by rebase) | 2026-09-13 seventh pass (fork lane); final disposition 2026-09-15 (docs-only) |
+| Captured alert envelope replays indefinitely (S8-02) | The valet-relay alert sink requires BOTH gates before forward: a valid MAC (who) AND a fresh `webhook-timestamp` (when) — epoch-seconds OR RFC3339 parsed, two-sided ±300 s window mirroring the kernel's `WEBHOOK_REPLAY_SECS` + `WEBHOOK_TS_FUTURE_SKEW_SECS` (enforced together at `enqueue_ts`), deliberately NOT env-tunable. Receiver-side id-dedup DECLINED with the reason in the producer: `src/alert.rs` retries the SAME `delivery_id` + `ts` up to three times, so an id-set would trade a duplicate alert for a silently lost one — pinned (`the same id and ts is admitted twice`) so the next reader cannot "helpfully" add the Set | R76 "Cadence" (§5b row backfilled by R77 — T9-03: it shipped with none) |
+| Unbounded request rate on the messaging edge (S8-04) | signal-gateway's `apply_rate_limit` wraps the FINISHED router — after `.with_state` and after the auth `match` — so the limit is outermost; in the tokenless loopback posture there is no auth layer at all, and a layer inside `create_router_with_auth` would bound only one arm. Structural pin refuses deleting the wrap (`tests/s8_04_rate_limit_wired.rs`); the module is `pub` in the lib target so the integration tests reach the REAL limiter | R76 "Cadence" (§5b row backfilled by R77 — T9-03: it shipped with none) |
+| Security verb lies during incident response (F9-01) | `POST /ops/agents/revoke` REFUSES the opaque operator superuser's label with its own 400 `operator_bearer_unrevocable`, naming rotation + restart as the remedy and writing NOTHING — the operator bearer is a static token the kill-switch structurally cannot reach (the auth middleware's operator arm consults no revocation row), so the old `revoked:true` response certified an inert control at exactly the moment a truthful verb matters. The revocable neighbours keep the A5-01 always-write law: the loopback agent by its anchor, unseen JWT subs with `known:false` + warning | R77 "Verity" |
 
 **Ceilings this line explicitly keeps** (do not "fix" without amending the
 architecture):
@@ -436,6 +442,22 @@ architecture):
   one `forget` row) — filesystem copies, `.bak`, standby chunks, and SSD
   wear-leveling stay operator-level ceilings, and the host compromise
   ceiling itself stands: the anchor is detection, never prevention.
+- WORKLOAD IDENTITY IS STATIC SHARED SECRETS (W9-03, F9-S-04 census, ninth
+  pass): every inter-component seam — the opaque operator bearer, the MCP
+  bearer, the signal-gateway bearer, the relay/bridge HMACs — is one
+  long-lived secret whose only remedy is file rotation + restart; only HTTP
+  session JWTs are bounded (24 h cap). A per-boot ephemeral loopback bearer
+  through the existing JWT machinery was considered and DECLINED for now:
+  it breaks every scripted/API-keyed consumer at each restart and needs a
+  provisioning story this component does not have. Consequence (named, not
+  hidden): a leaked operator token is unkilable from inside — F9-01's
+  refusal says so out loud; rotation is the operator's remedy.
+- RULE OF TWO IN THE OPENCLAW HOST (W9-05, ninth pass): the brain plugin
+  parses untrusted JSON inside the same host process that holds provider
+  keys — accepted tension, mitigated by the unforgeable sentinel fence,
+  per-agent gating, and the sanitized projection seam, and RECORDED here so
+  a future fence-weakening refactor is visible against this ceiling rather
+  than silent.
 - Single-tenant storage: the domain shim is a label, not a boundary —
   `included_global` makes mixing visible; true isolation is `BRAIN_MULTI_DB`
   (v2.0 Cortex). Quorum is opt-in (default 1); pin-ack signatures are TOFU,

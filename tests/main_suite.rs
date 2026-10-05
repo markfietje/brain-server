@@ -9734,6 +9734,98 @@ Final paragraph after the rule.";
         assert_eq!(admitted.0["known"], false);
     }
 
+    /// F9-01 (ninth pass): revoking the opaque operator superuser's label
+    /// must REFUSE, not succeed. The drill revoked `"loopback"` and got
+    /// `{"known":true,"revoked":true}` — while the same operator bearer kept
+    /// 200-ing every route, because the auth middleware's operator arm
+    /// consults no revocation row. A success response over an inert control
+    /// is the lie this pin forbids: the refusal is loud (its own code), it
+    /// names the real remedy (rotation + restart), NOTHING is written, and
+    /// the two revocable identities beside it (the loopback agent, an
+    /// unseen JWT sub) keep the A5-01 always-write behavior — so this pin
+    /// cannot pass by making the verb refuse everything.
+    #[tokio::test]
+    async fn revoke_refuses_the_opaque_operator_loudly() {
+        use axum::Json as AxumJson;
+        use handlers::mesh::{RevokeRequest, post_revoke};
+
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let state = drawbridge_state(&tmp);
+
+        let err = post_revoke(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            AxumJson(RevokeRequest {
+                principal: "loopback".to_string(),
+                reason: "drill: leaked operator token".to_string(),
+                allow_unknown: true,
+            }),
+        )
+        .await
+        .expect_err("revoking the opaque operator label must refuse");
+        assert_eq!(
+            err.status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "the refusal is a loud 400, not a 200-over-nothing"
+        );
+        assert_eq!(
+            err.inner.code, "operator_bearer_unrevocable",
+            "the refusal carries its own code, not a generic input_invalid"
+        );
+        let msg = err.inner.message.clone();
+        assert!(
+            msg.to_lowercase().contains("rotat"),
+            "the refusal names rotation as the remedy: {msg:?}"
+        );
+        assert!(
+            msg.contains("agent@loopback"),
+            "the refusal names the revocable agent so the typo-adjacent name is reachable"
+        );
+
+        // NOTHING was written: the revocation table carries no row for the
+        // operator label (a row nothing consults is the theatre refused here).
+        {
+            let conn = state.pool.get().unwrap();
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM revoked_principals WHERE principal = 'loopback'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 0, "no inert revocation row may be written");
+        }
+
+        // Anti-vacuity, both neighbours: the loopback agent (structurally
+        // known) and an unseen JWT sub (A5-01 always-write) still revoke 200.
+        let agent = post_revoke(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(None),
+            AxumJson(RevokeRequest {
+                principal: "agent@loopback".to_string(),
+                reason: "drill".to_string(),
+                allow_unknown: false,
+            }),
+        )
+        .await
+        .expect("the loopback agent stays revocable");
+        assert_eq!(agent.0["revoked"], true);
+
+        let unseen = post_revoke(
+            State(state),
+            handlers::auth::OptPrincipal(None),
+            AxumJson(RevokeRequest {
+                principal: "user:ghost".to_string(),
+                reason: "drill".to_string(),
+                allow_unknown: false,
+            }),
+        )
+        .await
+        .expect("an unseen JWT sub still revokes (A5-01 always-write)");
+        assert_eq!(unseen.0["revoked"], true);
+        assert_eq!(unseen.0["known"], false);
+    }
+
     /// A5-05: revoke input discipline runs BEFORE the known-set probe —
     /// surrounding whitespace is its own loud 400 (trimming silently would
     /// target an identity the operator did not type), and the length bound
@@ -18069,7 +18161,9 @@ mod scrim {
             }
         }
 
-        const SHIPPED_ROUNDS: [&str; 8] = ["R68", "R69", "R70", "R72", "R73", "R74", "R75", "R76"];
+        const SHIPPED_ROUNDS: [&str; 9] = [
+            "R68", "R69", "R70", "R72", "R73", "R74", "R75", "R76", "R77",
+        ];
         for (id, disposition) in &rows {
             let declared = declared_disposition(disposition);
             let claims_open = declared.contains("OPEN");

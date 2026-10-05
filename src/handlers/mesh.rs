@@ -422,6 +422,35 @@ pub async fn post_revoke(
                 "1..=256 chars",
             )));
         }
+        // F9-01: the opaque operator superuser is STRUCTURALLY outside the
+        // kill-switch. The operator bearer is a static token — the auth
+        // middleware's operator arm consults no revocation row — so a revoke
+        // of this label would write a row nothing ever reads and answer
+        // `revoked:true` over an inert control, during exactly the incident
+        // response where a truthful verb matters most. Refuse loudly, name
+        // the real remedy (rotation + restart), and write nothing. This is
+        // deliberately NOT the A5-01 always-write posture: that law protects
+        // live identities whose rows the middleware DOES honor; this label
+        // names no such identity. The agent principal remains revocable —
+        // it has its own anchor (`AGENT_LOOPBACK_SUB`).
+        if body.principal == crate::auth::OPERATOR_LOOPBACK_LABEL {
+            return Err(HandlerError::bad_request_with(
+                "operator_bearer_unrevocable",
+                format!(
+                    "'{}' is the opaque operator superuser's label. The operator bearer is a \
+                     static token the kill-switch cannot reach — revoking it would report \
+                     success over a row nothing consults. The remedy is rotation: replace \
+                     the token in the store (AUTH_TOKEN / AUTH_TOKEN_FILE) and restart the \
+                     server. The loopback agent ('{}') IS revocable and stays so.",
+                    crate::auth::OPERATOR_LOOPBACK_LABEL,
+                    crate::auth::AGENT_LOOPBACK_SUB,
+                ),
+                serde_json::json!({
+                    "principal": crate::auth::OPERATOR_LOOPBACK_LABEL,
+                    "remedy": "rotate the operator token and restart",
+                }),
+            ));
+        }
         // Availability-first kill-switch: the
         // revocation ALWAYS writes — a JWT `sub` with no card/crew/
         // delegation row is still a live identity (the middleware honors its

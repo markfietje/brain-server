@@ -150,3 +150,55 @@ Operator process (verify per state you operate in):
 - [ ] Dates re-checked quarterly against primary sources (legislature
   pages, AG offices, CPPA). This file is dated 2026-09-14; statutes and
   stays move.
+
+---
+
+## Addendum — verified 2026-10-06 (ninth-pass regulatory arm)
+
+**The status date above is deliberately NOT bumped.** The quarterly pass the
+cadence requires did not run: NCSL is still Cloudflare-blocked from the build
+environment (with it, orrick 403 / iapp 404 / olis timeout / cga.ct.gov dead
+/ legiscan 403). Bumping the date would claim a verification most rows never
+got. What follows is the dated record of the subset that WAS verified today
+and how — the file's own discipline, extended rather than overridden.
+
+**Federal — the two Executive Orders previously withheld are now verifiable
+and the rows exist (L9-03).** The blockquote above said no primary federal
+source was reachable, so the EOs stayed absent rather than guessed; the
+ninth pass reached the **Federal Register** and both are `[V]`:
+
+- **EO 14409** — published FR **2026-06-05**. Federal-agency /
+  covered-platform duties, not component duties; deployer-level.
+- **EO 14434** — published FR **2026-10-02** (four days before this
+  addendum). Same posture.
+
+Also FR-verified today: **FTC TIDA enforcement live since 2026-05** (FTC
+blog) and an **FTC AI-impersonation NPRM published 2026-10-01**. None of
+these change the component's posture (the header's "no comprehensive federal
+AI law" stands — these are EOs and rulemaking, not statutes), but a
+deployer-facing register should no longer say they are unverifiable.
+
+**Export controls (L9-15): UNKNOWN → measured.** The 2026 FR sweep found
+**no BIS model-weights rule** (chip/chokepoint rulemaking continues). This
+component is not a weights distributor; the row moves from "unknown" to
+"none found in the FR sweep as of 2026-10-06 — watch", which is a dated
+observation, not a permanent fact.
+
+**CT CART (L9-16): live on date arithmetic, statute still unread.** General
+duties (PA 26-15) went live **2026-10-01** — five days before this
+addendum — on the calendar this repo already asserted. cga.ct.gov remains
+connection-dead, so **the statute text has still never been read from a
+primary source**; treat the CT rows as date-verified, text-unverified.
+
+**States/standards verified despite the wall:** CO SB26-189 (signed
+2026-05-14, Ch.131, duties 2027-01-01 — primary), CPPA ADMT package
+(existence; partial), EU AI Act Art 111(4) transitional date
+(consolidated-text, 2nd verification), MCP spec currency (2026-07-28 —
+sessions removed, `server/discover` added; a re-map is advisable),
+CycloneDX 1.7.2 vs cargo-cyclonedx 0.5.9's 1.5 ceiling (pin confirmed
+correct), SLSA v1.2, sigstore cosign v3.1.3, A2A v1.0.1, OAuth 2.1 still an
+Active I-D (never cite as RFC). Access dates and the reachability ledger
+live in the ninth-pass audit report.
+
+**Next full quarterly due: 2026-12-14** (unchanged — this addendum is not
+the quarterly pass).

@@ -75,6 +75,16 @@ pub enum PrincipalKind {
 /// `POST /ops/agents/revoke` kills every agent bearer identity-wide.
 pub const AGENT_LOOPBACK_SUB: &str = "agent@loopback";
 
+/// The opaque operator superuser's identity label — the audit actor, the
+/// owner-stamp string, and the `principal_label` of `Principal::None`.
+/// RESERVED from the kill-switch: the operator bearer is a static token
+/// with no revocable principal id, so `/ops/agents/revoke` REFUSES this
+/// label loudly instead of writing an inert revocation row (F9-01); the
+/// remedy for a leaked operator token is rotation + restart. A JWT `sub`
+/// that collides with this string inherits the refusal — it already
+/// collides with the superuser's audit identity.
+pub const OPERATOR_LOOPBACK_LABEL: &str = "loopback";
+
 /// An authenticated principal. Built from a verified JWT's claims in the
 /// middleware; injected into request extensions. The `Option<Principal>`
 /// pattern in handlers means `None` = opaque-token mode or no auth (the

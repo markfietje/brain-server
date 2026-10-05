@@ -1,6 +1,93 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R76 "Cadence"**.
+> Current release (unreleased): **R77 "Verity"** — *security verbs must not
+> lie, and the record must agree with the tree.* The ninth-pass
+> (`docs/SECURITY_AUDIT_20261006_NINTH_PASS.md`, untracked by operator
+> decision — audit reports are private) R77 band, plus the private-visibility
+> commit that landed the register. **No authz change**, no route change, no
+> schema change (**1.32.26** unchanged), **zero new dependency edges**.
+>
+> **(0) Before the round: the ninth-pass register landed, and the audit
+> reports went private.** 29 finding rows appended to `AUDIT.md` with the
+> register law EXTENDED to them — the eighth-pass pin's slice is now bounded
+> at the next `## ` heading (an unbounded tail absorbed the new table: 39
+> rows parsed as 67 and the floor fired), and a ninth-pass slice with the
+> same arms (floor, anchor ids, duplicate ids, disposition vocabulary,
+> no-OPEN-naming-a-shipped-round) parses the new table on its own header.
+> The four `SECURITY_AUDIT_*_PASS` files are untracked (`git rm --cached`
+> for the three that were tracked): release tags ship to the PUBLIC repo and
+> carry their commit's whole ancestry, so tracked audit reports would
+> publish with the next tag. They stay on disk; nothing in the gates
+> references them as links (backtick prose only).
+>
+> **(1) F9-01 — the revoke verb now REFUSES the identity it cannot kill.**
+> The drill revoked `loopback` and got `{"known":true,"revoked":true}` while
+> the same operator bearer kept 200-ing every route — the auth middleware's
+> operator arm consults no revocation row, because a static token has no
+> principal id to revoke. The fix is the F4-S-01 loud-refusal pattern, NOT
+> the A5-01 always-write law (that law protects identities whose rows the
+> middleware DOES honor): `400 operator_bearer_unrevocable`, its own code,
+> naming **rotation + restart** as the remedy, writing **nothing** (pinned:
+> no `revoked_principals` row lands), and naming `agent@loopback` so the
+> typo-adjacent revocable identity is reachable. Anti-vacuity both
+> neighbours: the loopback agent and an unseen JWT sub still revoke 200 in
+> the same pin. `OPERATOR_LOOPBACK_LABEL` is a named const beside
+> `AGENT_LOOPBACK_SUB`; `principal_label` consumes it (one definition).
+> Openapi's 400 arm and the allow_unknown description were corrected in the
+> same commit (they claimed "every well-formed revoke writes
+> unconditionally" — now they name the one refusal), `schema.d.ts`
+> regenerated. **Red-proof:** disabling the refusal block fails the pin at
+> the `expect_err`.
+>
+> **(2) T9-02 — the tree's two bind docs disagreed, and the false one lost.**
+> `docs/security.md` claimed the server "refuses to bind 0.0.0.0 unless
+> BIND_PUBLIC=1"; the drill measured warn-and-bind (`/ready` 200 on the LAN
+> interface), which `docs/configuration.md` already stated. security.md now
+> states the measured truth (including which cases DO refuse: unparseable
+> host, tokenless non-loopback) and names the correction.
+>
+> **(3) T9-03 — R76's controls get their THREAT_MODEL rows one round late,
+> and the lateness is the finding.** SECURITY.md's stamp policy says it moves
+> in the same commit as any security-relevant claim; R76 shipped two
+> controls with SECURITY.md at 2026-09-25 and THREAT_MODEL at v1.28.92. Both
+> stamps now read R77 (2026-10-06), and §5b carries BACKFILLED rows for
+> R76's two controls (alert-sink ±300 s two-sided freshness + the declined
+> id-dedup; the outermost rate limit and why the layering is the content),
+> each row naming its own backfill so the record shows the gap.
+>
+> **(4) F9-S-01 — the legal-holds filter rides the house LIKE fence.**
+> `?reason=%` matched every row (two full-table scans answering nothing the
+> operator typed). `like_contains_pattern` paired with `ESCAPE '\\'` in the SQL now fence it.
+> Red-first: reverting the fix only (tests kept) fails both pins. The pin's
+> own first draft carried a wrong assertion — "substring match stays
+> case-sensitive" — which SQLite refutes (LIKE is ASCII-case-insensitive,
+> fence or no fence); the mutant run caught it and it was corrected, not
+> kept.
+>
+> **(5) The docs/reg band (L9), every correction labelled with what it is
+> NOT.** L9-01: the CETS 225 contradiction resolved to ONE date (2025-09-01,
+> the CoE-sourced reg_watch constant) across all three sites, recorded as a
+> correction, not a verification — no CoE primary was reachable. L9-04/05:
+> the OWASP wording now stands on provenance (the 2026 LLM Top 10 numbering
+> rests on the DOI'd artifact this repo live-fetched, explicitly NOT on a
+> fresh page read; the Agentic 2025-12-09 launch date is WITHDRAWN as
+> unconfirmed). L9-03/15: the state map gains a dated 2026-10-06 addendum
+> carrying the FR-verified EO rows and the measured export-controls state —
+> **the status date is deliberately NOT bumped** (NCSL stayed blocked; the
+> quarterly pass did not run). W9-05 + F9-S-04 became THREAT_MODEL ceiling
+> rows (Rule of Two; static workload identity with the per-boot ephemeral
+> bearer DECLINED and its reasons recorded). T9-04: the register's own
+> `:129`→`:143` citation drift fixed in the row.
+>
+> **What did NOT ship, stated plainly.** **Not** F9-02 (ingest verdict /
+> withheld-count wire fields — a wire-contract decision). **Not** R9-02,
+> W9-01 (**R78**), S9-01 (**R79**), S9-02/03/04/05/08 (**R80**), S9-06/W9-04
+> (**R81**) — the register routes them and this round did not touch them.
+> **Not** the fork lane (K9-01…03, W9-02, K8-* — a different repository).
+> **Not** L9-16 (CT statute text still unread; carried open with evidence).
+> No migration; no irreversible risk.
+
+> Predecessor: **R76 "Cadence"**.
 > Predecessor: **R75 "Greenlight"** — the round whose two commits shipped with
 > no round notes at all. R76 theme: **the two messaging edges never asked *when*
 > or *how often*.** Closed **S8-02** (alert-sink freshness) and **S8-04** (the

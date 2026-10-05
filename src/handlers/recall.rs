@@ -778,12 +778,13 @@ pub async fn run_recall(
 // ---------------------------------------------------------------------------
 
 /// audit actor label for a recall read event — the JWT
-/// principal's `sub`, or `loopback` in opaque/no-auth mode.
+/// principal's `sub`, or the opaque operator superuser's reserved label
+/// (`OPERATOR_LOOPBACK_LABEL`) in opaque/no-auth mode.
 pub(crate) fn principal_label(principal: &Option<crate::auth::Principal>) -> String {
     principal
         .as_ref()
         .map(|p| p.sub.clone())
-        .unwrap_or_else(|| "loopback".to_string())
+        .unwrap_or_else(|| crate::auth::OPERATOR_LOOPBACK_LABEL.to_string())
 }
 
 /// True when the global corpus was mixed into a domain-routed query.

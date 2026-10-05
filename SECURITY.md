@@ -1,6 +1,6 @@
 # Security Policy
 
-**Last reviewed:** 2026-09-25 against OWASP Top 10:**2025** + Cheat Sheet Series (R34 GDL provider boundary and R35 GDL launch execution-integrity controls added: ticket-only request, server-owned profile, confined secret, HTTPS/SSRF/DNS, role and stable-error controls, terminal provider-failure settlement, total deadline, and receiver cancellation; v1.28.92 "Ledger" refresh context retained)
+**Last reviewed:** 2026-10-06 (R77 "Verity") against OWASP Top 10:**2025** + Cheat Sheet Series (ninth-pass closures folded in: the revoke verb's loud `operator_bearer_unrevocable` refusal for the opaque superuser, the legal-holds LIKE fence, the bind-posture doc truth; R76's two messaging-edge controls — alert-sink timestamp freshness and the outermost gateway rate limit — now recorded in THREAT_MODEL §5b, backfilled here because they shipped with no stamp move, which is what T9-03 filed; R34 GDL provider boundary and R35 GDL launch execution-integrity controls retained)
 **Stamp policy:** this "Last reviewed" line moves in the same commit as any security-relevant claim it covers — a stamp N releases behind HEAD is itself a finding.
 (Context7-verified), OWASP Multi-Tenant Security Cheat Sheet, OWASP JSON Web
 Token Cheat Sheet, OWASP Secrets Management Cheat Sheet, OWASP gRPC + Microservices

@@ -44,8 +44,8 @@ pub use crate::secret_file::check_secret_permissions;
 pub use jwt::{ALLOWED_ALGS, AuthError, Claims, TokenType, VerifyingKey};
 #[allow(unused_imports)]
 pub use policy::{
-    AGENT_LOOPBACK_SUB, Action, Principal, PrincipalKind, Scope, client_authorized_domains,
-    is_authorized,
+    AGENT_LOOPBACK_SUB, Action, OPERATOR_LOOPBACK_LABEL, Principal, PrincipalKind, Scope,
+    client_authorized_domains, is_authorized,
 };
 #[allow(unused_imports)]
 pub use revocation::{RevocationCache, purge_expired, revoke, revoke_chain};

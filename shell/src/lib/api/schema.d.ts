@@ -3228,7 +3228,7 @@ export interface paths {
         put?: never;
         /**
          * Revoke a principal — the ASI03/07 kill-switch (Admin on global)
-         * @description Attestation v1.28.62: revokes an identity. Every card use, delegation dispatch, and result submission re-checks revocation and refuses closed (403 `principal_revoked`); every ACTIVE run where the principal owns in-flight delegation work drains through the existing run-cancel path. Revocation, hash-chained audit row, and drain commit or roll back together. Identity-wide (not domain-scoped).
+         * @description Attestation v1.28.62: revokes an identity. Every card use, delegation dispatch, and result submission re-checks revocation and refuses closed (403 `principal_revoked`); every ACTIVE run where the principal owns in-flight delegation work drains through the existing run-cancel path. Revocation, hash-chained audit row, and drain commit or roll back together. Identity-wide (not domain-scoped). The opaque operator superuser's label is the one refused principal (400 operator_bearer_unrevocable): its bearer is a static token the kill-switch structurally cannot reach, so the verb refuses loudly — naming token rotation + restart as the remedy — instead of writing an inert row and reporting success.
          */
         post: operations["postAgentRevoke"];
         delete?: never;
@@ -12861,7 +12861,7 @@ export interface operations {
                     principal: string;
                     reason?: string;
                     /**
-                     * @description DEPRECATED no-op (v1.28.83): accepted for wire compatibility and ignored. Every well-formed revoke writes unconditionally; an unseen name is reported via known:false + warning, never refused.
+                     * @description DEPRECATED no-op (v1.28.83): accepted for wire compatibility and ignored. Every well-formed revoke of a REVOCABLE identity writes unconditionally; an unseen name is reported via known:false + warning, never refused. The one refusal (R77, F9-01): the opaque operator label operator_bearer_unrevocable — a static token no revocation row can reach.
                      * @default false
                      */
                     allow_unknown?: boolean;
@@ -12888,7 +12888,7 @@ export interface operations {
                     };
                 };
             };
-            /** @description input_invalid | principal_malformed */
+            /** @description input_invalid | principal_malformed | operator_bearer_unrevocable (the opaque operator label is structurally outside the kill-switch — the remedy is token rotation + restart */
             400: {
                 headers: {
                     [name: string]: unknown;

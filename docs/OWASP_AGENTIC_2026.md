@@ -7,7 +7,7 @@ stay, the addendum extends them).
 
 | Framework | Edition | Published | Canonical source |
 |---|---|---|---|
-| **GenAI LLM Top 10 2026** | LLM01–LLM10 | 2026-08-04 | `GenAI-Security-Project/GenAI-LLM-Top10` `2026/final` (DOI `10.5281/zenodo.22109015`) |
+| **GenAI LLM Top 10 2026** | LLM01–LLM10 | 2026-08-04 | `GenAI-Security-Project/GenAI-LLM-Top10` `2026/final` (DOI `10.5281/zenodo.22109015`; L9-04 note: the canonical page still presented the 2025 edition at the 2026-10-06 reading — the 2026 numbering stands on this DOI'd artifact, re-verify before external citation) |
 | **Top 10 for Agentic Applications 2026** | ASI01–ASI10 | 2025-12-09 | OWASP Agentic Applications project |
 
 > **Provenance of the two dates above, stated because they are hand-typed.**

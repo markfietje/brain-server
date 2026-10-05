@@ -348,14 +348,25 @@ is served as `GET /.well-known/ai-literacy` (public) and mirrored in
 
 OWASP's GenAI guidance splits into two documents, meant to be read together.
 The **GenAI LLM Top 10 2026** (published 2026-08-04, grounded in 7,714 real AI
-incidents, 6,639 classified) is the LLM list (LLM01–LLM10; memory-adjacent
-entry **LLM09 Vector and Embedding Weaknesses**). The memory-persistence
-attack surface itself is named **ASI06 Memory and Context Poisoning** in the
-companion **OWASP Top 10 for Agentic Applications**, which launched
-**2025-12-09** (ASI06 has been an entry since that initial release) — a
-distinct agentic list, not an entry of the LLM Top 10. This section maps
-brain-server's controls to ASI06's prescribed defenses and to the 2026
-research that motivated the category.
+incidents, 6,639 classified — provenance: the repo's prior live fetch of the
+`GenAI-Security-Project/GenAI-LLM-Top10` `2026/final` artifact, DOI
+`10.5281/zenodo.22109015`) is the LLM list (LLM01–LLM10; memory-adjacent
+entry **LLM09 Vector and Embedding Weaknesses**, per that DOI'd artifact).
+**L9-04 honesty note (2026-10-06):** the ninth-pass regulatory arm could not
+re-verify the 2026 numbering live — the canonical llmtop10.com page still
+presented the **2025** edition at that reading, where Vector/Embedding is
+**LLM08** — so the numbering above stands on the DOI'd artifact this repo
+fetched, not on a fresh page read; re-verify both before citing the number
+externally. The memory-persistence attack surface itself is named **ASI06
+Memory and Context Poisoning** in the companion **OWASP Top 10 for Agentic
+Applications** for **2026** (released; re-verified 2026-10-06, with its Agent
+Control Standard companion). **L9-05 correction:** this section previously
+asserted a **2025-12-09** launch date for that list — the standalone page
+404s and the date is unconfirmed, so it is withdrawn; ASI06's presence as an
+entry is verified by the released list, its first-publication date is not
+claimed here. A distinct agentic list, not an entry of the LLM Top 10. This
+section maps brain-server's controls to ASI06's prescribed defenses and to
+the 2026 research that motivated the category.
 
 **Why the category exists (2026 disclosure timeline).** Two independent
 disclosures showed persistent-memory poisoning succeeding against current
@@ -393,7 +404,7 @@ playbook.
 **Adjacent taxonomies (one-line maps, same honest posture).** The **Microsoft
 AI Red Team Taxonomy v2** memory-safety / model-integrity / infrastructure
 classes map to the screen + HITL gate + hash-chained audit respectively; the
-**LLM Top 10 2026 LLM09 Vector/Embedding Weaknesses** entry maps to the vec0
+**LLM Top 10 2026 LLM09 Vector/Embedding Weaknesses** entry (numbering per the DOI'd `2026/final` artifact — see the L9-04 note in §6.5) maps to the vec0
 purge + verify-before-emit + tombstone path (§4, §9). Control maps, not
 conformance claims.
 

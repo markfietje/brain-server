@@ -228,7 +228,10 @@ pub(crate) fn list_holds(
         clauses.push("knowledge_id = ?");
     }
     if reason.is_some() {
-        clauses.push("reason LIKE ?");
+        // The house LIKE fence (`like_contains_pattern`): the needle must
+        // match LITERALLY, so `?reason=%` cannot widen into a full-table
+        // match (two scans per request) the way an unfenced `%needle%` does.
+        clauses.push("reason LIKE ? ESCAPE '\\'");
     }
     if !clauses.is_empty() {
         sql.push_str(" WHERE ");
@@ -239,7 +242,9 @@ pub(crate) fn list_holds(
         params.push(Box::new(k));
     }
     if let Some(needle) = reason {
-        params.push(Box::new(format!("%{needle}%")));
+        params.push(Box::new(crate::workflow::kcs::like_contains_pattern(
+            needle,
+        )));
     }
     let refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
     let total: i64 = conn
@@ -297,6 +302,57 @@ mod tests {
         assert!(validate(&[1], &"x".repeat(501)).is_err());
         assert!(validate(&(1..=1001).collect::<Vec<_>>(), "ok").is_err());
         assert!(validate(&[1, 2], "litigation 2026-118").is_ok());
+    }
+
+    #[test]
+    fn reason_filter_escapes_like_metacharacters() {
+        // The registry's `?reason=` filter must ride the house LIKE fence: an
+        // unfenced `%{needle}%` lets `?reason=%` match EVERY row (and `_`
+        // act as a one-char wildcard), turning a substring filter into two
+        // full-table scans that answer nothing the operator typed.
+        let mut conn = db();
+        let tx = conn.transaction().unwrap();
+        insert_holds(&tx, &[1], "litigation 2026-118", None, 10).unwrap();
+        insert_holds(&tx, &[2], "sox audit", None, 11).unwrap();
+        insert_holds(&tx, &[3], "100% complete discovery", None, 12).unwrap();
+        insert_holds(&tx, &[4], "case_a hold", None, 13).unwrap();
+        tx.commit().unwrap();
+
+        // `%` as the needle matches only the row that LITERALLY contains a
+        // percent sign — not all four (the pre-fence behavior).
+        let (rows, total) = list_holds(&conn, None, Some("%"), 100).unwrap();
+        assert_eq!(total, 1, "`%` must not match everything");
+        assert_eq!(rows[0].knowledge_id, 3);
+
+        // `_` matches a literal underscore, not "any one character".
+        let (rows, total) = list_holds(&conn, None, Some("case_a"), 100).unwrap();
+        assert_eq!(total, 1, "`_` must be literal");
+        assert_eq!(rows[0].knowledge_id, 4);
+        let (_, total) = list_holds(&conn, None, Some("caseXa"), 100).unwrap();
+        assert_eq!(total, 0, "`_` must not wildcard");
+
+        // A backslash in the needle is literal, not an escape the query eats.
+        let (rows, total) = list_holds(&conn, None, Some("100%"), 100).unwrap();
+        assert_eq!(total, 1, "literal `%` stays findable through the fence");
+        assert_eq!(rows[0].knowledge_id, 3);
+    }
+
+    #[test]
+    fn reason_filter_still_substring_matches_unfenced_needles() {
+        // Anti-vacuity for the fence: ordinary needles still match by
+        // substring — the fix narrows only the metacharacters, it does not
+        // turn the filter into equality. (LIKE stays ASCII-case-insensitive,
+        // fence or no fence — not a property this pin asserts.)
+        let mut conn = db();
+        let tx = conn.transaction().unwrap();
+        insert_holds(&tx, &[1], "litigation 2026-118", None, 10).unwrap();
+        insert_holds(&tx, &[2], "sox audit", None, 11).unwrap();
+        tx.commit().unwrap();
+        let (rows, total) = list_holds(&conn, None, Some("sox"), 100).unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(rows[0].knowledge_id, 2);
+        let (_, total) = list_holds(&conn, None, Some("nonexistent"), 100).unwrap();
+        assert_eq!(total, 0, "a needle that matches nothing returns zero rows");
     }
 
     #[test]

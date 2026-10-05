@@ -6382,7 +6382,12 @@ paths:
         closed (403 `principal_revoked`); every ACTIVE run where the
         principal owns in-flight delegation work drains through the existing
         run-cancel path. Revocation, hash-chained audit row, and drain commit
-        or roll back together. Identity-wide (not domain-scoped).
+        or roll back together. Identity-wide (not domain-scoped). The opaque
+        operator superuser's label is the one refused principal (400
+        operator_bearer_unrevocable): its bearer is a static token the
+        kill-switch structurally cannot reach, so the verb refuses loudly —
+        naming token rotation + restart as the remedy — instead of writing
+        an inert row and reporting success.
       operationId: postAgentRevoke
       requestBody:
         required: true
@@ -6394,7 +6399,7 @@ paths:
               properties:
                 principal: { type: string, maxLength: 256 }
                 reason: { type: string, maxLength: 500 }
-                allow_unknown: { type: boolean, default: false, description: 'DEPRECATED no-op (v1.28.83): accepted for wire compatibility and ignored. Every well-formed revoke writes unconditionally; an unseen name is reported via known:false + warning, never refused.' }
+                allow_unknown: { type: boolean, default: false, description: 'DEPRECATED no-op (v1.28.83): accepted for wire compatibility and ignored. Every well-formed revoke of a REVOCABLE identity writes unconditionally; an unseen name is reported via known:false + warning, never refused. The one refusal (R77, F9-01): the opaque operator label operator_bearer_unrevocable — a static token no revocation row can reach.' }
       responses:
         "200":
           description: Revoked (unconditional since v1.28.83 — availability-first kill-switch)
@@ -6409,7 +6414,7 @@ paths:
                   known: { type: boolean, description: 'Whether the name matched a card, crew record, delegation, prior revocation, or the loopback agent. false carries a warning — the revocation WAS written.' }
                   wedged_delegations: { type: array, items: { type: integer }, description: 'Active run ids where the revoked principal owes an in-flight delegation result (delegatee-side wedge — the drain cancels owned work only; cancel these runs by hand).' }
                   warning: { type: string, description: 'Present only when known:false. Names the loopback agent; re-revoke the intended name if this was a typo (the written row is harmless).' }
-        "400": { description: input_invalid | principal_malformed }
+        "400": { description: input_invalid | principal_malformed | operator_bearer_unrevocable (the opaque operator label is structurally outside the kill-switch — the remedy is token rotation + restart, and nothing is written) }
         "401": { description: Not authenticated }
         "403": { description: Not authorized (Admin required) }
   /ops/agents/revocations:
