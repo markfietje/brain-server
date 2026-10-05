@@ -367,7 +367,10 @@ impl HandlerError {
         static INCIDENT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let id = INCIDENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let message = message.into();
-        tracing::error!(incident = id, error = %message, "internal error");
+        // F8-04: this driver string embeds SQL text, constraint names and
+        // filesystem paths — some of them request-derived — so it rides the
+        // `LogValue` newtype. The incident id beside it is a u64.
+        tracing::error!(incident = id, error = %crate::server::router::memory::LogValue::new(&message), "internal error");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             inner: ApiError::new(
@@ -775,7 +778,12 @@ pub fn domain_pools(
         .map(|d| {
             let pool = registry
                 .pool_for(&d)
-                .map_err(|e| tracing::warn!("audit domain sweep: pool for '{d}' unavailable: {e}"))
+                .map_err(|e| {
+                    tracing::warn!(
+                        "audit domain sweep: pool for '{}' unavailable: {e}",
+                        crate::server::router::memory::LogValue::new(&d)
+                    )
+                })
                 .ok();
             (d, pool)
         })

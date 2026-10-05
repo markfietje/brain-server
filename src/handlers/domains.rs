@@ -264,7 +264,12 @@ pub async fn delete_domain(
         // best-effort (it must not fail a completed erasure), but a failure
         // is now visible instead of invisible.
         if let Err(e) = crate::service::domains_admin::vacuum(&conn) {
-            tracing::warn!("post-delete VACUUM failed for domain {name}: {e}");
+            // F8-04: `name` is the request's path segment, so it rides the
+            // `LogValue` newtype rather than the log line raw.
+            tracing::warn!(
+                "post-delete VACUUM failed for domain {}: {e}",
+                crate::server::router::memory::LogValue::new(&name)
+            );
         }
         Ok(())
     })

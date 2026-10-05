@@ -69,7 +69,10 @@ fn load_webhook_secret() -> Option<Vec<u8>> {
             // Fail closed like the auth token file: a group/world-accessible
             // secret is refused (None) rather than trusted.
             if crate::auth::check_secret_permissions(std::path::Path::new(&secret_path)).is_err() {
-                tracing::warn!(path = %secret_path,
+                // F8-04: the secret's PATH is operator-config-derived, so it
+                // rides the `LogValue` newtype — the diagnostic is worth
+                // keeping, and an unsanitised path in it could forge a log entry.
+                tracing::warn!(path = %crate::server::router::memory::LogValue::new(&secret_path),
                     "webhook secret file is not owner-only; refusing to trust it");
                 return None;
             }
@@ -568,7 +571,7 @@ fn deny(state: &Arc<AppState>, kind: &str, detail: &str) {
 fn load_kb_feedback_secret() -> Option<Vec<u8>> {
     let path = std::env::var("BRAIN_KB_FEEDBACK_SECRET_FILE").ok()?;
     if crate::auth::check_secret_permissions(std::path::Path::new(&path)).is_err() {
-        tracing::warn!(path = %path,
+        tracing::warn!(path = %crate::server::router::memory::LogValue::new(&path),
             "kb-feedback secret file is not owner-only; refusing to trust it");
         return None;
     }
@@ -1155,15 +1158,174 @@ mod valet_tests {
         crate::service::webhook_ingest::file_pending_draft(&conn, content, 1).expect("proposal")
     }
 
+    /// The env-var fence for this module's tests. `install_secret` writes a
+    /// PROCESS-GLOBAL env var, and `load_signal_secret` reads it — so two of
+    /// these tests running concurrently on the lib test runner raced: one
+    /// test's `set_var` landed between another's write and its read, and the
+    /// reader resolved the WRONG secret and saw an unexpected status. This is
+    /// the same class `config.rs` fences with `TOKEN_ENV_LOCK`/`IP_ENV_LOCK`,
+    /// and it was the one intermittent red in the suite.
+    ///
+    /// `tokio::sync::Mutex`, NOT `std::sync::Mutex`: the fence is held across
+    /// `.await` points for the whole test body, and holding a `std` guard
+    /// across an await blocks a runtime worker thread (clippy's
+    /// `await_holding_lock`, correctly, refuses it). Each `#[tokio::test]`
+    /// runs its own runtime, and this lock is shared by `static`, so the two
+    /// tests still serialise against each other — which is the whole point.
+    static SIGNAL_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// One 0600 secret file + the env pin, so `load_signal_secret` resolves.
+    /// The CALLER must hold [`SIGNAL_ENV_LOCK`] for the whole test body, not
+    /// just around this call, or the write and the read can still be split.
     fn install_secret(dir: &tempfile::TempDir) -> Vec<u8> {
         let secret = b"test-signal-secret".to_vec();
         let path = dir.path().join("signal.secret");
-        std::fs::write(&path, &secret).expect("write");
         use std::os::unix::fs::PermissionsExt;
+        std::fs::write(&path, &secret).expect("write");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("chmod");
         unsafe { std::env::set_var("BRAIN_SIGNAL_WEBHOOK_SECRET_FILE", &path) };
         secret
+    }
+
+    /// The 0600 pin every secret file needs before `load_signal_secret` will
+    /// trust it. Named so the concurrent red-proof tests below do not each
+    /// re-import the trait inside a nested block.
+    fn write_owner_only(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).expect("chmod 0600");
+    }
+
+    /// THE RED-PROOF for the fence, and it is DETERMINISTIC by construction —
+    /// the natural race fired roughly once per several full-suite runs, which is
+    /// not evidence that a fence works.
+    ///
+    /// The hazard is that the env var is PROCESS-GLOBAL while each test
+    /// installs a path into its OWN `TempDir`. So the deterministic property to
+    /// prove is mutual exclusion of the *install*, not of the whole test: while
+    /// one caller holds the fence, a second install must not be able to land.
+    ///
+    /// NOTE ON WHY THIS TEST ALSO HOLDS THE FENCE AT ITS TOP LEVEL. The fixture
+    /// install is itself a write to the process-global var, so this test must not
+    /// race the OTHER fence tests that do the same. That is not a workaround —
+    /// it is the same discipline under test, and an early version of this test
+    /// omitted it and flaked against its sibling ~3 runs in 14.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn signal_env_fence_blocks_a_second_install_until_released() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        // Taken BEFORE the fixture install, and held to the end of the body.
+        // ONE guard only: this lock is strictly FIFO and NOT reentrant, so the
+        // nested "holder" acquisition an earlier version used would deadlock
+        // the test against itself.
+        let top = SIGNAL_ENV_LOCK.lock().await;
+
+        let holder_dir = tempfile::TempDir::new().expect("holder dir");
+        let probe_dir = tempfile::TempDir::new().expect("probe dir");
+        let probe_lands = Arc::new(AtomicBool::new(false));
+
+        // The holder installs under the fence it already holds.
+        let holder_secret = install_secret(&holder_dir);
+        let holder_path: PathBuf = std::env::var("BRAIN_SIGNAL_WEBHOOK_SECRET_FILE")
+            .expect("holder pin")
+            .into();
+
+        // The PROBE tries to install while the holder is inside. With the fence
+        // it must block; the flag records whether it ever got through.
+        let probe_flag = probe_lands.clone();
+        let probe_dir_path = probe_dir.path().to_path_buf();
+        let probe = tokio::spawn(async move {
+            let _g = SIGNAL_ENV_LOCK.lock().await;
+            let path = probe_dir_path.join("signal.secret");
+            std::fs::write(&path, b"PROBE-SECRET").expect("probe write");
+            write_owner_only(&path);
+            unsafe { std::env::set_var("BRAIN_SIGNAL_WEBHOOK_SECRET_FILE", &path) };
+            probe_flag.store(true, Ordering::SeqCst);
+        });
+
+        // Give the probe ample opportunity to land if the fence is absent.
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        assert!(
+            !probe_lands.load(Ordering::SeqCst),
+            "RED-PROOF: the probe installed WHILE the holder held the fence — the fence does \
+             not exclude a second install, so a concurrent test would repoint the env var \
+             mid-test and resolve the wrong secret file"
+        );
+        assert_eq!(
+            std::env::var("BRAIN_SIGNAL_WEBHOOK_SECRET_FILE")
+                .ok()
+                .as_deref(),
+            holder_path.to_str(),
+            "RED-PROOF: the env var was repointed away from the holder's file while the fence \
+             was held"
+        );
+        assert_eq!(
+            load_signal_secret().as_deref(),
+            Some(holder_secret.as_slice()),
+            "RED-PROOF: the holder's own secret must still resolve while it holds the fence"
+        );
+
+        // Release, and the probe must now land — this is the anti-vacuity half:
+        // it proves the probe was live and merely BLOCKED, not dead.
+        drop(top);
+        probe.await.expect("probe task");
+        assert!(
+            probe_lands.load(Ordering::SeqCst),
+            "anti-vacuity: the probe must install once the fence is released — if it never ran \
+             at all, the assertions above proved nothing"
+        );
+    }
+
+    /// The second half of the pair: proves the fence makes the REAL seam observe
+    /// a consistent secret, by driving `load_signal_secret` concurrently. Kept
+    /// as a separate test so the exclusion proof above stays deterministic and
+    /// readable, and so a failure in either names its own property.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn signal_env_fence_keeps_the_secret_resolution_consistent() {
+        use std::sync::Arc;
+        // ONE guard for the whole body. `tokio::sync::Mutex` is strictly FIFO
+        // and NOT reentrant, so acquiring it twice in one test DEADLOCKS
+        // against itself — an earlier version of this test did exactly that.
+        // The fixture install below is a process-global write, so the fence is
+        // taken BEFORE it, and released only after the writer has landed.
+        let held = SIGNAL_ENV_LOCK.lock().await;
+        let dir_a = tempfile::TempDir::new().expect("dir a");
+        let dir_b = tempfile::TempDir::new().expect("dir b");
+        let expected = Arc::new(install_secret(&dir_a));
+
+        // Second writer, fenced: it must not be able to repoint the var while
+        // this test is between its write and its read.
+        let writer_dir = dir_b.path().to_path_buf();
+        let writer_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let wflag = writer_flag.clone();
+        let writer = tokio::spawn(async move {
+            let _g = SIGNAL_ENV_LOCK.lock().await;
+            let path = writer_dir.join("signal.secret");
+            std::fs::write(&path, b"OTHER-SECRET").expect("write");
+            write_owner_only(&path);
+            unsafe { std::env::set_var("BRAIN_SIGNAL_WEBHOOK_SECRET_FILE", &path) };
+            wflag.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+
+        for _ in 0..50 {
+            tokio::task::yield_now().await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert_eq!(
+            load_signal_secret().as_deref(),
+            Some(expected.as_slice()),
+            "the holder must read back its OWN secret while holding the fence"
+        );
+        assert!(
+            !writer_flag.load(std::sync::atomic::Ordering::SeqCst),
+            "a fenced writer must not repoint the process-global pin mid-test"
+        );
+        drop(held);
+        writer.await.expect("writer task");
     }
 
     fn signed_request(secret: &[u8], id: &str, payload: &serde_json::Value) -> (HeaderMap, Bytes) {
@@ -1187,6 +1349,10 @@ mod valet_tests {
     #[tokio::test]
     async fn inbound_signal_becomes_screened_steering() {
         let (dir, state) = test_state();
+        // Serialise against every other test in this module: the secret env
+        // var is process-global, so a concurrent `set_var` would resolve the
+        // wrong file. Held for the whole body, across the awaits.
+        let _env_guard = SIGNAL_ENV_LOCK.lock().await;
         let secret = install_secret(&dir);
         let run = seed_run(&state);
 
@@ -1233,6 +1399,10 @@ mod valet_tests {
     #[tokio::test]
     async fn draft_approve_by_message_binds_digest() {
         let (dir, state) = test_state();
+        // Serialise against every other test in this module: the secret env
+        // var is process-global, so a concurrent `set_var` would resolve the
+        // wrong file. Held for the whole body, across the awaits.
+        let _env_guard = SIGNAL_ENV_LOCK.lock().await;
         let secret = install_secret(&dir);
         let content = "Short pillar post draft. Shipped notes inside.";
         let pid = seed_pending_proposal(&state, content);

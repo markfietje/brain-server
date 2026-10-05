@@ -733,9 +733,10 @@ pub fn notify_art19(subject: String, certificate_id: i64, certified_at: String) 
         crate::config::dsar_webhook_secret().is_some(),
     ) {
         tracing::error!(
-            "DSAR Art 19 webhook to {url} REFUSED unsigned (no opt-out): \
+            "DSAR Art 19 webhook to {} REFUSED unsigned (no opt-out): \
              set BRAIN_DSAR_WEBHOOK_SECRET or unset BRAIN_DSAR_WEBHOOK_URL — \
-             the purge itself is unaffected"
+             the purge itself is unaffected",
+            crate::server::router::memory::LogValue::new(&url)
         );
         return;
     }

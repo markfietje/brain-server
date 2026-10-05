@@ -271,6 +271,41 @@ pub(crate) fn sanitize_log_value(v: &str) -> String {
     crate::strip_invisible::strip_control_chars(v).replace('\n', " ")
 }
 
+/// A value cleared for a log line, and the ONLY way to get one.
+///
+/// **Why a newtype.** `sanitize_log_value` had a single production call site
+/// and fourteen tests — none of which asserted that any call site USES it. A
+/// seam nothing is forced through is a convention, and conventions are what a
+/// future author silently violates; that is F8-04. Wrapping the sanitised text
+/// in a type whose ONLY constructor is [`sanitize_log_value`] makes the safe
+/// path the only path: a handler cannot interpolate a raw request-derived
+/// identifier into a log line without either naming this type or giving up the
+/// `Display` impl `tracing` needs.
+///
+/// **Bounds law (deliberate, and pinned).** There is no `From<&str>`, no
+/// `From<String>`, no `Deref<Target = str>`, no `Default`, and the field is
+/// private — so the value cannot be manufactured anywhere but its constructor.
+/// Each of those escapes would re-open exactly the hole this type closes, so
+/// the round's pin fails if one is ever added.
+///
+/// `Display` renders the SANITISED form, which is what makes the ergonomic
+/// `tracing::warn!("… {}", LogValue::new(&domain))` and the field form
+/// `tracing::warn!(domain = %LogValue::new(&domain), "…")` both safe.
+pub(crate) struct LogValue(String);
+
+impl LogValue {
+    /// The only constructor: sanitize, then wrap.
+    pub(crate) fn new(v: &str) -> Self {
+        Self(sanitize_log_value(v))
+    }
+}
+
+impl std::fmt::Display for LogValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum EmbeddingsInput {

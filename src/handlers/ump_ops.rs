@@ -87,8 +87,10 @@ pub async fn remember(
                     declared,
                 ) {
                     tracing::warn!(
-                        "forbidden_scope audit not recorded: owner={owner} declared={declared} \
-                         (connection or audit write failed)"
+                        "forbidden_scope audit not recorded: owner={} declared={} \
+                         (connection or audit write failed)",
+                        crate::server::router::memory::LogValue::new(&owner),
+                        crate::server::router::memory::LogValue::new(declared)
                     );
                 }
                 return Err(HandlerError::bad_request_with(

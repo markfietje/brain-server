@@ -17997,12 +17997,12 @@ mod r38_delivery {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_25),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_26),
             "the migration literal and the ceiling const must agree on the current stamp"
         );
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.25",
+            "1.32.26",
             "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
              this binary cannot migrate"
         );
@@ -18739,12 +18739,12 @@ mod r40_attestations {
         // round; what moves is the ceiling, and it moves for both.
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_25),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_26),
             "the ceiling const and the migration literal must move together"
         );
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.25",
+            "1.32.26",
             "LATEST_KNOWN_SCHEMA must move with the stamp — refuse_newer must not bless a DB \
              this binary cannot migrate"
         );
@@ -19540,14 +19540,14 @@ mod r41_replay {
         // The stamp moved, and moved with the table.
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.25",
+            "1.32.26",
             "the release round is a schema round: the stamp moves with the table that earns it. \
              Later schema rounds re-pin the CURRENT stamp — the model-citation-key round moved \
-             it to 1.32.25"
+             it to 1.32.25 and the proposal-edge round moved it to 1.32.26"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_25),
+            Some(brain_server::storage_layout::SCHEMA_VERSION_V1_32_26),
         );
         // ...and the parity table the migration rehearsal walks carries the new
         // table: a rehearsal that came back with zero bindings would produce a
@@ -19991,13 +19991,13 @@ mod r42_authority_bindings {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.25",
+            "1.32.26",
             "the bindings stamp pin moves with the release round's stamp: each schema round \
              re-pins the CURRENT stamp, so a stale ceiling fails loudly here"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some("1.32.25"),
+            Some("1.32.26"),
             "what the migration stamps must be what the ceiling declares"
         );
     }
@@ -20887,7 +20887,7 @@ mod r42_authority_bindings {
             .find("CREATE TABLE IF NOT EXISTS delivery_bindings")
             .expect("the table DDL must exist in the migration's production region");
         let stamp_at = migration
-            .find("'schema_version', '1.32.25'")
+            .find("'schema_version', '1.32.26'")
             .expect("the stamp must move to the current schema round's stamp");
         assert!(
             ddl_at < stamp_at,
@@ -20896,7 +20896,7 @@ mod r42_authority_bindings {
         // The stamp's two arms stay in lockstep — the lockstep pin derives both
         // sides, and a half-edited stamp makes `refuse-newer` lie.
         assert!(
-            migration.contains("DO UPDATE SET value = '1.32.25'"),
+            migration.contains("DO UPDATE SET value = '1.32.26'"),
             "both arms of the schema_version upsert must move together"
         );
         // Rehearsal parity: the new table is walked by the migration rehearsal,
@@ -21117,24 +21117,25 @@ mod r43_releases {
         let db = test_db();
         assert_eq!(
             brain_server::storage_layout::LATEST_KNOWN_SCHEMA,
-            "1.32.25",
+            "1.32.26",
             "the release round is a schema round: the stamp moves with the table that earns it. \
              Each schema round re-pins the CURRENT stamp — the per-domain axis round left it at \
-             1.32.24, and the model-citation-key round moved it to 1.32.25 for the two registry-key \
-             columns on delivery_traces"
+             1.32.24, the model-citation-key round moved it to 1.32.25 for the two registry-key \
+             columns on delivery_traces, and the proposal-edge round moved it to 1.32.26 for \
+             proposals.promoted_chunk_id"
         );
         assert_eq!(
             brain_server::storage_layout::schema_version(&db).as_deref(),
-            Some("1.32.25"),
+            Some("1.32.26"),
         );
         let migration = src("src/migration.rs");
         assert!(
-            migration.contains("DO UPDATE SET value = '1.32.25'"),
+            migration.contains("DO UPDATE SET value = '1.32.26'"),
             "both arms of the schema_version upsert must move together"
         );
         let layout = src("src/storage_layout.rs");
         assert!(
-            layout.contains("is_newer_than_known(Some(\"1.32.26\"))"),
+            layout.contains("is_newer_than_known(Some(\"1.32.27\"))"),
             "the probe must move one ABOVE the new ceiling, or it silently tests Equal"
         );
     }
@@ -22222,19 +22223,21 @@ mod r44_outcomes {
         // R57b moved it again for the trace citation's three nullable columns, R60
         // moved it again for the disproof condition's six columns on `claims`, the
         // scope round moved it again for the seventh (`disproof_scope`), the
-        // per-domain axis round moved it again for `knowledge_domain_versions`, and the
-        // model-citation-key round moved it again for `delivery_traces`' registry-key pair.
+        // the per-domain axis round moved it again for `knowledge_domain_versions`, the
+        // model-citation-key round moved it again for `delivery_traces`' registry-key pair, and the
+        // proposal-edge round moved it again for `proposals.promoted_chunk_id`.
         assert!(
-            layout.contains("pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_25;")
-                && layout.contains("\"1.32.25\""),
+            layout.contains("pub const LATEST_KNOWN_SCHEMA: &str = SCHEMA_VERSION_V1_32_26;")
+                && layout.contains("\"1.32.26\""),
             "the schema stamp is the lockstep triple: LATEST_KNOWN_SCHEMA must name the \
              newest SCHEMA_VERSION_* const and that const must carry the same literal. R44 \
              shipped no stamp; R51 moved it to 1.32.20 for the additive knowledge_version \
              column, R57b moved it to 1.32.21 for the decision trace's model citation, \
              R60 moved it to 1.32.22 for the disproof condition's six additive columns on \
              `claims`, the scope round moved it to 1.32.23 for the seventh, the per-domain \
-             axis round moved it to 1.32.24 for the domain version table, and the \
-             model-citation-key round moved it to 1.32.25 for the two registry-key columns."
+             axis round moved it to 1.32.24 for the domain version table, the \
+             model-citation-key round moved it to 1.32.25 for the two registry-key columns, and \
+             the proposal-edge round moved it to 1.32.26 for proposals.promoted_chunk_id."
         );
         let rehearse = src("src/bin/brain_migrate_rehearse.rs");
         assert!(
@@ -22323,5 +22326,752 @@ mod r44_outcomes {
                  handler"
             );
         }
+    }
+}
+
+/// R70 "Seams" — the six audit8 findings that were "the machine is right for
+/// the wrong reason". One theme: **enforcement, not behaviour**.
+///
+/// PLACEMENT, and why it is here rather than in a `src/` unit test: the
+/// source-scanning pins below need the house lexer, and the house lexer lives
+/// in THIS crate. `handler_body` is `pub(super)` here, and the house records at
+/// `src/handlers/workflow_decisions.rs:300-305` that it cannot be reached from
+/// a `src/` unit test. The R70 note also checked the obvious alternative and
+/// found it CLOSED: `src/spire_inventory.rs:628`'s `strip_rust_comments` is
+/// `pub fn`, but `spire_inventory` is `#[cfg(test)] pub mod` (`src/lib.rs:346`),
+/// so it does not exist in the lib an integration test links against — the
+/// `cfg` is the blocker, not visibility. So BOTH lexers here are the existing
+/// test-side ones (`strip_line_comments` / `strip_cfg_test_regions`), reused and
+/// not reimplemented; a second `src/` stripper would fire `dup_guard`.
+mod r70_seams {
+    /// Read a production source file from the repo.
+    fn src(rel: &str) -> String {
+        std::fs::read_to_string(format!("{}/{rel}", env!("CARGO_MANIFEST_DIR")))
+            .unwrap_or_else(|e| panic!("read {rel}: {e}"))
+    }
+
+    /// The production region of a source file: comments stripped, then
+    /// `#[cfg(test)]` regions removed — BOTH by the house lexers in this
+    /// crate, in that order. Comments go first so a doc comment naming a
+    /// guarded symbol can never false-pass a substring assert (the F7-07
+    /// lesson), and test regions go second so a fixture's own
+    /// `tracing::warn!` is not mistaken for production code.
+    fn production(rel: &str) -> String {
+        super::tests::strip_cfg_test_regions(&super::tests::strip_line_comments(&src(rel)))
+    }
+
+    /// Extract a function body — braces balanced, string-aware. This is the
+    /// house extractor, reached through `super::handler_body` (R70 note: the
+    /// pin lives in this crate BECAUSE that extractor is `pub(super)` here and
+    /// unreachable from `src/`).
+    fn body(prod: &str, name: &str) -> Option<String> {
+        super::tests::handler_body(prod, name)
+    }
+
+    // ── F8-04: the log seam ────────────────────────────────────────────────
+    //
+    // `sanitize_log_value` had ONE production call site and fourteen tests,
+    // none of which asserted that any call site USES it. A seam with no
+    // enforcement is a convention. This pin is the enforcement.
+
+    /// The offenders: every `tracing::{warn,error,info,debug}!` in
+    /// `src/handlers/**` whose format string interpolates a request-derived
+    /// identifier must ride the `LogValue` newtype, whose ONLY constructor is
+    /// `sanitize_log_value`.
+    ///
+    /// **Wrong implementation this pin is built to kill:** a new handler that
+    /// writes `tracing::warn!("bad input: {name}")` with `name` straight from
+    /// the request — a crafted `\n` forges an entry in the journald/launchd
+    /// stream the operator reads. This is not a hypothetical: EIGHT such sites
+    /// were in the tree when the pin was written, and the guard found all eight
+    /// before any of them was fixed (red output in the R70 note).
+    ///
+    /// A value is an OFFENCE only if it can carry attacker-chosen bytes. The
+    /// categories that cannot are exempted by CATEGORY below, each with its
+    /// reason stated in code rather than asserted in prose — so a future author
+    /// who adds a `String` to one of them fails the pin instead of reasoning
+    /// about whether it "looks safe".
+    #[test]
+    fn r70_handler_logs_ride_the_sanitised_newtype() {
+        let sources = handler_log_sources();
+        let sites = bare_log_values(&sources);
+        let unexplained: Vec<String> = sites
+            .iter()
+            .filter(|s| !is_exempt_category(&s.ident))
+            .map(|s| s.render())
+            .collect();
+        assert!(
+            unexplained.is_empty(),
+            "these handler log sites interpolate a value that can carry \
+             request-derived bytes without the `LogValue` seam — a crafted \
+             control character forges log entries:\n{}",
+            unexplained.join("\n")
+        );
+
+        // The categories the guard passes on must still describe a REAL set of
+        // call sites. Without this, deleting every converted site would leave
+        // the exemptions looking load-bearing while they classify nothing —
+        // the "guard that reports ok because it sees nothing" failure.
+        let exempt_hits = sites
+            .iter()
+            .filter(|s| is_exempt_category(&s.ident))
+            .count();
+        assert!(
+            exempt_hits > 0,
+            "no call site fell into an exempt category — either the tree changed \
+             or `is_exempt_category` no longer matches the real sites"
+        );
+    }
+
+    /// Can this identifier's value carry attacker-chosen bytes into a log
+    /// line?
+    ///
+    /// Only a `String`/`&str` whose CONTENTS originate outside the binary can.
+    /// The categories below cannot, and each is pinned to its real declaration
+    /// so the exemption cannot rot into a blanket pass:
+    ///
+    /// * **error values** (`e`, `last_err`) — a `Display` of an error type
+    ///   built by this codebase from typed variants. Note the honest ceiling:
+    ///   an error that embeds a driver string MAY carry request text, and
+    ///   `HandlerError::internal` is the one path that does. That path is
+    ///   converted (see `mod.rs`, `error = %LogValue::new(&message)`); the
+    ///   remainder are SQL/bind/IO errors whose operands are bound
+    ///   parameters, never the interpolated value itself.
+    /// * **integer row ids** (`id`, `run_id`, `run`, `incident`) — an `i64` or
+    ///   `u64` renders as digits; there is no byte to inject.
+    /// * **`&'static str` constants** (`OPERATOR_KEY_PREV_FILE`, `reason`) —
+    ///   compile-time literals. `TemplateDispatchError::EnqueueSuppressed`
+    ///   carries `&'static str` (`src/workflow/channels.rs:1527`), which is why
+    ///   `{reason}` is exempt and why an enum-shaped variable name does NOT
+    ///   buy an exemption by itself.
+    fn is_exempt_category(ident: &str) -> bool {
+        if ident.is_empty() {
+            return false;
+        }
+        // all-digits would be a literal, never an identifier
+        if ident.chars().all(|c| c.is_ascii_digit() || c == '_') {
+            return false;
+        }
+        // Error values, by their declaration-shaped name.
+        if matches!(ident, "e" | "err" | "last_err") {
+            return true;
+        }
+        // SCREAMING_CASE is a const in this tree's convention
+        // (`OPERATOR_KEY_PREV_FILE`, `OPERATOR_KEY_SEED_LEN`), and
+        // `reason` is the `&'static str` enum payload named above.
+        if ident
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+            || matches!(ident, "reason")
+        {
+            return true;
+        }
+        // Integer row ids: a lowercase identifier that is a known id field.
+        // Deliberately a CLOSED list rather than a shape — `name`, `domain`,
+        // `path`, `url`, `owner` and `declared` are all request/config-derived
+        // and must NOT be exempted, and a shape rule ("any snake_case word")
+        // would exempt exactly those.
+        matches!(ident, "id" | "run_id" | "run" | "incident")
+    }
+
+    /// The anti-vacuity half. A guard that finds nothing because it cannot see
+    /// anything is the failure this round is about, so the SCANNER is pinned
+    /// against a planted violation, in the same shape as the real one.
+    #[test]
+    fn r70_log_scanner_catches_a_planted_offender() {
+        // Exactly the real shape: a bare identifier from the request,
+        // interpolated into a tracing format string.
+        let planted = r#"
+            async fn planted(name: String) {
+                tracing::warn!("delete refused for {name}");
+            }
+        "#;
+        let found = bare_log_values(&[("fixture.rs".to_string(), planted.to_string())]);
+        assert_eq!(
+            found.len(),
+            1,
+            "the scanner must catch a bare interpolated identifier — found {:?}",
+            found.iter().map(LogSite::render).collect::<Vec<_>>()
+        );
+        assert!(
+            found[0].ident == "name" && found[0].invocation.contains("delete refused"),
+            "the diagnostic must NAME the offending value and its site, so a \
+             failure is actionable: {:?}",
+            found.iter().map(LogSite::render).collect::<Vec<_>>()
+        );
+
+        // The seam itself is NOT an offence: `LogValue` renders the sanitised
+        // form, so routing through the newtype is the fix.
+        let fixed = r#"
+            async fn planted(name: String) {
+                tracing::warn!("delete refused for {}", LogValue::new(&name));
+            }
+        "#;
+        assert!(
+            bare_log_values(&[("fixture.rs".to_string(), fixed.to_string())]).is_empty(),
+            "a site routed through `LogValue` must pass — otherwise the guard \
+             would force authors to delete the log line instead of sanitising it"
+        );
+
+        // The SECOND real shape, and the one a line-scanner misses: a
+        // multi-line invocation carrying a structured field (`webhooks.rs:71`
+        // is exactly `tracing::warn!(path = %secret_path, "…")`). If the scan
+        // only read `{ident}` placeholders it would pass this file unchanged,
+        // which is the "guard that reports ok while its subject is violated"
+        // failure R68 exists to prevent.
+        let field = r#"
+            async fn secret(path: String) {
+                tracing::warn!(path = %path,
+                    "secret file is not owner-only; refusing to trust it");
+            }
+        "#;
+        let found_field = bare_log_values(&[("fixture.rs".to_string(), field.to_string())]);
+        assert_eq!(
+            found_field.len(),
+            1,
+            "a BARE structured field (`path = %path`) must be caught too — a \
+             scan reading only format placeholders would miss it: {:?}",
+            found_field.iter().map(LogSite::render).collect::<Vec<_>>()
+        );
+        assert!(
+            found_field[0].ident == "path",
+            "the diagnostic reports the VALUE's name (`path`), not the field \
+             label — a classifier that read `path` would exempt a forged-site \
+             diagnostic: {:?}",
+            found_field.iter().map(LogSite::render).collect::<Vec<_>>()
+        );
+        // The `?` (Debug) sigil is the same vulnerability — `Debug` on a
+        // String still emits its contents.
+        let debug_field = r#"
+            async fn secret2(path: String) {
+                tracing::warn!(path = ?path, "not owner-only");
+            }
+        "#;
+        assert_eq!(
+            bare_log_values(&[("fixture.rs".to_string(), debug_field.to_string())]).len(),
+            1,
+            "the `?path` Debug sigil renders the same string and is the same hole"
+        );
+        // …and the fixed shape of that field passes.
+        let field_fixed = r#"
+            async fn secret3(path: String) {
+                tracing::warn!(path = %LogValue::new(&path),
+                    "not owner-only");
+            }
+        "#;
+        assert!(
+            bare_log_values(&[("fixture.rs".to_string(), field_fixed.to_string())]).is_empty(),
+            "a field routed through `LogValue` must pass"
+        );
+
+        // A comment NAMES the symbol without being one — the F7-07 lesson.
+        // The fixture is pre-stripped (the caller's `production` strips
+        // comments before this scanner runs), so the mention sits in a string
+        // literal, exactly as a real doc comment would appear after stripping.
+        let commented = r#"
+            async fn commented(name: String) {
+                let _note = "this mention of LogValue::new is prose, not a call";
+                tracing::warn!("delete refused for {name}");
+            }
+        "#;
+        assert_eq!(
+            bare_idents(
+                &log_invocations(commented)
+                    .first()
+                    .map(|(_, i)| i.clone())
+                    .unwrap_or_default()
+            )
+            .len(),
+            1,
+            "prose naming the seam must not satisfy the guard — the scan must \
+             read CODE, not the mention of it"
+        );
+    }
+
+    /// The newtype must not be constructible from a raw string by any of the
+    /// three obvious escapes. The whole value of the round is that the safe
+    /// path is the ONLY path, so each escape is killed by construction: there
+    /// is no `From<&str>`, no `From<String>`, no public field, and no
+    /// `Deref<Target = str>`.
+    ///
+    /// Built to kill: a future author adding `impl From<&str> for LogValue`
+    /// (or `#[derive(Default)]`, which would hand out an empty — unsanitised,
+    /// but worse, *unconstructed* — value) to "save a line".
+    #[test]
+    fn r70_log_value_newtype_has_no_unsafe_constructor() {
+        let src = production("src/server/router/memory.rs");
+        let decl = body(&src, "LogValue").or_else(|| {
+            // A newtype's body is its `impl` block; find it by the type name.
+            src.find("struct LogValue").map(|i| src[i..].to_string())
+        });
+        let region = decl.expect("the `LogValue` newtype must exist beside `sanitize_log_value`");
+
+        for banned in [
+            "impl From<&str> for LogValue",
+            "impl From<String> for LogValue",
+            "impl From<&String> for LogValue",
+            "impl Deref for LogValue",
+            "impl Default for LogValue",
+        ] {
+            assert!(
+                !region.contains(banned),
+                "`LogValue` must have exactly ONE constructor (`sanitize_log_value`); \
+                 `{banned}` is a second, and re-opens the hole this round closes"
+            );
+        }
+        // The field must be private — `pub` would let any module build one
+        // directly. `LogValue(pub String)` / `pub struct LogValue { pub .. }`.
+        assert!(
+            !region.contains("pub String") && !region.contains("pub(crate) String"),
+            "the newtype's inner field must be PRIVATE so the constructor is the \
+             only way to obtain one"
+        );
+        // And the seam it wraps must still be the ONLY sanitiser reachable.
+        assert!(
+            src.contains("fn sanitize_log_value"),
+            "`sanitize_log_value` must remain the single log-value seam"
+        );
+    }
+
+    /// Every handler file, with `#[cfg(test)]` regions blanked and comments
+    /// stripped — the guard's input.
+    fn handler_log_sources() -> Vec<(String, String)> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/handlers");
+        let mut files = Vec::new();
+        collect_rs(&root, &mut files);
+        assert!(
+            !files.is_empty(),
+            "src/handlers not found under {}",
+            root.display()
+        );
+        files
+            .into_iter()
+            .map(|p| {
+                let rel = format!(
+                    "src/handlers/{}",
+                    p.file_name().expect("handler filename").to_string_lossy()
+                );
+                let raw = std::fs::read_to_string(&p).expect("readable handler");
+                (
+                    rel,
+                    super::tests::strip_cfg_test_regions(&super::tests::strip_line_comments(&raw)),
+                )
+            })
+            .collect()
+    }
+
+    fn collect_rs(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            panic!("cannot read {}", dir.display());
+        };
+        let mut paths: Vec<_> = rd.flatten().map(|e| e.path()).collect();
+        paths.sort();
+        for p in paths {
+            if p.is_dir() {
+                collect_rs(&p, out);
+            } else if p.extension().is_some_and(|e| e == "rs") {
+                out.push(p);
+            }
+        }
+    }
+
+    /// Find `tracing::` log sites that interpolate a bare identifier.
+    ///
+    /// HONEST SCOPE, stated because a guard that overclaims is the defect this
+    /// programme keeps finding. This reads each `tracing::{warn,error,info,
+    /// debug}!` invocation as a whole (paren-balanced, so a multi-line call is
+    /// seen whole) and flags a site when it interpolates a bare identifier —
+    /// either as a `{ident}` format placeholder or as a `%ident` structured
+    /// field — that is NOT wrapped in `LogValue`.
+    ///
+    /// It cannot type-check, so a value that is safe by construction but named
+    /// like a request field is a false positive the author resolves by routing
+    /// it through `LogValue`. That is the intended direction of pressure: the
+    /// newtype's constructor IS the sanitiser, so passing through it is never
+    /// wrong, merely redundant, and it is what makes the seam mechanical rather
+    /// than a convention someone has to remember.
+    /// One bare identifier interpolated into a handler log line.
+    struct LogSite {
+        file: String,
+        line: usize,
+        /// The interpolated value's NAME (`domain`, `secret_path`, `e`).
+        ident: String,
+        /// The whole invocation, newlines folded — for an actionable message.
+        invocation: String,
+    }
+
+    impl LogSite {
+        fn render(&self) -> String {
+            format!(
+                "{}:{}: `{}` — {}",
+                self.file, self.line, self.ident, self.invocation
+            )
+        }
+    }
+
+    /// Every bare interpolated value across the handler tree.
+    ///
+    /// HONEST SCOPE, stated because a guard that overclaims is the defect this
+    /// programme keeps finding. This reads each `tracing::{warn,error,info,
+    /// debug}!` invocation as a whole (paren-balanced, so a multi-line call is
+    /// seen whole) and reports a value when it is interpolated BARE — as a
+    /// `{ident}` format placeholder or a `%ident`/`?ident` structured field —
+    /// without going through `LogValue`.
+    ///
+    /// It cannot type-check, which is why the caller classifies the result
+    /// rather than this function deciding: an identifier named like a request
+    /// field is treated as one until proven otherwise, and the only way to
+    /// prove otherwise is to not have a request-derived string under that name
+    /// (see `is_exempt_category`).
+    fn bare_log_values(sources: &[(String, String)]) -> Vec<LogSite> {
+        let mut found = Vec::new();
+        for (rel, prod) in sources {
+            for (line_no, inv) in log_invocations(prod) {
+                let flat = inv.replace('\n', " ");
+                for ident in bare_idents(&flat) {
+                    found.push(LogSite {
+                        file: rel.clone(),
+                        line: line_no,
+                        ident,
+                        invocation: flat.clone(),
+                    });
+                }
+            }
+        }
+        found
+    }
+
+    /// Every `tracing::{warn,error,info,debug}!` invocation in `src`, as
+    /// `(1-based line, invocation text)`. Paren-balanced so a call spanning
+    /// several lines — the `webhooks.rs` `path = %secret_path` shape — is
+    /// returned whole rather than truncated at the first line.
+    fn log_invocations(prod: &str) -> Vec<(usize, String)> {
+        let mut out = Vec::new();
+        let mut offset = 0usize;
+        while let Some(rel_idx) = prod[offset..].find("tracing::") {
+            let i = offset + rel_idx;
+            offset = i + "tracing::".len();
+            let after = &prod[offset..];
+            let level_len = ["warn!", "error!", "info!", "debug!"]
+                .iter()
+                .find(|l| after.starts_with(**l))
+                .map(|l| l.len());
+            let Some(level_len) = level_len else {
+                continue;
+            };
+            let open = offset + level_len; // the '('
+            let Some(close) = paren_end(prod, open) else {
+                continue;
+            };
+            let line_no = prod[..i].matches('\n').count() + 1;
+            out.push((line_no, prod[open + 1..close].to_string()));
+            offset = close + 1;
+        }
+        out
+    }
+
+    /// Index of the `)` matching the `(` at `open`, string-aware. Walks
+    /// `char_indices` rather than bytes so a multi-byte character (an em dash
+    /// in a message string, a `—` in this file's own prose) can never split a
+    /// char boundary and panic the scan.
+    fn paren_end(s: &str, open: usize) -> Option<usize> {
+        let mut depth = 0i32;
+        let mut in_str = false;
+        let mut esc = false;
+        for (i, c) in s[open..].char_indices() {
+            let idx = open + i;
+            if in_str {
+                if esc {
+                    esc = false;
+                } else if c == '\\' {
+                    esc = true;
+                } else if c == '"' {
+                    in_str = false;
+                }
+                continue;
+            }
+            match c {
+                '"' => in_str = true,
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(idx);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// The identifiers a log invocation interpolates BARE — i.e. without
+    /// already going through the newtype. Two syntaxes carry a value into a
+    /// `tracing` line:
+    ///   * `{ident}` in the format string (the `recall.rs` `({domain})` shape);
+    ///   * `field = %ident` / `field = ?ident` (the `webhooks.rs` `path =
+    ///     %secret_path` shape).
+    ///
+    /// Only the VALUE's name is returned in both cases — the field name is
+    /// metadata, and returning it would let a caller classify `path` (a safe
+    /// label) instead of `secret_path` (the value that matters).
+    ///
+    /// An invocation that calls `LogValue::new` anywhere is treated as already
+    /// routed through the seam: the interpolated value is then the sanitised
+    /// newtype, not a raw string.
+    fn bare_idents(inv: &str) -> Vec<String> {
+        if inv.contains("LogValue::new") {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        // (1) format-string placeholders: `{ident}` / `{ident:?}` / `{ident:#}`
+        let chars: Vec<char> = inv.chars().collect();
+        let mut i = 0usize;
+        while i < chars.len() {
+            if chars[i] == '{' {
+                if chars.get(i + 1) == Some(&'{') {
+                    i += 2;
+                    continue;
+                }
+                let mut ident = String::new();
+                let mut j = i + 1;
+                while j < chars.len() && (chars[j].is_ascii_alphanumeric() || chars[j] == '_') {
+                    ident.push(chars[j]);
+                    j += 1;
+                }
+                if !ident.is_empty() {
+                    out.push(ident);
+                }
+                i = j.max(i + 1);
+                continue;
+            }
+            i += 1;
+        }
+        // (2) structured fields: `name = %ident` / `name = ?ident` / `name =
+        //     ident` — the VALUE, not the field name.
+        for part in inv.split(',') {
+            let Some((field, value)) = part.split_once('=') else {
+                continue;
+            };
+            if field.trim().is_empty() {
+                continue;
+            }
+            let value = value.trim();
+            let value = value
+                .strip_prefix('%')
+                .or_else(|| value.strip_prefix('?'))
+                .unwrap_or(value)
+                .trim();
+            // Only a BARE identifier is reported — a call, a literal, or an
+            // already-wrapped value is not the vulnerable shape.
+            let is_bare_ident = !value.is_empty()
+                && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                && value
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_');
+            if is_bare_ident {
+                out.push(value.to_string());
+            }
+        }
+        out
+    }
+
+    // ── F8-06: the webhook exemption becomes an explicit list ──────────────
+
+    /// Every `/webhooks/*` route the router registers must be NAMED in
+    /// `WEBHOOK_PATHS`, every named route must actually be registered, and
+    /// every exempted handler must verify a signature in-handler. The prefix
+    /// rule exempted whatever landed under `/webhooks/` — including anything
+    /// added in future — so the exemption was a convention, not an enforced
+    /// list.
+    ///
+    /// **Wrong implementation this pin is built to kill:** a new route
+    /// registered at `/webhooks/{newkind}` whose handler never verifies a
+    /// signature. Under the old prefix rule it was public by inheritance.
+    #[test]
+    fn r70_every_webhook_route_is_named_and_verifies() {
+        let guards = production("src/server/router/route_guards.rs");
+        let workflow = production("src/server/router/workflow.rs");
+
+        // (a) the scan is not blind. A guard that reads zero routes would pass
+        // every assertion below vacuously.
+        let registered = registered_webhook_routes(&workflow);
+        assert!(
+            !registered.is_empty(),
+            "no `/webhooks/` routes found in the router registration — the scan \
+             is blind, which is the failure this pin exists to prevent"
+        );
+
+        // (b) every registered webhook route is NAMED. Read the registered set
+        // from the router (the authority), never from the list — a list that
+        // quietly forgot a route would otherwise be self-certifying.
+        for route in &registered {
+            assert!(
+                guards.contains(&format!("\"{route}\"")),
+                "`{route}` is registered under `/webhooks/` but is NOT named in \
+                 `WEBHOOK_PATHS` — under the old prefix rule it was public by \
+                 inheritance; now it must be declared"
+            );
+        }
+
+        // (c) both directions: a stale entry left by a deleted route would keep
+        // exempting a path nothing serves.
+        for declared in webhook_declared_routes(&guards) {
+            assert!(
+                registered.contains(&declared),
+                "`{declared}` is declared in `WEBHOOK_PATHS` but no router \
+                 registration produces it — a stale exemption"
+            );
+        }
+
+        // (d) every exempted handler verifies. The four channel handlers call
+        // `verify_bridge`; the two `webhooks.rs` routes share `receive`.
+        let channel = production("src/handlers/channel_webhook.rs");
+        for handler in [
+            "receive_channel",
+            "drain_channel",
+            "ack_channel",
+            "post_console",
+        ] {
+            let b = body(&channel, handler)
+                .unwrap_or_else(|| panic!("`fn {handler}` must exist in channel_webhook.rs"));
+            assert!(
+                b.contains("verify_bridge("),
+                "`{handler}` is registered under the webhook exemption but does \
+                 not call `verify_bridge` — it is unauthenticated"
+            );
+        }
+        let webhooks = production("src/handlers/webhooks.rs");
+        let receive = body(&webhooks, "receive").expect("`fn receive` must exist in webhooks.rs");
+        assert!(
+            receive.contains("verify_github_signature")
+                || receive.contains("receive_standard")
+                || receive.contains("verify_bridge"),
+            "the shared `/webhooks/{{kind}}` handler must verify a signature in \
+             one of its branches"
+        );
+
+        // (e) the prefix rule is GONE. Leaving `starts_with("/webhooks/")` in
+        // place would silently re-open the convention the list replaced, which
+        // would make the whole change cosmetic.
+        assert!(
+            !guards.contains("starts_with(\"/webhooks/\")"),
+            "the `/webhooks/` PREFIX rule must be deleted, not merely shadowed \
+             by the list — otherwise the convention still governs"
+        );
+    }
+
+    /// The routes the router registers under `/webhooks/`, read from the
+    /// registration site (the authority), not from the list.
+    fn registered_webhook_routes(router: &str) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut cursor = 0usize;
+        while let Some(rel) = router[cursor..].find("/webhooks/") {
+            let lit_start = cursor + rel + "/webhooks/".len();
+            let Some(end) = router[lit_start..].find('"') else {
+                break;
+            };
+            let route = format!("/webhooks/{}", &router[lit_start..lit_start + end]);
+            if !out.contains(&route) {
+                out.push(route);
+            }
+            cursor = lit_start + end;
+        }
+        out
+    }
+
+    /// The routes `WEBHOOK_PATHS` declares.
+    fn webhook_declared_routes(guards: &str) -> Vec<String> {
+        let Some(block) = guards
+            .split("pub const WEBHOOK_PATHS")
+            .nth(1)
+            .and_then(|r| r.split("];").next())
+        else {
+            panic!("`WEBHOOK_PATHS` must exist — F8-06 replaces the prefix rule");
+        };
+        block
+            .lines()
+            .filter_map(|l| l.split('"').nth(1))
+            .filter(|p| p.starts_with("/webhooks/"))
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty())
+            .collect()
+    }
+
+    /// The anti-vacuity half, and the mutation §3 asks for: an UNVERIFIED
+    /// webhook route must be able to fail this pin. The fixture registers a
+    /// `/webhooks/noverify` route whose handler verifies nothing, and asserts
+    /// the check REJECTS it. A pin that only counted routes would pass.
+    #[test]
+    fn r70_webhook_guard_rejects_an_unverified_route() {
+        let guards = production("src/server/router/route_guards.rs");
+
+        // The declaration half: an unnamed route is refused.
+        let workflow_with = format!(
+            "{}\n.route(\"/webhooks/noverify\", post(handlers::webhooks::receive));\n",
+            production("src/server/router/workflow.rs")
+        );
+        let registered = registered_webhook_routes(&workflow_with);
+        assert!(
+            registered.contains(&"/webhooks/noverify".to_string()),
+            "the planted route must be visible to the scan — found {registered:?}"
+        );
+        let undeclared: Vec<&String> = registered
+            .iter()
+            .filter(|r| !guards.contains(&format!("\"{r}\"")))
+            .collect();
+        assert_eq!(
+            undeclared.len(),
+            1,
+            "a registered webhook route absent from `WEBHOOK_PATHS` must fail \
+             the declaration check"
+        );
+
+        // The verifier half: a handler that verifies nothing fails. Assert the
+        // fixture is genuinely unverifying FIRST, so the check below cannot be
+        // vacuous.
+        let fake = "async fn noverify_route(headers: HeaderMap, body: Bytes) -> Response {\n    Response::new(body)\n}\n";
+        let b = body(fake, "noverify_route").expect("fixture body");
+        assert!(
+            !b.contains("verify_bridge(") && !b.contains("verify_github_signature"),
+            "the fixture handler must verify NOTHING — otherwise the assertion \
+             below is vacuous"
+        );
+        assert!(
+            !b.contains("verify_bridge("),
+            "a webhook-exempt handler calling no verifier must fail this \
+             assertion — this is what makes the exemption safe"
+        );
+
+        // The matcher itself, and the regression this round nearly shipped: the
+        // `is_public_path` call sites disagree on what they pass —
+        // `auth.rs:129` passes axum's `MatchedPath` (the TEMPLATE) while `:277`
+        // and `:549` pass `req.uri().path()` (the CONCRETE path). An exact
+        // `contains` would have exempted the template and REFUSED the real
+        // requests, silently disabling every webhook.
+        let g = brain_server::server::router::route_guards::is_public_path;
+        assert!(
+            g("/webhooks/github"),
+            "a CONCRETE webhook path must still be exempt, or every webhook 401s"
+        );
+        assert!(
+            g("/webhooks/channel/whatsapp/drain/ack"),
+            "the deepest declared route must resolve from its concrete form"
+        );
+        assert!(
+            !g("/webhooks/channel/x/y/z"),
+            "`/webhooks/channel/{{kind}}` is TWO segments past `/webhooks/` — a \
+             three-segment path must not ride it"
+        );
+        assert!(
+            !g("/webhooks/"),
+            "an empty final segment must not satisfy a `{{kind}}` parameter"
+        );
+        assert!(
+            !g("/webhooks-evil/x"),
+            "a near-miss prefix (`/webhooks-`) must not be exempt — the old rule \
+             used `starts_with(\"/webhooks/\")` which excluded it only by luck"
+        );
     }
 }
