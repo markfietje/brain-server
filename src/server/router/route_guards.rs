@@ -50,20 +50,104 @@ pub const PUBLIC_PATHS: &[&str] = &[
     "/auth/refresh",
 ];
 
+/// The webhook seams: routes exempt from the bearer middleware because they
+/// are authenticated by their OWN in-handler verification (an HMAC signature
+/// over the raw body — GitHub and the channel bridges cannot present a brain
+/// bearer token, and inventing one for them would defeat the point).
+///
+/// **F8-06: this list is EXPLICIT where it was `path.starts_with("/webhooks/")`.**
+/// The prefix rule exempted every route under `/webhooks/` from authN + authZ,
+/// including any route added there in future — so the exemption was a
+/// convention nobody was forced to honour, and a handler registered at
+/// `/webhooks/anything` would have inherited "public" without ever verifying a
+/// signature. That is not a hole today (all six verify and fail closed) and it
+/// is exactly the "machine is right for the wrong reason" shape: right by
+/// convention, not by enforcement.
+///
+/// Naming each route makes the exemption auditable: a new webhook route is NOT
+/// automatically public, it must be added here — and adding it is the moment
+/// the author states, in this file, that the handler verifies its own
+/// signature. `r70_every_webhook_route_is_named_and_verifies` is the pin.
+///
+/// Method-independent, like every entry here: CORS preflight (`OPTIONS`) is
+/// exempted separately in each middleware.
+pub const WEBHOOK_PATHS: &[&str] = &[
+    // GitHub + Signal + kb-feedback + the delivery observation sub-family —
+    // one handler, four internal branches, each verifying in-handler
+    // (`webhooks.rs:receive`).
+    "/webhooks/{kind}",
+    "/webhooks/delivery/{kind}",
+    // The channel bridge family — Standard Webhooks HMAC per discovered
+    // per-config secret (`channel_webhook.rs:verify_bridge`, called by all
+    // four handlers).
+    "/webhooks/channel/{kind}",
+    "/webhooks/channel/{kind}/drain",
+    "/webhooks/channel/{kind}/drain/ack",
+    "/webhooks/channel/{kind}/console",
+];
+
 /// The public-path decision both auth middlewares run: exact [`PUBLIC_PATHS`]
-/// entries, then the rules that can't be a const list — the webhook seams
-/// (authenticated by their own HMAC signature check inside the handler:
-/// GitHub cannot present a brain bearer token), the client SPA seat (static
-/// assets, no data), and the root redirect. Method-independent: CORS
-/// preflight (`OPTIONS`) is exempted separately in each middleware.
+/// entries, the EXPLICIT [`WEBHOOK_PATHS`] list, then the rules that can't be a
+/// const list — the client SPA seat (static assets, no data) and the root
+/// redirect. Method-independent: CORS preflight (`OPTIONS`) is exempted
+/// separately in each middleware.
 pub fn is_public_path(path: &str) -> bool {
     PUBLIC_PATHS.contains(&path)
-        || path.starts_with("/webhooks/")
+        || is_webhook_path(path)
         || path == "/"
         // `/app` or `/app/...` — exact segment match so a future route like
         // `/apple` can never ride the prefix silently (2026-09-11 fix).
         || path == "/app"
         || path.starts_with("/app/")
+}
+
+/// Does this request path address one of the declared [`WEBHOOK_PATHS`]?
+///
+/// **Why a template match and not `contains`.** The three `is_public_path`
+/// call sites do NOT agree on what they pass: `server/router/auth.rs:129`
+/// passes axum's `MatchedPath` (the TEMPLATE, `/webhooks/{kind}`), while
+/// `:277` and `:549` pass `req.uri().path()` (the CONCRETE path,
+/// `/webhooks/github`). An exact `contains` on templates would therefore have
+/// exempted the requests and REFUSED the concrete ones — silently disabling
+/// every webhook, which is fail-OPEN's mirror and just as bad. So both forms
+/// resolve here.
+///
+/// The match is **segment-wise**, not a prefix: `/webhooks/{kind}` must not
+/// admit `/webhooks/channel/foo` (three segments), and `/webhooks/{kind}`
+/// must not admit `/webhooks/` + an empty segment. A `{param}` segment
+/// matches exactly one non-empty segment; every other segment must be equal.
+pub fn is_webhook_path(path: &str) -> bool {
+    WEBHOOK_PATHS
+        .iter()
+        .any(|template| matches_path_template(template, path))
+}
+
+/// Does `path` address `template`, matching `{param}` segments one-for-one?
+fn matches_path_template(template: &str, path: &str) -> bool {
+    let mut t = template.split('/');
+    let mut p = path.split('/');
+    loop {
+        match (t.next(), p.next()) {
+            (None, None) => return true,
+            (None, _) | (_, None) => return false,
+            (Some(seg_t), Some(seg_p)) => {
+                // A whole parameter segment (`{kind}`) matches exactly one
+                // NON-EMPTY segment. The check is on the WHOLE segment, not on
+                // `split('/')` equality — `{kind}` arrives as one piece, so a
+                // literal comparison would never see it and would reject every
+                // real request (`/webhooks/github` vs `/webhooks/{kind}`).
+                let is_param = seg_t.starts_with('{') && seg_t.ends_with('}');
+                if is_param {
+                    if seg_p.is_empty() {
+                        // `/webhooks/` must not satisfy `/webhooks/{kind}`.
+                        return false;
+                    }
+                } else if seg_t != seg_p {
+                    return false;
+                }
+            }
+        }
+    }
 }
 
 /// Every path registered by `build_app`, in registration order.
