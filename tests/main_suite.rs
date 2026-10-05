@@ -18033,6 +18033,54 @@ mod scrim {
             );
         }
 
+        // A row must not name a round that SHIPPED while still reading OPEN. This is
+        // the drift shape itself, and it is separate from the closed-row check
+        // above: a finding can be genuinely open and still be mis-routed to a
+        // round that never owned it, which is how S8-01 and D8-02 both sat
+        // saying `OPEN — R70`/`OPEN — R68` long after those rounds shipped.
+        //
+        // The list is the rounds recorded as shipped in `AGENTS.md`. A row may
+        // name one of these only if it is NOT open — a closed row crediting
+        // its round is the normal, correct shape.
+        //
+        // Match the DECLARED disposition — the first bolded span in the cell —
+        // not the whole cell. A row that records WHY its original routing was
+        // wrong must be able to quote that original filing: S8-01's prose says
+        // "The audit filed this as `OPEN — R70`" while correctly declaring
+        // `OPEN — UNROUTED`, and matching the whole cell read that provenance
+        // as a routing claim and turned a correct row red. Quoting history is
+        // not a routing claim. A cell with no bolded declaration falls back to
+        // the whole cell, so this narrows precision and never widens the miss.
+        fn declared_disposition(cell: &str) -> &str {
+            match cell
+                .split_once("**")
+                .and_then(|(_, rest)| rest.split_once("**"))
+            {
+                Some((decl, _)) => decl,
+                None => cell,
+            }
+        }
+
+        const SHIPPED_ROUNDS: [&str; 5] = ["R68", "R69", "R70", "R72", "R73"];
+        for (id, disposition) in &rows {
+            let declared = declared_disposition(disposition);
+            let claims_open = declared.contains("OPEN");
+            let named: Vec<&str> = SHIPPED_ROUNDS
+                .iter()
+                .copied()
+                .filter(|r| declared.contains(&format!("OPEN — {r}")))
+                .collect();
+            assert!(
+                !(claims_open && !named.is_empty()),
+                "`{id}` is OPEN but names a round that already shipped \
+                 ({}) — a genuinely-open finding routed to a round that never \
+                 owned it will never be picked up. Say UNROUTED, or name the \
+                 round that will. Disposition: {}",
+                named.join(", "),
+                &disposition[..disposition.len().min(160)]
+            );
+        }
+
         // The rows this round stamped: each must now say closed. Written as an
         // explicit list rather than "nothing anywhere says OPEN", because the
         // K8-* rows are legitimately OPEN (the fork is a different repo) and a
@@ -18045,7 +18093,7 @@ mod scrim {
                 panic!("register row `{id}` must exist in the eighth-pass table")
             });
             assert!(
-                !row.1.contains("OPEN"),
+                !declared_disposition(&row.1).contains("OPEN"),
                 "`{id}` is verified closed in the tree (R73 re-measured each \
                  one against the code, not a commit subject) but its register \
                  row still says OPEN. A stale register sends the next reader \
