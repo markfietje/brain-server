@@ -223,6 +223,24 @@ jobs:
       - name: test
         run: cargo test --manifest-path tools/signal-gateway/Cargo.toml
 
+  valet-relay-gate:
+    # The Signal bridge edge holds its own HMAC secret and verifies inbound
+    # alert envelopes. Its tests previously ran NOWHERE — no workflow touched
+    # valet-relay at all — so the alert sink's replay-casing could rot with
+    # nothing failing. This job runs the relay's suite on every push.
+    name: valet-relay conformance + green
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+      # Shell-expanded rather than `node --test <dir>`: the runner's own glob
+      # handling for a bare directory path is version-dependent, and the test
+      # files are flat here.
+      - name: test
+        run: node --test tools/valet-relay/*.test.js
+
   otel-gate:
     # v1.20.7 M1 — the `otel` feature (instrumented decision cores) must not
     # rot: the OTLP deps, the #[cfg_attr] spans, and the cfg-gated tests are

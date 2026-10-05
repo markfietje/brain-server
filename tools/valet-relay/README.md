@@ -6,7 +6,9 @@ Node process. See the header comment of `relay.js` for the full contract.
 ## What it is allowed to do
 
 - OUT: listen on `127.0.0.1:$listen_port/alert` as the server's
-  `BRAIN_ALERT_WEBHOOK_URL` sink; verify the Standard Webhooks signature;
+  `BRAIN_ALERT_WEBHOOK_URL` sink; verify the Standard Webhooks signature **and**
+  that `webhook-timestamp` is within ±300 s of now (the spec's `TOLERANCE_IN_SECONDS`,
+  and the same two-sided law the kernel enforces on its own inbound webhooks);
   forward ONLY `valet/due` (and later `valet/brief`) alert envelopes to your
   number via signal-cli-rest-api. Metadata-only by construction.
 - IN: poll signal-cli's receive endpoint; for messages from YOUR number only,
@@ -39,9 +41,14 @@ Node process. See the header comment of `relay.js` for the full contract.
 ## Run
 
 ```sh
-node tools/valet-relay/relay.js --selftest   # signature round-trip, no network
+node --test tools/valet-relay/*.test.js      # the suite, zero dependencies
+node tools/valet-relay/relay.js --selftest   # signature round-trip + freshness, no network
 node tools/valet-relay/relay.js              # the relay (launchd/cron keeps it alive)
 ```
+
+The suite writes its own 0600 config fixtures into a temp dir; it needs no
+configured relay. `--selftest` does need one, since `loadConfig()` refuses to
+run without it.
 
 If the relay dies, reminders queue in the server's outbox — the morning
 still exists.
