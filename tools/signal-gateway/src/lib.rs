@@ -3,13 +3,22 @@
 //! The rest of the crate (API, Signal edge, brain adapter) is a binary-only tree
 //! declared from `main.rs`. This library target exists for the postures that
 //! must be provable from a test rather than read off a log line: what the
-//! process is allowed to serve, and on which interface.
+//! process is allowed to serve, on which interface, and how fast.
 //!
 //! Memory safety: the package forbids `unsafe_code` crate-wide (`Cargo.toml`
 //! `[lints.rust]`), so this target is covered by the same compile-time bar
 //! `main.rs` carries.
 
 #![forbid(unsafe_code)]
+
+use axum::response::IntoResponse;
+
+pub mod ratelimit;
+
+pub use ratelimit::{
+    API_RATE_LIMIT_KEY, API_RATE_LIMIT_MAX_REQUESTS, API_RATE_LIMIT_WINDOW_SECS, RateLimiter,
+    create_rate_limiter,
+};
 
 /// Whether the operator explicitly opted into serving a non-loopback interface.
 ///
@@ -62,6 +71,55 @@ pub fn resolve_api_auth(
              set server.auth_token in the config, or bind a loopback address"
         )),
     }
+}
+
+/// Put the request-rate limit on a router, OUTSIDE whatever layers it already
+/// carries.
+///
+/// Generic over the router's state so it composes with both arms of
+/// `create_router_with_auth` without a `with_state` coupling: the middleware
+/// closes over a cloned `RateLimiter` and needs no state of its own.
+///
+/// Layering order is the substance here, not an accident. `main.rs` calls this
+/// on the FINISHED router — after `.with_state(...)` and after the auth
+/// `match` — so the limit is the outermost thing a request meets. That matters
+/// for the unauthenticated loopback posture, where there is no auth layer at
+/// all: a flood of unauthenticated requests is bounded by the same budget as an
+/// authenticated one, instead of being unbounded precisely where the operator
+/// chose the loosest posture. Wrapping it *inside* the router builder, before
+/// the auth `match`, would leave the tokenless arm unwrapped.
+///
+/// The refusal is a bare `429` with `RETRY-AFTER` and an empty body. It never
+/// unwraps, never panics, and never echoes anything derived from the request —
+/// the one `tracing` line carries the limiter's key and nothing else.
+pub fn apply_rate_limit<S>(router: axum::Router<S>, limiter: RateLimiter) -> axum::Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    let retry_after_secs = limiter.window_secs();
+    router.layer(axum::middleware::from_fn(
+        move |req: axum::http::Request<axum::body::Body>, next: axum::middleware::Next| {
+            let limiter = limiter.clone();
+            async move {
+                if limiter.is_allowed(API_RATE_LIMIT_KEY) {
+                    return next.run(req).await;
+                }
+                tracing::debug!(
+                    rate_limit_key = API_RATE_LIMIT_KEY,
+                    "request refused: rate limit exhausted"
+                );
+                (
+                    axum::http::StatusCode::TOO_MANY_REQUESTS,
+                    [(
+                        axum::http::header::RETRY_AFTER,
+                        retry_after_secs.to_string(),
+                    )],
+                    axum::body::Body::empty(),
+                )
+                    .into_response()
+            }
+        },
+    ))
 }
 
 #[cfg(test)]

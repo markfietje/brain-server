@@ -34,6 +34,11 @@ pub fn create_router(state: AppState) -> Router {
 /// `auth_token: Some(t)` → every request must present
 /// `Authorization: Bearer <t>` (constant-time compare). The token gates the
 /// FULL surface — reads and sends — because both are identity-bearing.
+///
+/// NOTE: this builder returns the FINISHED router, auth layer included, and
+/// does NOT rate-limit. `main.rs` wraps the result in `apply_rate_limit` so the
+/// limit is outermost — see the layering note on `apply_rate_limit` for why
+/// putting it inside this function would leave the tokenless arm unwrapped.
 pub fn create_router_with_auth(state: AppState, auth_token: Option<String>) -> Router {
     let router = Router::new()
         // Health and info

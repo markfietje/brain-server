@@ -24,13 +24,15 @@ mod api;
 mod brain;
 mod cache;
 mod config;
-mod ratelimit;
 mod signal;
 mod state;
 mod validation;
 
 use config::Config;
-use signal_gateway::{remote_bind_allowed, resolve_api_auth};
+use signal_gateway::{
+    API_RATE_LIMIT_MAX_REQUESTS, API_RATE_LIMIT_WINDOW_SECS, apply_rate_limit, create_rate_limiter,
+    remote_bind_allowed, resolve_api_auth,
+};
 use state::AppState;
 
 #[derive(Parser)]
@@ -126,6 +128,20 @@ async fn main() -> Result<()> {
                 info!("API auth: NONE — served on loopback only (enforced above)");
                 api::create_router(state)
             };
+
+            // Rate limiting is wrapped around the FINISHED router, so it sits
+            // outside the auth layer — and, in the tokenless loopback posture,
+            // outside the only layer there is. `/v2/send` drives real
+            // Signal-network sends over the live identity's websocket; the
+            // worker's `max_sends_per_second` semaphore bounds concurrency, not
+            // request rate, so nothing bounded the rate before this.
+            let limiter = create_rate_limiter();
+            info!(
+                "API rate limit: {API_RATE_LIMIT_MAX_REQUESTS} requests per \
+                 {API_RATE_LIMIT_WINDOW_SECS}s, one global budget"
+            );
+            let app = apply_rate_limit(app, limiter);
+
             let listener = tokio::net::TcpListener::bind(addr).await?;
             info!("Listening on {}", addr);
             info!("Endpoints:");
