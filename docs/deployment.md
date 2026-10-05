@@ -46,7 +46,7 @@ Brain Server is configured through environment variables (all resolved in
 | Variable | Default | Description |
 |---|---|---|
 | `BIND_HOST` | `127.0.0.1` | Bind address. `0.0.0.0` without `BIND_PUBLIC` logs a loud warning and still binds (the opt-in is env *presence* — any value counts); an unparseable host without `BIND_PUBLIC` refuses boot; any non-loopback bind with no auth configured refuses boot |
-| `BIND_PORT` | `8765` | Listen port |
+| `BIND_PORT` | `8765` | Listen port. **Fail-closed (R70/F8-10):** a present-and-malformed value refuses boot with a message naming the key, the value and the range. It used to be `.parse().unwrap_or(8765)`, so a typo silently bound the *production* port. `0` is refused specifically — it parses, but port 0 binds a kernel-chosen ephemeral port that changes every restart. Unset (or empty) still binds 8765 |
 | `BRAIN_DB_PATH` | `~/.openclaw/workspace/brain.db` | SQLite database path |
 | `CORS_ORIGINS` | `http://localhost:3000,http://localhost:8080` | CORS allowlist (scheme included) |
 | `AUTH_TOKEN` / `AUTH_TOKEN_FILE` | — | Opaque bearer token(s); newline-separated = live rotation; off if unset |

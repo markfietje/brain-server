@@ -1117,10 +1117,7 @@ pub fn bootstrap() -> Result<BootOutcome> {
     info!("webhook drain worker started");
 
     let bind_host = std::env::var("BIND_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
-    let bind_port: u16 = std::env::var("BIND_PORT")
-        .unwrap_or_else(|_| "8765".to_string())
-        .parse()
-        .unwrap_or(8765);
+    let bind_port = resolve_bind_port().map_err(|e| anyhow::anyhow!("fatal bind port: {e}"))?;
 
     let public_opt_in = std::env::var(config::BIND_PUBLIC_OPT_IN).is_ok();
     let addr = match bind_host.parse::<std::net::IpAddr>() {
@@ -1209,6 +1206,62 @@ pub fn bootstrap() -> Result<BootOutcome> {
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     use subtle::ConstantTimeEq as _;
     a.len() == b.len() && a.ct_eq(b).unwrap_u8() == 1
+}
+
+/// Resolve `BIND_PORT`, refusing a malformed value instead of silently
+/// binding the production port.
+///
+/// **F8-10.** This was `.parse().unwrap_or(8765)`: a typo (`BIND_PORT=876`,
+/// `abc`) bound **the production port** with no diagnostic at all. A
+/// fail-open default on a bind address is the wrong direction — an operator
+/// who set the variable believes they chose something, and the process
+/// silently disagrees.
+///
+/// **The shape is `config::validate_write_posture`'s, deliberately not
+/// invented here:** absent reads as the default, and only a
+/// *present-and-invalid* value refuses. `BIND_PORT` unset still binds 8765,
+/// so no deployment changes behaviour; only a set-but-malformed value now
+/// stops the boot. (`std::env::var` returns `Err(NotPresent)` for unset and
+/// `Err(NotUnicode)` for a non-UTF-8 value — the latter is a set value that
+/// cannot be read, so it refuses rather than defaulting.)
+///
+/// **`0` is refused too, and this is measured, not assumed.** `u16::from_str`
+/// *accepts* `"0"`, so the parse alone would not catch it — and port 0 means
+/// "bind an ephemeral port chosen by the kernel", which is the worst outcome
+/// of all: the server comes up on a port nobody can find, on a port that
+/// changes every restart. `65536` is refused by the parse itself
+/// ("number too large"), which is why both are named in the error.
+///
+/// Public and pure-per-argument so it is pinnable WITHOUT booting a server —
+/// `bootstrap()` is not reachable from a test.
+pub fn resolve_bind_port_from(value: Option<String>) -> Result<u16, String> {
+    let Some(raw) = value else {
+        return Ok(8765);
+    };
+    // An EMPTY value reads as unset — the `"" | "open" | "review"` arm of
+    // `validate_write_posture`. `BIND_PORT=` in a plist or a `.env` line is
+    // how an operator writes "I did not set this", not a request for port
+    // zero; refusing it would break a working deployment for no safety gain.
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(8765);
+    }
+    let port: u16 = trimmed
+        .parse()
+        .map_err(|e| format!("BIND_PORT='{raw}' is not a valid port ({e}); must be 1-65535"))?;
+    if port == 0 {
+        return Err(
+            "BIND_PORT='0' is invalid; port 0 binds a kernel-chosen ephemeral \
+             port, which changes every restart — must be 1-65535"
+                .to_string(),
+        );
+    }
+    Ok(port)
+}
+
+/// [`resolve_bind_port_from`] over the process environment.
+pub fn resolve_bind_port() -> Result<u16, String> {
+    resolve_bind_port_from(std::env::var("BIND_PORT").ok())
 }
 
 /// Handle CLI flags before any side effect. Prints version/usage and exits;
@@ -1310,6 +1363,65 @@ pub(crate) fn enforce_loopback_bind_guard(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F8-10: a present-and-malformed `BIND_PORT` refuses boot; absent keeps
+    /// the 8765 default.
+    ///
+    /// **Wrong implementation this pin is built to kill:** restoring
+    /// `.parse().unwrap_or(8765)`, under which `BIND_PORT=abc` binds THE
+    /// PRODUCTION PORT with no diagnostic — an operator who set the variable
+    /// believes they chose something and the process silently disagrees.
+    ///
+    /// The `0` and `65536` cases are the interesting ones and the values are
+    /// MEASURED, not assumed: `u16::from_str` accepts `"0"` (port 0 = bind a
+    /// kernel-chosen ephemeral port, the worst outcome — the server is up on
+    /// a port nobody can find, changing every restart), and rejects `"65536"`
+    /// as out of range. A parse-only fix would pass `65536` and fail `0`.
+    #[test]
+    fn r70_bind_port_refuses_a_malformed_value() {
+        // absent → the default is UNCHANGED (no deployment changes behaviour)
+        assert_eq!(resolve_bind_port_from(None).expect("unset"), 8765);
+        assert_eq!(
+            resolve_bind_port_from(Some(String::new())).expect("empty"),
+            8765,
+            "an empty value reads as unset, exactly like `validate_write_posture`'s \"\" arm"
+        );
+
+        // the typo that used to bind production
+        //
+        // NOTE, measured rather than assumed: `876` is a VALID u16 and parses
+        // cleanly, so it is NOT a refusal case — it binds port 876, which is a
+        // legitimate (if unintended) choice. The F8-10 finding is about values
+        // that CANNOT be a port, where `.unwrap_or(8765)` silently substituted
+        // the production port. A guard that refused every "surprising" number
+        // would be inventing policy the audit did not ask for.
+        for bad in ["abc", "80a", "-1", "65536", "4294967296", "8765x"] {
+            let err = resolve_bind_port_from(Some(bad.to_string()))
+                .expect_err(&format!("BIND_PORT={bad:?} must refuse boot"));
+            assert!(
+                err.contains("BIND_PORT") && err.contains(bad.trim()),
+                "the refusal must NAME the key and the offending value — an \
+                 operator cannot act on 'invalid port': {err}"
+            );
+        }
+
+        // port 0 parses fine and must still be refused, with a reason that
+        // says WHY rather than restating the range
+        let zero = resolve_bind_port_from(Some("0".to_string()))
+            .expect_err("port 0 must refuse — it binds an ephemeral port");
+        assert!(
+            zero.contains("ephemeral"),
+            "the port-0 refusal must explain the hazard: {zero}"
+        );
+
+        // valid values pass, including the boundaries
+        for (raw, expect) in [("1", 1u16), ("80", 80), ("8765", 8765), ("65535", 65535)] {
+            assert_eq!(
+                resolve_bind_port_from(Some(raw.to_string())).expect(raw),
+                expect
+            );
+        }
+    }
 
     #[test]
     fn test_ct_eq() {
