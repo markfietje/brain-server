@@ -17981,6 +17981,32 @@ mod scrim {
              K8-01) — the scope is wrong"
         );
 
+        // No finding id may appear TWICE inside the eighth-pass table. R73
+        // created exactly this defect while re-routing S8-01: it added a
+        // corrected row instead of fixing the original, so the table carried two
+        // S8-01 rows with different severities (MED-HIGH vs MED) and different
+        // dispositions. The status check below cannot see it — both rows state
+        // a status, just different ones — which is why this needs its own arm.
+        //
+        // Ids that repeat LEGITIMATELY (a findings table beside its own closure
+        // table) live in DIFFERENT tables, so slicing to one table is what makes
+        // this check sound rather than noisy.
+        let mut by_id: std::collections::BTreeMap<&str, usize> = std::collections::BTreeMap::new();
+        for (id, _) in &rows {
+            *by_id.entry(id.as_str()).or_insert(0) += 1;
+        }
+        let duplicates: Vec<(&str, usize)> = by_id
+            .iter()
+            .filter(|(_, count)| **count > 1)
+            .map(|(id, count)| (*id, *count))
+            .collect();
+        assert!(
+            duplicates.is_empty(),
+            "these finding ids appear more than once in the eighth-pass table \
+             with disagreeing rows — a duplicated id hides which one is stale: \
+             {duplicates:?}"
+        );
+
         // Every row states a status. This is the property that was silently
         // wrong for ten rows: they stated one, but the wrong one.
         //
