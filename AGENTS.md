@@ -33,14 +33,24 @@
 >
 > **(3) The fork re-sync rides this round** (`scripts/sync-plugin.sh`,
 > after the plugin commit): the extension moves 0.6.10 → 0.6.11 with
-> byte-parity checked, and the fork's vitest lane becomes the ONLY place
-> the plugin's pins execute (S9-07's named gap — no runner exists in
-> this repo; `plugin/node_modules` is empty). New pins:
-> config.test.ts (string-allowlist mutant incl. mixed arrays, string
-> numerics/booleans, out-of-range ints, the enum refusal, and the
-> fully-typed anti-vacuity arm) + plugin.test.ts (exclude drops
-> captured on the tool path; all-captured → no-memories; label default
-> keeps + labels).
+> byte-parity checked (typebox specifier = the fork's declared delta),
+> and the fork's vitest lane is the ONLY place the plugin's pins execute
+> (S9-07's named gap — no runner exists in this repo;
+> `plugin/node_modules` is empty). **Measured there: `test/` 74/74,
+> `src/` 77/77, `tsc --noEmit` CLEAN.** The sync surfaced two of this
+> round's own first-draft defects, both fixed before commit: the census
+> initially enforced RANGES (the manifest schema's gate — fixtures
+> legitimately exercise sub-second heartbeats; types refuse, ranges
+> delegate), and the tool-path test fixtures lacked `untrusted: true`,
+> so the Fencepost filter satisfied the exclude assertions VACUOUSLY.
+> It also surfaced a PRE-EXISTING one: canonical `format.test.ts` had
+> never passed a typechecker (no runner here) — JSON imports without
+> NodeNext attributes + two indexed-access holes; fixed canonical-side
+> and re-synced. New pins: config.test.ts (string-allowlist mutant incl.
+> mixed arrays, string numerics/booleans, the enum refusal, the
+> ranges-delegate arm, and the fully-typed anti-vacuity arm) +
+> plugin.test.ts (exclude drops captured on the tool path;
+> all-captured → no-memories; label default keeps + labels).
 >
 > **Spire this round:** no Rust tests added (the pins are the fork's
 > vitest lane — named here so the badge count is NOT expected to move).
