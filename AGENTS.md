@@ -1,6 +1,56 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R80 "Gateway"** — *the remedy that
+> Current release (unreleased): **R81 "Types"** — *the plugin validates
+> its own boundary, and the exclude posture means what its name says.*
+> Closes the ninth pass's **S9-06** (was S8-05, re-routed) and **W9-04**;
+> carries the fork re-sync to **0.6.11** (the §5 version-lag row). No
+> authz change, no route change, no schema change (**1.32.26**
+> unchanged), zero new dependency edges. Predecessor notes below.
+>
+> **(1) S9-06 — one type error used to defeat whole controls.** A string
+> `agents` turned the allowlist gates into SUBSTRING matching
+> (`.includes` on a string admits `ops`, `1`, anything contained); a
+> string `autoRecallTopK` failed every recall comparison silently. The
+> manifest's `configSchema` may or may not be enforced by the host —
+> this repo cannot observe that (the S9-06 premise) — so the plugin now
+> validates its own boundary: `assertFieldTypes`, a CLOSED field census
+> (every declared field: boolean / string / string-array / enum /
+> integer-with-range), runs FIRST in `resolveConfig`; a wrong-typed
+> value REFUSES registration with the field name, the expected shape,
+> and the got-typeof. **Disclosed posture change:** an unknown
+> `untrustedOrigins`/`captureMode` enum used to degrade to default —
+> read as fail-safe, but a typo of "exclude" silently switched the
+> posture DOWN to label, re-injecting exactly what the operator wanted
+> dropped. Both enums refuse now.
+>
+> **(2) W9-04 — `exclude` reaches the tool path.**
+> `untrustedOrigins:"exclude"` now drops channel-captured hits from the
+> `memory_recall` TOOL result too (a tool result is model context
+> exactly like the injected fence); an all-captured result returns the
+> no-memories shape with `excludedByPosture: true`. Default "label"
+> byte-identical. The three comments that claimed the tool path "never
+> excludes / always labels" are rewritten to the two-path truth.
+>
+> **(3) The fork re-sync rides this round** (`scripts/sync-plugin.sh`,
+> after the plugin commit): the extension moves 0.6.10 → 0.6.11 with
+> byte-parity checked, and the fork's vitest lane becomes the ONLY place
+> the plugin's pins execute (S9-07's named gap — no runner exists in
+> this repo; `plugin/node_modules` is empty). New pins:
+> config.test.ts (string-allowlist mutant incl. mixed arrays, string
+> numerics/booleans, out-of-range ints, the enum refusal, and the
+> fully-typed anti-vacuity arm) + plugin.test.ts (exclude drops
+> captured on the tool path; all-captured → no-memories; label default
+> keeps + labels).
+>
+> **Spire this round:** no Rust tests added (the pins are the fork's
+> vitest lane — named here so the badge count is NOT expected to move).
+> Register: S9-06 + W9-04 flipped CLOSED — R81 with evidence;
+> `SHIPPED_ROUNDS` → `[&str; 13]`. **What did NOT ship:** the fork lane
+> proper (K9-01…03, W9-02, K8-* — remediation decisions in that
+> repository, untouched by the sync); F9-02 (unrouted wire decision).
+> No migration; no irreversible risk.
+
+> Predecessor: **R80 "Gateway"** — *the remedy that
 > already existed in-tree becomes the one production uses, and the edge's
 > last three law-gaps close.* Closes the ninth pass's **S9-02, S9-03,
 > S9-04, S9-05, S9-08**. No authz change, no route change, no wire

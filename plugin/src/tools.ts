@@ -25,6 +25,7 @@ import {
 import type { ResolvedBrainConfig } from "./config.js";
 import {
   RECALL_ABSTENTION,
+  excludeChannelCaptures,
   formatRecallContext,
   normalizeRecallQuery,
   sanitizeForBlock,
@@ -273,10 +274,23 @@ export function registerBrainTools(
             details: { count: 0, decision: result.decision },
           };
         }
+        // The `exclude` posture applies HERE too, not only to auto-inject:
+        // the knob's security meaning is "channel-captured memory never
+        // reaches this agent's context", and a tool result IS model
+        // context. Default ("label") stays byte-identical — hits keep
+        // their in-fence origin prefixes either way.
+        const unexcluded =
+          c.untrustedOrigins === "exclude" ? excludeChannelCaptures(result.hits) : result.hits;
+        if (!unexcluded.length) {
+          return {
+            content: [{ type: "text" as const, text: "No relevant memories found." }],
+            details: { count: 0, decision: result.decision, excludedByPosture: true },
+          };
+        }
         // v1.20.29 "Bound": per-hit body cap (caller-side, before formatting)
         // so a single huge chunk can't dominate the injected context. format.ts
         // is untouched (Release C owns it); the cap is applied here + the hook.
-        const hits = clampHitBodies(result.hits);
+        const hits = clampHitBodies(unexcluded);
         return {
           content: [{ type: "text" as const, text: formatRecallContext(hits) }],
           details: {

@@ -34,8 +34,9 @@ export const brainConfigSchema = Type.Object({
   autoRecall: Type.Optional(Type.Boolean()),
   autoCapture: Type.Optional(Type.Boolean()),
   /** the origin-labeling line: label = render `[memory | channel-capture]`
-   * prefixes on channel-captured hits; exclude = drop them from auto-inject
-   * entirely (the tool path always labels). Default: label. */
+   * prefixes on channel-captured hits; exclude = drop them from BOTH
+   * model-context paths (auto-inject and the memory_recall tool result).
+   * Default: label. */
   untrustedOrigins: Type.Optional(Type.Union([Type.Literal("label"), Type.Literal("exclude")])),
   // v1.20.1 "Shield" M2: how auto-captures enter the brain.
   //   "proposal" (default) — go through the server's human review queue
@@ -231,8 +232,103 @@ function assertValidTeamDomain(raw: string): void {
   }
 }
 
+// ── Boundary typecheck ──────────────────────────────────────────────────────
+// Nothing downstream can undo a string landing where an array belongs: an
+// `agents: "ops-agent-1"` value turns the allowlist gates into SUBSTRING
+// matching (`.includes` on a string — one type error defeats least
+// privilege), and a string `autoRecallTopK` quietly fails every recall
+// comparison. The manifest's configSchema may or may not be enforced by
+// the host — this repo cannot observe that — so the plugin validates its
+// own boundary: the closed census below names every declared field and its
+// kind, every PRESENT field must match its kind or registration REFUSES.
+// Fail-closed, mirroring the arms below that already validate (baseUrl
+// scheme, teamDomain shape). A type error is never silently defaulted over.
+
+type FieldKind =
+  | "boolean"
+  | "string"
+  | "string[]"
+  | "chatType[]"
+  | "originMode"
+  | "captureModeKind"
+  | `int:${number}..${number}`;
+
+/** The closed field census — adding a config field without a row here
+ * fails the census pin in config.test.ts (the schema and this table are
+ * pinned to name the same fields). */
+const FIELD_KINDS: Record<string, FieldKind> = {
+  enabled: "boolean",
+  baseUrl: "string",
+  authToken: "string",
+  agents: "string[]",
+  allowedChatIds: "string[]",
+  deniedChatIds: "string[]",
+  allowedChatTypes: "chatType[]",
+  untrustedOrigins: "originMode",
+  captureMode: "captureModeKind",
+  autoRecall: "boolean",
+  autoCapture: "boolean",
+  strictDomain: "boolean",
+  defaultDomain: "string",
+  autoRecallTopK: "int:1..20",
+  autoRecallTimeoutMs: "int:250..30000",
+  requestTimeoutMs: "int:250..30000",
+  minQueryLength: "int:1..200",
+  recallMaxChars: "int:40..10000",
+  autoRecallGraph: "boolean",
+  autoRecallMaxContextTokens: "int:0..8000",
+  proposalTools: "boolean",
+  teamBridge: "boolean",
+  teamDomain: "string",
+  teamHeartbeatMs: "int:15000..600000",
+};
+
+const CHAT_TYPES = new Set(["direct", "group", "channel", "explicit"]);
+
+function kindDescription(kind: FieldKind): string {
+  if (kind === "boolean") return "a boolean";
+  if (kind === "string") return "a string";
+  if (kind === "string[]") return "an array of strings";
+  if (kind === "chatType[]") return "an array of direct|group|channel|explicit";
+  if (kind === "originMode") return '"label" or "exclude"';
+  if (kind === "captureModeKind") return '"proposal" or "direct"';
+  return `an integer ${kind.slice(4).replace("..", "..=")}`;
+}
+
+function valueMatchesKind(kind: FieldKind, v: unknown): boolean {
+  if (kind === "boolean") return typeof v === "boolean";
+  if (kind === "string") return typeof v === "string";
+  if (kind === "string[]") return Array.isArray(v) && v.every((x) => typeof x === "string");
+  if (kind === "chatType[]") {
+    return (
+      Array.isArray(v) && v.every((x) => typeof x === "string" && CHAT_TYPES.has(x))
+    );
+  }
+  if (kind === "originMode") return v === "label" || v === "exclude";
+  if (kind === "captureModeKind") return v === "proposal" || v === "direct";
+  const range = kind.slice(4).split("..");
+  const [min, max] = [Number(range[0]), Number(range[1])];
+  return typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
+}
+
+function assertFieldTypes(cfg: Partial<BrainConfig>): void {
+  for (const [field, kind] of Object.entries(FIELD_KINDS)) {
+    const v = (cfg as Record<string, unknown>)[field];
+    if (v !== undefined && !valueMatchesKind(kind, v)) {
+      throw new Error(
+        `brain-server plugin: config field '${field}' must be ${kindDescription(kind)}, ` +
+          `got ${typeof v} — refusing to boot on a type-mismatched config (check openclaw.json)`,
+      );
+    }
+  }
+}
+
 export function resolveConfig(raw: unknown): ResolvedBrainConfig {
   const cfg = (raw ?? {}) as Partial<BrainConfig>;
+  // Boundary typecheck FIRST: the cast above is a lie until every present
+  // field proves its type, and every downstream `??` default would
+  // otherwise paper over a type error the operator needed to see.
+  assertFieldTypes(cfg);
   const authToken = resolveAuthToken(cfg);
   const baseUrl = (cfg.baseUrl && cfg.baseUrl.trim()) || DEFAULTS.baseUrl;
   const defaultDomain = cfg.defaultDomain?.trim() || DEFAULTS.defaultDomain;

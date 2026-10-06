@@ -568,6 +568,55 @@ describe("agent_end — autoCapture to POST /ingest", () => {
   });
 });
 
+describe("tools — the exclude posture reaches the memory_recall path", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  test("untrustedOrigins:exclude drops channel-captured hits from tool results", async () => {
+    // A tool result IS model context: the knob's security meaning is
+    // "captured memory never reaches this agent", not "never auto-injects".
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        hits: [
+          { id: 1, content: "owner-authored fact", score: 0.9, untrusted: true },
+          { id: 2, content: "captured in a channel", score: 0.8, origin: "channel-capture" },
+        ],
+      }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"], untrustedOrigins: "exclude" });
+    const res = await tools.get("memory_recall")!.execute("call-1", { query: "anything" });
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("owner-authored fact");
+    expect(text).not.toContain("captured in a channel");
+  });
+
+  test("all-captured hits under exclude return the no-memories shape", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        hits: [{ id: 2, content: "only captured", score: 0.8, origin: "channel-capture" }],
+      }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"], untrustedOrigins: "exclude" });
+    const res = await tools.get("memory_recall")!.execute("call-1", { query: "anything" });
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("No relevant memories found.");
+  });
+
+  test("default label posture keeps captured hits, labeled (byte-identical default)", async () => {
+    // Anti-vacuity: the exclude wiring must not have learned to drop
+    // everything — the default keeps captured hits with their prefix.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      mockResponse({
+        hits: [{ id: 2, content: "captured in a channel", score: 0.8, origin: "channel-capture" }],
+      }),
+    );
+    const { tools } = registerPlugin({ agents: ["main"] });
+    const res = await tools.get("memory_recall")!.execute("call-1", { query: "anything" });
+    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
+    expect(text).toContain("captured in a channel");
+    expect(text).toContain("[memory | channel-capture]");
+  });
+});
+
 describe("tools — error surfacing (404 vs 500, brain-server-specific)", () => {
   afterEach(() => vi.restoreAllMocks());
 

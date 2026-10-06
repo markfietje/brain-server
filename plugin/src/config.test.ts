@@ -161,9 +161,67 @@ describe("untrustedOrigins (v0.6.0 Origin)", () => {
     expect(resolveConfig({ untrustedOrigins: "label" } as never).untrustedOrigins).toBe("label");
   });
 
-  test("an invalid value degrades to the label default (fail-safe)", () => {
-    // The manifest schema only admits label|exclude; the resolver is the
-    // second gate for configs that bypass it (hand-edited jsonc).
-    expect(resolveConfig({ untrustedOrigins: "purge" } as never).untrustedOrigins).toBe("label");
+  test("an invalid value REFUSES to boot — degrading to label is fail-UNSAFE", () => {
+    // The old tolerant fallback read as fail-safe, but for a typo of
+    // "exclude" it silently switched the posture DOWN to label —
+    // re-injecting exactly the channel-captured hits the operator wanted
+    // dropped. A typo the operator must fix beats a posture they never
+    // chose. The manifest schema is the first gate; this resolver is the
+    // second for configs that bypass it (hand-edited jsonc).
+    expect(() => resolveConfig({ untrustedOrigins: "purge" } as never)).toThrow(
+      /untrustedOrigins.*must be/,
+    );
+  });
+});
+
+// ── boundary typecheck (ninth-pass remediation) ─────────────────────────────
+// One type error used to defeat whole controls: a string `agents` turned
+// the allowlist gates into SUBSTRING matching (`.includes` on a string
+// admits any sub-agent), and a string `autoRecallTopK` failed every
+// recall comparison. These pin the refusal — and, anti-vacuity, that a
+// fully-valid typed config still resolves.
+describe("config boundary typecheck", () => {
+  test("a string agents allowlist refuses to boot (no substring admit)", () => {
+    // `agents: "ops-agent-1"` is the exact ninth-pass mutant: `.includes`
+    // on the string would admit `ops`, `ops-agent`, `1`, …
+    expect(() => resolveConfig({ agents: "ops-agent-1" } as never)).toThrow(
+      /agents.*array of strings.*string/,
+    );
+    expect(() => resolveConfig({ allowedChatIds: "teamchat" } as never)).toThrow(
+      /allowedChatIds.*array of strings/,
+    );
+    // Mixed arrays refuse too — one non-string element re-opens the hole.
+    expect(() => resolveConfig({ agents: ["ok", 7] } as never)).toThrow(
+      /agents.*array of strings/,
+    );
+  });
+
+  test("string numerics and booleans refuse to boot", () => {
+    expect(() => resolveConfig({ autoRecallTopK: "5" } as never)).toThrow(
+      /autoRecallTopK.*integer/,
+    );
+    expect(() => resolveConfig({ enabled: "yes" } as never)).toThrow(
+      /enabled.*boolean.*string/,
+    );
+    // Out-of-range integers refuse as loudly as wrong types.
+    expect(() => resolveConfig({ autoRecallTopK: 99 } as never)).toThrow(/autoRecallTopK/);
+  });
+
+  test("a fully-typed config still resolves (anti-vacuity)", () => {
+    const cfg = resolveConfig({
+      enabled: true,
+      agents: ["ops-agent-1"],
+      allowedChatTypes: ["direct", "explicit"],
+      allowedChatIds: ["chat-1"],
+      deniedChatIds: ["chat-2"],
+      untrustedOrigins: "exclude",
+      captureMode: "proposal",
+      autoRecallTopK: 7,
+      teamHeartbeatMs: 30_000,
+      autoRecallMaxContextTokens: 2_000,
+    });
+    expect(cfg.agents).toEqual(["ops-agent-1"]);
+    expect(cfg.untrustedOrigins).toBe("exclude");
+    expect(cfg.autoRecallTopK).toBe(7);
   });
 });

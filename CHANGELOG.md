@@ -93,6 +93,35 @@ relay dedup-id law, bootstrap mode law.
 
 **Not shipped:** S9-06 + W9-04 (R81), the fork lane, F9-02.
 
+## Unreleased — R81 "Types"
+
+### Release notes
+
+**The plugin validates its own boundary, and the exclude posture means what
+its name says.** Findings closed: **S9-06** (was S8-05, re-routed) and
+**W9-04** (ninth pass); carries the fork re-sync to 0.6.11. No
+authz/route/wire/schema change; no new dependency edges.
+
+- **S9-06:** `assertFieldTypes` — a closed per-field census — runs first in
+  `resolveConfig`: a string `agents` (which turned allowlists into substring
+  matching), a string `autoRecallTopK`, a boolean-typed-as-string — all
+  refuse registration with the field, the expected shape, and the got type.
+  The host may or may not enforce the manifest's configSchema; the plugin no
+  longer depends on that. Disclosed posture change: unknown
+  `untrustedOrigins`/`captureMode` enum values now refuse instead of
+  degrading to default (a typo of "exclude" used to silently switch the
+  posture down to label).
+- **W9-04:** `untrustedOrigins:"exclude"` drops channel-captured hits from
+  the `memory_recall` tool result as well as auto-inject; all-captured
+  results return the no-memories shape (`excludedByPosture`). Default
+  "label" byte-identical.
+- **Fork sync:** the extension re-syncs 0.6.10 → 0.6.11
+  (`scripts/sync-plugin.sh`, byte-parity checked); the fork's vitest lane is
+  where the plugin's pins execute (no runner exists in this repo).
+
+**Not shipped:** the fork-lane remediation decisions (K9-*, W9-02, K8-*),
+F9-02.
+
 ## Unreleased — R76 "Cadence"
 
 ### Release notes

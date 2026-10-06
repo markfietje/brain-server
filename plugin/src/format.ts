@@ -110,14 +110,21 @@ export function formatRecallContext(hits: ReadonlyArray<BrainRecallHit>): string
  * empty result as a plain "no memories".
  */
 // The origin-labeling line: non-owner hits carry a visible prefix INSIDE the
-// fence; owner hits stay untagged. The memory_recall TOOL path always labels
-// (tools return what was asked) — only auto-inject can exclude.
+// fence; owner hits stay untagged. Under the default "label" posture BOTH
+// paths label; under "exclude" both paths drop channel-captured hits
+// entirely (see excludeChannelCaptures).
 export function originLinePrefix(hit: BrainRecallHit): string {
-  return hit.origin && hit.origin !== "owner" ? ` [memory | ${sanitizeForBlock(hit.origin)}]` : "";
+  const origin = hit.origin;
+  if (!origin || origin === "owner") {
+    return "";
+  }
+  return ` [memory | ${sanitizeForBlock(origin)}]`;
 }
 
 // The `untrustedOrigins: "exclude"` posture: drop channel-captured hits from
-// AUTO-INJECT. The tool path never calls this.
+// BOTH model-context paths — auto-inject AND the memory_recall tool result
+// (a tool result is model context exactly like an injected fence; the knob's
+// security meaning is "captured memory never reaches this agent").
 export function excludeChannelCaptures(hits: ReadonlyArray<BrainRecallHit>): BrainRecallHit[] {
   const keep = (h: BrainRecallHit): boolean => h.origin !== "channel-capture";
   return hits.filter(keep);
