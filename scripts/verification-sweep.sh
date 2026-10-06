@@ -47,6 +47,32 @@ audit_every_lockfile() {
   return "$found"
 }
 run "audit"                  audit_every_lockfile
+# Lock FRESHNESS, not just vulnerabilities: a lockfile can be committed stale
+# against its own manifest, and every bare cargo invocation (CI lane, local
+# clippy) then re-locks SILENTLY — green over dependency versions nobody
+# committed. The probe MUST be the full-form `cargo metadata --locked`: the
+# --no-deps form passes vacuously on exactly the stale locks this lane exists
+# to catch, because it never resolves the requirement graph against the lock.
+#
+# TRACKED lockfiles only (git ls-files), unlike the audit lane's on-disk find:
+# freshness is a property of what a checkout builds, and the one on-disk
+# exception (fuzz/Cargo.lock, gitignored) is a local build artifact no CI
+# checkout ever sees — flagging it would make this lane permanently red over
+# a file the repository does not ship.
+lock_freshness_every_lockfile() {
+  local found=0 lock dir n=0
+  while IFS= read -r lock; do
+    n=$((n + 1))
+    dir=$(dirname "$lock")
+    if ! cargo metadata --locked --format-version 1 --manifest-path "$dir/Cargo.toml" >/dev/null 2>&1; then
+      echo "STALE  $lock (cargo metadata --locked refused)"
+      found=1
+    fi
+  done < <(git ls-files -z -- '*Cargo.lock' | while IFS= read -r -d '' f; do echo "$f"; done)
+  echo "lock-freshness checked $n tracked lockfile(s)"
+  return "$found"
+}
+run "lock-freshness"         lock_freshness_every_lockfile
 run "docs-truth"             bash scripts/docs-truth.sh
 run "env-truth"              bash scripts/env-truth.sh --selfcheck
 run "badges"                 bash scripts/badges.sh --selfcheck

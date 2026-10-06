@@ -1,11 +1,115 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R78 "Attrtwo"** — *the last two
+> Current release (unreleased): **R79 "Locks"** — *the committed lock is
+> the reviewed truth; nothing may move it silently — not a CI runner, not
+> a git branch pointer.* Closes the ninth pass's **S9-01**. No authz
+> change, no route change, no wire change, no schema change (**1.32.26**
+> unchanged). The DEPENDENCY GRAPHS MOVE (that is the point — see below);
+> no new dependency EDGES. Predecessor notes below.
+>
+> **(1) The staleness had a two-day-old root cause, and the re-lock is
+> the minimal resolution.** Commit `0a1d48b9` ("the three edge tools, at
+> the same versions as the server") bumped both `tools/` manifests on
+> 2026-10-04 without re-locking — every bare cargo invocation since was
+> a silent re-lock. Measured fix deltas, all patch-level: channel-bridge
+> moves clap 4.6.6→4.6.7 ×3, jsonwebtoken 11.0.0→11.1.0, reqwest
+> 0.13.4→0.13.5, tokio 1.53.1→1.53.2, uuid 1.26.0→1.27.0; signal-gateway
+> the same class plus uuid 1.25.0→1.27.0. `cargo metadata --locked` exit
+> 0 on both, and the cargo-audit advisory ID set is BYTE-IDENTICAL
+> old-lock vs new-lock — the re-lock introduced zero new advisories
+> (236/437 deps scanned).
+>
+> **(2) The presage decision: pin the REVIEWED rev, and the stack did
+> not move.** `branch = "main"` was the defect's teeth: upstream had
+> moved to `33dd149` with a newer `libsignal-service` past `bb43e81`, so
+> any re-lock under the branch pointer rode the whole stack forward
+> unreviewed. Both presage deps now pin
+> `rev = f74b96e0…` — the rev the committed lock already resolved, the
+> one the stack-policy note and the `version = "0.99.0"` label describe.
+> Measured consequence: the re-lock changed the lock's presage SOURCE
+> LINE (`branch=main#f74b96e` → `rev=f74b96e#f74b96e`) and nothing else
+> in the stack — libsignal core and libsignal-service `bb43e81` are
+> byte-unmoved, upstream's newer main is now an explicit future decision
+> (change the rev + re-lock + bump the version together). The
+> stack-policy comment is rewritten to the new posture; riding main
+> forward is the defect, not the fix.
+>
+> **(3) `--locked` lands on clippy/test — fmt CANNOT carry it, and the
+> register's `--no-deps` note is why.** `cargo fmt` rejects `--locked`
+> ("unexpected argument", measured) because fmt resolves via
+> `--no-deps` metadata — the same form that passes vacuously on a stale
+> lock, which is exactly why the register row says the sweep probe must
+> use the full form. Both gate lanes' clippy + test now pin resolution;
+> the sweep gains `lock-freshness`, a full-form
+> `cargo metadata --locked` lane over every TRACKED lockfile — tracked,
+> not on-disk, because `fuzz/Cargo.lock` is a gitignored local artifact
+> no checkout ever sees, and flagging it would make the lane permanently
+> red over a file the repository does not ship (the audit lane stays
+> on-disk by its own older reasoning). The sweep is LOCAL-only coverage;
+> CI's teeth are the `--locked` flags themselves. Full validation at the
+> pinned rev: signal-gateway **53 passed / 0 failed** (fmt + clippy
+> clean — including a PRE-EXISTING fmt drift in
+> `tests/s8_04_rate_limit_wired.rs` this round had to fix or the lane
+> stays red), channel-bridge **39 passed / 0 failed**.
+>
+> **(4) Three pins, five red-proofs, one fail-closed catch.**
+> `tests/lock_discipline_pins.rs`: the freshness law (hermetic
+> manifest-vs-lock checker — direct-dep caret satisfaction + git-rev
+> equality; the full-graph probe stays in the sweep lane and the CI
+> `--locked` flags, because resolving signal-gateway's git graph inside
+> the root suite would add multi-repo clones to every cold CI run), the
+> CI-lane law (job-block sliced, so a renamed lane FAILS the existence
+> arm rather than passing vacuously), and the rev law (rev, never
+> branch). Red-proven: stale lock → the tokio 1.53.2 arm; dropped
+> `--locked` → the lane arm; renamed job → the existence arm; manifest
+> rev ≠ locked rev → the git arm; branch form → the rev law. The
+> checker FAILED CLOSED on its own first run — the lock resolves
+> `serde_yaml 0.9.34+deprecated` and the parser refused the
+> build-metadata suffix rather than skipping past it; taught the form,
+> kept the failure mode.
+>
+> **(5) The round's own gate run found main RED at HEAD — R77/R78's
+> src comments carried audit-id labels the comment guard has rejected
+> since the errata round.** Three sites: `F9-01` in
+> `src/auth/policy.rs:82` and `src/handlers/mesh.rs:425` (shipped with
+> the revoke refusal), `R9-02` in `src/gate.rs:687` (shipped with the
+> attribute-tier pair). Neither predecessor round claims a full-suite
+> run, and the ninth pass's last one predates them — a scoped-test
+> discipline that leaves the suite's only red unreadable as
+> "pre-existing noise" is the exact failure this file documented at the
+> two-unnoted-commits rounds. Fixed at the root, the errata way: label
+> dropped, invariant sentence kept verbatim; zero behaviour change.
+>
+> **Spire this round:** lib count +0 (the three pins are integration
+> tests). **The badge moved 3160 → 3168, machine-derived**
+> (`badges.sh --verify-count` exit 0, `OK README test-count badge
+> matches the build (3168)`) — +8, not +3: R77/R78's own pins were
+> never re-derived into the committed badge either, which is the same
+> no-full-gate-run discipline §5 names. Register: S9-01 flipped
+> CLOSED — R79 with evidence; `SHIPPED_ROUNDS` → `[&str; 11]`.
+> **Verification, measured over the working tree:** full
+> `cargo test --features bench` **49 ok lines / 0 FAILED** (pipefail);
+> default-features CI dry-run clippy clean + **50 ok / 0 FAILED**;
+> fmt clean (root + both tools + client); clippy `-D warnings` clean
+> (bench + default + both tools); `cargo audit` exit 0 on both new
+> locks with advisory ID sets **identical** old-vs-new; the new
+> lock-freshness lane: **7 tracked lockfiles, 0 stale**;
+> `docs-truth.sh` **LOW=17 (pre-existing, unmoved)**; doc-links 405
+> resolve; `badges.sh --selfcheck`, `env-truth.sh`, `lipstyk-gate`
+> exit 0. **What did NOT ship:** the OTHER CI lanes' `--locked`
+> (root/crates/client/steward-harness/valet-relay stay bare — the
+> register scoped the round to "both lanes", and the sweep lane covers
+> every tracked lockfile behaviourally; same class, fresh today, named
+> here rather than silently widened); NOT a presage/libsignal bump
+> (riding main is the defect); NOT S9-02…S9-08/W9-04 (**R80**), S9-06
+> (**R81**), the fork lane (K9-*), F9-02 (unrouted wire decision). No
+> migration; no irreversible risk.
+
+> Predecessor: **R78 "Attrtwo"** — *the last two
 > fetch-capable survivors of the read seam, and the one outbound lane
 > without the markdown-ref strip.* Closes the ninth pass's **R9-02** and
 > **W9-01**. No authz change, no route change, no schema change
-> (**1.32.26** unchanged), zero new dependency edges. Predecessor notes
-> below.
+> (**1.32.26** unchanged), zero new dependency edges.
 >
 > **(1) R9-02 — `style=` and `ping=` join the attribute tier, and the
 > DESIGN mirrors the two laws the tier already follows.** `ping` dies by

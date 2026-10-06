@@ -422,7 +422,7 @@ pub async fn post_revoke(
                 "1..=256 chars",
             )));
         }
-        // F9-01: the opaque operator superuser is STRUCTURALLY outside the
+        // The opaque operator superuser is STRUCTURALLY outside the
         // kill-switch. The operator bearer is a static token — the auth
         // middleware's operator arm consults no revocation row — so a revoke
         // of this label would write a row nothing ever reads and answer

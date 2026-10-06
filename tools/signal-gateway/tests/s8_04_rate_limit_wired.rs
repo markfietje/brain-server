@@ -152,7 +152,11 @@ fn a_live_key_is_never_swept_out_from_under_a_request() {
     let t0 = Instant::now();
     assert!(limiter.admit_at("k", t0));
     assert!(limiter.admit_at("k", t0 + Duration::from_secs(30)));
-    assert_eq!(limiter.tracked_keys(), 1, "one key, still holding its entries");
+    assert_eq!(
+        limiter.tracked_keys(),
+        1,
+        "one key, still holding its entries"
+    );
     assert!(
         !limiter.admit_at("k", t0 + Duration::from_secs(30)),
         "a swept key would have refilled its budget at 30 s"

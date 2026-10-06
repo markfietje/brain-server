@@ -196,10 +196,13 @@ jobs:
             tools/channel-bridge
       - name: fmt
         run: cargo fmt --manifest-path tools/channel-bridge/Cargo.toml --all -- --check
+      # --locked (clippy/test, not fmt — cargo fmt rejects the flag): a bare
+      # invocation re-locks SILENTLY when the committed lock drifts from the
+      # manifest, reporting green against dependency versions no one committed.
       - name: clippy
-        run: cargo clippy --manifest-path tools/channel-bridge/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --locked --manifest-path tools/channel-bridge/Cargo.toml --all-targets -- -D warnings
       - name: test
-        run: cargo test --manifest-path tools/channel-bridge/Cargo.toml
+        run: cargo test --locked --manifest-path tools/channel-bridge/Cargo.toml
 
   signal-gateway-gate:
     # The Signal edge controls a live messaging identity: its bind/auth posture
@@ -218,10 +221,15 @@ jobs:
             tools/signal-gateway
       - name: fmt
         run: cargo fmt --manifest-path tools/signal-gateway/Cargo.toml --all -- --check
+      # --locked (clippy/test, not fmt — cargo fmt rejects the flag): this
+      # workspace carries git dependencies; a silent re-lock here can move the
+      # whole libsignal stack to whatever upstream merged that morning. The
+      # presage rev is pinned in Cargo.toml and the lock is committed — the
+      # runner must build exactly those bytes or fail loudly.
       - name: clippy
-        run: cargo clippy --manifest-path tools/signal-gateway/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --locked --manifest-path tools/signal-gateway/Cargo.toml --all-targets -- -D warnings
       - name: test
-        run: cargo test --manifest-path tools/signal-gateway/Cargo.toml
+        run: cargo test --locked --manifest-path tools/signal-gateway/Cargo.toml
 
   valet-relay-gate:
     # The Signal bridge edge holds its own HMAC secret and verifies inbound

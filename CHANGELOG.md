@@ -4,6 +4,62 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## Unreleased — R79 "Locks"
+
+### Release notes
+
+**The committed lock is the reviewed truth; nothing may move it silently —
+not a CI runner, not a git branch pointer.** Finding closed: **S9-01** (ninth
+pass). No authz change, no route change, no wire change, no schema change
+(1.32.26 unchanged). The tools' dependency GRAPHS move by design (that is the
+fix); no new dependency EDGES appear.
+
+### S9-01 — stale locks, silent re-locks, and a branch-pointed git stack
+
+Both `tools/` manifests were bumped (commit `0a1d48b9`, 2026-10-04) without
+re-locking, so `cargo metadata --locked` refused on both workspaces — and
+every bare cargo invocation (the CI lanes, a local clippy) re-locked
+**silently**, reporting green against dependency versions nobody committed.
+
+- **Re-locked + committed, minimal resolution.** channel-bridge: clap
+  4.6.6→4.6.7 (×3 crates), jsonwebtoken 11.0.0→11.1.0, reqwest 0.13.4→0.13.5,
+  tokio 1.53.1→1.53.2, uuid 1.26.0→1.27.0. signal-gateway: the same class plus
+  uuid 1.25.0→1.27.0. `cargo audit` advisory ID sets are **identical** old-lock
+  vs new-lock — zero new advisories.
+- **`presage` + `presage-store-sqlite` pin `rev = f74b96e0…`** (was
+  `branch = "main"`). Upstream main had moved past the committed stack (newer
+  libsignal-service past `bb43e81`); under a branch pointer, any re-lock rode
+  the whole libsignal stack forward unreviewed. The pin holds the reviewed
+  stack — the re-lock changed the lock's presage source LINE and nothing else
+  in the stack. Bumping is now an explicit act: new rev + re-lock + version
+  bump (the package version tracks the libsignal tag) in one reviewed commit.
+  The stack-policy comment in the manifest is rewritten to that posture.
+- **Both CI lanes pin resolution**: `channel-bridge-gate` and
+  `signal-gateway-gate` run clippy and test with `--locked`. `cargo fmt`
+  cannot carry the flag (it rejects `--locked`; it resolves via `--no-deps`
+  metadata, which is also why staleness probes must use the full form).
+- **The verification sweep gains `lock-freshness`** — a full-form
+  `cargo metadata --locked` lane over every TRACKED lockfile (tracked, not
+  on-disk: `fuzz/Cargo.lock` is a gitignored local artifact no checkout ever
+  sees). Local-only coverage; CI's teeth are the `--locked` flags.
+- **Pins** in `tests/lock_discipline_pins.rs` (manifest-vs-lock freshness,
+  CI-lane `--locked`, git-deps-by-rev), red-proven on five mutants including
+  the renamed-lane and rev≠lock arms. At the pinned rev: signal-gateway
+  53 passed / 0 failed; channel-bridge 39 passed / 0 failed. The round also
+  fixed a PRE-EXISTING fmt drift in signal-gateway's rate-limit test file
+  (the lane's fmt step was red at HEAD before this round touched it).
+- **Found at HEAD, pre-existing, fixed in passing:** the comment guard
+  (`comments_never_reference_versions_plans_audit_ids`) was RED on three
+  `src/` comments shipped by the two preceding rounds (audit-id labels in
+  `src/auth/policy.rs`, `src/gate.rs`, `src/handlers/mesh.rs`) — neither
+  predecessor claims a full-suite run. Labels dropped, invariant sentences
+  kept verbatim; zero behaviour change.
+
+**Not shipped:** `--locked` on the OTHER CI lanes (scoped to the two the
+register names; the sweep lane covers every tracked lockfile), any
+presage/libsignal bump (riding main is the defect), S9-02…S9-08/W9-04 (R80),
+S9-06 (R81), the fork lane, F9-02.
+
 ## Unreleased — R76 "Cadence"
 
 ### Release notes

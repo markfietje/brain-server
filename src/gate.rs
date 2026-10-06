@@ -684,7 +684,7 @@ fn sweep_surviving_tag(tag: &str) -> String {
 /// `name="value"`). The `on[a-z]+` handler family dies by NAME; the URL
 /// attributes die by SCHEME (one bounded entity-decode pass, then all
 /// whitespace/control bytes removed — the browser URL rule — then a
-/// case-insensitive prefix match). The R9-02 pair: `ping` dies by NAME (a
+/// case-insensitive prefix match). The beacon/`style` pair: `ping` dies by NAME (a
 /// click beacon is a fetch primitive — whatever URL it carries is sent, so
 /// there is no benign form to scheme-check), and `style` dies by VALUE when
 /// it can express a NETWORK FETCH (`url(` / `image-set(` after the HTML

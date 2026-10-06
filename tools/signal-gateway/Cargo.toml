@@ -1,8 +1,8 @@
 [package]
 name = "signal-gateway"
 # Version tracks the libsignal stack this build is pinned against
-# (Cargo.lock: libsignal tag v0.99.0 via presage main — see the stack-policy
-# note near the bottom of this file) — bump both together.
+# (Cargo.lock: libsignal tag v0.99.0 via the pinned presage rev — see the
+# stack-policy note near the bottom of this file) — bump both together.
 version = "0.99.0"
 edition = "2024"
 rust-version = "1.98"
@@ -10,8 +10,14 @@ description = "Lightweight Signal daemon edge for brain-server Switchboard"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-presage = { git = "https://github.com/whisperfish/presage", branch = "main" }
-presage-store-sqlite = { git = "https://github.com/whisperfish/presage", branch = "main" }
+# Pinned by rev, never by branch: a branch pointer re-resolves to whatever
+# upstream merged the moment ANY re-lock occurs (a manifest bump elsewhere in
+# this file, a CI runner without --locked), shipping unreviewed movement of
+# the whole libsignal stack under a green build. The rev below is the commit
+# the stack-policy note describes — moving it is a deliberate, reviewed act:
+# change the rev, re-lock, and bump this package's version together.
+presage = { git = "https://github.com/whisperfish/presage", rev = "f74b96e0fb9099ce8be2b28b7ca9d11f78a6faea" }
+presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "f74b96e0fb9099ce8be2b28b7ca9d11f78a6faea" }
 
 tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs"], default-features = false }
 
@@ -53,11 +59,15 @@ tempfile = "3"
 # with `rev = bb43e81` — re-pointing those to newer tags of the SAME URL via
 # our manifest is rejected ("patches must point to different sources").
 #
-# Consequence: the newest MUTUALLY-COMPATIBLE stack is whatever presage main
-# pins: libsignal v0.99.0 + libsignal-service-rs bb43e81 (both confirmed the
-# latest upstream publishes whisperfish ships against). The moment upstream
-# merges a libsignal bump (watch presage PR #429 successors / service-rs deps),
-# `cargo update` here inherits it automatically since we track branch=main.
+# Consequence: the newest MUTUALLY-COMPATIBLE stack is whatever the PINNED
+# presage rev resolves: libsignal v0.99.0 + libsignal-service-rs bb43e81
+# (both confirmed the latest upstream publishes whisperfish ships against,
+# as of the pin). Upstream presage main has moved past this rev; riding it
+# forward is a DELIBERATE act, not an automatic one — pick the new rev,
+# read what libsignal/libsignal-service revs it resolves, re-lock, and bump
+# this package's version (it tracks the libsignal tag) in the same commit.
+# CI runs clippy/test with --locked so a runner can never re-resolve this
+# stack on its own.
 #
 # Options if vendoring is ever wanted: fork signalapp/libsignal under a new
 # URL (e.g. github.com/markfietje/libsignal) at tag v0.101.0 and patch toward

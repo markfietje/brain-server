@@ -79,7 +79,7 @@ pub const AGENT_LOOPBACK_SUB: &str = "agent@loopback";
 /// owner-stamp string, and the `principal_label` of `Principal::None`.
 /// RESERVED from the kill-switch: the operator bearer is a static token
 /// with no revocable principal id, so `/ops/agents/revoke` REFUSES this
-/// label loudly instead of writing an inert revocation row (F9-01); the
+/// label loudly instead of writing an inert revocation row; the
 /// remedy for a leaked operator token is rotation + restart. A JWT `sub`
 /// that collides with this string inherits the refusal — it already
 /// collides with the superuser's audit identity.
