@@ -476,15 +476,19 @@ and **deny always wins**.
 
 **The HTTP surface: seventeen route registrations across fifteen paths, plus
 one public webhook.** The four run POSTs (`/workflow/delivery/runs`,
-`/runs/{id}/advance`, `/runs/{id}/answer`, `/runs/{id}/gates`) and the reads
-(`/runs/{id}/attestations`, `/replay-verify`, `/trace`, `/steps`, `/runs/{id}`,
-`/runs`) carry the original contract: authorization is the run's own domain
+`/workflow/delivery/runs/{id}/advance`, `/workflow/delivery/runs/{id}/answer`,
+`/workflow/delivery/runs/{id}/gates`) and the reads
+(`/workflow/delivery/runs/{id}/attestations`,
+`/workflow/delivery/runs/{id}/replay-verify`,
+`/workflow/delivery/runs/{id}/trace`, `/workflow/delivery/runs/{id}/steps`,
+`/workflow/delivery/runs/{id}`, `/workflow/delivery/runs`) carry the original contract: authorization is the run's own domain
 plus the `workflow` role, and reads ask for Read rather than Write. On top of
 those now sit the **release family** — `POST /workflow/delivery/releases`,
-`/releases/{id}/approve`, `/releases/{id}/promote`, `GET /releases` — the
-**`/due` crank**, `GET /bindings` (scoped to the queried domain) and
-`GET /outcomes` (the derived read model). Two posture details worth naming:
-the release family and `/due` **explicitly refuse agent principals**, and
+`/workflow/delivery/releases/{id}/approve`,
+`/workflow/delivery/releases/{id}/promote`, `GET /workflow/delivery/releases` — the
+**`/workflow/delivery/due` crank**, `GET /workflow/delivery/bindings` (scoped to the queried domain) and
+`GET /workflow/delivery/outcomes` (the derived read model). Two posture details worth naming:
+the release family and `/workflow/delivery/due` **explicitly refuse agent principals**, and
 approve and promote are deliberately separate requests (anti-replay). The
 public inbound arm is `POST /webhooks/delivery/{kind}` — GitHub HMAC verified
 — which lands external observations as evidence.
@@ -507,13 +511,13 @@ of a durable delivery intent for the outbox. Every refusal in the chain is a
 typed `Denied` with the state untouched.
 
 **The reads are evidence, and one of them is now a read model.**
-`/runs/{id}/replay-verify` re-derives each trace row's content address from
+`/workflow/delivery/runs/{id}/replay-verify` re-derives each trace row's content address from
 its own stored columns and reports whether they agree (plus an ordinal/order
 fold); the verdict and the listing ride one read, and a mismatch is DATA —
 the request succeeds and the reader is handed the diff — because a report
 that turned a finding into an error would tell them less than the finding
-does. `/runs/{id}/trace` serves the rows in ordinal order with the chain head
-read from storage rather than recomputed. `GET /outcomes` is the derived read
+does. `/workflow/delivery/runs/{id}/trace` serves the rows in ordinal order with the chain head
+read from storage rather than recomputed. `GET /workflow/delivery/outcomes` is the derived read
 model: change lead time, governed release cadence, change-fail rate
 (labelled `role: "control"`), approval→promotion elapsed, each against the
 run's own 90-day history — with typed insufficiency rather than a made-up
@@ -524,7 +528,7 @@ registries, deploy targets, project-management trackers, and incident systems
 remain the systems of record for whatever they own. The first two connectors
 exist and are **read-only by construction**: GitHub `vcs` and `ci` adapters,
 pinned to their exact host, following no redirects, with no write verb
-anywhere in the adapter layer. They are consumed by the `/due` crank (three
+anywhere in the adapter layer. They are consumed by the `/workflow/delivery/due` crank (three
 phases: select the due batch and verify intents with no network, resolve the
 binding and make one read-adapter call, mark the intent delivered) and by the
 inbound webhook's `reconcile_authority`, which turns landed observations into
