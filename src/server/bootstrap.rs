@@ -67,6 +67,34 @@ pub struct Bootstrap {
 ///
 /// Applied to EVERY pooled connection: `synchronous` and `wal_autocheckpoint`
 /// are per-connection settings that reset on reconnect, so the policy must be
+/// Bring a memory-bearing artefact into the 0600 family: the main db, the
+/// pre-migration backup, and its marker. Idempotent (heals artefacts created
+/// before the law), warn-and-continue on failure — mode is defence-in-depth
+/// on multi-user hosts, not boot correctness. No-op outside Unix.
+fn enforce_private_mode(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        match std::fs::metadata(path)
+            .map(|m| m.permissions())
+            .and_then(|p| {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map(|_| p)
+            }) {
+            Ok(prev) if prev.mode() & 0o777 != 0o600 => {
+                warn!(
+                    "memory-bearing file {} was mode {:o} — brought to 0600",
+                    path.display(),
+                    prev.mode() & 0o777
+                );
+            }
+            Ok(_) => {}
+            Err(e) => warn!("could not enforce 0600 on {}: {e}", path.display()),
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 /// re-asserted at init — a pragma set on one connection (the migration's) never
 /// covered the pool. Defaults equal the pre-Headroom effective behavior
 /// (FULL / 1000 — the SQLite compile defaults, measured), so this changes
@@ -582,6 +610,13 @@ pub fn bootstrap() -> Result<BootOutcome> {
                 .with_init(main_pool_connection_init(durability)),
         )?;
 
+    // The main database is memory content: 0600 at creation (and a heal for
+    // databases created before this law — the snapshot/standby/temp families
+    // already carry it; the main db and its pre-migration artefacts were the
+    // 0644 outliers). Warn-and-continue, matching the backup block's
+    // posture: mode is defence-in-depth, not boot correctness.
+    enforce_private_mode(&db_path);
+
     // Offline `--re-embed <profile>` — the fail-closed dim
     // guard's escape hatch. Runs INSTEAD of serving: rebuilds the vector store
     // at the target profile's dim and re-embeds every chunk, then exits.
@@ -625,8 +660,12 @@ pub fn bootstrap() -> Result<BootOutcome> {
                     // raw literal.
                     match crate::backup::vacuum_into(&conn, &backup_path) {
                         Ok(_) => {
-                            // Touch the marker so we never re-backup.
+                            // Touch the marker so we never re-backup. Both
+                            // artefacts carry memory content — same 0600 law
+                            // as the main db (they were 0644 outliers).
                             let _ = std::fs::write(&marker, b"v0.9.0 backup complete");
+                            enforce_private_mode(&marker);
+                            enforce_private_mode(&backup_path);
                             info!("Pre-migration backup complete");
                         }
                         Err(e) => warn!("Pre-migration backup failed (continuing): {e}"),
@@ -1441,6 +1480,36 @@ mod tests {
     /// every non-public route's handler must
     /// `None`-principal-is-superuser behavior above — a non-loopback bind with
     /// no auth must refuse startup. Pure predicates + guard, no live socket.
+    /// The main db, pre-migration backup and marker are memory-bearing
+    /// artefacts and belong to the 0600 family: the helper must create-or-heal
+    /// the mode, be idempotent, and stay quiet on an already-private file.
+    #[test]
+    fn private_mode_is_enforced_and_idempotent() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = tempfile::tempdir().expect("tempdir");
+            let p = dir.path().join("memory-bearing.db");
+            std::fs::write(&p, b"rows").expect("fixture write");
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o644))
+                .expect("fixture chmod 0644");
+            enforce_private_mode(&p);
+            let mode = std::fs::metadata(&p).expect("stat").permissions().mode();
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "a 0644 artefact must be healed to 0600"
+            );
+            // Idempotent: a second pass neither fails nor changes the mode.
+            enforce_private_mode(&p);
+            let mode = std::fs::metadata(&p).expect("stat").permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+            // A file the operator already tightened further is left as-is at
+            // 0600 (the law's floor) and a missing path warns, not panics.
+            enforce_private_mode(&dir.path().join("absent"));
+        }
+    }
+
     #[test]
     fn bind_is_loopback_and_auth_configured_predicates() {
         use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};

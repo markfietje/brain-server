@@ -105,6 +105,30 @@ impl Default for SignalConfig {
 
 impl Config {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        // The config carries `server.auth_token` — a secret file. The 0600
+        // law the bridge credential, the relay secret and the presage store
+        // already enforce applies here too: refuse group/world-readable (or
+        // -writable) modes instead of quietly reading the token through
+        // them. This was the one secret file in the edge without the law.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(path.as_ref())
+                .with_context(|| {
+                    format!("Failed to stat config file: {}", path.as_ref().display())
+                })?
+                .permissions()
+                .mode();
+            if mode & 0o077 != 0 {
+                anyhow::bail!(
+                    "config file {} is mode {:o} — group/world bits set. A file carrying \
+                     server.auth_token must be 0600. Fix: chmod 600 {}",
+                    path.as_ref().display(),
+                    mode & 0o777,
+                    path.as_ref().display()
+                );
+            }
+        }
         let contents = fs::read_to_string(path.as_ref())
             .with_context(|| format!("Failed to read config file: {}", path.as_ref().display()))?;
 
@@ -112,5 +136,47 @@ impl Config {
             serde_yaml::from_str(&contents).context("Failed to parse config file")?;
 
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Test-only: the crate denies panic vectors in PRODUCTION code
+    // (`Cargo.toml` `[lints.clippy]`); tests must fail loudly.
+    #![allow(clippy::expect_used, clippy::panic)]
+    use super::*;
+
+    fn write_config(dir: &std::path::Path, mode: u32) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join("config.yaml");
+        std::fs::write(
+            &p,
+            "server:\n  address: 127.0.0.1:8080\nsignal:\n  data_dir: /tmp/sg\n  \
+             attachments_dir: /tmp/sg-att\n",
+        )
+        .expect("fixture write");
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).expect("fixture chmod");
+        p
+    }
+
+    #[test]
+    fn a_world_readable_config_is_refused_not_read() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = write_config(dir.path(), 0o644);
+        let err =
+            Config::load(&p).expect_err("a 0644 config carries the auth token and must be refused");
+        assert!(
+            err.to_string().contains("0600"),
+            "the refusal must name the remedy: {err}"
+        );
+    }
+
+    #[test]
+    fn a_private_config_loads() {
+        // Anti-vacuity: the check must not learn to refuse everything.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let p = write_config(dir.path(), 0o600);
+        let cfg = Config::load(&p).expect("a 0600 config loads");
+        assert_eq!(cfg.server.address, "127.0.0.1:8080");
     }
 }

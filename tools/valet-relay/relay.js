@@ -208,6 +208,19 @@ const alertServer = http.createServer((req, res) => {
 
 const seenEnvelopes = new Set(); // bounded below; replay protection client-side
 
+// Dedup id for an inbound envelope: derives from the ENVELOPE'S OWN platform
+// timestamp (the Rust twin's `external_id(sender_uuid, ts_millis)` law), NOT
+// from time-of-forward — a retained envelope re-polled in a later second
+// must keep its id, or the client-side replay cap never sees the repeat.
+// Absent timestamp falls back to forward time (the envelope is then
+// unrepeatable by construction). Exported for the pin; `webhook-timestamp`
+// stays wall-clock — freshness is about the signature, the id is identity.
+function inboundDedupId(env, text, from) {
+  const envTs = Number(env && env.envelope && env.envelope.timestamp);
+  return `signal-${Number.isFinite(envTs) && envTs > 0 ? envTs : Date.now()}-${
+    crypto.createHash('sha1').update(text + from).digest('hex').slice(0, 12)}`;
+}
+
 async function pollOnce() {
   let r;
   await new Promise((resolve) => {
@@ -233,8 +246,8 @@ async function pollOnce() {
     const from = env && env.envelope && env.envelope.source;
     if (typeof text !== 'string') continue;
     if (from !== CFG.my_number) continue; // only MY commands steer the brain
+    const id = inboundDedupId(env, text, from);
     const ts = String(Math.floor(Date.now() / 1000));
-    const id = `signal-${ts}-${crypto.createHash('sha1').update(text + from).digest('hex').slice(0, 12)}`;
     if (seenEnvelopes.has(id)) continue;
     seenEnvelopes.add(id);
     if (seenEnvelopes.size > 500) {
@@ -262,7 +275,10 @@ async function pollOnce() {
 // `relay.test.js` does) yields the pure decision functions and nothing else.
 // No behaviour changes when it is run as a process.
 
-module.exports = { sign, verifyAlert, freshTimestamp, envelopeToText, FRESHNESS_TOLERANCE_SECS };
+module.exports = {
+  sign, verifyAlert, freshTimestamp, envelopeToText, inboundDedupId,
+  FRESHNESS_TOLERANCE_SECS,
+};
 
 if (require.main === module) {
   // ── self-test mode: `node relay.js --selftest` verifies the two signature

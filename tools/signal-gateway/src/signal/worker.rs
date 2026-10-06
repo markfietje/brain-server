@@ -10,7 +10,6 @@ use presage::manager::{Manager, Registered};
 use presage::model::identity::OnNewIdentity;
 use presage::model::messages::Received;
 use presage_store_sqlite::SqliteStore;
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -26,138 +25,45 @@ use super::types::{
 };
 use base64::Engine;
 
-/// Recipient cache for resolving phone numbers/addresses to UUIDs
-#[derive(Clone, Default)]
-pub struct RecipientCache {
-    cache: Arc<Mutex<HashMap<String, String>>>,
-    self_aci: Arc<Mutex<Option<String>>>,
-}
+// The production recipient cache is the bounded twin in `crate::cache`
+// (cap 4096, oldest-quarter eviction, TTL on the phone leg). The former
+// inline HashMap cache was unbounded and logged phone->UUID pairs at
+// INFO — both halves are register findings, both closed by using the
+// twin that already existed in-tree.
+pub use crate::cache::RecipientCache;
 
-impl RecipientCache {
-    pub fn new() -> Self {
-        Self::default()
+/// Full resolution: cache fast-paths first, THEN presage's websocket
+/// username -> ACI lookup. Requires a manager clone because the lookup
+/// opens its own request cycle — callers are exactly the send paths,
+/// which already hold one. Lives here (not on the cache) because it
+/// orchestrates the Signal manager, which is worker territory; the
+/// cache stays storage + pure classification.
+pub(super) async fn resolve_via_manager(
+    cache: &RecipientCache,
+    manager: &mut Manager<SqliteStore, Registered>,
+    recipient: &str,
+) -> anyhow::Result<String> {
+    if let Ok(uuid) = cache.resolve(recipient) {
+        return Ok(uuid);
     }
-
-    pub fn insert(&self, key: String, uuid: String) {
-        tracing::info!("[CACHE] Mapping {} -> {}", key, uuid);
-        self.cache.lock().insert(key, uuid);
+    if recipient.contains('.') && !recipient.contains('-') && !recipient.starts_with('+') {
+        let Some(aci) = manager
+            .lookup_username(recipient)
+            .await
+            .map_err(|e| anyhow::anyhow!("username lookup failed: {e:?}"))?
+        else {
+            anyhow::bail!("username '{recipient}' not found on Signal");
+        };
+        let uuid = aci.service_id_string();
+        // No operands in the log line: usernames and ACIs are identifiers.
+        tracing::debug!("[RESOLVE] username resolved via manager");
+        cache.insert(recipient.to_string(), uuid.clone());
+        return Ok(uuid);
     }
-
-    pub fn get(&self, key: &str) -> Option<String> {
-        self.cache.lock().get(key).cloned()
-    }
-
-    /// Reverse lookup: get phone number from UUID
-    #[allow(dead_code)]
-    pub fn reverse_get(&self, uuid: &str) -> Option<String> {
-        let cache = self.cache.lock();
-        for (key, value) in cache.iter() {
-            if value == uuid && Self::is_phone(key) {
-                tracing::info!("[CACHE] Reverse lookup: {} -> {}", uuid, key);
-                return Some(key.clone());
-            }
-        }
-        None
-    }
-
-    pub fn set_self_aci(&self, aci: String) {
-        tracing::info!("[CACHE] Self ACI: {}", aci);
-        *self.self_aci.lock() = Some(aci);
-    }
-
-    pub fn get_self_aci(&self) -> Option<String> {
-        self.self_aci.lock().clone()
-    }
-
-    /// Check if string is a valid UUID format
-    fn is_uuid(s: &str) -> bool {
-        s.len() == 36 && s.chars().filter(|&c| c == '-').count() == 4
-    }
-
-    /// Check if string is a phone number (starts with +)
-    fn is_phone(s: &str) -> bool {
-        s.starts_with("+") && s.len() >= 10
-    }
-
-    /// Check if string is a username (contains . but not -)
-    fn is_username(s: &str) -> bool {
-        s.contains(".") && !s.contains("-") && !s.starts_with("+")
-    }
-
-    /// Resolve recipient to UUID
-    pub fn resolve(&self, recipient: &str) -> Result<String> {
-        // Already a UUID
-        if Self::is_uuid(recipient) {
-            tracing::info!("[RESOLVE] Already UUID: {}", recipient);
-            return Ok(recipient.to_string());
-        }
-
-        // Check cache for phone/username
-        if let Some(uuid) = self.get(recipient) {
-            tracing::debug!("[RESOLVE] Cache hit");
-            return Ok(uuid);
-        }
-
-        // Phone number - try to use self ACI for self-messaging
-        if Self::is_phone(recipient)
-            && let Some(self_aci) = self.get_self_aci()
-        {
-            tracing::info!(
-                "[RESOLVE] Using self ACI for phone: {} -> {}",
-                recipient,
-                self_aci
-            );
-            // Cache it for future
-            self.insert(recipient.to_string(), self_aci.clone());
-            return Ok(self_aci);
-        }
-
-        // Username - needs external resolution (not implemented yet)
-        if Self::is_username(recipient) {
-            tracing::warn!(
-                "[RESOLVE] Username resolution not yet implemented: {}",
-                recipient
-            );
-            anyhow::bail!("Username resolution requires calling /v1/cache/seed first with the UUID")
-        }
-
-        tracing::warn!("[RESOLVE] Cannot resolve: {}", recipient);
-        anyhow::bail!(
-            "Cannot resolve recipient: {}. Use UUID or seed the cache with /v1/cache/seed",
-            recipient
-        )
-    }
-
-    /// Full resolution: cache fast-paths first, THEN presage's websocket
-    /// username → ACI lookup. Requires a manager clone because the lookup
-    /// opens its own request cycle — callers are exactly the send paths,
-    /// which already hold one.
-    async fn resolve_via_manager(
-        &self,
-        manager: &mut Manager<SqliteStore, Registered>,
-        recipient: &str,
-    ) -> Result<String> {
-        if let Ok(uuid) = self.resolve(recipient) {
-            return Ok(uuid);
-        }
-        if Self::is_username(recipient) {
-            let Some(aci) = manager
-                .lookup_username(recipient)
-                .await
-                .map_err(|e| anyhow::anyhow!("username lookup failed: {e:?}"))?
-            else {
-                anyhow::bail!("username '{recipient}' not found on Signal");
-            };
-            let uuid = aci.service_id_string();
-            tracing::info!("[RESOLVE] username {recipient} -> {uuid}");
-            self.insert(recipient.to_string(), uuid.clone());
-            return Ok(uuid);
-        }
-        anyhow::bail!(
-            "Cannot resolve recipient: {}. Use UUID or seed the cache with /v1/cache/seed",
-            recipient
-        )
-    }
+    anyhow::bail!(
+        "Cannot resolve recipient: {}. Use UUID or seed the cache with /v1/cache/seed",
+        recipient
+    )
 }
 
 /// Presentation form of OUR OWN phone number for every surface that leaves
@@ -372,7 +278,7 @@ impl SignalWorker {
         let account_number = Arc::new(Mutex::new(None));
         let send_rate_limiter = Arc::new(Semaphore::new(config.max_sends_per_second));
         let command_timeout_ms = config.command_timeout_ms;
-        let recipient_cache = RecipientCache::new();
+        let recipient_cache = RecipientCache::default(); // 1 h TTL — the bounded twin
 
         let handle = SignalHandle {
             command_tx: command_tx.clone(),
@@ -591,11 +497,13 @@ impl SignalWorker {
     ) -> Result<bool> {
         match Manager::load_registered(store.clone()).await {
             Ok(manager) => {
-                // Get self ACI for self-messaging
+                // Get self ACI for self-messaging. The ACI is an identifier:
+                // it reaches the cache (which never logs operands) and the
+                // caller's own error paths, never a log line.
                 let aci = manager.registration_data().service_ids.aci;
                 let aci_str = aci.to_string();
                 cache.set_self_aci(aci_str.clone());
-                tracing::info!("[WORKER] Self ACI: {}", aci_str);
+                tracing::info!("[WORKER] self ACI captured (operand withheld)");
 
                 // Get phone number — NEVER emitted raw: API/log/payload
                 // surfaces carry only the masked / configured presentation.
@@ -670,7 +578,7 @@ impl SignalWorker {
             _ => anyhow::bail!("Not linked"),
         };
 
-        let resolved = cache.resolve_via_manager(&mut manager, &recipient).await?;
+        let resolved = resolve_via_manager(cache, &mut manager, &recipient).await?;
         let sid = ServiceId::parse_from_service_id_string(&resolved)
             .ok_or_else(|| anyhow::anyhow!("Invalid ServiceId: {}", resolved))?;
 
@@ -730,7 +638,7 @@ impl SignalWorker {
             _ => anyhow::bail!("Not linked"),
         };
 
-        let resolved = cache.resolve_via_manager(&mut manager, &recipient).await?;
+        let resolved = resolve_via_manager(cache, &mut manager, &recipient).await?;
         let sid = ServiceId::parse_from_service_id_string(&resolved)
             .ok_or_else(|| anyhow::anyhow!("Invalid ServiceId"))?;
 
@@ -767,7 +675,7 @@ impl SignalWorker {
             _ => anyhow::bail!("Not linked"),
         };
 
-        let resolved = cache.resolve_via_manager(&mut manager, &recipient).await?;
+        let resolved = resolve_via_manager(cache, &mut manager, &recipient).await?;
         let sid = ServiceId::parse_from_service_id_string(&resolved)
             .ok_or_else(|| anyhow::anyhow!("Invalid ServiceId"))?;
 

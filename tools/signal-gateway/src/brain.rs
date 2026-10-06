@@ -185,6 +185,11 @@ impl BrainClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             http: reqwest::Client::builder()
                 .timeout(Duration::from_secs(15))
+                // Egress law (mirrors channel-bridge): the signed webhook
+                // headers — HMAC over the body — must NEVER ride a redirect
+                // cross-origin. A 3xx answer from the brain seam is a
+                // misconfiguration to surface, not an instruction to follow.
+                .redirect(reqwest::redirect::Policy::none())
                 .build()?,
         })
     }

@@ -211,6 +211,24 @@ test('the forwarded-kind rule is unchanged', () => {
   assert.equal(envelopeToText('workflow', {}), null);
 });
 
+// ── the inbound dedup id keys on the ENVELOPE, not the clock ─────────────────
+
+test('a retained envelope keeps its dedup id across re-polls', () => {
+  const env = { envelope: { timestamp: 1727712000000, source: '+15550001111',
+    dataMessage: { message: 'what is due' } } };
+  // The platform timestamp rides the id — NOT the wall clock. A time-of-
+  // forward id lets the same envelope re-post once per second, which is
+  // exactly the replay the client-side cap exists to catch.
+  const id = relay.inboundDedupId(env, 'what is due', '+15550001111');
+  assert.match(id, /^signal-1727712000000-[0-9a-f]{12}$/,
+    'the id must derive from the envelope timestamp');
+  assert.equal(id, relay.inboundDedupId(env, 'what is due', '+15550001111'),
+    'same envelope, same id — across any two poll instants');
+  // Distinct envelopes stay distinct (anti-vacuity: not a constant id).
+  const other = relay.inboundDedupId(env, 'different text', '+15550001111');
+  assert.notEqual(id, other, 'the text still discriminates');
+});
+
 // ── end-to-end: a real listener, a real child process, a real Signal sink ────
 
 function listen(server) {

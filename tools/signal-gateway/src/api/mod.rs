@@ -231,10 +231,23 @@ async fn seed_cache(
         }
     };
 
-    // Insert into cache
+    // Insert into cache. The seed verb is an integrity-bearing act on a
+    // messaging edge: a wrong mapping sends messages to the wrong identity,
+    // so it is AUDITED loudly — at WARN, with sha256 digests (not the raw
+    // operands: phone numbers and ACIs are identifiers, and the cache's own
+    // PII law keeps them off the log lane).
     let cache = state.signal.get_recipient_cache();
     cache.insert(phone.clone(), uuid.clone());
-    tracing::debug!("cache seeded");
+    let digest = |v: &str| {
+        use sha2::{Digest, Sha256};
+        let h = Sha256::digest(v.as_bytes());
+        h.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    tracing::warn!(
+        phone_sha256 = &digest(&phone)[..12],
+        uuid_sha256 = &digest(&uuid)[..12],
+        "cache seeded via /v1/cache/seed"
+    );
 
     (
         axum::http::StatusCode::OK,

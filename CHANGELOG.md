@@ -60,6 +60,39 @@ register names; the sweep lane covers every tracked lockfile), any
 presage/libsignal bump (riding main is the defect), S9-02…S9-08/W9-04 (R80),
 S9-06 (R81), the fork lane, F9-02.
 
+## Unreleased — R80 "Gateway"
+
+### Release notes
+
+**The remedy that already existed in-tree becomes the one production uses,
+and the edge's last law-gaps close.** Findings closed: **S9-02, S9-03,
+S9-04, S9-05, S9-08** (ninth pass). No authz/route/wire/schema change; no
+new dependency edges.
+
+- **S9-02:** signal-gateway's bounded recipient cache (cap 4096,
+  oldest-quarter eviction — previously dead code) is now THE production
+  cache; the unbounded inline HashMap and its `[CACHE] Mapping` /
+  `Self ACI` INFO log lines are deleted. PII law on the module: no operand
+  rides any log lane. `POST /v1/cache/seed` is audited at WARN with
+  sha256 digests — loud and PII-lawful.
+- **S9-03:** `config.yaml` (carries `auth_token`) refuses group/world
+  bits at load — the 0600 law the other secret files already enforce.
+- **S9-04:** `BrainClient` follows no redirects (`Policy::none()`), so
+  signed webhook headers never re-send cross-origin (channel-bridge law
+  mirrored).
+- **S9-05:** valet-relay's inbound dedup id derives from the envelope's
+  own platform timestamp (`inboundDedupId`), not time-of-forward — a
+  retained envelope re-polled later keeps its id.
+- **S9-08:** the main `brain.db`, the pre-migration `VACUUM INTO` backup
+  and its marker join the 0600 family (`enforce_private_mode` — idempotent
+  heal, warn-and-continue).
+
+Pins: `tests/s9_02_cache_wiring.rs` (bounded-cache wiring, log-lane PII,
+redirect law), config 0600 refusal + anti-vacuity, cache resolve laws,
+relay dedup-id law, bootstrap mode law.
+
+**Not shipped:** S9-06 + W9-04 (R81), the fork lane, F9-02.
+
 ## Unreleased — R76 "Cadence"
 
 ### Release notes

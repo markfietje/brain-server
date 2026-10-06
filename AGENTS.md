@@ -1,6 +1,63 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R79 "Locks"** — *the committed lock is
+> Current release (unreleased): **R80 "Gateway"** — *the remedy that
+> already existed in-tree becomes the one production uses, and the edge's
+> last three law-gaps close.* Closes the ninth pass's **S9-02, S9-03,
+> S9-04, S9-05, S9-08**. No authz change, no route change, no wire
+> change, no schema change (**1.32.26** unchanged), zero new dependency
+> edges (sha2 was already a gateway dep). Predecessor notes below.
+>
+> **(1) S9-02 — the bounded twin is THE cache, and the inline one is
+> deleted.** `worker.rs` re-exports `crate::cache::RecipientCache` (cap
+> 4096, oldest-quarter eviction, TTL on the phone leg) and its unbounded
+> inline HashMap is gone — with `clear()`, which was dead by ANY measure;
+> `len`/`get_phone` stay as `#[cfg(test)]` measured truths (production
+> writes and resolves forward; the reverse leg is eviction symmetry,
+> asserted in tests, never stubbed). The module now carries a PII LAW:
+> no operand rides any log lane — the `[CACHE] Mapping {phone} -> {uuid}`
+> and `Self ACI: {}` INFO lines are dead, resolve paths log SHAPE at
+> debug, and caller-facing errors may name the recipient the caller
+> supplied. The seed verb (`POST /v1/cache/seed`) is audited at WARN
+> with sha256 digests (`phone_sha256`/`uuid_sha256`, 12 hex) — a wrong
+> mapping sends messages to the wrong identity, so the act is loud AND
+> PII-lawful; the bearer gate already covers the route when configured
+> (the audit row's "gate or audit" resolved to audit, stated here).
+>
+> **(2) The three small laws.** S9-03: `Config::load` refuses a
+> config.yaml with group/world bits before reading it — the server's
+> `secret_file` law mirrored; the refusal names `chmod 600`. S9-04:
+> `BrainClient` builds with `redirect::Policy::none()` — the signed HMAC
+> headers never ride a redirect cross-origin (the channel-bridge egress
+> law, now twin-consistent). S9-05: the relay's inbound dedup id derives
+> from the ENVELOPE'S platform timestamp (`inboundDedupId`, extracted +
+> exported; absent-ts falls back to forward time; `webhook-timestamp`
+> stays wall-clock — freshness is the signature, the id is identity).
+>
+> **(3) S9-08 — the 0644 outliers join the 0600 family.** `enforce_private_mode`
+> (bootstrap) touches the main db at pool build, and the pre-migration
+> `VACUUM INTO` backup + marker at their creation: idempotent (heals
+> pre-law artefacts, warning the heal), warn-and-continue on failure —
+> mode is defence-in-depth on multi-user hosts, not boot correctness,
+> matching the surrounding backup block's own posture.
+>
+> **Pins, red-provable:** `the_bounded_cache_is_the_production_cache`
+> (inline struct OR dead-code allow returns → fires),
+> `cache_pii_operands_stay_off_the_log_lane` (mapping line returns →
+> fires), `brain_client_refuses_redirects` (tests/s9_02_cache_wiring.rs);
+> `a_world_readable_config_is_refused_not_read` + anti-vacuity
+> `a_private_config_loads`; `resolve_reads_the_bounded_legs` /
+> `resolve_fast_paths_are_shape_not_identity` (cache.rs);
+> `a_retained_envelope_keeps_its_dedup_id_across_re-polls` (relay — the
+> regex anchors the envelope ts, a wall-clock id cannot match);
+> `private_mode_is_enforced_and_idempotent` (bootstrap).
+>
+> **Spire this round:** gateway bin tests **20+8+10+19 + wiring file**,
+> relay **19/19** (18 + the new pin), root fmt/clippy clean, register
+> flipped five rows — all with evidence. **What did NOT ship:** S9-06 +
+> W9-04 (**R81**), the fork lane (K9-*, W9-02 — different repository),
+> F9-02 (unrouted wire decision). No migration; no irreversible risk.
+
+> Predecessor: **R79 "Locks"** — *the committed lock is
 > the reviewed truth; nothing may move it silently — not a CI runner, not
 > a git branch pointer.* Closes the ninth pass's **S9-01**. No authz
 > change, no route change, no wire change, no schema change (**1.32.26**
