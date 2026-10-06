@@ -138,7 +138,9 @@ audit-chain.key
 # .gitignore never applies to an already-tracked file, so it asserted a
 # protection the repo did not have. Re-adding the rule would recreate the
 # same false control.
+docs/SECURITY_AUDIT_20261006_TENTH_PASS.md
 docs/SECURITY_AUDIT_20261006_NINTH_PASS.md
 docs/SECURITY_AUDIT_20260912_FIFTH_PASS.md
 docs/SECURITY_AUDIT_20260912_FOURTH_PASS.md
 docs/SECURITY_AUDIT_20260913_SEVENTH_PASS.md
+docs/SECURITY_AUDIT_20261006_TENTH_PASS_REGULATORY.md
