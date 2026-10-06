@@ -32,7 +32,7 @@ this plugin (TS)  ──POST /recall (loopback)──►  brain-server (Rust)
   guidance goes to the provider-cacheable system prompt (`prependSystemContext`).
 - **Calibrated abstention:** when retrieval quality is too low to support a
   claim, the server returns `decision: "low_confidence"` with no hits. The
-  auto-recall hook fails open (injects nothing); the `memory_recall` tool tells
+  auto-recall hook fails open (injects nothing); the `brain_memory_recall` tool tells
   the agent to clarify or fall back to web search instead of presenting a
   fabricated answer.
 
@@ -60,7 +60,7 @@ this plugin (TS)  ──POST /recall (loopback)──►  brain-server (Rust)
   prefix ` [memory | channel-capture]` inside the fence (owner memories stay
   untagged), `autoCapture` tells the server which chat a capture came from
   (`origin_context`), and the new `untrustedOrigins` knob (below) drops
-  channel-captured hits from auto-injection entirely. The `memory_recall` TOOL
+  channel-captured hits from auto-injection entirely. The `brain_memory_recall` TOOL
   path always labels — a tool consumer always sees the taint. The openclaw host
   additionally marks quoted/replayed `[memory | …]` prefixes in inbound text as
   untrusted replay, so a captured label cannot be forged into fresh prose.
@@ -151,20 +151,20 @@ context tokens when set.
 
 | Tool                       | Purpose                                                                                                                                                                                                                     |
 | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `memory_recall`            | Hybrid semantic + lexical recall. Power overrides `domain`/`source`/`since`/`lex`/`vec`/`hyde`/`intent`; advanced `at`/`asOf`/`memoryKind`/`minRelevance`/`graph`/`maxContextTokens`. Surfaces `low_confidence` abstention. |
-| `memory_store`             | Save a durable fact, optionally with `entities[]`/`relations[]` for the KG. Default `captureMode: "proposal"` → human review.                                                                                               |
-| `memory_verify`            | Deterministic span verification (no LLM): is a claim literally supported by a chunk's text? Use before acting on a recalled fact.                                                                                           |
-| `memory_get`               | Fetch the full stored text behind a recalled snippet by id.                                                                                                                                                                 |
-| `memory_graph_entity`      | Look up an entity and its one-hop knowledge-graph relations.                                                                                                                                                                |
-| `memory_graph_traverse`    | Multi-hop KG traversal (causal subgraphs `kind="causes:"`, bi-temporal `at`, explained paths).                                                                                                                              |
-| `memory_proposal_list`     | List captures awaiting human review. Gated behind `proposalTools`.                                                                                                                                                          |
-| `memory_proposal_decide`   | Approve/reject a captured proposal. Gated behind `proposalTools`.                                                                                                                                                           |
-| `memory_procedure_get`     | Fetch the ordered steps of a runbook/procedure.                                                                                                                                                                             |
-| `memory_procedure_store`   | Create a runbook/procedure with ordered steps (direct write, server-screened).                                                                                                                                              |
-| `memory_decision_evaluate` | Deterministically evaluate a stored decision rule against numeric variables (no LLM).                                                                                                                                       |
+| `brain_memory_recall`            | Hybrid semantic + lexical recall. Power overrides `domain`/`source`/`since`/`lex`/`vec`/`hyde`/`intent`; advanced `at`/`asOf`/`memoryKind`/`minRelevance`/`graph`/`maxContextTokens`. Surfaces `low_confidence` abstention. |
+| `brain_memory_store`             | Save a durable fact, optionally with `entities[]`/`relations[]` for the KG. Default `captureMode: "proposal"` → human review.                                                                                               |
+| `brain_memory_verify`            | Deterministic span verification (no LLM): is a claim literally supported by a chunk's text? Use before acting on a recalled fact.                                                                                           |
+| `brain_memory_get`               | Fetch the full stored text behind a recalled snippet by id.                                                                                                                                                                 |
+| `brain_memory_graph_entity`      | Look up an entity and its one-hop knowledge-graph relations.                                                                                                                                                                |
+| `brain_memory_graph_traverse`    | Multi-hop KG traversal (causal subgraphs `kind="causes:"`, bi-temporal `at`, explained paths).                                                                                                                              |
+| `brain_memory_proposal_list`     | List captures awaiting human review. Gated behind `proposalTools`.                                                                                                                                                          |
+| `brain_memory_proposal_decide`   | Approve/reject a captured proposal. Gated behind `proposalTools`.                                                                                                                                                           |
+| `brain_memory_procedure_get`     | Fetch the ordered steps of a runbook/procedure.                                                                                                                                                                             |
+| `brain_memory_procedure_store`   | Create a runbook/procedure with ordered steps (direct write, server-screened).                                                                                                                                              |
+| `brain_memory_decision_evaluate` | Deterministically evaluate a stored decision rule against numeric variables (no LLM).                                                                                                                                       |
 
-> No `memory_forget` tool — erasure is a human action (operator console / HTTP API), removed
-> v1.20.25. The plugin also feeds brain-server hits into the stock `memory_search`/`memory_get`
+> No `brain_memory_forget` tool — erasure is a human action (operator console / HTTP API), removed
+> v1.20.25. The plugin also feeds brain-server hits into the stock `memory_search`/`brain_memory_get`
 > via `registerMemoryCorpusSupplement` (non-exclusive unified search). See
 > [`docs/openclaw-integration.md`](https://github.com/markfietje/brain-server/blob/main/docs/openclaw-integration.md)
 > for the procedural-memory scenarios (runbooks, decision trees).
@@ -293,7 +293,7 @@ answers it end to end:
   ` [memory | channel-capture]` inside the untrusted fence, so the model sees
   the taint exactly where it sees the memory. Owner memories stay untagged.
 - **By posture** — `untrustedOrigins: "exclude"` drops channel-captured hits
-  from auto-injection entirely. The `memory_recall` TOOL path always labels:
+  from auto-injection entirely. The `brain_memory_recall` TOOL path always labels:
   a tool consumer always sees what it asked for.
 - **On replay** — if a labeled line is quoted back into inbound text, the
   openclaw host marks it `untrusted replay` so a forwarded memory cannot

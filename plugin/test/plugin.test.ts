@@ -172,29 +172,29 @@ describe("plugin registration", () => {
     expect(hooks.has("agent_end")).toBe(true);
     expect(hooks.has("session_end")).toBe(true);
     // kind:"memory" slot contract (matches openclaw.plugin.json contracts.tools).
-    expect(tools.has("memory_recall")).toBe(true);
-    expect(tools.has("memory_store")).toBe(true);
+    expect(tools.has("brain_memory_recall")).toBe(true);
+    expect(tools.has("brain_memory_store")).toBe(true);
     // v1.20.25: agent-facing hard-delete is removed — erasure is a human action.
-    expect(tools.has("memory_forget")).toBe(false);
+    expect(tools.has("brain_memory_forget")).toBe(false);
     // brain-server differentiated surfaces (span verify, fetch, knowledge graph).
-    expect(tools.has("memory_verify")).toBe(true);
-    expect(tools.has("memory_get")).toBe(true);
-    expect(tools.has("memory_graph_entity")).toBe(true);
+    expect(tools.has("brain_memory_verify")).toBe(true);
+    expect(tools.has("brain_memory_get")).toBe(true);
+    expect(tools.has("brain_memory_graph_entity")).toBe(true);
     // v0.3.0: graph traversal is always registered.
-    expect(tools.has("memory_graph_traverse")).toBe(true);
+    expect(tools.has("brain_memory_graph_traverse")).toBe(true);
     // v0.3.0: proposal review tools are gated behind config.proposalTools (off by default).
-    expect(tools.has("memory_proposal_list")).toBe(false);
-    expect(tools.has("memory_proposal_decide")).toBe(false);
+    expect(tools.has("brain_memory_proposal_list")).toBe(false);
+    expect(tools.has("brain_memory_proposal_decide")).toBe(false);
     // v0.4.0: procedural tools (runbooks / decision trees) are always registered.
-    expect(tools.has("memory_procedure_get")).toBe(true);
-    expect(tools.has("memory_procedure_store")).toBe(true);
-    expect(tools.has("memory_decision_evaluate")).toBe(true);
+    expect(tools.has("brain_memory_procedure_get")).toBe(true);
+    expect(tools.has("brain_memory_procedure_store")).toBe(true);
+    expect(tools.has("brain_memory_decision_evaluate")).toBe(true);
   });
 
   test("registers the proposal review tools when config.proposalTools is true", () => {
     const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
-    expect(tools.has("memory_proposal_list")).toBe(true);
-    expect(tools.has("memory_proposal_decide")).toBe(true);
+    expect(tools.has("brain_memory_proposal_list")).toBe(true);
+    expect(tools.has("brain_memory_proposal_decide")).toBe(true);
   });
 
   test("registers a static memory capability (prompt-cached system guidance)", () => {
@@ -564,7 +564,7 @@ describe("agent_end — autoCapture to POST /ingest", () => {
   });
 });
 
-describe("tools — the exclude posture reaches the memory_recall path", () => {
+describe("tools — the exclude posture reaches the brain_memory_recall path", () => {
   afterEach(() => vi.restoreAllMocks());
 
   test("untrustedOrigins:exclude drops channel-captured hits from tool results", async () => {
@@ -585,7 +585,7 @@ describe("tools — the exclude posture reaches the memory_recall path", () => {
       }),
     );
     const { tools } = registerPlugin({ agents: ["main"], untrustedOrigins: "exclude" });
-    const res = await tools.get("memory_recall")!.execute("call-1", { query: "anything" });
+    const res = await tools.get("brain_memory_recall")!.execute("call-1", { query: "anything" });
     const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
     expect(text).toContain("owner-authored fact");
     expect(text).not.toContain("captured in a channel");
@@ -606,7 +606,7 @@ describe("tools — the exclude posture reaches the memory_recall path", () => {
       }),
     );
     const { tools } = registerPlugin({ agents: ["main"], untrustedOrigins: "exclude" });
-    const res = await tools.get("memory_recall")!.execute("call-1", { query: "anything" });
+    const res = await tools.get("brain_memory_recall")!.execute("call-1", { query: "anything" });
     const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
     expect(text).toContain("No relevant memories found.");
   });
@@ -628,7 +628,7 @@ describe("tools — the exclude posture reaches the memory_recall path", () => {
       }),
     );
     const { tools } = registerPlugin({ agents: ["main"] });
-    const res = await tools.get("memory_recall")!.execute("call-1", { query: "anything" });
+    const res = await tools.get("brain_memory_recall")!.execute("call-1", { query: "anything" });
     const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
     expect(text).toContain("captured in a channel");
     expect(text).toContain("[memory | channel-capture]");
@@ -638,26 +638,26 @@ describe("tools — the exclude posture reaches the memory_recall path", () => {
 describe("tools — error surfacing (404 vs 500, brain-server-specific)", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  test("memory_recall surfaces a 500 to the agent instead of an empty result", async () => {
+  test("brain_memory_recall surfaces a 500 to the agent instead of an empty result", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse("boom", { status: 500 }));
     const { tools } = registerPlugin({ agents: ["main"] });
-    const res = await tools.get("memory_recall")!.execute("call-1", { query: "anything" });
+    const res = await tools.get("brain_memory_recall")!.execute("call-1", { query: "anything" });
     const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
     expect(text).toContain("Recall failed");
     expect(text).toContain("500");
   });
 
-  test("memory_forget is not an agent tool (erasure is human-only)", async () => {
+  test("brain_memory_forget is not an agent tool (erasure is human-only)", async () => {
     const { tools } = registerPlugin({ agents: ["main"] });
-    expect(tools.has("memory_forget")).toBe(false);
+    expect(tools.has("brain_memory_forget")).toBe(false);
   });
 
-  test("memory_store queues a proposal for human review by default (captureMode: proposal)", async () => {
+  test("brain_memory_store queues a proposal for human review by default (captureMode: proposal)", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse({ id: 42, status: "pending", novelty: 1 }),
     );
     const { tools } = registerPlugin({ agents: ["main"] });
-    const res = await tools.get("memory_store")!.execute("call-1", { text: "a durable fact" });
+    const res = await tools.get("brain_memory_store")!.execute("call-1", { text: "a durable fact" });
     const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
     const details = (res as { details: { pending: boolean; id: number; status: string } }).details;
     // The agent's write is queued for HUMAN review, never written straight to memory.
@@ -667,34 +667,34 @@ describe("tools — error surfacing (404 vs 500, brain-server-specific)", () => 
     expect(text).toContain("Submitted for review");
   });
 
-  test("memory_store with captureMode:direct writes straight to memory", async () => {
+  test("brain_memory_store with captureMode:direct writes straight to memory", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse({ id: 7, status: "created", entities_added: 2 }),
     );
     const { tools } = registerPlugin({ agents: ["main"], captureMode: "direct" });
-    const res = await tools.get("memory_store")!.execute("call-1", { text: "a durable fact" });
+    const res = await tools.get("brain_memory_store")!.execute("call-1", { text: "a durable fact" });
     const details = (res as { details: { pending: boolean; status: string } }).details;
     expect(details.pending).toBe(false);
     expect(details.status).toBe("created");
   });
 
-  test("memory_recall surfaces calibrated abstention (low_confidence) to the agent", async () => {
+  test("brain_memory_recall surfaces calibrated abstention (low_confidence) to the agent", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse({ hits: [], decision: "low_confidence" }),
     );
     const { tools } = registerPlugin({ agents: ["main"] });
-    const res = await tools.get("memory_recall")!.execute("call-1", { query: "vague query" });
+    const res = await tools.get("brain_memory_recall")!.execute("call-1", { query: "vague query" });
     const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
     expect(text).toContain("low confidence");
     expect(text).toContain("clarify");
   });
 
-  test("memory_verify reports supported vs unsupported claim", async () => {
+  test("brain_memory_verify reports supported vs unsupported claim", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse({ chunk_id: 7, supported: true, decision: "supported", match_ranges: [[0, 5]] }),
     );
     const { tools } = registerPlugin({ agents: ["main"] });
-    const res = await tools.get("memory_verify")!.execute("call-1", {
+    const res = await tools.get("brain_memory_verify")!.execute("call-1", {
       chunk_id: 7,
       claim: "vitamin",
     });
@@ -703,18 +703,18 @@ describe("tools — error surfacing (404 vs 500, brain-server-specific)", () => 
     expect((res as { details: { verified: boolean } }).details.verified).toBe(true);
   });
 
-  test("memory_get returns the full chunk text", async () => {
+  test("brain_memory_get returns the full chunk text", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse({ id: 7, title: "Bignay", content: "an antioxidant fruit" }),
     );
     const { tools } = registerPlugin({ agents: ["main"] });
-    const res = await tools.get("memory_get")!.execute("call-1", { id: 7 });
+    const res = await tools.get("brain_memory_get")!.execute("call-1", { id: 7 });
     const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
     expect(text).toContain("an antioxidant fruit");
     expect((res as { details: { found: boolean } }).details.found).toBe(true);
   });
 
-  test("memory_graph_entity returns entity relations", async () => {
+  test("brain_memory_graph_entity returns entity relations", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse({
         name: "bignay",
@@ -723,7 +723,7 @@ describe("tools — error surfacing (404 vs 500, brain-server-specific)", () => 
       }),
     );
     const { tools } = registerPlugin({ agents: ["main"] });
-    const res = await tools.get("memory_graph_entity")!.execute("call-1", { name: "bignay" });
+    const res = await tools.get("brain_memory_graph_entity")!.execute("call-1", { name: "bignay" });
     const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
     expect(text).toContain("alternative_to");
     expect((res as { details: { found: boolean } }).details.found).toBe(true);
@@ -733,7 +733,7 @@ describe("tools — error surfacing (404 vs 500, brain-server-specific)", () => 
 describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus supplement", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  test("memory_graph_traverse forwards start/maxDepth/kind and maps the response", async () => {
+  test("brain_memory_graph_traverse forwards start/maxDepth/kind and maps the response", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse({
         traversal: [
@@ -759,7 +759,7 @@ describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus su
     );
     const { tools } = registerPlugin({ agents: ["main"] });
     const res = await tools
-      .get("memory_graph_traverse")!
+      .get("brain_memory_graph_traverse")!
       .execute("call-1", { start: "metabolic syndrome", maxDepth: 2, kind: "causes:" });
     const url = (fetchMock.mock.calls[0]?.[0] as string) ?? "";
     expect(url).toContain("/graph/traverse");
@@ -774,19 +774,19 @@ describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus su
     });
   });
 
-  test("memory_graph_traverse empty traversal => not found", async () => {
+  test("brain_memory_graph_traverse empty traversal => not found", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ traversal: [], visited: 0 }));
     const { tools } = registerPlugin({ agents: ["main"] });
-    const res = await tools.get("memory_graph_traverse")!.execute("call-1", { start: "nothing" });
+    const res = await tools.get("brain_memory_graph_traverse")!.execute("call-1", { start: "nothing" });
     expect((res as { details: { found: boolean } }).details.found).toBe(false);
   });
 
-  test("memory_proposal_list is gated off unless proposalTools:true", () => {
+  test("brain_memory_proposal_list is gated off unless proposalTools:true", () => {
     const { tools } = registerPlugin({ agents: ["main"] });
-    expect(tools.has("memory_proposal_list")).toBe(false);
+    expect(tools.has("brain_memory_proposal_list")).toBe(false);
   });
 
-  test("memory_proposal_list lists pending proposals", async () => {
+  test("brain_memory_proposal_list lists pending proposals", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse([
         {
@@ -805,14 +805,14 @@ describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus su
       ]),
     );
     const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
-    const res = await tools.get("memory_proposal_list")!.execute("call-1", { status: "pending" });
+    const res = await tools.get("brain_memory_proposal_list")!.execute("call-1", { status: "pending" });
     const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
     expect(text).toContain("#42");
     expect(text).toContain("prefers dark mode");
     expect((res as { details: { count: number } }).details.count).toBe(1);
   });
 
-  test("memory_proposal_decide approve promotes and forwards supersedes", async () => {
+  test("brain_memory_proposal_decide approve promotes and forwards supersedes", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(
@@ -820,7 +820,7 @@ describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus su
       );
     const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
     const res = await tools
-      .get("memory_proposal_decide")!
+      .get("brain_memory_proposal_decide")!
       .execute("call-1", { id: 42, decision: "approve", supersedes: 7 });
     const url = (fetchMock.mock.calls[0]?.[0] as string) ?? "";
     expect(url).toContain("/proposals/42/approve");
@@ -830,27 +830,27 @@ describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus su
     expect((res as { details: { decided: boolean } }).details.decided).toBe(true);
   });
 
-  test("memory_proposal_decide reject drops the proposal", async () => {
+  test("brain_memory_proposal_decide reject drops the proposal", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(mockResponse({ proposal_id: 42, status: "rejected" }));
     const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
     const res = await tools
-      .get("memory_proposal_decide")!
+      .get("brain_memory_proposal_decide")!
       .execute("call-1", { id: 42, decision: "reject" });
     const url = (fetchMock.mock.calls[0]?.[0] as string) ?? "";
     expect(url).toContain("/proposals/42/reject");
     expect((res as { details: { decided: boolean } }).details.decided).toBe(true);
   });
 
-  test("memory_recall forwards the v0.3.0 advanced params", async () => {
+  test("brain_memory_recall forwards the v0.3.0 advanced params", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(
         mockResponse({ hits: [{ id: 1, content: "x", score: 0.5 }], decision: "ok" }),
       );
     const { tools } = registerPlugin({ agents: ["main"] });
-    await tools.get("memory_recall")!.execute("call-1", {
+    await tools.get("brain_memory_recall")!.execute("call-1", {
       query: "what was true then",
       at: "2024-01-01",
       memoryKind: "fact",
@@ -965,7 +965,7 @@ describe("per-field boundary — tool details carry no raw untrusted text", () =
       ]),
     );
     const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
-    const res = await tools.get("memory_proposal_list")!.execute("call-1", { status: "pending" });
+    const res = await tools.get("brain_memory_proposal_list")!.execute("call-1", { status: "pending" });
     const raw = JSON.stringify((res as { details: unknown }).details);
     expect(raw).not.toContain("onerror");
     expect(raw).not.toContain("<script");
@@ -1006,7 +1006,7 @@ describe("per-field boundary — tool details carry no raw untrusted text", () =
       }),
     );
     const res2 = await tools
-      .get("memory_graph_traverse")!
+      .get("brain_memory_graph_traverse")!
       .execute("call-1", { start: "seed", explain: true });
     const raw2 = JSON.stringify((res2 as { details: unknown }).details);
     expect(raw2).not.toContain("onerror");
@@ -1023,7 +1023,7 @@ describe("per-field boundary — tool details carry no raw untrusted text", () =
       }),
     );
     const res3 = await tools
-      .get("memory_decision_evaluate")!
+      .get("brain_memory_decision_evaluate")!
       .execute("call-1", { id: 5, variables: { employee_count: 75 } });
     const raw3 = JSON.stringify(res3);
     expect(raw3).not.toContain("onerror");
@@ -1035,7 +1035,7 @@ describe("per-field boundary — tool details carry no raw untrusted text", () =
 describe("v0.4.0 — procedural memory (runbooks, decision trees)", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  test("memory_procedure_get renders the ordered step chain", async () => {
+  test("brain_memory_procedure_get renders the ordered step chain", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse({
         procedure_id: 7,
@@ -1054,7 +1054,7 @@ describe("v0.4.0 — procedural memory (runbooks, decision trees)", () => {
       }),
     );
     const { tools } = registerPlugin({ agents: ["main"] });
-    const res = await tools.get("memory_procedure_get")!.execute("call-1", { id: 7 });
+    const res = await tools.get("brain_memory_procedure_get")!.execute("call-1", { id: 7 });
     const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
     expect(text).toContain("Runbook #7");
     expect(text).toContain("Inventory");
@@ -1065,20 +1065,20 @@ describe("v0.4.0 — procedural memory (runbooks, decision trees)", () => {
     });
   });
 
-  test("memory_procedure_get 404 => not found", async () => {
+  test("brain_memory_procedure_get 404 => not found", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse("no procedure", { status: 404 }));
     const { tools } = registerPlugin({ agents: ["main"] });
-    const res = await tools.get("memory_procedure_get")!.execute("call-1", { id: 99 });
+    const res = await tools.get("brain_memory_procedure_get")!.execute("call-1", { id: 99 });
     expect((res as { details: { found: boolean } }).details.found).toBe(false);
   });
 
-  test("memory_procedure_store forwards title/content/steps + is_decision", async () => {
+  test("brain_memory_procedure_store forwards title/content/steps + is_decision", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(mockResponse({ id: 7, status: "created", step_ids: [8, 9] }));
     const { tools } = registerPlugin({ agents: ["main"] });
-    expect(tools.has("memory_procedure_store")).toBe(true);
-    const res = await tools.get("memory_procedure_store")!.execute("call-1", {
+    expect(tools.has("brain_memory_procedure_store")).toBe(true);
+    const res = await tools.get("brain_memory_procedure_store")!.execute("call-1", {
       title: "Onboarding",
       content: "overview",
       steps: [{ title: "s1", content: "do x", isDecision: true }],
@@ -1095,7 +1095,7 @@ describe("v0.4.0 — procedural memory (runbooks, decision trees)", () => {
     });
   });
 
-  test("memory_decision_evaluate forwards variables and maps a matched branch", async () => {
+  test("brain_memory_decision_evaluate forwards variables and maps a matched branch", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse({
         result: "enterprise",
@@ -1105,7 +1105,7 @@ describe("v0.4.0 — procedural memory (runbooks, decision trees)", () => {
     );
     const { tools } = registerPlugin({ agents: ["main"] });
     const res = await tools
-      .get("memory_decision_evaluate")!
+      .get("brain_memory_decision_evaluate")!
       .execute("call-1", { id: 5, variables: { employee_count: 75 } });
     const url = (fetchMock.mock.calls[0]?.[0] as string) ?? "";
     expect(url).toContain("/decision/5/evaluate");
@@ -1116,33 +1116,33 @@ describe("v0.4.0 — procedural memory (runbooks, decision trees)", () => {
     expect(text).toContain("employee_count >= 50");
   });
 
-  test("memory_decision_evaluate default branch renders as default", async () => {
+  test("brain_memory_decision_evaluate default branch renders as default", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse({ result: "small-business", used_default: true }),
     );
     const { tools } = registerPlugin({ agents: ["main"] });
     const res = await tools
-      .get("memory_decision_evaluate")!
+      .get("brain_memory_decision_evaluate")!
       .execute("call-1", { id: 5, variables: {} });
     const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
     expect(text).toContain("small-business");
     expect(text).toContain("default");
   });
 
-  test("memory_decision_evaluate 404 => not found", async () => {
+  test("brain_memory_decision_evaluate 404 => not found", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse("no rule", { status: 404 }));
     const { tools } = registerPlugin({ agents: ["main"] });
     const res = await tools
-      .get("memory_decision_evaluate")!
+      .get("brain_memory_decision_evaluate")!
       .execute("call-1", { id: 5, variables: {} });
     expect((res as { details: { evaluated: boolean } }).details.evaluated).toBe(false);
   });
 });
 
-// v1.20.29 "Bound" — request-amplification bound + param clamp + body cap.
+// What the "Bound" release pinned, in test terms:
 //   - F-6: inflight de-dup collapses same-query same-turn recalls to ONE POST;
 //     a per-session cap no-ops beyond MAX_RECALLS_PER_TURN.
-//   - F-7: `memory_recall.maxContextTokens` schema max is now 8_000 (was 32k),
+//   - F-7: the recall tool's maxContextTokens schema max is now 8_000 (was 32k),
 //     and the per-hit body cap (MAX_HIT_CHARS) truncates huge chunks before
 //     formatting. format.ts is untouched (Release C owns it).
 describe('v1.20.29 "Bound" — inflight de-dup, per-session cap, body + token clamp', () => {
@@ -1207,7 +1207,7 @@ describe('v1.20.29 "Bound" — inflight de-dup, per-session cap, body + token cl
     expect(callsAfterCap).toBe(10); // the 11th never reached the server
   });
 
-  test("hit body clamped + memory_recall maxContextTokens schema is 8000", async () => {
+  test("hit body clamped + brain_memory_recall maxContextTokens schema is 8000", async () => {
     // (a) Per-hit body cap: a hit whose content far exceeds MAX_HIT_CHARS is
     // truncated to MAX_HIT_CHARS on the caller side before formatting.
     const longContent = "A".repeat(MAX_HIT_CHARS * 4);
@@ -1233,13 +1233,13 @@ describe('v1.20.29 "Bound" — inflight de-dup, per-session cap, body + token cl
     const { tools } = registerPlugin({ agents: ["main"] });
     fetchMock.mockClear();
     fetchMock.mockResolvedValue(mockResponse({ hits: [{ id: 1, content: "x", score: 0.5 }] }));
-    await tools.get("memory_recall")!.execute("c1", { query: "what", maxContextTokens: 8_000 });
+    await tools.get("brain_memory_recall")!.execute("c1", { query: "what", maxContextTokens: 8_000 });
     const atCeiling = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
     expect(atCeiling.max_context_tokens).toBe(8_000);
 
     fetchMock.mockClear();
     const overCeiling = await tools
-      .get("memory_recall")!
+      .get("brain_memory_recall")!
       .execute("c2", { query: "what", maxContextTokens: 32_000 });
     // Check failed (32k > 8k max) => params => {} => "No query provided." + no POST.
     expect((overCeiling as { content: { text: string }[] }).content[0]!.text).toContain(

@@ -208,7 +208,7 @@ export async function evaluateDecision(
 
 /**
  * Register the procedural-memory tools. All three are always registered for any
- * allowlisted agent; `memory_procedure_store` is a direct write (the server has
+ * allowlisted agent; `brain_memory_procedure_store` is a direct write (the server has
  * no proposal variant for procedures), gated instead by the server's Write
  * authz + injection screen and the plugin's per-agent `agents` allowlist.
  * Trust basis, stated plainly: procedure writes are agent-invoked structured
@@ -225,17 +225,17 @@ export function registerProceduralTools(
   const memoryProcedureGetParamsSchema = Type.Object({
     id: Type.Integer({
       description:
-        "Procedure/runbook id (from a recall hit with memoryKind=procedure, or a prior memory_procedure_store).",
+        "Procedure/runbook id (from a recall hit with memoryKind=procedure, or a prior brain_memory_procedure_store).",
     }),
   });
   type MemoryProcedureGetParams = Partial<Static<typeof memoryProcedureGetParamsSchema>>;
 
   api.registerTool(
     {
-      name: "memory_procedure_get",
+      name: "brain_memory_procedure_get",
       label: "Memory Procedure Get",
       description:
-        "Fetch the ordered steps of a stored runbook/procedure. Use to follow a troubleshooting playbook or implementation guide step-by-step. Pair with memory_recall (memoryKind=procedure) to find a runbook first.",
+        "Fetch the ordered steps of a stored runbook/procedure. Use to follow a troubleshooting playbook or implementation guide step-by-step. Pair with brain_memory_recall (memoryKind=procedure) to find a runbook first.",
       parameters: memoryProcedureGetParamsSchema,
       async execute(_toolCallId, params) {
         const c = liveCfg();
@@ -278,7 +278,7 @@ export function registerProceduralTools(
         }
       },
     },
-    { name: "memory_procedure_get" },
+    { name: "brain_memory_procedure_get" },
   );
 
   const memoryProcedureStoreParamsSchema = Type.Object({
@@ -293,7 +293,7 @@ export function registerProceduralTools(
         isDecision: Type.Optional(
           Type.Boolean({
             description:
-              "Mark this step as a decision rule; evaluate later via memory_decision_evaluate.",
+              "Mark this step as a decision rule; evaluate later via brain_memory_decision_evaluate.",
           }),
         ),
       }),
@@ -306,7 +306,7 @@ export function registerProceduralTools(
 
   api.registerTool(
     {
-      name: "memory_procedure_store",
+      name: "brain_memory_procedure_store",
       label: "Memory Procedure Store",
       description:
         "Create a runbook/procedure with ordered steps (knowledge base / troubleshooting playbook). Writes directly to memory (server-screened; no proposal review).",
@@ -356,7 +356,7 @@ export function registerProceduralTools(
         }
       },
     },
-    { name: "memory_procedure_store" },
+    { name: "brain_memory_procedure_store" },
   );
 
   const memoryDecisionEvaluateParamsSchema = Type.Object({
@@ -373,7 +373,7 @@ export function registerProceduralTools(
 
   api.registerTool(
     {
-      name: "memory_decision_evaluate",
+      name: "brain_memory_decision_evaluate",
       label: "Memory Decision Evaluate",
       description:
         "Deterministically evaluate a stored decision rule (no LLM): returns the branch matching the supplied numeric variables, or the default. Use for troubleshooting decision trees inside a runbook.",
@@ -434,6 +434,6 @@ export function registerProceduralTools(
         }
       },
     },
-    { name: "memory_decision_evaluate" },
+    { name: "brain_memory_decision_evaluate" },
   );
 }

@@ -555,7 +555,7 @@ export class BrainClient {
   /**
    * Structured store. The server trusts the caller's graph data (validated
    * server-side; names/length enforced). Used by autoCapture and the
-   * `memory_store` tool. entities/relations are optional graph enrichment.
+   * `brain_memory_store` tool. entities/relations are optional graph enrichment.
    */
   async store(params: {
     title: string;

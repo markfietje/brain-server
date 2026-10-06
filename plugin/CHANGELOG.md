@@ -4,6 +4,23 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.12] — 2026-10-06
+
+### Changed (tool surface — agents referencing old names must update)
+
+- **All brain tools are namespaced `brain_*`** (`brain_memory_recall`,
+  `brain_memory_store`, `brain_memory_verify`, `brain_memory_get`,
+  `brain_memory_graph_entity`, `brain_memory_graph_traverse`,
+  `brain_memory_proposal_list`, `brain_memory_proposal_decide`,
+  `brain_memory_procedure_get`, `brain_memory_procedure_store`,
+  `brain_memory_decision_evaluate`): the bare `memory_get` name collided
+  with memory-core in the same host, and registration order decided which
+  answered — the OWASP confused-deputy family. Upstream's tool keeps its
+  name; ours are unambiguous now.
+- The manifest's two `untrustedOrigins` descriptions now state the two-path
+  truth (exclude drops from auto-inject AND the tool result), fixing the
+  stale "the tool path always labels" claim.
+
 ## [0.6.11] — 2026-09-25
 
 **Diagnostic and type-safety repairs** — test/runtime contract clarity and

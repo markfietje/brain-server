@@ -81,7 +81,7 @@ export default definePluginEntry({
     // ------------------------------------------------------------------
     // v1.20.29 "Bound" (F-6): shared inflight de-dup + per-session cap.
     // The three recall call sites (auto-recall hook, corpus `search`, and the
-    // `memory_recall` tool) previously shared no guard — same-turn duplicates
+    // `brain_memory_recall` tool) previously shared no guard — same-turn duplicates
     // and agent loops fanned out unbounded POSTs. This closure-scoped gate is
     // shared by the hook + corpus search (the two automated paths); the tool
     // stays explicit (an agent-callable surface, different semantics).
@@ -152,7 +152,7 @@ export default definePluginEntry({
     // v0.3.0: expose brain-server's index as a NON-exclusive unified search
     // corpus (api.registerMemoryCorpusSupplement). This composes with the
     // built-in memory slot rather than competing for it: the stock
-    // `memory_search`/`memory_get` tools gain brain-server hits alongside
+    // `memory_search`/`brain_memory_get` tools gain brain-server hits alongside
     // memory-core, gated by the same `agents` allowlist + chat-type policy as
     // auto-recall. Fail-open — corpus search never stalls the host on a server error.
     // ------------------------------------------------------------------------

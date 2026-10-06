@@ -35,7 +35,7 @@ export const brainConfigSchema = Type.Object({
   autoCapture: Type.Optional(Type.Boolean()),
   /** the origin-labeling line: label = render `[memory | channel-capture]`
    * prefixes on channel-captured hits; exclude = drop them from BOTH
-   * model-context paths (auto-inject and the memory_recall tool result).
+   * model-context paths (auto-inject and the brain_memory_recall tool result).
    * Default: label. */
   untrustedOrigins: Type.Optional(Type.Union([Type.Literal("label"), Type.Literal("exclude")])),
   // v1.20.1 "Shield" M2: how auto-captures enter the brain.
@@ -59,8 +59,8 @@ export const brainConfigSchema = Type.Object({
   // (coverage/diversity) instead of always taking the top-K verbatim.
   autoRecallGraph: Type.Optional(Type.Boolean()),
   autoRecallMaxContextTokens: Type.Optional(Type.Integer({ minimum: 0, maximum: 8_000 })),
-  // v0.3.0: expose the human review-queue tools (memory_proposal_list /
-  // memory_proposal_decide). Off by default — promoting a capture to memory is
+  // v0.3.0: expose the human review-queue tools (brain_memory_proposal_list /
+  // brain_memory_proposal_decide). Off by default — promoting a capture to memory is
   // an operator action, so the agent must not gain it unless explicitly opted in.
   proposalTools: Type.Optional(Type.Boolean()),
 

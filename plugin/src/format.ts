@@ -80,7 +80,7 @@ export function formatRecallContext(hits: ReadonlyArray<BrainRecallHit>): string
     // run them through the shared block sanitation too (they were raw).
     const title = hit.title?.trim() ? ` ${sanitizeForBlock(hit.title).trim()}` : "";
     // Sanitized like every other interpolation — `domain` is agent-
-    // influenceable via memory_store's free-form param.
+    // influenceable via brain_memory_store's free-form param.
     const domain = hit.domain ? ` [${sanitizeForBlock(hit.domain).trim()}]` : "";
     // A `conflict` hit is contested by another current chunk (v1.6 supersedes /
     // contradicts). Surface it so the model does not treat a contested memory
@@ -103,7 +103,7 @@ export function formatRecallContext(hits: ReadonlyArray<BrainRecallHit>): string
 }
 
 /**
- * Message for the `memory_recall` tool when the server abstains
+ * Message for the `brain_memory_recall` tool when the server abstains
  * (`decision: "low_confidence"`, v1.5 calibrated abstention). Retrieval
  * quality was too low to support a claim, so there are no hits — the agent
  * should ask the user to clarify or fall back to web search, not treat the
@@ -122,7 +122,7 @@ export function originLinePrefix(hit: BrainRecallHit): string {
 }
 
 // The `untrustedOrigins: "exclude"` posture: drop channel-captured hits from
-// BOTH model-context paths — auto-inject AND the memory_recall tool result
+// BOTH model-context paths — auto-inject AND the brain_memory_recall tool result
 // (a tool result is model context exactly like an injected fence; the knob's
 // security meaning is "captured memory never reaches this agent").
 export function excludeChannelCaptures(hits: ReadonlyArray<BrainRecallHit>): BrainRecallHit[] {

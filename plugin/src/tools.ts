@@ -214,7 +214,7 @@ export function registerBrainTools(
 
   api.registerTool(
     {
-      name: "memory_recall",
+      name: "brain_memory_recall",
       label: "Memory Recall",
       description:
         "Search long-term memory. Use for past decisions, preferences, or previously discussed topics. Optionally scope by source or time, or override the semantic query.",
@@ -306,7 +306,7 @@ export function registerBrainTools(
         };
       },
     },
-    { name: "memory_recall" },
+    { name: "brain_memory_recall" },
   );
 
   const memoryStoreParamsSchema = Type.Object({
@@ -334,7 +334,7 @@ export function registerBrainTools(
 
   api.registerTool(
     {
-      name: "memory_store",
+      name: "brain_memory_store",
       label: "Memory Store",
       description:
         "Save a durable fact/decision to long-term memory. Optionally include entities/relations for the knowledge graph.",
@@ -371,7 +371,7 @@ export function registerBrainTools(
           } else {
             const prop = await client.submitProposal({
               content: text,
-              source: "memory_store",
+              source: "brain_memory_store",
               ...(p.title?.trim() ? { sourcePrompt: p.title.trim() } : {}),
               timeoutMs: c.requestTimeoutMs,
             });
@@ -397,14 +397,14 @@ export function registerBrainTools(
         };
       },
     },
-    { name: "memory_store" },
+    { name: "brain_memory_store" },
   );
 
-  // v1.20.25: the agent-facing `memory_forget` tool is REMOVED. An agent can
+  // v1.20.25: the agent-facing `brain_memory_forget` tool is REMOVED. An agent can
   // autonomously hard-delete long-term memory with no human gate — ambient
   // authority in the exact shape the mantra forbids ("memory you can see,
   // approve, and erase" — erase is a HUMAN action). The read-only recall/
-  // get/verify/graph tools + the review-queued `memory_store` are the agent's
+  // get/verify/graph tools + the review-queued `brain_memory_store` are the agent's
   // only surface. Erasure remains a human action via the operator console
   // and the `brain` CLI (server `DELETE /memory/{id}` is untouched).
 
@@ -415,7 +415,7 @@ export function registerBrainTools(
 
   api.registerTool(
     {
-      name: "memory_verify",
+      name: "brain_memory_verify",
       label: "Memory Verify",
       description:
         "Deterministic span verification (no LLM): checks whether a claim is literally supported by a chunk's stored text. Use after recalling a fact to confirm the brain actually said it before acting on it.",
@@ -451,7 +451,7 @@ export function registerBrainTools(
         }
       },
     },
-    { name: "memory_verify" },
+    { name: "brain_memory_verify" },
   );
 
   const memoryGetParamsSchema = Type.Object({
@@ -460,7 +460,7 @@ export function registerBrainTools(
 
   api.registerTool(
     {
-      name: "memory_get",
+      name: "brain_memory_get",
       label: "Memory Get",
       description:
         "Fetch the full stored text of a memory/chunk by id. Use to read the complete context behind a recalled snippet before relying on it.",
@@ -504,7 +504,7 @@ export function registerBrainTools(
         }
       },
     },
-    { name: "memory_get" },
+    { name: "brain_memory_get" },
   );
 
   const memoryGraphEntityParamsSchema = Type.Object({
@@ -513,7 +513,7 @@ export function registerBrainTools(
 
   api.registerTool(
     {
-      name: "memory_graph_entity",
+      name: "brain_memory_graph_entity",
       label: "Memory Graph Entity",
       description:
         "Look up an entity in the knowledge graph and its one-hop relations. Use to explore how a concept connects to others.",
@@ -573,7 +573,7 @@ export function registerBrainTools(
         }
       },
     },
-    { name: "memory_graph_entity" },
+    { name: "brain_memory_graph_entity" },
   );
 
   const memoryGraphTraverseParamsSchema = Type.Object({
@@ -608,14 +608,14 @@ export function registerBrainTools(
     explain: Type.Optional(
       Type.Boolean({
         description:
-          "Add structured hop chains (paths). Intermediate node ids need memory_get to resolve names.",
+          "Add structured hop chains (paths). Intermediate node ids need brain_memory_get to resolve names.",
       }),
     ),
   });
 
   api.registerTool(
     {
-      name: "memory_graph_traverse",
+      name: "brain_memory_graph_traverse",
       label: "Memory Graph Traverse",
       description:
         "Multi-hop knowledge-graph traversal from a start entity. Use for reasoning over how concepts connect: causal subgraphs (kind='causes:'), multi-hop relations, and point-in-time walks. Bounded to 4 hops / 256 nodes by the server.",
@@ -703,7 +703,7 @@ export function registerBrainTools(
         }
       },
     },
-    { name: "memory_graph_traverse" },
+    { name: "brain_memory_graph_traverse" },
   );
 
   // v0.3.0: human review-queue tools. These close the loop on the default
@@ -721,10 +721,10 @@ export function registerBrainTools(
 
     api.registerTool(
       {
-        name: "memory_proposal_list",
+        name: "brain_memory_proposal_list",
         label: "Memory Proposal List",
         description:
-          "List captured facts awaiting human review (default status: pending). Use to see what autoCapture or memory_store queued before it becomes memory.",
+          "List captured facts awaiting human review (default status: pending). Use to see what autoCapture or brain_memory_store queued before it becomes memory.",
         parameters: memoryProposalListParamsSchema,
         async execute(_toolCallId, params) {
           const c = liveCfg();
@@ -753,7 +753,7 @@ export function registerBrainTools(
             return {
               content: [{ type: "text" as const, text: lines }],
               // details are a model-context seam (the code's own note on
-              // memory_recall): the sanitized projection replaces the raw
+              // brain_memory_recall): the sanitized projection replaces the raw
               // rows — sourcePrompt (the capture-trigger turn text) is
               // DROPPED, counts not bodies.
               details: {
@@ -781,11 +781,11 @@ export function registerBrainTools(
           }
         },
       },
-      { name: "memory_proposal_list" },
+      { name: "brain_memory_proposal_list" },
     );
 
     const memoryProposalDecideParamsSchema = Type.Object({
-      id: Type.Integer({ description: "Proposal id from memory_proposal_list." }),
+      id: Type.Integer({ description: "Proposal id from brain_memory_proposal_list." }),
       decision: Type.Union([Type.Literal("approve"), Type.Literal("reject")]),
       supersedes: Type.Optional(
         Type.Integer({
@@ -797,7 +797,7 @@ export function registerBrainTools(
 
     api.registerTool(
       {
-        name: "memory_proposal_decide",
+        name: "brain_memory_proposal_decide",
         label: "Memory Proposal Decide",
         description:
           "Approve or reject a captured proposal. Approving promotes it to memory (recallable); rejecting drops it (audited). This is the human-review gate for captureMode 'proposal'.",
@@ -851,7 +851,7 @@ export function registerBrainTools(
           }
         },
       },
-      { name: "memory_proposal_decide" },
+      { name: "brain_memory_proposal_decide" },
     );
   }
 }

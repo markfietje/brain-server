@@ -13,17 +13,17 @@
   ],
   "contracts": {
     "tools": [
-      "memory_recall",
-      "memory_store",
-      "memory_verify",
-      "memory_get",
-      "memory_graph_entity",
-      "memory_graph_traverse",
-      "memory_proposal_list",
-      "memory_proposal_decide",
-      "memory_procedure_get",
-      "memory_procedure_store",
-      "memory_decision_evaluate"
+      "brain_memory_recall",
+      "brain_memory_store",
+      "brain_memory_verify",
+      "brain_memory_get",
+      "brain_memory_graph_entity",
+      "brain_memory_graph_traverse",
+      "brain_memory_proposal_list",
+      "brain_memory_proposal_decide",
+      "brain_memory_procedure_get",
+      "brain_memory_procedure_store",
+      "brain_memory_decision_evaluate"
     ]
   },
   "configSchema": {
@@ -90,7 +90,7 @@
         "type": "string",
         "enum": ["label", "exclude"],
         "default": "label",
-        "description": "v0.6.0 Origin: how channel-captured hits are treated in AUTO-INJECT. 'label' (default) keeps them with a visible '[memory | channel-capture]' line inside the untrusted fence; 'exclude' drops them from auto-injection entirely. The memory_recall TOOL path always labels, whatever this is set to."
+        "description": "v0.6.0 Origin: how channel-captured hits are treated in AUTO-INJECT. 'label' (default) keeps them with a visible '[memory | channel-capture]' line inside the untrusted fence; 'exclude' drops them from BOTH model-context paths (auto-inject and the brain_memory_recall tool result), whatever this is set to."
       },
       "strictDomain": {
         "type": "boolean",
@@ -145,7 +145,7 @@
       "proposalTools": {
         "type": "boolean",
         "default": false,
-        "description": "Expose the memory_proposal_list / memory_proposal_decide tools so the agent can close the review loop on captureMode:'proposal'. Off by default — promoting a capture to memory is an operator action."
+        "description": "Expose the brain_memory_proposal_list / brain_memory_proposal_decide tools so the agent can close the review loop on captureMode:'proposal'. Off by default — promoting a capture to memory is an operator action."
       },
       "teamBridge": {
         "type": "boolean",
@@ -209,7 +209,7 @@
     },
     "untrustedOrigins": {
       "label": "Untrusted Origins",
-      "help": "How channel-captured memories are treated in auto-injection: label (default) shows them with a visible origin tag inside the fence; exclude drops them entirely. The memory_recall tool always labels."
+      "help": "How channel-captured memories are treated in auto-injection: label (default) shows them with a visible origin tag inside the fence; exclude drops them from both auto-inject and the brain_memory_recall tool result."
     }
   }
 }
