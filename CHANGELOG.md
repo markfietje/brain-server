@@ -4,6 +4,25 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## Unreleased — fork lane (zero-conflict band)
+
+**Only fixes that cannot merge-conflict with openclaw/openclaw upstream**
+(operator instruction). K9-01 (HIGH) and W9-02 closed; plugin bumps to
+**0.6.12**. No upstream file touched in either repo — measured empty fork
+diffs on every relevant path before the work.
+
+- **K9-01:** fork-owned `scripts/fork/package-mac-app-gated.sh` wraps
+  upstream's packager — a diverged tree refuses to build without an
+  explicit fork Sparkle feed + key (an explicitly-upstream feed is refused
+  too); clean upstream checkouts pass through. Drilled all four arms.
+- **W9-02:** all eleven brain tools namespaced `brain_*` (extension-owned
+  rename; upstream's `memory-core` keeps its names). Fork lane measured
+  151/151 vitest + tsc clean.
+
+**Not shipped (real conflict surface, deliberately declined for now):**
+K8-01/K8-03 (upstream-owned hot files; additive seam unproven), K9-02,
+D9-*, F9-02.
+
 ## Unreleased — R79 "Locks"
 
 ### Release notes

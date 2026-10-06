@@ -1,6 +1,48 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R81 "Types"** — *the plugin validates
+> **Fork lane (post-R81, 2026-10-06) — ZERO-CONFLICT POSTURE, operator
+> instruction: only fixes that cannot merge-conflict with
+> openclaw/openclaw upstream.** Closes the ninth pass's **K9-01** (HIGH)
+> and **W9-02**. Measured first: the fork is **0 behind / 96 ahead**;
+> every targeted upstream file (`package-mac-app.sh`,
+> `package-mac-dist.sh`, `restart-mac.sh`, `tool-results.ts`,
+> `external-content.ts`) carries an **empty fork diff** — so the
+> conflict question was answerable per-fix, not guessed.
+>
+> **(1) K9-01 — the wrapper, not the edit.** Upstream's
+> `package-mac-app.sh` defaults `SPARKLE_FEED_URL`/`SPARKLE_PUBLIC_ED_KEY`
+> to upstream's values (`${VAR:-default}` — measured), so a fork-built
+> app verifies upstream's Ed25519 over an upstream zip through Sparkle's
+> ordinary update UX and silently replaces itself.
+> `scripts/fork/package-mac-app-gated.sh` is fork-NEW: it refuses to
+> package a diverged tree without an explicit fork feed, refuses an
+> explicitly-upstream feed, passes clean upstream checkouts through,
+> then `exec`s the real script verbatim. **Upstream file untouched →
+> nothing to conflict, ever.** Drilled all four arms via `--gate-only`
+> (two refusals exit 1, two passes exit 0). Ceiling: direct invocation
+> of upstream's script bypasses the gate — fork build paths must point
+> at the wrapper (README beside it).
+>
+> **(2) W9-02 — the rename, extension-owned.** All eleven brain tools
+> namespaced `brain_*` (plugin **0.6.12**, 106+ name references across
+> names/registrations/descriptions/tests/manifest/README; the plugin's
+> own CHANGELOG entries left as history). Upstream's `memory-core`
+> keeps `memory_get`; ours answer unambiguously. The manifest's two
+> stale "the tool path always labels" descriptions fixed to the
+> two-path truth. Synced to the fork (byte-parity, the usual baseline
+> reset dance); **fork lane measured: 151/151 vitest + tsc clean**.
+>
+> **What did NOT ship, by the operator's zero-conflict instruction:**
+> **K8-01** and **K8-03** — both fixes require in-place edits of
+> upstream-owned hot files (fork diffs measured empty today), i.e. real
+> future conflict surface; they stay OPEN with the two honest options
+> recorded (an additive seam if one exists — unproven until a code
+> look — or the in-place edit shipped with a red-first behavioural pin
+> so a merge that takes upstream's side fails LOUDLY). Also not:
+> K9-02 (typebox five-surface drift — a fork lockfile/catalog decision),
+> D9-01/02/03, K8-05/06/07/11, D8-01, and F9-02 (unrouted wire decision).
+
+> Predecessor: **R81 "Types"** — *the plugin validates
 > its own boundary, and the exclude posture means what its name says.*
 > Closes the ninth pass's **S9-06** (was S8-05, re-routed) and **W9-04**;
 > carries the fork re-sync to **0.6.11** (the §5 version-lag row). No
