@@ -690,7 +690,7 @@ pub fn validate_env_sinks_at_boot() -> Result<(), String> {
 /// unresolved — fails closed BEFORE any byte leaves (the caller logs the
 /// `egress_*` label; the sink's fail-soft posture is unchanged).
 ///
-/// SINGLE-FLIGHT (F9-S-03): the pin map's write lock is held across
+/// SINGLE-FLIGHT: the pin map's write lock is held across
 /// check-resolve-insert, so concurrent first sends cannot each resolve
 /// and race the pin — the old shape could return a client built BEFORE
 /// the winning insert, i.e. a client with NO pin for the host (live DNS,

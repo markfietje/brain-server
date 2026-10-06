@@ -344,10 +344,11 @@ fn azp_refusal_never_echoes_the_token_or_the_expectation() {
     let err = check_azp(Some(FOREIGN), Some(BOUND)).expect_err("must refuse");
     let rendered = format!("{err} | {}", err.code());
     assert_eq!(err.code(), "azp_binding");
-    for secret in [FOREIGN, BOUND, "user:alice"] {
+    for (i, secret) in [FOREIGN, BOUND, "user:alice"].iter().enumerate() {
         assert!(
             !rendered.contains(secret),
-            "the refusal leaked {secret:?}: {rendered}"
+            "the refusal leaked secret #{i} (of {})",
+            [FOREIGN, BOUND, "user:alice"].len()
         );
     }
     // The two categories must still be distinguishable to the operator.

@@ -185,7 +185,7 @@ fn mediated_host_port(host_name: &str) -> Result<(String, u16), String> {
 /// The pinned client for one allowlisted host — cache hit returns as-is;
 /// first use resolves + pins, and the miss path is SINGLE-FLIGHT: the
 /// write lock is held across check-resolve-insert, so the FIRST resolution
-/// wins for every caller (F9-S-02 — the old check-then-resolve shape let
+/// wins for every caller — the old check-then-resolve shape let
 /// concurrent first calls each resolve DNS and each return their own
 /// client, so a caller could hold a pin the map never recorded). Refusals
 /// are deny strings the caller audits.
