@@ -9,6 +9,7 @@
 - [Docker deployment](docker.md)
 - [The clean cycle (appliance operation)](clean-cycle.md)
 - [Deployment reference architecture](deployment-reference-architecture.md)
+- [Linux service & systemd unit](systemd-service.md)
 - [Reverse-proxy SSO](proxy-sso.md)
 
 # Core concepts
@@ -19,6 +20,8 @@
 - [Human in the loop](human-in-the-loop.md)
 - [The memory lifecycle](memory-lifecycle.md)
 - [Architecture](architecture.md)
+- [The agent loop](agentloop.md)
+- [Domain engines (aftersales, care, interview, evidence, evolve)](domain-engines.md)
 - [Connectors](connectors.md)
 - [Custom CRM connectors](connector-crm-custom.md)
 
@@ -31,6 +34,10 @@
 - [Use cases](use-cases.md)
 - [Procedures & runbooks](runbooks.md)
 - [Configuration](configuration.md)
+- [The secrets ladder](secrets-ladder.md)
+- [Storage & migrations](storage-and-migrations.md)
+- [Input hygiene & transport limits](input-hygiene-and-limits.md)
+- [Model identity & the registry surfaces](model-identity.md)
 - [Authorization (RBAC middleware)](authz.md)
 - [Retrieval & recall](retrieval-and-recall.md)
 - [Knowledge graph](knowledge-graph.md)
@@ -40,6 +47,7 @@
 - [Keystone worked example](keystone-worked-example.md)
 - [Engine SDK](engine-sdk.md)
 - [OpenClaw integration](openclaw-integration.md)
+- [Signal gateway edge](signal-gateway-edge.md)
 - [MCP server](mcp.md)
 - [Client GUI](client-gui.md)
 - [Client console](client-complete-console.md)
@@ -63,10 +71,12 @@
 - [Signed parcels](parcels.md)
 - [Principal kill-switch](kill-switch.md)
 - [Records pack (Art30/RoPA/breach/transfers)](records-pack.md)
+- [Steward harness (driving the governed loop)](steward-harness.md)
 - [Observability](observability.md)
 
 # Trust & verification
 
+- [Repo verification tooling (the gates)](repo-verification-tooling.md)
 - [Proof map](./trust/proof-map.md)
 - [Reproduce on a throwaway instance](./trust/reproduce.md)
 - [WCAG 2.2 AA checklist](./trust/wcag22-aa-checklist.md)
