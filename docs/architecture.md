@@ -216,7 +216,7 @@ flowchart TD
     E2 --> I1
     L5 -- "question surfaces where the agent already works" --> H1
     H1 --> H2
-    H2 -- "POST /workflow/runs/id/answer" --> L6
+    H2 -- "POST /workflow/runs/{id}/answer" --> L6
     H3 --> LOOP
     H4 --> LOOP
     G1 --> H2
