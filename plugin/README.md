@@ -59,10 +59,10 @@ this plugin (TS)  ──POST /recall (loopback)──►  brain-server (Rust)
   group/channel traffic carry origin `channel-capture`; auto-injected hit lines
   prefix ` [memory | channel-capture]` inside the fence (owner memories stay
   untagged), `autoCapture` tells the server which chat a capture came from
-   (`origin_context`), and the new `untrustedOrigins` knob (below) drops
-   channel-captured hits from BOTH model-context paths under `"exclude"`
-   (auto-inject AND the `brain_memory_recall` tool result); under `"label"`
-   (default) the tool path labels every hit with its taint. The openclaw host
+  (`origin_context`), and the new `untrustedOrigins` knob (below) drops
+  channel-captured hits from BOTH model-context paths under `"exclude"`
+  (auto-inject AND the `brain_memory_recall` tool result); under `"label"`
+  (default) the tool path labels every hit with its taint. The openclaw host
   additionally marks quoted/replayed `[memory | …]` prefixes in inbound text as
   untrusted replay, so a captured label cannot be forged into fresh prose.
 - **Schema-declared config (v0.6.1)** — every knob (including
