@@ -183,10 +183,30 @@ fn mediated_host_port(host_name: &str) -> Result<(String, u16), String> {
 }
 
 /// The pinned client for one allowlisted host — cache hit returns as-is;
-/// first use resolves + pins (the FIRST resolution wins for the process
-/// lifetime; a later rebind can never move a pinned host). Refusals are
-/// deny strings the caller audits.
+/// first use resolves + pins, and the miss path is SINGLE-FLIGHT: the
+/// write lock is held across check-resolve-insert, so the FIRST resolution
+/// wins for every caller (F9-S-02 — the old check-then-resolve shape let
+/// concurrent first calls each resolve DNS and each return their own
+/// client, so a caller could hold a pin the map never recorded). Refusals
+/// are deny strings the caller audits.
 fn pinned_hostcall_client(host_name: &str) -> Result<reqwest::Client, String> {
+    pinned_hostcall_client_with(host_name, resolve_host_addrs)
+}
+
+/// Real DNS resolution for the seam below (split out so the single-flight
+/// pin can count resolutions without touching the network).
+fn resolve_host_addrs(host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, String> {
+    let resolved: Vec<std::net::SocketAddr> = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("egress_unresolved: '{host}': {e}"))?
+        .collect();
+    Ok(resolved)
+}
+
+fn pinned_hostcall_client_with(
+    host_name: &str,
+    resolve: fn(&str, u16) -> Result<Vec<std::net::SocketAddr>, String>,
+) -> Result<reqwest::Client, String> {
     // The cache's structural bound: membership is re-checked HERE, so the
     // cache keyset is always a subset of the allowlist.
     if !http_allowlist()
@@ -195,38 +215,36 @@ fn pinned_hostcall_client(host_name: &str) -> Result<reqwest::Client, String> {
     {
         return Err("host not in http allowlist".to_string());
     }
-    if let Some(client) = hostcall_clients()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(host_name)
-    {
+    // ONE guard for the whole miss path (check, resolve, insert): holding
+    // it across resolution is the single-flight property. It serializes
+    // first calls per process, not steady-state traffic — cache hits
+    // return under the same lock immediately, and a DNS stall delays only
+    // first uses of OTHER hosts' clients (the availability trade the pin's
+    // correctness requires; steady-state sends never re-enter this path).
+    let mut clients = hostcall_clients().lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(client) = clients.get(host_name) {
         return Ok(client.clone());
     }
     let (host, port) = mediated_host_port(host_name)?;
-    let addrs: Vec<std::net::SocketAddr> = match host.parse::<std::net::IpAddr>() {
-        Ok(ip) => vec![std::net::SocketAddr::new(ip, port)],
-        Err(_) => (host.as_str(), port)
-            .to_socket_addrs()
-            .map_err(|e| format!("egress_unresolved: '{host}': {e}"))?
-            .collect(),
+    let ip = host.parse::<std::net::IpAddr>().ok();
+    let addrs: Vec<std::net::SocketAddr> = match ip {
+        Some(ip) => vec![std::net::SocketAddr::new(ip, port)],
+        None => resolve(&host, port)?,
     };
     if addrs.is_empty() {
         return Err(format!(
             "egress_unresolved: '{host}' resolved to no addresses"
         ));
     }
-    let client = if host.parse::<std::net::IpAddr>().is_ok() {
-        crate::webhook::egress_client()
-    } else {
-        let pinned = crate::webhook::egress_client_pinned_to(&host, &addrs);
-        hostcall_clients()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(host_name.to_string())
-            .or_insert_with(|| pinned.clone());
-        pinned
-    };
-    Ok(client)
+    if ip.is_some() {
+        // An IP-literal host needs no pin (the address IS the name) — the
+        // shared egress client serves it, uncached, exactly as before the
+        // single-flight change.
+        return Ok(crate::webhook::egress_client());
+    }
+    let pinned = crate::webhook::egress_client_pinned_to(&host, &addrs);
+    clients.insert(host_name.to_string(), pinned.clone());
+    Ok(pinned)
 }
 
 /// The unprivileged read principal handlers sanitize through — an engine's
@@ -1503,6 +1521,72 @@ mod tests {
             before + 1,
             "the refusal never touches the cache"
         );
+        unsafe { std::env::remove_var("BRAIN_ENGINE_HTTP_ALLOWLIST") }
+    }
+
+    /// F9-S-02 (ninth pass): the miss path is SINGLE-FLIGHT — the write
+    /// lock is held across check-resolve-insert, so the FIRST resolution
+    /// wins for every concurrent caller. The old check-then-resolve shape
+    /// let N concurrent first calls each resolve DNS and each return their
+    /// own client, so a caller could hold a pin the map never recorded
+    /// ("first resolution wins" was not enforced by the lock scope). The
+    /// counting resolver sleeps so all four callers are provably IN the
+    /// miss simultaneously against the racy shape — the race cannot slip
+    /// through on scheduler luck.
+    #[test]
+    fn pinned_hostcall_client_is_single_flight() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let _g = env_lock();
+        const HOST_KEY: &str = "single-flight.test";
+        unsafe { std::env::set_var("BRAIN_ENGINE_HTTP_ALLOWLIST", HOST_KEY) }
+        hostcall_clients()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(HOST_KEY);
+
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn counting_resolve(_host: &str, port: u16) -> Result<Vec<std::net::SocketAddr>, String> {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            // Long enough that all four callers are inside the miss path
+            // before the first one finishes — the racy shape resolves 4×,
+            // deterministically, not by luck.
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            Ok(vec![std::net::SocketAddr::new(
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                port,
+            )])
+        }
+
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                std::thread::spawn(|| {
+                    pinned_hostcall_client_with(
+                        HOST_KEY,
+                        counting_resolve
+                            as fn(&str, u16) -> Result<Vec<std::net::SocketAddr>, String>,
+                    )
+                    .is_ok()
+                })
+            })
+            .collect();
+        let oks: usize = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|ok| *ok)
+            .count();
+        assert_eq!(oks, 4, "every concurrent caller succeeds");
+        assert_eq!(
+            CALLS.load(Ordering::SeqCst),
+            1,
+            "exactly ONE resolution serves all callers — the first wins, the rest hit the pin"
+        );
+        let mut clients = hostcall_clients().lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            clients.contains_key(HOST_KEY),
+            "the winning pin landed in the map"
+        );
+        clients.remove(HOST_KEY);
         unsafe { std::env::remove_var("BRAIN_ENGINE_HTTP_ALLOWLIST") }
     }
 }

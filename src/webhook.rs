@@ -689,15 +689,38 @@ pub fn validate_env_sinks_at_boot() -> Result<(), String> {
 /// recovery) and pins; anything refused — private range, metadata host,
 /// unresolved — fails closed BEFORE any byte leaves (the caller logs the
 /// `egress_*` label; the sink's fail-soft posture is unchanged).
+///
+/// SINGLE-FLIGHT (F9-S-03): the pin map's write lock is held across
+/// check-resolve-insert, so concurrent first sends cannot each resolve
+/// and race the pin — the old shape could return a client built BEFORE
+/// the winning insert, i.e. a client with NO pin for the host (live DNS,
+/// the rebinding window the map exists to close). The shared client is
+/// built AFTER the insert under the same guard.
 pub fn egress_client_for_url(url: &str) -> Result<reqwest::Client, EgressRefused> {
+    egress_client_for_url_with(url, resolve_and_validate_sink)
+}
+
+/// The resolver seam for [`egress_client_for_url`] (split out so the
+/// single-flight pin can count resolutions without touching the network).
+pub fn egress_client_for_url_with(
+    url: &str,
+    resolve: fn(&str, u16, bool) -> Result<Vec<SocketAddr>, EgressRefused>,
+) -> Result<reqwest::Client, EgressRefused> {
     let (host, port) = sink_host_port(url)?;
-    if pinned_addrs_for(&host).is_some() {
-        return Ok(egress_client());
-    }
-    let allow = crate::config::egress_allow_private().unwrap_or(false);
-    let addrs = resolve_and_validate_sink(&host, port, allow)?;
-    if host.parse::<IpAddr>().is_err() {
-        pin_egress_host(&host, addrs);
+    {
+        let mut pins = egress_pins().write().expect("egress pin lock");
+        if !pins.contains_key(host.to_ascii_lowercase().as_str()) {
+            let allow = crate::config::egress_allow_private().unwrap_or(false);
+            let addrs = resolve(&host, port, allow)?;
+            if host.parse::<IpAddr>().is_err() {
+                // Insert-only by construction: the guard makes this the
+                // ONLY writer for this key, and `entry` keeps a concurrent
+                // boot-time pin the winner if one somehow raced in.
+                pins.entry(host.to_ascii_lowercase()).or_insert(addrs);
+            }
+        }
+        // The guard drops BEFORE the client build: egress_client() reads
+        // the pin map, and a read under our own write lock would deadlock.
     }
     Ok(egress_client())
 }
@@ -1561,5 +1584,63 @@ mod tests {
             display.contains("egress_unresolved"),
             "the named label rides the display: {display}"
         );
+    }
+
+    /// F9-S-03 (ninth pass): the send seam's miss path is SINGLE-FLIGHT —
+    /// one write-lock guard covers check-resolve-insert, so concurrent
+    /// first sends cannot each resolve and race the pin. The racy shape
+    /// could return a client built BEFORE the winning insert: a client
+    /// with NO pin for the host, i.e. live DNS — the rebinding window the
+    /// pin map exists to close. The counting resolver sleeps so all four
+    /// callers are provably inside the miss simultaneously against the
+    /// racy shape.
+    #[test]
+    fn egress_client_for_url_is_single_flight() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        const HOST: &str = "single-flight-sink.test";
+        let url = format!("https://{HOST}/hook");
+        egress_pins().write().unwrap().remove(HOST);
+
+        static CALLS: AtomicUsize = AtomicUsize::new(0);
+        fn counting(
+            _host: &str,
+            port: u16,
+            _allow: bool,
+        ) -> Result<Vec<SocketAddr>, EgressRefused> {
+            CALLS.fetch_add(1, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            Ok(vec![SocketAddr::new(
+                IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                port,
+            )])
+        }
+
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let url_owned = url.clone();
+                std::thread::spawn(move || {
+                    egress_client_for_url_with(
+                        &url_owned,
+                        counting as fn(&str, u16, bool) -> Result<Vec<SocketAddr>, EgressRefused>,
+                    )
+                    .is_ok()
+                })
+            })
+            .collect();
+        let oks: usize = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|ok| *ok)
+            .count();
+        assert_eq!(oks, 4, "every concurrent first send succeeds");
+        assert_eq!(
+            CALLS.load(Ordering::SeqCst),
+            1,
+            "exactly ONE resolution pins the host — no caller builds an unpinned client"
+        );
+        let mut pins = egress_pins().write().unwrap();
+        assert!(pins.contains_key(HOST), "the winning pin landed");
+        pins.remove(HOST);
     }
 }
