@@ -12,6 +12,13 @@ this date". About two hours, one sitting recommended.
 5. [The human-control claims](05-the-human-control-claims.md)
 6. [Freshness and limits](06-freshness-and-limits.md)
 
+7. [Storage and chain, down to the bytes](07-storage-and-chain-internals.md)
+8. [The screen pipeline and the egress posture](08-screen-and-egress.md)
+9. [The authorization matrix and the gates](09-authz-and-gates.md)
+10. [Determinism, evals, and self-measurement](10-determinism-and-evals.md)
+
+Lessons 7 to 10 are the deep dive: run them after the core six.
+
 The two artifacts this course orbits:
 [the proof map](../../trust/proof-map.md) and
 [the reproduce script](../../trust/reproduce.md).

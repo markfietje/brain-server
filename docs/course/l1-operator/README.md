@@ -12,7 +12,7 @@ copy. About two hours end to end.
 6. [People and their data](06-people-and-their-data.md)
 7. [Keeping the memory healthy](07-keeping-it-healthy.md)
 8. [Where the lines are](08-where-the-lines-are.md)
-
+9. [Your second brain (solo use)](09-your-second-brain.md)
 Start at lesson 1. The course is a sequence, but lessons 4 through 7 also
 work as reference once you have read them once.
 

@@ -1,0 +1,33 @@
+# brain-server
+
+> Self-hosted AI agent memory: one Rust binary, one SQLite file. Human-gated
+> writes, deterministic hybrid recall (vector + full-text + graph), zero
+> tokens per query, local embeddings, MCP + UMP 1.0 L3, hash-chained audit,
+> GDPR DSAR erasure with certificates. Runs offline on a Raspberry Pi.
+
+Audience paths: use it (L1), run it (L2), build on it (builder), verify it (L3).
+
+## Course
+
+- [The course index](course/README.md): tracks for every audience, with time estimates
+- [AI memory FAQ](course/faq.md): straight answers, each checkable live
+- [L1: working on the system](course/l1-operator/README.md): reviewers and daily users
+- [L2: running the system](course/l2-operations/README.md): install, operate, recover
+- [Builder track: memory for your AI agent](course/lb-builder/README.md): API, UMP, MCP, the reference plugin
+- [L3: verifying the system](course/l3-verification/README.md): check-first, reproduce script, evidence packs
+
+## Core docs
+
+- [Overview](overview.md): what it is in one page
+- [Audiences](audiences.md): who it is for, claims reverse-checked against source
+- [Architecture](architecture.md): the layering law and request flow
+- [The memory lifecycle](memory-lifecycle.md): capture to erasure, step by step
+- [Human in the loop](human-in-the-loop.md): the control doctrine
+- [API reference](api.md): every route with its authz requirement
+- [CLI reference](cli-reference.md): every operator verb
+- [UMP](universal-memory-protocol.md): the protocol, conformance L3
+
+## Trust
+
+- [Proof map](trust/proof-map.md): every claim, its release, its live evidence
+- [Reproduce](trust/reproduce.md): verify the whole posture on a throwaway instance in ~3 minutes

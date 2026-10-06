@@ -12,7 +12,7 @@ and the capstone in lesson 8 is worth a full sitting on its own.
 6. [Channels and assistants](06-channels-and-assistants.md)
 7. [The team surfaces](07-the-team-surfaces.md)
 8. [When things look wrong](08-when-things-look-wrong.md)
-
+9. [Edge and field deployments](09-edge-and-field.md)
 Related reading, deeper than the course goes:
 [Deployment](../../deployment.md),
 [Configuration](../../configuration.md),

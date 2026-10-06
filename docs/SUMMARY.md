@@ -5,6 +5,7 @@
 # Getting started
 
 - [The course (L1 use, L2 operate, L3 verify)](course/README.md)
+- [AI memory FAQ](course/faq.md)
 - [Quickstart](quickstart.md)
 - [Installation & configuration](deployment.md)
 - [Docker deployment](docker.md)
