@@ -11,8 +11,9 @@ private plans archive on 2026-10-04 — this page is the in-repo roadmap.)
 
 ## Current status
 
-**v1.29.x — the current server line (1.29.2 "Engines", with the governed
-delivery line continuing unreleased on top).** Brain Server ships two operator
+**v1.29.x — the current server line (1.29.3 "Hardening" — the two audit
+passes landed as shipped behavior — with the governed delivery line beneath
+it).** Brain Server ships two operator
 GUIs over one HTTP API: the **Dioxus control surface** (`client/` — one Rust
 codebase, web + desktop) and the **SvelteKit + Tauri shell** (`shell/` — the
 active successor; a typed-wire SvelteKit SPA with a Tauri desktop core, its

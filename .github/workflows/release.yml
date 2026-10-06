@@ -252,14 +252,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Verify CI green on the tagged commit (fail-closed)
-        # The green-CI gate belongs to the SYSTEM, not the helper. release.sh
-        # waits for ci.yml before tagging, but `git tag && git push --tags`
-        # bypasses release.sh entirely — this step is the in-workflow backstop
-        # (S7-10): the ci.yml run for the tagged SHA must exist AND conclude
-        # `success` before anything publishes. Red OR absent ⇒ refuse. Wait
-        # windows mirror release.sh (≤10 min for the run to register, ≤60 min
-        # for the matrix); the normal path finds a completed green run
-        # instantly because release.sh already waited.
+        # The green-CI gate belongs to the SYSTEM, not the helper. Since the
+        # 2026-10-06 billing law (private-repo Actions disabled), the tag push
+        # itself is the public ci.yml trigger — there is no pre-tag run to
+        # wait for, so THIS step is the wait (S7-10): `git tag && git push
+        # --tags` bypassing release.sh entirely still cannot publish, because
+        # the ci.yml run for the tagged SHA must exist AND conclude `success`
+        # before anything publishes. Red OR absent ⇒ refuse. Wait windows:
+        # ≤10 min for the run to register, ≤60 min for the matrix (the builds
+        # below run in parallel; the normal path waits out the matrix here).
+        # scripts/release.sh watches the same runs in parallel as the
+        # operator's terminal witness; this step's refusal is the enforcement.
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

@@ -44,15 +44,20 @@ default-feature clippy/test, the crates + steward-harness + otel jobs, the
 `lipstyk --diff "$(git rev-parse origin/main)" --exclude-tests src client plugin`
 changed-line gate, and `cargo fmt --manifest-path client/Cargo.toml -- --check`.
 
-After the push, `scripts/release.sh` BLOCKS until the CI run for the exact
-tagged commit is green (fail-closed — the tag itself re-runs no tests, so
-that wait is the only automated bridge between "pushed main" and
-"shipped binaries"). These local gates are the pre-push redundancy, not a
-substitute for the wait. CI-side facts the releaser should know are current
-as of 1.29.2: the `audit` job runs the `cargo-audit` binary over every
-tracked lockfile (`.github/workflows/ci.yml`), and the conformance pack
-follows the two-door rule (explicit `GDL_R10_PACK_DIR` = fail-closed
-operator request; plain absence on CI = named skip — `src/handlers/case_run.rs`).
+After the push, `scripts/release.sh` cuts the tag and pushes it to `public`,
+where — per the 2026-10-06 billing law (private-repo Actions disabled, the
+free 2,000 min/month gone) — the tag push itself runs the full `ci.yml`
+matrix, and `release.yml`'s publication step fail-closes unless that matrix
+is green for the exact tagged SHA: red or absent ⇒ binaries build but
+nothing publishes. `release.sh` watches the same runs and exits non-zero on
+a not-green verdict; the enforcement is the workflow's, not the helper's.
+These local gates are the pre-tag discipline — the tag is cut only from a
+tree that already passed them. CI-side facts the releaser should know are
+current as of 1.29.3: the `audit` job runs the `cargo-audit` binary over
+every tracked lockfile (`.github/workflows/ci.yml`), and the conformance
+pack follows the two-door rule (explicit `GDL_R10_PACK_DIR` = fail-closed
+operator request; plain absence on CI = named skip —
+`src/handlers/case_run.rs`).
 
 ## Badges are facts, not hand-typed claims
 
@@ -154,7 +159,7 @@ surface: add it to `ingest_write_sites_route_through_screen`.
 | Script | Purpose | Documented |
 |---|---|---|
 | `install-service.sh` | Build + install binaries, launchd plist, strips macOS provenance xattr. | deployment.md / AGENTS.md |
-| `release.sh` | Tag + publish; blocks on green CI for the tagged SHA. | this page / AGENTS.md |
+| `release.sh` | Tag + publish; watches the public runs for the tagged SHA (the fail-closed green gate is `release.yml`'s). | this page / AGENTS.md |
 | `release-sign.sh` | Sign release artifacts (also signs `brain kb build` tarballs). | cli-reference.md (kb) |
 | `badges.sh` | Regenerate README badges from the real build; `--verify-count` is the test-count drift guard, `--selfcheck` the cheap derivations + completeness. | this page |
 | `env-truth.sh` | Docs-vs-code env-var truth gate (tiers live, docs qualified + Loop-tracked). | this page |

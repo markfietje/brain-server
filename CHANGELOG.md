@@ -4,6 +4,123 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.3] — 2026-10-06 — "Hardening": two audit passes land as shipped behavior
+
+Two full-spectrum remediation passes land as shipped behavior: erasure now
+covers the approved proposals behind purged memories, hostile attributes die
+at the read seam, wrong-typed configuration refuses to boot, the production
+cache is bounded, and the revoke verb can no longer report a success it did
+not perform. The memory plugin's tools gain unambiguous `brain_*` names, the
+docs tree grows a complete three-tier course, and the release pipeline moves
+to the public repo: the release tag now runs the full test matrix there, and
+nothing publishes unless that matrix is green for the tagged commit.
+
+### Release notes
+
+**Security fixes**
+
+- Client-supplied `style=` and `ping=` attributes can no longer carry network
+  fetches through the read seam; a fetch-bearing style attribute drops whole
+  instead of being scheme-checked (54856695).
+- DSAR erasure now also deletes the approved proposals behind the memories it
+  purges, so an erasure certificate can no longer certify an erasure that
+  left plaintext behind.
+- The operator bearer can no longer be "revoked" into a false success: the
+  revoke verb refuses identities it cannot actually kill and names rotation
+  as the remedy (f886b2df).
+- Wrong-typed server configuration refuses to boot — a string where an
+  allowlist belongs or a typo'd enum can no longer silently downgrade the
+  security posture (c25e8910).
+- The recipient cache is bounded with eviction and TTL, phone-number
+  mappings can no longer reach any log lane, group/world-readable config
+  files are refused before reading, and signed webhook clients refuse
+  redirects (b47187e8).
+- The egress deny table now covers IPv4-compatible IPv6 embeddings, and a
+  bind-port typo refuses the boot instead of silently binding a random port
+  (fcace742, 472652bb).
+
+**Improvements**
+
+- The alert sink verifies message freshness (±5 minutes) and the signal
+  gateway rate-limits outbound sends, closing the replay and flood windows
+  (43533767, f944c7ea).
+- The API auth posture is a function of the bind address: an
+  unauthenticated router is no longer built on a public interface
+  (3715a33e).
+- Markdown reference-style definitions are stripped before content reaches a
+  model or a channel, closing the last auto-fetch image path (54856695).
+- Plugin 0.6.12: every memory tool is namespaced `brain_*`, ending
+  collisions with other MCP memory servers; channel-captured memories can be
+  excluded from tool results, not only labeled (15f536f6).
+- macOS app packaging refuses to ship a fork-built app pointing at the
+  upstream update feed (a10bebe1).
+- Releases now run their own test matrix: the release tag triggers the full
+  CI suite on the public repo and publication fail-closes unless it is green
+  (5bcaf39f).
+
+**Changed**
+
+- Dependencies refreshed across the workspace at current stable, with
+  committed lockfiles pinned and CI refusing a stale lock (1207ab92,
+  8c55c6fe).
+- Docs: a complete three-tier course (24 lessons), ten new source→docs
+  coverage pages, and an AI-memory FAQ (32d464a1, e845eb94, 44458ab1).
+
+**Bug fixes**
+
+- Webhook route matching consults an explicit path list, so a
+  template-versus-concrete path disagreement can no longer exempt or refuse
+  the wrong requests (701a7e1e).
+- Restore no longer silently drops legal holds across a backup/restore cycle
+  (c89e8403).
+- The wire contract passes its own gates again: the duplicated operation id
+  is gone and the regenerated client schema matches (7e339cdb).
+
+### Engineering record
+
+Everything since 1.29.2 lands here, in one release. The remediation rounds,
+in order: R68 "Silence" (three machine checks that under-delivered — the SQL
+statement counter became structural, the comment stripper became
+string-aware, the authz prose was made true by code); R69 "Erasure" (the
+DSAR erasure reaches the approved proposals behind purged memories; additive
+`proposals.promoted_chunk_id`, schema 1.32.25 → 1.32.26); R70 "Seams" (the
+write deadline moves inside its closure, the webhook exemption becomes an
+explicit list, the egress deny table normalizes IPv4-compatible embeddings,
+BIND_PORT fails closed); R72 "Truth" (the test-count badge derives from the
+build and refuses drift); R73 "Receipts" (the audit register stops
+disagreeing with the code); R74 "Dirty" (a green suite that does not
+describe the committed tree is not evidence — six suites repaired at
+committed HEAD); R75 "Greenlight" (the API auth posture becomes a function
+of the bind address); R76 "Cadence" (the alert sink verifies message
+freshness, the signal-gateway rate limiter is wired); R77 "Verity" (the
+revoke verb refuses the identity it cannot kill); R78 "Attrtwo" (the last
+fetch-capable attribute survivors die at the read seam); R79 "Locks" (the
+committed lock is the reviewed truth — `--locked` enforced, presage pinned
+to a rev); R80 "Gateway" (the bounded twin is THE production cache, PII
+operands off the log lanes, group/world-readable configs refused, signed
+clients refuse redirects); R81 "Types" (the plugin validates its own
+configuration boundary; the exclude posture reaches the tool path). Plus
+the fork lane (the Sparkle feed gate and the `brain_*` tool namespace,
+plugin 0.6.12), a workspace-wide dependency refresh with re-locked
+lockfiles, and the public-CI release reconciliation below.
+
+Release pipeline: private-repo Actions were disabled on billing grounds (the
+2026-10-06 law), so the release tag is now the PUBLIC CI trigger — `ci.yml`
+runs the full matrix on the tagged SHA and `release.yml` fail-closes
+publication on it; `scripts/release.sh` witnesses the runs and exits
+non-zero on a not-green verdict, and its watch cannot claim green from an
+empty query or a timeout. The public push URL is re-enabled; `main` is still
+never pushed to the public repo (tags-only, unchanged).
+
+Local pre-tag gate for this release: `cargo fmt --check`, `cargo clippy
+--all-targets --features bench -- -D warnings`, the full `cargo test
+--features bench` suite, `cargo metadata --locked` (lock freshness),
+`scripts/badges.sh --selfcheck`, and `scripts/docs-truth.sh`. The remaining
+matrix lanes (feature lanes, engine crates, harness, tool gates, tier
+smoke, client, shell) run on the public tag matrix and fail this release
+closed. Schema 1.32.26 unchanged; no new dependency edges (the root
+Cargo.lock moves on its own version field only); SBOM regenerated for 1.29.3.
+
 ## Unreleased — fork lane (zero-conflict band)
 
 **Only fixes that cannot merge-conflict with openclaw/openclaw upstream**

@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 # Release helper for brain-server.
-# Usage: ./scripts/release.sh vX.Y.Z   (e.g. ./scripts/release.sh v1.13.0)
+# Usage: ./scripts/release.sh vX.Y.Z   (e.g. ./scripts/release.sh v1.29.3)
 #
 # What it does:
 #   1. sanity checks (clean tree, tag not taken, main in sync with origin,
-#      public remote actually pushable)
-#   2. BLOCKS until the CI run for that exact commit is green (fail-closed:
-#      the tag itself re-runs no tests, so this wait is the only bridge
-#      between "pushed main" and "shipped binaries")
-#   3. warns if Cargo.toml / CHANGELOG.md don't match the version
-#   4. creates an annotated tag and pushes it to `public`
-#   5. the GitHub Actions "release" workflow then builds the binaries and
-#      creates the GitHub release with auto-generated notes.
+#      public remote actually pushable, CHANGELOG section exists — the
+#      release-notes generator refuses to publish without one)
+#   2. warns if Cargo.toml doesn't match the version
+#   3. creates an annotated tag and pushes it to `public` — under the
+#      2026-10-06 billing law (see below) that tag push IS the public CI
+#      trigger
+#   4. watches the public runs for the tagged SHA and exits non-zero on a
+#      not-green verdict (the AGENTS.md witness duty — enforcement is NOT
+#      here)
+#   5. the GitHub Actions "release" workflow builds the binaries, REFUSES
+#      to publish unless the ci.yml run for the tagged SHA is green
+#      (fail-closed), and creates the GitHub release with notes generated
+#      from CHANGELOG.md.
 #
 # TWO REMOTES, DELIBERATELY:
 #   origin (brain-server-private)  — main. Private working history.
@@ -24,14 +29,27 @@
 # rounds that follow, which include work that is deliberately not public.
 #
 # The consequence to know about: `public/main` therefore LAGS `origin/main` by
-# design, and it must not be treated as drift to be corrected. `ci.yml` runs on
-# `branches: [main]` only, so a tag push to `public` triggers `release.yml`
-# (build-only, no tests) and NOT the test matrix.
+# design, and it must not be treated as drift to be corrected.
+#
+# CI AND THE BILLING LAW (2026-10-06): private-repo Actions are DISABLED —
+# the free 2,000 min/month died in six days. There is no pre-tag CI run left
+# to wait on: the TAG PUSH is the CI trigger. A v* tag on `public` runs the
+# full ci.yml matrix there (public-repo Actions are free), and release.yml's
+# publication step fail-closes unless that matrix is green for the tagged
+# SHA — red or absent ⇒ binaries build but NOTHING publishes.
+# Tests-before-shipping survives the private-CI removal intact: the gate
+# moved out of a helper's wait loop into the workflow that does the
+# shipping. The pre-tag discipline is the LOCAL gate suite (AGENTS.md → CI
+# dry-run): cut the tag only from a tree that already passed it. This
+# script's remaining CI duty is the witness — watch the public runs, report
+# red loudly, exit non-zero on a not-green verdict — and `git tag && git
+# push --tags` bypassing this script still cannot publish, because the
+# enforcement lives in release.yml (S7-10), not here.
 set -euo pipefail
 
 TAG="${1:-}"
 if [[ -z "$TAG" || "$TAG" != v* ]]; then
-  echo "usage: $0 vX.Y.Z   (e.g. ./scripts/release.sh v1.13.0)" >&2
+  echo "usage: $0 vX.Y.Z   (e.g. ./scripts/release.sh v1.29.3)" >&2
   exit 1
 fi
 
@@ -55,11 +73,12 @@ if git ls-remote --tags public "refs/tags/$TAG" 2>/dev/null | grep -q "$TAG"; th
   exit 1
 fi
 
-# 1c. `public` must actually be pushable BEFORE the tag is created. This local
-# checkout has its `public` push URL set to the literal string `DISABLED`, so a
-# push would fail at the very last line — after the tag object existed locally
-# and after ~an hour of CI waiting, leaving a half-finished release and a local
-# tag that 1b will then refuse to recreate. Fail here instead, for free.
+# 1c. `public` must actually be pushable BEFORE the tag is created. The push
+# URL was once set to the literal string `DISABLED` (the private-only era);
+# it is enabled again. The guard stays as a cheap tripwire so a re-disabled
+# URL fails HERE instead of after the tag object exists and the matrix has
+# run — which would leave a half-finished release and a local tag that 1b
+# then refuses to recreate. Fail here instead, for free.
 PUBLIC_PUSH_URL="$(git remote get-url --push public 2>/dev/null || true)"
 if [[ -z "$PUBLIC_PUSH_URL" || "$PUBLIC_PUSH_URL" == "DISABLED" ]]; then
   echo "error: remote 'public' is not pushable (push URL = '${PUBLIC_PUSH_URL:-<none>}')." >&2
@@ -88,14 +107,22 @@ fi
 # SHA ⇒ binaries build but NOTHING publishes. The pre-tag discipline is the
 # LOCAL gate suite (fmt, clippy, tests, badges) on the tree being tagged.
 
-# 2. Version consistency warnings (non-fatal).
+# 2. Version consistency: Cargo mismatch is a warning (the tag defines the
+# release; a deliberate mismatch has no downstream failure). A missing
+# CHANGELOG section is FATAL here: release.yml's notes generator refuses to
+# publish without one, and finding that out after the matrix and four
+# cross-builds is an hour of runners spent learning what grep knew for free.
 CARGO_VER="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
 if [[ "$CARGO_VER" != "${TAG#v}" ]]; then
   echo "warning: Cargo.toml says $CARGO_VER but you are tagging ${TAG#v}."
   echo "         Bump Cargo.toml and CHANGELOG.md first if this release should match."
 fi
 if ! grep -q "^## \[${TAG#v}\]" CHANGELOG.md; then
-  echo "warning: CHANGELOG.md has no section for ${TAG#v}. Add one if you want it in the notes."
+  echo "error: CHANGELOG.md has no '## [${TAG#v}]' section. release.yml generates the" >&2
+  echo "       published notes from it and REFUSES to publish without one — add the" >&2
+  echo "       section (with its ### Release notes block), then re-run. Refusing to" >&2
+  echo "       spend the build queue on a release that cannot publish." >&2
+  exit 1
 fi
 
 # 3. Tag and push. `public`, NOT `origin`: the release workflow, the
@@ -114,8 +141,25 @@ echo "this SHA)."
 if command -v gh >/dev/null 2>&1; then
   SHA="$(git rev-parse "$TAG")"
   echo ">> watching the public runs for ${TAG}…"
-  sleep 20
-  for _ in $(seq 1 150); do  # ≤ 75 min
+  # Registration first: an EMPTY query is not a green verdict. If the tag
+  # triggered nothing (workflow disabled, YAML error, race), claiming green
+  # here would be exactly the vacuous pass this repo keeps killing.
+  RUN_SEEN=""
+  for _ in $(seq 1 20); do  # ≤ 10 min for the runs to register after the push
+    RUN_SEEN="$(gh run list --repo markfietje/brain-server --commit "$SHA" \
+                 --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+    [[ -n "$RUN_SEEN" ]] && break
+    sleep 30
+  done
+  if [[ -z "$RUN_SEEN" ]]; then
+    echo "error: no public runs registered for ${SHA:0:10} within 10 min — the tag" >&2
+    echo "       triggered nothing observable. Nothing was witnessed, and release.yml" >&2
+    echo "       cannot have published without its own fail-closed check. Inspect:" >&2
+    echo "       https://github.com/markfietje/brain-server/actions" >&2
+    exit 1
+  fi
+  DONE=0; VERDICT=""
+  for _ in $(seq 1 150); do  # ≤ 75 min for the matrix + release assembly
     DONE=1; VERDICT=""
     while IFS=$'\t' read -r ST CO; do
       [[ "$ST" != "completed" ]] && DONE=0
@@ -130,6 +174,12 @@ if command -v gh >/dev/null 2>&1; then
     echo "       release.yml refuses to ship over a red matrix. Inspect:" >&2
     echo "       https://github.com/markfietje/brain-server/actions" >&2
     exit 1
+  fi
+  if [[ "$DONE" != 1 ]]; then
+    echo "warning: public runs still in progress after 75 min — keep watching:" >&2
+    echo "         https://github.com/markfietje/brain-server/actions" >&2
+    echo "         Publication stays fail-closed until they land green." >&2
+    exit 0
   fi
   echo ">> all public runs for $TAG are green."
 fi
