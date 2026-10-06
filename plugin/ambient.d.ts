@@ -71,9 +71,7 @@ declare module "openclaw/plugin-sdk/plugin-entry" {
   export type MemoryCorpusResult = Readonly<Record<string, unknown>>;
 
   export type MemoryCorpusRegistration = {
-    search(
-      args: MemoryCorpusSearchArgs,
-    ): Promise<ReadonlyArray<MemoryCorpusResult>>;
+    search(args: MemoryCorpusSearchArgs): Promise<ReadonlyArray<MemoryCorpusResult>>;
     get(args: MemoryCorpusGetArgs): Promise<MemoryCorpusResult | null>;
   };
 

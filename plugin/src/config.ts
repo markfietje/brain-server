@@ -300,9 +300,7 @@ function valueMatchesKind(kind: FieldKind, v: unknown): boolean {
   if (kind === "string") return typeof v === "string";
   if (kind === "string[]") return Array.isArray(v) && v.every((x) => typeof x === "string");
   if (kind === "chatType[]") {
-    return (
-      Array.isArray(v) && v.every((x) => typeof x === "string" && CHAT_TYPES.has(x))
-    );
+    return Array.isArray(v) && v.every((x) => typeof x === "string" && CHAT_TYPES.has(x));
   }
   if (kind === "originMode") return v === "label" || v === "exclude";
   if (kind === "captureModeKind") return v === "proposal" || v === "direct";

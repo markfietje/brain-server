@@ -92,29 +92,30 @@ declare module "typebox" {
     OptionalPropertyNames<Properties>
   >;
 
-  export type Static<Schema extends TSchema> = Schema extends TOptionalSchema<infer Inner>
-    ? Static<Inner> | undefined
-    : Schema extends TObjectSchema<infer Properties>
-      ? {
-          [Key in RequiredPropertyNames<Properties>]: Static<Properties[Key]>;
-        } & {
-          [Key in OptionalPropertyNames<Properties>]?: Static<Properties[Key]>;
-        }
-      : Schema extends TArraySchema<infer Item>
-        ? Array<Static<Item>>
-        : Schema extends TUnionSchema<infer Members>
-          ? Static<Members[number]>
-          : Schema extends TRecordSchema<infer Key, infer Value>
-            ? Record<Extract<Static<Key>, string>, Static<Value>>
-            : Schema extends TLiteralSchema<infer Value>
-              ? Value
-              : Schema extends TStringSchema
-                ? string
-                : Schema extends TNumberSchema
-                  ? number
-                  : Schema extends TBooleanSchema
-                    ? boolean
-                    : never;
+  export type Static<Schema extends TSchema> =
+    Schema extends TOptionalSchema<infer Inner>
+      ? Static<Inner> | undefined
+      : Schema extends TObjectSchema<infer Properties>
+        ? {
+            [Key in RequiredPropertyNames<Properties>]: Static<Properties[Key]>;
+          } & {
+            [Key in OptionalPropertyNames<Properties>]?: Static<Properties[Key]>;
+          }
+        : Schema extends TArraySchema<infer Item>
+          ? Array<Static<Item>>
+          : Schema extends TUnionSchema<infer Members>
+            ? Static<Members[number]>
+            : Schema extends TRecordSchema<infer Key, infer Value>
+              ? Record<Extract<Static<Key>, string>, Static<Value>>
+              : Schema extends TLiteralSchema<infer Value>
+                ? Value
+                : Schema extends TStringSchema
+                  ? string
+                  : Schema extends TNumberSchema
+                    ? number
+                    : Schema extends TBooleanSchema
+                      ? boolean
+                      : never;
 
   export type TypeBuilder = {
     Optional<Schema extends TSchema>(schema: Schema): TOptionalSchema<Schema>;
@@ -142,5 +143,8 @@ declare module "typebox" {
 declare module "typebox/value" {
   import type { Static, TSchema } from "typebox";
 
-  export function Check<Schema extends TSchema>(schema: Schema, value: unknown): value is Static<Schema>;
+  export function Check<Schema extends TSchema>(
+    schema: Schema,
+    value: unknown,
+  ): value is Static<Schema>;
 }

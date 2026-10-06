@@ -40,8 +40,10 @@ declare module "vitest" {
     mockName(name: string): MockInstance<Args, Result>;
   };
 
-  export type MockFunction<Args extends readonly unknown[] = readonly unknown[], Result = void> =
-    MockInstance<Args, Result>;
+  export type MockFunction<
+    Args extends readonly unknown[] = readonly unknown[],
+    Result = void,
+  > = MockInstance<Args, Result>;
 
   export type VitestApi = {
     fn<Args extends readonly unknown[] = readonly unknown[], Result = void>(

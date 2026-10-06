@@ -45,11 +45,7 @@ type MockRuntime =
   | Record<string, never>;
 type HookOptions = { timeoutMs: number | undefined };
 type ToolOptions = { name: string | undefined };
-type HookRegistrationArgs = [
-  name: string,
-  handler: HookHandler,
-  ...options: [] | [HookOptions],
-];
+type HookRegistrationArgs = [name: string, handler: HookHandler, ...options: [] | [HookOptions]];
 type ToolRegistrationArgs = [tool: unknown, ...options: [] | [ToolOptions]];
 type MockTool = {
   name?: string;

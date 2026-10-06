@@ -191,18 +191,14 @@ describe("config boundary typecheck", () => {
       /allowedChatIds.*array of strings/,
     );
     // Mixed arrays refuse too — one non-string element re-opens the hole.
-    expect(() => resolveConfig({ agents: ["ok", 7] } as never)).toThrow(
-      /agents.*array of strings/,
-    );
+    expect(() => resolveConfig({ agents: ["ok", 7] } as never)).toThrow(/agents.*array of strings/);
   });
 
   test("string numerics and booleans refuse to boot", () => {
     expect(() => resolveConfig({ autoRecallTopK: "5" } as never)).toThrow(
       /autoRecallTopK.*integer/,
     );
-    expect(() => resolveConfig({ enabled: "yes" } as never)).toThrow(
-      /enabled.*boolean.*string/,
-    );
+    expect(() => resolveConfig({ enabled: "yes" } as never)).toThrow(/enabled.*boolean.*string/);
     // Out-of-range integers refuse as loudly as wrong types.
     expect(() => resolveConfig({ autoRecallTopK: 99 } as never)).toThrow(/autoRecallTopK/);
   });
