@@ -221,6 +221,13 @@ jobs:
         with:
           workspaces: |
             tools/signal-gateway
+      - name: install protoc
+        # The presage rev pin's libsignal stack carries
+        # sparsepostquantumratchet, whose build script compiles .proto files
+        # and dies on the runner image with "Could not find `protoc`". The
+        # rev pin is deliberate (R79: build exactly the reviewed bytes); this
+        # apt package is its Linux-side cost.
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
       - name: fmt
         run: cargo fmt --manifest-path tools/signal-gateway/Cargo.toml --all -- --check
       # --locked (clippy/test, not fmt — cargo fmt rejects the flag): this

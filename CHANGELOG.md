@@ -118,8 +118,15 @@ Local pre-tag gate for this release: `cargo fmt --check`, `cargo clippy
 `scripts/badges.sh --selfcheck`, and `scripts/docs-truth.sh`. The remaining
 matrix lanes (feature lanes, engine crates, harness, tool gates, tier
 smoke, client, shell) run on the public tag matrix and fail this release
-closed. Schema 1.32.26 unchanged; no new dependency edges (the root
-Cargo.lock moves on its own version field only); SBOM regenerated for 1.29.3.
+closed — which is how the first cut of this tag caught two real defects the
+local macOS gate could not see, both fixed before the re-cut: eight
+delivery pins plus three neighbours passed only where the developer's real
+operator key existed (the attestation fixtures now install their own key
+directory, so the suite no longer depends on the machine it runs on), and
+the signal-gateway lane needed `protoc` on the runner for the presage pin's
+post-quantum ratchet build. Schema 1.32.26 unchanged; no new dependency
+edges (the root Cargo.lock moves on its own version field only); SBOM
+regenerated for 1.29.3.
 
 ## Unreleased — fork lane (zero-conflict band)
 

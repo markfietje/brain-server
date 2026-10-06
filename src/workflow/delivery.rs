@@ -4510,6 +4510,8 @@ mod tests {
     #[test]
     fn the_registry_id_is_the_bare_id_of_the_same_model_the_key_names() {
         let mut conn = seed();
+        // the key law: the bound pass signs its attestation link (see seeded_run)
+        let _operator = crate::test_support::operator_key_guard();
         let digest = "b".repeat(64);
         let config = "c".repeat(64);
         seed_model(
@@ -4553,6 +4555,10 @@ mod tests {
     #[test]
     fn an_uncited_trace_stores_no_registry_key() {
         let mut conn = seed();
+        // the key law: even an UNCITED pass signs its link, so without a key this
+        // pin passes VACUOUSLY — the pass refuses, no row lands, and "no registry
+        // key" is trivially true of nothing
+        let _operator = crate::test_support::operator_key_guard();
         let run = open(&mut conn, "observe");
         advance_with_model(&mut conn, run.run_id, 0, "design", None).expect("the unbound pass");
 
@@ -4585,6 +4591,8 @@ mod tests {
     #[test]
     fn the_ceiling_the_registry_key_leaves_outside_the_content_address_is_real() {
         let mut conn = seed();
+        // the key law: the bound pass signs its attestation link (see seeded_run)
+        let _operator = crate::test_support::operator_key_guard();
         let digest = "b".repeat(64);
         let config = "c".repeat(64);
         seed_model(
@@ -4653,6 +4661,8 @@ mod tests {
         crate::register_sqlite_vec::register_sqlite_vec();
         let mut conn = Connection::open(dir.path().join("brain.db")).expect("open");
         crate::migration::run_migration(&mut conn, 512).expect("first migration");
+        // the key law: the bound pass signs its attestation link (see seeded_run)
+        let _operator = crate::test_support::operator_key_guard();
 
         // Write the rows FIRST, through the real writer, then walk the shape
         // backwards. The order matters: the writer names the registry-key
@@ -5017,6 +5027,14 @@ mod tests {
     /// A run with several trace rows, each recorded through the real writers, so
     /// the read surface is exercised over rows production actually produced
     /// rather than over hand-inserted fixtures.
+    ///
+    /// The phase pass inside signs an attestation link, so every CALLER must
+    /// hold `operator_key_guard()` — without it the pass resolves the operator
+    /// key from the machine's real `~/.config/brain-server/ump` and the whole
+    /// cluster is only green where the operator's own key exists. That is how
+    /// eight of these pins passed locally and failed on the keyless CI runner:
+    /// a suite that silently depends on the developer's live key is R74's
+    /// "green suite that does not describe the committed tree", per machine.
     fn seeded_run(conn: &mut Connection) -> Created {
         let run = open(conn, "observe");
         // A phase pass and a gate evaluation: three rows, seq 1..3.
@@ -5308,6 +5326,7 @@ mod tests {
     #[test]
     fn delivery_replay_verify_is_byte_exact_and_zero_model_calls() {
         let mut conn = seed();
+        let _operator = crate::test_support::operator_key_guard();
         let run = seeded_run(&mut conn);
 
         let report = replay_verify(&conn, run.run_id, 2).expect("the replay report assembles");
@@ -5334,6 +5353,7 @@ mod tests {
     #[test]
     fn delivery_replay_reports_mismatches_as_data_not_status() {
         let mut conn = seed();
+        let _operator = crate::test_support::operator_key_guard();
         let run = seeded_run(&mut conn);
 
         // Flip one stored address, directly — the shape an out-of-band edit
@@ -5393,6 +5413,7 @@ mod tests {
     #[test]
     fn delivery_replay_orders_by_seq_and_requires_contiguity() {
         let mut conn = seed();
+        let _operator = crate::test_support::operator_key_guard();
         let run = seeded_run(&mut conn);
 
         // Delete the middle row. `UNIQUE(run_id, seq)` does not defend against
@@ -5498,6 +5519,7 @@ mod tests {
     #[test]
     fn delivery_trace_read_returns_rows_and_head() {
         let mut conn = seed();
+        let _operator = crate::test_support::operator_key_guard();
         let run = seeded_run(&mut conn);
 
         let listing = trace_listing(&conn, run.run_id, 2).expect("the listing assembles");
@@ -5780,6 +5802,8 @@ mod tests {
     #[test]
     fn a_promoted_rules_row_is_citable_and_lands_a_model_ref() {
         let mut conn = seed();
+        // the key law: the bound pass signs its attestation link (see seeded_run)
+        let _operator = crate::test_support::operator_key_guard();
         // The exact defect shape: bindable kind, promoted, artifact_digest NULL.
         seed_model(&conn, "rules-probe", HEX_B, "promoted", None);
         let run = open(&mut conn, "bounded-auto");
@@ -5868,6 +5892,8 @@ mod tests {
     #[test]
     fn a_rules_row_cites_its_config_digest_as_the_artifact() {
         let mut conn = seed();
+        // the key law: the bound pass signs its attestation link (see seeded_run)
+        let _operator = crate::test_support::operator_key_guard();
         seed_model(&conn, "rules-same", HEX_B, "promoted", None);
         let run = open(&mut conn, "bounded-auto");
         advance_with_model(
@@ -5909,6 +5935,8 @@ mod tests {
     #[test]
     fn the_queue_population_is_reachable_again() {
         let mut conn = seed();
+        // the key law: the bound pass signs its attestation link (see seeded_run)
+        let _operator = crate::test_support::operator_key_guard();
         seed_model(&conn, "rules-reach", HEX_B, "promoted", None);
         let run = open(&mut conn, "bounded-auto");
         advance_with_model(
