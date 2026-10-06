@@ -17810,6 +17810,50 @@ mod scrim {
         assert!(!pii.contains("555"), "PII redacted: {pii:?}");
     }
 
+    /// W9-01 (ninth pass): OTLP span attributes were the one outbound lane
+    /// without the markdown-ref strip — a collector (or its UI) that renders
+    /// exported text would dereference an image ref baked into an attribute,
+    /// the EchoLeak class every other lane already refuses. Image refs and
+    /// reference-style refs die; the visible link TEXT survives (the strip
+    /// neutralizes the fetch, not the prose).
+    #[cfg(feature = "otel")]
+    #[test]
+    fn span_attributes_strip_markdown_refs() {
+        let out = brain_server::otel::sanitize_span_attribute(
+            "see ![leak](https://evil.example/pixel.gif) for details",
+        );
+        assert!(
+            !out.contains("evil.example"),
+            "an image ref must not ride span attributes: {out:?}"
+        );
+        assert!(
+            !out.contains("]("),
+            "no markdown ref form survives: {out:?}"
+        );
+        assert!(
+            out.contains("leak") && out.contains("for details"),
+            "the visible text keeps (the fetch dies, not the prose): {out:?}"
+        );
+
+        // Reference-style: the definition dies wherever it sits.
+        let ref_style = brain_server::otel::sanitize_span_attribute(
+            "a [x] and later\n[x]: https://evil.example/def",
+        );
+        assert!(
+            !ref_style.contains("evil.example"),
+            "reference definitions are fetch primitives too: {ref_style:?}"
+        );
+
+        // Anti-vacuity: plain text with a bare URL is untouched by THIS
+        // strip (other lanes' policies govern bare URLs; the markdown-ref
+        // strip must not become a general rewriter).
+        let plain = brain_server::otel::sanitize_span_attribute("docs at https://good.example/a");
+        assert!(
+            plain.contains("https://good.example/a"),
+            "a bare URL in prose is not a markdown ref: {plain:?}"
+        );
+    }
+
     #[cfg(feature = "otel")]
     #[test]
     fn query_hash_unchanged() {
@@ -18161,8 +18205,8 @@ mod scrim {
             }
         }
 
-        const SHIPPED_ROUNDS: [&str; 9] = [
-            "R68", "R69", "R70", "R72", "R73", "R74", "R75", "R76", "R77",
+        const SHIPPED_ROUNDS: [&str; 10] = [
+            "R68", "R69", "R70", "R72", "R73", "R74", "R75", "R76", "R77", "R78",
         ];
         for (id, disposition) in &rows {
             let declared = declared_disposition(disposition);

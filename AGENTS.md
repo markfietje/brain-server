@@ -1,7 +1,49 @@
 # Agent Execution Log — brain-server
 
-> Current release (unreleased): **R77 "Verity"** — *security verbs must not
-> lie, and the record must agree with the tree.* The ninth-pass
+> Current release (unreleased): **R78 "Attrtwo"** — *the last two
+> fetch-capable survivors of the read seam, and the one outbound lane
+> without the markdown-ref strip.* Closes the ninth pass's **R9-02** and
+> **W9-01**. No authz change, no route change, no schema change
+> (**1.32.26** unchanged), zero new dependency edges. Predecessor notes
+> below.
+>
+> **(1) R9-02 — `style=` and `ping=` join the attribute tier, and the
+> DESIGN mirrors the two laws the tier already follows.** `ping` dies by
+> NAME (the `on*` law): a click beacon is a fetch primitive — whatever
+> URL it carries is sent, so there is no benign form to scheme-check.
+> `style` dies by VALUE only when it can express a network FETCH (the
+> scheme law's spirit): `url(`/`image-set(` after four bounded
+> normalization passes — one HTML entity-decode, CSS-comment strip
+> (`ur/**/l(`), one CSS-escape decode (`\75 rl(`, `\u rl(`), and the
+> browser whitespace-removal rule — each one pass, no rescans (the house
+> rule). `style="color:red"` and benign http(s) hrefs stay byte-identical
+> (F7-01 parity law: the tier is fetch-hostile, not attribute-hostile);
+> a fetch-bearing style drops WHOLE — the attribute, not the URL, is the
+> hostile unit, because the seam cannot rewrite CSS safely. Ten canaries
+> (obfuscations included) + neighbour-attr survival + tag/text survival;
+> red-proof: disabling both arms fails the pin. The plugin needs no
+> change — its attribute tier is deliberately server-canonical (the
+> element mirror is its job; documented since .86).
+>
+> **(2) W9-01 — and the pin caught the fix's own first ordering.** The
+> markdown-ref strip initially ran AFTER the newline collapse — which
+> DISARMS reference-style definitions (`[x]: https://…` is line-anchored;
+> collapse first and the definition never matches). The pin's
+> reference-style case failed, the order flipped, and the lesson is in
+> the code comment. Bare URLs in prose are untouched by this strip (the
+> anti-vacuity arm) — other lanes' policies govern those. Red-proof:
+> reverting the strip fails the pin at the image-ref assertion.
+>
+> **Spire this round:** the two new pins live in `src/gate.rs` (lib) and
+> `tests/main_suite.rs` (otel-gated) — lib count +1, badge re-derived at
+> ship. THREAT_MODEL's Attrbane row extended with the pair; the Origin
+> row carries the OTLP-strip addendum. Register: R9-02 + W9-01 flipped
+> CLOSED — R78 with evidence. **What did NOT ship:** everything routed to
+> R79/R80/R81 and the fork lane, unchanged; F9-02 still unrouted (a wire
+> decision). No migration; no irreversible risk.
+
+> Predecessor: **R77 "Verity"** — *security verbs must not lie, and the
+> record must agree with the tree.* The ninth-pass
 > (`docs/SECURITY_AUDIT_20261006_NINTH_PASS.md`, untracked by operator
 > decision — audit reports are private) R77 band, plus the private-visibility
 > commit that landed the register. **No authz change**, no route change, no

@@ -16,12 +16,19 @@ use crate::screen::ScreenResult;
 /// The origin-labeling line (telemetry-is-untrusted posture): every span
 /// ATTRIBUTE value derived from request text passes this before export —
 /// ANSI/C1 strip (the shared `strip_control_chars`, which also closes
-/// log-forging), newline collapse, and unconditional PII redaction. Treat
-/// any collector as untrusted infrastructure: attributes are export bytes,
-/// not trusted internal state. Resource attributes (host/version) are
-/// static and never routed through request text.
+/// log-forging), newline collapse, the markdown-ref strip (W9-01: OTLP was
+/// the one outbound lane without it — a collector or its UI that renders
+/// exported text would dereference `![leak](https://…)` image refs, the
+/// EchoLeak class every other lane already refuses), and unconditional PII
+/// redaction. Treat any collector as untrusted infrastructure: attributes
+/// are export bytes, not trusted internal state. Resource attributes
+/// (host/version) are static and never routed through request text.
 pub fn sanitize_span_attribute(v: &str) -> String {
-    let single_line = crate::strip_invisible::strip_control_chars(v).replace('\n', " ");
+    // Order: the markdown-ref strip runs BEFORE the newline collapse —
+    // reference-style definitions (`[x]: https://…`) are line-anchored, and
+    // collapsing first would disarm exactly that form.
+    let no_refs = crate::fence::strip_markdown_refs(v);
+    let single_line = crate::strip_invisible::strip_control_chars(&no_refs).replace('\n', " ");
     crate::pii_mask::redact_unconditional(&single_line)
 }
 

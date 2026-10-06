@@ -684,7 +684,13 @@ fn sweep_surviving_tag(tag: &str) -> String {
 /// `name="value"`). The `on[a-z]+` handler family dies by NAME; the URL
 /// attributes die by SCHEME (one bounded entity-decode pass, then all
 /// whitespace/control bytes removed — the browser URL rule — then a
-/// case-insensitive prefix match). Everything else keeps.
+/// case-insensitive prefix match). The R9-02 pair: `ping` dies by NAME (a
+/// click beacon is a fetch primitive — whatever URL it carries is sent, so
+/// there is no benign form to scheme-check), and `style` dies by VALUE when
+/// it can express a NETWORK FETCH (`url(` / `image-set(` after the HTML
+/// entity decode, CSS comment strip, one CSS-escape decode, and the browser
+/// whitespace-removal rule — so `style="color:red"` survives whole while
+/// `background:url(https://…)` does not). Everything else keeps.
 fn attr_is_hostile(token: &str) -> bool {
     let (name, value) = token
         .split_once('=')
@@ -696,6 +702,9 @@ fn attr_is_hostile(token: &str) -> bool {
     {
         return true;
     }
+    if lower == "ping" {
+        return true;
+    }
     if matches!(
         lower.as_str(),
         "href" | "src" | "action" | "formaction" | "xlink:href" | "poster" | "background"
@@ -703,7 +712,112 @@ fn attr_is_hostile(token: &str) -> bool {
     {
         return scheme_is_dangerous(v);
     }
+    if lower == "style"
+        && let Some(v) = value
+    {
+        return css_value_fetches(v);
+    }
     false
+}
+
+/// Does a `style=` value express a network fetch? CSS loads bytes through
+/// `url(…)` (and `image-set(…)`); both are obfuscatable in ways a naive
+/// substring misses, so the probe normalizes first — each layer bounded,
+/// one pass, no rescans (the same rule the scheme probe follows):
+///
+/// 1. HTML layer: one entity-decode pass (`&#117;rl(` → `url(`);
+/// 2. CSS comments removed (`ur/**/l(` is one token to a CSS engine);
+/// 3. one CSS-escape decode (`\75 rl(` / `\u rl(` → `url(`);
+/// 4. whitespace/control bytes removed (a CSS tokenizer eats them);
+/// 5. case-insensitive substring match on the two fetch primitives.
+///
+/// A style that survives this clean (`color:red`) is benign by every rule
+/// a CSS engine applies; one that reaches a fetch primitive is dropped
+/// whole — the ATTRIBUTE, not the URL, is the hostile unit (the seam
+/// cannot rewrite CSS safely, so it refuses the fetch-capable form).
+fn css_value_fetches(value: &str) -> bool {
+    let unquoted = value
+        .trim_matches(|c: char| c.is_whitespace() || c.is_control())
+        .trim_matches(|c| c == '"' || c == '\'');
+    let decoded = decode_entities_once(unquoted);
+    let no_comments = strip_css_comments(&decoded);
+    let unescaped = decode_css_escapes_once(&no_comments);
+    let lowered: String = unescaped
+        .chars()
+        .filter(|c| !c.is_whitespace() && !c.is_control())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    lowered.contains("url(") || lowered.contains("image-set(")
+}
+
+/// Remove `/* … */` comments (bounded, non-nested — CSS comments do not
+/// nest). An unterminated `/*` drops the tail: a CSS engine would too, and
+/// keeping an unterminated comment's contents around to match against is
+/// how an evasion stays live.
+fn strip_css_comments(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
+            match s[i + 2..].find("*/") {
+                Some(rel) => {
+                    i += 2 + rel + 2;
+                }
+                None => return out,
+            }
+            continue;
+        }
+        let ch = s[i..].chars().next().unwrap_or('/');
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// ONE bounded CSS-escape decode: `\` + 1..=6 hex digits + one optional
+/// whitespace becomes that codepoint; `\` + any other char becomes the
+/// char itself (CSS identity escapes — `\u` is `u`). Output is NOT
+/// rescanned. Undecodable tails stay literal.
+fn decode_css_escapes_once(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] != b'\\' {
+            let ch = s[i..].chars().next().unwrap_or('\\');
+            out.push(ch);
+            i += ch.len_utf8();
+            continue;
+        }
+        let rest = &s[i + 1..];
+        let hex_end = rest
+            .char_indices()
+            .take_while(|(_, c)| c.is_ascii_hexdigit())
+            .take(6)
+            .map(|(idx, c)| idx + c.len_utf8())
+            .last()
+            .unwrap_or(0);
+        if hex_end > 0 {
+            let cp = u32::from_str_radix(&rest[..hex_end], 16).unwrap_or(u32::MAX);
+            if let Some(ch) = char::from_u32(cp) {
+                out.push(ch);
+            }
+            // CSS consumes exactly ONE whitespace after a hex escape.
+            let mut after = hex_end;
+            if rest[after..].starts_with(' ') {
+                after += 1;
+            } else if rest[after..].starts_with("\r\n") {
+                after += 2;
+            }
+            i += 1 + after;
+        } else {
+            let ch = rest.chars().next().unwrap_or('\\');
+            out.push(ch);
+            i += 1 + ch.len_utf8();
+        }
+    }
+    out
 }
 
 /// The scheme probe: trim whitespace/control bytes and one layer of
@@ -1563,6 +1677,97 @@ mod tests {
             "fence literals never ride read output: {out:?}"
         );
         assert!(out.contains("data") && out.contains("trusted after"));
+    }
+
+    /// R9-02 (ninth pass): `style=` (CSS `url()` fetch) and `ping=` (click
+    /// beacon) survived the seam VERBATIM with full attacker URLs — drill-
+    /// confirmed, latent only while no in-tree renderer dereferences (one
+    /// renderer edit from live, the S8-06 class). `ping` dies by NAME (a
+    /// beacon is a fetch primitive — no benign form to scheme-check);
+    /// `style` dies by VALUE only when it can express a fetch, so benign
+    /// styles stay byte-identical (the F7-01 parity law: the tier is
+    /// fetch-hostile, not attribute-hostile).
+    #[test]
+    fn sanitize_read_attr_tier_sweeps_style_and_ping() {
+        let canaries = [
+            ("<a ping=\"https://evil.example/click\">track</a>", "track"),
+            (
+                "<a ping='https://evil.example/a https://evil.example/b'>list</a>",
+                "list",
+            ),
+            ("<a ping=https://evil.example/unquoted>raw</a>", "raw"),
+            (
+                "<div style=\"background:url(https://evil.example/x)\">bg</div>",
+                "bg",
+            ),
+            (
+                "<div style=\"background:url('https://evil.example/q')\">quoted</div>",
+                "quoted",
+            ),
+            (
+                "<div STYLE=\"background:URL(https://evil.example/up)\">upper</div>",
+                "upper",
+            ),
+            (
+                "<div style=\"background:ur/**/l(https://evil.example/c)\">comment</div>",
+                "comment",
+            ),
+            (
+                "<div style=\"background:\\75 rl(https://evil.example/h)\">hex</div>",
+                "hex",
+            ),
+            (
+                "<div style=\"background:&#117;rl(https://evil.example/e)\">entity</div>",
+                "entity",
+            ),
+            (
+                "<div style=\"background: image-set('https://evil.example/i 1x')\">srcset</div>",
+                "srcset",
+            ),
+        ];
+        for (c, text) in canaries {
+            let out = sanitize_read(c, false, &None);
+            let lowered = out.to_ascii_lowercase();
+            assert!(
+                !lowered.contains("evil.example"),
+                "a fetch-capable attribute must not ride the seam with its URL: {c:?} -> {out:?}"
+            );
+            assert!(
+                !lowered.contains("ping="),
+                "the ping attribute dies by name: {c:?} -> {out:?}"
+            );
+            assert!(
+                !lowered.contains("style="),
+                "a fetch-bearing style attribute is dropped whole: {c:?} -> {out:?}"
+            );
+            // The ELEMENT survives with its text — the attribute is the
+            // hostile unit, not the tag (the seam must not eat prose).
+            assert!(
+                out.contains(text),
+                "the surviving tag keeps its inner text: {c:?} -> {out:?}"
+            );
+        }
+
+        // Anti-vacuity, the F7-01 law: benign content is byte-identical.
+        // A style with no fetch primitive survives whole...
+        let benign = "<div style=\"color:red;font-weight:bold\">calm</div>";
+        assert_eq!(sanitize_read(benign, false, &None), benign);
+        // ...a benign href keeps its URL (the tier stays scheme-hostile,
+        // not attribute-hostile)...
+        let link = "<a href=\"https://good.example/page\">docs</a>";
+        assert_eq!(sanitize_read(link, false, &None), link);
+        // ...and a NEIGHBOURING attribute on a ping-bearing tag survives
+        // (the drop is per-attribute, not per-tag).
+        let mixed = "<a ping=\"https://evil.example/c\" title=\"keep me\">mixed</a>";
+        let out = sanitize_read(mixed, false, &None);
+        assert!(
+            out.contains("title=\"keep me\""),
+            "neighbour attr keeps: {out:?}"
+        );
+        assert!(
+            !out.to_ascii_lowercase().contains("evil.example"),
+            "ping url dies: {out:?}"
+        );
     }
 
     /// The read seam strips every member of the closed element-name set —
