@@ -199,8 +199,11 @@ describe("config boundary typecheck", () => {
       /autoRecallTopK.*integer/,
     );
     expect(() => resolveConfig({ enabled: "yes" } as never)).toThrow(/enabled.*boolean.*string/);
-    // Out-of-range integers refuse as loudly as wrong types.
-    expect(() => resolveConfig({ autoRecallTopK: 99 } as never)).toThrow(/autoRecallTopK/);
+    // Out-of-range integers are NOT the type gate's business (ranges are
+    // the manifest schema's): the resolver must not learn to refuse values
+    // the schema layer owns — tests exercise sub-second heartbeats, for
+    // one. Types refuse; ranges delegate.
+    expect(resolveConfig({ autoRecallTopK: 99 } as never).autoRecallTopK).toBe(99);
   });
 
   test("a fully-typed config still resolves (anti-vacuity)", () => {

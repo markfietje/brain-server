@@ -244,14 +244,7 @@ function assertValidTeamDomain(raw: string): void {
 // Fail-closed, mirroring the arms below that already validate (baseUrl
 // scheme, teamDomain shape). A type error is never silently defaulted over.
 
-type FieldKind =
-  | "boolean"
-  | "string"
-  | "string[]"
-  | "chatType[]"
-  | "originMode"
-  | "captureModeKind"
-  | `int:${number}..${number}`;
+type FieldKind = "boolean" | "string" | "string[]" | "chatType[]" | "originMode" | "captureModeKind" | "int";
 
 /** The closed field census — adding a config field without a row here
  * fails the census pin in config.test.ts (the schema and this table are
@@ -270,17 +263,17 @@ const FIELD_KINDS: Record<string, FieldKind> = {
   autoCapture: "boolean",
   strictDomain: "boolean",
   defaultDomain: "string",
-  autoRecallTopK: "int:1..20",
-  autoRecallTimeoutMs: "int:250..30000",
-  requestTimeoutMs: "int:250..30000",
-  minQueryLength: "int:1..200",
-  recallMaxChars: "int:40..10000",
+  autoRecallTopK: "int",
+  autoRecallTimeoutMs: "int",
+  requestTimeoutMs: "int",
+  minQueryLength: "int",
+  recallMaxChars: "int",
   autoRecallGraph: "boolean",
-  autoRecallMaxContextTokens: "int:0..8000",
+  autoRecallMaxContextTokens: "int",
   proposalTools: "boolean",
   teamBridge: "boolean",
   teamDomain: "string",
-  teamHeartbeatMs: "int:15000..600000",
+  teamHeartbeatMs: "int",
 };
 
 const CHAT_TYPES = new Set(["direct", "group", "channel", "explicit"]);
@@ -292,7 +285,7 @@ function kindDescription(kind: FieldKind): string {
   if (kind === "chatType[]") return "an array of direct|group|channel|explicit";
   if (kind === "originMode") return '"label" or "exclude"';
   if (kind === "captureModeKind") return '"proposal" or "direct"';
-  return `an integer ${kind.slice(4).replace("..", "..=")}`;
+  return "an integer";
 }
 
 function valueMatchesKind(kind: FieldKind, v: unknown): boolean {
@@ -304,9 +297,12 @@ function valueMatchesKind(kind: FieldKind, v: unknown): boolean {
   }
   if (kind === "originMode") return v === "label" || v === "exclude";
   if (kind === "captureModeKind") return v === "proposal" || v === "direct";
-  const range = kind.slice(4).split("..");
-  const [min, max] = [Number(range[0]), Number(range[1])];
-  return typeof v === "number" && Number.isInteger(v) && v >= min && v <= max;
+  // TYPES only, deliberately: ranges are the manifest schema's gate. The
+  // resolver refuses a string `autoRecallTopK` (the recall-defeating class)
+  // but not an out-of-range integer — that is a contract the host's
+  // configSchema owns, and tests legitimately exercise sub-second
+  // heartbeats the schema's production minimums would refuse.
+  return typeof v === "number" && Number.isInteger(v);
 }
 
 function assertFieldTypes(cfg: Partial<BrainConfig>): void {
