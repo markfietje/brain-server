@@ -80,49 +80,13 @@ if [[ "$HEAD_SHA" != "$ORIGIN_SHA" ]]; then
   exit 1
 fi
 
-# 1e. CI must be GREEN on the exact commit being tagged. The tag re-runs
-# nothing (ci.yml ignores v* tags and release.yml runs no tests), so the
-# main-push CI run is the ONLY automated gate between "pushed" and
-# "shipped" — tagging while it is red or unfinished would publish binaries
-# that never passed the matrix. Fail-closed: no verifiable green = no tag.
-if ! command -v gh >/dev/null 2>&1; then
-  echo "error: gh CLI not found — refusing to tag without verifying CI green" >&2
-  echo "       on the commit (fail-closed). Install + auth gh, verify the Actions" >&2
-  echo "       tab yourself, or push a tag manually at your own judgement." >&2
-  exit 1
-fi
-echo ">> waiting for CI (ci.yml) on ${HEAD_SHA:0:10} to finish…"
-RUN_ID=""
-for _ in $(seq 1 20); do  # ≤ 10 min for the run to register after the push
-  RUN_ID="$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --json databaseId --limit 1 --jq '.[0].databaseId' 2>/dev/null || true)"
-  [[ -n "$RUN_ID" ]] && break
-  sleep 30
-done
-if [[ -z "$RUN_ID" ]]; then
-  echo "error: no CI run found for $HEAD_SHA — was main actually pushed? Refusing to tag (fail-closed)." >&2
-  exit 1
-fi
-RUN_URL="$(gh run view "$RUN_ID" --json url --jq .url 2>/dev/null || echo "(gh run view $RUN_ID)")"
-echo ">> watching CI run #$RUN_ID — $RUN_URL"
-STATUS="queued"; CONCLUSION=""
-for _ in $(seq 1 120); do  # ≤ 60 min for the matrix to complete
-  LINE="$(gh run view "$RUN_ID" --json status,conclusion --jq '[.status, (.conclusion // "")] | @tsv' 2>/dev/null || true)"
-  if [[ -n "$LINE" ]]; then
-    STATUS="${LINE%%$'\t'*}"
-    CONCLUSION="${LINE##*$'\t'}"
-  fi
-  [[ "$STATUS" == "completed" ]] && break
-  sleep 30
-done
-if [[ "$STATUS" != "completed" ]]; then
-  echo "error: CI run #$RUN_ID still '$STATUS' after 60 min — refusing to tag. Re-run release.sh once it is green." >&2
-  exit 1
-fi
-if [[ "$CONCLUSION" != "success" ]]; then
-  echo "error: CI on $HEAD_SHA concluded '$CONCLUSION' — a red matrix must never ship. Fix it, then re-run release.sh." >&2
-  exit 1
-fi
-echo ">> CI green on ${HEAD_SHA:0:10}."
+# 1e. The green-CI gate lives in the PUBLIC release workflow, not here
+# (2026-10-06: private-repo CI is disabled for billing; public Actions are
+# free). The TAG PUSH itself triggers the full ci.yml matrix on public —
+# `main` is deliberately never pushed there — and release.yml's publication
+# step fail-closes on that very run: red OR absent ci.yml for the tagged
+# SHA ⇒ binaries build but NOTHING publishes. The pre-tag discipline is the
+# LOCAL gate suite (fmt, clippy, tests, badges) on the tree being tagged.
 
 # 2. Version consistency warnings (non-fatal).
 CARGO_VER="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
@@ -143,6 +107,31 @@ fi
 git tag -a "$TAG" -m "Release $TAG"
 git push public "$TAG"
 echo ""
-echo "Tag $TAG pushed. The 'release' workflow is building binaries and creating the release."
+echo "Tag $TAG pushed. The tag triggers BOTH the full CI matrix and the release"
+echo "workflow on public; release.yml publishes binaries + notes ONLY if that"
+echo "matrix is green (its own fail-closed check watches the ci.yml run for"
+echo "this SHA)."
+if command -v gh >/dev/null 2>&1; then
+  SHA="$(git rev-parse "$TAG")"
+  echo ">> watching the public runs for ${TAG}…"
+  sleep 20
+  for _ in $(seq 1 150); do  # ≤ 75 min
+    DONE=1; VERDICT=""
+    while IFS=$'\t' read -r ST CO; do
+      [[ "$ST" != "completed" ]] && DONE=0
+      [[ -n "$CO" && "$CO" != "success" ]] && VERDICT="$VERDICT $CO"
+    done < <(gh run list --repo markfietje/brain-server --commit "$SHA" \
+               --json status,conclusion --jq '.[] | [.status, (.conclusion // "")] | @tsv' 2>/dev/null)
+    [[ "$DONE" == 1 ]] && break
+    sleep 30
+  done
+  if [[ -n "$VERDICT" ]]; then
+    echo "error: public runs concluded not-green ($VERDICT). Nothing published:" >&2
+    echo "       release.yml refuses to ship over a red matrix. Inspect:" >&2
+    echo "       https://github.com/markfietje/brain-server/actions" >&2
+    exit 1
+  fi
+  echo ">> all public runs for $TAG are green."
+fi
 echo "Watch it: https://github.com/markfietje/brain-server/actions"
 echo "Result:   https://github.com/markfietje/brain-server/releases"

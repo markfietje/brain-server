@@ -2779,12 +2779,15 @@ scripts/lipstyk-gate.sh
 # tests included — helpers inside #[cfg(test)] mods are still scanned; use
 # .expect() like sibling tests instead of Result-returning test bodies).
 
-# Tag pushes do NOT re-run CI: the branches-only push filter already excludes
-# tags (`tags-ignore: ['v*']` pins that intent explicitly). The tag triggers
-# release.yml only. Run the dry-run gate ONCE per main push, not per tag.
-# release.sh BLOCKS on green CI for the tagged SHA (gh run watch, fail-closed):
-# the tag re-runs no tests, so the main-push CI run is the only automated
-# bridge between "pushed" and "shipped" — red or unfinished = no tag. The
+# CI and releases (2026-10-06 billing law): PRIVATE-repo Actions are
+# disabled (the free 2,000 min/month died in six days; CI + CodeQL were the
+# burn). PUBLIC-repo Actions are free, so the RELEASE TAG is the public CI
+# trigger: a v* tag push runs the FULL ci.yml matrix on public (main is
+# still never pushed there — release.sh's law), and release.yml's
+# publication step fail-closes unless that matrix is green for the tagged
+# SHA: red or absent ⇒ binaries build but nothing publishes. The pre-tag
+# discipline is the LOCAL gate suite; release.sh watches the public runs
+# after the push and exits non-zero on a not-green verdict. The
 # release builds are 4 parallel per-target jobs (linux x86_64/aarch64,
 # macOS arm64/x86_64); the verify-required-assets gate refuses to publish if
 # any primary brain-server binary is missing.

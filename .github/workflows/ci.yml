@@ -3,13 +3,15 @@ name: CI
 on:
   push:
     branches: [main]
-    # Tag pushes re-run NOTHING here: release.sh pushes main first (this CI
-    # matrix gates that exact SHA), then the tag triggers release.yml only.
-    # Honest semantics: a branches-only push filter ALREADY excludes tag
-    # pushes (GitHub: defining only branches means the workflow won't run
-    # for the undefined ref) — the tags-ignore pins that intent explicitly,
-    # so a future `tags:` addition can never silently double-run releases.
-    tags-ignore: ['v*']
+    # Release tags RUN the full matrix here, on purpose (2026-10-06 billing
+    # decision): private-repo CI is disabled (Actions minutes exhausted the
+    # 2,000/month free tier in six days), and public-repo Actions are free —
+    # so the TAG is the public CI trigger, because `main` is deliberately
+    # never pushed to public (release.sh's law: a branch would publish
+    # unreleased rounds). release.yml's publication step then fail-closes on
+    # this very run: no green ci.yml for the tagged SHA ⇒ binaries never
+    # publish. Tests-before-shipping survives the private-CI removal intact.
+    tags: ['v*']
   pull_request:
 
 # Supersede stale runs: rapid successive pushes cancel the earlier matrix
