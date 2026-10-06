@@ -80,11 +80,12 @@ jobs:
         # `--no-fail-fast` so ONE failing test does not collapse the sum into a
         # misleading total: the job above already failed, and this step must
         # still report what the count actually was.
-        run: BRAIN_TEST_COUNT="$(cargo test --features bench,migrate --no-fail-fast -- \
-              --skip handlers::case_run::conformance::gdl_conformance_pack_run \
-              --skip workflow::sandbox::tests::realized_paths_law_pinned_against_symlinked_temp 2>&1 \
-              | grep -Eo '[0-9]+ passed' | awk '{ s+=$1 } END { print s+0 }')" \
-             bash scripts/badges.sh --verify-count
+        run: |
+          BRAIN_TEST_COUNT="$(cargo test --features bench,migrate --no-fail-fast \
+            --skip handlers::case_run::conformance::gdl_conformance_pack_run \
+            --skip workflow::sandbox::tests::realized_paths_law_pinned_against_symlinked_temp \
+            2>&1 | grep -Eo '[0-9]+ passed' | awk '{ s+=$1 } END { print s+0 }')"
+          bash scripts/badges.sh --verify-count
       - name: README badge + release-checklist drift gate
         # The badges are DERIVED (scripts/badges.sh reads Cargo.toml and the
         # build), but nothing ran the comparison, so a release could bump the

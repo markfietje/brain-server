@@ -1704,10 +1704,26 @@ mod tests {
 
         static CLS_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+        /// Set/remove an env var UNDER the caller's `CLS_ENV_LOCK`.
+        ///
+        /// SELF-DEADLOCK FIX: this helper used to take `CLS_ENV_LOCK` itself,
+        /// and every caller had ALREADY taken it — `std::sync::Mutex` is
+        /// non-reentrant, so each of these tests deadlocked against itself
+        /// the moment the lane actually ran. It sat green for seven weeks
+        /// because the `injection-classifier` CI lane never executed its
+        /// tests (the billing-era "failures" were jobs that never started);
+        /// the first real run — the public tag matrix, 2026-10-07 — hung on
+        /// all four env-driven pins at once. The helper now REQUIRES the
+        /// lock to be held (asserted via `try_lock`, which cannot block),
+        /// so the misuse cannot come back silently.
         fn set_env(key: &str, value: Option<String>) {
-            let _g = CLS_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            // SAFETY: single-threaded under CLS_ENV_LOCK — the documented
-            // env-mutation posture (the `standby.rs` / `config.rs` precedent).
+            assert!(
+                CLS_ENV_LOCK.try_lock().is_err(),
+                "set_env requires the caller to hold CLS_ENV_LOCK (held = try_lock fails)"
+            );
+            // SAFETY: single-threaded under the caller's CLS_ENV_LOCK — the
+            // documented env-mutation posture (the `standby.rs` / `config.rs`
+            // precedent).
             unsafe {
                 if let Some(v) = value {
                     std::env::set_var(key, v);
