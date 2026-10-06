@@ -48,6 +48,20 @@ fn spine(rel: &str) -> PathBuf {
         .join(rel)
 }
 
+fn spine_present() -> bool {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../brain-steward-ip");
+    if root.is_dir() {
+        true
+    } else {
+        println!(
+            "SKIP (spine half): no private checkout at {} — CI lane. \
+             Re-run on an operator machine for the cross-document pins.",
+            root.display()
+        );
+        false
+    }
+}
+
 /// Resolve a spine artifact across the live set and the archive.
 ///
 /// Returns the first readable candidate. A `plans/`-rooted `rel` is also tried
@@ -662,6 +676,9 @@ const BANNED_NUMBERS: &[&str] = &["has 8 call sites for", "5 production sites"];
 /// audit chain. This is the pin that keeps the correction CLOSED.
 #[test]
 fn r45_0_no_external_artifact_claims_ed25519_over_the_chain() {
+    if !spine_present() {
+        return;
+    }
     // Named artifacts that must be scanned even if they do not happen to
     // mention the helper (a doc could describe the chain in prose only).
     let named = [
@@ -796,6 +813,9 @@ fn is_quoting_claim(line: &str, needle: &str) -> bool {
 
 #[test]
 fn r45_0_banned_overstated_sentences_are_gone() {
+    if !spine_present() {
+        return;
+    }
     let mut found: Vec<String> = Vec::new();
     for (rel, needle) in BANNED_CLAIMS {
         let text = read_spine(rel);
@@ -832,6 +852,9 @@ fn r45_0_banned_overstated_sentences_are_gone() {
 /// correction is not merely the absence of a false claim.
 #[test]
 fn r45_0_corrected_sentence_present_in_every_listed_artifact() {
+    if !spine_present() {
+        return;
+    }
     // Artifacts that DESCRIBE the chain's mechanism must name the real one.
     // The two `R45_*` plans used to be listed here by name; discovery now finds
     // them without a round number.
@@ -921,6 +944,9 @@ fn r45_0_corrected_sentence_present_in_every_listed_artifact() {
 /// the repo-root duplicate is byte-identical and is what ships beside the PDF.
 #[test]
 fn r45_0_engineers_ref_known_limits_ceiling_row_is_retained() {
+    if !spine_present() {
+        return;
+    }
     for rel in [
         "plans/memorysteward-engineers-ref.tex",
         "docs/MemorySteward-Engineers-Reference.tex",
@@ -1108,6 +1134,9 @@ fn r45_0_hmac_epoch_link_is_still_hmac_over_the_eight_length_prefixed_fields() {
 /// trusting a hardcoded list, so the published number cannot drift again.
 #[test]
 fn r45_0_governing_spec_call_site_count_matches_measurement() {
+    if !spine_present() {
+        return;
+    }
     let kernel = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
 
     // (file, line-of-call, cfg(test)-boundary) — the boundary is where the test
@@ -1354,6 +1383,9 @@ const SIX_LOOPS: &[&str] = &["Create", "Solve", "Evolve", "Deflect", "Operate", 
 /// the way this one did.
 #[test]
 fn r45_0_blueprint_names_all_six_loops() {
+    if !spine_present() {
+        return;
+    }
     const BLUEPRINT: &str = "docs/blueprint/02-SYSTEM_ARCHITECTURE.md";
     let text = read_spine(BLUEPRINT);
 
@@ -1434,6 +1466,9 @@ fn r45_0_blueprint_names_all_six_loops() {
 /// Deliver as a knowledge loop, is the drift this guards against.
 #[test]
 fn r45_0_blueprint_loop_count_agrees_with_the_authoritative_plan() {
+    if !spine_present() {
+        return;
+    }
     const BLUEPRINT: &str = "docs/blueprint/02-SYSTEM_ARCHITECTURE.md";
     const PLAN: &str = "plans/PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md";
 
@@ -1547,6 +1582,9 @@ fn r45_0_blueprint_loop_count_agrees_with_the_authoritative_plan() {
 /// all. A guard written for it must be shown to catch it.
 #[test]
 fn r45_0_blueprint_completeness_pins_are_non_vacuous() {
+    if !spine_present() {
+        return;
+    }
     /// The predicate `r45_0_blueprint_names_all_six_loops` applies, factored out
     /// so the red-proof and the real pin cannot drift apart.
     fn all_six_loops_named(text: &str) -> Result<(), Vec<&'static str>> {

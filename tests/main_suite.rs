@@ -18326,9 +18326,97 @@ mod scrim {
                 &disposition[..disposition.len().min(160)]
             );
         }
+
+        // TENTH-PASS TABLE (2026-10-06): the same law, the same arms, its own
+        // slice. The header differs AGAIN (`Ref`, not `ID`/`#`) so neither
+        // `rfind` above can see it. This arm exists BECAUSE of how the table
+        // got here: the tenth pass first shipped its rows under the NINTH
+        // pass's header (`| ID | …`), and this pin failed with "parsed 52 rows
+        // from the ninth-pass table — the slice is wrong" — the identical
+        // shape R73 and the eighth pass each hit, in a register whose own
+        // history calls it the scope bug the pin exists to catch. A shared
+        // header is not a shared table; it is an ambiguous one, and `rfind`
+        // resolves the ambiguity by taking the LAST. So each pass earns its
+        // own header AND its own arm here, and the law is extended rather
+        // than dodged.
+        const HEADER10: &str = "| Ref | Finding | Sev | Disposition |";
+        let start10 = register
+            .rfind(HEADER10)
+            .expect("the tenth-pass findings table header must exist in AUDIT.md");
+        let tail10 = &register[start10..];
+        let table10 = match tail10.find("\n## ") {
+            Some(end) => &tail10[..end],
+            None => tail10,
+        };
+        let mut rows10: Vec<(String, String)> = Vec::new();
+        for line in table10.lines() {
+            let mut cells = line.splitn(4, '|');
+            let (Some(_), Some(id), Some(_), Some(disposition)) =
+                (cells.next(), cells.next(), cells.next(), cells.next())
+            else {
+                continue;
+            };
+            let id = id.trim();
+            let is_id = !id.is_empty()
+                && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && id.contains('-')
+                && id.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+            if is_id {
+                rows10.push((id.to_string(), disposition.to_string()));
+            }
+        }
+        assert!(
+            rows10.len() >= 20 && rows10.len() < 70,
+            "parsed {} rows from the tenth-pass table — the slice is wrong",
+            rows10.len()
+        );
+        assert!(
+            rows10.iter().any(|(i, _)| i == "F4-01") && rows10.iter().any(|(i, _)| i == "K4-03"),
+            "the sliced tenth-pass table does not carry its anchor ids (F4-01, K4-03) — \
+             the scope is wrong"
+        );
+        let mut by_id10: std::collections::BTreeMap<&str, usize> =
+            std::collections::BTreeMap::new();
+        for (id, _) in &rows10 {
+            *by_id10.entry(id.as_str()).or_insert(0) += 1;
+        }
+        let dups10: Vec<(&str, usize)> = by_id10
+            .iter()
+            .filter(|(_, count)| **count > 1)
+            .map(|(id, count)| (*id, *count))
+            .collect();
+        assert!(
+            dups10.is_empty(),
+            "these tenth-pass ids appear more than once: {dups10:?}"
+        );
+        for (id, disposition) in &rows10 {
+            assert!(
+                STATUSES.iter().any(|s| disposition.contains(s)),
+                "tenth-pass register row `{id}` carries no recognised \
+                 disposition keyword. Disposition: {}",
+                &disposition[..disposition.len().min(120)]
+            );
+        }
+        for (id, disposition) in &rows10 {
+            let declared = declared_disposition(disposition);
+            let claims_open = declared.contains("OPEN");
+            let named: Vec<&str> = SHIPPED_ROUNDS
+                .iter()
+                .copied()
+                .filter(|r| declared.contains(&format!("OPEN — {r}")))
+                .collect();
+            assert!(
+                !(claims_open && !named.is_empty()),
+                "`{id}` is OPEN but names a round that already shipped \
+                 ({}) — say UNROUTED, or name the round that will. \
+                 Disposition: {}",
+                named.join(", "),
+                &disposition[..disposition.len().min(160)]
+            );
+        }
     }
 
-    /// The installer writes review for NEW installs only:    /// The installer writes review for NEW installs only: the insert is
+    /// The installer writes review for NEW installs only: the insert is
     /// guarded by an absent-posture check, and the unconditional remove
     /// (which stomped operator-set values on every re-run) is gone.
     #[test]
@@ -21379,6 +21467,19 @@ mod r42_authority_bindings {
     /// to silently discharge this gate.
     #[test]
     fn delivery_r42_gate_note_is_dated_and_pinned() {
+        // Two-door rule (gdl_conformance_pack_run): the gate note lives in the
+        // PRIVATE spine checkout; where the sibling is absent — the CI shape — the
+        // pin is a named skip, never a red lane. A checkout that exists but lost
+        // the note still panics below.
+        let spine_root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../brain-steward-ip");
+        if !spine_root.is_dir() {
+            println!(
+                "SKIP delivery_r42_gate_note_is_dated_and_pinned: no private spine checkout at              {} — CI lane",
+                spine_root.display()
+            );
+            return;
+        }
         const NOTE: &str = "R42_ADAPTER_BOUNDARY_RE_AUDIT_2026-09-27.md";
         let spine =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../brain-steward-ip/plans");

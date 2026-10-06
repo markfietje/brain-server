@@ -165,6 +165,13 @@ fn the_ceiling_is_stated_beside_the_contract() {
 /// This pin does not pretend the item is closed. It records that the gap is
 /// still open and points at the file that proves it, so the next round inherits
 /// a named finding rather than a silently dropped requirement.
+///
+/// The evidence file lives in the PRIVATE spine checkout, so the pin rides the
+/// `gdl_conformance_pack_run` two-door rule (`src/handlers/case_run.rs`): on an
+/// operator machine it is a real pin; where the sibling is absent — the CI
+/// shape, which first surfaced on the public tag matrix after the billing-law
+/// move — the kernel half above still runs and the spine half is a NAMED skip,
+/// never a red lane and never a silent pass.
 #[test]
 fn the_classifier_digest_finding_is_still_open_and_named() {
     let screen = code_only(&read("src/screen.rs"));
@@ -176,12 +183,21 @@ fn the_classifier_digest_finding_is_still_open_and_named() {
     // The evidence file must still be naming it.
     let evidence = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../brain-steward-ip/plans/R63a_DETERMINISM_CONTRACTS_EVIDENCE_2026-09-29.md");
-    let text = std::fs::read_to_string(&evidence).unwrap_or_else(|e| {
-        panic!(
-            "the R63a evidence file must exist at {}: {e}",
+    let Ok(text) = std::fs::read_to_string(&evidence) else {
+        assert!(
+            !Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../brain-steward-ip")
+                .is_dir(),
+            "the spine checkout exists but its R63a evidence file is missing: {}",
             evidence.display()
-        )
-    });
+        );
+        println!(
+            "SKIP the_classifier_digest_finding_is_still_open_and_named (spine half): no \
+             private checkout at ../brain-steward-ip — CI lane. The kernel half ran; \
+             re-run on an operator machine for the evidence-file half."
+        );
+        return;
+    };
     assert!(
         text.contains("open finding") || text.contains("OPEN"),
         "the evidence file must carry the open finding forward"

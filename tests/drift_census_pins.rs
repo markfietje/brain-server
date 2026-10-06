@@ -979,11 +979,24 @@ fn the_other_r57_deferrals_are_still_deferred() {
 /// has lied.* This is the machine-checked form of the "named" half.
 #[test]
 fn the_scope_is_stated_in_the_evidence_before_the_work_it_governed() {
+    let sibling = repo_root()
+        .parent()
+        .expect("the repo has a parent")
+        .join("brain-steward-ip");
+    // Two-door rule (gdl_conformance_pack_run): the evidence lives in the
+    // PRIVATE spine checkout; where the sibling is absent — the CI shape — the
+    // pin is a named skip, never a red lane. A checkout that exists but lost
+    // the file still panics: that is housekeeping drift, not a CI limitation.
+    if !sibling.is_dir() {
+        println!(
+            "SKIP the_scope_is_stated_in_the_evidence_before_the_work_it_governed: no \
+             private spine checkout at {} — CI lane",
+            sibling.display()
+        );
+        return;
+    }
     let evidence = std::fs::read_to_string(
-        repo_root()
-            .parent()
-            .expect("the repo has a parent")
-            .join("brain-steward-ip/plans/R57_SCOREBOARD_EVIDENCE_2026-09-29.md"),
+        sibling.join("plans/R57_SCOREBOARD_EVIDENCE_2026-09-29.md"),
     )
     .unwrap_or_else(|e| {
         panic!(

@@ -52,6 +52,28 @@ fn spine(rel: &str) -> PathBuf {
         .join(rel)
 }
 
+/// True when the PRIVATE spine checkout exists at all. Eight of this file's
+/// pins read it; on a public CI runner it never exists, which first surfaced
+/// as a red tag matrix after the billing-law move of CI to the public repo
+/// (2026-10-06). Each pin takes this door with the two-door rule of
+/// `gdl_conformance_pack_run` (`src/handlers/case_run.rs`): sibling present →
+/// the pin is real and still panics on a moved/missing artifact; sibling
+/// absent → a NAMED skip printed to stdout, never a silent pass and never a
+/// red lane.
+fn spine_present() -> bool {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../brain-steward-ip");
+    if root.is_dir() {
+        true
+    } else {
+        println!(
+            "SKIP (spine half): no private checkout at {} — CI lane. \
+             Re-run on an operator machine for the cross-document pins.",
+            root.display()
+        );
+        false
+    }
+}
+
 fn read_spine(rel: &str) -> String {
     let path = spine(rel);
     std::fs::read_to_string(&path).unwrap_or_else(|e| {
@@ -174,6 +196,9 @@ fn expect_all_six(label: &str, doc: &str, set: &BTreeSet<&'static str>) {
 /// opens the third document cannot fail when the third document drifts.
 #[test]
 fn r51_all_three_documents_enumerate_the_same_six_loops() {
+    if !spine_present() {
+        return;
+    }
     let kernel = read_kernel("docs/architecture.md");
     let plan = read_spine("plans/PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md");
     let blueprint = read_spine("docs/blueprint/02-SYSTEM_ARCHITECTURE.md");
@@ -210,6 +235,9 @@ fn r51_all_three_documents_enumerate_the_same_six_loops() {
 /// equality pin above could pass because everything matched.
 #[test]
 fn r51_loop_set_extractor_is_non_vacuous() {
+    if !spine_present() {
+        return;
+    }
     let plan = read_spine("plans/PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md");
     let full = enumerated_loops(&plan);
     assert_eq!(full.len(), SIX_LOOPS.len(), "the plan enumerates all six");
@@ -305,6 +333,9 @@ fn draws_operate_as_fifth_chain_box(text: &str) -> bool {
 /// was wrong, not the taxonomy.
 #[test]
 fn r51_redproof_prefix_docs_drew_operate_as_the_fifth_chain_box() {
+    if !spine_present() {
+        return;
+    }
     for (label, fixture) in [
         (
             "plans/PLAN_SIX_LOOPS_FINAL_ARCHITECTURE.md",
@@ -355,6 +386,9 @@ const CADENCES: &[(&str, &str)] = &[
 /// documents.** A reader must never have to guess which timescale a statement is about.
 #[test]
 fn r51_four_timescales_appear_in_all_three_documents() {
+    if !spine_present() {
+        return;
+    }
     let docs = [
         ("docs/architecture.md", read_kernel("docs/architecture.md")),
         (
@@ -388,6 +422,9 @@ fn r51_four_timescales_appear_in_all_three_documents() {
 /// The four STAGES appear in ring order in all three documents (I51.1/I51.2 shape).
 #[test]
 fn r51_four_stages_appear_in_ring_order_in_all_three_documents() {
+    if !spine_present() {
+        return;
+    }
     let docs = [
         ("docs/architecture.md", read_kernel("docs/architecture.md")),
         (
@@ -435,6 +472,9 @@ fn r51_four_stages_appear_in_ring_order_in_all_three_documents() {
 /// which is the same defect class I51.3 was written to close — applied one level down.
 #[test]
 fn r51_delivery_phase_names_match_the_code() {
+    if !spine_present() {
+        return;
+    }
     let core = read_kernel("crates/brain-delivery-core/src/lib.rs");
     let kernel_doc = read_kernel("docs/architecture.md");
     let blueprint = read_spine("docs/blueprint/02-SYSTEM_ARCHITECTURE.md");

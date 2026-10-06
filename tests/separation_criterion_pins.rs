@@ -207,6 +207,19 @@ fn a_corpus_that_cannot_reach_separation_says_so() {
 /// than refused.
 #[test]
 fn the_refused_primitive_arm_is_recorded_with_its_measured_reason() {
+    // Two-door rule (gdl_conformance_pack_run): the decision sheet lives in the
+    // PRIVATE spine checkout; where the sibling is absent — the CI shape — the
+    // pin is a named skip, never a red lane. A checkout that exists but lost
+    // the sheet still panics via `read`.
+    let sibling = repo_root().join("../brain-steward-ip");
+    if !sibling.is_dir() {
+        println!(
+            "SKIP the_refused_primitive_arm_is_recorded_with_its_measured_reason: no \
+             private spine checkout at {} — CI lane",
+            sibling.display()
+        );
+        return;
+    }
     let sheet =
         read("../brain-steward-ip/plans/DECISION_SHEET_FOUR_MEASUREMENT_DECISIONS_2026-10-03.md");
     assert!(
