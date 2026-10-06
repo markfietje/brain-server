@@ -59,9 +59,10 @@ this plugin (TS)  ──POST /recall (loopback)──►  brain-server (Rust)
   group/channel traffic carry origin `channel-capture`; auto-injected hit lines
   prefix ` [memory | channel-capture]` inside the fence (owner memories stay
   untagged), `autoCapture` tells the server which chat a capture came from
-  (`origin_context`), and the new `untrustedOrigins` knob (below) drops
-  channel-captured hits from auto-injection entirely. The `brain_memory_recall` TOOL
-  path always labels — a tool consumer always sees the taint. The openclaw host
+   (`origin_context`), and the new `untrustedOrigins` knob (below) drops
+   channel-captured hits from BOTH model-context paths under `"exclude"`
+   (auto-inject AND the `brain_memory_recall` tool result); under `"label"`
+   (default) the tool path labels every hit with its taint. The openclaw host
   additionally marks quoted/replayed `[memory | …]` prefixes in inbound text as
   untrusted replay, so a captured label cannot be forged into fresh prose.
 - **Schema-declared config (v0.6.1)** — every knob (including
@@ -113,7 +114,7 @@ Restart the gateway after installing. Min host version: `2026.5.31`.
   "autoRecall": true, // deterministic per-turn recall
   "autoCapture": false, // store durable facts after a turn (sends origin_context when the chat is group/channel)
   "captureMode": "proposal", // route captures through human review (default)
-  "untrustedOrigins": "label", // v0.6.0: label channel-captured hits in auto-inject, or "exclude" them (tool path always labels)
+  "untrustedOrigins": "label", // "label": tag channel-captured hits on both paths; "exclude": drop them from both (auto-inject AND tool result)
   "strictDomain": false, // false = cross-domain fallback on miss
   "defaultDomain": "global",
   "autoRecallTopK": 3,
@@ -293,8 +294,9 @@ answers it end to end:
   ` [memory | channel-capture]` inside the untrusted fence, so the model sees
   the taint exactly where it sees the memory. Owner memories stay untagged.
 - **By posture** — `untrustedOrigins: "exclude"` drops channel-captured hits
-  from auto-injection entirely. The `brain_memory_recall` TOOL path always labels:
-  a tool consumer always sees what it asked for.
+  from BOTH model-context paths (auto-inject AND the `brain_memory_recall`
+  tool result); `"label"` (default) keeps them with the origin tag inside the
+  fence on both paths.
 - **On replay** — if a labeled line is quoted back into inbound text, the
   openclaw host marks it `untrusted replay` so a forwarded memory cannot
   masquerade as fresh prose.

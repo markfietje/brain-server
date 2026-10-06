@@ -283,7 +283,7 @@ export default definePluginEntry({
               : h,
           );
           // The untrustedOrigins posture: `exclude` drops channel-captured
-          // hits from auto-inject entirely (the tool path always labels).
+          // hits here; the tool path applies the same posture (tools.ts).
           const injectable = c.untrustedOrigins === "exclude" ? excludeChannelCaptures(hits) : hits;
           const block = formatRecallContext(injectable);
           if (!block) {
