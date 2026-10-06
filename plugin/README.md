@@ -149,8 +149,8 @@ context tokens when set.
 
 ## Tools
 
-| Tool                       | Purpose                                                                                                                                                                                                                     |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tool                             | Purpose                                                                                                                                                                                                                     |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `brain_memory_recall`            | Hybrid semantic + lexical recall. Power overrides `domain`/`source`/`since`/`lex`/`vec`/`hyde`/`intent`; advanced `at`/`asOf`/`memoryKind`/`minRelevance`/`graph`/`maxContextTokens`. Surfaces `low_confidence` abstention. |
 | `brain_memory_store`             | Save a durable fact, optionally with `entities[]`/`relations[]` for the KG. Default `captureMode: "proposal"` → human review.                                                                                               |
 | `brain_memory_verify`            | Deterministic span verification (no LLM): is a claim literally supported by a chunk's text? Use before acting on a recalled fact.                                                                                           |

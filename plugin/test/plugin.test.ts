@@ -657,7 +657,9 @@ describe("tools — error surfacing (404 vs 500, brain-server-specific)", () => 
       mockResponse({ id: 42, status: "pending", novelty: 1 }),
     );
     const { tools } = registerPlugin({ agents: ["main"] });
-    const res = await tools.get("brain_memory_store")!.execute("call-1", { text: "a durable fact" });
+    const res = await tools
+      .get("brain_memory_store")!
+      .execute("call-1", { text: "a durable fact" });
     const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
     const details = (res as { details: { pending: boolean; id: number; status: string } }).details;
     // The agent's write is queued for HUMAN review, never written straight to memory.
@@ -672,7 +674,9 @@ describe("tools — error surfacing (404 vs 500, brain-server-specific)", () => 
       mockResponse({ id: 7, status: "created", entities_added: 2 }),
     );
     const { tools } = registerPlugin({ agents: ["main"], captureMode: "direct" });
-    const res = await tools.get("brain_memory_store")!.execute("call-1", { text: "a durable fact" });
+    const res = await tools
+      .get("brain_memory_store")!
+      .execute("call-1", { text: "a durable fact" });
     const details = (res as { details: { pending: boolean; status: string } }).details;
     expect(details.pending).toBe(false);
     expect(details.status).toBe("created");
@@ -777,7 +781,9 @@ describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus su
   test("brain_memory_graph_traverse empty traversal => not found", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ traversal: [], visited: 0 }));
     const { tools } = registerPlugin({ agents: ["main"] });
-    const res = await tools.get("brain_memory_graph_traverse")!.execute("call-1", { start: "nothing" });
+    const res = await tools
+      .get("brain_memory_graph_traverse")!
+      .execute("call-1", { start: "nothing" });
     expect((res as { details: { found: boolean } }).details.found).toBe(false);
   });
 
@@ -805,7 +811,9 @@ describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus su
       ]),
     );
     const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
-    const res = await tools.get("brain_memory_proposal_list")!.execute("call-1", { status: "pending" });
+    const res = await tools
+      .get("brain_memory_proposal_list")!
+      .execute("call-1", { status: "pending" });
     const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
     expect(text).toContain("#42");
     expect(text).toContain("prefers dark mode");
@@ -965,7 +973,9 @@ describe("per-field boundary — tool details carry no raw untrusted text", () =
       ]),
     );
     const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
-    const res = await tools.get("brain_memory_proposal_list")!.execute("call-1", { status: "pending" });
+    const res = await tools
+      .get("brain_memory_proposal_list")!
+      .execute("call-1", { status: "pending" });
     const raw = JSON.stringify((res as { details: unknown }).details);
     expect(raw).not.toContain("onerror");
     expect(raw).not.toContain("<script");
@@ -1233,7 +1243,9 @@ describe('v1.20.29 "Bound" — inflight de-dup, per-session cap, body + token cl
     const { tools } = registerPlugin({ agents: ["main"] });
     fetchMock.mockClear();
     fetchMock.mockResolvedValue(mockResponse({ hits: [{ id: 1, content: "x", score: 0.5 }] }));
-    await tools.get("brain_memory_recall")!.execute("c1", { query: "what", maxContextTokens: 8_000 });
+    await tools
+      .get("brain_memory_recall")!
+      .execute("c1", { query: "what", maxContextTokens: 8_000 });
     const atCeiling = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
     expect(atCeiling.max_context_tokens).toBe(8_000);
 
