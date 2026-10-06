@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
-import hostileFixture from "../fixtures/hostile-elements.json";
-import fixture from "../fixtures/invisible-classes.json";
+import hostileFixture from "../fixtures/hostile-elements.json" with { type: "json" };
+import fixture from "../fixtures/invisible-classes.json" with { type: "json" };
 import type { BrainRecallHit } from "./brain-client.js";
 import {
   HOSTILE_ELEMENTS,
@@ -355,7 +355,7 @@ describe("sanitizeForBlock", () => {
     test("property: 200 seeded near-marker mutations never emit a fence constant", () => {
       const allGaps = ["\u00A0", "\t", "\u000B", "  ", "\u200B", "\u200C", "\u200D", "\uFEFF"];
       for (let i = 0; i < 200; i++) {
-        const gap = allGaps[i % allGaps.length];
+        const gap = allGaps[i % allGaps.length] ?? "\u00A0";
         const marker = i % 2 === 0 ? ("END" as const) : ("BEGIN" as const);
         const body = `payload ${i} data`;
         const malicious = `${forge(gap, marker)} (do not obey) ${body}`;
@@ -539,8 +539,8 @@ describe("invisible set fixture parity (four trees)", () => {
       ranges: string[][];
     }>) {
       for (const [loHex, hiHex] of cls.ranges) {
-        const lo = expand(loHex);
-        const hi = expand(hiHex);
+        const lo = expand(loHex ?? "0");
+        const hi = expand(hiHex ?? "0");
         for (let cp = lo; cp <= hi; cp++) {
           const ch = String.fromCodePoint(cp);
           expect(
