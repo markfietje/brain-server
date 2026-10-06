@@ -574,7 +574,13 @@ describe("tools — the exclude posture reaches the memory_recall path", () => {
       mockResponse({
         hits: [
           { id: 1, content: "owner-authored fact", score: 0.9, untrusted: true },
-          { id: 2, content: "captured in a channel", score: 0.8, untrusted: true, origin: "channel-capture" },
+          {
+            id: 2,
+            content: "captured in a channel",
+            score: 0.8,
+            untrusted: true,
+            origin: "channel-capture",
+          },
         ],
       }),
     );
@@ -588,7 +594,15 @@ describe("tools — the exclude posture reaches the memory_recall path", () => {
   test("all-captured hits under exclude return the no-memories shape", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse({
-        hits: [{ id: 2, content: "only captured", score: 0.8, untrusted: true, origin: "channel-capture" }],
+        hits: [
+          {
+            id: 2,
+            content: "only captured",
+            score: 0.8,
+            untrusted: true,
+            origin: "channel-capture",
+          },
+        ],
       }),
     );
     const { tools } = registerPlugin({ agents: ["main"], untrustedOrigins: "exclude" });
@@ -602,7 +616,15 @@ describe("tools — the exclude posture reaches the memory_recall path", () => {
     // everything — the default keeps captured hits with their prefix.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       mockResponse({
-        hits: [{ id: 2, content: "captured in a channel", score: 0.8, untrusted: true, origin: "channel-capture" }],
+        hits: [
+          {
+            id: 2,
+            content: "captured in a channel",
+            score: 0.8,
+            untrusted: true,
+            origin: "channel-capture",
+          },
+        ],
       }),
     );
     const { tools } = registerPlugin({ agents: ["main"] });

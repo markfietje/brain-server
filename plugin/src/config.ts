@@ -244,7 +244,14 @@ function assertValidTeamDomain(raw: string): void {
 // Fail-closed, mirroring the arms below that already validate (baseUrl
 // scheme, teamDomain shape). A type error is never silently defaulted over.
 
-type FieldKind = "boolean" | "string" | "string[]" | "chatType[]" | "originMode" | "captureModeKind" | "int";
+type FieldKind =
+  | "boolean"
+  | "string"
+  | "string[]"
+  | "chatType[]"
+  | "originMode"
+  | "captureModeKind"
+  | "int";
 
 /** The closed field census — adding a config field without a row here
  * fails the census pin in config.test.ts (the schema and this table are
