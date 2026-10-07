@@ -323,6 +323,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: ./.github/actions/huggingface-prefetch
       - name: clippy (--features compliance-pack, all targets)
         run: cargo clippy --all-targets --features compliance-pack -- -D warnings
       - name: test (--features compliance-pack)
@@ -337,6 +338,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: ./.github/actions/huggingface-prefetch
       - name: clippy (--features multivec, all targets)
         run: cargo clippy --all-targets --features multivec -- -D warnings
       - name: test (--features multivec)
@@ -356,6 +358,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: ./.github/actions/huggingface-prefetch
       - name: clippy (--features injection-classifier, all targets)
         run: cargo clippy --all-targets --features injection-classifier -- -D warnings
       - name: test (--features injection-classifier)
