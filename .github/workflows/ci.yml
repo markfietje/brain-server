@@ -89,8 +89,8 @@ jobs:
           BRAIN_TEST_COUNT="$(cargo test --features bench,migrate --no-fail-fast \
             --skip handlers::case_run::conformance::gdl_conformance_pack_run \
             --skip workflow::sandbox::tests::realized_paths_law_pinned_against_symlinked_temp \
-            --skip workflow::sandbox::landlock::landlock_write_inside_workdir_succeeds \
-            --skip workflow::sandbox::landlock::landlock_write_outside_workdir_fails \
+            --skip landlock_write_inside_workdir_succeeds \
+            --skip landlock_write_outside_workdir_fails \
             --skip workflow::sandbox::tests::exec_route_wraps_the_sandbox_when_selected \
             --skip workflow::sandbox::tests::escape_is_process_not_thread \
             --skip workflow::sandbox::tests::sandboxed_network_is_denied \

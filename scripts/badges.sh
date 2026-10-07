@@ -44,16 +44,20 @@ test_count()   {
   # exist ONLY on one OS — 7 seatbelt tests compile solely on macOS, 2
   # landlock tests solely on Linux — so a raw derivation differs by 5
   # across the two platforms and the badge gate (which runs on Linux CI)
-  # can never agree with a macOS-derived number. The four skips below
-  # exclude BOTH platform-only families by name, so the count measures
-  # the SAME test set everywhere. The names are the contract: a new
-  # platform-gated sandbox test must either be added to these skips or
-  # named platform-neutrally, or the badge drifts by design again.
+  # can never agree with a macOS-derived number. The skips below exclude
+  # BOTH platform-only families by name, so the count measures the SAME
+  # test set everywhere. BARE NAMES, DELIBERATELY: libtest matches --skip
+  # by substring against the full path, and the landlock pair lives at
+  # workflow::sandbox::landlock::linux_ci::* — a module a darwin host
+  # cannot even compile, so the first cut's full-path skips were written
+  # blind and matched nothing on the runner (derived 3166, not 3164). A
+  # bare name cannot be wrong about nesting. A new platform-gated sandbox
+  # test must join these skips or the badge drifts by design again.
   ( cd "$REPO" && cargo test --features bench,migrate -- \
       --skip handlers::case_run::conformance::gdl_conformance_pack_run \
       --skip workflow::sandbox::tests::realized_paths_law_pinned_against_symlinked_temp \
-      --skip workflow::sandbox::landlock::landlock_write_inside_workdir_succeeds \
-      --skip workflow::sandbox::landlock::landlock_write_outside_workdir_fails \
+      --skip landlock_write_inside_workdir_succeeds \
+      --skip landlock_write_outside_workdir_fails \
       --skip workflow::sandbox::tests::exec_route_wraps_the_sandbox_when_selected \
       --skip workflow::sandbox::tests::escape_is_process_not_thread \
       --skip workflow::sandbox::tests::sandboxed_network_is_denied \
