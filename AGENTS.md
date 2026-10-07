@@ -1,5 +1,58 @@
 # Agent Execution Log — brain-server
 
+> **R83 "Grammar" — the attribute tier learns the space around `=`.**
+> Second round of the parallel programme (lane L2 developed in worktree
+> `brain-L2`, L0 shipped; fork lane parked under the operator's
+> zero-conflict directive — no `~/Sites/openclaw` edit that could
+> merge-conflict with `openclaw/openclaw`). Closes the tenth pass's
+> **F4-02** (HIGH) and **P4-02**; lands the **R9-02 falsification
+> erratum**. No authz change, no route change, no wire change, no schema
+> change (**1.32.26** unchanged), zero new dependency edges.
+>
+> **(1) F4-02 — one lookahead rejoins what the split tore apart.** The
+> whitespace-only tokeniser handed `attr_is_hostile` `None` for every
+> spaced `name = value` form, so all five whitespace forms survived
+> byte-identical across all seven scheme attributes plus `style`
+> (preflight probe: 28 survivals → 0 post-fix). Pins
+> `spaced_equals_cannot_smuggle_a_hostile_attribute` +
+> `spaced_benign_attributes_pass_through_verbatim`; the mutant
+> (lookahead forced `None`) fails with 45 spaced forms survived.
+> **Measured, not inherited:** only ` `/`\t`/`\n` were ever live —
+> `\r`/`\x0c` already die upstream where the control-strip rejoins the
+> tight form, and spaced `ping` already died by name (its URL residue
+> rode pre-fix, killed post-fix). The fix is whitespace-agnostic, so
+> all five die through one path regardless. Scope correction recorded:
+> the plan text said the 7-name URL list carries `data`, the code says
+> `background` — no gap, `data=` belongs to `<object>`, which the
+> element tier owns.
+>
+> **(2) P4-02 — the shell twin carries the same fix and the same
+> canaries** (`sweepAttributesInTags`/`sweepSurvivingTag`/`attrIsHostile`
+> + entity/CSS decoders; `shell/tests/attribute-canary.test.ts` 3/3,
+> `pnpm test` 85/85 across 19 files, `pnpm check` clean; the mutant
+> kills the identical 45-count). The plugin tier is server-canonical by
+> design and inherits via sync; the fork-sanitizer arm lives under K4-02
+> (R92, parked with the fork lane).
+>
+> **(3) The R9-02 erratum.** R78's `CLOSED` row gains the falsification
+> sentence: the `css_value_fetches` arm was unreachable through the
+> tokeniser's own grammar until F4-02 — and THREAT_MODEL's Attrbane row
+> is corrected in the same commit (stamp law).
+>
+> **Spire at ship:** `cargo test --lib gate::` 63/0; full
+> `cargo test --features bench` 50 ok lines / 0 FAILED; fmt + clippy
+> (`bench` + default) clean; `badges.sh --selfcheck` clean,
+> `--verify-count` re-derived **3170** (+2, the round's own pins);
+> `docs-truth.sh` LOW=17/MED=0; `env-truth.sh` clean; doc-links 547
+> resolve. Register: F4-02 + P4-02 flipped CLOSED — R83 with evidence;
+> `SHIPPED_ROUNDS` → `[&str; 15]`.
+>
+> **ponytail: NOT** the fork sanitizer gap (K4-02 → R92, fork lane's);
+> NOT the `data`-attribute question (answered above); NOT R84's fork
+> half (parked — K4-03/05/06/07/10/12, K8-11, K4-09 stay OPEN under the
+> zero-conflict directive); no schema/route/authz change; zero new
+> dependency edges.
+>
 > **R82 "Reach" — the live-exposure round: the gateway stops running the
 > operator token.** First round of the parallel programme
 > (`docs/EXECUTION_PLAN_20261007_PARALLEL.md`; lane L1 developed in

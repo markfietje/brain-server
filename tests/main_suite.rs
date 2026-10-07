@@ -18229,9 +18229,9 @@ mod scrim {
             }
         }
 
-        const SHIPPED_ROUNDS: [&str; 14] = [
+        const SHIPPED_ROUNDS: [&str; 15] = [
             "R68", "R69", "R70", "R72", "R73", "R74", "R75", "R76", "R77", "R78", "R79", "R80",
-            "R81", "R82",
+            "R81", "R82", "R83",
         ];
         for (id, disposition) in &rows {
             let declared = declared_disposition(disposition);

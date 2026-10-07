@@ -4,6 +4,17 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R83 "Grammar": the attribute tier learns the space around `=`
+
+Spaced `name = value` forms no longer bypass the read seam's attribute
+tier: the tokeniser rejoins the pair before the hostility probe, so all
+five whitespace forms die across all seven scheme attributes plus
+`style` and `ping` (28 pre-fix survivals → 0). The shell twin mirrors
+the fix with the same canary family; the plugin tier inherits via sync.
+Carries the R9-02 falsification erratum (the `css_value_fetches` arm
+was unreachable through the old grammar). No wire, schema, route, or
+authz change; zero new dependency edges; badge re-derived at **3170**.
+
 ## [Unreleased] — R82 "Reach": the live-exposure round
 
 The gateway authenticates as the agent principal — the operator token no
