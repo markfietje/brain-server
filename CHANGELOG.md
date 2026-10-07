@@ -4,7 +4,19 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
-## [Unreleased] — R83 "Grammar": the attribute tier learns the space around `=`
+## [1.29.4] — 2026-10-07 — "Domains": the agent principal reaches its domains, and two hardening rounds ship
+
+### R84 "Domains": auto-detected agent scopes
+
+The Twokeys agent principal no longer hard-codes `write:*/global`: its
+scope set is derived per request from the distinct domains present in
+`knowledge` (`BRAIN_AGENT_DOMAINS` overrides with an explicit list), so
+the gateway's agent token can read and write every provisioned domain
+while keeping the no-Admin ceiling and fixed `agent` role. Verified live:
+an agent-token recall on `gutmindsynergy` returns `"decision":"ok"` where
+it previously 403'd.
+
+### R83 "Grammar": the attribute tier learns the space around `=`
 
 Spaced `name = value` forms no longer bypass the read seam's attribute
 tier: the tokeniser rejoins the pair before the hostility probe, so all
@@ -15,7 +27,7 @@ Carries the R9-02 falsification erratum (the `css_value_fetches` arm
 was unreachable through the old grammar). No wire, schema, route, or
 authz change; zero new dependency edges; badge re-derived at **3170**.
 
-## [Unreleased] — R82 "Reach": the live-exposure round
+### R82 "Reach": the live-exposure round
 
 The gateway authenticates as the agent principal — the operator token no
 longer rides it, and revoking the agent identity finally reaches gateway
