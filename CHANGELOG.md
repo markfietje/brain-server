@@ -135,7 +135,11 @@ rule — real where the sibling exists, a named skip on a public runner), a
 register pin and its findings table briefly landed split across two commits,
 the injection-classifier lane self-deadlocked (a non-reentrant lock taken
 twice, latent since v1.28.71), and the badge-count step's plain YAML scalar
-folded its continuations into ` bash` (command not found). This release's
+folded its continuations into ` bash` (command not found). The closing gates
+found two more: the docs-truth/env-truth step (the last never-executed gate in
+the matrix) needed ripgrep on the runner, and a Linux parity host caught the
+ump census fixture claiming ENV_LOCK in comments while never taking it — a
+real cross-test race narrower machines had hidden. This release's
 tree also carries the single-flight promotion closing the two open
 tenth-pass egress findings (a0b72d8), two CodeQL test-surface fixes
 generated-key and no-secrets-in-assert-messages (e748d760), and the
