@@ -621,28 +621,33 @@ pub async fn auth_middleware(
         // boundary (the one trust-boundary seam that sees every route —
         // operator/None traffic is untouched).
         let pool = s.pool.clone();
-        let verdict = tokio::task::spawn_blocking(move || -> Result<bool, String> {
-            let conn = pool
-                .get()
-                .map_err(|e| format!("revocation store unavailable: {e}"))?;
-            crate::workflow::mesh::is_revoked(&conn, auth::AGENT_LOOPBACK_SUB)
-                .map_err(|e| format!("revocation store error: {e}"))
-        })
+        let check = tokio::task::spawn_blocking(
+            move || -> std::result::Result<(bool, Vec<String>), String> {
+                let conn = pool
+                    .get()
+                    .map_err(|e| format!("revocation store unavailable: {e}"))?;
+                let revoked = crate::workflow::mesh::is_revoked(&conn, auth::AGENT_LOOPBACK_SUB)
+                    .map_err(|e| format!("revocation store error: {e}"))?;
+                let domains = auth::agent_domains(&conn);
+                Ok((revoked, domains))
+            },
+        )
         .await
         .unwrap_or_else(|e| Err(format!("revocation store unavailable: {e}")));
-        match verdict {
-            Ok(true) => {
-                audit_auth_failure(&s.db_path, &path, "identity_revoked").await;
-                return unauthorized_response("identity_revoked");
-            }
-            Ok(false) => {}
+        let (revoked, domains) = match check {
+            Ok(pair) => pair,
             Err(code) => {
                 audit_auth_failure(&s.db_path, &path, &code).await;
                 return unauthorized_response(&code);
             }
+        };
+        if revoked {
+            audit_auth_failure(&s.db_path, &path, "identity_revoked").await;
+            return unauthorized_response("identity_revoked");
         }
-        req.extensions_mut()
-            .insert(auth::Principal::agent_loopback());
+        req.extensions_mut().insert(
+            auth::Principal::agent_loopback_for_domains(&domains),
+        );
         let resp = next.run(req).await;
         if resp.status() == axum::http::StatusCode::FORBIDDEN {
             audit_auth_failure(&s.db_path, &path, "agent_forbidden").await;

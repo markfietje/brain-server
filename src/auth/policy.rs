@@ -149,6 +149,79 @@ impl Principal {
             kind: PrincipalKind::AgentLoopback,
         }
     }
+
+    /// The Twokeys agent principal over an EXPLICIT domain set: same
+    /// identity, same fixed role, same no-Admin ceiling — the domain leg of
+    /// the scope vec carries one `write:*/<d>` per entry (Write implies
+    /// Read down). Empty/invalid input collapses to the `global`-only
+    /// posture, so an unparsable grant set can never widen by accident.
+    pub fn agent_loopback_for_domains(domains: &[String]) -> Self {
+        let mut p = Self::agent_loopback();
+        let mut scopes: Vec<Scope> = domains
+            .iter()
+            .map(|d| d.trim().to_ascii_lowercase())
+            .filter(|d| !d.is_empty())
+            .take(256)
+            .map(|domain| Scope {
+                action: Action::Write,
+                team: "*".to_string(),
+                domain,
+            })
+            .collect();
+        if scopes.is_empty() {
+            scopes.push(Scope {
+                action: Action::Write,
+                team: "*".to_string(),
+                domain: "global".to_string(),
+            });
+        }
+        p.scopes = scopes;
+        p
+    }
+}
+
+/// Env knob listing the agent principal's domains, comma-separated
+/// (`BRAIN_AGENT_DOMAINS=global,gutmindsynergy`). When unset or empty the
+/// middleware auto-detects: the distinct domains present in `knowledge`.
+pub const AGENT_DOMAINS_ENV: &str = "BRAIN_AGENT_DOMAINS";
+
+/// The agent principal's domain set for this request: the env list when
+/// configured, otherwise the distinct domains currently in `knowledge`
+/// (auto-detection). Detection errors and an empty table both fall back to
+/// `global` only — the failure mode is the pre-split ceiling, never a
+/// silent grant.
+pub fn agent_domains(conn: &rusqlite::Connection) -> Vec<String> {
+    if let Ok(raw) = std::env::var(AGENT_DOMAINS_ENV) {
+        let list: Vec<String> = raw
+            .split(',')
+            .map(|s| s.trim().to_ascii_lowercase())
+            .filter(|s| !s.is_empty())
+            .take(256)
+            .collect();
+        if !list.is_empty() {
+            return list;
+        }
+    }
+    let found: Result<Vec<String>, rusqlite::Error> = (|| {
+        let mut stmt = conn.prepare("SELECT DISTINCT domain FROM knowledge")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let d = row?.trim().to_ascii_lowercase();
+            if !d.is_empty() {
+                out.push(d);
+            }
+        }
+        Ok(out)
+    })();
+    match found {
+        Ok(mut list) if !list.is_empty() => {
+            list.sort();
+            list.dedup();
+            list
+        }
+        _ => vec!["global".to_string()],
+    }
 }
 
 /// A parsed scope. `<action>:<team>/<domain>`. Lowercased on parse so
@@ -517,5 +590,93 @@ mod tests {
             "only concrete, non-global domains"
         );
         assert!(!got.iter().any(|d| d == "*" || d == "global"));
+    }
+
+    #[test]
+    fn agent_principal_over_an_empty_domain_set_stays_global_only() {
+        let p = Principal::agent_loopback_for_domains(&[]);
+        assert_eq!(p.scopes.len(), 1);
+        assert_eq!(p.scopes[0].domain, "global");
+        assert_eq!(p.scopes[0].action, Action::Write);
+    }
+
+    #[test]
+    fn agent_principal_over_named_domains_writes_each_and_reads_down() {
+        let p = Principal::agent_loopback_for_domains(&[
+            "GutMindSynergy".to_string(),
+            " global ".to_string(),
+            "gutmindsynergy".to_string(),
+        ]);
+        // dedup is the caller's job; lowercasing is this constructor's.
+        assert!(
+            p.scopes
+                .iter()
+                .any(|s| s.domain == "gutmindsynergy" && s.action == Action::Write)
+        );
+        assert!(
+            p.scopes
+                .iter()
+                .any(|s| s.domain == "global" && s.action == Action::Write)
+        );
+        assert!(p.scopes.iter().all(|s| s.team == "*"));
+        assert!(p.roles.iter().any(|r| r == "agent"));
+        assert_eq!(p.kind, PrincipalKind::AgentLoopback);
+    }
+
+    fn memdb() -> rusqlite::Connection {
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE knowledge (id INTEGER PRIMARY KEY, domain TEXT);
+             INSERT INTO knowledge (domain) VALUES ('global'), ('gutmindsynergy'), ('health'), ('GutMindSynergy');",
+        )
+        .unwrap();
+        c
+    }
+
+    #[test]
+    fn agent_domains_auto_detects_distinct_knowledge_domains() {
+        let _env = SCOPE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var(AGENT_DOMAINS_ENV).ok();
+        unsafe { std::env::remove_var(AGENT_DOMAINS_ENV) };
+        let got = agent_domains(&memdb());
+        restore_env(AGENT_DOMAINS_ENV, prev);
+        assert!(got.contains(&"global".to_string()));
+        assert!(got.contains(&"gutmindsynergy".to_string()));
+        assert!(got.contains(&"health".to_string()));
+        assert_eq!(
+            got.iter().filter(|d| *d == "gutmindsynergy").count(),
+            1,
+            "lowercasing must merge the 'GutMindSynergy' case variant"
+        );
+    }
+
+    #[test]
+    fn agent_domains_falls_back_to_global_on_an_empty_table() {
+        let _env = SCOPE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var(AGENT_DOMAINS_ENV).ok();
+        unsafe { std::env::remove_var(AGENT_DOMAINS_ENV) };
+        let c = rusqlite::Connection::open_in_memory().unwrap();
+        c.execute_batch("CREATE TABLE knowledge (id INTEGER PRIMARY KEY, domain TEXT);")
+            .unwrap();
+        let got = agent_domains(&c);
+        restore_env(AGENT_DOMAINS_ENV, prev);
+        assert_eq!(got, vec!["global".to_string()]);
+    }
+
+    #[test]
+    fn agent_domains_env_list_wins_over_detection() {
+        let _env = SCOPE_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var(AGENT_DOMAINS_ENV).ok();
+        unsafe { std::env::set_var(AGENT_DOMAINS_ENV, "global, Job , ,PERSONAL") };
+        let got = agent_domains(&memdb());
+        restore_env(AGENT_DOMAINS_ENV, prev);
+        assert_eq!(
+            got,
+            vec![
+                "global".to_string(),
+                "job".to_string(),
+                "personal".to_string()
+            ]
+        );
     }
 }

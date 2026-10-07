@@ -47,6 +47,7 @@ PINNED_CALLSITES=(
   "BRAIN_CASE_STATUS_KEY_FILE|secrets-ladder derive: src/secrets.rs format!(\"BRAIN_{NAME}_KEY_FILE\") <- the same resolve call"
   "BRAIN_SERVER_AUTH_TOKEN|external consumer: openclaw-host env substitution for the plugin authToken (docs/deployment.md:629); writer src/bin/brain.rs:3918"
   "BRAIN_JWT_AZP|runtime-derived name: src/config.rs:489 JWT_AZP_ENV const <- std::env::var(JWT_AZP_ENV) at src/config.rs:495 (resolve for auth::jwt::check_azp)"
+  "BRAIN_AGENT_DOMAINS|runtime-derived name: src/auth/policy.rs AGENT_DOMAINS_ENV const <- std::env::var(AGENT_DOMAINS_ENV) in agent_domains"
 )
 
 # Arm 3 — declared non-knobs: names the contract docs themselves state are

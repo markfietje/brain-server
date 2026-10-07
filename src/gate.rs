@@ -713,19 +713,14 @@ fn sweep_surviving_tag(tag: &str) -> String {
         } else {
             None
         };
-        match joined {
-            Some((candidate, unit)) => {
-                if attr_is_hostile(&candidate) {
-                    for k in unit {
-                        drop[k] = true;
-                    }
+        if let Some((candidate, unit)) = joined {
+            if attr_is_hostile(&candidate) {
+                for k in unit {
+                    drop[k] = true;
                 }
             }
-            None => {
-                if attr_is_hostile(tok) {
-                    drop[i] = true;
-                }
-            }
+        } else if attr_is_hostile(tok) {
+            drop[i] = true;
         }
     }
     // Pass 3: emit kept tokens with the whitespace between them verbatim.
