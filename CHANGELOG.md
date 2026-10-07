@@ -41,6 +41,10 @@ nothing publishes unless that matrix is green for the tagged commit.
 
 **Improvements**
 
+- The egress client cache's miss path is single-flight: concurrent first
+  calls can no longer each resolve DNS and diverge from the pin map — the
+  first resolution wins and every served client is one the map recorded
+  (a0b72d8).
 - The alert sink verifies message freshness (±5 minutes) and the signal
   gateway rate-limits outbound sends, closing the replay and flood windows
   (43533767, f944c7ea).
@@ -124,9 +128,21 @@ delivery pins plus three neighbours passed only where the developer's real
 operator key existed (the attestation fixtures now install their own key
 directory, so the suite no longer depends on the machine it runs on), and
 the signal-gateway lane needed `protoc` on the runner for the presage pin's
-post-quantum ratchet build. Schema 1.32.26 unchanged; no new dependency
-edges (the root Cargo.lock moves on its own version field only); SBOM
-regenerated for 1.29.3.
+post-quantum ratchet build. Later cuts of the same tag caught four more
+never-ran-lane defects, all fixed in-tree: six integration binaries panicked
+when the private spine checkout was absent (those pins now ride the two-door
+rule — real where the sibling exists, a named skip on a public runner), a
+register pin and its findings table briefly landed split across two commits,
+the injection-classifier lane self-deadlocked (a non-reentrant lock taken
+twice, latent since v1.28.71), and the badge-count step's plain YAML scalar
+folded its continuations into ` bash` (command not found). This release's
+tree also carries the single-flight promotion closing the two open
+tenth-pass egress findings (a0b72d8), two CodeQL test-surface fixes
+generated-key and no-secrets-in-assert-messages (e748d760), and the
+dependabot bumps applied on the development line (codeql-action pair,
+@lucide/svelte; tauri was already current). Schema 1.32.26 unchanged; no
+new dependency edges (the root Cargo.lock moves on its own version field
+only); SBOM regenerated for 1.29.3; test badge re-derived at 3171.
 
 ## Unreleased — fork lane (zero-conflict band)
 
