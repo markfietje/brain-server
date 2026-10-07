@@ -645,9 +645,8 @@ pub async fn auth_middleware(
             audit_auth_failure(&s.db_path, &path, "identity_revoked").await;
             return unauthorized_response("identity_revoked");
         }
-        req.extensions_mut().insert(
-            auth::Principal::agent_loopback_for_domains(&domains),
-        );
+        req.extensions_mut()
+            .insert(auth::Principal::agent_loopback_for_domains(&domains));
         let resp = next.run(req).await;
         if resp.status() == axum::http::StatusCode::FORBIDDEN {
             audit_auth_failure(&s.db_path, &path, "agent_forbidden").await;
