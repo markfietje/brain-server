@@ -10,8 +10,8 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 
 <p align="center">
 
-  <a href="https://github.com/markfietje/brain-server/actions/workflows/ci.yml">
-    <img alt="CI" src="https://github.com/markfietje/brain-server/actions/workflows/ci.yml/badge.svg?branch=main">
+  <a href="https://github.com/markfietje/brain-server/actions/workflows/ci.yml?query=branch%3Av1.29.3">
+    <img alt="CI (release v1.29.3)" src="https://github.com/markfietje/brain-server/actions/workflows/ci.yml/badge.svg?branch=v1.29.3">
   </a>
   <a href="https://github.com/markfietje/brain-server/releases/latest">
     <img alt="Latest release" src="https://img.shields.io/github/v/release/markfietje/brain-server?include_prereleases&sort=semver">
@@ -67,6 +67,12 @@ count, CI's badge-drift gate does, on every release tag).*
 *Version, UMP, and SBOM values are derived by `scripts/badges.sh` and are machine-checked by
 `--selfcheck`. CI and release badges are live GitHub signals; stack badges link to the in-repo
 manifests and docs.*
+
+*The CI badge tracks the release tag, not `main`: the full matrix runs on `v*` tag pushes
+(the 2026-10-06 billing law — private-repo Actions are off, public-repo Actions are free),
+and `main` is deliberately never pushed to the public repo (`scripts/release.sh`), so a
+`branch=main` badge would report a stale public snapshot forever. The badge moves with each
+release, like the version badge.*
 
 <p align="center">
 
