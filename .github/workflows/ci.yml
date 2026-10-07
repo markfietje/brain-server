@@ -140,8 +140,11 @@ jobs:
         #
         # `rg` is a hard dependency of env-truth.sh and its lookups swallow a
         # missing binary with `|| true`, so a runner without it would fail with
-        # a confusing ERR spew instead of a named cause. Check it first.
+        # a confusing ERR spew instead of a named cause. The runner image does
+        # NOT carry ripgrep (first real execution of this step, 2026-10-07,
+        # failed on exactly this), so install it before the guard.
         run: |
+          command -v rg >/dev/null || sudo apt-get install -y ripgrep
           command -v rg >/dev/null || { echo "::error::ripgrep (rg) is required by scripts/env-truth.sh"; exit 1; }
           bash scripts/docs-truth.sh
           bash scripts/env-truth.sh --selfcheck

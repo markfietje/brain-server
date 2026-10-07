@@ -1167,9 +1167,24 @@ mod tests {
     // --- hash-only visibility: the integrity census -------------------------
 
     /// A 0600 operator seed dir + env, the shared fixture shape.
-    struct PinKey(#[allow(dead_code)] tempfile::TempDir);
+    ///
+    /// HOLDS the shared ENV_LOCK for its whole life. The guard used to be a
+    /// lie: the comments claimed "single-threaded under ENV_LOCK" but nothing
+    /// here took it, so any concurrent ENV_LOCK holder (the standby/provenance/
+    /// mesh/parcels fixtures all move the same var) could remove the var
+    /// between this fixture's set and the test's read — observed live as a
+    /// flaky `all_signed_shows_zero_hash_only` (left: 0, right: 2) on an
+    /// 8-core Linux host after it had hidden on narrower machines. The
+    /// MutexGuard is stored in the struct so the lock lives as long as the
+    /// fixture does; Drop releases the env var BEFORE the guard (field order:
+    /// guard dropped first would race the removal — declare guard after dir).
+    struct PinKey {
+        _dir: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
     impl PinKey {
         fn new() -> PinKey {
+            let lock = crate::test_support::lock_env();
             let dir = tempfile::TempDir::new().unwrap();
             std::fs::write(dir.path().join("operator.key"), [7u8; 32]).unwrap();
             #[cfg(unix)]
@@ -1181,14 +1196,18 @@ mod tests {
                 )
                 .unwrap();
             }
-            // SAFETY: single-threaded under ENV_LOCK — the documented posture.
+            // SAFETY: single-threaded under ENV_LOCK — NOW ACTUALLY HELD.
             unsafe { std::env::set_var("BRAIN_UMP_KEY_DIR", dir.path()) };
-            PinKey(dir)
+            PinKey {
+                _dir: dir,
+                _lock: lock,
+            }
         }
     }
     impl Drop for PinKey {
         fn drop(&mut self) {
-            // SAFETY: single-threaded under ENV_LOCK.
+            // SAFETY: the ENV_LOCK is still held (self._lock outlives this
+            // Drop body — fields drop after the impl returns).
             unsafe { std::env::remove_var("BRAIN_UMP_KEY_DIR") };
         }
     }
