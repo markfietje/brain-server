@@ -127,9 +127,6 @@ audit-chain.key
 # dep-research scratch (crate extraction) — never commit
 .depcheck/
 
-# plugin-sync baseline (scripts/sync-plugin.sh) — local drift-guard state, never commit
-/.plugin-sync-baseline
-
 # AGENTS.md is deliberately NOT ignored. It is tracked and published (added
 # 64abca7; the same blob is in both origin/main and public/main), and public
 # source cites it as its authority (src/workflow/channels.rs:19,
