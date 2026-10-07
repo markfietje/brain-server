@@ -312,7 +312,7 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
     ),
     (
         "agent",
-        r#"{"name":"agent","description":"Front-line worker: sees only their own private memory, can write + decide their own drafts","scopes":["private"],"owner_filter":"self","can":["read","write","reject"],"panels_default":["overview","ingest","recall","health"],"panels_hidden":["audit","subjects"],"tools_allowed":["ump.recall","ump.get","ump.feedback"]}"#,
+        r#"{"name":"agent","description":"Front-line worker: reads and writes across the shared memory pool (no Admin, no approve), the gateway's standing identity","scopes":["private","domain","team"],"owner_filter":"all","can":["read","write","reject"],"panels_default":["overview","ingest","recall","health"],"panels_hidden":["audit","subjects"],"tools_allowed":["ump.recall","ump.get","ump.feedback"]}"#,
     ),
     (
         "workflow-operator",
@@ -420,15 +420,17 @@ mod tests {
     }
 
     #[test]
-    fn owner_filter_self_sees_only_own_rows() {
+    fn agent_preset_sees_the_shared_pool_not_just_self() {
         let agent = presets().into_iter().find(|r| r.name == "agent").unwrap();
         let gate = effective_filter("ana", &[], std::slice::from_ref(&agent));
         assert_eq!(
-            gate.access_scopes,
-            Some(vec!["private".to_string()]),
-            "agent sees only private scope"
+            gate.access_scopes, None,
+            "owner_filter 'all' marks the role unrestricted (adminish)"
         );
-        assert_eq!(gate.owner_in, Some(vec!["ana".to_string()]));
+        assert_eq!(
+            gate.owner_in, None,
+            "no owner restriction — legacy NULL-owner rows visible"
+        );
     }
 
     #[test]
