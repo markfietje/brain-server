@@ -75,6 +75,13 @@ lock_freshness_every_lockfile() {
 run "lock-freshness"         lock_freshness_every_lockfile
 run "docs-truth"             bash scripts/docs-truth.sh
 run "env-truth"              bash scripts/env-truth.sh --selfcheck
+# The gateway-token truth lane: the openclaw gateway must authenticate with
+# the AGENT token, never the operator token (the twokeys boundary only binds
+# traffic to a revocable principal if the process carries the agent token).
+# Digest-only output — no token material on any lane. Machine-local: on a
+# checkout without an openclaw gateway env it SKIPS loudly (exit 0) — absence
+# of the setup is not a violation, and CI must stay green without the setup.
+run "secrets-truth"          bash scripts/secrets-truth.sh --selfcheck
 run "badges"                 bash scripts/badges.sh --selfcheck
 run "lipstyk"                scripts/lipstyk-gate.sh
 
