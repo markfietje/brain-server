@@ -186,7 +186,24 @@ function resolveAuthToken(cfg: Partial<BrainConfig>): string | undefined {
     }
     return envToken;
   }
-  return cfg.authToken?.trim() || undefined;
+  const cfgToken = cfg.authToken?.trim();
+  if (cfgToken) {
+    // Same refusal as the two env rungs above: a config value carrying
+    // more than one token means the operator pasted the server's two-line
+    // token file into openclaw.json (env placeholders make this easy) —
+    // its FIRST line is the privileged OPERATOR token, and transmitting
+    // it whole would leak operator authority down the agent path. This
+    // rung is the one production actually rides (the env rungs are empty
+    // in a default gateway install), so it carries the same teeth.
+    if (/\s/.test(cfgToken)) {
+      throw new Error(
+        "brain-server plugin: authToken holds more than one token — " +
+          "set it to the single agent-token value, never the operator token",
+      );
+    }
+    return cfgToken;
+  }
+  return undefined;
 }
 
 /** Resolve raw plugin config into a fully-populated, validated config. */
