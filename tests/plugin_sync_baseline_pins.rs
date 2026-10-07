@@ -67,9 +67,14 @@ fn the_plugin_sync_baseline_is_tracked() {
 
     // Tracked AND not ignored: an ignore rule over a tracked file is inert
     // today but re-arms the moment someone `git rm --cached`s it, so the
-    // rule itself must not exist.
+    // rule itself must not exist. The probe is `--no-index` on purpose:
+    // plain `git check-ignore` defers to the index and NEVER reports a rule
+    // over a tracked file (measured: with the rule re-added, plain
+    // check-ignore exits 1 and this arm passed green over the rule's
+    // presence — the vacuous pass this flag exists to kill; --no-index
+    // asks the rule question directly and exits 0 on that same state).
     let ignore = Command::new("git")
-        .args(["check-ignore", BASELINE_PATH])
+        .args(["check-ignore", "--no-index", BASELINE_PATH])
         .current_dir(repo("."))
         .output()
         .expect("git check-ignore must run");
