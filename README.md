@@ -31,7 +31,7 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 <p align="center">
 
   <a href="#verification-and-evidence">
-    <img alt="3171 tests passed" src="https://img.shields.io/badge/tests-3171%20passed-brightgreen.svg">
+    <img alt="3164 tests passed" src="https://img.shields.io/badge/tests-3164%20passed-brightgreen.svg">
   </a>
   <a href="docs/universal-memory-protocol.md">
     <img alt="UMP 1.0 L3 verified" src="https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg">
@@ -50,10 +50,9 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 
 <p align="center">
 
-*The test-count badge above is derived by `scripts/badges.sh`, not hand-typed. It is
-**not selfcheck-verified**: the lightweight `--selfcheck` path cannot machine-compare it,
-because that needs a full `cargo test` run. `scripts/badges.sh --verify-count` is the arm
-that does that comparison.*
+*The test-count badge is derived, never hand-typed (`scripts/badges.sh
+--verify-count`; not selfcheck-verified — the cheap path cannot compare a
+count, CI's badge-drift gate does, on every release tag).*
 
 <p align="center">
   <a href="Cargo.toml"><img alt="Rust 2024" src="https://img.shields.io/badge/Rust-2024-orange?logo=rust"></a>

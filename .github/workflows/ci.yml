@@ -81,9 +81,23 @@ jobs:
         # misleading total: the job above already failed, and this step must
         # still report what the count actually was.
         run: |
+          # PLATFORM-NORMALIZED derivation (2026-10-07): skips the OS-only
+          # sandbox families (7 seatbelt tests = macOS-only, 2 landlock tests
+          # = Linux-only) so the badge count measures the same test set on
+          # every platform. Must stay in lockstep with scripts/badges.sh's
+          # test_count().
           BRAIN_TEST_COUNT="$(cargo test --features bench,migrate --no-fail-fast \
             --skip handlers::case_run::conformance::gdl_conformance_pack_run \
             --skip workflow::sandbox::tests::realized_paths_law_pinned_against_symlinked_temp \
+            --skip workflow::sandbox::landlock::landlock_write_inside_workdir_succeeds \
+            --skip workflow::sandbox::landlock::landlock_write_outside_workdir_fails \
+            --skip workflow::sandbox::tests::exec_route_wraps_the_sandbox_when_selected \
+            --skip workflow::sandbox::tests::escape_is_process_not_thread \
+            --skip workflow::sandbox::tests::sandboxed_network_is_denied \
+            --skip workflow::sandbox::tests::secret_not_in_hostcall_payload \
+            --skip workflow::sandbox::tests::harness_kill_within_budget \
+            --skip workflow::sandbox::tests::sandbox_cancel_mid_run_kills_cancelled \
+            --skip workflow::sandbox::tests::sandbox_handle_drop_kills_and_reaps_mid_run \
             2>&1 | grep -Eo '[0-9]+ passed' | awk '{ s+=$1 } END { print s+0 }')"
           bash scripts/badges.sh --verify-count
       - name: README badge + release-checklist drift gate

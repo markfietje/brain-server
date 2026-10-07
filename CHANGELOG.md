@@ -142,7 +142,11 @@ generated-key and no-secrets-in-assert-messages (e748d760), and the
 dependabot bumps applied on the development line (codeql-action pair,
 @lucide/svelte; tauri was already current). Schema 1.32.26 unchanged; no
 new dependency edges (the root Cargo.lock moves on its own version field
-only); SBOM regenerated for 1.29.3; test badge re-derived at 3171.
+only); SBOM regenerated for 1.29.3; test badge re-derived at 3164, the
+platform-normalized count — the OS-only sandbox families (seven seatbelt
+tests on macOS, two landlock tests on Linux) are excluded from the
+derivation in both `badges.sh` and the CI gate, so the badge measures the
+same test set on every platform.
 
 ## Unreleased — fork lane (zero-conflict band)
 

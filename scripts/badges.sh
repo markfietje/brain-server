@@ -40,9 +40,28 @@ test_count()   {
     printf '%s' "$BRAIN_TEST_COUNT"
     return
   fi
+  # PLATFORM-NORMALIZED (2026-10-07): the sandbox suite carries tests that
+  # exist ONLY on one OS — 7 seatbelt tests compile solely on macOS, 2
+  # landlock tests solely on Linux — so a raw derivation differs by 5
+  # across the two platforms and the badge gate (which runs on Linux CI)
+  # can never agree with a macOS-derived number. The four skips below
+  # exclude BOTH platform-only families by name, so the count measures
+  # the SAME test set everywhere. The names are the contract: a new
+  # platform-gated sandbox test must either be added to these skips or
+  # named platform-neutrally, or the badge drifts by design again.
   ( cd "$REPO" && cargo test --features bench,migrate -- \
       --skip handlers::case_run::conformance::gdl_conformance_pack_run \
-      --skip workflow::sandbox::tests::realized_paths_law_pinned_against_symlinked_temp 2>&1 ) \
+      --skip workflow::sandbox::tests::realized_paths_law_pinned_against_symlinked_temp \
+      --skip workflow::sandbox::landlock::landlock_write_inside_workdir_succeeds \
+      --skip workflow::sandbox::landlock::landlock_write_outside_workdir_fails \
+      --skip workflow::sandbox::tests::exec_route_wraps_the_sandbox_when_selected \
+      --skip workflow::sandbox::tests::escape_is_process_not_thread \
+      --skip workflow::sandbox::tests::sandboxed_network_is_denied \
+      --skip workflow::sandbox::tests::secret_not_in_hostcall_payload \
+      --skip workflow::sandbox::tests::harness_kill_within_budget \
+      --skip workflow::sandbox::tests::sandbox_cancel_mid_run_kills_cancelled \
+      --skip workflow::sandbox::tests::sandbox_handle_drop_kills_and_reaps_mid_run \
+      2>&1 ) \
     | grep -Eo '[0-9]+ passed' | awk '{ s+=$1 } END { print s+0 }'
 }
 
