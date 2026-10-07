@@ -1,6 +1,6 @@
 # Security
 
-> Coverage current through R77 (2026-10-06) — includes the R68–R76
+> Coverage current through R82 (2026-10-07) — includes the R68–R76
 > remediation programme (R76's two messaging-edge controls now carry
 > THREAT_MODEL §5b rows), the 1.29.x governed
 > model-identity line (the digest-pinned model registry
@@ -19,12 +19,13 @@ is the informational summary.
 ## Principles
 
 - **Loopback-safe by default.** The default bind is `127.0.0.1`. A
-  `BIND_HOST=0.0.0.0` without `BIND_PUBLIC` set logs a loud warning and
+  `BIND_HOST=0.0.0.0` without `BIND_PUBLIC` **armed** (`1` or `true`; since
+  R82 an explicit `0` counts as unarmed, not as set) logs a loud warning and
   STILL binds (ninth-pass drill-verified on the LAN interface; the opt-in
   acknowledges the warning, it is not a gate). What DOES refuse boot: an
-  unparseable host without `BIND_PUBLIC`, and any non-loopback bind with no
-  auth token configured. The default posture is that the memory lives on
-  the host. (T9-02: this line previously claimed a `0.0.0.0` refusal that
+  unparseable host without an armed `BIND_PUBLIC`, and any non-loopback bind
+  with no auth token configured. The default posture is that the memory lives
+  on the host. (T9-02: this line previously claimed a `0.0.0.0` refusal that
   does not exist — `docs/configuration.md` has always stated the real
   behavior; the two docs now agree.)
 - **No data egress.** There is no telemetry to third parties. Outbound HTTP is

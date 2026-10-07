@@ -4,6 +4,35 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R82 "Reach": the live-exposure round
+
+The gateway authenticates as the agent principal — the operator token no
+longer rides it, and revoking the agent identity finally reaches gateway
+traffic. `BIND_PUBLIC=0` stops arming the public bind opt-in, and the
+plugin↔fork parity baseline is tracked, so the sync drift guard arms in
+every checkout instead of silently destroying target-side edits on one
+machine.
+
+### Release notes
+
+**Security fixes**
+
+- The openclaw gateway env now carries the **agent** token via
+  `BRAIN_TOKEN_FILE` (rung 1 of the plugin ladder) with no `authToken`
+  placeholder left in `openclaw.json`; the new `scripts/secrets-truth.sh
+  --selfcheck` lane pins the digest truth (12-hex, no token material) and
+  FAILS against the pre-fix posture on a hostile fixture.
+- Plugin token ladder rung 3 refuses multi-token values — the one rung in
+  production is hardened exactly like rungs 1–2 (c78f3984).
+- `BIND_PUBLIC` is value-read: an explicit `BIND_PUBLIC=0` no longer arms
+  the `0.0.0.0` opt-in or suppresses the warning, and an unparseable
+  `BIND_HOST` reaches its boot refusal instead of the public fallback
+  (9501bcf4).
+- The plugin↔fork parity baseline is tracked and machine-pinned — a fresh
+  checkout can no longer print "initializing without drift guard" and then
+  `rsync --delete` over target-side committed edits (a343f8c3, 3fd231ed,
+  9932a4ef).
+
 ## [1.29.3] — 2026-10-06 — "Hardening": two audit passes land as shipped behavior
 
 Two full-spectrum remediation passes land as shipped behavior: erasure now

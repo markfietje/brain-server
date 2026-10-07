@@ -1,5 +1,61 @@
 # Agent Execution Log — brain-server
 
+> **R82 "Reach" — the live-exposure round: the gateway stops running the
+> operator token.** First round of the parallel programme
+> (`docs/EXECUTION_PLAN_20261007_PARALLEL.md`; lane L1 developed in
+> worktree `brain-L1`, L0 shipped). Closes the tenth pass's **F4-01**
+> (CRITICAL), **F4-10**, **F4-11**, and **P4-07**. No authz change, no
+> route change, no wire change, no schema change (**1.32.26**
+> unchanged), zero new dependency edges (all `Cargo.lock` files
+> byte-untouched).
+>
+> **(1) F4-01 — the fork half, digest-verified.** The gateway wrapper now
+> pins `BRAIN_TOKEN_FILE=$HOME/.config/brain-server/auth-agent-token`,
+> unsets `BRAIN_SERVER_AUTH_TOKEN`, and `openclaw.json` carries no
+> `authToken`; `scripts/secrets-truth.sh --selfcheck` (`9932a4ef`) exits
+> 0 with auth line 1 (operator) digest `70fcdd05b6b8`, line 2 (agent)
+> `7257711ce377`, effective gateway env `token_file=7257711ce377`,
+> `token_var`/`server_auth` absent — digest-only output on every lane
+> (the e748d760 #78 law). The hostile fixture — the machine's actual
+> pre-fix wrapper (`.pre-r82`), driven on copies — FAILS the selfcheck
+> naming the operator-digest match. The **live revoke drill was NOT
+> run**; the evidence is the digest truth, and the round notes say so.
+> **(2) F4-01 — the plugin half (`c78f3984`).** Rung 3 of the token
+> ladder gains the multi-token refusal rungs 1–2 already carry; the pin
+> `plugin_config_token_refuses_a_multi_token_value` runs in the fork's
+> vitest runner (`1 passed | 15 skipped` by name) and is red-proven by
+> stripping the refusal (`expected [Function] to throw an error`) — the
+> S9-07 ceiling named, not silently worked around. **(3) F4-10
+> (`9501bcf4`).** `BIND_PUBLIC` is value-read
+> (`matches!(…, Ok("1") | Ok("true"))`); `cargo test --lib bootstrap`
+> 9/0 with `bind_public_zero_does_not_opt_in_to_public_exposure` plus
+> the needle-built wiring pin `the_production_bind_public_read_is_
+> value_read`; red-proofs: call site reverted to `is_ok()` fails the
+> wiring pin (8/1), presence-semantics predicate fails the `=0` arm
+> (`left: true, right: false`). **(4) F4-11 (`a343f8c3`, `3fd231ed`).**
+> The baseline is tracked, the ignore rule deleted; the pin's own mutant
+> drill caught a second defect — plain `git check-ignore` defers to the
+> index and NEVER reports a rule over a tracked file, so the ignore-arm
+> passed green over the rule until the pin learned `--no-index`.
+> Scratch-clone drill: baseline absent → `initializing without drift
+> guard` + a planted committed target-side edit silently destroyed
+> (exit 0); baseline tracked → the guard refuses target-side drift
+> (exit 1).
+>
+> **Known residual, named:** the fresh-checkout sync (committed baseline
+> `8e518690…` + the fork's HEAD) REFUSES naming exactly `package.json` —
+> the declared fork-field typebox delta (`1.3.34` vs canonical
+> `1.3.33`) trips the guard's byte-exact three-way `cmp`, which has no
+> declared-delta exemption. `scripts/sync-plugin.sh` needs the declared
+> fork-field delta list taught to the guard; decision carried to the
+> fork lane (R84's ship).
+>
+> **ponytail: NOT** the live revoke/kill-switch drill (digest evidence
+> only; live system untouched); NOT the sync-guard typebox exemption
+> (fork lane's); NOT the wire fields (F9-02 → R90); NOT the remaining
+> K-lane; no schema/route/authz change; zero new dependency edges; NOT
+> AUDIT/AGENTS/badge/CHANGELOG/SHIPPED_ROUNDS by the lane (L0's).
+
 > **Fork lane (post-R81, 2026-10-06) — ZERO-CONFLICT POSTURE, operator
 > instruction: only fixes that cannot merge-conflict with
 > openclaw/openclaw upstream.** Closes the ninth pass's **K9-01** (HIGH)
