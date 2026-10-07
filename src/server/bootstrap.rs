@@ -1158,7 +1158,8 @@ pub fn bootstrap() -> Result<BootOutcome> {
     let bind_host = std::env::var("BIND_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let bind_port = resolve_bind_port().map_err(|e| anyhow::anyhow!("fatal bind port: {e}"))?;
 
-    let public_opt_in = std::env::var(config::BIND_PUBLIC_OPT_IN).is_ok();
+    let public_opt_in =
+        public_bind_opt_in_from(std::env::var(config::BIND_PUBLIC_OPT_IN).ok().as_deref());
     let addr = match bind_host.parse::<std::net::IpAddr>() {
         Ok(ip) => {
             if ip == std::net::IpAddr::V4(std::net::Ipv4Addr::new(0, 0, 0, 0)) && !public_opt_in {
@@ -1301,6 +1302,27 @@ pub fn resolve_bind_port_from(value: Option<String>) -> Result<u16, String> {
 /// [`resolve_bind_port_from`] over the process environment.
 pub fn resolve_bind_port() -> Result<u16, String> {
     resolve_bind_port_from(std::env::var("BIND_PORT").ok())
+}
+
+/// The public-exposure opt-in is VALUE-read, not presence-read: only the
+/// explicit armed values (`"1"`, `"true"`) count.
+///
+/// **Wrong implementation this predicate is built to kill:** restoring
+/// `std::env::var(..).is_ok()`, under which every tier profile's
+/// `BIND_PUBLIC=0` — an operator's explicit SAFE default — ARMS the opt-in:
+/// the all-interfaces warning is suppressed and an unparseable `BIND_HOST`
+/// takes the `0.0.0.0` fallback instead of the `exit 2` refusal, while the
+/// boot logs claim "BIND_PUBLIC is set". `docker-compose.yml`'s
+/// `BIND_PUBLIC: "1"` keeps working, so compose and the tiers stop
+/// disagreeing about the same knob. A set-but-unrecognised value is NOT
+/// armed (fail-closed: `"0"`, `""`, `"yes"`, `"on"` all leave the loopback
+/// posture in place) — an operator who wants public exposure must name one
+/// of the two armed values, never a typo.
+///
+/// Pure-per-argument so it is pinnable WITHOUT booting a server; the
+/// `Option<&str>` input is `std::env::var(..).ok().as_deref()`.
+pub fn public_bind_opt_in_from(value: Option<&str>) -> bool {
+    matches!(value, Some("1") | Some("true"))
 }
 
 /// Handle CLI flags before any side effect. Prints version/usage and exits;
@@ -1508,6 +1530,72 @@ mod tests {
             // 0600 (the law's floor) and a missing path warns, not panics.
             enforce_private_mode(&dir.path().join("absent"));
         }
+    }
+
+    /// `BIND_PUBLIC` arms the public opt-in by VALUE, not by presence, so
+    /// the tier profiles' `BIND_PUBLIC=0` (their explicit safe default,
+    /// shipped in all four `deploy/tiers/*.env`) behaves exactly like an
+    /// unset variable. Downstream, the resolved `bool` is the ONLY input
+    /// the bind match consumes, so an equal decision is an equal posture
+    /// byte-for-byte: same warning text, same refusal, same fallback.
+    ///
+    /// **Wrong implementation this pin is built to kill:** restoring
+    /// `std::env::var(..).is_ok()` at the read site, under which
+    /// `Some("0")` resolves armed — this pin's `=0` arm fails.
+    #[test]
+    fn bind_public_zero_does_not_opt_in_to_public_exposure() {
+        // The tier profiles' safe default must read exactly like unset.
+        assert_eq!(
+            public_bind_opt_in_from(Some("0")),
+            public_bind_opt_in_from(None),
+            "BIND_PUBLIC=0 is an explicit DECLINE — it must not arm the opt-in"
+        );
+        assert!(!public_bind_opt_in_from(Some("0")));
+
+        // Unset, empty, and unrecognised values never arm (fail-closed).
+        for unarmed in [None, Some(""), Some("yes"), Some("on"), Some("junk")] {
+            assert!(
+                !public_bind_opt_in_from(unarmed),
+                "an unarmed or unrecognised value must not opt in: {unarmed:?}"
+            );
+        }
+
+        // Anti-vacuity: the predicate CAN arm — a never-armed
+        // implementation (a `false` constant) would pass every arm above
+        // and prove nothing. Both armed values are the documented pair.
+        assert!(public_bind_opt_in_from(Some("1")));
+        assert!(public_bind_opt_in_from(Some("true")));
+    }
+
+    /// The production read site must resolve the opt-in through the
+    /// value-read predicate. Text-bound on purpose — the read lives in the
+    /// boot path, which starts real workers and is not reachable from a
+    /// test, so the wiring is pinned the same way the outermost rate-limit
+    /// wrap is (a literal call-form match). The needle is built from parts
+    /// so this file's own assertion literal cannot satisfy it; the
+    /// presence-read form is the mutant this pin exists to kill and is
+    /// likewise assembled at runtime.
+    #[test]
+    fn the_production_bind_public_read_is_value_read() {
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/server/bootstrap.rs"
+        ))
+        .expect("bootstrap.rs source must be readable from its own test");
+        let value_form = format!(
+            "public_bind_opt_in_from(std::env::var({}).ok().as_deref())",
+            "config::BIND_PUBLIC_OPT_IN"
+        );
+        assert!(
+            src.contains(&value_form),
+            "the boot path must resolve BIND_PUBLIC through the value-read predicate"
+        );
+        let presence_form = format!("{}).is_ok()", "config::BIND_PUBLIC_OPT_IN");
+        assert!(
+            !src.contains(&presence_form),
+            "the presence-read form must not return: BIND_PUBLIC=0 (the tier \
+             profiles' explicit safe default) would arm the public opt-in"
+        );
     }
 
     #[test]
