@@ -635,6 +635,16 @@ fn region_has_hostile_element(region: &str) -> bool {
 /// including both brackets — the caller guarantees the shape). Whitespace
 /// between kept tokens is preserved verbatim, so an all-clean tag returns
 /// byte-identical and the sweep is idempotent.
+///
+/// A bare `=` (or one glued to only one side) pairs with the preceding
+/// name and the following token as its value, so the hostility probe sees
+/// the joined `name=value` for EVERY spacing form — `href = "…"`,
+/// `href= "…"`, `href ="…"` judge exactly as the tight `href="…"` does
+/// (a tokenizer that splits on whitespace hands the probe bare fragments
+/// otherwise, and no fragment alone names the hostile attribute). The
+/// merge only feeds the DECISION: kept tokens still emit verbatim, and a
+/// hostile merge drops every token of the joined attribute, never just
+/// the middle.
 fn sweep_surviving_tag(tag: &str) -> String {
     let bytes = tag.as_bytes();
     let name_len = &bytes[1..]
@@ -645,37 +655,89 @@ fn sweep_surviving_tag(tag: &str) -> String {
     out.push('<');
     out.push_str(&tag[1..1 + name_len]);
     let rest = &tag[1 + name_len..bytes.len() - 1];
-    let mut j = 0usize;
-    while j < rest.len() {
-        let b = rest.as_bytes()[j];
-        if b.is_ascii_whitespace() {
-            out.push(b as char);
-            j += 1;
-            continue;
-        }
-        // One attribute token: to the next whitespace, but a quoted value
-        // runs to its closing quote (spaces inside ride along).
-        let start = j;
-        let mut quote: Option<u8> = None;
+    // Pass 1: token spans. One attribute token runs to the next
+    // whitespace, but a quoted value runs to its closing quote (spaces
+    // inside ride along).
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    {
+        let mut j = 0usize;
         while j < rest.len() {
-            let b = rest.as_bytes()[j];
-            match quote {
-                Some(q) => {
-                    if b == q {
-                        quote = None;
-                    }
-                }
-                None if b == b'"' || b == b'\'' => quote = Some(b),
-                None if b.is_ascii_whitespace() => break,
-                None => {}
+            if rest.as_bytes()[j].is_ascii_whitespace() {
+                j += 1;
+                continue;
             }
-            j += 1;
-        }
-        let tok = &rest[start..j];
-        if !attr_is_hostile(tok) {
-            out.push_str(tok);
+            let start = j;
+            let mut quote: Option<u8> = None;
+            while j < rest.len() {
+                let b = rest.as_bytes()[j];
+                match quote {
+                    Some(q) => {
+                        if b == q {
+                            quote = None;
+                        }
+                    }
+                    None if b == b'"' || b == b'\'' => quote = Some(b),
+                    None if b.is_ascii_whitespace() => break,
+                    None => {}
+                }
+                j += 1;
+            }
+            spans.push((start, j));
         }
     }
+    let toks: Vec<&str> = spans.iter().map(|(s, e)| &rest[*s..*e]).collect();
+    // Pass 2: the drop set, so a hostile merge condemns its whole
+    // attribute (a forward-only emit could not take back a kept name).
+    let mut drop = vec![false; toks.len()];
+    for (i, tok) in toks.iter().enumerate() {
+        if drop[i] {
+            continue;
+        }
+        let joined: Option<(String, Vec<usize>)> = if *tok == "=" {
+            match (toks.get(i.wrapping_sub(1)), toks.get(i + 1)) {
+                (Some(prev), Some(next)) if !prev.contains('=') => {
+                    Some((format!("{prev}={next}"), vec![i - 1, i, i + 1]))
+                }
+                _ => None,
+            }
+        } else if let Some(after) = tok.strip_prefix('=') {
+            match toks.get(i.wrapping_sub(1)) {
+                Some(prev) if !prev.contains('=') && !after.is_empty() => {
+                    Some((format!("{prev}{tok}"), vec![i - 1, i]))
+                }
+                _ => None,
+            }
+        } else if tok.strip_suffix('=').is_some_and(|name| !name.is_empty()) {
+            toks.get(i + 1)
+                .map(|next| (format!("{tok}{next}"), vec![i, i + 1]))
+        } else {
+            None
+        };
+        match joined {
+            Some((candidate, unit)) => {
+                if attr_is_hostile(&candidate) {
+                    for k in unit {
+                        drop[k] = true;
+                    }
+                }
+            }
+            None => {
+                if attr_is_hostile(tok) {
+                    drop[i] = true;
+                }
+            }
+        }
+    }
+    // Pass 3: emit kept tokens with the whitespace between them verbatim.
+    let mut j = 0usize;
+    for (k, (s, e)) in spans.iter().enumerate() {
+        out.push_str(&rest[j..*s]);
+        if !drop[k] {
+            out.push_str(&rest[*s..*e]);
+        }
+        j = *e;
+    }
+    out.push_str(&rest[j..]);
     out.push('>');
     out
 }
@@ -691,6 +753,10 @@ fn sweep_surviving_tag(tag: &str) -> String {
 /// entity decode, CSS comment strip, one CSS-escape decode, and the browser
 /// whitespace-removal rule — so `style="color:red"` survives whole while
 /// `background:url(https://…)` does not). Everything else keeps.
+///
+/// Spaced forms arrive here REJOINED by the sweep's `=` lookahead, so
+/// this function always sees the whole `name=value` and never a bare
+/// `name`, `=`, or value fragment on its own.
 fn attr_is_hostile(token: &str) -> bool {
     let (name, value) = token
         .split_once('=')
@@ -1767,6 +1833,141 @@ mod tests {
         assert!(
             !out.to_ascii_lowercase().contains("evil.example"),
             "ping url dies: {out:?}"
+        );
+    }
+
+    /// Whitespace around `=` does not smuggle a hostile attribute past the
+    /// sweep: every spacing form judges as one joined `name=value`, so a
+    /// dangerous scheme, a fetch-bearing style, or a click beacon dies
+    /// spaced exactly as it dies tight. Survivors accumulate into one
+    /// count, so a regressed tokenizer fails en masse, not on the first
+    /// form — the red-proof is that count, not a single assertion.
+    #[test]
+    fn spaced_equals_cannot_smuggle_a_hostile_attribute() {
+        // The tier's own URL-name set, re-derived from its match list.
+        const URL_ATTRS: [&str; 7] = [
+            "href",
+            "src",
+            "action",
+            "formaction",
+            "xlink:href",
+            "poster",
+            "background",
+        ];
+        // Whitespace the tokenizer splits on. The two control members die
+        // upstream (a control-strip rejoins them into the tight form the
+        // tier already kills), so they assert as already-dead arms below.
+        const LIVE_WS: [char; 3] = [' ', '\t', '\n'];
+        const DEAD_WS: [char; 2] = ['\r', '\x0c'];
+        fn hostile_input(attr: &str, w: char) -> String {
+            let val = if attr == "style" {
+                "background:url(https://evil.example/s.png)"
+            } else if attr == "ping" {
+                "https://evil.example/click"
+            } else {
+                "javascript:alert(1)"
+            };
+            format!("<a {attr}{w}={w}\"{val}\">x</a>")
+        }
+        // Control: the tight form dies, so every spaced death below is
+        // attributable to the spacing grammar and not a dead fixture.
+        let tight = "<a href=\"javascript:alert(1)\">x</a>";
+        let tight_out = sanitize_read(tight, false, &None);
+        assert!(
+            !tight_out.contains("javascript:"),
+            "tight control must die: {tight_out:?}"
+        );
+        let mut survived: Vec<String> = Vec::new();
+        let mut dead_ws_failed: Vec<String> = Vec::new();
+        for attr in URL_ATTRS.into_iter().chain(["style", "ping"]) {
+            for w in LIVE_WS {
+                let input = hostile_input(attr, w);
+                let out = sanitize_read(&input, false, &None);
+                if out.contains("evil.example") || out.contains(attr) {
+                    survived.push(format!("{attr} ws={w:?}: {out:?}"));
+                }
+            }
+            // Half-forms: whitespace on only one side of the `=`.
+            let val = if attr == "style" {
+                "background:url(https://evil.example/s.png)"
+            } else if attr == "ping" {
+                "https://evil.example/click"
+            } else {
+                "javascript:alert(1)"
+            };
+            for input in [
+                format!("<a {attr}= \"{val}\">x</a>"),
+                format!("<a {attr} =\"{val}\">x</a>"),
+            ] {
+                let out = sanitize_read(&input, false, &None);
+                if out.contains("evil.example") || out.contains(attr) {
+                    survived.push(format!("{attr} half-form: {out:?}"));
+                }
+            }
+            // Already-dead arms: control whitespace dies upstream, so
+            // these pass with AND without the lookahead — they document
+            // the cause, they do not pin the fix.
+            for w in DEAD_WS {
+                let input = hostile_input(attr, w);
+                let out = sanitize_read(&input, false, &None);
+                if out.contains("evil.example") {
+                    dead_ws_failed.push(format!("{attr} ws={w:?}: {out:?}"));
+                }
+            }
+        }
+        assert!(
+            dead_ws_failed.is_empty(),
+            "control-whitespace arms must already die upstream: {dead_ws_failed:?}"
+        );
+        assert!(
+            survived.is_empty(),
+            "{} spaced forms survived the sweep: {survived:?}",
+            survived.len()
+        );
+    }
+
+    /// The parity law under spacing: a benign attribute with spaces around
+    /// its `=` is byte-identical (the tier stays fetch-hostile, not
+    /// attribute-hostile), a neighbour of a spaced hostile attribute
+    /// survives, and the element keeps its text.
+    #[test]
+    fn spaced_benign_attributes_pass_through_verbatim() {
+        for w in [' ', '\t', '\n'] {
+            let link = format!("<a href{w}={w}\"https://good.example/page\">docs</a>");
+            assert_eq!(
+                sanitize_read(&link, false, &None),
+                link,
+                "benign spaced href must pass through verbatim"
+            );
+            let calm = format!("<div style{w}={w}\"color:red\">calm</div>");
+            assert_eq!(
+                sanitize_read(&calm, false, &None),
+                calm,
+                "benign spaced style must pass through verbatim"
+            );
+            let sentence =
+                format!("before <a href{w}={w}\"https://good.example/p\">docs</a> after");
+            assert_eq!(
+                sanitize_read(&sentence, false, &None),
+                sentence,
+                "prose around a spaced benign tag must survive"
+            );
+        }
+        // A neighbour of a spaced hostile attribute survives while the
+        // hostile one dies whole (the drop is per-attribute, not per-tag).
+        let mixed = "<a class=\"keep\" href = \"javascript:alert(1)\" title=\"also keep\">text</a>";
+        let out = sanitize_read(mixed, false, &None);
+        assert!(
+            out.contains("class=\"keep\"") && out.contains("title=\"also keep\""),
+            "neighbour attrs survive a spaced hostile: {out:?}"
+        );
+        assert!(
+            !out.contains("evil.example") && !out.to_ascii_lowercase().contains("javascript:"),
+            "the spaced hostile attribute dies whole: {out:?}"
+        );
+        assert!(
+            out.contains(">text</a>"),
+            "the surviving tag keeps its text: {out:?}"
         );
     }
 
