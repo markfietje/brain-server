@@ -530,7 +530,7 @@ export class BrainClient {
       provenance: true,
       // the read-scope stamp: the model's explicit domain wins; otherwise the
       // operator's defaultDomain rides every unscoped recall.
-      ...(params.domain ?? this.recallDomain
+      ...((params.domain ?? this.recallDomain)
         ? { domain: params.domain ?? this.recallDomain }
         : {}),
       ...(typeof params.strictDomain === "boolean" ? { strict: params.strictDomain } : {}),
