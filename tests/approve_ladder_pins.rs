@@ -911,3 +911,97 @@ async fn the_deferral_receipt_is_behind_the_read_gate() {
         "an unauthenticated /classify must be refused at the door, got {status}"
     );
 }
+
+// ── the promote files the chunk under the PROPOSAL's domain ───────────────
+
+/// Seed a proposal under a specific domain residency (the generic promote
+/// arm's Triage premise: the reviewer authorized Write on THIS domain).
+#[allow(dead_code)]
+fn seed_proposal_in_domain(
+    conn: &Connection,
+    kind: &str,
+    content: &str,
+    now: i64,
+    domain: &str,
+) -> i64 {
+    conn.execute(
+        "INSERT INTO proposals(kind, content, source, novelty, salience, created_at, domain, owner)
+         VALUES (?1, ?2, 'agent', 0.9, 0.5, ?3, ?4, 'proposer@acme')",
+        rusqlite::params![kind, content, now, domain],
+    )
+    .expect("seed domain proposal");
+    conn.last_insert_rowid()
+}
+
+/// The generic promote must carry the approved proposal's domain into the
+/// knowledge row. The insert omits nothing: `knowledge.domain` is
+/// `NOT NULL DEFAULT 'global'`, so a promote that drops the column does not
+/// fail — it silently files the approved chunk into `global`, where the
+/// UNIQUE(content_hash, domain) pair collides with whatever the identical
+/// content already has there (measured live: `500 internal error` on a
+/// legitimate operator approve, the proposal stuck `pending`).
+///
+/// The red shape replays that exact sequence over the REAL router: the same
+/// content approved first into `global` (the only path a reviewer had before
+/// the domain was carried), then proposed into a site domain. Before the fix
+/// the second approve 500s on the collision; after it, the chunk exists ONCE
+/// PER DOMAIN, each under its own residency.
+#[tokio::test]
+async fn promote_files_the_chunk_under_the_proposals_domain() {
+    let srv = server();
+    let now = chrono::Utc::now().timestamp();
+    let content = "blueberries carry anthocyanins and support cognition";
+
+    // The global-domain copy: the identical content already promoted there.
+    let pid_global = {
+        let conn = srv.state.pool.get().expect("conn");
+        seed_proposal(&conn, "fact", content, now)
+    };
+    let d_global = digest_for(&srv.state, pid_global);
+    let (status, body) = post_approve(&srv.state, pid_global, Some(&d_global)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let chunk_global = body["chunk_id"].as_i64().expect("chunk id");
+
+    // The site-domain proposal with the IDENTICAL content.
+    let pid_site = {
+        let conn = srv.state.pool.get().expect("conn");
+        seed_proposal_in_domain(&conn, "fact", content, now + 1, "gutmindsynergy")
+    };
+    let d_site = digest_for(&srv.state, pid_site);
+    let (status, body) = post_approve(&srv.state, pid_site, Some(&d_site)).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "approving into a distinct domain must not collide with the global row: {body}"
+    );
+    let chunk_site = body["chunk_id"].as_i64().expect("chunk id");
+    assert_ne!(
+        chunk_global, chunk_site,
+        "two approvals promote two rows, one per domain"
+    );
+
+    let conn = srv.state.pool.get().expect("conn");
+    let (global_domain, site_domain): (String, String) = {
+        let g: String = conn
+            .query_row(
+                "SELECT domain FROM knowledge WHERE id = ?1",
+                [chunk_global],
+                |r| r.get(0),
+            )
+            .expect("global chunk reads back");
+        let s: String = conn
+            .query_row(
+                "SELECT domain FROM knowledge WHERE id = ?1",
+                [chunk_site],
+                |r| r.get(0),
+            )
+            .expect("site chunk reads back");
+        (g, s)
+    };
+    assert_eq!(
+        site_domain, "gutmindsynergy",
+        "the approved proposal's residency is the row's residency"
+    );
+    assert_eq!(global_domain, "global", "the earlier copy is unmoved");
+    assert_eq!(proposal_status(&srv.state, pid_site), "approved");
+}

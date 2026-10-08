@@ -1559,6 +1559,10 @@ pub async fn approve_proposal(
                 owner: content_owner_stamp(&principal.0).as_deref(),
                 origin: &origin,
                 flagged,
+                // the approved proposal's residency: the row the reviewer
+                // authorized (Write on `row_domain`, re-checked in this tx)
+                // is the row the promote must file — not the column default.
+                domain: &row_domain,
             },
         )
         .map_err(|e| HandlerError::internal(e.to_string()))?;

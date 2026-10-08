@@ -179,6 +179,12 @@ pub(crate) struct Promotion<'a> {
     pub owner: Option<&'a str>,
     pub origin: &'a str,
     pub flagged: i64,
+    /// The residency the approved proposal was created under. The column is
+    /// `NOT NULL DEFAULT 'global'`, so an INSERT that omits it does not fail —
+    /// it silently files the promoted chunk into `global`, where the
+    /// UNIQUE(content_hash, domain) pair then collides with whatever the
+    /// identical content already has in `global`.
+    pub domain: &'a str,
 }
 
 /// The generic promote: the knowledge row for an approved proposal. The vec
@@ -186,8 +192,8 @@ pub(crate) struct Promotion<'a> {
 pub(crate) fn promote_chunk_insert(conn: &Connection, p: &Promotion<'_>) -> Result<i64, GateError> {
     conn.execute(
         "INSERT INTO knowledge(content, title, source, content_hash, authority,
-                               observed_at, node_kind, assertion_kind, confidence, owner, origin, flagged)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                               observed_at, node_kind, assertion_kind, confidence, owner, origin, flagged, domain)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         rusqlite::params![
             p.content,
             None::<String>,
@@ -201,6 +207,7 @@ pub(crate) fn promote_chunk_insert(conn: &Connection, p: &Promotion<'_>) -> Resu
             p.owner,
             p.origin,
             p.flagged,
+            p.domain,
         ],
     )
     .map_err(|e| GateError::Database(format!("insert failed: {e}")))?;
@@ -406,6 +413,7 @@ mod tests {
                 owner: None,
                 origin: "human",
                 flagged,
+                domain: "global",
             },
         )
         .expect("insert");
@@ -491,6 +499,7 @@ mod tests {
                 owner: None,
                 origin: "human",
                 flagged,
+                domain: "global",
             },
         )
         .expect("insert");
@@ -504,6 +513,84 @@ mod tests {
             )
             .unwrap();
         assert_eq!(stored, 0, "clean content is not tainted");
+    }
+
+    /// The promote insert files the chunk under the domain it is GIVEN, and
+    /// the domain leg is part of the UNIQUE(content_hash, domain) pair — the
+    /// same content may live once per domain. A promote that omits the column
+    /// does not fail: it rides the `NOT NULL DEFAULT 'global'`, silently
+    /// re-filing every approved proposal into `global` (and colliding with
+    /// whatever the identical content already has there). The anti-vacuity
+    /// arm proves the default exists, so a promote hardcoding or dropping
+    /// the domain fails the exact-domain assertion rather than passing on
+    /// the default.
+    #[test]
+    fn promoted_chunk_carries_its_proposal_domain() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().expect("db");
+        crate::migration::run_migration(&mut conn, 1).expect("migration");
+        let promote = |conn: &mut Connection, hash: &str, domain: &str| {
+            let tx = conn.transaction().expect("tx");
+            let id = promote_chunk_insert(
+                &tx,
+                &Promotion {
+                    content: "identical body",
+                    source_kind: "manual",
+                    content_hash: hash,
+                    authority: None,
+                    observed_at: None,
+                    kind: "fact",
+                    assertion: "stated",
+                    confidence: 0.5,
+                    owner: None,
+                    origin: "human",
+                    flagged: 0,
+                    domain,
+                },
+            )
+            .expect("promote must succeed: the domain leg makes the pair distinct");
+            tx.commit().expect("commit");
+            id
+        };
+
+        // the identical content_hash under TWO domains: both must land.
+        let in_site = promote(&mut conn, "hash-d", "gutmindsynergy");
+        let in_global = promote(&mut conn, "hash-d", "global");
+        assert_ne!(in_site, in_global, "two rows, one per domain");
+
+        let site_domain: String = conn
+            .query_row(
+                "SELECT domain FROM knowledge WHERE id = ?1",
+                rusqlite::params![in_site],
+                |r| r.get(0),
+            )
+            .expect("site row reads back");
+        let global_domain: String = conn
+            .query_row(
+                "SELECT domain FROM knowledge WHERE id = ?1",
+                rusqlite::params![in_global],
+                |r| r.get(0),
+            )
+            .expect("global row reads back");
+        assert_eq!(site_domain, "gutmindsynergy", "the carried domain wins");
+        assert_eq!(global_domain, "global");
+
+        // anti-vacuity: the column default IS 'global', so a promote that
+        // drops the column lands in 'global' and fails the exact-domain
+        // assertion above rather than passing on the default.
+        conn.execute(
+            "INSERT INTO knowledge(content, content_hash) VALUES ('default probe', 'hash-dv')",
+            [],
+        )
+        .expect("default probe");
+        let default_domain: String = conn
+            .query_row(
+                "SELECT domain FROM knowledge WHERE content_hash = 'hash-dv'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("default probe row");
+        assert_eq!(default_domain, "global", "the default must be 'global'");
     }
 
     /// Regression: v1.17.1 M4 added `created_at` to the export column list, but the

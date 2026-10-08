@@ -1616,6 +1616,7 @@ mod tests {
                 owner: Some(subject),
                 origin: "human",
                 flagged: 0,
+                domain: "global",
             },
         )
         .expect("promote");
