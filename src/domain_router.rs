@@ -8,6 +8,16 @@
 //! source domain. ponytail: centroids are simple arithmetic means of raw f32
 //! embeddings (not learned); upgrade path is a per-domain probe-set / SVM if a
 //! corpus needs sharper separation.
+//!
+//! The probe-set upgrade lives here now: `route_multi` scores a query against
+//! per-domain PROTOTYPE vectors (k-means cluster means of the domain's chunk
+//! embeddings, rebuilt by the sweep) using the mean of each domain's top-k
+//! prototype similarities. A topic that is a sliver of a large domain — a
+//! green-tea cluster inside a gut-microbiome corpus — scores against its own
+//! prototype instead of being averaged away by the domain mean, which is the
+//! measured failure single-centroid routing has with large heterogeneous
+//! domains. Centroids remain the per-write-refresh signal and the fallback
+//! when a domain carries no prototypes yet.
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, params};
@@ -19,6 +29,21 @@ use crate::search::cosine_sim;
 /// query to be confidently routed to that domain. Below this, non-strict recall
 /// federates across domains.
 pub const DOMAIN_CONFIDENCE_THRESHOLD: f32 = 0.30;
+
+/// Prototype clusters per domain (k-means, deterministic). A domain with fewer
+/// vectors than this keeps every vector as its own prototype. 24 clusters over
+/// the largest live domain bounds the sweep at a fraction of a second while
+/// giving a heterogeneous corpus one prototype per major topic.
+pub const PROTO_K: usize = 24;
+
+/// How many of a domain's best prototype similarities are averaged into the
+/// domain's routing score. k > 1 damps a single outlier prototype: one lucky
+/// vector cannot win a domain the way a max-aggregation would.
+pub const ROUTE_TOP_K: usize = 3;
+
+/// k-means iteration cap. Convergence almost always fires first; the cap makes
+/// worst-case sweep cost bounded and the result deterministic regardless.
+const KMEANS_ITERS: usize = 12;
 
 /// Arithmetic mean of a set of equal-length f32 vectors. Returns an empty vec
 /// if the input is empty. All vectors are assumed to share the model's dim.
@@ -36,6 +61,64 @@ pub fn mean_vector(vectors: &[Vec<f32>]) -> Vec<f32> {
     let n = vectors.len() as f32;
     acc.iter_mut().for_each(|a| *a /= n);
     acc
+}
+
+/// The domain's routing score: the MEAN of the query's top-`ROUTE_TOP_K`
+/// prototype similarities. Aggregating k > 1 (instead of max) is the damping
+/// law — a single outlier prototype cannot carry a domain.
+fn topk_mean_sim(query: &[f32], protos: &[&Vec<f32>]) -> f32 {
+    let mut sims: Vec<f32> = protos
+        .iter()
+        .filter(|p| !p.is_empty())
+        .map(|p| cosine_sim(query, p))
+        .collect();
+    if sims.is_empty() {
+        return f32::NEG_INFINITY;
+    }
+    sims.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+    let k = ROUTE_TOP_K.min(sims.len());
+    sims[..k].iter().sum::<f32>() / k as f32
+}
+
+/// Route a query vector to the single best-matching domain by PROTOTYPE
+/// similarity, or `None` below [`DOMAIN_CONFIDENCE_THRESHOLD`]. Pure +
+/// deterministic (ties broken alphabetically). `prototypes` is
+/// `(domain, vector)` and may hold many vectors per domain. Domains whose
+/// prototype list is empty (or all-empty vectors) cannot win — the caller
+/// falls back to centroid routing for them.
+pub fn route_multi(query: &[f32], prototypes: &[(String, Vec<f32>)]) -> Option<String> {
+    // prototypes arrive ordered by domain (the reader sorts); score each
+    // contiguous same-domain run in one pass.
+    let mut best: Option<(f32, &str)> = None;
+    let mut run_start = 0usize;
+    while run_start < prototypes.len() {
+        let domain = prototypes[run_start].0.as_str();
+        let mut run_end = run_start + 1;
+        while run_end < prototypes.len() && prototypes[run_end].0 == prototypes[run_start].0 {
+            run_end += 1;
+        }
+        let protos: Vec<&Vec<f32>> = prototypes[run_start..run_end]
+            .iter()
+            .map(|(_, v)| v)
+            .collect();
+        run_start = run_end;
+
+        let score = topk_mean_sim(query, &protos);
+        if score == f32::NEG_INFINITY {
+            continue;
+        }
+        match best {
+            None => best = Some((score, domain)),
+            Some((bs, _)) if score > bs => best = Some((score, domain)),
+            Some((bs, bd)) if (score - bs).abs() < f32::EPSILON && domain < bd => {
+                best = Some((score, domain))
+            }
+            _ => {}
+        }
+    }
+    best.and_then(|(score, domain)| {
+        (score >= DOMAIN_CONFIDENCE_THRESHOLD).then(|| domain.to_string())
+    })
 }
 
 /// Route a query vector to the single best-matching domain, or `None` if no
@@ -113,6 +196,130 @@ pub fn read_centroids(global_pool: &Pool) -> Result<Vec<(String, Vec<f32>)>> {
     Ok(rows)
 }
 
+/// Ensure the prototype table exists. Created lazily and additively
+/// (`IF NOT EXISTS`) rather than through the migration ladder: prototypes are
+/// routing hints rebuilt wholesale by the sweep — not source-of-truth data —
+/// so the table earns no schema-version bump and a fresh or old DB converges
+/// on first sweep.
+fn ensure_prototype_table(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS domain_route_prototypes (
+            domain TEXT NOT NULL,
+            idx INTEGER NOT NULL,
+            proto BLOB NOT NULL,
+            PRIMARY KEY (domain, idx)
+        )",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Read every stored `(domain, prototype)` ordered by domain (the order
+/// `route_multi`'s run-scanning relies on).
+pub fn read_prototypes(global_pool: &Pool) -> Result<Vec<(String, Vec<f32>)>> {
+    let conn = global_pool
+        .get()
+        .context("prototype read: DB connection failed")?;
+    ensure_prototype_table(&conn)?;
+    let mut stmt = conn.prepare(
+        "SELECT domain, proto FROM domain_route_prototypes ORDER BY domain, idx",
+    )?;
+    let rows: Vec<(String, Vec<f32>)> = stmt
+        .query_map([], |row| {
+            let domain: String = row.get(0)?;
+            let blob: Vec<u8> = row.get(1)?;
+            Ok((domain, blob_to_f32(&blob)))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(rows)
+}
+
+/// Deterministic k-means over the domain's chunk vectors; the cluster means
+/// become the domain's routing prototypes. Initial centers are evenly strided
+/// over the (id-ordered) vector list — no RNG — and the assignment loop is
+/// capped at [`KMEANS_ITERS`], so the same vectors always produce the same
+/// prototypes. Empty clusters are dropped; a domain with fewer vectors than
+/// [`PROTO_K`] keeps every vector (k = count).
+fn kmeans_prototypes(vectors: &[Vec<f32>], k: usize) -> Vec<Vec<f32>> {
+    if vectors.is_empty() || k == 0 {
+        return Vec::new();
+    }
+    let k = k.min(vectors.len());
+    let mut centers: Vec<Vec<f32>> = (0..k)
+        .map(|i| vectors[i * vectors.len() / k].clone())
+        .collect();
+    let mut assignments = vec![0usize; vectors.len()];
+    for _ in 0..KMEANS_ITERS {
+        // assignment: first-max on ties keeps the pass deterministic
+        let mut changed = false;
+        for (vi, v) in vectors.iter().enumerate() {
+            let mut best = 0usize;
+            let mut best_score = f32::NEG_INFINITY;
+            for (ci, c) in centers.iter().enumerate() {
+                let s = cosine_sim(v, c);
+                if s > best_score {
+                    best_score = s;
+                    best = ci;
+                }
+            }
+            if assignments[vi] != best {
+                assignments[vi] = best;
+                changed = true;
+            }
+        }
+        // update: mean of assigned members; an emptied center keeps its old
+        // position (it will absorb members next pass)
+        let mut sums = vec![vec![0.0f32; centers.first().map_or(0, Vec::len)]; centers.len()];
+        let mut counts = vec![0usize; centers.len()];
+        for (vi, v) in vectors.iter().enumerate() {
+            let c = assignments[vi];
+            counts[c] += 1;
+            for (a, x) in sums[c].iter_mut().zip(v.iter()) {
+                *a += *x;
+            }
+        }
+        for (ci, center) in centers.iter_mut().enumerate() {
+            if counts[ci] > 0 {
+                *center = sums[ci].iter().map(|a| a / counts[ci] as f32).collect();
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    centers
+}
+
+/// Rebuild one domain's routing prototypes from its live chunk vectors and
+/// upsert them into the global DB (replacing the domain's previous set).
+/// Returns the prototype count (0 clears any stale set, mirroring the
+/// centroid law for emptied domains).
+pub fn rebuild_prototypes(domain_pool: &Pool, domain: &str, global_pool: &Pool) -> Result<usize> {
+    let dconn = domain_pool
+        .get()
+        .context("prototype compute: domain DB connection failed")?;
+    let vectors = read_domain_vectors(&dconn, domain)?;
+    drop(dconn);
+
+    let protos = kmeans_prototypes(&vectors, PROTO_K);
+    let gconn = global_pool
+        .get()
+        .context("prototype compute: global DB connection failed")?;
+    ensure_prototype_table(&gconn)?;
+    gconn.execute(
+        "DELETE FROM domain_route_prototypes WHERE domain = ?1",
+        params![domain],
+    )?;
+    for (idx, proto) in protos.iter().enumerate() {
+        gconn.execute(
+            "INSERT INTO domain_route_prototypes (domain, idx, proto) VALUES (?1, ?2, ?3)",
+            params![domain, idx as i64, f32_to_blob(proto)],
+        )?;
+    }
+    Ok(protos.len())
+}
+
 /// Recompute and store a single domain's centroid. Vectors are read from
 /// `domain_pool` (the domain's own DB) joined to `knowledge` on `domain`; the
 /// centroid is upserted into the global DB's `domain_centroids` table. Returns
@@ -156,13 +363,17 @@ pub fn recompute_centroid(domain_pool: &Pool, domain: &str, global_pool: &Pool) 
     Ok(count)
 }
 
-/// one-shot recompute of every known domain's centroid from the
-/// corrected vector source. Domain set = `DISTINCT knowledge.domain` ∪ existing
-/// `domain_centroids` rows (so a domain that emptied out also gets its stale
-/// centroid cleaned). In shim mode all domains share the global pool. Returns
-/// `(domain, vector_count)` per domain — the post-migration catch-up sweep
-/// that makes auto-route meaningful (until real centroids exist, `route()`
-/// only ever sees `global`).
+/// one-shot recompute of every known domain's centroid AND routing prototypes
+/// from the corrected vector source. Domain set = `DISTINCT knowledge.domain` ∪
+/// existing `domain_centroids` rows (so a domain that emptied out also gets its
+/// stale centroid cleaned). In shim mode all domains share the global pool.
+/// Returns `(domain, vector_count)` per domain — the post-migration catch-up
+/// sweep that makes auto-route meaningful (until real centroids exist, `route()`
+/// only ever sees `global`). Prototypes ride the same sweep: per-write
+/// `recompute_centroid` refreshes only the centroid (k-means over a large
+/// domain is sweep-cost, not write-cost), so a domain's prototypes may lag its
+/// newest chunks until the next sweep — a routing-hint staleness the fallback
+/// path absorbs (no prototypes → centroid routing, unchanged).
 pub fn recompute_all_centroids(global_pool: &Pool) -> Result<Vec<(String, usize)>> {
     let conn = global_pool
         .get()
@@ -181,6 +392,7 @@ pub fn recompute_all_centroids(global_pool: &Pool) -> Result<Vec<(String, usize)
     let mut out = Vec::new();
     for d in domains {
         let count = recompute_centroid(global_pool, &d, global_pool)?;
+        rebuild_prototypes(global_pool, &d, global_pool)?;
         out.push((d, count));
     }
     Ok(out)
@@ -192,13 +404,16 @@ pub fn recompute_all_centroids(global_pool: &Pool) -> Result<Vec<(String, usize)
 /// `vec_knowledge`, matching `find_near_duplicates` (consolidate.rs:260), and
 /// dequantizes via `decode_embedding`. `valid_to IS NULL` excludes superseded
 /// chunks (the loser of a contradiction resolution) so a centroid isn't pulled
-/// toward outdated content. Kept Connection-taking so tests use `test_db()`.
+/// toward outdated content. `ORDER BY k.id` pins the read order — the k-means
+/// init strides this list, so an unpinned order would make prototypes
+/// nondeterministic. Kept Connection-taking so tests use `test_db()`.
 pub fn read_domain_vectors(conn: &Connection, domain: &str) -> Result<Vec<Vec<f32>>> {
     let mut stmt = conn.prepare(
         "SELECT v.embedding_int8
          FROM vec_knowledge v
          JOIN knowledge k ON k.id = v.knowledge_id
-         WHERE k.domain = ?1 AND k.valid_to IS NULL",
+         WHERE k.domain = ?1 AND k.valid_to IS NULL
+         ORDER BY k.id",
     )?;
     let rows = stmt.query_map(params![domain], |row| row.get::<_, Vec<u8>>(0))?;
     let mut vectors: Vec<Vec<f32>> = Vec::new();
@@ -349,6 +564,227 @@ mod tests {
         for (a, b) in got.iter().zip(v.iter()) {
             assert!((a - b).abs() < 1e-6);
         }
+    }
+
+    // ── prototype routing (the probe-set upgrade) ─────────────
+
+    /// In 8 dims: `bulk` is a large heterogeneous domain whose MEAN is pulled
+    /// orthogonal to the query by its many off-topic vectors, but which carries
+    /// a tight on-topic cluster (3 aligned prototypes). `tiny` is a focused
+    /// domain whose single centroid IS the query direction. The measured
+    /// failure: single-centroid routing sends this query to `tiny` (or
+    /// nowhere), never `bulk`, even though `bulk` holds the matching topic.
+    /// Top-k prototype means let the on-topic cluster carry `bulk`.
+    #[test]
+    fn route_multi_finds_a_topic_the_domain_mean_averages_away() {
+        let on_topic = vec![1.0, 0.9, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0];
+        let off_topic = vec![0.0, 0.0, 0.0, 1.0, 1.0, 0.9, 0.8, 0.7];
+        let query = vec![1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+
+        // the single-centroid world: bulk's mean is dominated by off-topic
+        // mass and loses to tiny's exact match.
+        let bulk_mean = mean_vector(&[on_topic.clone(), off_topic.clone(), off_topic.clone()]);
+        let centroids = vec![
+            ("bulk".to_string(), bulk_mean),
+            ("tiny".to_string(), query.clone()),
+        ];
+        assert_eq!(
+            route(&query, &centroids).as_deref(),
+            Some("tiny"),
+            "precondition: centroid routing picks the focused domain"
+        );
+
+        // the prototype world: bulk's on-topic cluster is a real prototype,
+        // and its top-3 mean (one on-topic + two damped) still beats a domain
+        // whose prototypes are all orthogonal — bulk wins with tiny below
+        // threshold.
+        let prototypes = vec![
+            ("bulk".to_string(), on_topic.clone()),
+            ("bulk".to_string(), off_topic.clone()),
+            ("bulk".to_string(), off_topic.clone()),
+            ("bulk".to_string(), off_topic.clone()),
+            ("tiny".to_string(), off_topic.clone()),
+        ];
+        assert_eq!(
+            route_multi(&query, &prototypes).as_deref(),
+            Some("bulk"),
+            "the on-topic cluster routes the query into the large domain"
+        );
+    }
+
+    /// A domain scoring on ONE extreme prototype must not beat a domain with
+    /// several moderately-good ones: the top-k MEAN is the damping law (a max
+    /// aggregation would let the single lucky vector win). 2D keeps the
+    /// arithmetic exact: 0.8+0+0 vs (0.5+0.5+0.5)/3.
+    #[test]
+    fn route_multi_damps_a_single_outlier_prototype() {
+        let query = vec![1.0, 0.0];
+        let prototypes = vec![
+            // "lucky": one near-exact hit, everything else orthogonal.
+            ("lucky".to_string(), vec![1.0, 0.0]),
+            ("lucky".to_string(), vec![0.0, 1.0]),
+            ("lucky".to_string(), vec![0.0, 1.0]),
+            ("lucky".to_string(), vec![0.0, 1.0]),
+            // "steady": nothing exact, three solid matches.
+            ("steady".to_string(), vec![0.5, 0.5]),
+            ("steady".to_string(), vec![0.5, 0.5]),
+            ("steady".to_string(), vec![0.5, 0.5]),
+            ("steady".to_string(), vec![0.5, 0.5]),
+        ];
+        assert_eq!(
+            route_multi(&query, &prototypes).as_deref(),
+            Some("steady"),
+            "top-k mean damps the single outlier (max would pick lucky)"
+        );
+    }
+
+    #[test]
+    fn route_multi_returns_none_when_nothing_clears_the_threshold() {
+        let q = vec![1.0, 0.0];
+        let prototypes = vec![
+            ("a".to_string(), vec![0.0, 1.0]),
+            ("b".to_string(), vec![-0.1, 0.9]),
+        ];
+        assert!(route_multi(&q, &prototypes).is_none());
+    }
+
+    #[test]
+    fn route_multi_ties_break_alphabetically_and_are_deterministic() {
+        let q = vec![1.0, 0.0];
+        let protos = |order: bool| {
+            let a = ("alpha".to_string(), vec![1.0, 0.0]);
+            let b = ("beta".to_string(), vec![1.0, 0.0]);
+            if order {
+                vec![b, a]
+            } else {
+                vec![a, b]
+            }
+        };
+        let first = route_multi(&q, &protos(false));
+        let second = route_multi(&q, &protos(true));
+        assert_eq!(first.as_deref(), Some("alpha"));
+        assert_eq!(first, second, "same scores → same winner either input order");
+    }
+
+    #[test]
+    fn route_multi_skips_empty_prototype_vectors() {
+        let q = vec![1.0, 0.0];
+        let prototypes = vec![
+            ("empty".to_string(), Vec::new()),
+            ("empty".to_string(), Vec::new()),
+            ("real".to_string(), vec![1.0, 0.0]),
+        ];
+        assert_eq!(route_multi(&q, &prototypes).as_deref(), Some("real"));
+    }
+
+    #[test]
+    fn route_multi_on_empty_input_is_none() {
+        assert!(route_multi(&[1.0, 0.0], &[]).is_none());
+    }
+
+    /// The sweep builds prototypes from the real vec0 index, deterministically:
+    /// two sweeps over identical content produce byte-identical prototype rows,
+    /// and a below-centroid query still routes into the domain that holds its
+    /// tight cluster. Driven through the real migration + vec0 + sweep path.
+    #[test]
+    fn prototype_sweep_is_deterministic_and_routes_the_cluster() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("proto.db");
+        let insert = |conn: &rusqlite::Connection, id: i64, content: &str, domain: &str, v: &[f32]| {
+            conn.execute(
+                "INSERT INTO knowledge(id, content, content_hash, domain) VALUES (?1, ?2, ?2, ?3)",
+                rusqlite::params![id, content, domain],
+            )
+            .unwrap();
+            let blob: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+            conn.execute(
+                "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+                 VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'test', datetime('now'))",
+                rusqlite::params![id, blob],
+            )
+            .unwrap();
+        };
+        // a tight 6-vector cluster in the first band (dims 0..64) and a
+        // second topic in the next band (dims 64..128) — 512-dim like the
+        // real vec0 table.
+        let topic_vec = |jitter: f32| -> Vec<f32> {
+            (0..512)
+                .map(|i| {
+                    if i < 64 {
+                        1.0 + jitter
+                    } else if i < 128 {
+                        0.1
+                    } else {
+                        0.0
+                    }
+                })
+                .collect()
+        };
+        let filler_vec = |jitter: f32| -> Vec<f32> {
+            (0..512)
+                .map(|i| {
+                    if (64..128).contains(&i) {
+                        1.0 + jitter
+                    } else if i < 64 {
+                        0.1
+                    } else {
+                        0.0
+                    }
+                })
+                .collect()
+        };
+        {
+            let mut conn = rusqlite::Connection::open(&path).unwrap();
+            crate::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
+                .expect("migration");
+            for i in 0..6 {
+                insert(
+                    &conn,
+                    i + 1,
+                    &format!("topic chunk {i}"),
+                    "site",
+                    &topic_vec(i as f32 * 0.01),
+                );
+            }
+            for i in 0..6 {
+                insert(
+                    &conn,
+                    100 + i,
+                    &format!("filler chunk {i}"),
+                    "site",
+                    &filler_vec(i as f32 * 0.01),
+                );
+            }
+        }
+        let pool: crate::Pool = r2d2::Pool::builder()
+            .build(crate::pool::SqliteConnectionManager::file(&path))
+            .expect("pool build");
+        let first = crate::domain_router::recompute_all_centroids(&pool).unwrap();
+        let protos_a = crate::domain_router::read_prototypes(&pool).unwrap();
+        let _ = crate::domain_router::recompute_all_centroids(&pool);
+        let protos_b = crate::domain_router::read_prototypes(&pool).unwrap();
+        assert_eq!(protos_a, protos_b, "identical content → identical prototypes");
+        assert!(
+            !protos_a.is_empty(),
+            "the sweep stored at least one prototype ({first:?})"
+        );
+
+        // A query near the first band's cluster: the domain's MEAN sits between
+        // the two topic bands, but a prototype sits on this cluster.
+        let site_protos = protos_a
+            .iter()
+            .filter(|(d, _)| d == "site")
+            .map(|(_, v)| v.clone())
+            .collect::<Vec<_>>();
+        assert!(!site_protos.is_empty());
+        let query = topic_vec(0.0);
+        let routed = crate::domain_router::route_multi(&query, &protos_a);
+        assert_eq!(
+            routed.as_deref(),
+            Some("site"),
+            "the cluster's prototype routes the query into its domain"
+        );
     }
 
     // ── ingest auto-routing (pure decision) ──────────────────

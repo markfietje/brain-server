@@ -330,14 +330,23 @@ pub async fn run_recall(
                 })?;
                 targets.push(("global".to_string(), p));
             } else {
-                // Centroid routing: encode once, compare to each centroid.
+                // Prototype routing when the sweep has built any: top-k
+                // prototype means separate topics that a domain's single mean
+                // vector averages away. No prototypes (never swept, or the
+                // feature's first run) → the centroid route, byte-unchanged.
                 let qvec = {
                     let m = Arc::clone(&model);
                     m.encode_one(&query)
                 };
-                let centroids =
-                    crate::domain_router::read_centroids(&state.pool).unwrap_or_default();
-                routed = crate::domain_router::route(&qvec, &centroids);
+                let prototypes =
+                    crate::domain_router::read_prototypes(&state.pool).unwrap_or_default();
+                if prototypes.is_empty() {
+                    let centroids =
+                        crate::domain_router::read_centroids(&state.pool).unwrap_or_default();
+                    routed = crate::domain_router::route(&qvec, &centroids);
+                } else {
+                    routed = crate::domain_router::route_multi(&qvec, &prototypes);
+                }
                 for d in shim_routing_targets(routed.as_deref()) {
                     let p = state
                         .registry
