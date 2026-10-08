@@ -2369,6 +2369,14 @@ pub(crate) async fn reindex(
             tx.commit()?;
             reembedded += 1;
         }
+        // Rebuild every derived retrieval structure, not just the vectors:
+        // centroids AND routing prototypes ride the same sweep. Re-embedding
+        // without the sweep left the router's picture of the corpus stale
+        // until an operator found the separate /domains/recompute route —
+        // a derived-structure staleness the operator surface should never
+        // ship. Failure propagates: a silently lost routing structure is a
+        // silent retrieval regression, same law as the vector loss above.
+        crate::domain_router::recompute_all_centroids(&pool)?;
         Ok((reembedded, skipped))
     })
     .await;

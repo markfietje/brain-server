@@ -221,9 +221,8 @@ pub fn read_prototypes(global_pool: &Pool) -> Result<Vec<(String, Vec<f32>)>> {
         .get()
         .context("prototype read: DB connection failed")?;
     ensure_prototype_table(&conn)?;
-    let mut stmt = conn.prepare(
-        "SELECT domain, proto FROM domain_route_prototypes ORDER BY domain, idx",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT domain, proto FROM domain_route_prototypes ORDER BY domain, idx")?;
     let rows: Vec<(String, Vec<f32>)> = stmt
         .query_map([], |row| {
             let domain: String = row.get(0)?;
@@ -654,16 +653,15 @@ mod tests {
         let protos = |order: bool| {
             let a = ("alpha".to_string(), vec![1.0, 0.0]);
             let b = ("beta".to_string(), vec![1.0, 0.0]);
-            if order {
-                vec![b, a]
-            } else {
-                vec![a, b]
-            }
+            if order { vec![b, a] } else { vec![a, b] }
         };
         let first = route_multi(&q, &protos(false));
         let second = route_multi(&q, &protos(true));
         assert_eq!(first.as_deref(), Some("alpha"));
-        assert_eq!(first, second, "same scores → same winner either input order");
+        assert_eq!(
+            first, second,
+            "same scores → same winner either input order"
+        );
     }
 
     #[test]
@@ -691,7 +689,11 @@ mod tests {
         crate::register_sqlite_vec::register_sqlite_vec();
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("proto.db");
-        let insert = |conn: &rusqlite::Connection, id: i64, content: &str, domain: &str, v: &[f32]| {
+        let insert = |conn: &rusqlite::Connection,
+                      id: i64,
+                      content: &str,
+                      domain: &str,
+                      v: &[f32]| {
             conn.execute(
                 "INSERT INTO knowledge(id, content, content_hash, domain) VALUES (?1, ?2, ?2, ?3)",
                 rusqlite::params![id, content, domain],
@@ -764,7 +766,10 @@ mod tests {
         let protos_a = crate::domain_router::read_prototypes(&pool).unwrap();
         let _ = crate::domain_router::recompute_all_centroids(&pool);
         let protos_b = crate::domain_router::read_prototypes(&pool).unwrap();
-        assert_eq!(protos_a, protos_b, "identical content → identical prototypes");
+        assert_eq!(
+            protos_a, protos_b,
+            "identical content → identical prototypes"
+        );
         assert!(
             !protos_a.is_empty(),
             "the sweep stored at least one prototype ({first:?})"
