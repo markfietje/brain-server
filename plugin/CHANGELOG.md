@@ -4,6 +4,30 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.13] — 2026-10-09
+
+### Added
+
+- **`defaultDomain` now stamps unscoped recalls (the read-scope stamp).** Plain
+  chat never names a domain: the model calls `brain_memory_recall` without a
+  `domain`, the server auto-routes, and a below-confidence query fell back to
+  `global`-only — so a corpus living outside `global` was unreachable from
+  conversation no matter how rich it was. The operator's `defaultDomain` now
+  rides every recall the model leaves unscoped (`BrainClient` stamps it at the
+  single choke point covering both the tool and the auto-inject path); an
+  explicit model-supplied domain always wins, and the `"global"` default
+  stamps nothing (wire body byte-identical to the unstamped past). Set it once:
+  `"defaultDomain": "gutmindsynergy"` in the plugin config.
+
+### Changed
+
+- `defaultDomain` is validated at registration against the server's domain
+  pattern (lowercase alnum/`-`/`_`, ≤63): a typo now fails once at boot with
+  the fix named, instead of turning every unscoped retrieval into a 4xx.
+- `brain_memory_recall`'s tool description tells the model the default domain
+  applies when it omits `domain`, so explicit cross-domain scoping stays a
+  deliberate act.
+
 ## [0.6.12] — 2026-10-06
 
 ### Changed (tool surface — agents referencing old names must update)

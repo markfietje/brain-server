@@ -66,6 +66,17 @@ describe("resolveConfig", () => {
     expect(cfg.defaultDomain).toBe(DEFAULTS.defaultDomain);
   });
 
+  test("defaultDomain accepts the server's domain shape (underscore included)", () => {
+    const cfg = resolveConfig({ defaultDomain: "gut_mind-synergy2" });
+    expect(cfg.defaultDomain).toBe("gut_mind-synergy2");
+  });
+
+  test("defaultDomain with an invalid shape refuses registration (it is stamped into EVERY unscoped recall)", () => {
+    for (const bad of ["GutMind", "gut mind", "-leading", "a".repeat(64), "gut; DROP"]) {
+      expect(() => resolveConfig({ defaultDomain: bad })).toThrow(/defaultDomain .*invalid/);
+    }
+  });
+
   test("authToken blank string resolves to undefined (not emitted)", () => {
     const cfg = resolveConfig({ authToken: "   " });
     expect(cfg.authToken).toBeUndefined();

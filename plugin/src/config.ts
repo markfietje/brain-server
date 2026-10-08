@@ -46,6 +46,10 @@ export const brainConfigSchema = Type.Object({
   //   only by the server-side injection screen.
   captureMode: Type.Optional(Type.Union([Type.Literal("proposal"), Type.Literal("direct")])),
   strictDomain: Type.Optional(Type.Boolean()),
+  /** The read-scope stamp: every recall the model leaves unscoped (plain chat)
+   * is stamped into this domain, so a corpus outside `global` stays reachable
+   * without the model knowing domain names. An explicit model domain always
+   * wins; "global" (the default) stamps nothing. Also the teamBridge fallback. */
   defaultDomain: Type.Optional(Type.String()),
 
   autoRecallTopK: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
@@ -249,6 +253,22 @@ function assertValidTeamDomain(raw: string): void {
   }
 }
 
+const DEFAULT_DOMAIN_RE = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+
+/**
+ * Mirrors the server's ingest/recall domain pattern (lowercase alnum, `-`/`_`
+ * after position one, <= 63). The resolver stamps this value into every
+ * unscoped recall, so an invalid shape would turn EVERY retrieval into a 4xx
+ * — fail at boot with the fix named, never per-turn.
+ */
+function assertValidDefaultDomain(raw: string): void {
+  if (!DEFAULT_DOMAIN_RE.test(raw)) {
+    throw new Error(
+      `brain-server plugin: defaultDomain '${raw}' invalid — use 1..=63 lowercase alnum/-/_ (it is stamped into every unscoped recall; a bad value would break all retrieval)`,
+    );
+  }
+}
+
 // ── Boundary typecheck ──────────────────────────────────────────────────────
 // Nothing downstream can undo a string landing where an array belongs: an
 // `agents: "ops-agent-1"` value turns the allowlist gates into SUBSTRING
@@ -351,6 +371,7 @@ export function resolveConfig(raw: unknown): ResolvedBrainConfig {
   const baseUrl = (cfg.baseUrl && cfg.baseUrl.trim()) || DEFAULTS.baseUrl;
   const defaultDomain = cfg.defaultDomain?.trim() || DEFAULTS.defaultDomain;
   assertSafeBaseUrl(baseUrl);
+  assertValidDefaultDomain(defaultDomain);
   return {
     enabled: cfg.enabled ?? DEFAULTS.enabled,
     baseUrl,

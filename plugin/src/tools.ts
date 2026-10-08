@@ -217,7 +217,7 @@ export function registerBrainTools(
       name: "brain_memory_recall",
       label: "Memory Recall",
       description:
-        "Search long-term memory. Use for past decisions, preferences, or previously discussed topics. Optionally scope by source or time, or override the semantic query.",
+        "Search long-term memory. Use for past decisions, preferences, or previously discussed topics. Optionally scope by source or time, or override the semantic query. When you omit `domain`, the operator's configured default domain applies automatically — only pass `domain` to search a DIFFERENT specific domain.",
       parameters: memoryRecallParamsSchema,
       async execute(_toolCallId, params) {
         const c = liveCfg();

@@ -438,6 +438,16 @@ export class BrainClient {
   private readonly origin: string;
   private readonly token?: string;
   private readonly defaultTimeoutMs: number;
+  /**
+   * The operator's `defaultDomain` when it is NOT the "global" default: the
+   * read-scope stamp. Recall the model leaves unscoped (the common chat case —
+   * the model never knows which domains exist) is stamped into this domain, so
+   * a corpus living outside `global` stays reachable from plain conversation.
+   * An explicit model-supplied domain ALWAYS wins; "global" stamps nothing and
+   * the wire body is byte-identical to the unstamped past. Read paths only —
+   * captures keep their own domain plumbing.
+   */
+  private readonly recallDomain?: string;
 
   constructor(cfg: ResolvedBrainConfig) {
     // Trim trailing slash so `${baseUrl}/path` is always well-formed.
@@ -448,6 +458,9 @@ export class BrainClient {
     // exactOptionalPropertyTypes: only set when a token is configured.
     if (cfg.authToken !== undefined) {
       this.token = cfg.authToken;
+    }
+    if (cfg.defaultDomain !== "global") {
+      this.recallDomain = cfg.defaultDomain;
     }
     this.defaultTimeoutMs = cfg.requestTimeoutMs;
   }
@@ -515,7 +528,11 @@ export class BrainClient {
       query: params.query,
       limit: params.limit,
       provenance: true,
-      ...(params.domain ? { domain: params.domain } : {}),
+      // the read-scope stamp: the model's explicit domain wins; otherwise the
+      // operator's defaultDomain rides every unscoped recall.
+      ...(params.domain ?? this.recallDomain
+        ? { domain: params.domain ?? this.recallDomain }
+        : {}),
       ...(typeof params.strictDomain === "boolean" ? { strict: params.strictDomain } : {}),
       ...(params.source ? { source: params.source } : {}),
       ...(params.since ? { since: params.since } : {}),

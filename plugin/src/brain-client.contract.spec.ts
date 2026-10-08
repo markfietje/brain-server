@@ -104,6 +104,37 @@ describe("BrainClient.recall", () => {
     expect(body.intent).toBe("lookup");
   });
 
+  // ── the defaultDomain read-scope stamp ────────────────────────────────────
+  // Plain chat never names a domain: the model calls brain_recall unscoped and
+  // the server's auto-router falls back to global-only on a below-confidence
+  // query — so a corpus outside `global` was unreachable from conversation.
+  // The operator's defaultDomain stamps every unscoped recall; an explicit
+  // model domain always wins; the "global" default stamps nothing.
+
+  test("stamps the operator's defaultDomain into an unscoped recall", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
+    const client = new BrainClient(resolveConfig({ defaultDomain: "gutmindsynergy" }));
+    await client.recall({ query: "What are the benefits of green tea", limit: 5 });
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
+    expect(body.domain).toBe("gutmindsynergy");
+  });
+
+  test("an explicit model domain wins over the operator's default", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
+    const client = new BrainClient(resolveConfig({ defaultDomain: "gutmindsynergy" }));
+    await client.recall({ query: "q", limit: 5, domain: "job" });
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
+    expect(body.domain).toBe("job");
+  });
+
+  test("the global default stamps nothing (wire body byte-identical to unstamped)", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
+    const client = new BrainClient(cfg());
+    await client.recall({ query: "q", limit: 5 });
+    const body = JSON.parse((fetchMock.mock.calls[0]?.[1]?.body as string) ?? "{}");
+    expect(body).not.toHaveProperty("domain");
+  });
+
   test("empty 2xx body => empty hits, no throw", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse("", { status: 204 }));
     const client = new BrainClient(cfg());
