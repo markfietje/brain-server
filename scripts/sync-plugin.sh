@@ -64,6 +64,12 @@ fi
 
 RSYNC_EXCLUDES=(--exclude node_modules --exclude package-lock.json)
 
+# The fork workspace truth (used by the drift guard's declared-delta exemption
+# AND by the post-sync fork-field patch). Defined here so set -u sees it in
+# every phase.
+FORK_WS="$OC_DIR/pnpm-workspace.yaml"
+FORK_LOCK="$OC_DIR/pnpm-lock.yaml"
+
 # 4. Committed-drift guard: every file rsync would touch must match its
 # baseline blob in the target's HEAD (i.e. the target did not move on its
 # own since the last sync). No baseline yet (fresh clone, first run):
@@ -87,12 +93,28 @@ if [[ -n "$BASE_BRAIN" && -n "$CHANGED" ]]; then
 		old_exists=0; head_exists=0
 		git -C "$REPO" cat-file -e "$BASE_BRAIN:plugin/$f" 2>/dev/null && old_exists=1 || true
 		git -C "$EXT_DIR" cat-file -e "HEAD:./$EXT_BASE/$f" 2>/dev/null && head_exists=1 || true
-		if [[ "$old_exists" == 1 && "$head_exists" == 1 ]]; then
-			if ! cmp -s <(git -C "$REPO" show "$BASE_BRAIN:plugin/$f") \
+	if [[ "$old_exists" == 1 && "$head_exists" == 1 ]]; then
+		# DECLARED FORK-FIELD DELTA exemption (the R82 residual, now closed):
+		# the fork owns the typebox specifier (workspace catalog truth, patched
+		# post-sync by 5b and committed on the target side), so the target may
+		# differ from the baseline by exactly that field. Rewrite the baseline
+		# copy's typebox line to the fork's declared value and compare — equal
+		# means the target moved ONLY by the declared delta; anything else is
+		# still drift. Missing fork workspace → no exemption (fail-closed).
+		if [[ "$f" == "package.json" && -f "$FORK_WS" ]]; then
+			want_tb="$(awk '/^[[:space:]]+typebox:/ {print $2; exit}' "$FORK_WS")"
+			if [[ -n "$want_tb" ]] && cmp -s \
+				<(git -C "$REPO" show "$BASE_BRAIN:plugin/$f" \
+					| LC_ALL=C sed "s/^\([[:space:]]*\"typebox\": \)\"[^\"]*\"$/\1\"$want_tb\"/") \
 				<(git -C "$EXT_DIR" show "HEAD:./$EXT_BASE/$f"); then
-				echo "drifted (target moved independently): $f" >&2
-				DRIFTED=1
+				continue
 			fi
+		fi
+		if ! cmp -s <(git -C "$REPO" show "$BASE_BRAIN:plugin/$f") \
+			<(git -C "$EXT_DIR" show "HEAD:./$EXT_BASE/$f"); then
+			echo "drifted (target moved independently): $f" >&2
+			DRIFTED=1
+		fi
 		elif [[ "$old_exists" == 0 && "$head_exists" == 1 ]]; then
 			# Absent at baseline, present in target HEAD: added on the
 			# target side (or rsync-excluded) — not ours to touch.
@@ -130,9 +152,8 @@ rsync -rc --delete "${RSYNC_EXCLUDES[@]}" "$SRC/" "$TARGET/"
 # `--frozen-lockfile` mismatch, in one silent copy.) Each row: file, field,
 # source of truth. The patch runs AFTER rsync; the byte-identity check below
 # then verifies the file's delta is EXACTLY these fields, and the post-check
-# (5c) pins manifest == lock forever.
-FORK_WS="$OC_DIR/pnpm-workspace.yaml"
-FORK_LOCK="$OC_DIR/pnpm-lock.yaml"
+# (5c) pins manifest == lock forever. (FORK_WS/FORK_LOCK are defined up top,
+# before the drift guard, so every phase sees them under set -u.)
 
 patch_fork_fields() {
 	local manifest="$TARGET/package.json"
