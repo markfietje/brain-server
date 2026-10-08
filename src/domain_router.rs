@@ -25,21 +25,31 @@ use rusqlite::{Connection, params};
 use crate::Pool;
 use crate::search::cosine_sim;
 
-/// Minimum cosine similarity between a query and a domain centroid for the
-/// query to be confidently routed to that domain. Below this, non-strict recall
-/// federates across domains.
-pub const DOMAIN_CONFIDENCE_THRESHOLD: f32 = 0.30;
+/// Minimum cosine similarity for a query to be confidently routed to a domain
+/// (prototype-cluster score for `route_multi`, centroid score for `route`).
+/// Below this, unscoped recall falls back to `global`-only. CALIBRATED, not
+/// inherited: measured over the live corpus (2026-10-09, potion-retrieval-32M
+/// space, 8,792 chunks / 11 domains), unrelated-domain prototype scores sit at
+/// ≤ 0.10 while true-topic clusters score ≥ 0.27 — 0.25 sits 0.15 above the
+/// measured noise ceiling and just under the measured topic floor. The
+/// previous 0.30 rejected a true topic whose best prototype (0.306) was
+/// diluted below the bar by blind top-k averaging.
+pub const DOMAIN_CONFIDENCE_THRESHOLD: f32 = 0.25;
 
 /// Prototype clusters per domain (k-means, deterministic). A domain with fewer
-/// vectors than this keeps every vector as its own prototype. 24 clusters over
-/// the largest live domain bounds the sweep at a fraction of a second while
-/// giving a heterogeneous corpus one prototype per major topic.
-pub const PROTO_K: usize = 24;
+/// vectors than this keeps every vector as its own prototype. 48 clusters over
+/// the largest live domain bounds the sweep at well under a second while
+/// giving a heterogeneous corpus one prototype per topic — coarser grids
+/// absorb minority topics (a 124-chunk green-tea cluster inside 7,700
+/// gut-microbiome chunks) into broader means and the topic loses its own
+/// routing signature.
+pub const PROTO_K: usize = 48;
 
-/// How many of a domain's best prototype similarities are averaged into the
-/// domain's routing score. k > 1 damps a single outlier prototype: one lucky
-/// vector cannot win a domain the way a max-aggregation would.
-pub const ROUTE_TOP_K: usize = 3;
+/// Width of the supporting cluster around the best prototype, in cosine
+/// units. Prototypes scoring within this margin of the best are averaged
+/// into the domain's score; anything farther is a different topic and does
+/// not dilute it. See [`cluster_mean_sim`].
+const PROTO_CLUSTER_MARGIN: f32 = 0.08;
 
 /// k-means iteration cap. Convergence almost always fires first; the cap makes
 /// worst-case sweep cost bounded and the result deterministic regardless.
@@ -63,10 +73,19 @@ pub fn mean_vector(vectors: &[Vec<f32>]) -> Vec<f32> {
     acc
 }
 
-/// The domain's routing score: the MEAN of the query's top-`ROUTE_TOP_K`
-/// prototype similarities. Aggregating k > 1 (instead of max) is the damping
-/// law — a single outlier prototype cannot carry a domain.
-fn topk_mean_sim(query: &[f32], protos: &[&Vec<f32>]) -> f32 {
+/// The domain's routing score: the mean of the prototype similarities within
+/// [`PROTO_CLUSTER_MARGIN`] of the best prototype — the query's SUPPORTING
+/// CLUSTER. Two measured failures shaped this over its alternatives:
+/// blind top-k means dilute a precise topic with unrelated prototypes (the
+/// EGCG measurement: best 0.306 averaged with two 0.25s to 0.273, under a
+/// 0.30 bar — the domain held 124 matching chunks and still did not route);
+/// raw max has no support requirement at all. The margin cluster keeps both
+/// properties: a topic confirmed by several close prototypes averages them,
+/// and a topic that lives in exactly one prototype keeps its own score —
+/// a lone strong prototype means content LIKE the query genuinely exists in
+/// that domain; the threshold, the global rescue leg, and per-hit domain
+/// labels own the noise case. Pure + deterministic.
+fn cluster_mean_sim(query: &[f32], protos: &[&Vec<f32>]) -> f32 {
     let mut sims: Vec<f32> = protos
         .iter()
         .filter(|p| !p.is_empty())
@@ -76,8 +95,10 @@ fn topk_mean_sim(query: &[f32], protos: &[&Vec<f32>]) -> f32 {
         return f32::NEG_INFINITY;
     }
     sims.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-    let k = ROUTE_TOP_K.min(sims.len());
-    sims[..k].iter().sum::<f32>() / k as f32
+    let cut = sims[0] - PROTO_CLUSTER_MARGIN;
+    let cluster = sims.iter().take_while(|&&s| s >= cut);
+    let n = cluster.clone().count().max(1) as f32;
+    cluster.sum::<f32>() / n
 }
 
 /// Route a query vector to the single best-matching domain by PROTOTYPE
@@ -103,7 +124,7 @@ pub fn route_multi(query: &[f32], prototypes: &[(String, Vec<f32>)]) -> Option<S
             .collect();
         run_start = run_end;
 
-        let score = topk_mean_sim(query, &protos);
+        let score = cluster_mean_sim(query, &protos);
         if score == f32::NEG_INFINITY {
             continue;
         }
@@ -611,30 +632,54 @@ mod tests {
         );
     }
 
-    /// A domain scoring on ONE extreme prototype must not beat a domain with
-    /// several moderately-good ones: the top-k MEAN is the damping law (a max
-    /// aggregation would let the single lucky vector win). 2D keeps the
-    /// arithmetic exact: 0.8+0+0 vs (0.5+0.5+0.5)/3.
+    /// The routing score is the SUPPORTING CLUSTER's mean, and the pin
+    /// discriminates it from BOTH degenerate aggregations (each arm fails
+    /// exactly one):
+    ///  - arm A fails blind top-k: a lone exact prototype followed by far
+    ///    ones scores 1.0 (its own cluster), not the diluted top-3 mean
+    ///    (0.367) — dilution is the measured EGCG failure;
+    ///  - arm B fails raw max: a best prototype supported by two close ones
+    ///    scores at the cluster mean (0.967), below its lone best (1.0).
+    ///
+    /// A lone strong prototype with no support keeps its own score — that is
+    /// deliberate: content LIKE the query genuinely exists in that domain;
+    /// the threshold, the global rescue leg, and per-hit domain labels own
+    /// the noise case.
     #[test]
-    fn route_multi_damps_a_single_outlier_prototype() {
+    fn route_multi_scores_the_supporting_cluster() {
         let query = vec![1.0, 0.0];
-        let prototypes = vec![
-            // "lucky": one near-exact hit, everything else orthogonal.
-            ("lucky".to_string(), vec![1.0, 0.0]),
-            ("lucky".to_string(), vec![0.0, 1.0]),
-            ("lucky".to_string(), vec![0.0, 1.0]),
-            ("lucky".to_string(), vec![0.0, 1.0]),
-            // "steady": nothing exact, three solid matches.
-            ("steady".to_string(), vec![0.5, 0.5]),
-            ("steady".to_string(), vec![0.5, 0.5]),
-            ("steady".to_string(), vec![0.5, 0.5]),
-            ("steady".to_string(), vec![0.5, 0.5]),
+
+        // arm A — no dilution: the outlier stays out of the cluster.
+        let diluted_if_topk: Vec<(String, Vec<f32>)> = vec![
+            ("d".to_string(), vec![1.0, 0.0]),
+            ("d".to_string(), vec![0.0, 1.0]),
+            ("d".to_string(), vec![0.0, 1.0]),
+            ("d".to_string(), vec![0.0, 1.0]),
         ];
-        assert_eq!(
-            route_multi(&query, &prototypes).as_deref(),
-            Some("steady"),
-            "top-k mean damps the single outlier (max would pick lucky)"
+        let a = {
+            let protos: Vec<&Vec<f32>> = diluted_if_topk.iter().map(|(_, v)| v).collect();
+            cluster_mean_sim(&query, &protos)
+        };
+        assert!(
+            (a - 1.0).abs() < 1e-4,
+            "arm A: the supporting cluster is {a}, blind top-3 would give 0.367"
         );
+
+        // arm B — support damps: close prototypes average with the best.
+        let supported: Vec<(String, Vec<f32>)> = vec![
+            ("d".to_string(), vec![1.0, 0.0]),
+            ("d".to_string(), vec![0.96, 0.28]),
+            ("d".to_string(), vec![0.94, 0.34]),
+        ];
+        let b = {
+            let protos: Vec<&Vec<f32>> = supported.iter().map(|(_, v)| v).collect();
+            cluster_mean_sim(&query, &protos)
+        };
+        assert!(
+            (b - 0.967).abs() < 0.01,
+            "arm B: the cluster mean averages the supporters: {b}"
+        );
+        assert!(b < a, "supported clusters score below a lone exact match");
     }
 
     #[test]
