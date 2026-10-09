@@ -10,6 +10,50 @@ pub fn clamp_graph_limit(limit: Option<i64>) -> i64 {
     limit.unwrap_or(MAX_GRAPH_EDGES).clamp(1, MAX_GRAPH_EDGES)
 }
 
+/// The record gate lowered to a SQL predicate over the knowledge row aliased
+/// `k` — the same LEFT JOIN seam the graph reads already carry for
+/// `k.domain = ?`. `None` = unrestricted (loopback/opaque/admin: the query
+/// keeps its unwrapped shape); `Some((clause, binds))` = the clause
+/// references `k.owner`/`k.access_scope` with positional placeholders
+/// starting at `first`, and `binds` carries their values in binding order —
+/// the same placeholders may be referenced from several clause copies in one
+/// statement (SQLite binds a positional parameter once). Mirrors
+/// `RecordReadGate::admits` exactly: a NULL column never matches (`IN`
+/// rejects NULL, as `is_some_and` does), and an empty set compiles to `1=0`
+/// — the fail-closed empty permit matches nothing, in SQL as in `admits`.
+pub(crate) fn record_gate_sql(
+    gate: &crate::handlers::gate::RecordReadGate,
+    first: usize,
+) -> Option<(String, Vec<rusqlite::types::Value>)> {
+    if gate.access_scopes.is_none() && gate.owner_in.is_none() {
+        return None;
+    }
+    let mut binds = Vec::new();
+    let mut next = first;
+    let mut arms = Vec::new();
+    for (col, set) in [
+        ("k.access_scope", &gate.access_scopes),
+        ("k.owner", &gate.owner_in),
+    ] {
+        let Some(values) = set.as_ref() else { continue };
+        if values.is_empty() {
+            arms.push("1=0".to_string());
+            continue;
+        }
+        let placeholders: Vec<String> = values
+            .iter()
+            .map(|v| {
+                binds.push(rusqlite::types::Value::Text(v.clone()));
+                let p = format!("?{next}");
+                next += 1;
+                p
+            })
+            .collect();
+        arms.push(format!("{col} IN ({})", placeholders.join(", ")));
+    }
+    Some((format!("({})", arms.join(" AND ")), binds))
+}
+
 /// row mapper for the recursive CTE. Extracted so all four
 /// param-shape branches share one definition (DRY; the only thing that varies
 /// is which params are bound, not how the row maps).

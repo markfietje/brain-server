@@ -147,10 +147,10 @@ mod tests {
         let c = graph_db(1000); // hub id 1 with 1000 out-edges
         // The entity query joins both endpoints, so a 1000-edge hub yields
         // >1000 rows without a cap; the LIMIT keeps the response finite.
-        let bounded = entity_relations(&c, 1, 500, None, false, &None).unwrap();
+        let bounded = entity_relations(&c, 1, 500, None, false, &None, None).unwrap();
         assert_eq!(bounded.len(), 500, "bounded to the cap");
         // A small explicit limit is honored.
-        let tiny = entity_relations(&c, 1, 3, None, false, &None).unwrap();
+        let tiny = entity_relations(&c, 1, 3, None, false, &None, None).unwrap();
         assert_eq!(tiny.len(), 3);
         // The clamp (handler-side) keeps limits in 1..=MAX_GRAPH_EDGES.
         assert_eq!(graph_read::clamp_graph_limit(None), MAX_GRAPH_EDGES);
@@ -170,11 +170,11 @@ mod tests {
     fn graph_relations_respects_limit_from_and_to() {
         let c = graph_db(1000);
         // from-branch: hub (id 1, name "hub") fans out 1000 edges.
-        let from = relations_for(&c, "hub", true, "out", 2, None, false, &None).unwrap();
+        let from = relations_for(&c, "hub", true, "out", 2, None, false, &None, None).unwrap();
         assert_eq!(from.len(), 2);
         assert_eq!(from[0]["direction"], "out");
         // to-branch: create an entity every edge points into and query "in".
-        let to = relations_for(&c, "e1005", false, "in", 1, None, false, &None).unwrap();
+        let to = relations_for(&c, "e1005", false, "in", 1, None, false, &None, None).unwrap();
         assert_eq!(to.len(), 1);
         assert_eq!(to[0]["direction"], "in");
         assert_eq!(to[0]["entity"], "hub");
@@ -197,14 +197,14 @@ mod tests {
         // entity_relations: the retired edge is hidden; the other 3 remain. Its
         // join matches both endpoints (2 rows per edge: hub + target), so 3
         // live edges → 6 rows; the point is e1001 is absent.
-        let rels = entity_relations(&c, 1, 100, None, false, &None).unwrap();
+        let rels = entity_relations(&c, 1, 100, None, false, &None, None).unwrap();
         assert_eq!(rels.len(), 6, "3 live edges, 2 join rows each");
         assert!(
             !rels.iter().any(|v| v["to_entity"] == "e1001"),
             "e1001 must not appear as current"
         );
         // relations_for (both branches): e1001 is gone from the fan-out.
-        let from = relations_for(&c, "hub", true, "out", 100, None, false, &None).unwrap();
+        let from = relations_for(&c, "hub", true, "out", 100, None, false, &None, None).unwrap();
         assert_eq!(
             from.len(),
             3,
@@ -10565,14 +10565,15 @@ Final paragraph after the rule.";
         .unwrap();
 
         // Scoped to alpha: neither the beta edge nor the unlinked edge shows.
-        let scoped = entity_relations(&conn, hub, 50, Some("alpha"), false, &None).unwrap();
+        let scoped = entity_relations(&conn, hub, 50, Some("alpha"), false, &None, None).unwrap();
         assert_eq!(scoped.len(), 0, "foreign + unlinked edges invisible");
         // Scoped to beta: only the linked beta edge shows (the query emits
         // one row per endpoint entity — 2 rows for the one edge).
-        let beta_scoped = entity_relations(&conn, hub, 50, Some("beta"), false, &None).unwrap();
+        let beta_scoped =
+            entity_relations(&conn, hub, 50, Some("beta"), false, &None, None).unwrap();
         assert_eq!(beta_scoped.len(), 2, "beta principal sees its own edge");
         // Unrestricted (loopback): both edges, all endpoint rows.
-        let all = entity_relations(&conn, hub, 50, None, false, &None).unwrap();
+        let all = entity_relations(&conn, hub, 50, None, false, &None, None).unwrap();
         assert_eq!(all.len(), 4, "loopback sees every edge");
     }
 

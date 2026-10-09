@@ -463,9 +463,26 @@ pub async fn evaluate(
 ) -> Result<Json<DecisionOutcome>, HandlerError> {
     // read gate (loads a chunk + runs the stored rule).
     super::authorize(&principal.0, crate::auth::Action::Read, "", "global")?;
+    // belt-and-braces (the /procedure/{id}/steps idiom): the row's own
+    // domain + the record gate re-authorize before any stored rule text or
+    // evaluation leaves — a foreign private decision rule is probe-blind.
+    let record_gate = crate::handlers::gate::record_read_gate(&principal.0, &state.pool);
+    let gate_principal = principal.0.clone();
     let pool = state.pool.clone();
     let outcome = tokio::task::spawn_blocking(move || -> Result<DecisionOutcome, HandlerError> {
         let conn = pool.get().map_err(HandlerError::db_down)?;
+        let row_meta: Option<(String, Option<String>, Option<String>)> =
+            crate::service::procedure::row_access_meta(&conn, id)
+                .ok()
+                .flatten();
+        if let Some((row_domain, row_owner, row_scope)) = row_meta
+            && (!crate::handlers::can_read_domain(&gate_principal, &row_domain)
+                || !record_gate.admits(&row_owner, &row_scope))
+        {
+            return Err(HandlerError::not_found(format!(
+                "no decision rule with id {id}"
+            )));
+        }
         let content: String =
             crate::service::procedure::decision_rule_content(&conn, id).map_err(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => {

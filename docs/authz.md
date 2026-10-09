@@ -153,7 +153,10 @@ The capability vocabulary (`CAN_ACTIONS`) is: `read`, `write`, `approve`,
 A JWT **without** a `roles` claim is owner-bound: its record gate carries its
 own subject as the owner predicate, so it reads its **own** private rows and
 is denied another subject's private rows on every read surface (recall,
-suggest, by-id, multi-get, UMP get, procedures, verify). An absent/empty
+suggest, by-id, multi-get, UMP get, procedures, verify — and, since the
+read-gate completion round, legacy `/search`, the graph trio
+`/graph/entity`//`graph/relations`//`graph/traverse` (each walked edge's
+knowledge row), and `/decision/{id}/evaluate`). An absent/empty
 subject reads no private rows (fail closed). Domain/team scopes still follow
 the signed JWT scopes; admin and loopback/opaque operator access are
 unchanged.

@@ -836,6 +836,13 @@ pub async fn search(
         }
     };
     filters.source_leg = source_leg;
+    // The composite record gate (the /recall idiom): a no-role JWT carries
+    // its subject as the owner predicate, so legacy /search cannot drop the
+    // owner condition the by-id surfaces enforce. Role bundles resolve inside
+    // the same gate; loopback/opaque stays unrestricted.
+    let record_gate = crate::handlers::gate::record_read_gate(&principal.0, &s.pool);
+    filters.access_scopes = record_gate.access_scopes.clone().map(std::sync::Arc::new);
+    filters.owner_in = record_gate.owner_in.clone().map(std::sync::Arc::new);
 
     let model = Arc::clone(&s.model);
     // resolve pool from domain param (defaults to global).
@@ -2847,6 +2854,11 @@ pub(crate) async fn get_entity(
     let domain_scoped = domain.as_deref().unwrap_or("global");
     let domain_scope = handlers::graph_domain_scope(&principal.0, &state.registry, domain_scoped);
 
+    // The record gate lowered onto every edge's knowledge row (the
+    // `(owner, access_scope)` pair the by-id reads enforce), rendered once
+    // for the shared SQL seam — ?1 id, ?2 limit, ?3 domain precede it.
+    let record_gate = crate::handlers::gate::record_read_gate(&principal.0, &state.pool);
+    let gate_sql = crate::graph_read::record_gate_sql(&record_gate, 4);
     let result = task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
 
@@ -2879,6 +2891,7 @@ pub(crate) async fn get_entity(
             domain_scope.as_deref(),
             false,
             &principal.0,
+            gate_sql.as_ref().map(|(c, b)| (c.as_str(), b.as_slice())),
         )?;
 
         Ok(serde_json::json!({
@@ -2909,9 +2922,19 @@ pub fn entity_relations(
     domain_scope: Option<&str>,
     pii: bool,
     principal: &Option<crate::auth::Principal>,
+    gate: Option<(&str, &[rusqlite::types::Value])>,
 ) -> Result<Vec<serde_json::Value>, AppError> {
+    // The record gate rides the same LEFT JOIN k seam the domain scope does:
+    // an edge whose chunk is outside the caller's (owner, access_scope)
+    // reach is invisible, exactly as a foreign-domain edge already is.
+    let (gate_clause, gate_binds) = gate.unwrap_or(("", &[]));
+    let gate_tail = if gate_clause.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {gate_clause}")
+    };
     let mut stmt = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT e.name, r.relation_type, CASE WHEN r.from_entity_id = ?1 THEN 'out' ELSE 'in' END as dir
              FROM relationships r
              JOIN entities e ON (r.to_entity_id = e.id OR r.from_entity_id = e.id)
@@ -2919,12 +2942,21 @@ pub fn entity_relations(
              WHERE (r.from_entity_id = ?1 OR r.to_entity_id = ?1)
                AND r.superseded_at IS NULL
                AND (?3 IS NULL OR k.domain = ?3)
-             ORDER BY r.id LIMIT ?2",
-        )
+               {gate_tail}
+             ORDER BY r.id LIMIT ?2"
+        ))
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
+    let mut binds = vec![
+        rusqlite::types::Value::Integer(id),
+        rusqlite::types::Value::Integer(limit),
+        domain_scope
+            .map(|s| rusqlite::types::Value::Text(s.to_string()))
+            .unwrap_or(rusqlite::types::Value::Null),
+    ];
+    binds.extend(gate_binds.iter().cloned());
     let relations = stmt
-        .query_map(params![id, limit, domain_scope], |r| {
+        .query_map(rusqlite::params_from_iter(binds), |r| {
             let name = r.get::<_, String>(0)?;
             let rel = r.get::<_, String>(1)?;
             Ok(serde_json::json!({
@@ -2975,6 +3007,10 @@ pub(crate) async fn get_relations(
         domain.as_deref().unwrap_or("global"),
     );
 
+    // The record gate lowered onto every edge's knowledge row (see
+    // `get_entity`) — same placeholder order, rendered once.
+    let record_gate = crate::handlers::gate::record_read_gate(&principal.0, &state.pool);
+    let gate_sql = crate::graph_read::record_gate_sql(&record_gate, 4);
     let result = task::spawn_blocking(move || {
         let conn = pool.get().map_err(|e| AppError::Internal(e.to_string()))?;
         let direction = if is_from { "out" } else { "in" };
@@ -2987,6 +3023,7 @@ pub(crate) async fn get_relations(
             domain_scope.as_deref(),
             false,
             &principal.0,
+            gate_sql.as_ref().map(|(c, b)| (c.as_str(), b.as_slice())),
         )?;
         Ok(serde_json::json!({ "relations": results }))
     })
@@ -3010,31 +3047,53 @@ pub fn relations_for(
     domain_scope: Option<&str>,
     pii: bool,
     principal: &Option<crate::auth::Principal>,
+    gate: Option<(&str, &[rusqlite::types::Value])>,
 ) -> Result<Vec<serde_json::Value>, AppError> {
+    // The record gate rides the LEFT JOIN k seam (see `entity_relations`).
+    let (gate_clause, gate_binds) = gate.unwrap_or(("", &[]));
+    let gate_tail = if gate_clause.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {gate_clause}")
+    };
     let query = if is_from {
-        "SELECT e.name, r.relation_type FROM relationships r
+        format!(
+            "SELECT e.name, r.relation_type FROM relationships r
          JOIN entities e ON r.to_entity_id = e.id
          LEFT JOIN knowledge k ON r.knowledge_id = k.id
          WHERE r.from_entity_id = (SELECT id FROM entities WHERE name = ?1)
            AND r.superseded_at IS NULL
            AND (?3 IS NULL OR k.domain = ?3)
+           {gate_tail}
          ORDER BY r.id LIMIT ?2"
+        )
     } else {
-        "SELECT e.name, r.relation_type FROM relationships r
+        format!(
+            "SELECT e.name, r.relation_type FROM relationships r
          JOIN entities e ON r.from_entity_id = e.id
          LEFT JOIN knowledge k ON r.knowledge_id = k.id
          WHERE r.to_entity_id = (SELECT id FROM entities WHERE name = ?1)
            AND r.superseded_at IS NULL
            AND (?3 IS NULL OR k.domain = ?3)
+           {gate_tail}
          ORDER BY r.id LIMIT ?2"
+        )
     };
 
     let mut stmt = conn
-        .prepare(query)
+        .prepare(&query)
         .map_err(|e| AppError::Internal(e.to_string()))?;
 
+    let mut binds = vec![
+        rusqlite::types::Value::Text(param_lower.to_string()),
+        rusqlite::types::Value::Integer(limit),
+        domain_scope
+            .map(|s| rusqlite::types::Value::Text(s.to_string()))
+            .unwrap_or(rusqlite::types::Value::Null),
+    ];
+    binds.extend(gate_binds.iter().cloned());
     let results = stmt
-        .query_map(params![param_lower, limit, domain_scope], |r| {
+        .query_map(rusqlite::params_from_iter(binds), |r| {
             let name = r.get::<_, String>(0)?;
             let rel = r.get::<_, String>(1)?;
             Ok(serde_json::json!({
@@ -3271,6 +3330,17 @@ pub(crate) async fn traverse_graph(
     // shim-mode JWT edge scoping (the entity tables carry no
     // domain column; the chunk link is the domain atom).
     let domain_scope = handlers::graph_domain_scope(&principal.0, &state.registry, &scope_label);
+    // The record gate lowered onto every WALKED edge's knowledge row — not
+    // just the rendered ones: a foreign private edge must neither render nor
+    // be walked THROUGH (its derived text would surface one hop later).
+    // Placeholders continue after eid(?1), depth(?2), and whichever of
+    // at/kind/scope compiled in — the binding order below matches exactly.
+    let record_gate = crate::handlers::gate::record_read_gate(&principal.0, &state.pool);
+    let gate_first = 3
+        + usize::from(at_normalized.is_some())
+        + usize::from(kind_filter.is_some())
+        + usize::from(domain_scope.is_some());
+    let gate_sql = graph_read::record_gate_sql(&record_gate, gate_first);
     // the read seam rides the closure: every traversal row's string fields
     // pass sanitize_read_cow (the graph family is a stored-text surface).
     let seam_principal = principal.0.clone();
@@ -3368,23 +3438,40 @@ pub(crate) async fn traverse_graph(
         // scope clause is compiled in only when the request is scoped, so
         // unscoped walks (loopback/opaque/multi-db) keep the byte-identical
         // query shape.
-        let (scope_clause, scope_join, scope_join_rec) = match &domain_scope {
-            Some(_) => {
-                let ph = if at_normalized.is_some() {
-                    "?5"
-                } else if kind_filter.is_some() {
-                    "?4"
-                } else {
-                    "?3"
-                };
-                (
-                    format!(" AND (?{ph} IS NULL OR k.domain = ?{ph})"),
-                    "LEFT JOIN knowledge k ON k.id = rs.knowledge_id".to_string(),
-                    "LEFT JOIN knowledge k ON r.knowledge_id = k.id".to_string(),
-                )
-            }
-            None => (String::new(), String::new(), String::new()),
+        // The k join now serves two masters: the domain scope (when the
+        // walk is scoped) and the record gate (when the caller's gate is
+        // narrowed) — either one needs the knowledge row beside every edge,
+        // and the gate may need it with no domain scope at all (a multi-db
+        // pool where domain filtering is pool-isolated but private rows
+        // still bind by owner).
+        let scope_ph = if at_normalized.is_some() {
+            "?5"
+        } else if kind_filter.is_some() {
+            "?4"
+        } else {
+            "?3"
         };
+        let scope_clause = match &domain_scope {
+            // `scope_ph` carries its own `?` — the template must not add a
+            // second one (`??3` is a syntax error; the pre-gate rewrite
+            // shipped that doubling, so a scoped (JWT) walk never compiled
+            // and answered 500 — the matrix's "neither 401 nor 403" pass
+            // cell read the 500 as a pass).
+            Some(_) => format!(" AND ({scope_ph} IS NULL OR k.domain = {scope_ph})"),
+            None => String::new(),
+        };
+        let (scope_join, scope_join_rec) = if domain_scope.is_some() || gate_sql.is_some() {
+            (
+                "LEFT JOIN knowledge k ON k.id = rs.knowledge_id",
+                "LEFT JOIN knowledge k ON r.knowledge_id = k.id",
+            )
+        } else {
+            ("", "")
+        };
+        let gate_clause = gate_sql
+            .as_ref()
+            .map(|(c, _)| format!(" AND {c}"))
+            .unwrap_or_default();
         let valid_clause = valid_clause.replace("?at", at_ph);
         let kind_clause = kind_clause_tmpl.replace("?kind", kind_ph);
         let kind_seed_clause = kind_seed_clause_tmpl.replace("?kind", kind_ph);
@@ -3398,7 +3485,7 @@ pub(crate) async fn traverse_graph(
                 SELECT rs.from_entity_id, rs.to_entity_id, 1, \
                        CAST(rs.from_entity_id AS TEXT), CAST(rs.relation_type AS TEXT) \
                 FROM relationships rs {scope_join} \
-                WHERE rs.from_entity_id = ?1{valid_clause}{kind_seed_clause}{current_seed_clause}{scope_clause} \
+                WHERE rs.from_entity_id = ?1{valid_clause}{kind_seed_clause}{current_seed_clause}{scope_clause}{gate_clause} \
                 UNION ALL \
                 SELECT r.from_entity_id, r.to_entity_id, t.depth + 1, \
                        t.path || '->' || CAST(r.from_entity_id AS TEXT), \
@@ -3406,7 +3493,7 @@ pub(crate) async fn traverse_graph(
                 FROM relationships r \
                 JOIN traversal t ON r.from_entity_id = t.to_id \
                 {scope_join_rec} \
-                WHERE t.depth < ?2{valid_clause}{kind_clause}{current_clause}{scope_clause} \
+                WHERE t.depth < ?2{valid_clause}{kind_clause}{current_clause}{scope_clause}{gate_clause} \
             ) \
             SELECT DISTINCT e.name, t.depth, t.path, t.edge_path, \
                    (SELECT name FROM entities WHERE id = t.from_id) AS from_name \
@@ -3451,60 +3538,37 @@ pub(crate) async fn traverse_graph(
                     k.clone()
                 }
             });
-            let rows: Vec<_> = match (
-                at_normalized.as_ref(),
-                kind_param.as_ref(),
-                domain_scope.as_ref(),
-            ) {
-                (Some(at), Some(k), Some(sc)) => stmt
-                    .query_map(params![eid, depth, at, k, sc], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
-                    .map_err(|e| AppError::Internal(e.to_string()))?
-                    .filter_map(|r| r.ok())
-                    .take(trace::MAX_VISITED.saturating_sub(total_visited))
-                    .collect(),
-                (Some(at), Some(k), None) => stmt
-                    .query_map(params![eid, depth, at, k], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
-                    .map_err(|e| AppError::Internal(e.to_string()))?
-                    .filter_map(|r| r.ok())
-                    .take(trace::MAX_VISITED.saturating_sub(total_visited))
-                    .collect(),
-                (Some(at), None, Some(sc)) => stmt
-                    .query_map(params![eid, depth, at, sc], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
-                    .map_err(|e| AppError::Internal(e.to_string()))?
-                    .filter_map(|r| r.ok())
-                    .take(trace::MAX_VISITED.saturating_sub(total_visited))
-                    .collect(),
-                (Some(at), None, None) => stmt
-                    .query_map(params![eid, depth, at], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
-                    .map_err(|e| AppError::Internal(e.to_string()))?
-                    .filter_map(|r| r.ok())
-                    .take(trace::MAX_VISITED.saturating_sub(total_visited))
-                    .collect(),
-                (None, Some(k), Some(sc)) => stmt
-                    .query_map(params![eid, depth, k, sc], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
-                    .map_err(|e| AppError::Internal(e.to_string()))?
-                    .filter_map(|r| r.ok())
-                    .take(trace::MAX_VISITED.saturating_sub(total_visited))
-                    .collect(),
-                (None, Some(k), None) => stmt
-                    .query_map(params![eid, depth, k], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
-                    .map_err(|e| AppError::Internal(e.to_string()))?
-                    .filter_map(|r| r.ok())
-                    .take(trace::MAX_VISITED.saturating_sub(total_visited))
-                    .collect(),
-                (None, None, Some(sc)) => stmt
-                    .query_map(params![eid, depth, sc], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
-                    .map_err(|e| AppError::Internal(e.to_string()))?
-                    .filter_map(|r| r.ok())
-                    .take(trace::MAX_VISITED.saturating_sub(total_visited))
-                    .collect(),
-                (None, None, None) => stmt
-                    .query_map(params![eid, depth], graph_read::traverse_row_mapper(domain, false, seam_principal.clone()))
-                    .map_err(|e| AppError::Internal(e.to_string()))?
-                    .filter_map(|r| r.ok())
-                    .take(trace::MAX_VISITED.saturating_sub(total_visited))
-                    .collect(),
-            };
+            // One ordered binding: eid, depth, then whichever of
+            // at/kind/scope compiled in (the same order the placeholder
+            // indices were assigned above), then the record gate's set
+            // elements. The positional parameters are referenced by index,
+            // so the gate's clause copies (seed AND recursive step) bind
+            // their values exactly once.
+            let mut binds: Vec<rusqlite::types::Value> = vec![
+                rusqlite::types::Value::Integer(eid),
+                rusqlite::types::Value::Integer(i64::from(depth)),
+            ];
+            if let Some(at) = &at_normalized {
+                binds.push(rusqlite::types::Value::Text(at.clone()));
+            }
+            if let Some(k) = &kind_param {
+                binds.push(rusqlite::types::Value::Text(k.clone()));
+            }
+            if let Some(sc) = &domain_scope {
+                binds.push(rusqlite::types::Value::Text(sc.clone()));
+            }
+            if let Some((_, gate_binds)) = &gate_sql {
+                binds.extend(gate_binds.iter().cloned());
+            }
+            let rows: Vec<_> = stmt
+                .query_map(
+                    rusqlite::params_from_iter(binds),
+                    graph_read::traverse_row_mapper(domain, false, seam_principal.clone()),
+                )
+                .map_err(|e| AppError::Internal(e.to_string()))?
+                .filter_map(|r| r.ok())
+                .take(trace::MAX_VISITED.saturating_sub(total_visited))
+                .collect();
             total_visited += rows.len();
             all.extend(rows);
         }
