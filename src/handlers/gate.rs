@@ -1863,8 +1863,8 @@ pub fn record_read_gate(
 ) -> RecordReadGate {
     match principal {
         None => RecordReadGate::unrestricted(),
-        Some(pr) if pr.roles.is_empty() => match scope_filter(principal) {
-            Some(sc) => {
+        Some(pr) if pr.roles.is_empty() => scope_filter(principal)
+            .map(|sc| {
                 if pr.sub.trim().is_empty() {
                     RecordReadGate::empty_permit()
                 } else {
@@ -1873,16 +1873,14 @@ pub fn record_read_gate(
                         owner_in: Some(vec![pr.sub.clone()]),
                     }
                 }
-            }
-            None => RecordReadGate::unrestricted(),
-        },
-        Some(_) => match role_retrieval_gate(principal, pool) {
-            Some(g) => RecordReadGate {
+            })
+            .unwrap_or_else(RecordReadGate::unrestricted),
+        Some(_) => role_retrieval_gate(principal, pool)
+            .map(|g| RecordReadGate {
                 access_scopes: g.access_scopes,
                 owner_in: g.owner_in,
-            },
-            None => RecordReadGate::empty_permit(),
-        },
+            })
+            .unwrap_or_else(RecordReadGate::empty_permit),
     }
 }
 
