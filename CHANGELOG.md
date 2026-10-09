@@ -6,6 +6,15 @@ are consistent at that tag.
 
 ## [1.29.5] — 2026-10-09 — "Routing": unscoped recall learns where the corpus lives
 
+Covers every commit from tag `v1.29.4` (`15a544c`) to this release —
+`git log v1.29.4..v1.29.5` reproduces the range, and every bullet below
+names its proof commit. The routing release: unscoped recall learns where
+the corpus lives (multi-prototype topic match, supporting-cluster score,
+threshold 0.25, the global shadow law), erasure reaches the routing
+structures, approve files the authorized domain, and `/reindex` rebuilds
+the whole derived estate. No schema-version bump (prototypes are an
+additive routing-hint table).
+
 ### Multi-prototype domain routing
 
 The centroid router compared a query to ONE mean vector per domain, so a
@@ -107,7 +116,7 @@ shared-pool pin, re-widening every bundle fails the supervisor arm.
 
 ### Release notes
 
-**Fixes**
+**Bug fixes**
 
 - Approved proposals land in the domain the reviewer authorized instead
   of the `global` default — the UNIQUE(content_hash, domain) 500 on a
