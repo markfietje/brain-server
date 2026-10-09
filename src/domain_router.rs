@@ -452,13 +452,17 @@ pub fn recompute_all_centroids(global_pool: &Pool) -> Result<Vec<(String, usize)
     Ok(out)
 }
 
-/// Read a domain's current (non-superseded) chunk vectors from the live vec0
-/// index. Previously read the frozen legacy `embeddings` JSON table
+/// Read a domain's current (non-superseded, non-tombstoned) chunk vectors from
+/// the live vec0 index. Previously read the frozen legacy `embeddings` JSON table
 /// (2 rows since the vec0 cutover), which silently zeroed every centroid. Now reads
 /// `vec_knowledge`, matching `find_near_duplicates` (consolidate.rs:260), and
 /// dequantizes via `decode_embedding`. `valid_to IS NULL` excludes superseded
 /// chunks (the loser of a contradiction resolution) so a centroid isn't pulled
-/// toward outdated content. `ORDER BY k.id` pins the read order — the k-means
+/// toward outdated content; the `tombstones` anti-join excludes UMP-forgotten
+/// chunks — without it, forgotten content keeps shaping centroids and routing
+/// prototypes after erasure (measured: forgotten global copies held the
+/// nicotinamide/creatine prototypes at 0.64/0.47, routing those queries to an
+/// emptied domain). `ORDER BY k.id` pins the read order — the k-means
 /// init strides this list, so an unpinned order would make prototypes
 /// nondeterministic. Kept Connection-taking so tests use `test_db()`.
 pub fn read_domain_vectors(conn: &Connection, domain: &str) -> Result<Vec<Vec<f32>>> {
@@ -467,6 +471,7 @@ pub fn read_domain_vectors(conn: &Connection, domain: &str) -> Result<Vec<Vec<f3
          FROM vec_knowledge v
          JOIN knowledge k ON k.id = v.knowledge_id
          WHERE k.domain = ?1 AND k.valid_to IS NULL
+           AND NOT EXISTS (SELECT 1 FROM tombstones t WHERE t.knowledge_id = k.id)
          ORDER BY k.id",
     )?;
     let rows = stmt.query_map(params![domain], |row| row.get::<_, Vec<u8>>(0))?;
@@ -757,6 +762,63 @@ mod tests {
     #[test]
     fn route_multi_on_empty_input_is_none() {
         assert!(route_multi(&[1.0, 0.0], &[]).is_none());
+    }
+
+    /// Forgotten (tombstoned) chunks must stop shaping centroids and routing
+    /// prototypes the moment they are erased: `read_domain_vectors` filters by
+    /// `valid_to` only, and UMP forget writes a `tombstones` row while leaving
+    /// the knowledge row's `valid_to` NULL — so the anti-join below is the
+    /// ONLY thing excluding forgotten content from the sweep. Measured live:
+    /// forgotten global copies held the nicotinamide/creatine prototypes at
+    /// 0.64/0.47 after erasure, routing those queries to an emptied domain
+    /// that answered zero hits.
+    #[test]
+    fn tombstoned_chunks_are_excluded_from_centroids_and_prototypes() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tomb.db");
+        let insert = |conn: &rusqlite::Connection, id: i64, content: &str, v: &[f32]| {
+            conn.execute(
+                "INSERT INTO knowledge(id, content, content_hash, domain) VALUES (?1, ?2, ?2, 'global')",
+                rusqlite::params![id, content],
+            )
+            .unwrap();
+            let blob: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+            conn.execute(
+                "INSERT INTO vec_knowledge(knowledge_id, embedding_int8, embedding_bit, source, created_at)
+                 VALUES (?1, vec_quantize_int8(?2, 'unit'), vec_quantize_binary(?2), 'test', datetime('now'))",
+                rusqlite::params![id, blob],
+            )
+            .unwrap();
+        };
+        {
+            let mut conn = rusqlite::Connection::open(&path).unwrap();
+            crate::migration::run_migration(&mut conn, crate::config::DB_MMAP_SIZE_MIB)
+                .expect("migration");
+            let v: Vec<f32> = (0..512).map(|i| ((i as f32) * 0.02).sin()).collect();
+            insert(&conn, 1, "live chunk", &v);
+            insert(&conn, 2, "forgotten chunk", &v);
+            // UMP forget leaves the knowledge row (valid_to NULL) and writes
+            // the tombstone — mirror exactly that state.
+            conn.execute(
+                "INSERT INTO tombstones(knowledge_id, document_id, reason) VALUES (2, 'doc-2', 'test forget')",
+                [],
+            )
+            .unwrap();
+        }
+        let pool: crate::Pool = r2d2::Pool::builder()
+            .build(crate::pool::SqliteConnectionManager::file(&path))
+            .expect("pool build");
+        let conn = pool.get().unwrap();
+        let vectors = read_domain_vectors(&conn, "global").expect("read");
+        assert_eq!(
+            vectors.len(),
+            1,
+            "tombstoned chunk excluded from centroid/prototype source"
+        );
+        crate::domain_router::recompute_all_centroids(&pool).unwrap();
+        let protos = read_prototypes(&pool).unwrap();
+        assert!(!protos.is_empty(), "the surviving chunk still routes");
     }
 
     /// The measured blueberries shape (2026-10-09): global's leftover topical
