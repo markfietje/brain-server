@@ -46,20 +46,23 @@ fn ledger_rows() -> Vec<(String, String, String)> {
     }
     rows
 }
-
-/// A `docs/*.md` code span named in AGENTS.md is a live reference — the
-/// file must exist. (The parallel plan was cited but absent.)
+/// A `docs/` execution-plan reference named in AGENTS.md is a live
+/// reference — the file must exist in the tree a fresh clone sees.
+/// Scoped to plan/index names on purpose: past audit reports are cited in
+/// AGENTS.md too but stay untracked by design (sealed history), so a
+/// blanket `docs/*.md` check would fail clean clones over files that must
+/// never be committed. (The parallel plan was cited but absent.)
 #[test]
 fn referenced_execution_plans_exist() {
     let agents = std::fs::read_to_string(repo().join("AGENTS.md")).expect("AGENTS.md readable");
     let mut missing = Vec::new();
     for chunk in agents.split('`').skip(1).step_by(2) {
         let span = chunk.trim();
-        if span.starts_with("docs/")
+        let is_plan = span.starts_with("docs/")
             && span.ends_with(".md")
             && !span.contains(' ')
-            && !repo().join(span).exists()
-        {
+            && (span.contains("EXECUTION_PLAN") || span.contains("EXECUTION_INDEX"));
+        if is_plan && !repo().join(span).exists() {
             missing.push(span.to_string());
         }
     }
