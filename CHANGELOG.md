@@ -4,6 +4,25 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.8] — 2026-10-09 — "Ledger": the release verify step survives its transport
+
+Covers every commit from tag `v1.29.7` (`24bdcf1`) to this release —
+`git log v1.29.7..v1.29.8` reproduces the range. A workflow-only
+release: the merged-dist SBOM gate checked the manifest version with an
+inline interpreter one-liner whose nested quotes never reached the
+runner intact, so every tag build refused to publish at the verify
+step. The check now reads the version through a quoting-layer-free
+heredoc. No schema change, no route change, no wire change, no authz
+change, zero new dependency edges.
+
+### Release notes
+
+**Bug fixes**
+
+- The release verify step reads the staged SBOM version through a
+  heredoc instead of a nested-quote one-liner, so the tag-matched
+  manifest gate publishes instead of refusing on a syntax error.
+
 ## [1.29.7] — 2026-10-09 — "Ledger": the plan-reference pin passes clean clones
 
 Covers every commit from tag `v1.29.6` (`ad07f05`) to this release —
