@@ -240,11 +240,16 @@ fi
 #     compiled in (FEATURES above) and ARMED only on quality-local /
 #     desktop / enterprise profiles — quality-local keeps the same embedding
 #     model and dim (no re-embed) and adds the rerank tier at boot. The model
-#     artifacts stay an operator fetch (the manifest in 2e pins their
-#     integrity); a missing/failed load fails OPEN to the RRF order — recall
-#     never stalls on a reranker fault. Also retires the dead legacy
-#     RERANK_ENABLED env (read by nothing since the profile gate landed).
-CLS_RERANK_DIR="$HOME/.config/brain-server/models/mxbai-rerank-large-v1"
+#     is mxbai-rerank-base-v1 int8: the MEASURED pick (2026-10-09, live A/B/C
+#     over the real store) — large-v1 scored marginally better on some queries
+#     but ran 3-7.6s per unscoped recall against the server's 8s recall
+#     timeout, while base ran 1-2.5s with comparable ordering (both fixed the
+#     gut-lining query identically). Artifacts stay an operator fetch (the
+#     manifest in 2e pins their integrity); a missing/failed load fails OPEN
+#     to the RRF order — recall never stalls on a reranker fault. Also
+#     retires the dead legacy RERANK_ENABLED env (read by nothing since the
+#     profile gate landed).
+CLS_RERANK_DIR="$HOME/.config/brain-server/models/mxbai-rerank-base-v1"
 mkdir -p "$CLS_RERANK_DIR/onnx" 2>/dev/null || true
 chmod 700 "$CLS_RERANK_DIR" 2>/dev/null || true
 plutil -remove EnvironmentVariables.RERANK_ENABLED "$PLIST" 2>/dev/null || true

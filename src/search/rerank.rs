@@ -141,19 +141,26 @@ impl Reranker {
     /// `BRAIN_RERANK_MODEL_DIR` or the default), falling back to the in-registry
     /// `bge-reranker-v2-m3` when the XML files are absent or the load fails.
     /// Fail-open sits with the caller (`LazyLock` → `None`), so a missing model
-    /// dir degrades to the in-enum model, never to a boot failure.
+    /// dir degrades to the in-enum model, never to a boot failure. The model id
+    /// reports the dir ACTUALLY loaded (`byo:<dirname>`) — a hardcoded golden
+    /// label would lie the moment an operator points the seam at a sibling
+    /// (the base-tier swap does exactly that).
     pub fn new(top_n: usize) -> anyhow::Result<Self> {
-        // Prefer the user-defined model: mxbai-rerank-large-v1 (golden).
+        // Prefer the user-defined model via the BYO-ONNX seam.
         match Self::new_mxbai_user_defined(top_n) {
-            Ok(inner) => Ok(Self {
-                inner: Mutex::new(inner),
-                model_id: std::sync::Arc::from("mixedbread-ai/mxbai-rerank-large-v1"),
-                top_n,
-            }),
+            Ok(inner) => {
+                let byo_label = resolve_model_dir()
+                    .and_then(|d| d.file_name().map(|n| n.to_string_lossy().to_string()))
+                    .unwrap_or_else(|| "model".to_string());
+                Ok(Self {
+                    inner: Mutex::new(inner),
+                    model_id: std::sync::Arc::from(format!("byo:{byo_label}").as_str()),
+                    top_n,
+                })
+            }
             Err(e) => {
                 tracing::warn!(
-                    "mxbai-rerank-large-v1 via user-defined seam unavailable \
-                     ({e}); falling back to bge-reranker-v2-m3"
+                    "BYO rerank model unavailable ({e}); falling back to bge-reranker-v2-m3"
                 );
                 let options = RerankInitOptions::new(RerankerModel::BGERerankerV2M3)
                     .with_show_download_progress(true);
