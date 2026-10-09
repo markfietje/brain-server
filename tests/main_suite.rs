@@ -6233,19 +6233,24 @@ Final paragraph after the rule.";
     }
 
     /// `role_scopes_filter_recall` — the roles data gate
-    /// (access_scopes + owner) drives the retrieval filter for self/reports/
-    /// admin, pulled straight from the seeded role bundles.
+    /// (access_scopes + owner) drives the retrieval filter for
+    /// reports/admin, pulled straight from the seeded role bundles.
     #[test]
     fn role_retrieval_gate_resolves_seeded_bundles() {
         let pool = roles_pool();
         let gate = |p: &auth::Principal| {
             handlers::gate::role_retrieval_gate(&Some(p.clone()), &pool).unwrap()
         };
-        // agent → owner=self, private scope only.
+        // agent → the shared pool (owner_filter "all" marks the role
+        // adminish for retrieval — the gateway identity must see the legacy
+        // NULL-owner rows; the no-Admin ceiling lives in the action gates,
+        // not here).
         let g = gate(&role_p("ana", &["agent"], &[]));
-        assert_eq!(g.owner_in, Some(vec!["ana".to_string()]), "self");
-        assert_eq!(g.access_scopes, Some(vec!["private".to_string()]));
-        // supervisor (reports) → only managed rows (owner IN managed).
+        assert_eq!(g.owner_in, None, "agent: no owner restriction");
+        assert_eq!(g.access_scopes, None, "agent: no scope restriction");
+        // supervisor (reports) → only managed rows (owner IN managed) — the
+        // narrowing arm: a regression that made every bundle unrestricted
+        // fails here.
         let g2 = gate(&role_p("bob", &["supervisor"], &["ana", "chris"]));
         assert_eq!(
             g2.owner_in,
@@ -10449,38 +10454,55 @@ Final paragraph after the rule.";
         assert!(ok.0["record"].is_object(), "record must render");
     }
 
-    /// F-04 + M3.2: the record gate runs on /get too — an `agent` role can
-    /// read its own rows (owner=self, private) and nothing else's, exactly
-    /// like recall's gate. The role bundle resolves from the seeded store.
+    /// F-04 + M3.2: the record gate runs on /get too — the seeded BUNDLE
+    /// narrows by-id reads. The supervisor role (owner IN manages) is the
+    /// narrowing arm: another owner's row is a probe-blind 404, a managed
+    /// owner's row is served. The agent role is the shared-pool arm:
+    /// owner_filter "all" serves other owners' rows BY DESIGN (the gateway
+    /// identity must see the legacy NULL-owner rows) — a preset re-narrowed
+    /// without updating this pin fails the last arm.
     #[tokio::test]
-    async fn agent_role_cannot_read_other_owners_by_id() {
+    async fn record_read_gate_by_id_narrows_by_bundle_agent_sees_the_shared_pool() {
         use axum::extract::{Path, State};
 
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let state = drawbridge_state(&tmp);
         let mine = seed_chunk(&state, "global", Some("ana"), Some("private"), "mine");
         let theirs = seed_chunk(&state, "global", Some("other"), Some("private"), "theirs");
-        let agent = role_p("ana", &["agent"], &[]);
 
+        // Narrowing arm: the supervisor reads managed rows, nothing else's.
+        let supervisor = role_p("bob", &["supervisor"], &["ana"]);
         let err = get_chunk(
             State(state.clone()),
-            handlers::auth::OptPrincipal(Some(agent.clone())),
+            handlers::auth::OptPrincipal(Some(supervisor.clone())),
             axum::http::HeaderMap::new(),
             Path(theirs),
         )
         .await
-        .expect_err("another owner's row must be denied");
+        .expect_err("an unmanaged owner's row must be denied");
         assert!(matches!(err, AppError::NotFound(_)), "{err:?}");
 
         let ok = get_chunk(
             State(state.clone()),
-            handlers::auth::OptPrincipal(Some(agent)),
+            handlers::auth::OptPrincipal(Some(supervisor)),
             axum::http::HeaderMap::new(),
             Path(mine),
         )
         .await
-        .expect("own row resolves");
+        .expect("a managed owner's row resolves");
         assert_eq!(ok.0["id"], mine);
+
+        // Shared-pool arm: the agent role reads across owners.
+        let agent = role_p("ana", &["agent"], &[]);
+        let ok = get_chunk(
+            State(state.clone()),
+            handlers::auth::OptPrincipal(Some(agent)),
+            axum::http::HeaderMap::new(),
+            Path(theirs),
+        )
+        .await
+        .expect("the agent role sees the shared pool, by id too");
+        assert_eq!(ok.0["id"], theirs);
     }
 
     /// F-06: in shim mode the graph edge-read scope is the chunk link — a
@@ -10888,20 +10910,21 @@ Final paragraph after the rule.";
         );
         assert!(!gate.admits(&None, &None), "deny-all when no role resolves");
 
-        // Contrast: the SEEDED agent role does resolve (scopes ["private"],
-        // owner "self") — the empty-lookup denial is not a blanket outage.
+        // Contrast: the SEEDED agent role does resolve (owner_filter "all"
+        // — the shared pool, by design) — the empty-lookup denial is not a
+        // blanket outage.
         let agent = role_p("ana", &["agent"], &[]);
         let resolved = handlers::gate::record_read_gate(&Some(agent), &pool);
         assert!(
             resolved.admits(&Some("ana".to_string()), &Some("private".to_string())),
-            "the seeded agent role admits its own private rows (sanity)"
+            "the seeded agent role admits rows (sanity)"
         );
         assert!(
-            !resolved.admits(
+            resolved.admits(
                 &Some("someone-else".to_string()),
                 &Some("private".to_string())
             ),
-            "and still narrows to its own rows (sanity)"
+            "and admits across owners (the shared-pool law) — not deny-all"
         );
     }
 
