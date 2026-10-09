@@ -4,6 +4,23 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.7] — 2026-10-09 — "Ledger": the plan-reference pin passes clean clones
+
+Covers every commit from tag `v1.29.6` (`ad07f05`) to this release —
+`git log v1.29.6..v1.29.7` reproduces the range. A test-only release:
+the round-ledger plan-reference pin checked every cited doc path, so
+past audit reports — cited in history, untracked by design — failed
+fresh clones (and the tag build) while passing beside them. The pin now
+checks execution-plan names only. No schema change, no route change, no
+wire change, no authz change, zero new dependency edges.
+
+### Release notes
+
+**Bug fixes**
+
+- The plan-reference pin checks execution-plan names only: cited audit
+  history stays untracked by design and no longer fails clean clones.
+
 ## [1.29.6] — 2026-10-09 — "Ledger": private reads bind to owners, releases carry their own SBOM
 
 Covers every commit from tag `v1.29.5` (`59c152f`) to this release —
