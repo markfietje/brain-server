@@ -1449,6 +1449,28 @@ pub fn run_migration_with_store_dim(
         )?;
     }
 
+    // ── the domain router's routing prototypes ───────────────
+    // `domain_route_prototypes` holds the per-domain k-means cluster means
+    // the unscoped-recall router scores against. Derived data rebuilt
+    // wholesale by the sweep — routing hints, not source-of-truth — so it
+    // earns no schema-version bump (additive `IF NOT EXISTS`, like every
+    // support table here). Declared in the ladder so the shipped schema is
+    // complete: every production statement must PREPARE against a freshly
+    // migrated database (tests/sql_schema_agreement.rs). The router's own
+    // `ensure_prototype_table` stays as the defensive seam — a backup
+    // restored over a migrated file still converges on first sweep.
+    // Lives in every domain file like `transfers`/`legal_holds`; the router
+    // operates on the `global` pool (routing is a whole-corpus concern).
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS domain_route_prototypes (
+            domain TEXT NOT NULL,
+            idx INTEGER NOT NULL,
+            proto BLOB NOT NULL,
+            PRIMARY KEY (domain, idx)
+        )",
+        [],
+    )?;
+
     // ── v1.26.0 "Cross-Border": the transfer register + tagging ────
     // `transfers` is the Art 30 processing-activities + Art 46 transfer-
     // safeguard evidence: every cross-border data flow as a row. The `knowledge`

@@ -251,11 +251,11 @@ pub fn read_centroids(global_pool: &Pool) -> Result<Vec<(String, Vec<f32>)>> {
     Ok(rows)
 }
 
-/// Ensure the prototype table exists. Created lazily and additively
-/// (`IF NOT EXISTS`) rather than through the migration ladder: prototypes are
-/// routing hints rebuilt wholesale by the sweep — not source-of-truth data —
-/// so the table earns no schema-version bump and a fresh or old DB converges
-/// on first sweep.
+/// Ensure the prototype table exists. Declared in the migration ladder
+/// (additive `IF NOT EXISTS`, no schema-version bump — prototypes are
+/// routing hints rebuilt wholesale by the sweep, not source-of-truth data);
+/// this seam stays so a backup restored over a migrated file — or any db
+/// the ladder has not reached — still converges on first sweep.
 fn ensure_prototype_table(conn: &Connection) -> Result<()> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS domain_route_prototypes (
