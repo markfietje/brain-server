@@ -101,16 +101,29 @@ fn cluster_mean_sim(query: &[f32], protos: &[&Vec<f32>]) -> f32 {
     cluster.sum::<f32>() / n
 }
 
-/// Route a query vector to the single best-matching domain by PROTOTYPE
-/// similarity, or `None` below [`DOMAIN_CONFIDENCE_THRESHOLD`]. Pure +
-/// deterministic (ties broken alphabetically). `prototypes` is
+/// Route a query vector to the single best-matching content domain by
+/// PROTOTYPE similarity, or `None` below [`DOMAIN_CONFIDENCE_THRESHOLD`].
+/// Pure + deterministic (ties broken alphabetically). `prototypes` is
 /// `(domain, vector)` and may hold many vectors per domain. Domains whose
 /// prototype list is empty (or all-empty vectors) cannot win — the caller
 /// falls back to centroid routing for them.
+///
+/// The GLOBAL SHADOW LAW: `global` is the working-memory junk drawer — it can
+/// win the score (it holds topical leftovers too; measured: a blueberries
+/// query matched global's fruit notes at 0.398 against the corpus domain's
+/// 0.363) but routing to it means searching global ALONE, hiding a content
+/// domain that scored within topic margin. When the raw winner is `global`,
+/// the best NON-global domain within [`PROTO_CLUSTER_MARGIN`] of it takes the
+/// route instead (the caller always pairs the route with the global rescue
+/// leg, so both are searched); when no content domain shadows that closely,
+/// the answer is `None` — global-only, and a working-memory query is not
+/// dragged into the bulk corpus (the measured swamp this router exists to
+/// avoid).
 pub fn route_multi(query: &[f32], prototypes: &[(String, Vec<f32>)]) -> Option<String> {
     // prototypes arrive ordered by domain (the reader sorts); score each
     // contiguous same-domain run in one pass.
     let mut best: Option<(f32, &str)> = None;
+    let mut best_content: Option<(f32, &str)> = None;
     let mut run_start = 0usize;
     while run_start < prototypes.len() {
         let domain = prototypes[run_start].0.as_str();
@@ -128,6 +141,17 @@ pub fn route_multi(query: &[f32], prototypes: &[(String, Vec<f32>)]) -> Option<S
         if score == f32::NEG_INFINITY {
             continue;
         }
+        let is_content = domain != "global";
+        if is_content {
+            match best_content {
+                None => best_content = Some((score, domain)),
+                Some((bs, _)) if score > bs => best_content = Some((score, domain)),
+                Some((bs, bd)) if (score - bs).abs() < f32::EPSILON && domain < bd => {
+                    best_content = Some((score, domain))
+                }
+                _ => {}
+            }
+        }
         match best {
             None => best = Some((score, domain)),
             Some((bs, _)) if score > bs => best = Some((score, domain)),
@@ -137,9 +161,19 @@ pub fn route_multi(query: &[f32], prototypes: &[(String, Vec<f32>)]) -> Option<S
             _ => {}
         }
     }
-    best.and_then(|(score, domain)| {
-        (score >= DOMAIN_CONFIDENCE_THRESHOLD).then(|| domain.to_string())
-    })
+    let (score, domain) = best?;
+    if domain != "global" {
+        return (score >= DOMAIN_CONFIDENCE_THRESHOLD).then(|| domain.to_string());
+    }
+    // global won: a content domain within topic margin is the real route.
+    match best_content {
+        Some((cs, cd))
+            if cs >= score - PROTO_CLUSTER_MARGIN && cs >= DOMAIN_CONFIDENCE_THRESHOLD =>
+        {
+            Some(cd.to_string())
+        }
+        _ => None,
+    }
 }
 
 /// Route a query vector to the single best-matching domain, or `None` if no
@@ -723,6 +757,38 @@ mod tests {
     #[test]
     fn route_multi_on_empty_input_is_none() {
         assert!(route_multi(&[1.0, 0.0], &[]).is_none());
+    }
+
+    /// The measured blueberries shape (2026-10-09): global's leftover topical
+    /// notes outscored the content domain's cluster, and routing to the raw
+    /// winner means searching global ALONE — hiding a corpus that scored
+    /// within topic margin. The shadow law routes the content domain instead;
+    /// the caller always pairs the route with the global rescue leg, so both
+    /// are searched. The second arm is the swamp guard: a working-memory
+    /// query with NO near content domain routes to None (global only).
+    #[test]
+    fn route_multi_global_shadow_never_hides_a_near_topic() {
+        let query = vec![1.0, 0.0];
+        let shadowed = vec![
+            ("global".to_string(), vec![1.0, 0.0]),
+            ("gutmindsynergy".to_string(), vec![1.0, 0.0]),
+            ("gutmindsynergy".to_string(), vec![0.0, 1.0]),
+        ];
+        assert_eq!(
+            route_multi(&query, &shadowed).as_deref(),
+            Some("gutmindsynergy"),
+            "global winning raw must not hide the near content domain"
+        );
+
+        let no_shadow = vec![
+            ("global".to_string(), vec![1.0, 0.0]),
+            ("gutmindsynergy".to_string(), vec![0.0, 1.0]),
+        ];
+        assert_eq!(
+            route_multi(&query, &no_shadow).as_deref(),
+            None,
+            "no near content domain: global-only, the bulk corpus stays out"
+        );
     }
 
     /// The sweep builds prototypes from the real vec0 index, deterministically:
