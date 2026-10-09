@@ -1037,10 +1037,47 @@ mod tests {
         let url = format!("http://{addr}/sink");
         let connects = Arc::new(AtomicU32::new(0));
         let connects_cloned = Arc::clone(&connects);
-        // Non-blocking + deadline so the responder self-terminates whether or
-        // not a buggy follow arrives (no hang on the second accept).
-        listener.set_nonblocking(true).unwrap();
+        // The FIRST accept is blocking and bounded by the client's own
+        // 15 s total cap — a cold client build under a heavier feature
+        // linkage can take longer than any fixed deadline to reach its
+        // first connect, and a deadline-expired listener DROP is what turns
+        // that slowness into a connection-refused panic (measured: this
+        // test failed as "connection refused" with an 800 ms
+        // self-termination deadline while the client was still
+        // constructing). Once the first connection has landed, the loop
+        // goes non-blocking + short-deadline so a buggy follow cannot hang
+        // the second accept.
+        listener.set_nonblocking(false).unwrap();
         let thread = std::thread::spawn(move || {
+            let first = match listener.accept() {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            let (mut sock, _) = first;
+            let _ = sock.set_nonblocking(false);
+            connects_cloned.fetch_add(1, Ordering::SeqCst);
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 1024];
+            loop {
+                let n = sock.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            // First connection → 302 to the same listener.
+            let loc = format!("http://{addr}/followed");
+            let resp =
+                format!("HTTP/1.1 302 Found\r\nLocation: {loc}\r\nContent-Length: 0\r\n\r\n");
+            let _ = sock.write_all(resp.as_bytes());
+            let _ = sock.shutdown(std::net::Shutdown::Both);
+
+            // Any stray second connection (a buggy follow) → 200, bounded:
+            // the listener self-terminates 800 ms after the redirect.
+            let _ = listener.set_nonblocking(true);
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(800);
             while std::time::Instant::now() < deadline {
                 let (mut sock, _) = match listener.accept() {
@@ -1067,17 +1104,7 @@ mod tests {
                         break;
                     }
                 }
-                // First connection → 302 to the same listener; any stray
-                // second connection (a buggy follow) → 200.
-                if connects_cloned.load(Ordering::SeqCst) == 1 {
-                    let loc = format!("http://{addr}/followed");
-                    let resp = format!(
-                        "HTTP/1.1 302 Found\r\nLocation: {loc}\r\nContent-Length: 0\r\n\r\n"
-                    );
-                    let _ = sock.write_all(resp.as_bytes());
-                } else {
-                    let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
-                }
+                let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
             }
         });
 
