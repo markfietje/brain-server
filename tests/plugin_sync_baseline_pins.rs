@@ -128,4 +128,22 @@ fn the_baseline_names_a_commit_the_repo_can_resolve() {
          the sync script treats that as 'no usable baseline' and disarms the \
          drift guard with the same silent fallback"
     );
+    // Anti-misdiagnosis, not a second law: a SHALLOW clone (actions/checkout's
+    // default fetch-depth is 1) holds exactly one commit object, so the probe
+    // above fails for every ancestor whatever the baseline says. CI checks
+    // out with fetch-depth: 0 (the same lane shape the fuzz job always had),
+    // so this arm names the mechanism instead of letting a shallow checkout
+    // read as a corrupt baseline.
+    let shallow = Command::new("git")
+        .args(["rev-parse", "--is-shallow-repository"])
+        .current_dir(repo("."))
+        .output()
+        .unwrap_or_else(|e| panic!("git rev-parse must run: {e}"));
+    assert_eq!(
+        String::from_utf8_lossy(&shallow.stdout).trim(),
+        "false",
+        "this test cannot measure the baseline law in a shallow clone — a \
+         depth-1 checkout resolves no ancestor, so give the job \
+         fetch-depth: 0 (as every ci.yml lane now does)"
+    );
 }
