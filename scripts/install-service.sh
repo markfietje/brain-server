@@ -249,7 +249,18 @@ fi
 #     to the RRF order — recall never stalls on a reranker fault. Also
 #     retires the dead legacy RERANK_ENABLED env (read by nothing since the
 #     profile gate landed).
-CLS_RERANK_DIR="$HOME/.config/brain-server/models/mxbai-rerank-base-v1"
+#
+#     The model is a CONFIGURABLE OPTION, never a hardcode: the server's seam
+#     is `BRAIN_RERANK_MODEL_DIR` (any BYO-ONNX dir with onnx/model_quantized
+#     .onnx + the four tokenizer files), and the installer's provisioned
+#     default is overridable at install time —
+#       RERANK_MODEL=mxbai-rerank-large-v1 ./scripts/install-service.sh
+#     names a sibling dir under ~/.config/brain-server/models/ (default:
+#     mxbai-rerank-base-v1, the measured latency pick; large-v1 is the
+#     measured quality-when-latency-allows option). An already-set
+#     BRAIN_RERANK_MODEL_DIR in the plist is operator-owned and untouched.
+RERANK_MODEL="${RERANK_MODEL:-mxbai-rerank-base-v1}"
+CLS_RERANK_DIR="$HOME/.config/brain-server/models/$RERANK_MODEL"
 mkdir -p "$CLS_RERANK_DIR/onnx" 2>/dev/null || true
 chmod 700 "$CLS_RERANK_DIR" 2>/dev/null || true
 plutil -remove EnvironmentVariables.RERANK_ENABLED "$PLIST" 2>/dev/null || true
@@ -261,7 +272,7 @@ else
 	ok "MODEL_PROFILE=$CURRENT_PROFILE kept (operator-set; untouched)"
 fi
 if [ ! -f "$CLS_RERANK_DIR/onnx/model_quantized.onnx" ] || [ ! -f "$CLS_RERANK_DIR/tokenizer.json" ]; then
-	log "rerank artifacts absent -> tier arms but fails open to RRF order (place the mxbai-rerank-large-v1 int8 set in $CLS_RERANK_DIR, or it falls back to the bge download)"
+	log "rerank artifacts absent for $RERANK_MODEL -> tier arms but fails open to RRF order (place the int8 ONNX + tokenizer set in $CLS_RERANK_DIR, or it falls back to the bge download)"
 else
 	plutil -remove EnvironmentVariables.BRAIN_RERANK_MODEL_DIR "$PLIST" 2>/dev/null || true
 	plutil -insert EnvironmentVariables.BRAIN_RERANK_MODEL_DIR -string "$CLS_RERANK_DIR" "$PLIST"
