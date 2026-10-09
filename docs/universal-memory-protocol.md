@@ -122,11 +122,19 @@ The full surface is ten routes under `/ump/`.
 | `GET /ump/memory/{id}` | Fetch one record by id. Integrity is verified before the record is returned. |
 | `POST /ump/recall` | Ranked retrieval with per-result signals. |
 | `POST /ump/revise` | Patch a record. Creates a new version and supersedes the old one. |
-| `POST /ump/forget` | Erase a record, soft or hard, with a tombstone and an audit row. |
+| `POST /ump/forget` | Erase a record, soft or hard, with a tombstone and an audit row. Hard erase carries the `/purge` destructive authority (Admin scope + the `purge` role capability). |
 | `POST /ump/feedback` | Tell the server whether a recalled memory was followed, overridden, ignored, or contradicted. |
 | `GET /ump/subscribe` | Server-sent event stream of changes. Events carry `{kind, id}` only, never record bodies. |
 | `POST /ump/audit` | Read the hash-chained audit log. |
 | `GET /ump/audit/verify` | Verify the audit chain is intact. |
+
+### Target authorization
+
+`revise`, `forget`, and `feedback` take a record id, so each is bound to the
+caller's record gate: a principal may only mutate a record whose
+`(owner, access_scope)` it could read, and a refused target answers exactly
+like a missing id (a write surface that distinguished "exists, not yours"
+from "not there" would leak which private ids exist).
 
 A discovery document with the same payload as capabilities is served at `/.well-known/ump.json`.
 

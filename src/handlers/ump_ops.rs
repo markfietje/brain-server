@@ -554,6 +554,29 @@ pub async fn recall(
     Ok(Json(json!({ "results": results })))
 }
 
+/// The probe-blind target-row refusal every any-id UMP mutation
+/// (`revise`/`forget`/`feedback`) shares. The record gate — the same
+/// `(owner, access_scope)` pair the read seam enforces — must admit the
+/// target row, else the mutation answers exactly like a missing id: a
+/// write surface that distinguishes "exists, not yours" from "not there"
+/// is an id-existence oracle for private data. `None` principal
+/// (loopback/opaque operator, capability bearer) is unrestricted by the
+/// gate's own semantics.
+fn authorize_target_row(
+    gate: &super::gate::RecordReadGate,
+    owner: Option<&str>,
+    access_scope: Option<&str>,
+    id: i64,
+) -> Result<(), HandlerError> {
+    let owner = owner.map(str::to_owned);
+    let scope = access_scope.map(str::to_owned);
+    if gate.admits(&owner, &scope) {
+        Ok(())
+    } else {
+        Err(HandlerError::not_found(format!("no chunk with id {id}")))
+    }
+}
+
 /// §3.5 `revise` — patch a record: the patched record lowers through the
 /// ingest path as a NEW chunk, then `resolve_supersession` expires the old
 /// one (default recall returns the new revision; `?at=<past>` still finds
@@ -594,6 +617,9 @@ pub async fn revise(
     super::cap_gate(&cap.0, "write")?;
     let id_arg = req.id.clone();
     let owner = principal_to_owner(&principal.0);
+    // Resolved before the pool is touched inside the closure (the gate may
+    // read the role store; a conn must not be held across a second pool.get).
+    let record_gate = super::gate::record_read_gate(&principal.0, &state.pool);
     let pool = state.pool.clone();
     let old_id = tokio::task::spawn_blocking(
         move || -> Result<(i64, crate::handlers::ingest::IngestRequest), HandlerError> {
@@ -602,6 +628,15 @@ pub async fn revise(
             let row = load_knowledge_row(&conn, old_id)
                 .map_err(|e| HandlerError::internal(e.to_string()))?
                 .ok_or_else(|| HandlerError::not_found(format!("no chunk with id {id_arg}")))?;
+            // The target-row gate keys on the SQL columns — the same pair
+            // every read surface filters on (`k.owner`, `k.access_scope`),
+            // never the client-controlled `ump_meta` overlay.
+            authorize_target_row(
+                &record_gate,
+                row["owner"].as_str(),
+                row["access_scope"].as_str(),
+                old_id,
+            )?;
             let meta = UmpMeta::parse(row["ump_meta"].as_str());
             let row_owner = row["owner"].as_str().or(meta.owner.as_deref());
             let redact = owner.is_some()
@@ -715,9 +750,23 @@ pub async fn forget(
 ) -> Result<Json<Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     super::cap_gate(&cap.0, "write")?;
+    // Hard erase is the `/purge` act and carries its destructive authority —
+    // Write scope alone never reaches it. A capability bearer can never grant
+    // it: no admin verb exists in the §5.2 vocabulary (the audit-surface
+    // precedent), so the cap gate refuses every token before the principal
+    // gates run. Checked before the row resolves: the 403/401 leak nothing
+    // about which ids exist.
+    if req.hard {
+        super::cap_gate(&cap.0, "admin")?;
+        super::authorize(&principal.0, crate::auth::Action::Admin, "", "global")?;
+        super::authorize_role(&principal.0, &state.pool, "purge")?;
+    }
     let id_arg = req.id.clone();
     let reason = req.reason.unwrap_or_else(|| "ump_forget".to_string());
     let hard = req.hard;
+    // Resolved outside the closure (may read the role store through the
+    // pool; a held conn must not sit under a second pool.get).
+    let record_gate = super::gate::record_read_gate(&principal.0, &state.pool);
     let pool = state.pool.clone();
     let id = tokio::task::spawn_blocking(move || -> Result<i64, HandlerError> {
         let mut conn = pool.get().map_err(HandlerError::db_down)?;
@@ -729,6 +778,13 @@ pub async fn forget(
             .map_err(|e| HandlerError::internal(format!("existence check failed: {e}")))?;
         if !exists {
             return Err(HandlerError::not_found(format!("no chunk with id {id}")));
+        }
+        // The target-row gate: the same `(owner, access_scope)` pair every
+        // read surface filters on (probe-blind refusal for foreign rows).
+        let row_meta = crate::service::procedure::row_access_meta(&tx, id)
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        if let Some((_, row_owner, row_scope)) = row_meta {
+            authorize_target_row(&record_gate, row_owner.as_deref(), row_scope.as_deref(), id)?;
         }
         let now = chrono::Utc::now().timestamp();
         if hard {
@@ -813,10 +869,21 @@ pub async fn feedback(
     // the same capture the /suggest/feedback handler does. No principal → NULL.
     let owner = principal.0.as_ref().map(|p| p.sub.clone());
     let ts = chrono::Utc::now().timestamp();
+    // Resolved outside the closure (may read the role store through the
+    // pool; a held conn must not sit under a second pool.get).
+    let record_gate = super::gate::record_read_gate(&principal.0, &state.pool);
     let pool = state.pool.clone();
     tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
         let conn = pool.get().map_err(HandlerError::db_down)?;
         let id = resolve_row_id(&conn, &id_arg)?;
+        // Feedback is an any-id mutation: it may only land on a row the
+        // caller's record gate admits — a foreign private row must neither
+        // take the caller's ranking signal nor confirm its id exists.
+        let row_meta = crate::service::procedure::row_access_meta(&conn, id)
+            .map_err(|e| HandlerError::internal(e.to_string()))?;
+        if let Some((_, row_owner, row_scope)) = row_meta {
+            authorize_target_row(&record_gate, row_owner.as_deref(), row_scope.as_deref(), id)?;
+        }
         crate::service::suggest::record_feedback(
             &conn,
             id,

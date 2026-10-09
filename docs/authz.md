@@ -165,6 +165,17 @@ mistake a no-role JWT for the agent role: no-role means owner-only, the
 `agent` role means shared-pool by design. Narrowing the agent preset to
 owner-only is a separate policy decision and release, not part of this fix.
 
+The **same record gate binds the UMP any-id mutations** (R93): `/ump/revise`,
+`/ump/forget`, and `/ump/feedback` may only target a row the caller's gate
+admits — the identical `(owner, access_scope)` pair the read surfaces filter
+on. A refused target answers exactly like a missing id (probe-blind 404): a
+write surface that distinguishes "exists, not yours" from "not there" would
+be an id-existence oracle for private data. **Hard forget is the `/purge`
+act** and carries its destructive authority on top: Admin scope AND the
+`purge` role capability. A UMP capability bearer can never reach hard erase —
+no admin verb exists in the §5.2 vocabulary — while its write-verb soft
+lane is unchanged, as is the loopback/opaque operator path.
+
 ## The posture knob
 
 `BRAIN_RBAC_ROLELESS_POSTURE` = `pass` (default) | `deny`.

@@ -2936,7 +2936,9 @@ paths:
         (`id`/`integrity` are server-authoritative and never patched), lowered
         through the ingest path as a new chunk, and the old chunk is expired
         via `resolve_supersession` (default recall returns the new revision;
-        `?at=<past>` still finds the old). Returns `{id, supersedes}`.
+        `?at=<past>` still finds the old). Target-row bound: the caller's
+        record gate decides the id (a foreign private row answers 404,
+        indistinguishable from a missing one). Returns `{id, supersedes}`.
       responses:
         "200":
           description: "{id, supersedes: [old_id]}"
@@ -2946,6 +2948,8 @@ paths:
                 type: object
                 example: {"id": 43, "supersedes": [42]}
                 description: 'the patched record id + the superseded old revision id(s); default recall returns the new revision'
+        "404":
+          description: not_found (missing id, or a target row the caller's record gate does not admit)
   /ump/forget:
     post:
       summary: Delete or soft-delete a record (v1.17.3 M2, UMP §3.4)
@@ -2953,7 +2957,10 @@ paths:
       description: >
         `{id, reason?, hard?}` — `hard:false` (default) flags the row
         (quarantine-style, still retrievable with `include_flagged`) + tombstone
-        + audit; `hard:true` runs the v1.14 `purge_chunk_ids` erase path.
+        + audit; `hard:true` runs the v1.14 `purge_chunk_ids` erase path and
+        requires the `/purge` destructive authority (Admin scope AND the
+        `purge` role capability; a capability bearer is always refused).
+        Target-row bound: the caller's record gate decides the id.
         Returns `{result: "tombstoned"}`.
       responses:
         "200":
@@ -2964,8 +2971,12 @@ paths:
                 type: object
                 example: {"result": "tombstoned"}
                 description: 'hard:false flags the row + tombstone + audit; hard:true runs the v1.14 purge erase path'
+        "401":
+          description: unauthorized (a capability bearer can never reach hard erase)
+        "403":
+          description: forbidden (hard erase without Admin scope or the purge capability)
         "404":
-          description: not_found
+          description: not_found (missing id, or a target row the caller's record gate does not admit)
   /ump/feedback:
     post:
       summary: Record outcome feedback (v1.17.3 M2, UMP §3.6)
@@ -2974,7 +2985,8 @@ paths:
         `{id, outcome, reason?}` with outcome in followed|overridden|ignored|
         contradicted. Mapped to the suggest-feedback last-wins upsert
         (followed → accept, rest → dismiss) with the granular outcome
-        persisted in `ump_outcome`.
+        persisted in `ump_outcome`. Target-row bound: the caller's record
+        gate decides the id.
       responses:
         "200":
           description: "{result: recorded}"
@@ -2986,6 +2998,8 @@ paths:
                 description: 'feedback mapped to the suggest-feedback last-wins upsert (followed → accept, rest → dismiss)'
         "400":
           description: feedback_invalid
+        "404":
+          description: not_found (missing id, or a target row the caller's record gate does not admit)
   /ump/subscribe:
     get:
       summary: SSE change signal (v1.17.3 M2, UMP §3.8)

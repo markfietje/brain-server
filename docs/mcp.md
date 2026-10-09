@@ -91,9 +91,9 @@ The tool list (verified from `src/bin/mcp.rs` `method_tools_list`):
 | `ump.remember` | `POST /ump/remember` | Store a UMP memory record |
 | `ump.get` | `GET /ump/memory/{id}` | Read one record by id (integrity re-verified; others' rows §2.7-redacted) |
 | `ump.recall` | `POST /ump/recall` | Ranked recall with per-result signals (`filter.kind`, `filter.valid_at`) |
-| `ump.revise` | `POST /ump/revise` | Patch a record; stored as a new revision, old chunk expired via supersession |
-| `ump.forget` | `POST /ump/forget` | Soft (default) or hard erase (`hard: true` runs the v1.14 erase path) |
-| `ump.feedback` | `POST /ump/feedback` | Record outcome feedback (`followed`/`overridden`/`ignored`/`contradicted`) |
+| `ump.revise` | `POST /ump/revise` | Patch a record; stored as a new revision, old chunk expired via supersession. Target-row bound (the caller's record gate decides the id) |
+| `ump.forget` | `POST /ump/forget` | Soft (default) or hard erase (`hard: true` runs the v1.14 erase path and requires the `/purge` authority: Admin scope + the `purge` role capability — never a capability token) |
+| `ump.feedback` | `POST /ump/feedback` | Record outcome feedback (`followed`/`overridden`/`ignored`/`contradicted`). Target-row bound |
 | `ump.audit` | `POST /ump/audit` | Recent hash-chained audit rows |
 | `ump.audit.verify` | `GET /ump/audit/verify` | Full audit-chain integrity verification |
 

@@ -1648,7 +1648,7 @@ export interface paths {
         put?: never;
         /**
          * Patch a record (v1.17.3 M2, UMP §3.5)
-         * @description `{id, patch}` — the patch is deep-merged over the stored record (`id`/`integrity` are server-authoritative and never patched), lowered through the ingest path as a new chunk, and the old chunk is expired via `resolve_supersession` (default recall returns the new revision; `?at=<past>` still finds the old). Returns `{id, supersedes}`.
+         * @description `{id, patch}` — the patch is deep-merged over the stored record (`id`/`integrity` are server-authoritative and never patched), lowered through the ingest path as a new chunk, and the old chunk is expired via `resolve_supersession` (default recall returns the new revision; `?at=<past>` still finds the old). Target-row bound: the caller's record gate decides the id (a foreign private row answers 404, indistinguishable from a missing one). Returns `{id, supersedes}`.
          */
         post: operations["umpRevise"];
         delete?: never;
@@ -1668,7 +1668,7 @@ export interface paths {
         put?: never;
         /**
          * Delete or soft-delete a record (v1.17.3 M2, UMP §3.4)
-         * @description `{id, reason?, hard?}` — `hard:false` (default) flags the row (quarantine-style, still retrievable with `include_flagged`) + tombstone + audit; `hard:true` runs the v1.14 `purge_chunk_ids` erase path. Returns `{result: "tombstoned"}`.
+         * @description `{id, reason?, hard?}` — `hard:false` (default) flags the row (quarantine-style, still retrievable with `include_flagged`) + tombstone + audit; `hard:true` runs the v1.14 `purge_chunk_ids` erase path and requires the `/purge` destructive authority (Admin scope AND the `purge` role capability; a capability bearer is always refused). Target-row bound: the caller's record gate decides the id. Returns `{result: "tombstoned"}`.
          */
         post: operations["umpForget"];
         delete?: never;
@@ -1688,7 +1688,7 @@ export interface paths {
         put?: never;
         /**
          * Record outcome feedback (v1.17.3 M2, UMP §3.6)
-         * @description `{id, outcome, reason?}` with outcome in followed|overridden|ignored| contradicted. Mapped to the suggest-feedback last-wins upsert (followed → accept, rest → dismiss) with the granular outcome persisted in `ump_outcome`.
+         * @description `{id, outcome, reason?}` with outcome in followed|overridden|ignored| contradicted. Mapped to the suggest-feedback last-wins upsert (followed → accept, rest → dismiss) with the granular outcome persisted in `ump_outcome`. Target-row bound: the caller's record gate decides the id.
          */
         post: operations["umpFeedback"];
         delete?: never;
@@ -8917,6 +8917,13 @@ export interface operations {
                     "application/json": Record<string, never>;
                 };
             };
+            /** @description not_found (missing id, or a target row the caller's record gate does not admit) */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     umpForget: {
@@ -8937,7 +8944,21 @@ export interface operations {
                     "application/json": Record<string, never>;
                 };
             };
-            /** @description not_found */
+            /** @description unauthorized (a capability bearer can never reach hard erase) */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description forbidden (hard erase without Admin scope or the purge capability) */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description not_found (missing id, or a target row the caller's record gate does not admit) */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -8966,6 +8987,13 @@ export interface operations {
             };
             /** @description feedback_invalid */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description not_found (missing id, or a target row the caller's record gate does not admit) */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
