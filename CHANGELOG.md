@@ -4,6 +4,133 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.5] — 2026-10-09 — "Routing": unscoped recall learns where the corpus lives
+
+### Multi-prototype domain routing
+
+The centroid router compared a query to ONE mean vector per domain, so a
+topic that is a sliver of a large heterogeneous domain was averaged away
+and the query fell back to global-only — measured live: "EGCG catechins
+antioxidants" never reached 124 green-tea chunks inside a gut-microbiome
+corpus. The router now k-means each domain's chunk vectors (deterministic
+— id-ordered init, no RNG, capped passes) into prototypes and scores the
+mean of each domain's top-k prototype similarities. Prototypes are a
+lazily-created additive table — routing hints, not source-of-truth data,
+so no schema-version bump; no prototypes (first run) takes the centroid
+route byte-unchanged, and prototypes refresh on the sweep.
+
+Calibrated on the live store (8,792 chunks, 11 domains): the score is the
+mean of the prototypes within topic margin of the best (the supporting
+cluster), the confidence threshold sits at 0.25 — 0.15 above the measured
+noise ceiling, just under the measured topic floor — and the prototype
+count doubles so minority topics keep their own routing signature. After:
+unscoped "benefits of blueberries" routes into the corpus with zero
+configuration; the working-memory gold queries still stay global.
+
+### The global shadow law
+
+When the junk-drawer global domain wins the raw routing score, the best
+non-global domain within topic margin takes the route alongside it — the
+caller pairs both with the global rescue leg, so a near-topic corpus can
+no longer be hidden by global's leftover topical notes. No near content:
+None, global-only — a working-memory query still never drags the bulk
+corpus in.
+
+### Tombstone hygiene, promote provenance, reindex
+
+- **Forget reaches routing.** UMP forget tombstones a chunk while the
+  routing sweep filtered by `valid_to` only — forgotten content kept
+  shaping centroids and prototypes after erasure (measured: 0.64/0.47
+  prototype weights on emptied domains). The sweep now anti-joins
+  tombstones; restore semantics unchanged (tombstones stay soft), only
+  their retrieval influence is cut.
+- **Approve files where the reviewer aimed.** `promote_chunk_insert`
+omitted the domain column, so every approved proposal was silently
+  filed into the `global` default — and `UNIQUE(content_hash, domain)`
+  then collided with identical content already there (measured: a 500 on
+  a legitimate approve, the proposal stuck pending). The approved row the
+  reviewer authorized is the row the promote files, with Write re-checked
+  on the row's own domain inside the tx.
+- **`/reindex` rebuilds the whole derived estate.** It re-embedded
+  vectors but never touched centroids or routing prototypes — the
+  router's picture of the corpus stayed stale until an operator found
+  the separate `/domains/recompute` route. The sweep now rides the same
+  Admin-gated call; failure propagates. Response shape unchanged.
+
+### The edges: plugin 0.6.13, installer rerank, sync guard
+
+- **plugin 0.6.13** — the operator's `defaultDomain` now rides every
+  recall the model leaves unscoped (stamped at BrainClient's single choke
+  point; an explicit model domain always wins; `global` stamps nothing —
+  wire body byte-identical to unstamped). `defaultDomain` gains
+  registration-time shape validation against the server's domain pattern,
+  and the recall tool description tells the model the default applies
+  when it omits domain. Also lands `scripts/brain-api.sh`: the token-safe
+  CLI client — role-correct line reads, digest-only auth output,
+  self-fetched approve digests, so hand-assembled curl headers are never
+  needed.
+- **The installer arms the rerank tier on desktop-class hosts** — the
+  cross-encoder existed in-tree behind `rerank-tier` but this deployment
+  never compiled or armed it. The installer builds the feature, provisions
+  the quality-local profile and the absolute model dir, pins the models
+  dir into the integrity manifest, and retires the dead legacy
+  `RERANK_ENABLED` env. Model pick is measured, not default: live A/B/C
+  over the real store made mxbai-rerank-base-v1 the provisioned default
+  (1–2.5 s topical vs large's 3–7.6 s against the 8 s recall timeout);
+  `RERANK_MODEL` picks a sibling dir at install time, and the server's
+  model id now names the dir ACTUALLY loaded (`byo:<dirname>`) instead of
+  a hardcoded golden label.
+- **The sync drift guard learns the declared fork-field delta** — the
+  R82 residual closes. The pre-sync guard's byte-exact three-way cmp
+  refused any sync whose target package.json carried the fork's declared
+  typebox specifier; the exemption rewrites the baseline copy's typebox
+  line to the fork workspace's declared value before the cmp (equal means
+  the target moved ONLY by the declared delta; a missing fork workspace
+  disables the exemption, fail-closed). Measured: the 0.6.13 sync —
+  refused before, passes now with "declared deltas verified".
+
+No schema change (1.32.26 unchanged), no route change, no wire change,
+no authz change, zero new dependency edges.
+
+### The v1.29.4 test erratum
+
+The agent preset's shared-pool widening (1.29.4) updated the in-crate
+role pins but missed three handler-level pins in `tests/main_suite.rs`
+that still asserted the pre-widening agent (owner=self, private-only) —
+the suite shipped red at v1.29.4 and the badge bump to 3175 was never
+machine-derived (`--verify-count` would have refused it). All three pins
+now assert the deliberate law: the agent role retrieves the shared pool
+(adminish for retrieval; the no-Admin ceiling lives in the action
+gates), and the by-id narrowing arm moved to the supervisor role, whose
+bundle still narrows — re-narrowing the agent preset fails the new
+shared-pool pin, re-widening every bundle fails the supervisor arm.
+
+### Release notes
+
+**Fixes**
+
+- Approved proposals land in the domain the reviewer authorized instead
+  of the `global` default — the UNIQUE(content_hash, domain) 500 on a
+  legitimate approve is gone.
+- Forgotten (tombstoned) chunks no longer shape routing centroids and
+  prototypes — erasure now reaches the retrieval structures.
+- `/reindex` rebuilds centroids and routing prototypes along with the
+  vectors.
+
+**Improvements**
+
+- Unscoped recall routes by multi-prototype topic match with a measured
+  confidence threshold (0.25), a supporting-cluster score, and the global
+  shadow law — near-topic corpora are found without configuration.
+- plugin 0.6.13: `defaultDomain` stamps unscoped recalls; registration
+  validates its shape.
+- The installer arms the rerank tier on desktop hosts with the measured
+  base model as default (`RERANK_MODEL` to pick a sibling).
+- `scripts/brain-api.sh`: token-safe CLI client for the operator/agent
+  token lines.
+- `scripts/sync-plugin.sh`: the drift guard accepts the fork's declared
+  typebox delta (fail-closed elsewhere).
+
 ## [1.29.4] — 2026-10-07 — "Domains": the agent principal reaches its domains, and two hardening rounds ship
 
 ### R84 "Domains": auto-detected agent scopes
