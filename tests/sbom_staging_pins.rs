@@ -60,6 +60,37 @@ fn stage(version: &str, tree: &Path, dist: &Path) -> std::process::Output {
         .expect("stage-sbom.sh executes")
 }
 
+/// A dist fixture file with a chosen filename and reported version.
+fn write_dist_sbom(dist: &Path, filename: &str, internal: &str) {
+    let body = serde_json::json!({
+        "bomFormat": "CycloneDX",
+        "specVersion": "1.5",
+        "version": 1,
+        "metadata": {
+            "component": {
+                "type": "application",
+                "name": "brain-server",
+                "version": internal,
+            }
+        },
+        "components": [],
+    });
+    std::fs::write(
+        dist.join(filename),
+        serde_json::to_string(&body).expect("fixture serializes"),
+    )
+    .expect("fixture written");
+}
+
+fn check_dist(version: &str, dist: &Path) -> std::process::Output {
+    Command::new("bash")
+        .arg(repo().join("scripts/check-dist-sbom.sh"))
+        .arg(version)
+        .arg(dist)
+        .output()
+        .expect("check-dist-sbom.sh executes")
+}
+
 /// Fixture with several historical SBOMs stages exactly the tag-matched
 /// manifest — and the merged multi-platform dist then holds one SBOM asset
 /// for the target version.
@@ -148,18 +179,69 @@ fn workflow_stages_no_sbom_glob() {
     );
 }
 
-/// The merged-dist gate lives in the release job's verify step: exactly the
-/// tag-matched manifest must be present, with a matching reported version,
-/// and no other SBOM beside it.
+/// The merged-dist gate lives in the release job's verify step and runs
+/// through `scripts/check-dist-sbom.sh` (a file, not inline: run-block
+/// quoting layers do not survive the transport intact). Removing the call
+/// fails this pin; the behavior below proves what the call enforces.
 #[test]
-fn release_verify_pins_the_merged_dist_sbom() {
+fn release_verify_routes_through_dist_check() {
     let yml = workflow();
     assert!(
-        yml.contains("dist/brain-server-${version}.cdx.json"),
-        "the release verify step names the exact version-matched dist SBOM"
+        yml.contains("scripts/check-dist-sbom.sh"),
+        "the release verify step must invoke the dist SBOM check seam"
     );
+}
+
+/// A dist holding exactly the tag-matched manifest passes the check.
+#[test]
+fn dist_check_passes_for_exact_match() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).expect("dist dir");
+    write_dist_sbom(&dist, "brain-server-1.29.5.cdx.json", "1.29.5");
+    let out = check_dist("1.29.5", &dist);
     assert!(
-        yml.contains("historical SBOM"),
-        "the verify step refuses historical SBOMs in the merged dist"
+        out.status.success(),
+        "exact match passes: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+/// A dist without the manifest fails the check (fail closed).
+#[test]
+fn dist_check_refuses_missing() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).expect("dist dir");
+    let out = check_dist("1.29.5", &dist);
+    assert!(!out.status.success(), "a missing dist SBOM must fail");
+}
+
+/// A manifest reporting the wrong version fails even as the sole file.
+#[test]
+fn dist_check_refuses_mismatch() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).expect("dist dir");
+    write_dist_sbom(&dist, "brain-server-1.29.5.cdx.json", "1.29.4");
+    let out = check_dist("1.29.5", &dist);
+    assert!(
+        !out.status.success(),
+        "a version-mismatched dist SBOM must fail"
+    );
+}
+
+/// A historical manifest beside the matched one fails the check.
+#[test]
+fn dist_check_refuses_historicals() {
+    let tmp = tempfile::tempdir().expect("temp dir");
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).expect("dist dir");
+    write_dist_sbom(&dist, "brain-server-1.29.5.cdx.json", "1.29.5");
+    write_dist_sbom(&dist, "brain-server-1.29.4.cdx.json", "1.29.4");
+    let out = check_dist("1.29.5", &dist);
+    assert!(
+        !out.status.success(),
+        "a historical SBOM beside the matched one must fail"
     );
 }
