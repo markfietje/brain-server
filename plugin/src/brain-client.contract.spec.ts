@@ -104,12 +104,12 @@ describe("BrainClient.recall", () => {
     expect(body.intent).toBe("lookup");
   });
 
-  // ── the defaultDomain read-scope stamp ────────────────────────────────────
   // Plain chat never names a domain: the model calls brain_recall unscoped and
   // the server's auto-router falls back to global-only on a below-confidence
   // query — so a corpus outside `global` was unreachable from conversation.
-  // The operator's defaultDomain stamps every unscoped recall; an explicit
-  // model domain always wins; the "global" default stamps nothing.
+  // The stamp is applied at BrainClient's single choke point so the tool path
+  // and auto-inject cannot drift; "global" is deliberately NOT a domain stamp
+  // (it would pin the router to the junk drawer and defeat the routing tier).
 
   test("stamps the operator's defaultDomain into an unscoped recall", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(mockResponse({ hits: [] }));
