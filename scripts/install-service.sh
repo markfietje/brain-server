@@ -46,7 +46,10 @@ die() { printf 'ERR %s\n' "$*" >&2; exit 1; }
 # to build without it.
 COMPLIANCE_FEATURE="compliance-pack"
 [[ "${BRAIN_NO_COMPLIANCE_PACK:-0}" = "1" ]] && COMPLIANCE_FEATURE=""
-FEATURES="bench,migrate${COMPLIANCE_FEATURE:+,$COMPLIANCE_FEATURE}"
+FEATURES="bench,migrate,rerank-tier${COMPLIANCE_FEATURE:+,$COMPLIANCE_FEATURE}"
+# rerank-tier compiles the cross-encoder stage into the binary, but the RUNTIME
+# gate is the profile: only enterprise/desktop/quality-local boot ever arms it
+# (bootstrap.rs), so an edge host carries the code without ever paying for it.
 log "building release binaries (features: $FEATURES)..."
 ( cd "$REPO" && cargo build --release --features "$FEATURES" \
     --bin "$BIN_NAME" --bin brain --bin mcp --bin bench --bin brain-connector-stub --bin brain-migrate-rehearse )
@@ -207,10 +210,12 @@ fi
 
 # 2e. Model-artifact pinning (Bedrock): generate a BRAIN_MODEL_MANIFEST for
 #     the local model artifacts and point the service at it — the server then
-#     verifies every pinned file's SHA-256 at boot (fail-closed).
+#     verifies every pinned file's SHA-256 at boot (fail-closed). The config
+#     models dir is pinned too (rerank tier + injection classifier live there).
 if command -v shasum >/dev/null 2>&1; then
 	MANIFEST="$HOME/.config/brain-server/model-manifest.json"
-	if bash "$REPO/scripts/gen-model-manifest.sh" "$MANIFEST" >/dev/null 2>&1; then
+	if bash "$REPO/scripts/gen-model-manifest.sh" "$MANIFEST" \
+		"$HOME/.fastembed_cache" "$REPO/models" "$HOME/.config/brain-server/models" >/dev/null 2>&1; then
 		plutil -remove EnvironmentVariables.BRAIN_MODEL_MANIFEST "$PLIST" 2>/dev/null || true
 		plutil -insert EnvironmentVariables.BRAIN_MODEL_MANIFEST -string "$MANIFEST" "$PLIST"
 		ok "model manifest provisioned -> $MANIFEST"
@@ -229,6 +234,33 @@ mkdir -p "$CLS_DIR" 2>/dev/null || true
 chmod 700 "$CLS_DIR" 2>/dev/null || true
 if [ ! -f "$CLS_DIR/model.onnx" ] || [ ! -f "$CLS_DIR/tokenizer.json" ]; then
 	log "injection classifier artifacts absent -> layer 2 stays off (place model.onnx + tokenizer.json in $CLS_DIR, or set BRAIN_INJECTION_CLASSIFIER=off to silence)"
+fi
+
+# 2g. Rerank tier (the quality-local host posture). The cross-encoder stage is
+#     compiled in (FEATURES above) and ARMED only on quality-local /
+#     desktop / enterprise profiles — quality-local keeps the same embedding
+#     model and dim (no re-embed) and adds the rerank tier at boot. The model
+#     artifacts stay an operator fetch (the manifest in 2e pins their
+#     integrity); a missing/failed load fails OPEN to the RRF order — recall
+#     never stalls on a reranker fault. Also retires the dead legacy
+#     RERANK_ENABLED env (read by nothing since the profile gate landed).
+CLS_RERANK_DIR="$HOME/.config/brain-server/models/mxbai-rerank-large-v1"
+mkdir -p "$CLS_RERANK_DIR/onnx" 2>/dev/null || true
+chmod 700 "$CLS_RERANK_DIR" 2>/dev/null || true
+plutil -remove EnvironmentVariables.RERANK_ENABLED "$PLIST" 2>/dev/null || true
+CURRENT_PROFILE="$(plutil -extract EnvironmentVariables.MODEL_PROFILE raw "$PLIST" 2>/dev/null || true)"
+if [[ -z "$CURRENT_PROFILE" ]]; then
+	plutil -insert EnvironmentVariables.MODEL_PROFILE -string "quality-local" "$PLIST"
+	ok "MODEL_PROFILE=quality-local installed (same embedder; arms the rerank tier)"
+else
+	ok "MODEL_PROFILE=$CURRENT_PROFILE kept (operator-set; untouched)"
+fi
+if [ ! -f "$CLS_RERANK_DIR/onnx/model_quantized.onnx" ] || [ ! -f "$CLS_RERANK_DIR/tokenizer.json" ]; then
+	log "rerank artifacts absent -> tier arms but fails open to RRF order (place the mxbai-rerank-large-v1 int8 set in $CLS_RERANK_DIR, or it falls back to the bge download)"
+else
+	plutil -remove EnvironmentVariables.BRAIN_RERANK_MODEL_DIR "$PLIST" 2>/dev/null || true
+	plutil -insert EnvironmentVariables.BRAIN_RERANK_MODEL_DIR -string "$CLS_RERANK_DIR" "$PLIST"
+	ok "BRAIN_RERANK_MODEL_DIR=$CLS_RERANK_DIR installed (absolute dir; CWD-relative is refused by the server)"
 fi
 
 # 3. Restart the launchd service so it runs the new binary.
