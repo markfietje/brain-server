@@ -585,7 +585,14 @@ jobs:
           # historical SBOM refuses to publish (fail-closed).
           sbom="dist/brain-server-${version}.cdx.json"
           [ -f "$sbom" ] || { echo "::error::required SBOM missing: $sbom"; exit 1; }
-          actual="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metadata"]["component"]["version'])' "$sbom")"
+          # Inline `python3 -c` with nested quotes does not survive the
+          # run-block transport (v1.29.7: the closing `'])'` never reached
+          # the interpreter) — the heredoc below carries no quoting layers.
+          actual="$(python3 - "$sbom" <<'PYEOF'
+import json,sys
+print(json.load(open(sys.argv[1]))["metadata"]["component"]["version"])
+PYEOF
+)"
           [ "$actual" = "$version" ] || { echo "::error::SBOM version mismatch: $sbom reports $actual, want $version"; exit 1; }
           extra="$(ls dist/*.cdx.json 2>/dev/null | grep -v -F "$sbom" || true)"
           [ -z "$extra" ] || { echo "::error::historical SBOMs in dist (only $sbom ships): $extra"; exit 1; }
