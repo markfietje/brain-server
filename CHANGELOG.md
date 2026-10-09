@@ -4,6 +4,66 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.6] — 2026-10-09 — "Ledger": private reads bind to owners, releases carry their own SBOM
+
+Covers every commit from tag `v1.29.5` (`59c152f`) to this release —
+`git log v1.29.5..v1.29.6` reproduces the range. The ledger release: a
+JWT without roles reads its own private memory and no one else's, a
+release stages exactly its tag-matched SBOM or refuses to publish, and
+the round ledger (shipped pins, lane identifiers, route inventory)
+agrees with the tree it describes. No schema change (1.32.26 unchanged),
+no route change, no wire change, zero new dependency edges.
+
+### Owner-bound no-role reads
+
+The record read gate granted the private scope to role-less JWTs without
+an owner predicate, so one subject's private rows surfaced in another
+subject's recall, suggestions, and by-id reads. The no-role arm now
+carries the JWT subject as its owner condition on every read surface
+(recall, suggest, get, multi-get, UMP get, procedures, verify); an
+absent or empty subject reads no private rows, failing closed. The
+explicit agent shared pool, admin access, and loopback/opaque operator
+access are unchanged by design, and the authorization doc now states
+that distinction instead of letting the two be confused (proof `7661b43`;
+pins `private_memory_pins`, five re-seeded domain-isolation tests).
+
+### Tag-matched SBOM staging
+
+The release staged `sbom/*.cdx.json` — every historical manifest rode
+each new release as if current. Staging now copies exactly the
+release-matched manifest through a dedicated seam that refuses a missing
+or version-mismatched file, and the release verify step refuses a merged
+dist that is missing its SBOM, mismatched, or carrying historicals
+(proof `7661b43`; pins `sbom_staging_pins`).
+
+### A ledger that agrees with itself
+
+The shipped-round pin stopped at the previous release while the changelog
+had already shipped the next round; the parallel-programme reference had
+no file and the fork lane reused a shipped round number; the repo brief
+read route paths from the thin binary and reported zero against the
+census's 232. The pin now covers every released round with
+lane-qualified identifiers for parallel work, the missing plan record
+exists as sealed history, and the brief reads router registrations
+(proof `7661b43`; pins `round_ledger_pins`).
+
+### Release notes
+
+**Security fixes**
+
+- Private reads bind to owners: a role-less JWT reads its own private
+  rows and is denied another subject's across recall, suggest, by-id,
+  multi-get, UMP get, procedures, and verify; empty subjects read none.
+- Releases carry their own SBOM: staging copies exactly the
+  tag-matched manifest and refuses missing or mismatched files, and
+  publication refuses a merged dist without it or with historicals.
+
+**Improvements**
+
+- The round ledger agrees with the tree: shipped pins cover every
+  released round, parallel lanes carry qualified identifiers, and the
+  repo brief reports the router registration census.
+
 ## [1.29.5] — 2026-10-09 — "Routing": unscoped recall learns where the corpus lives
 
 Covers every commit from tag `v1.29.4` (`15a544c`) to this release —
