@@ -32,7 +32,12 @@ if [ -f "$m" ]; then
   echo "main.rs: ${total} lines | test-region from L${testln:-?} | router .route( sites: ${routes:-0}"
 fi
 echo "env vars:      $(grep -rhoE 'BRAIN_[A-Z0-9_]+' src --include='*.rs' | sort -u | wc -l | tr -d ' ')"
-echo "unique paths:  $(tr '\n' ' ' < "$m" 2>/dev/null | grep -oE '"(/[a-zA-Z0-9{}_.:/-]+)"' | sort -u | wc -l | tr -d ' ')"
+# Route registrations live ONLY under src/server/router/** (main.rs is thin
+# wiring since the Capstone flip), so the unique-path inventory reads the
+# router tree — flattened first because a `.route("path", method(` site may
+# span lines, exactly like scripts/docs-truth.py's census. main.rs must
+# never be the source: it reports zero and the brief would lie.
+echo "unique paths:  $(for f in src/server/router/*.rs; do tr '\n' ' ' < "$f"; echo; done | grep -oE '\.route\( *"[^"]+" *, *[a-z]+\(' | grep -oE '"[^"]+"' | sort -u | wc -l | tr -d ' ') (router registrations)"
 echo "cli commands:  $(sed -n 's/^        name: "\([a-z-]*\)",/\1/p' src/bin/brain.rs 2>/dev/null | wc -l | tr -d ' ')"
 
 echo "--- guards present ---"

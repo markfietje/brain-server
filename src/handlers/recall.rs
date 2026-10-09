@@ -488,17 +488,20 @@ pub async fn run_recall(
         }
         base_filters.min_relevance = Some(t.clone());
     }
-    base_filters.access_scopes =
-        crate::handlers::gate::scope_filter(principal).map(std::sync::Arc::new);
-    // a JWT principal with a `roles` claim is scoped by its
-    // role bundles (narrowed access_scopes + an owner predicate for
-    // self/reports). No roles → the scope path above applies unchanged.
-    // The gate (resolved once, below) also feeds the scope-violation
-    // detection so it does not re-resolve it for every recall.
+    // The composite record gate: no-role JWTs carry their subject as
+    // the owner predicate, so recall cannot drop the owner condition that
+    // by-id reads enforce. Role bundles resolve inside the same gate.
+    let record_gate = crate::handlers::gate::record_read_gate(principal, &state.pool);
+    base_filters.access_scopes = record_gate.access_scopes.clone().map(std::sync::Arc::new);
+    base_filters.owner_in = record_gate.owner_in.clone().map(std::sync::Arc::new);
+    // The scope-violation signal stays role-scoped (a no-role owner bound is
+    // not a cross-domain violation); it is true only when a role-carrying
+    // principal resolved to an owner predicate.
     let mut role_restricted = false;
-    if let Some(gate) = crate::handlers::gate::role_retrieval_gate(principal, &state.pool) {
-        role_restricted = gate.owner_in.is_some();
-        crate::handlers::gate::apply_role_gate(&mut base_filters, &gate);
+    if let Some(pr) = principal.as_ref()
+        && !pr.roles.is_empty()
+    {
+        role_restricted = record_gate.owner_in.is_some();
     }
     // when per-kind retention is enabled, carry the policy
     // into the retriever so chunks whose kind-default expiry has elapsed are

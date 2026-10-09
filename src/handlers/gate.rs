@@ -1851,8 +1851,12 @@ impl RecordReadGate {
 }
 
 /// Resolve the composite record gate for a principal: the role gate
-/// when it carries roles, else the scope filter. Errors inside either
-/// degrade to the empty permit (fail closed).
+/// when it carries roles, else the scope filter bound to the JWT subject.
+/// A no-role non-admin JWT reads its own private memory only (`owner_in` =
+/// its `sub`); an absent/empty subject degrades to the empty permit (fail
+/// closed, never an owner drop). Admin (scope filter `None`) and
+/// loopback/opaque stay unrestricted; role-based gates are unchanged.
+/// Errors inside either degrade to the empty permit (fail closed).
 pub fn record_read_gate(
     principal: &Option<crate::auth::Principal>,
     pool: &crate::Pool,
@@ -1860,10 +1864,16 @@ pub fn record_read_gate(
     match principal {
         None => RecordReadGate::unrestricted(),
         Some(pr) if pr.roles.is_empty() => match scope_filter(principal) {
-            Some(sc) => RecordReadGate {
-                access_scopes: Some(sc),
-                owner_in: None,
-            },
+            Some(sc) => {
+                if pr.sub.trim().is_empty() {
+                    RecordReadGate::empty_permit()
+                } else {
+                    RecordReadGate {
+                        access_scopes: Some(sc),
+                        owner_in: Some(vec![pr.sub.clone()]),
+                    }
+                }
+            }
             None => RecordReadGate::unrestricted(),
         },
         Some(_) => match role_retrieval_gate(principal, pool) {

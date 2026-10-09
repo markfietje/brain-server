@@ -9515,8 +9515,10 @@ Final paragraph after the rule.";
 
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let state = drawbridge_state(&tmp);
-        let alpha_id = seed_chunk(&state, "alpha", None, None, "alpha content");
-        let beta_id = seed_chunk(&state, "beta", None, None, "beta content");
+        // R85: no-role reads are owner-bound — seed explicit owners so the
+        // domain predicate is the only variable (both rows owned by ana).
+        let alpha_id = seed_chunk(&state, "alpha", Some("ana"), None, "alpha content");
+        let beta_id = seed_chunk(&state, "beta", Some("ana"), None, "beta content");
 
         let err = get_chunk(
             State(state.clone()),
@@ -9551,8 +9553,9 @@ Final paragraph after the rule.";
 
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let state = drawbridge_state(&tmp);
-        let alpha_id = seed_chunk(&state, "alpha", None, None, "alpha content");
-        let beta_id = seed_chunk(&state, "beta", None, None, "beta content");
+        // R85: owner-bound no-role — both rows owned by ana, domain isolates.
+        let alpha_id = seed_chunk(&state, "alpha", Some("ana"), None, "alpha content");
+        let beta_id = seed_chunk(&state, "beta", Some("ana"), None, "beta content");
 
         let resp = multi_get(
             State(state.clone()),
@@ -10373,8 +10376,9 @@ Final paragraph after the rule.";
 
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let state = drawbridge_state(&tmp);
-        let alpha_id = seed_chunk(&state, "alpha", None, None, "alpha renewal terms");
-        let beta_id = seed_chunk(&state, "beta", None, None, "beta renewal terms");
+        // R85: owner-bound no-role — both rows owned by ana, domain isolates.
+        let alpha_id = seed_chunk(&state, "alpha", Some("ana"), None, "alpha renewal terms");
+        let beta_id = seed_chunk(&state, "beta", Some("ana"), None, "beta renewal terms");
 
         // Foreign-domain id → probe-blind 404 (not 200-with-ranges).
         let err = verify(
@@ -10421,8 +10425,9 @@ Final paragraph after the rule.";
 
         let tmp = tempfile::NamedTempFile::new().expect("temp file");
         let state = drawbridge_state(&tmp);
-        let alpha_id = seed_chunk(&state, "alpha", None, None, "alpha shared note");
-        let beta_id = seed_chunk(&state, "beta", None, None, "beta shared note");
+        // R85: owner-bound no-role — both rows owned by ana, domain isolates.
+        let alpha_id = seed_chunk(&state, "alpha", Some("ana"), None, "alpha shared note");
+        let beta_id = seed_chunk(&state, "beta", Some("ana"), None, "beta shared note");
 
         // Foreign-domain id → probe-blind 404.
         let err = get_memory(
@@ -10666,9 +10671,10 @@ Final paragraph after the rule.";
             .expect("global migration");
         let reg = domain_registry::DomainRegistry::new(global_pool.clone(), &global_path, true);
         let alpha_pool = reg.register("alpha").expect("register alpha");
-        seed_into(&alpha_pool, "alpha", None, None, "alpha content");
+        // R85: owner-bound no-role — alpha row owned by ana so its own recall finds it.
+        seed_into(&alpha_pool, "alpha", Some("ana"), None, "alpha content");
         let beta_pool = reg.register("beta").expect("register beta");
-        seed_into(&beta_pool, "beta", None, None, "beta content");
+        seed_into(&beta_pool, "beta", Some("ana"), None, "beta content");
         let state = Arc::new(AppState {
             token_store: auth::TokenStore::new(),
             jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
@@ -18252,17 +18258,54 @@ mod scrim {
             }
         }
 
-        const SHIPPED_ROUNDS: [&str; 15] = [
+        // A shipped round is named only as a whole identifier: `OPEN — R84`
+        // routes at the shipped lane, but `OPEN — R84-fork` (a lane-qualified
+        // parallel round) and `OPEN — R840` must not count as naming it.
+        // Without the boundary a suffixed lane ID trips the shipped law the
+        // moment it is written.
+        fn names_shipped_round(declared: &str, round: &str) -> bool {
+            let needle = format!("OPEN — {round}");
+            let mut rest = declared;
+            while let Some(at) = rest.find(needle.as_str()) {
+                let after = &rest[at + needle.len()..];
+                match after.chars().next() {
+                    None => return true,
+                    Some(c) if !(c.is_ascii_alphanumeric() || c == '-') => return true,
+                    _ => {}
+                }
+                rest = &rest[at + 1..];
+            }
+            false
+        }
+
+        const SHIPPED_ROUNDS: [&str; 16] = [
             "R68", "R69", "R70", "R72", "R73", "R74", "R75", "R76", "R77", "R78", "R79", "R80",
-            "R81", "R82", "R83",
+            "R81", "R82", "R83", "R84",
         ];
+        // The boundary law above is load-bearing for lane-qualified IDs: a
+        // lane-suffixed routing must not read as the shipped bare ID, while
+        // ordinary trailing punctuation still counts as naming it.
+        assert!(
+            !names_shipped_round("OPEN — R84-fork", "R84"),
+            "a lane-qualified routing is not the shipped lane"
+        );
+        assert!(
+            !names_shipped_round("OPEN — R840", "R84"),
+            "a longer identifier is not the shipped round"
+        );
+        assert!(
+            names_shipped_round("OPEN — R84", "R84")
+                && names_shipped_round("OPEN — R84.", "R84")
+                && names_shipped_round("OPEN — R71 (fork repo)", "R71"),
+            "whole-identifier routings still name their round"
+        );
         for (id, disposition) in &rows {
             let declared = declared_disposition(disposition);
             let claims_open = declared.contains("OPEN");
             let named: Vec<&str> = SHIPPED_ROUNDS
                 .iter()
                 .copied()
-                .filter(|r| declared.contains(&format!("OPEN — {r}")))
+                .filter(|r| names_shipped_round(declared, r))
                 .collect();
             assert!(
                 !(claims_open && !named.is_empty()),
@@ -18362,7 +18405,7 @@ mod scrim {
             let named: Vec<&str> = SHIPPED_ROUNDS
                 .iter()
                 .copied()
-                .filter(|r| declared.contains(&format!("OPEN — {r}")))
+                .filter(|r| names_shipped_round(declared, r))
                 .collect();
             assert!(
                 !(claims_open && !named.is_empty()),
@@ -18450,7 +18493,7 @@ mod scrim {
             let named: Vec<&str> = SHIPPED_ROUNDS
                 .iter()
                 .copied()
-                .filter(|r| declared.contains(&format!("OPEN — {r}")))
+                .filter(|r| names_shipped_round(declared, r))
                 .collect();
             assert!(
                 !(claims_open && !named.is_empty()),

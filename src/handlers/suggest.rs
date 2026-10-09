@@ -164,21 +164,18 @@ pub async fn suggest(
         .filter(|s| !s.is_empty());
     let domain_label = domain.clone();
     let k_for_task = k;
-    // Resolve the record-level gates ONCE, before the
-    // blocking closure — /suggest returns full chunk content, so the
-    // scope filter + role gate apply exactly like /recall. Previously
-    // `..Default::default()` dropped them and an owner-restricted role saw
-    // other owners' private rows as suggestions /recall itself would gate.
-    // (Outside the closure: role_retrieval_gate opens a pool connection, so
-    // it must not run while the closure holds one.)
-    let mut gate_filters = crate::SearchFilters {
-        access_scopes: crate::handlers::gate::scope_filter(&principal.0).map(std::sync::Arc::new),
-        owner_in: None,
+    // Resolve the composite record gate ONCE, before the blocking closure —
+    // /suggest returns full chunk content, so the same (access_scopes,
+    // owner_in) pair /recall enforces applies here: no-role JWTs carry
+    // their subject as the owner predicate. (Outside the closure:
+    // record_read_gate may open a pool connection for role bundles, so it
+    // must not run while the closure holds one.)
+    let record_gate = crate::handlers::gate::record_read_gate(&principal.0, &state.pool);
+    let gate_filters = crate::SearchFilters {
+        access_scopes: record_gate.access_scopes.clone().map(std::sync::Arc::new),
+        owner_in: record_gate.owner_in.clone().map(std::sync::Arc::new),
         ..Default::default()
     };
-    if let Some(gate) = crate::handlers::gate::role_retrieval_gate(&principal.0, &state.pool) {
-        crate::handlers::gate::apply_role_gate(&mut gate_filters, &gate);
-    }
 
     let suggestions =
         tokio::task::spawn_blocking(move || -> Result<Vec<SuggestionHit>, HandlerError> {

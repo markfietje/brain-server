@@ -62,12 +62,23 @@ jobs:
       - name: Stage artifacts
         # brain-server (the main binary) plus every operator CLI, one pairing
         # per target. Feature-gated bins present only if their feature built.
+        # The SBOM stages EXACTLY the release-matched manifest (fail-closed):
+        # historical sbom/*.cdx.json files must never ride a release.
         run: |
+          set -e
           mkdir -p dist
           for b in brain-server brain mcp bench brain-migrate-rehearse brain-connector-stub brain-connector-gh brain-connector-crm; do
             cp -f "target/release/$b" "dist/${b}-linux-x86_64" 2>/dev/null || true
           done
-          cp -f sbom/*.cdx.json dist/ 2>/dev/null || true
+          if [ -n "${{ inputs.version }}" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          if ! printf '%s' "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+'; then
+            version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          fi
+          ./scripts/stage-sbom.sh "$version"
           ls -la dist
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -569,6 +580,15 @@ jobs:
             brain-server-darwin-x86_64; do
             [ -f "dist/$f" ] || { echo "::error::required asset missing: dist/$f"; exit 1; }
           done
+          # The SBOM integrity gate: the merged multi-platform dist carries
+          # EXACTLY the release-matched manifest — a missing, mismatched, or
+          # historical SBOM refuses to publish (fail-closed).
+          sbom="dist/brain-server-${version}.cdx.json"
+          [ -f "$sbom" ] || { echo "::error::required SBOM missing: $sbom"; exit 1; }
+          actual="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["metadata"]["component"]["version'])' "$sbom")"
+          [ "$actual" = "$version" ] || { echo "::error::SBOM version mismatch: $sbom reports $actual, want $version"; exit 1; }
+          extra="$(ls dist/*.cdx.json 2>/dev/null | grep -v -F "$sbom" || true)"
+          [ -z "$extra" ] || { echo "::error::historical SBOMs in dist (only $sbom ships): $extra"; exit 1; }
 
       - name: Create release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3

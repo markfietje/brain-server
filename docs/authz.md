@@ -132,7 +132,7 @@ parse-validated by `all_presets_parse_and_validate`:
 |---|---|
 | `admin` | Full control: every scope, every action (incl. `admin`, `purge`), all tools |
 | `solo` | SMB owner: the `admin` action set over all data, every panel (the simplest default) |
-| `agent` | Front-line worker: own private memory only, `read`/`write`/`reject`, UMP recall/get/feedback tools |
+| `agent` | Front-line worker: reads and writes across the shared memory pool — `owner_filter:"all"`, no owner restriction (the gateway's standing identity sees legacy NULL-owner rows too), `read`/`write`/`reject`, UMP recall/get/feedback tools |
 | `workflow-operator` | Governed workflow execution without administrative or publication authority: `can:["workflow"]` only |
 | `supervisor` | Call-center lead: sees their agents' rows, approves/rejects their queue, can export (DSAR) but not purge |
 | `qa-specialist` | Reads agent work + calibrates; cannot approve or purge |
@@ -147,6 +147,23 @@ parse-validated by `all_presets_parse_and_validate`:
 The capability vocabulary (`CAN_ACTIONS`) is: `read`, `write`, `approve`,
 `reject`, `calibrate`, `release_quarantine`, `dsar_export`, `purge`, `admin`,
 `workflow` — and NOT `publish`.
+
+## No-role JWTs vs the role-based shared pool (R85)
+
+A JWT **without** a `roles` claim is owner-bound: its record gate carries its
+own subject as the owner predicate, so it reads its **own** private rows and
+is denied another subject's private rows on every read surface (recall,
+suggest, by-id, multi-get, UMP get, procedures, verify). An absent/empty
+subject reads no private rows (fail closed). Domain/team scopes still follow
+the signed JWT scopes; admin and loopback/opaque operator access are
+unchanged.
+
+The **`agent` preset is the explicit exception, not the default.** Its
+`owner_filter:"all"` deliberately opens the shared pool across owners
+(including legacy NULL-owner rows) so the gateway identity can work. Do not
+mistake a no-role JWT for the agent role: no-role means owner-only, the
+`agent` role means shared-pool by design. Narrowing the agent preset to
+owner-only is a separate policy decision and release, not part of this fix.
 
 ## The posture knob
 
