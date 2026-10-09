@@ -4,6 +4,25 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.9] — 2026-10-09 — "Ledger": the dist check ships as a script, not inline
+
+Covers every commit from tag `v1.29.8` (`e63e59e`) to this release —
+`git log v1.29.8..v1.29.9` reproduces the range. A workflow-only
+follow-up: the previous release's merged-dist gate read the manifest
+version through an inline interpreter one-liner whose quoting never
+reached the runner intact, so the tag build refused at verify time.
+The gate now invokes a script file with the identical checks, pinned
+behaviorally. No schema change, no route change, no wire change, no
+authz change, zero new dependency edges.
+
+### Release notes
+
+**Bug fixes**
+
+- The merged-dist SBOM gate runs from a script file instead of inline,
+  so the tag-matched manifest check publishes instead of refusing on
+  a transport-mangled interpreter line.
+
 ## [1.29.8] — 2026-10-09 — "Ledger": the release verify step survives its transport
 
 Covers every commit from tag `v1.29.7` (`24bdcf1`) to this release —
