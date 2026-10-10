@@ -3252,6 +3252,42 @@ pub fn run_migration_with_store_dim(
                 }
             }
         }
+        // Genesis pin: same one-shot stamp for existing chains (the head's
+        // mirror — anchors the FIRST row so deleting the oldest rows is
+        // detectable). Boot's keyed `upgrade_pins` adds the MAC for hmac256
+        // chains; the migration's legacy stamp covers the unkeyed posture.
+        {
+            let genesis: Option<String> = db
+                .query_row(
+                    "SELECT value FROM schema_meta WHERE key = 'audit_chain_genesis'",
+                    [],
+                    |r| r.get(0),
+                )
+                .ok();
+            if genesis.is_none() {
+                let rows: i64 = db
+                    .query_row("SELECT COUNT(*) FROM audit_events", [], |r| r.get(0))
+                    .unwrap_or(0);
+                if rows > 0
+                    && let Some(pin) = crate::audit::initial_genesis_pin(db)
+                {
+                    match serde_json::to_string(&pin) {
+                        Ok(json) => {
+                            if let Err(e) = db.execute(
+                                "INSERT INTO schema_meta(key, value) VALUES ('audit_chain_genesis', ?1)
+                                     ON CONFLICT(key) DO UPDATE SET value = ?1;",
+                                params![json],
+                            ) {
+                                warn!(
+                                    "audit genesis pin stamp failed (head-deletion detection deferred): {e}"
+                                );
+                            }
+                        }
+                        Err(e) => warn!("audit genesis pin serialize failed: {e}"),
+                    }
+                }
+            }
+        }
     }
 
     // ── v1.28.5 "Compliance Pack" (feature-gated): Art.12/14 evidence

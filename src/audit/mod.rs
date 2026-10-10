@@ -477,7 +477,17 @@ fn write_key_file(path: &Path, key: &[u8; 32]) -> Result<(), ChainKeyError> {
     Ok(())
 }
 
-// ── the head pin ─────────────────────────────────────────────────────
+// ── the chain pins (head + genesis) ──────────────────────────────────
+
+/// `schema_meta` key holding the GENESIS pin: `(id, hash, epoch)` of the
+/// chain's FIRST row. The head pin anchors the tip (tail-truncation
+/// detection); the genesis pin anchors the origin (head-deletion
+/// detection — removing the oldest rows changes which row is first, and
+/// the pin's `id` disagrees). Both pins are MAC-protected under the
+/// `hmac256` epoch (see [`HeadPin::mac`]) so an attacker with SQL write
+/// access cannot rewrite them to bless a truncated chain: the MAC key
+/// lives outside the DB, beside the chain key it already cannot read.
+pub const GENESIS_PIN_META_KEY: &str = "audit_chain_genesis";
 
 /// The pinned chain head: `(id, hash, epoch)` of the last committed row's
 /// link. Written in the same tx as every audit row ([`record_tenant`]),
@@ -486,12 +496,79 @@ fn write_key_file(path: &Path, key: &[u8; 32]) -> Result<(), ChainKeyError> {
 /// (rollback disclosure).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HeadPin {
-    /// Row id of the pinned tip.
+    /// Row id of the pinned row.
     pub id: i64,
-    /// Link hash of the pinned tip (the value the next row chains from).
+    /// Link hash of the pinned row (the value the next row chains from —
+    /// or, for the genesis pin, the link that commits the first row's full
+    /// content).
     pub hash: String,
     /// Epoch the pin was computed under (`legacy` | `hmac256`).
     pub epoch: String,
+    /// HMAC-SHA256 over `"brain-audit-pin|{epoch}|{id}|{hash}"` with the
+    /// process chain key. Present exactly when the epoch is `hmac256`:
+    /// pins are state an attacker with SQL write access could otherwise
+    /// freely rewrite (they live in the same DB as the rows they guard),
+    /// and the MAC moves forging them behind the key the chain already
+    /// keeps outside the DB. `None` on legacy-epoch pins (no key exists to
+    /// MAC with — the legacy posture is unchanged and documented).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
+}
+
+impl HeadPin {
+    /// The pin a row would pin under `scheme` (MAC included when keyed).
+    fn for_row(scheme: &Scheme, row: &ChainRowFull) -> Self {
+        let id = row.id;
+        let hash = row_link(scheme, row);
+        let epoch = scheme_epoch(scheme).to_string();
+        let mac = match scheme {
+            Scheme::Legacy => None,
+            Scheme::Hmac(key) => Some(pin_mac(key.as_ref(), &epoch, id, &hash)),
+        };
+        Self {
+            id,
+            hash,
+            epoch,
+            mac,
+        }
+    }
+
+    /// Validate this pin's MAC under `key`. `false` when the MAC is absent
+    /// (a keyed-epoch pin must carry one) or does not verify.
+    fn mac_is_valid(&self, key: &[u8; 32]) -> bool {
+        self.mac.as_deref().is_some_and(|got| {
+            constant_time_eq_hex(got, &pin_mac(key, &self.epoch, self.id, &self.hash))
+        })
+    }
+}
+
+/// Pin MAC input: domain-separated, unambiguous (fixed field order, `|`
+/// cannot appear in epoch/id/hash — epoch is a closed vocabulary, id is an
+/// integer, hash is hex).
+fn pin_mac(key: &[u8; 32], epoch: &str, id: i64, hash: &str) -> String {
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts keys of any length");
+    mac.update(b"brain-audit-pin|");
+    mac.update(epoch.as_bytes());
+    mac.update(b"|");
+    mac.update(&id.to_le_bytes());
+    mac.update(b"|");
+    mac.update(hash.as_bytes());
+    hex_encode(&mac.finalize().into_bytes())
+}
+
+/// Hex-string equality without early exit on length or prefix (the compared
+/// values are attacker-influenced pin fields; the MAC itself is the secret
+/// check, so this is belt-and-braces, not the load-bearing constant time).
+fn constant_time_eq_hex(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 /// Read the head pin. `None` when unstamped (fresh DB, pre-1.27.31 DB the
@@ -499,9 +576,18 @@ pub struct HeadPin {
 /// value warns and reads as `None` — the pin is a detector, not evidence
 /// itself; the walk in [`verify_chain`] remains the authority.
 pub fn read_head_pin(conn: &Connection) -> Option<HeadPin> {
+    read_pin(conn, HEAD_PIN_META_KEY)
+}
+
+/// Read the genesis pin (same semantics as [`read_head_pin`]).
+pub fn read_genesis_pin(conn: &Connection) -> Option<HeadPin> {
+    read_pin(conn, GENESIS_PIN_META_KEY)
+}
+
+fn read_pin(conn: &Connection, key: &str) -> Option<HeadPin> {
     let raw: Option<String> = conn
         .query_row(
-            &format!("SELECT value FROM schema_meta WHERE key = '{HEAD_PIN_META_KEY}'"),
+            &format!("SELECT value FROM schema_meta WHERE key = '{key}'"),
             [],
             |r| r.get(0),
         )
@@ -510,17 +596,17 @@ pub fn read_head_pin(conn: &Connection) -> Option<HeadPin> {
     match serde_json::from_str(&raw) {
         Ok(pin) => Some(pin),
         Err(e) => {
-            tracing::warn!("audit head pin unparseable ({e}) — treating as absent");
+            tracing::warn!("audit pin '{key}' unparseable ({e}) — treating as absent");
             None
         }
     }
 }
 
-/// Persist the head pin. Creates `schema_meta` when absent (unit-test DBs and
-/// pre-v0.9 fixtures) so the pin never silently skips. Best-effort at the
-/// call sites that cannot fail their primary action (the audit row itself);
-/// callers inside a tx get atomicity for free.
-fn write_head_pin(conn: &Connection, pin: &HeadPin) -> bool {
+/// Persist a pin under `key`. Creates `schema_meta` when absent (unit-test
+/// DBs and pre-v0.9 fixtures) so the pin never silently skips. Best-effort
+/// at the call sites that cannot fail their primary action (the audit row
+/// itself); callers inside a tx get atomicity for free.
+fn write_pin(conn: &Connection, key: &str, pin: &HeadPin) -> bool {
     let Ok(json) = serde_json::to_string(pin) else {
         return false;
     };
@@ -529,7 +615,7 @@ fn write_head_pin(conn: &Connection, pin: &HeadPin) -> bool {
         && conn
             .execute(
                 &format!(
-                    "INSERT INTO schema_meta(key, value) VALUES ('{HEAD_PIN_META_KEY}', ?1)
+                    "INSERT INTO schema_meta(key, value) VALUES ('{key}', ?1)
                      ON CONFLICT(key) DO UPDATE SET value = ?1"
                 ),
                 params![json],
@@ -537,15 +623,32 @@ fn write_head_pin(conn: &Connection, pin: &HeadPin) -> bool {
             .is_ok()
 }
 
+/// Persist the head pin (see [`write_pin`]).
+fn write_head_pin(conn: &Connection, pin: &HeadPin) -> bool {
+    write_pin(conn, HEAD_PIN_META_KEY, pin)
+}
+
+/// Persist the genesis pin (see [`write_pin`]).
+fn write_genesis_pin(conn: &Connection, pin: &HeadPin) -> bool {
+    write_pin(conn, GENESIS_PIN_META_KEY, pin)
+}
+
+fn delete_pin(conn: &Connection, key: &str) {
+    let _ = conn.execute(&format!("DELETE FROM schema_meta WHERE key = '{key}'"), []);
+}
+
 /// The legacy-scheme pin for a DB's CURRENT tip — used by the
 /// migration to stamp the initial pin on upgrade (an existing chain is
 /// pre-re-anchor by definition). `None` when the chain is empty or unreadable.
 pub fn initial_head_pin(conn: &Connection) -> Option<HeadPin> {
-    tip_row(conn).map(|tip| HeadPin {
-        id: tip.id,
-        hash: row_link(&Scheme::Legacy, &tip),
-        epoch: EPOCH_LEGACY.to_string(),
-    })
+    tip_row(conn).map(|tip| HeadPin::for_row(&Scheme::Legacy, &tip))
+}
+
+/// The legacy-scheme pin for a DB's CURRENT first row — the genesis
+/// counterpart of [`initial_head_pin`], used by the same migration stamp.
+/// `None` when the chain is empty or unreadable.
+pub fn initial_genesis_pin(conn: &Connection) -> Option<HeadPin> {
+    first_row(conn).map(|first| HeadPin::for_row(&Scheme::Legacy, &first))
 }
 
 /// The current tip as a full row (the fields a link commits).
@@ -553,6 +656,17 @@ fn tip_row(conn: &Connection) -> Option<ChainRowFull> {
     conn.query_row(
         "SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash \
           FROM audit_events ORDER BY id DESC LIMIT 1",
+        [],
+        map_full_row,
+    )
+    .ok()
+}
+
+/// The chain's FIRST row as a full row — the genesis pin's subject.
+fn first_row(conn: &Connection) -> Option<ChainRowFull> {
+    conn.query_row(
+        "SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash \
+          FROM audit_events ORDER BY id ASC LIMIT 1",
         [],
         map_full_row,
     )
@@ -572,26 +686,26 @@ fn map_full_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChainRowFull> {
     })
 }
 
-/// Recompute + persist the pin for the current tip under the DB's own epoch.
-/// Returns the refreshed pin. Used by paths that legitimately rewrite the
-/// chain shape in-tx (retention prune, re-anchor).
+/// Recompute + persist BOTH pins for the current chain extent under the
+/// DB's own epoch — the head from the tip, the genesis from the first row.
+/// Returns the refreshed head pin. Used by paths that legitimately rewrite
+/// the chain shape in-tx (retention prune, re-anchor): the prune deletes
+/// the oldest rows, so the genesis must move with it or the very next
+/// verify would (correctly) report a head mismatch.
 fn refresh_head_pin(conn: &Connection, scheme: &Scheme) -> Option<HeadPin> {
     match tip_row(conn) {
         Some(tip) => {
-            let pin = HeadPin {
-                id: tip.id,
-                hash: row_link(scheme, &tip),
-                epoch: scheme_epoch(scheme).to_string(),
-            };
+            let pin = HeadPin::for_row(scheme, &tip);
             write_head_pin(conn, &pin);
+            if let Some(first) = first_row(conn) {
+                write_genesis_pin(conn, &HeadPin::for_row(scheme, &first));
+            }
             Some(pin)
         }
         None => {
-            // Empty chain carries no pin (the first write re-pins).
-            let _ = conn.execute(
-                &format!("DELETE FROM schema_meta WHERE key = '{HEAD_PIN_META_KEY}'"),
-                [],
-            );
+            // Empty chain carries no pins (the first write re-pins).
+            delete_pin(conn, HEAD_PIN_META_KEY);
+            delete_pin(conn, GENESIS_PIN_META_KEY);
             None
         }
     }
@@ -788,6 +902,7 @@ pub fn record_tenant_checked(
             "SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash FROM audit_events ORDER BY id DESC LIMIT 1",
             [], map_full_row,
         ).optional().map_err(|_| AuditWriteError::Tip)?;
+        let is_first_row = tip.is_none();
         let prev_hash = tip.map(|row| row_link(&scheme, &row));
         let target_hash = hash(target);
         let detail_hash = hash(detail);
@@ -811,13 +926,20 @@ pub fn record_tenant_checked(
             detail_hash,
             prev_hash,
         };
-        let pin = HeadPin {
-            id,
-            hash: row_link(&scheme, &row),
-            epoch: scheme_epoch(&scheme).into(),
-        };
+        let pin = HeadPin::for_row(&scheme, &row);
         if !write_head_pin(conn, &pin) {
             return Err(AuditWriteError::Pin);
+        }
+        // First row ever appended: the same tx also stamps the genesis pin
+        // so head-deletion is detectable from the chain's first moment. A
+        // genesis written here is trustworthy by construction (the chain
+        // was empty); the boot-time upgrade path stamps older chains and
+        // warns when it does.
+        if is_first_row {
+            let genesis = HeadPin::for_row(&scheme, &row);
+            if !write_genesis_pin(conn, &genesis) {
+                return Err(AuditWriteError::Pin);
+            }
         }
         conn.execute_batch(if top {
             "COMMIT"
@@ -1164,11 +1286,23 @@ pub fn chain_head(conn: &Connection) -> Option<String> {
 /// the chain means rows were added or removed OUTSIDE those paths: truncation
 /// or extension of an otherwise-internally-valid chain, detected.
 pub fn verify_chain(conn: &Connection) -> bool {
+    verify_chain_inner(conn, true)
+}
+
+/// The walk + pin comparison shared by [`verify_chain`] (MACs enforced)
+/// and the one-shot upgrade path (MACs tolerated, because a chain written
+/// before pins carried MACs still has sound LINKS — the upgrade re-stamps
+/// the pins only after this tolerant walk passes).
+fn verify_chain_inner(conn: &Connection, require_pin_macs: bool) -> bool {
     let Some(scheme) = current_scheme(conn) else {
         tracing::warn!(
             "audit chain verify: hmac256-epoch chain has no key in this process — not ok"
         );
         return false;
+    };
+    let keyed_mac = match &scheme {
+        Scheme::Legacy => None,
+        Scheme::Hmac(key) => Some(*key.as_ref()),
     };
     let mut stmt = match conn.prepare(
         "SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash FROM audit_events \
@@ -1190,6 +1324,7 @@ pub fn verify_chain(conn: &Connection) -> bool {
     // backref, the chain has started — any LATER NULL is tamper.
     let mut prev_link: Option<(i64, String)> = None;
     let mut chain_started = false;
+    let mut first_row: Option<(i64, String)> = None;
     for row in rows.flatten() {
         match &row.prev_hash {
             Some(got) => {
@@ -1210,9 +1345,74 @@ pub fn verify_chain(conn: &Connection) -> bool {
         // Advance: every row contributes its link, including NULL ones (the
         // first chained row after a NULL run links back to the last NULL row).
         let id = row.id;
-        prev_link = Some((id, row_link(&scheme, &row)));
+        let link = row_link(&scheme, &row);
+        if first_row.is_none() {
+            first_row = Some((id, link.clone()));
+        }
+        prev_link = Some((id, link));
     }
-    // Pin check — only when a pin exists (fresh/unpinned DBs skip).
+    // Under the keyed epoch, both pins must carry a MAC that verifies — a
+    // pin is state an attacker with SQL write access could otherwise
+    // rewrite at will (it lives in the same DB it guards). The MAC key is
+    // the chain key: already outside the DB, already required to forge a
+    // link. Skipped for legacy-epoch chains (no key exists; the legacy
+    // posture keeps its documented weaker pins) and for the one-shot
+    // upgrade walk that re-stamps old mac-less pins.
+    if let (Some(key), true) = (&keyed_mac, require_pin_macs) {
+        let head = read_head_pin(conn);
+        let genesis = read_genesis_pin(conn);
+        // A non-empty keyed chain always carries both pins (every append,
+        // prune, and re-anchor writes them in the same tx) — a missing pin
+        // on a live chain is not "never stamped", it is removed.
+        if first_row.is_some() && (head.is_none() || genesis.is_none()) {
+            tracing::error!(
+                "audit chain pin missing on a non-empty keyed chain \
+                 (head={}, genesis={}) — pin removal",
+                head.is_some(),
+                genesis.is_some()
+            );
+            return false;
+        }
+        for (name, pin) in [("head", head), ("genesis", genesis)] {
+            if let Some(pin) = pin
+                && !pin.mac_is_valid(key)
+            {
+                tracing::error!(
+                    "audit chain {name} pin MAC missing or invalid (id {}) — pin tamper",
+                    pin.id
+                );
+                return false;
+            }
+        }
+    }
+    // Genesis pin check — the FIRST row must be the pinned row. A chain
+    // whose oldest rows were deleted now starts at a later row: the pinned
+    // id disagrees, exactly like a tail-truncated chain disagrees with the
+    // head pin. Without this, deleting prefix rows was free: survivor links
+    // chain from their immediate predecessors only, and the tip (hence the
+    // head pin) never moves.
+    if let Some(pin) = read_genesis_pin(conn) {
+        match first_row {
+            Some((first_id, first_link)) if first_id == pin.id && first_link == pin.hash => {}
+            Some((first_id, _)) => {
+                tracing::error!(
+                    "audit chain genesis pin mismatch: pin=(id {}, hash {}..) first=(id {first_id}) \
+                     — the oldest rows were removed outside the audited write paths",
+                    pin.id,
+                    &pin.hash[..pin.hash.len().min(8)]
+                );
+                return false;
+            }
+            None => {
+                tracing::error!(
+                    "audit chain genesis pin exists (id {}) but the chain is empty — full truncation",
+                    pin.id
+                );
+                return false;
+            }
+        }
+    }
+    // Head-pin check — only when a pin exists (fresh/unpinned DBs skip).
     if let Some(pin) = read_head_pin(conn) {
         match prev_link {
             Some((tip_id, tip_link)) if tip_id == pin.id && tip_link == pin.hash => {}
@@ -1363,6 +1563,98 @@ pub fn bootstrap_epoch(conn: &Connection) -> bool {
          ON CONFLICT(key) DO UPDATE SET value = '{EPOCH_HMAC}';"
     ))
     .is_ok()
+}
+
+/// One-shot pin upgrade for existing chains, called at boot after the key
+/// resolves and the migration runs: stamps the genesis pin when absent and
+/// adds MACs to pins written before pins carried them. From this point
+/// [`verify_chain`] requires both pins present + MAC-valid on every
+/// non-empty keyed chain, so the upgrade is what keeps pre-existing
+/// hmac256 deployments verifying instead of failing closed on old pins.
+///
+/// GUARDS (the prune/re-anchor laundering rule, applied to pins):
+/// - Runs only when a key is installed AND the chain is non-empty.
+/// - The chain must pass the MAC-TOLERANT walk first — stamping pins onto a
+///   broken chain would bless it (a genesis pinned from a chain whose head
+///   was already deleted records the deletion as the origin). A chain that
+///   fails the walk is left verbatim for forensics and the operator sees
+///   the verify failure.
+/// - A genesis stamped onto an existing chain is DISCLOSED, not silent: the
+///   trustworthy genesis is the one written by the first append (the chain
+///   was empty). Here the chain already had history, so the stamp records
+///   the chain AS IT NOW EXISTS and says so at warn level. An operator who
+///   suspects pre-upgrade head deletion has the off-host `brain anchor`
+///   fingerprints to compare against.
+/// - Pins that already carry a MAC are never rewritten (an invalid MAC is a
+///   tamper signal, not an upgrade gap — fixing it here would erase one).
+/// - Legacy-epoch chains get the structural genesis stamp (detection
+///   without a key) but no MACs — there is no key to MAC with.
+pub fn upgrade_pins(conn: &Connection) -> bool {
+    let Some(scheme) = current_scheme(conn) else {
+        return false;
+    };
+    let (Some(first), Some(_tip)) = (first_row(conn), tip_row(conn)) else {
+        return false; // empty chain: the first append pins both
+    };
+    // Fast path (every boot after the first): nothing to stamp — genesis
+    // present, and under the keyed epoch both pins already carry MACs.
+    // Skips the O(n) tolerant walk entirely for steady-state boots.
+    {
+        let head = read_head_pin(conn);
+        let genesis = read_genesis_pin(conn);
+        let macs_done = match &scheme {
+            Scheme::Legacy => true,
+            Scheme::Hmac(_) => {
+                head.as_ref().is_some_and(|p| p.mac.is_some())
+                    && genesis.as_ref().is_some_and(|p| p.mac.is_some())
+            }
+        };
+        if genesis.is_some() && macs_done {
+            return false;
+        }
+    }
+    if !verify_chain_inner(conn, false) {
+        tracing::warn!(
+            "audit pin upgrade skipped: chain does not verify — evidence preserved verbatim"
+        );
+        return false;
+    }
+    let mut changed = false;
+    let genesis = read_genesis_pin(conn);
+    if genesis.is_none() {
+        tracing::warn!(
+            "audit genesis pin stamped onto an existing chain from row {} — it records the \
+             chain as it now exists; pre-upgrade head deletion is outside its evidence \
+             (compare off-host `brain anchor` fingerprints if suspected)",
+            first.id
+        );
+        changed |= write_genesis_pin(conn, &HeadPin::for_row(&scheme, &first));
+    }
+    // Add MACs to pins that predate MACs (absent field) — never overwrite a
+    // present one.
+    for (name, pin, rewrite) in [
+        (
+            "head",
+            read_head_pin(conn),
+            write_head_pin as fn(&Connection, &HeadPin) -> bool,
+        ),
+        ("genesis", read_genesis_pin(conn), write_genesis_pin),
+    ] {
+        if let Some(pin) = pin
+            && pin.mac.is_none()
+        {
+            let Scheme::Hmac(key) = &scheme else {
+                continue; // legacy: nothing to MAC with
+            };
+            let stamped = HeadPin {
+                mac: Some(pin_mac(key.as_ref(), &pin.epoch, pin.id, &pin.hash)),
+                ..pin
+            };
+            tracing::warn!("audit {name} pin upgraded with a MAC (id {})", pin.id);
+            changed |= rewrite(conn, &stamped);
+        }
+    }
+    changed
 }
 
 #[cfg(test)]
@@ -2684,6 +2976,311 @@ mod tests {
         set_chain_key_for_test(Some([7u8; 32]));
         assert!(verify_chain(&db), "key restored — chain attests again");
         set_chain_key_for_test(None);
+    }
+
+    /// The genesis pin: written by the FIRST append in the same tx, carrying a
+    /// MAC under the keyed epoch; anchored at the chain's first row so
+    /// deleting prefix rows is detectable (the head pin alone cannot see it —
+    /// survivor links chain from immediate predecessors only, and the tip
+    /// never moves when the OLDEST rows go).
+    #[test]
+    fn genesis_pin_written_on_first_append_and_detects_head_deletion() {
+        let _gate = key_gate();
+        set_chain_key_for_test(Some([7u8; 32]));
+        let db = db_with_meta();
+        assert!(bootstrap_epoch(&db));
+        for i in 1..=6 {
+            record(
+                &db,
+                AuditKind::Ingest,
+                "api",
+                &format!("c{i}"),
+                AuditStatus::Ok,
+                "d",
+            );
+        }
+        let genesis = read_genesis_pin(&db).expect("genesis pin after first append");
+        assert_eq!(genesis.id, 1, "anchored at the first row");
+        assert_eq!(genesis.epoch, EPOCH_HMAC);
+        assert!(
+            genesis.mac.is_some(),
+            "keyed-epoch pins carry a MAC from the first append"
+        );
+        assert!(read_head_pin(&db).unwrap().mac.is_some());
+        assert!(verify_chain(&db));
+
+        // Head deletion: the oldest rows vanish; the tip (and head pin) never
+        // move. The genesis pin is what disagrees.
+        db.execute("DELETE FROM audit_events WHERE id <= 3", [])
+            .unwrap();
+        assert!(
+            !verify_chain(&db),
+            "prefix deletion must trip the genesis pin"
+        );
+        set_chain_key_for_test(None);
+    }
+
+    /// The pin-forgery escalation: after a prefix deletion the attacker
+    /// rewrites the genesis pin to bless the new first row. The MAC makes the
+    /// rewrite worthless without the key — including a fully-specified
+    /// forged JSON with the right id and hash but a bogus MAC, and the
+    /// edge of a mac-less pin (stripped) under the keyed epoch.
+    #[test]
+    fn forged_or_stripped_genesis_pin_fails_verification() {
+        let _gate = key_gate();
+        set_chain_key_for_test(Some([7u8; 32]));
+        let db = db_with_meta();
+        assert!(bootstrap_epoch(&db));
+        for i in 1..=4 {
+            record(
+                &db,
+                AuditKind::Ingest,
+                "api",
+                &format!("c{i}"),
+                AuditStatus::Ok,
+                "d",
+            );
+        }
+        assert!(verify_chain(&db));
+        db.execute("DELETE FROM audit_events WHERE id = 1", [])
+            .unwrap();
+        // Forged pin: correct new-first row id (2), its TRUE link hash (copied
+        // from the live head computation for row 2 via the walk is overkill —
+        // any hash does, since the MAC is what fails), bogus MAC.
+        let forged = format!(
+            "{{\"id\":2,\"hash\":\"{}\",\"epoch\":\"hmac256\",\"mac\":\"{}\"}}",
+            "a".repeat(64),
+            "b".repeat(64)
+        );
+        db.execute(
+            "INSERT INTO schema_meta(key, value) VALUES ('audit_chain_genesis', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = ?1",
+            [&forged],
+        )
+        .unwrap();
+        assert!(!verify_chain(&db), "bogus MAC must fail");
+        // Stripped pin (mac field removed) under the keyed epoch: fail closed.
+        let stripped = format!(
+            "{{\"id\":2,\"hash\":\"{}\",\"epoch\":\"hmac256\"}}",
+            "a".repeat(64)
+        );
+        db.execute(
+            "INSERT INTO schema_meta(key, value) VALUES ('audit_chain_genesis', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = ?1",
+            [&stripped],
+        )
+        .unwrap();
+        assert!(
+            !verify_chain(&db),
+            "a mac-less pin on a keyed chain must fail closed"
+        );
+        // Pin-row removal: a non-empty keyed chain always carries both pins.
+        db.execute(
+            "DELETE FROM schema_meta WHERE key = 'audit_chain_genesis'",
+            [],
+        )
+        .unwrap();
+        assert!(
+            !verify_chain(&db),
+            "pin removal on a live keyed chain must fail"
+        );
+        set_chain_key_for_test(None);
+    }
+
+    /// The boot upgrade: an EXISTING keyed chain written before pins carried
+    /// MACs (or a genesis) gets both — and a chain that does not verify is
+    /// left verbatim (the laundering guard applies to pins too).
+    #[test]
+    fn upgrade_pins_stamps_old_chains_and_refuses_broken_ones() {
+        let _gate = key_gate();
+        set_chain_key_for_test(Some([7u8; 32]));
+        let db = db_with_meta();
+        assert!(bootstrap_epoch(&db));
+        for i in 1..=3 {
+            record(
+                &db,
+                AuditKind::Ingest,
+                "api",
+                &format!("c{i}"),
+                AuditStatus::Ok,
+                "d",
+            );
+        }
+        // Simulate the pre-upgrade shape: strip MACs + drop the genesis pin.
+        for key in [HEAD_PIN_META_KEY, GENESIS_PIN_META_KEY] {
+            if let Some(pin) = read_pin(&db, key) {
+                let bare = HeadPin { mac: None, ..pin };
+                let json = serde_json::to_string(&bare).unwrap();
+                db.execute(
+                    "INSERT INTO schema_meta(key, value) VALUES (?1, ?2)
+                     ON CONFLICT(key) DO UPDATE SET value = ?2",
+                    params![key, json],
+                )
+                .unwrap();
+            }
+        }
+        db.execute(
+            "DELETE FROM schema_meta WHERE key = 'audit_chain_genesis'",
+            [],
+        )
+        .unwrap();
+        // The stripped head pin still fails strict verify (mac required) —
+        // this is what makes the upgrade mandatory at boot.
+        assert!(!verify_chain(&db));
+        assert!(
+            upgrade_pins(&db),
+            "the upgrade must stamp the missing pieces"
+        );
+        assert!(read_genesis_pin(&db).is_some());
+        assert!(read_head_pin(&db).unwrap().mac.is_some());
+        assert!(read_genesis_pin(&db).unwrap().mac.is_some());
+        assert!(
+            verify_chain(&db),
+            "post-upgrade the chain verifies strictly"
+        );
+        assert!(!upgrade_pins(&db), "second boot: fast path, nothing to do");
+
+        // The laundering guard: a tampered chain is refused verbatim.
+        let db2 = db_with_meta();
+        assert!(bootstrap_epoch(&db2));
+        for i in 1..=3 {
+            record(
+                &db2,
+                AuditKind::Ingest,
+                "api",
+                &format!("c{i}"),
+                AuditStatus::Ok,
+                "d",
+            );
+        }
+        db2.execute("UPDATE audit_events SET actor = 'mallory' WHERE id = 2", [])
+            .unwrap();
+        assert!(!verify_chain(&db2));
+        assert!(
+            !upgrade_pins(&db2),
+            "a broken chain must not be pin-upgraded"
+        );
+        assert!(
+            !verify_chain(&db2),
+            "the broken chain still fails — nothing was re-blessed"
+        );
+        // The genesis stamped at FIRST APPEND is authentic (pre-tamper) and
+        // stays; what the guard refuses is STAMPING onto a broken chain —
+        // proven by stripping db2's pins and showing the upgrade will not
+        // restore them while the chain is broken.
+        db2.execute(
+            "DELETE FROM schema_meta WHERE key = 'audit_chain_genesis'",
+            [],
+        )
+        .unwrap();
+        db2.execute(
+            "UPDATE schema_meta SET value = json_set(value, '$.mac', json('null')) \
+             WHERE key = 'audit_chain_head'",
+            [],
+        )
+        .unwrap();
+        assert!(!upgrade_pins(&db2), "still refused with pins stripped");
+        assert!(
+            read_genesis_pin(&db2).is_none(),
+            "the upgrade must not stamp a genesis onto the broken chain"
+        );
+        set_chain_key_for_test(None);
+    }
+
+    /// The retention prune moves the genesis with the re-anchor: pruning the
+    /// oldest rows is the ONE legitimate head-deletion, and the re-anchored
+    /// chain verifies WITH its genesis re-stamped at the new oldest survivor.
+    /// (Old rows are seeded as a NULL-prefix run with aged timestamps —
+    /// editing a live row's `ts` would change its link and rightly refuse.)
+    #[test]
+    fn prune_reanchors_genesis_with_the_new_oldest_survivor() {
+        let _gate = key_gate();
+        set_chain_key_for_test(Some([7u8; 32]));
+        let db = db_with_meta();
+        // The prune sweeps orphaned `recall_traces` rows — the minimal audit
+        // fixture needs the table to exist (same as the sibling prune test).
+        db.execute(
+            "CREATE TABLE recall_traces(audit_id INTEGER PRIMARY KEY, trace_json TEXT)",
+            [],
+        )
+        .unwrap();
+        assert!(bootstrap_epoch(&db));
+        // Aged NULL-prefix rows (the pre-chain history a long-running
+        // deployment carries), then fresh chained rows on top.
+        db.execute_batch(
+            "INSERT INTO audit_events(id, ts, kind, actor, target_hash, status, detail_hash, prev_hash)
+             VALUES (1, datetime('now', '-40 days'), 'recall', 'alice', 't1', 'ok', 'd1', NULL),
+                    (2, datetime('now', '-39 days'), 'recall', 'alice', 't2', 'ok', 'd2', NULL);",
+        )
+        .unwrap();
+        // Pin the seeded extent before growing it (the seeded chain has no
+        // pins; the upgrade path is what an existing deployment would run —
+        // exercised explicitly here so the grow path starts pinned).
+        assert!(upgrade_pins(&db), "seeded extent gets its pins stamped");
+        for i in 1..=2 {
+            record(
+                &db,
+                AuditKind::Ingest,
+                "api",
+                &format!("c{i}"),
+                AuditStatus::Ok,
+                "d",
+            );
+        }
+        assert!(verify_chain(&db));
+        assert_eq!(read_genesis_pin(&db).unwrap().id, 1);
+        assert!(
+            db.query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE ts < datetime('now', '-30 days')",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .unwrap()
+                >= 2,
+            "fixture sanity: the aged rows are expired under a 30-day window"
+        );
+
+        let pruned = prune_audit_retention(&db, 30).expect("prune on healthy keyed chain");
+        assert_eq!(pruned, 2, "the two aged rows expired");
+        assert!(
+            verify_chain(&db),
+            "the pruned chain verifies with its new genesis"
+        );
+        let genesis = read_genesis_pin(&db).expect("genesis re-stamped by the prune");
+        assert_eq!(
+            first_row(&db).map(|r| r.id),
+            Some(genesis.id),
+            "the genesis follows the new oldest survivor"
+        );
+        assert!(genesis.id > 2, "the aged rows are gone from the pin's view");
+        set_chain_key_for_test(None);
+    }
+
+    /// Legacy chains get the STRUCTURAL genesis (no key exists to MAC with):
+    /// prefix deletion is detected by id+hash alone, pin rewriting is not
+    /// (the documented legacy ceiling — the keyed epoch is the upgrade path).
+    #[test]
+    fn legacy_genesis_is_structural_only() {
+        let db = db_with_meta(); // no key installed → legacy epoch
+        for i in 1..=3 {
+            record(
+                &db,
+                AuditKind::Ingest,
+                "api",
+                &format!("c{i}"),
+                AuditStatus::Ok,
+                "d",
+            );
+        }
+        let genesis = read_genesis_pin(&db).expect("legacy genesis stamped at append");
+        assert!(genesis.mac.is_none(), "no key, no MAC — structural only");
+        assert!(verify_chain(&db));
+        db.execute("DELETE FROM audit_events WHERE id = 1", [])
+            .unwrap();
+        assert!(
+            !verify_chain(&db),
+            "structural detection still catches deletion"
+        );
     }
 
     /// M6 re-anchor: the legacy chain replays under hmac256, keeps its leading

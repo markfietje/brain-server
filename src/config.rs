@@ -900,7 +900,26 @@ pub const BIND_PUBLIC_OPT_IN: &str = "BIND_PUBLIC";
 /// Webhook replay protection: a delivery whose timestamp is further than this
 /// many seconds from "now" is rejected (too old = replay risk, too new = clock
 /// skew / forged). GitHub sends `X-GitHub-Delivery` + `X-Hub-Signature-256`.
+/// This bounds the FRESHNESS window only — replay IDEMPOTENCY is the
+/// `webhook_seen` claim table, which is retained by volume (see
+/// [`WEBHOOK_SEEN_MAX`]), not by this clock: a captured signed delivery is a
+/// `Duplicate` for as long as its claim row survives eviction, not for five
+/// minutes.
 pub const WEBHOOK_REPLAY_SECS: u64 = 300;
+
+/// Hard cap on the `webhook_seen` replay-claim table. Retention is BY COUNT
+/// (oldest-quarter eviction at the cap — the same bounded-cache law the
+/// signal-gateway cache follows), NOT by time: time-pruning the table was
+/// what let a captured delivery replay as fresh once the window elapsed.
+/// The cap sits comfortably above `SIGNAL_MAX_PER_HOUR` (1_000) so the
+/// trailing-hour flood count reads a full hour of claims before eviction
+/// can trim it.
+pub const WEBHOOK_SEEN_MAX: usize = 4096;
+
+/// How many claim rows one eviction pass removes when the table is at the
+/// cap (a quarter — small enough to stay bounded under a storm, large
+/// enough that eviction is not per-insert churn).
+pub const WEBHOOK_SEEN_EVICT: usize = WEBHOOK_SEEN_MAX / 4;
 
 /// The Beacon hot-topic threshold: when a published slug's kb_feedback
 /// count first reaches this many deliveries, the rising-repeat `workflow`

@@ -4,6 +4,69 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R112 "Pins" — the chain sees its own head
+
+Three residuals from the v1.29.11 security-audit replay, closed red-first. No
+route, wire, or role-vocabulary change; zero new dependency edges.
+
+### The genesis pin + pin MACs (chain head-deletion + pin forgery)
+
+The head pin anchors the chain's TIP, so deleting the OLDEST audit rows was
+undetectable in-DB: survivor links chain from their immediate predecessors
+only, and the tip (hence the pin) never moves. A **genesis pin**
+(`schema_meta.audit_chain_genesis`, the same `(id, hash, epoch)` family) now
+anchors the FIRST row — written by the first append in the same transaction,
+moved by the retention prune's re-anchor together with the head pin, and
+compared by `verify_chain`, so prefix deletion answers `ok:false` with the
+mismatch named (`genesis pin mismatch: pin=(id 1) first=(id 4)`). Live-proven
+against a drill DB.
+
+Under the keyed (`hmac256`) epoch **both pins carry a MAC** —
+`HMAC(chain_key, "brain-audit-pin|epoch|id|hash")` — and verify requires both
+pins present + valid on a non-empty keyed chain: rewriting a pin to bless a
+truncation, or removing one, is now behind the chain key that already lives
+outside the DB. Existing keyed deployments upgrade at boot (`upgrade_pins` in
+the server, the `brain` CLI, and lazy domain opens): a tolerant-walk guard
+refuses to stamp onto a chain that does not verify (evidence-laundering guard,
+same rule as the prune), and a genesis stamped onto existing history is
+disclosed at warn with the off-host `brain anchor` named for suspected
+pre-upgrade deletion. The migration stamps the structural (legacy-epoch)
+genesis pin additively. Live-proven post-fix: `{"ok":false}` + the named
+mismatch where the pre-fix walk passed silently.
+
+**Stated ceiling (not fixed, by design):** destroying every row AND both pins
+reads as a fresh install — irreducible in-DB; the off-host `brain anchor`
+fingerprint is the detection layer. THREAT_MODEL §2b, the STRIDE deletion row
+and SECURITY.md's reporter ceilings now say exactly that.
+
+### `dsar_locate` multi-root attribution (carried since v1.15.0)
+
+Every `derived_from` descendant was attributed to `roots[0]`, so a subject
+owning several rows had a deletion REGISTRY (`tombstones.origin_id`) that
+mis-pointed for all but the first root (purge completeness was never
+affected). The BFS now carries `(id, root)` per hop; each descendant
+attributes to the root it actually descends from, transitively.
+
+### Webhook replay idempotency is durable, not window-bounded
+
+`webhook_seen` was time-pruned at `WEBHOOK_REPLAY_SECS` (300 s), so a captured
+signed delivery replayed as fresh once the window elapsed. The claim table is
+now retained **by count** (cap 4096, oldest-quarter eviction — the
+signal-gateway cache law), never time-pruned: a replay is a `Duplicate` until
+displaced by volume. `WEBHOOK_REPLAY_SECS` keeps its freshness-window meaning
+for dated deliveries only. The cap sits above `SIGNAL_MAX_PER_HOUR` so the
+trailing-hour flood count still reads a full hour of claims.
+
+### Pins + verification
+
+6 new audit unit tests, 2 webhook unit tests, the flipped 11-test integration
+battery `tests/audit_residuals_v129.rs` (regression pins for each fixed
+finding + controls + the stated ceiling). `CHAIN_MODULE_SHA256` re-recorded
+(scope pin — semantics extended, prior arms re-proven). Badge re-derived
+**3282** (`--verify-count` OK); fmt + clippy (bench + default) clean;
+docs-truth LOW=17 unmoved; env-truth clean; 547 doc links resolve; full
+`bench,migrate` lane 61 result lines / 0 FAILED.
+
 ## [1.29.11] — 2026-10-10 — "Identity": who is asking, not what the env says
 
 Covers every commit from tag `v1.29.10` (`f64d7256`) to this release —

@@ -105,6 +105,7 @@ model, not a substitute.
 |---|---|---|---|
 | **S**poofing | Forge audit entries | Append-only; writer is the authenticated process only | ✅ |
 | **T**ampering | Edit existing rows | Keyed hash chain — HMAC-SHA256 over the full row under a per-DB epoch + head pin `(id, hash, epoch)`; break is detectable on read (v1.1 M2.3; keyed epoch shipped v1.27.31) | ✅ |
+| **T**ampering | Delete rows (edit by removal): tail truncation, head deletion, full wipe | Head pin anchors the tip; genesis pin anchors the first row; both pins MAC-protected with the chain key under the keyed epoch, so a truncated chain cannot be re-pinned without it. Residual ceiling: total destruction of rows AND pins reads as a fresh install — off-host `brain anchor` covers | ✅ (§2b ceiling) |
 | **R**epudiation | "The log is wrong" | Keyed chain proves integrity (`/audit/verify`); signed release tags prove code provenance (keyed epoch shipped v1.27.31) | ✅ |
 | **I**nformation disclosure | Tenant A reads tenant B's audit | Data-layer filter `WHERE tenant_id = ?` + AuthZ on `/audit` (v1.1 M2.2) | 🚧 |
 | **D**enial of service | Fill audit table | Bounded by writes; rotation policy documented | 🚧 |
@@ -203,16 +204,23 @@ a `ponytail:` comment naming the ceiling and upgrade path.
    FileVault) is the standing recommendation for the primary.
 
 2b. **The audit chain detects tampering, not host compromise.** The HMAC
-   chain key and the head pin share the host with the DB: the chain proves
-   integrity against SQL/application-level tampering (a flipped row, a
-   truncated history, an old image restored over a newer one), NOT against
-   an attacker who owns the host — host compromise is disk encryption's
-   problem (statement 2). Scope: the tamper evidence covers the audit chain
-   and the UMP evidence rows bound to it; tampering with a BUSINESS row
-   behind the chain's back (direct DB write) is inside the host-compromise
-   ceiling — demonstrated live at the seventh pass (R7-08). Reporters:
-   demonstrating ".bak extraction on a stolen disk" is a KNOWN CEILING, not
-   a novel finding (see SECURITY.md).
+   chain key and the chain pins (head + genesis) share the host with the DB:
+   the chain proves integrity against SQL/application-level tampering (a
+   flipped row, a truncated history — TAIL truncation via the head pin,
+   HEAD deletion via the genesis pin — an old image restored over a newer
+   one, and pin forgery/removal, since both pins carry MACs under the keyed
+   epoch and the MAC key is the chain key itself, kept outside the DB),
+   NOT against an attacker who owns the host — host compromise is disk
+   encryption's problem (statement 2). The irreducible in-DB ceiling:
+   destroying ALL state (every row AND both pins) is indistinguishable
+   from a fresh install — detection there is the off-host `brain anchor`
+   fingerprint's job (and the key file the attacker would still need).
+   Scope: the tamper evidence covers the audit chain and the UMP evidence
+   rows bound to it; tampering with a BUSINESS row behind the chain's back
+   (direct DB write) is inside the host-compromise ceiling — demonstrated
+   live at the seventh pass (R7-08). Reporters: demonstrating ".bak
+   extraction on a stolen disk" is a KNOWN CEILING, not a novel finding
+   (see SECURITY.md).
 
 3. **Prompt-injection guard is heuristic, not ML-classifier-based.** Ceiling
    documented in `contains_suspicious_pattern`. Accepted because: edge-only

@@ -286,6 +286,9 @@ fn open_with_migration(path: &Path) -> Result<BrainPool, DomainRegistryError> {
     // (the server inits it before any pool opens). A no-op everywhere else —
     // in particular every unit test that never installs a key.
     crate::audit::bootstrap_epoch(&conn);
+    // Fresh domains pin both at first append; an existing domain's pins get
+    // the same one-shot upgrade the main boot runs (genesis stamp / MACs).
+    crate::audit::upgrade_pins(&conn);
     Ok(pool)
 }
 

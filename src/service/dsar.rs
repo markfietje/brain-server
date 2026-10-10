@@ -376,26 +376,44 @@ pub fn dsar_locate(
     let roots: Vec<i64> = collect_ids(tx, "SELECT id FROM knowledge WHERE owner = ?1", subject)?;
     let mut derived: Vec<(i64, i64)> = Vec::new(); // (derived_id, root_id)
     let mut seen: std::collections::HashSet<i64> = roots.iter().copied().collect();
-    let mut frontier: Vec<i64> = roots.clone();
+    // Frontier carries each hop's ORIGIN root so a multi-root subject's
+    // descendants attribute to the root they actually descend from. The
+    // previous shape collapsed every derived chunk onto `roots[0]`, which
+    // kept the purge complete (all pairs rode the first root's closure)
+    // but wrote the wrong `origin_id` into the deletion registry for any
+    // subject owning more than one row.
+    let mut frontier: Vec<(i64, i64)> = roots.iter().map(|r| (*r, *r)).collect();
     for _ in 0..DERIVED_MAX_DEPTH {
         if frontier.is_empty() {
             break;
         }
         let placeholders = vec!["?"; frontier.len()].join(",");
         let sql = format!(
-            "SELECT el.to_chunk FROM evidence_links el
+            "SELECT el.from_chunk, el.to_chunk FROM evidence_links el
              WHERE el.kind = 'derived_from' AND el.from_chunk IN ({placeholders})"
         );
         let mut stmt = tx.prepare(&sql)?;
-        let mut next: Vec<i64> = Vec::new();
+        let mut next: Vec<(i64, i64)> = Vec::new();
         {
-            let params: Vec<&dyn rusqlite::ToSql> =
-                frontier.iter().map(|i| i as &dyn rusqlite::ToSql).collect();
-            let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, i64>(0))?;
-            for v in rows.flatten() {
-                if seen.insert(v) {
-                    next.push(v);
-                    derived.push((v, roots[0]));
+            let params: Vec<&dyn rusqlite::ToSql> = frontier
+                .iter()
+                .map(|(id, _)| id as &dyn rusqlite::ToSql)
+                .collect();
+            let rows = stmt.query_map(params.as_slice(), |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
+            })?;
+            for (from, to) in rows.flatten() {
+                if seen.insert(to) {
+                    // Attribute to the ROOT that reaches this hop: the
+                    // frontier entry's carried root when `from` is itself a
+                    // derived row, or `from` itself when it is a root.
+                    let root = frontier
+                        .iter()
+                        .find(|(id, _)| *id == from)
+                        .map(|(_, root)| *root)
+                        .unwrap_or(from);
+                    derived.push((to, root));
+                    next.push((to, root));
                 }
             }
         }

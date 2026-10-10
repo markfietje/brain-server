@@ -7,23 +7,25 @@
 //! or forgery attempt never reaches indexing logic.
 //!
 //! ponytail: the queue is a single table; the worker deletes rows as it
-//! processes them. A true timestamp-based replay window needs the sender's
-//! timestamp header — GitHub's globally-unique `x-github-delivery` id is
-//! sufficient for replay protection here (a replay reuses the same
-//! `delivery_hash` and becomes a `Duplicate` no-op). `WEBHOOK_REPLAY_SECS`
-//! documents the intended window if a timestamp header is ever added.
+//! processes them. Replay IDEMPOTENCY is the `webhook_seen` claim table,
+//! retained BY COUNT (cap + oldest-quarter eviction — see
+//! [`evict_webhook_seen`]), not by time: a replay reuses the same
+//! `delivery_hash` and is a `Duplicate` no-op for as long as its claim row
+//! survives eviction, however long ago it was first delivered.
+//! `WEBHOOK_REPLAY_SECS` bounds the FRESHNESS window for dated deliveries
+//! only (a stale/future `Date` is refused as untrusted).
 //!
 //! Timestamp check: GitHub does NOT send a signed timestamp header, so a
 //! caller-supplied timestamp is OPTIONAL. When `enqueue_ts` receives
 //! `received_at: Some(t)`, a stamp older than `WEBHOOK_REPLAY_SECS` or more
 //! than 300s in the future yields `Rejected` (untrusted). When `None` (the
-//! GitHub case), only the `webhook_seen` replay window protects against
-//! replays. The request's HTTP `Date` header, if parseable, is the best-effort
+//! GitHub case), the durable `webhook_seen` claim table is the replay
+//! protection. The request's HTTP `Date` header, if parseable, is the best-effort
 //! caller-supplied timestamp.
 
 use crate::Pool;
 use crate::audit::{self, AuditKind, AuditStatus};
-use crate::config::{WEBHOOK_QUEUE_MAX, WEBHOOK_REPLAY_SECS};
+use crate::config::{WEBHOOK_QUEUE_MAX, WEBHOOK_REPLAY_SECS, WEBHOOK_SEEN_EVICT, WEBHOOK_SEEN_MAX};
 use crate::handlers::HandlerError;
 use base64::Engine;
 use hmac::{Hmac, KeyInit, Mac};
@@ -62,6 +64,32 @@ pub enum EnqueueOutcome {
 /// pool.
 pub struct WebhookQueue {
     pool: Arc<Pool>,
+}
+
+/// Enforce the `webhook_seen` retention law: the claim table is bounded BY
+/// COUNT (oldest-rowid quarter eviction at the cap), never time-pruned.
+/// Time-pruning is what made replay protection expire with the freshness
+/// window — a captured signed delivery replayed as fresh once its claim row
+/// aged out. With count retention a claim survives until displaced by
+/// volume, so idempotency is durable rather than window-bounded. Errors are
+/// logged, not fatal: a failed eviction degrades to an unbounded table
+/// (bounded again on the next successful pass), which fails safe.
+fn evict_webhook_seen(conn: &rusqlite::Connection) {
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM webhook_seen", [], |r| r.get(0))
+        .unwrap_or(0);
+    if count as usize <= WEBHOOK_SEEN_MAX {
+        return;
+    }
+    let evict = WEBHOOK_SEEN_EVICT.max(1) as i64;
+    if let Err(e) = conn.execute(
+        "DELETE FROM webhook_seen WHERE rowid IN (
+             SELECT rowid FROM webhook_seen ORDER BY rowid ASC LIMIT ?1
+         )",
+        params![evict],
+    ) {
+        tracing::warn!("webhook_seen eviction failed (table stays bounded on the next pass): {e}");
+    }
 }
 
 impl WebhookQueue {
@@ -164,16 +192,11 @@ impl WebhookQueue {
         let delivery_hash = format!("{:016x}", xxh3_64(delivery_id.as_bytes()));
         let payload_hash = format!("{:016x}", xxh3_64(payload));
 
-        // Replay window: prune seen entries older than WEBHOOK_REPLAY_SECS, then
-        // reject a delivery whose hash is still present (a replay that arrived
-        // after its queue row was drained). This is the real time-bounded
-        // replay protection; the queue's UNIQUE(delivery_hash) catches in-window
-        // duplicates that are still queued.
-        conn.execute(
-            "DELETE FROM webhook_seen WHERE seen_at < datetime('now', ?1)",
-            params![format!("-{} seconds", WEBHOOK_REPLAY_SECS)],
-        )
-        .ok();
+        // Replay idempotency: the claim table retains by COUNT (never
+        // time-pruned), so a delivery whose hash is present is a Duplicate
+        // however long ago it was first claimed — the queue's
+        // UNIQUE(delivery_hash) additionally catches duplicates still queued.
+        evict_webhook_seen(&conn);
         let seen: bool = conn
             .query_row(
                 "SELECT 1 FROM webhook_seen WHERE delivery_hash = ?1",
@@ -198,8 +221,9 @@ impl WebhookQueue {
         let outcome = if changed == 0 {
             EnqueueOutcome::Duplicate
         } else {
-            // Record the delivery in the replay-window table so a post-drain
-            // replay is still rejected until the window elapses.
+            // Record the delivery in the replay-claim table so a post-drain
+            // replay is still rejected — durably (the claim survives until
+            // volume eviction, not a clock window).
             // was `let _ =` — a failed seen-write would
             // let a replay within the window double-deliver to the sink.
             conn.execute(
@@ -236,11 +260,7 @@ impl WebhookQueue {
             .pool
             .get()
             .map_err(|e| HandlerError::internal(format!("webhook pool: {e}")))?;
-        conn.execute(
-            "DELETE FROM webhook_seen WHERE seen_at < datetime('now', ?1)",
-            params![format!("-{} seconds", WEBHOOK_REPLAY_SECS)],
-        )
-        .ok();
+        evict_webhook_seen(&conn);
         let changed = conn
             .execute(
                 "INSERT OR IGNORE INTO webhook_seen(delivery_hash) VALUES (?1)",
@@ -942,6 +962,93 @@ mod tests {
         assert_eq!(first, EnqueueOutcome::Enqueued);
         let second = q.enqueue("github", "push", "deliv-1", b"payload").unwrap();
         assert_eq!(second, EnqueueOutcome::Duplicate);
+    }
+
+    #[test]
+    fn replay_beyond_the_freshness_window_is_still_a_duplicate() {
+        // The claim table retains BY COUNT, never by time: a delivery
+        // whose claim row is arbitrarily OLD is still a Duplicate. This is
+        // the regression pin for the time-pruned table, where the claim
+        // expired with the freshness window and the replay re-enqueued as
+        // fresh after five minutes.
+        let pool = db();
+        let q = WebhookQueue::new(pool.clone());
+        assert_eq!(
+            q.enqueue("github", "push", "deliv-old", b"payload")
+                .unwrap(),
+            EnqueueOutcome::Enqueued
+        );
+        // Simulate the claim having aged far past any window (drain the
+        // queue so the UNIQUE constraint cannot be what catches it).
+        {
+            let conn = pool.get().unwrap();
+            conn.execute("DELETE FROM webhook_queue", []).unwrap();
+            conn.execute(
+                "UPDATE webhook_seen SET seen_at = datetime('now', '-90 days')",
+                [],
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            q.enqueue("github", "push", "deliv-old", b"payload")
+                .unwrap(),
+            EnqueueOutcome::Duplicate,
+            "an aged claim row must still answer Duplicate — retention is \
+             count-based, not window-based"
+        );
+    }
+
+    #[test]
+    fn webhook_seen_retention_is_count_capped_not_time_capped() {
+        // Fill past the cap; the table must settle inside [cap - evict, cap]
+        // — never grow unbounded, never lose the NEWEST claims (the
+        // trailing-hour flood count reads those). The OLDEST quarter was the
+        // eviction victim, so replaying it re-enqueues: bounded retention is
+        // the documented posture, not a defect.
+        let pool = db();
+        let q = WebhookQueue::new(pool.clone());
+        let total = crate::config::WEBHOOK_SEEN_MAX + 8;
+        for i in 0..=total {
+            let id = format!("flood-{i}");
+            assert_eq!(
+                q.enqueue("github", "push", &id, b"payload").unwrap(),
+                EnqueueOutcome::Enqueued,
+                "unique delivery {id} must enqueue (queue cap not reached)"
+            );
+        }
+        let count: i64 = {
+            let conn = pool.get().unwrap();
+            conn.query_row("SELECT COUNT(*) FROM webhook_seen", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert!(
+            count as usize <= crate::config::WEBHOOK_SEEN_MAX,
+            "claim table bounded by the cap — got {count}"
+        );
+        assert!(
+            count as usize >= crate::config::WEBHOOK_SEEN_MAX - crate::config::WEBHOOK_SEEN_EVICT,
+            "eviction trims a quarter, not the table — got {count}"
+        );
+        // The oldest claim was evicted by design — its replay is fresh work.
+        // (Drain the queue first so the queue's own UNIQUE constraint cannot
+        // be what answers — the CLAIM TABLE is the subject here.)
+        {
+            let conn = pool.get().unwrap();
+            conn.execute("DELETE FROM webhook_queue", []).unwrap();
+        }
+        assert_eq!(
+            q.enqueue("github", "push", "flood-0", b"payload").unwrap(),
+            EnqueueOutcome::Enqueued,
+            "the oldest quarter is the eviction victim — its replay re-enqueues \
+             (the disclosed bound of count-based retention)"
+        );
+        // The NEWEST claim survived — the flood count reads the recent hour.
+        let last = format!("flood-{total}");
+        assert_eq!(
+            q.enqueue("github", "push", &last, b"payload").unwrap(),
+            EnqueueOutcome::Duplicate,
+            "the newest claim survived eviction"
+        );
     }
 
     #[test]

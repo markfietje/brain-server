@@ -1001,8 +1001,12 @@ fn r45_0_correction_leaves_the_audit_chain_module_byte_untouched() {
 
 /// The measured SHA-256 of `src/audit/mod.rs` at the R45-0 open
 /// (kernel `f4e2025`, clean). Recorded so the pin is a fact, not an opinion.
+/// Re-recorded by the chain-pins round (genesis pin + pin MACs + head-deletion
+/// detection): the module's verdicts, key, epoch and check semantics are
+/// EXTENDED, not weakened — the round's own battery pins the new detection
+/// arms alongside the controls for every arm that already existed.
 const CHAIN_MODULE_SHA256: &str =
-    "d68080f501012e75fc6ed9880255686597a6cdcc9bb3ec68d0c7b92bb0bd7e28";
+    "2b75518fbae39828580f92c7baa6b26ea944622f2da4e5c9eef8a3cb4c7bdcb8";
 
 /// E8's second half: the correction adds no key material and no audit row.
 #[test]

@@ -40,9 +40,13 @@ at [`/.well-known/security.txt`](http://127.0.0.1:8765/.well-known/security.txt)
   public disclosure coordinated with reporter (90-day default per Project Zero).
 
 **Known ceilings (stated so reporters do not burn time on them):**
-- The audit chain's HMAC key and head pin share the host with the DB — the
-  chain detects SQL/application-level tampering, NOT host compromise; host
-  compromise is disk encryption's problem.
+- The audit chain's HMAC key and its pins (head + genesis) share the host
+  with the DB — the chain detects SQL/application-level tampering (row
+  edits, tail truncation, head deletion, pin forgery — both pins are
+  MAC-protected with the chain key), NOT host compromise; host compromise
+  is disk encryption's problem. Destroying every row AND both pins reads
+  as a fresh install — that total-destruction case is the off-host
+  `brain anchor` fingerprint's job.
 - The live DB and its `.bak` snapshots are PLAINTEXT on the primary; the
   encryption law covers the warm-standby follower only. LUKS/FileVault is
   the standing recommendation. A report demonstrating ".bak extraction on
@@ -138,7 +142,7 @@ ownership... log access control failures."
 | `alg` whitelist + reject `none` + reject algorithm confusion | JWT verifier | ✅ v1.2 |
 | AES-256-GCM for backups (v0.9.7) | `backup.rs` | ✅ |
 | HMAC-SHA256 for webhook verification (v0.9.7) | `webhook.rs` | ✅ |
-| Keyed audit chain (v1.27.31 "AuditRepair"): links are HMAC-SHA256 over the FULL row (id, ts, kind, actor, target_hash, status, detail_hash, prev_hash) under a key that never lives in the DB — a DB-only attacker cannot forge links; head pin `(id, hash)` detects truncation/extension; the format flips only via the announced `--re-audit` re-anchor (an audit chain is evidence) | `audit.rs` | ✅ v1.27.31 |
+| Keyed audit chain (v1.27.31 "AuditRepair"): links are HMAC-SHA256 over the FULL row (id, ts, kind, actor, target_hash, status, detail_hash, prev_hash) under a key that never lives in the DB — a DB-only attacker cannot forge links; head pin `(id, hash)` detects truncation/extension; the format flips only via the announced `--re-audit` re-anchor (an audit chain is evidence). Genesis pin (same family): anchors the FIRST row so head-deletion is detected, and both pins carry MACs under the keyed epoch — pin rewrite/removal is behind the key | `audit.rs` | ✅ v1.27.31 + pins |
 | Webhook replay window (opt-in, v1.20.4 G6): `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1` demands the Standard Webhooks header set (`webhook-id`/`webhook-timestamp`/`webhook-signature`) and verifies `v1,<base64>` HMAC-SHA256 over `{id}.{timestamp}.{raw body}` in constant time — the timestamp rides inside the HMAC, so a replay cannot re-stamp it. **GitHub's replay protection is `x-github-delivery` idempotency, not a timestamp** (its sender is a trusted third party); first-party senders opt into the hard window via the spec headers + flag. Default unchanged (legacy `sha256=` path). | `verify_standard_signature` + `receive_standard` | ✅ |
 | SQLCipher at rest (AES-256 per-page) | KMS trait | 🚧 v3.7 |
 | No hardcoded secrets (env / file / KMS) | all of `config.rs` | ✅ |

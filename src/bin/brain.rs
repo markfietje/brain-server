@@ -426,6 +426,15 @@ fn main() {
             .unwrap_or_else(|| std::path::Path::new(".")),
     ) {
         eprintln!("warning: audit chain key unavailable ({e})");
+    } else {
+        // Same one-shot pin upgrade the server boot runs: the CLI's chain
+        // checks (`doctor`, restore certification) enforce both-pins-present
+        // under the keyed epoch, so an existing chain's pins must be brought
+        // up to that shape before the first verify. Guarded inside — a chain
+        // that does not verify is left verbatim.
+        if let Ok(conn) = rusqlite::Connection::open(default_db_path()) {
+            let _ = brain_server::audit::upgrade_pins(&conn);
+        }
     }
     // `--json` is a global mode: `brain --json recall "…" or per-subcommand.
     if args.iter().any(|a| a == "--json") {
@@ -6659,6 +6668,7 @@ mod tests {
             id: 42,
             hash: "aa".into(),
             epoch: "hmac256".into(),
+            mac: None,
         };
         conn.execute(
             "INSERT INTO schema_meta(key, value) VALUES (?1, ?2)",

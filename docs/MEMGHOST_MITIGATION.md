@@ -44,7 +44,7 @@ approval gate**, and **no provenance on retrieval**.
 | Stage | brain-server control | Where |
 |---|---|---|
 | Plant | Every candidate memory is scored but **not** written (proposal). Untrusted content is tagged `untrusted: true`. | `POST /ingest/proposal` · OWASP LLM01:2025 boundary |
-| Write | **Human-in-the-loop.** A proposal becomes memory only after `approve`. Nothing is auto-promoted. | `POST /proposals/{id}/approve` |
+| Write | **Human-in-the-loop for the agent class.** A proposal becomes memory only after `approve`; agent-class principals (the `agent` role, the typed loopback agent) ALWAYS propose — their direct writes return `202` proposals under both write postures. Human principals holding a write scope still write directly under the default `open` posture — set `BRAIN_WRITE_POSTURE=review` to gate every writer (the operator checklist below). | `POST /proposals/{id}/approve` · `BRAIN_WRITE_POSTURE` |
 | Hide | **Append-only SHA-256 audit chain.** Every ingest, approve, reconcile, purge is a hash-linked row. No silent mutation exists. | `src/audit/mod.rs` · `GET /audit/verify` |
 | Conflict | A planted fact conflicting with an existing one is surfaced via `contradicts`/`supersedes` evidence links and an **unresolved-contradiction check** — it cannot silently overwrite. | `POST /consolidate/propose` · `brain check-consistency` |
 | Provenance | Every recall hit carries `source`, `assertion_kind`, `confidence`, and an evidence span. Retrieval can state **where a memory came from**. | `GET /recall` · `GET /get/{id}` |

@@ -2222,6 +2222,7 @@ mod tests {
                     id: head.id,
                     hash: head.hash.clone(),
                     epoch: "hmac256".into(),
+                    mac: None,
                 })
                 .unwrap()],
             )
@@ -2259,6 +2260,7 @@ mod tests {
             id,
             hash: format!("{id:064x}"),
             epoch: "legacy".into(),
+            mac: None,
         };
         assert_eq!(audit::classify_restored_head(None, None), NoPrePin);
         assert_eq!(

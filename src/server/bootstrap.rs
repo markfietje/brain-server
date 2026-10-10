@@ -771,6 +771,15 @@ pub fn bootstrap() -> Result<BootOutcome> {
     {
         info!("audit chain: fresh DB bootstrapped to the hmac256 epoch");
     }
+    // Pin upgrade for chains that predate genesis pins / pin MACs: stamps
+    // the genesis + adds MACs so verify's both-pins-required rule holds for
+    // existing deployments too (guarded + disclosed inside — a chain that
+    // does not verify is left verbatim for forensics).
+    if let Ok(conn) = pool.get()
+        && audit::upgrade_pins(&conn)
+    {
+        info!("audit chain: pins upgraded (genesis stamp / MACs added)");
+    }
 
     // ── legacy cutover: brain.db → global.db ─────────────────
     // When `BRAIN_MULTI_DB=true`, the per-domain system needs the legacy

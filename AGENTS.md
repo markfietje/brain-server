@@ -1,5 +1,62 @@
 # Agent Execution Log — brain-server
 
+> **R112 "Pins": the chain learns to see its own head.** The v1.29.11 audit
+> replay found three residuals; all three close here, red-first. (1) **The
+> genesis pin.** The head pin anchors the TIP, so deleting the OLDEST rows
+> was free: survivor links chain from immediate predecessors only and the
+> tip never moves. A second pin (`audit_chain_genesis`, same `(id, hash,
+> epoch)` family) now anchors the FIRST row — written by the first append
+> in the same tx, moved by the retention prune's re-anchor with the head,
+> and compared by `verify_chain` so prefix deletion answers `ok:false` with
+> the mismatch named. **Live-proven post-fix**: a drill DB with three head
+> rows deleted answers `{"ok":false}` + "genesis pin mismatch: pin=(id 1)
+> first=(id 4)" where the pre-fix walk passed silently. (2) **Pin MACs.**
+> Pins were unauthenticated JSON in the DB they guard — an attacker could
+> rewrite one to bless a truncation, or delete it. Under the keyed epoch
+> both pins carry `HMAC(chain_key, "brain-audit-pin|epoch|id|hash")`, and
+> verify requires both pins PRESENT + valid on a non-empty keyed chain:
+> forgery and removal are behind the key that already lives outside the DB.
+> Existing deployments upgrade at boot (`upgrade_pins`: tolerant-walk guard
+> — a broken chain is left verbatim, never re-blessed; a genesis stamped
+> onto existing history is disclosed at warn, with the off-host `brain
+> anchor` named for suspected pre-upgrade deletion). (3) **The wipe
+> ceiling is now STATED, not implied**: destroying all rows AND both pins
+> reads as a fresh install — irreducible in-DB; THREAT_MODEL §2b, the
+> STRIDE deletion row, and SECURITY.md's reporter ceilings all say so.
+>
+> **The two smaller findings:** `dsar_locate` attributed every `derived_from`
+> descendant to `roots[0]` (carried since v1.15.0) — the BFS now carries
+> `(id, root)` so the deletion registry's `origin_id` names the true root
+> (purge completeness was never affected; the registry was what lied). And
+> webhook replay idempotency was a 300 s window — `webhook_seen` is now
+> retained BY COUNT (cap 4096, oldest-quarter eviction, the signal-gateway
+> cache law), never time-pruned, so a captured signed delivery is a
+> `Duplicate` until volume displaces it; `WEBHOOK_REPLAY_SECS` keeps its
+> freshness-window meaning only.
+>
+> **Pins:** 6 new audit unit tests (genesis-on-first-append, head-deletion
+> detection, forged/stripped/removed pin detection, `upgrade_pins` stamp+
+> refuse, prune genesis re-anchor, legacy structural-only) + 2 webhook
+> (aged-claim Duplicate, count-capped retention with newest-claim survival)
+> + the flipped integration battery `tests/audit_residuals_v129.rs` (11
+> tests: 3 regression pins for the fixed findings, 5 controls, 1 stated
+> ceiling, 2 unchanged). `CHAIN_MODULE_SHA256` re-recorded (scope pin: the
+> module's semantics extended, its own battery proves every prior arm
+> still passes). Badge re-derived **3282**; `--verify-count` OK; fmt +
+> clippy (bench + default) clean; docs-truth LOW=17 unmoved; env-truth
+> clean; 547 doc links resolve; full `bench,migrate` lane 61 result lines
+> / 0 FAILED.
+>
+> **ponytail:** the wipe-everything case is NOT "fixed" — no in-DB design
+> can distinguish total destruction from a fresh install; the off-host
+> anchor stays the control and the docs now say exactly that. Legacy-epoch
+> chains keep STRUCTURAL genesis detection only (no key exists to MAC
+> with; `--re-audit` remains the upgrade path). No route, wire, schema, or
+> role-vocabulary change; the migration stamps the legacy genesis pin
+> additively; register residuals (write-deadline coverage, unsalted
+> SHA-256 audit hashes of low-entropy input, DSAR default-profile physical
+> residue) are documented acceptances, untouched deliberately.
+
 > **R95 "Vocabulary": `publish` is a capability, not a wall.** `publish` was
 > NOT in `CAN_ACTIONS`; `Role::validate` rejects any `can` item outside it, the
 > only production writer of the `roles` table validates, and no preset carried
