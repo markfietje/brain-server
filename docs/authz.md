@@ -102,26 +102,37 @@ The handlers' `authorize` / `authorize_role` remain the inner gate (defence in
 depth). The middleware is an outer filter over a property that could not
 otherwise be enforced.
 
-## The `publish` capability — a named deny-only class
+## The `publish` capability
 
-`publish` is **not** in `CAN_ACTIONS`. `Role::validate` rejects any `can` item
-outside that list, the only production writer of the `roles` table validates,
-and the migration seeds thirteen fixed presets — none carrying `publish`.
+`publish` **is** in `CAN_ACTIONS`, so `Role::validate` accepts it and a role can
+hold it. It is granted deliberately to four seeded presets — `admin`, `solo`,
+`supervisor`, `controller`, the ones that already carry `approve` — and to no
+others.
 
-**Therefore no role row can hold `publish`, and KCS article publication is
-impossible for every role-bearing principal, including `admin`.** Only role-less
-JWT principals and the unconfigured superuser can publish.
+**Approval does not imply publication.** Accepting a draft into memory and
+publishing it as an external-facing article are different acts with different
+consequences, so they are different capabilities: a role that does the first is
+not thereby granted the second, and removing `publish` from a role's `can`
+stops publication for it immediately.
 
-This round does **not** fix it: the fix is minting `publish` into
-`CAN_ACTIONS`, which the frozen-vocabulary rule forbids. It is declared in
-`DENY_ONLY_CAPABILITIES` and the premise is pinned
-(`r47_publish_is_a_deny_only_handler_seam_capability`) so the class cannot
-outlive its justification quietly.
+The deny-only class (`DENY_ONLY_CAPABILITIES`) is now **empty**, and it stays
+declared: an empty list makes "nothing is deny-only right now" a stated fact
+rather than an omission a future edit can fill in silently. The pin asserts
+BOTH halves — the vocabulary names `publish` AND the class does not — because
+either alone is half a truth.
 
-**The false precedent, recorded because the round nearly inherited it:** the
-obvious argument for pinning this as intended is that `workflow` is the same
-class. It is not. `CAN_ACTIONS` names `workflow`, and `workflow-operator`
-grants it. Two in-tree comments claimed otherwise and were wrong.
+**What this reversed.** The capability was previously unnameable: `Role::validate`
+rejects any `can` item outside `CAN_ACTIONS`, the only production writer of the
+`roles` table validates, and no preset carried it — so publication was
+impossible for every role-bearing principal (including `admin`) while every
+role-less principal passed. That was a defect, filed rather than absorbed, and
+it is now closed.
+
+**The false precedent, recorded because the original round nearly inherited
+it:** the obvious argument for treating `publish` as deny-only was that
+`workflow` is the same class. It is not. `CAN_ACTIONS` names `workflow`, and
+`workflow-operator` grants exactly `can:["workflow"]`. Two in-tree comments
+claimed otherwise and were wrong.
 
 ## The thirteen fixed presets (`src/role.rs::PRESETS_RAW`)
 

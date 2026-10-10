@@ -40,6 +40,11 @@ pub const CAN_ACTIONS: &[&str] = &[
     "read",
     "write",
     "approve",
+    // Publication is its OWN capability, deliberately not implied by
+    // `approve`: accepting a draft into memory and publishing it as an
+    // external-facing article are different acts with different consequences,
+    // and a role that does the first is not thereby granted the second.
+    "publish",
     "reject",
     "calibrate",
     "release_quarantine",
@@ -310,11 +315,11 @@ pub fn effective_filter(sub: &str, manages: &[String], roles: &[Role]) -> Retrie
 pub const PRESETS_RAW: &[(&str, &str)] = &[
     (
         "admin",
-        r#"{"name":"admin","description":"Full control: every scope, every panel, every action","scopes":["private","domain","team"],"owner_filter":"all","can":["read","write","approve","reject","calibrate","release_quarantine","dsar_export","purge","admin"],"panels_default":null,"panels_hidden":null,"tools_allowed":["*"]}"#,
+        r#"{"name":"admin","description":"Full control: every scope, every panel, every action","scopes":["private","domain","team"],"owner_filter":"all","can":["publish","read","write","approve","reject","calibrate","release_quarantine","dsar_export","purge","admin"],"panels_default":null,"panels_hidden":null,"tools_allowed":["*"]}"#,
     ),
     (
         "solo",
-        r#"{"name":"solo","description":"SMB owner: all panels, all actions, unrestricted data (the simplest default)","scopes":["private","domain","team"],"owner_filter":"all","can":["read","write","approve","reject","calibrate","release_quarantine","dsar_export","purge","admin"],"panels_default":["overview","ingest","recall","search","graph","review","procedures","connectors","security","audit","data","subjects","health","system"],"panels_hidden":null,"tools_allowed":["*"]}"#,
+        r#"{"name":"solo","description":"SMB owner: all panels, all actions, unrestricted data (the simplest default)","scopes":["private","domain","team"],"owner_filter":"all","can":["publish","read","write","approve","reject","calibrate","release_quarantine","dsar_export","purge","admin"],"panels_default":["overview","ingest","recall","search","graph","review","procedures","connectors","security","audit","data","subjects","health","system"],"panels_hidden":null,"tools_allowed":["*"]}"#,
     ),
     (
         "agent",
@@ -326,7 +331,7 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
     ),
     (
         "supervisor",
-        r#"{"name":"supervisor","description":"Call-center lead: sees only their agents' rows (manages claim), approves/rejects their queue","scopes":["private","domain","team"],"owner_filter":"reports","can":["read","write","approve","reject","calibrate","release_quarantine","dsar_export"],"panels_default":["overview","review","recall","security","audit","data","health"],"panels_hidden":["subjects"],"tools_allowed":["ump.recall","ump.get","ump.revise","ump.feedback","ump.remember"]}"#,
+        r#"{"name":"supervisor","description":"Call-center lead: sees only their agents' rows (manages claim), approves/rejects their queue","scopes":["private","domain","team"],"owner_filter":"reports","can":["publish","read","write","approve","reject","calibrate","release_quarantine","dsar_export"],"panels_default":["overview","review","recall","security","audit","data","health"],"panels_hidden":["subjects"],"tools_allowed":["ump.recall","ump.get","ump.revise","ump.feedback","ump.remember"]}"#,
     ),
     (
         "qa-specialist",
@@ -346,7 +351,7 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
     ),
     (
         "controller",
-        r#"{"name":"controller","description":"Data Controller: daily operational control, broad actions, retention enforcement","scopes":["private","domain","team"],"owner_filter":"all","can":["read","write","approve","reject","calibrate","release_quarantine","dsar_export","purge"],"panels_default":null,"panels_hidden":["security"],"tools_allowed":["*"]}"#,
+        r#"{"name":"controller","description":"Data Controller: daily operational control, broad actions, retention enforcement","scopes":["private","domain","team"],"owner_filter":"all","can":["publish","read","write","approve","reject","calibrate","release_quarantine","dsar_export","purge"],"panels_default":null,"panels_hidden":["security"],"tools_allowed":["*"]}"#,
     ),
     (
         "exec",

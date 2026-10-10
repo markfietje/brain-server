@@ -1,5 +1,33 @@
 # Agent Execution Log — brain-server
 
+> **R95 "Vocabulary": `publish` is a capability, not a wall.** `publish` was
+> NOT in `CAN_ACTIONS`; `Role::validate` rejects any `can` item outside it, the
+> only production writer of the `roles` table validates, and no preset carried
+> it. So **no role could hold `publish`**: KCS article publication was
+> impossible for every role-bearing principal — including `admin` — while every
+> role-less principal passed the gate. A defect, filed rather than absorbed,
+> and the frozen-vocabulary round that deferred it named it as the cause.
+>
+> `publish` is now a real capability, granted deliberately to the four seeded
+> presets that already carry `approve` (`admin`, `solo`, `supervisor`,
+> `controller`) and to no others. **Approval does not imply publication** —
+> accepting a draft into memory and publishing it as an external-facing article
+> are different acts, so they stay different capabilities and removing `publish`
+> stops publication immediately.
+>
+> **The frozen decision was reversed, so its pins were reversed with it.** Two
+> pins asserted the old premise (`publish` absent from `CAN_ACTIONS`; the
+> deny-only class naming it). Both now assert **both halves** of the new
+> reality — the vocabulary names `publish` AND the deny-only class does not —
+> because either half alone is a way to be half-wrong later. The class itself
+> stays declared and is now empty: "nothing is deny-only right now" is a stated
+> fact, not an omission a future edit fills in silently.
+>
+> **ponytail:** no capability beyond the one the handlers already asked for; the
+> approval path is untouched and publication remains a separate verb with its
+> own gate; the deny-only machinery stays because it is how the NEXT vocabulary
+> change gets declared rather than inferred.
+
 > **R107 "Tools": `tools_allowed` stops being a description.** The field
 > shipped stored-and-surfaced with enforcement deferred to v1.24, under an
 > explicit "store now, enforce later" note. It never arrived: the UMP entry

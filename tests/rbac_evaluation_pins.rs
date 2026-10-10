@@ -651,27 +651,35 @@ fn r47_the_gate_table_is_one_declaration() {
 // F3 + the `publish` DENY-ONLY decision (§2.3 of the corrections)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// The round's first real design decision. `publish` is NOT in `CAN_ACTIONS`,
-/// `role::validate` rejects any `can` item outside it, and the only production
-/// writer of the roles table validates — so NO role row can hold `publish`.
-/// R47 does not mint it (E2 forbids it) and does not re-label the row: it names
-/// the capability a handler-only DENY-ONLY class and pins the fact.
+/// THE REVERSAL, pinned so it cannot be reversed by accident in either
+/// direction.
+///
+/// This pin originally asserted that `publish` is NOT in `CAN_ACTIONS` and that
+/// the deny-only class names it — the R47 decision that made KCS publication
+/// impossible for every role-bearing principal while passing every role-less
+/// one. That decision was filed as a defect, not a design, and it has been
+/// reversed: `publish` is now a real capability, granted deliberately to the
+/// roles that carry `approve` and to no others.
+///
+/// The pin now asserts BOTH halves of the new reality, because either alone is
+/// half a truth: the vocabulary names `publish` AND the deny-only class does
+/// not. A future edit that put `publish` back on the deny-only list would make
+/// publication impossible again while every comment still said it was fine.
 #[test]
-fn r47_publish_is_a_deny_only_handler_seam_capability() {
+fn r47_publish_is_a_grantable_capability_and_not_deny_only() {
     let gates = code_region(&read_r47("src/authz/gates.rs"));
     assert!(
         gates.contains("DENY_ONLY_CAPABILITIES"),
-        "src/authz/gates.rs must declare the frozen DENY_ONLY_CAPABILITIES list — the \
-         round's resolution of the `publish` conflict. An implicit rule is a rule a \
-         future edit can widen without anyone reading it."
+        "src/authz/gates.rs must keep declaring the DENY_ONLY_CAPABILITIES class. It is \
+         empty now, and the declaration is what makes 'empty' a stated fact rather than an \
+         omission a future edit can fill in silently."
     );
     assert!(
-        gates.contains("\"publish\""),
-        "the deny-only class must name `publish`: it is the capability the conflict is about"
+        !gates.contains("\"publish\""),
+        "`publish` is back on the deny-only class — KCS publication is impossible again for \
+         every role-bearing principal, which is the defect this round reversed."
     );
 
-    // The underlying facts the decision rests on, asserted so the decision
-    // cannot outlive its premise silently.
     let role = read_repo("src/role.rs");
     let can_block = role
         .split("pub const CAN_ACTIONS")
@@ -679,9 +687,19 @@ fn r47_publish_is_a_deny_only_handler_seam_capability() {
         .and_then(|rest| rest.split("];").next())
         .expect("CAN_ACTIONS must still be declared");
     assert!(
-        !can_block.contains("\"publish\""),
-        "`publish` is in CAN_ACTIONS — the deny-only decision's premise has changed and \
-         the round's documentation is now false. Re-derive before trusting the class."
+        can_block.contains("\"publish\""),
+        "`publish` must be in CAN_ACTIONS, or `role::validate` rejects every role that tries \
+         to hold it and publication is unreachable again"
+    );
+
+    // Publication stays its OWN capability: the roles granted it are the ones
+    // that already approve, and nothing else inherits it from `approve`.
+    let presets = role.split("PRESETS_RAW").nth(1).unwrap_or_default();
+    let granted = presets.matches("\"can\":[\"publish\"").count();
+    assert_eq!(
+        granted, 4,
+        "exactly the four review-capable presets carry `publish` (admin, solo, supervisor, \
+         controller) — publication must be granted deliberately, not inherited"
     );
 }
 

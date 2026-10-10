@@ -32,29 +32,36 @@ use crate::server::router::route_guards::AUTHZ_GATES;
 /// Capabilities that exist OUTSIDE `CAN_ACTIONS` and are therefore
 /// unsatisfiable by construction.
 ///
-/// **The `publish` finding, stated exactly.** `CAN_ACTIONS`
-/// (`src/role.rs`) does not name `publish`. `Role::validate` returns `Err` for
-/// any `can` item outside it. The only production writer of the `roles` table
-/// is `src/handlers/roles.rs`'s upsert, which calls `validate()`, and the
-/// migration seeds thirteen fixed presets, none of which carries `publish`.
-/// No production path can therefore store a role holding `publish`, so
-/// `authorize_role(.., "publish")` denies every principal that HAS roles —
-/// including the `admin` preset — and passes every principal that has none.
+/// **THE CLASS IS NOW EMPTY, and that is the finding, not a leftover.** `publish`
+/// was the only member: `CAN_ACTIONS` did not name it, `Role::validate` rejects
+/// any `can` item outside it, and the only production writer of the roles table
+/// validates — so no role could hold `publish`, and `authorize_role(..,
+/// "publish")` denied every role-bearing principal (including `admin`) while
+/// passing every role-less one. KCS article publication was therefore impossible
+/// for anyone the RBAC layer could see, which is a defect, not a design.
 ///
-/// **What that means, stated plainly rather than softened:** KCS article
-/// publication is impossible for every role-bearing principal today. That is a
-/// real defect, it predates this round , and this round does not fix it: the fix is minting
-/// `publish` into `CAN_ACTIONS`, and the frozen-vocabulary decision freezes the vocabulary for this round.
-/// It is filed, not silently absorbed, and `r47_publish_is_a_deny_only_handler_
-/// deliberately, and `r47_publish_is_a_deny_only_handler_seam_capability` pins the
-/// premise so the class cannot outlive it quietly.
+/// A capability can only be DENY-ONLY by construction if the vocabulary cannot
+/// name it. That is now false: `publish` is in `CAN_ACTIONS`, granted
+/// deliberately to the four roles that already carry `approve` (publication
+/// stays its OWN capability — approval does not imply it), and refused for
+/// every other role.
 ///
-/// **The false precedent, recorded because the round nearly inherited it.** The
-/// obvious argument for pinning this as intended is that `workflow` is the same
-/// class. It is not: `CAN_ACTIONS` DOES name `workflow`, and the shipped
-/// `workflow-operator` preset grants exactly `can:["workflow"]`. Two in-tree
-/// comments claimed otherwise and were wrong.
-pub const DENY_ONLY_CAPABILITIES: &[&str] = &["publish"];
+/// The list and `is_deny_only` stay, because the machinery they feed is real
+/// and the class is how a future vocabulary change is declared rather than
+/// inferred. An empty list means "nothing is deny-only right now", which is a
+/// fact worth having in one place: a reader who assumed the class still held
+/// `publish` would be reasoning from a stale premise, and the pin in
+/// `tests/rbac_evaluation_pins.rs` is what catches that.
+///
+/// **The false precedent, recorded because the original round nearly inherited
+/// it.** The obvious argument for pinning `publish` as deny-only was that
+/// `workflow` is the same class. It is not: `CAN_ACTIONS` names `workflow` and
+/// the shipped `workflow-operator` preset grants exactly `can:["workflow"]`.
+///
+/// **ponytail:** no new capability beyond the one the handlers already asked
+/// for; no change to the approval path — publication remains a separate verb
+/// with its own gate.
+pub const DENY_ONLY_CAPABILITIES: &[&str] = &[];
 
 /// Whether `capability` is in the frozen deny-only class.
 pub fn is_deny_only(capability: &str) -> bool {
@@ -175,12 +182,28 @@ mod tests {
     use crate::auth::policy::Action;
     use crate::authz::policy::{DenyReason, Verdict, decide_gate_verdict};
 
+    /// The class that once held `publish` is EMPTY, because `publish` is now
+    /// in `CAN_ACTIONS` and grantable. This pin is the check on THAT claim:
+    /// a reader who found `publish` back in the deny-only list — or a future
+    /// edit that put it there to make publication impossible again — fails
+    /// here, loudly, with the reason written down.
     #[test]
-    fn r47_the_deny_only_class_is_frozen_and_named() {
-        assert_eq!(DENY_ONLY_CAPABILITIES, &["publish"]);
-        assert!(is_deny_only("publish"));
+    fn the_deny_only_class_is_empty_because_publish_is_now_grantable() {
+        assert!(
+            DENY_ONLY_CAPABILITIES.is_empty(),
+            "no capability is deny-only by construction any more; if you are adding one, say \
+             why the vocabulary cannot name it"
+        );
+        assert!(!is_deny_only("publish"));
         assert!(!is_deny_only("approve"));
         assert!(!is_deny_only("workflow"));
+        // The premise, asserted: `publish` really is nameable now.
+        assert!(
+            crate::role::CAN_ACTIONS.contains(&"publish"),
+            "`publish` must be in CAN_ACTIONS — the class is empty BECAUSE the vocabulary \
+             can now name it, and a reader checking one without the other is reading a \
+             stale premise"
+        );
     }
 
     #[test]
@@ -319,11 +342,21 @@ mod tests {
             decide_gate_verdict(None, &method_gated, "GET"),
             Verdict::Deny(DenyReason::MethodNotPermitted)
         ));
+        // The capability arm is STILL unreachable, for the same reason as the
+        // method arm: `required_capability` is never populated from the table,
+        // so no production Gate can carry one. It is pinned with a name that
+        // is in the vocabulary now, which is the point — the arm's
+        // reachability depends on the CONSTRUCTOR, not on the class being
+        // non-empty.
         let mut cap_gated = gate;
         cap_gated.required_capability = "publish";
-        assert!(matches!(
-            decide_gate_verdict(None, &cap_gated, "GET"),
-            Verdict::Deny(DenyReason::CapabilityDenyOnly)
-        ));
+        assert!(
+            !matches!(
+                decide_gate_verdict(None, &cap_gated, "GET"),
+                Verdict::Deny(DenyReason::CapabilityDenyOnly)
+            ),
+            "a gate carrying `publish` is no longer deny-only — the arm stays unreachable \
+             because nothing constructs one"
+        );
     }
 }
