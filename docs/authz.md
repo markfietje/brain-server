@@ -213,6 +213,30 @@ capability is not derivable from its path (`/proposals/{id}/approve` also
 demands `publish`, conditionally on the body), so the receipt stops at the
 seam it can measure and says which seam that is.
 
+## What `read` no longer implies
+
+Two surfaces outside ordinary retrieval, closed together because they leak the
+same thing by different routes:
+
+- **`GET /export`** is the portability path and it is §2.7's row decision, not
+  its field decision. A row the caller does not own — in `knowledge` **or** in
+  `proposals`, which are unapproved memory bodies — is replaced wholesale by
+  `{"redacted": true}` (title, source and owner included: a title is often the
+  sensitive part), and the graph is narrowed to the edges and entities the
+  surviving rows reference. A `withheld` object counts what was taken out per
+  collection, so the envelope never under-reports itself. The operator export
+  is unchanged — nothing withheld, every row verbatim, because a redaction that
+  reached loopback would silently break every backup.
+- **`GET /proposals`** is owner-bound: the record gate's resolved owner set
+  rides into the query, so a principal with no roles reads its own queue and a
+  role whose `owner_filter` opens the shared pool still reviews everyone's.
+- **`GET /quarantine`** and **`GET /decayed`** are review POSTURES, not reads —
+  both walk content across every owner (content the screen judged unfit, and
+  content past its expiry). They answer loopback/opaque operators and
+  principals holding Admin on their own tenant, which is exactly what
+  `review_flags_allowed` already means; every read- or write-scoped JWT is
+  refused.
+
 ## Denial audit rows
 
 One `audit_events` row per denial: `AuditKind::Auth`, `AuditStatus::Denied`,

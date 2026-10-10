@@ -689,9 +689,15 @@ mod tests {
 
         {
             let conn = f.state.pool.get().unwrap();
-            let pending =
-                crate::service::review::pending_page(&conn, "pending", 200, None, Some("global"))
-                    .unwrap();
+            let pending = crate::service::review::pending_page(
+                &conn,
+                "pending",
+                200,
+                None,
+                Some("global"),
+                None,
+            )
+            .unwrap();
             assert_eq!(pending.len(), 1);
             assert_eq!(pending[0].kind, PROP_KIND_REGISTRY_LIFECYCLE);
         }
@@ -787,7 +793,7 @@ mod tests {
             "the stale proposal must not transition the live row"
         );
         let pending =
-            crate::service::review::pending_page(&conn, "pending", 200, None, Some("global"))
+            crate::service::review::pending_page(&conn, "pending", 200, None, Some("global"), None)
                 .unwrap();
         assert!(
             pending.iter().any(|item| item.id == proposal_id),
@@ -818,7 +824,7 @@ mod tests {
             registry::STATUS_CANDIDATE
         );
         let pending =
-            crate::service::review::pending_page(&conn, "pending", 200, None, Some("global"))
+            crate::service::review::pending_page(&conn, "pending", 200, None, Some("global"), None)
                 .unwrap();
         assert!(
             pending.is_empty(),

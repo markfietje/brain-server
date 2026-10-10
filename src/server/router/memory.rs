@@ -2647,6 +2647,18 @@ pub(crate) async fn list_quarantined(
         domain.as_deref().unwrap_or("global"),
     )
     .map_err(|e| AppError::Forbidden(e.inner.message))?;
+    // The quarantine queue is an operator REVIEW posture, not a read: it lists
+    // content the screen judged unfit, across every owner. `review_flags_allowed`
+    // is the posture the tree already carries for exactly this decision
+    // (loopback/opaque, or Admin on the caller's own tenant), so the listing
+    // asks it rather than inventing a second notion of "reviewer".
+    if !handlers::review_flags_allowed(&principal.0) {
+        return Err(AppError::Forbidden(
+            "quarantine is a reviewer posture: a read-scoped principal may not review the \
+             flagged corpus"
+                .to_string(),
+        ));
+    }
     let shim_label = if state.registry.is_multi_db() {
         None
     } else {

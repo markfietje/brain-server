@@ -1,5 +1,47 @@
 # Agent Execution Log — brain-server
 
+> **R101 "Desk": the export and the review queue disclose to reviewers and
+> owners only.** Four surfaces the read gate never reached, closed together
+> because they leak the same thing by different routes.
+>
+> **`GET /export` was a field decision pretending to be a row decision.**
+> Redaction replaced `knowledge[].content` and nothing else, so a foreign row
+> still shipped its title, source, owner, origin and every other field — and
+> `bundle.proposals` shipped VERBATIM, because the bundle's proposal
+> projection never read the `owner` column the table has carried since the
+> QaQueue migration. Observed red-first against the live tree: a foreign
+> private row exporting `title: "Their private salary band"` with
+> `owner: "user:them"` beside a `[redacted]` content, plus the foreign
+> proposal body verbatim. A redacted row is now REPLACED by a bare
+> `{"redacted": true}` stub — no id, because an id is itself a handle on a row
+> the caller may not read — and a `withheld` object counts what was taken out
+> per collection so the envelope never under-reports itself. The graph is
+> narrowed by the ids the caller can see: an edge names its `knowledge_id`, and
+> the entity names on it were extracted from the foreign content.
+>
+> **The three review listings.** `GET /proposals` is owner-bound — the record
+> gate's resolved owner set rides into `pending_page` as an `owner IN (…)`
+> predicate, reached through the same resolver every read surface uses rather
+> than a second opinion about ownership. `GET /quarantine` and `GET /decayed`
+> are review POSTURES: both walk content across every owner, and both now ask
+> `review_flags_allowed`, which the tree already carried for exactly this
+> decision (loopback/opaque, or Admin on the caller's own tenant). No new
+> mechanism, no new role vocabulary, no new capability.
+>
+> **The neighbours are pinned, so "closed" cannot mean "closed to everyone".**
+> The operator export is byte-identical (nothing withheld, every row verbatim —
+> a redaction that reached loopback would silently break every backup); a
+> shared-pool reviewer role still reviews the whole queue; an admin-scoped
+> principal keeps both review scans; `/proposals` stays open to an owner-bound
+> caller for its own rows. The authz matrix's read/write/agent cells assert the
+> new denials through `REVIEWER_POSTURE_ROWS`, pinned against `AUTHZ_GATES` so
+> a renamed route fails loudly instead of quietly losing its cell.
+>
+> **ponytail:** no schema change, no new route, no role-vocabulary change; the
+> export envelope gains one additive `withheld` object and no format bump;
+> `/clients/{name}/proposals` keeps its own `manages` fence rather than
+> inheriting a second, unrelated owner predicate.
+
 > **R102 "Lane": the Signal draft-approve command approves drafts.**
 > `draft_proposal_row` selected `WHERE id=?1` with **no kind predicate**, so a
 > `[draft N] approve <digest>` message could flip ANY pending proposal to

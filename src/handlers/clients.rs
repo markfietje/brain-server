@@ -405,10 +405,15 @@ pub async fn client_proposals(
     let rows = tokio::task::spawn_blocking(
         move || -> Result<Vec<crate::service::review::ProposalView>, HandlerError> {
             let conn = domain_pool.get().map_err(HandlerError::db_down)?;
+            // No SQL owner filter here: this surface already narrows in Rust
+            // with `owner_in_filtered` against the caller's `manages` set,
+            // which is a different (client-management) fence. Passing the
+            // record gate's owners would be a second, unrelated predicate.
             let page = crate::service::review::pending_page(
                 &conn,
                 "pending",
                 crate::service::review::MAX_PROPOSALS,
+                None,
                 None,
                 None,
             )

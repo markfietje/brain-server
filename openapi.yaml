@@ -1376,6 +1376,11 @@ paths:
     get:
       summary: List quarantined (flagged) chunks (v0.9.7 Guard)
       operationId: listQuarantine
+      description: >
+        A REVIEWER posture, not a read: the queue is content the screen judged
+        unfit, across every owner. Loopback/opaque operators and principals
+        holding Admin on their own tenant may list it; a read- or write-scoped
+        JWT is refused 403.
       parameters:
         - name: limit
           in: query
@@ -1905,7 +1910,10 @@ paths:
         the queue — the read gate checks the REQUESTED domain (fail-closed 403
         for a foreign one; loopback/opaque unchanged), so a site-scoped
         reviewer works only their own queue. Absent → the legacy
-        global-authorized queue.
+        global-authorized queue. The queue is OWNER-BOUND as well: the record
+        gate's resolved owner set rides into the query, so a principal with no
+        roles reads its own pending proposals and a role whose `owner_filter`
+        opens the shared pool still reviews everyone's.
       parameters:
         - in: query
           name: status
@@ -2089,6 +2097,9 @@ paths:
         carries a `reason` (`per_chunk` or `kind_policy`) so the operator sees
         *why* a chunk is decayed. Nothing is deleted autonomously; the operator
         reviews and purges explicitly. v1.20.18: bounded by `limit`/`offset`.
+        A REVIEWER posture, not a read — same rule as the quarantine queue:
+        loopback/opaque operators and principals holding Admin on their own
+        tenant; a read- or write-scoped JWT is refused 403.
       parameters:
         - name: limit
           in: query
@@ -3138,7 +3149,15 @@ paths:
         `owner`, that row's `content` is redacted (`[redacted]`) — a cross-owner
         export never leaks another subject's chunk body. v1.20.19 "Vault": there
         is no `pii_map` vault to resolve — PII control is deterministic output
-        redaction, so raw PII is never exported.
+        redaction, so raw PII is never exported. The §2.7 redaction is now a
+        ROW decision, not a field decision: a row the caller does not own —
+        in `knowledge` OR in `proposals`, which are unapproved memory bodies —
+        is replaced wholesale by `{"redacted": true}` (title, source, owner and
+        the rest included), and the graph is narrowed to the edges and entities
+        the surviving rows reference. A `withheld` object counts what was taken
+        out per collection, so the envelope never under-reports itself. The
+        operator export (loopback/opaque) is unchanged: nothing withheld, every
+        row verbatim.
       parameters:
         - in: query
           name: format

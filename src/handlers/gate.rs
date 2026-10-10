@@ -450,10 +450,24 @@ pub async fn list_proposals(
     let since = q.since;
     let pool = super::resolve_domain_pool(&state.registry, Some(authz_domain))?;
 
+    // The queue is a reviewer surface: a pending proposal is unapproved memory
+    // text with an owner and a reviewer note. The record gate's resolved owner
+    // set rides into the query, so an owner-bound caller reads its own queue
+    // while a shared-pool reviewer role still reads everyone's — the same
+    // `(owner, access_scope)` fence every read surface applies, reached here
+    // through the same resolver rather than a second opinion about ownership.
+    let owner_in = record_read_gate(&principal.0, &pool).owner_in;
     let rows = tokio::task::spawn_blocking(move || -> Result<Vec<ProposalView>, HandlerError> {
         let conn = pool.get().map_err(HandlerError::db_down)?;
-        crate::service::review::pending_page(&conn, &status, limit, since, domain_filter.as_deref())
-            .map_err(|e| HandlerError::internal(e.to_string()))
+        crate::service::review::pending_page(
+            &conn,
+            &status,
+            limit,
+            since,
+            domain_filter.as_deref(),
+            owner_in.as_deref(),
+        )
+        .map_err(|e| HandlerError::internal(e.to_string()))
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -2371,6 +2385,20 @@ pub async fn list_decayed(
         "",
         domain.as_deref().unwrap_or("global"),
     )?;
+    // Same reviewer posture as the quarantine queue, and for the same reason:
+    // the decay scan walks expired content across every owner. A read-scoped
+    // principal is not a reviewer.
+    if !super::review_flags_allowed(&principal.0) {
+        return Err(HandlerError::forbidden(
+            crate::auth::Action::Read,
+            &principal
+                .0
+                .as_ref()
+                .map(|p| p.tenant.clone())
+                .unwrap_or_default(),
+            domain.as_deref().unwrap_or("global"),
+        ));
+    }
     let shim_label = if state.registry.is_multi_db() {
         None
     } else {
@@ -2614,17 +2642,72 @@ pub async fn export(
         // redacts the official `.well-known` surface) — empty owner is
         // personal + shared, so a non-principal exporter sees only the shell;
         // an exporter whose sub matches the row's OWN owner sees that row.
+        //
+        // A redacted row is REPLACED, not patched: redacting `content` alone
+        // still shipped the title, the source, the owner and every other
+        // metadata field, and a title is frequently the sensitive part. The
+        // stub carries nothing, and `withheld` counts what went into it so the
+        // envelope never under-reports itself. Proposals join the same rule —
+        // they are unapproved memory bodies, and the bundle now projects
+        // `owner` so the decision can be per row.
+        let mut withheld_knowledge = 0u64;
+        let mut withheld_proposals = 0u64;
+        let mut proposals = bundle.proposals;
+        let mut edges = bundle.relationships;
+        let mut entities = bundle.entities;
+        let mut withheld_entities = 0u64;
+        let mut withheld_edges = 0u64;
         if let Some(redact_owner) = redact_closure.as_deref() {
+            // Measured BEFORE the stubs replace the rows: the graph is narrowed
+            // by the ids the caller may actually see.
+            let visible: std::collections::HashSet<i64> = knowledge
+                .iter()
+                .filter(|k| !should_redact(k["owner"].as_str(), Some(redact_owner)))
+                .filter_map(|k| k["id"].as_i64())
+                .collect();
             for k in &mut knowledge {
-                let row_owner = k["owner"].as_str();
-                if should_redact(row_owner, Some(redact_owner)) {
-                    k["content"] = serde_json::Value::String("[redacted]".to_string());
+                if should_redact(k["owner"].as_str(), Some(redact_owner)) {
+                    *k = serde_json::json!({ "redacted": true });
+                    withheld_knowledge += 1;
                 }
             }
+            for p in &mut proposals {
+                if should_redact(p["owner"].as_str(), Some(redact_owner)) {
+                    *p = serde_json::json!({ "redacted": true });
+                    withheld_proposals += 1;
+                }
+            }
+            // A relationship names its `knowledge_id`, so an edge over a memory
+            // the caller cannot read leaks that memory's graph; the entity
+            // names on it are extracted from the foreign content. Narrow the
+            // edges to the visible set, then keep only the entities the
+            // surviving edges still reference. Counts are taken BEFORE the
+            // `take`, never after — the vector is empty once moved.
+            let all_edges = std::mem::take(&mut edges);
+            let all_edges_total = all_edges.len();
+            // An edge with no chunk behind it belongs to no memory the caller
+            // can be shown owning, so it stays; one whose chunk the caller
+            // cannot read goes with that memory.
+            let kept_edges: Vec<serde_json::Value> = all_edges
+                .into_iter()
+                .filter(|e| e["knowledge_id"].as_i64().is_none_or(|kid| visible.contains(&kid)))
+                .collect();
+            withheld_edges = (all_edges_total - kept_edges.len()) as u64;
+            let referenced: std::collections::HashSet<i64> = kept_edges
+                .iter()
+                .filter_map(|e| e["from_entity_id"].as_i64())
+                .chain(kept_edges.iter().filter_map(|e| e["to_entity_id"].as_i64()))
+                .collect();
+            edges = kept_edges;
+            let all_entities = std::mem::take(&mut entities);
+            let all_entities_total = all_entities.len();
+            let kept_entities: Vec<serde_json::Value> = all_entities
+                .into_iter()
+                .filter(|e| e["id"].as_i64().is_some_and(|id| referenced.contains(&id)))
+                .collect();
+            withheld_entities = (all_entities_total - kept_entities.len()) as u64;
+            entities = kept_entities;
         }
-        let proposals = bundle.proposals;
-        let entities = bundle.entities;
-        let edges = bundle.relationships;
         // provenance summary counts per origin/source
         // kind (the Art 50 model-vs-human bridge) + additive format version.
         let mut by_origin: std::collections::BTreeMap<&str, u64> = std::collections::BTreeMap::new();
@@ -2654,6 +2737,15 @@ pub async fn export(
                 "total": by_origin.values().sum::<u64>(),
                 "by_origin": by_origin,
                 "by_source": by_source,
+            },
+            // What the §2.7 redaction took out, counted per collection. Absent
+            // keys read as zero, so an operator export (nothing withheld) and a
+            // caller's export are the same shape.
+            "withheld": {
+                "knowledge": withheld_knowledge,
+                "proposals": withheld_proposals,
+                "entities": withheld_entities,
+                "relationships": withheld_edges,
             },
         }))
     })

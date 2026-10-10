@@ -581,6 +581,14 @@ const LAYOUT_CONDITIONAL: &[&str] = &["/consolidate/propose"];
 /// `write` class is deliberately role-less. Every entry here is checked
 /// against `AUTHZ_GATES` by `approval_role_rows_are_real_write_rows`, so a
 /// renamed route fails loudly instead of quietly losing its cell.
+/// Rows that are REVIEW POSTURES rather than reads: the quarantine queue and
+/// the decay scan both walk content across every owner, and the posture the
+/// tree already carries (`review_flags_allowed`) answers for loopback/opaque and
+/// for an Admin grant on the caller's own tenant — nothing else. So a read- or
+/// write-scoped role-less principal is refused, and so is the agent class.
+/// `/proposals` is NOT here: it is owner-bound rather than closed, so a
+/// read-scoped caller still gets its own queue.
+const REVIEWER_POSTURE_ROWS: &[&str] = &["/quarantine", "/decayed"];
 const APPROVAL_ROLE_ROWS: &[&str] = &[
     "/proposals/{id}/approve",
     "/proposals/{id}/reject",
@@ -766,6 +774,14 @@ fn approval_role_rows_are_real_write_rows() {
         !APPROVAL_ROLE_ROWS.is_empty(),
         "the approval-role row list must not empty out"
     );
+    for template in REVIEWER_POSTURE_ROWS {
+        assert!(
+            AUTHZ_GATES
+                .iter()
+                .any(|(t, a)| t == template && *a == "Read"),
+            "{template} is pinned as a reviewer-posture row but the table does not call it Read"
+        );
+    }
     for template in APPROVAL_ROLE_ROWS {
         let action = AUTHZ_GATES
             .iter()
@@ -892,7 +908,9 @@ async fn authz_matrix_rows_x_classes_through_composed_app() {
         let can_write = matches!(action, "Read" | "Write" | "Traverse");
 
         let st = send(&srv, Some(&read_tok), &path, method, body).await;
-        if can_read && LAYOUT_CONDITIONAL.contains(&template) {
+        if can_read && REVIEWER_POSTURE_ROWS.contains(&template) {
+            denied(st, "read (reviewer-posture row)");
+        } else if can_read && LAYOUT_CONDITIONAL.contains(&template) {
             assert_eq!(
                 st,
                 StatusCode::FORBIDDEN,
@@ -914,6 +932,8 @@ async fn authz_matrix_rows_x_classes_through_composed_app() {
                 StatusCode::FORBIDDEN,
                 "{method} {template} (write) is the GDL role-gated exception"
             );
+        } else if can_write && REVIEWER_POSTURE_ROWS.contains(&template) {
+            denied(st, "write (reviewer-posture row)");
         } else if can_write && APPROVAL_ROLE_ROWS.contains(&template) {
             // Disposing of a proposal is a role act, so the ROLE-LESS write
             // class is refused here even though its scope grants Write. This is
@@ -2412,6 +2432,9 @@ async fn probe_blind_404_on_foreign_run() {
 /// roles, so the empty-roles skip never fires) — those speak the denied
 /// vocabulary. Admin rows 403 outright.
 const ROLE_GATED_FOR_AGENT: &[&str] = &[
+    // reviewer postures, not reads — see REVIEWER_POSTURE_ROWS
+    "/quarantine",
+    "/decayed",
     // the `workflow` capability (19 gate sites). R47 CORRECTION: the reason
     // the agent is refused here is NOT that `workflow` is ungrantable —
     // CAN_ACTIONS does name it and the `workflow-operator` preset holds it

@@ -156,12 +156,21 @@ pub fn proposal_deadline(created_at: i64) -> (i64, i64, i64) {
 /// `d` (the handler passes only a domain the caller is authorized to read —
 /// the fence holds of the CALLER'S GATE, this statement just honors it);
 /// `None` is the legacy unscoped query.
+///
+/// `owner_in` is the same fence applied to the ROW: the handler passes the
+/// record gate's resolved owner set, so an owner-bound caller reads its own
+/// pending proposals and a shared-pool reviewer role reads everyone's. `None`
+/// is the unrestricted case (admin-scoped, loopback, or a role whose owner
+/// filter opens the pool). The SQL is an `IN`, so a row with a NULL owner
+/// does not match an owner-bound caller — the same NULL semantics every
+/// read surface applies.
 pub(crate) fn pending_page(
     conn: &Connection,
     status: &str,
     limit: usize,
     since: Option<i64>,
     domain: Option<&str>,
+    owner_in: Option<&[String]>,
 ) -> Result<Vec<ProposalView>, GateError> {
     const COLS: &str =
         "id, kind, content, source, source_prompt, authority, novelty, conflict_with,
@@ -178,6 +187,18 @@ pub(crate) fn pending_page(
     if let Some(d) = domain {
         bind.push(Box::new(d.to_string()));
         predicates.push(format!("domain = ?{}", bind.len()));
+    }
+    if let Some(owners) = owner_in.filter(|o| !o.is_empty()) {
+        // Positional binds: one placeholder per owner, each after the last
+        // predicate's, so `LIMIT` stays at ?2.
+        let holes: Vec<String> = owners
+            .iter()
+            .map(|o| {
+                bind.push(Box::new(o.clone()));
+                format!("?{}", bind.len())
+            })
+            .collect();
+        predicates.push(format!("owner IN ({})", holes.join(", ")));
     }
     let sql = format!(
         "SELECT {COLS} FROM proposals WHERE {} ORDER BY created_at DESC LIMIT ?2",
@@ -838,7 +859,8 @@ mod tests {
             )
             .unwrap();
 
-        let pending = pending_page(&conn, "pending", MAX_PROPOSALS, None, None).expect("pending");
+        let pending =
+            pending_page(&conn, "pending", MAX_PROPOSALS, None, None, None).expect("pending");
         let owned_v = pending
             .iter()
             .find(|v| v.id == owned)
@@ -916,7 +938,8 @@ mod tests {
         )
         .unwrap();
 
-        let views = pending_page(&conn, "approved", MAX_PROPOSALS, None, None).expect("approved");
+        let views =
+            pending_page(&conn, "approved", MAX_PROPOSALS, None, None, None).expect("approved");
         let decided_view = views
             .iter()
             .find(|v| v.id == decided)
@@ -928,7 +951,7 @@ mod tests {
         );
 
         let pending_views =
-            pending_page(&conn, "pending", MAX_PROPOSALS, None, None).expect("pending");
+            pending_page(&conn, "pending", MAX_PROPOSALS, None, None, None).expect("pending");
         let pending_view = pending_views
             .iter()
             .find(|v| v.id == pending)
@@ -939,7 +962,7 @@ mod tests {
         );
 
         let rejected_views =
-            pending_page(&conn, "rejected", MAX_PROPOSALS, None, None).expect("rejected");
+            pending_page(&conn, "rejected", MAX_PROPOSALS, None, None, None).expect("rejected");
         let expired_view = rejected_views
             .iter()
             .find(|v| v.id == expired)
@@ -968,15 +991,15 @@ mod tests {
         .unwrap();
 
         // Absent `since` → all rows, newest first (legacy behavior unchanged).
-        let all = pending_page(&conn, "approved", MAX_PROPOSALS, None, None).expect("all");
+        let all = pending_page(&conn, "approved", MAX_PROPOSALS, None, None, None).expect("all");
         let ids: Vec<i64> = all.iter().map(|v| v.id).collect();
         assert_eq!(ids.len(), 3, "no since → every row");
         let newest = all.iter().find(|v| v.content == "newest").unwrap();
         assert_eq!(ids[0], newest.id, "newest first preserved");
 
         // `since=2000` excludes rows created before the bound.
-        let windowed =
-            pending_page(&conn, "approved", MAX_PROPOSALS, Some(2000), None).expect("windowed");
+        let windowed = pending_page(&conn, "approved", MAX_PROPOSALS, Some(2000), None, None)
+            .expect("windowed");
         let wids: Vec<i64> = windowed.iter().map(|v| v.id).collect();
         assert_eq!(wids.len(), 2, "since=2000 keeps created_at >= 2000");
         assert!(
@@ -1035,7 +1058,7 @@ mod tests {
             .unwrap();
 
         // The unscoped page (loopback posture) returns both, each labeled.
-        let all = pending_page(&conn, "pending", MAX_PROPOSALS, None, None).expect("all");
+        let all = pending_page(&conn, "pending", MAX_PROPOSALS, None, None, None).expect("all");
         let acme_v = all.iter().find(|v| v.id == acme).expect("acme present");
         assert_eq!(acme_v.domain, "acme-us", "the row carries its stamp");
         assert_eq!(
@@ -1052,16 +1075,16 @@ mod tests {
 
         // The domain clamp narrows EXACTLY: the acme reviewer never sees the
         // global row; the global page keeps its own row.
-        let scoped =
-            pending_page(&conn, "pending", MAX_PROPOSALS, None, Some("acme-us")).expect("acme");
+        let scoped = pending_page(&conn, "pending", MAX_PROPOSALS, None, Some("acme-us"), None)
+            .expect("acme");
         assert_eq!(scoped.len(), 1, "the clamp is exact, not additive");
         assert_eq!(scoped[0].id, acme);
-        let global_page =
-            pending_page(&conn, "pending", MAX_PROPOSALS, None, Some("global")).expect("global");
+        let global_page = pending_page(&conn, "pending", MAX_PROPOSALS, None, Some("global"), None)
+            .expect("global");
         assert_eq!(global_page.len(), 1, "the global page keeps global rows");
         assert_eq!(global_page[0].id, legacy);
         assert!(
-            pending_page(&conn, "pending", MAX_PROPOSALS, None, Some("beta-eu"))
+            pending_page(&conn, "pending", MAX_PROPOSALS, None, Some("beta-eu"), None)
                 .expect("foreign")
                 .is_empty(),
             "a foreign scope yields nothing (deny-by-default)"

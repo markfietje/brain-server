@@ -295,7 +295,7 @@ pub(crate) fn export_bundle(conn: &Connection, max_bytes: u64) -> Result<ExportB
         let mut stmt = conn
             .prepare(
                 "SELECT id, kind, content, novelty, conflict_with, salience, status,
-                        created_at, decided_at
+                        created_at, decided_at, owner
                  FROM proposals ORDER BY id",
             )
             .map_err(GateError::from)?;
@@ -311,6 +311,12 @@ pub(crate) fn export_bundle(conn: &Connection, max_bytes: u64) -> Result<ExportB
                     "status": r.get::<_, String>(6)?,
                     "created_at": r.get::<_, i64>(7)?,
                     "decided_at": r.get::<_, Option<i64>>(8)?,
+                    // The projection now carries `owner` so the handler's §2.7
+                    // redaction can decide per row. Without it a caller could
+                    // not be told WHICH proposals are its own, so the only
+                    // options were "ship them all" or "ship none" — and a
+                    // proposal body is unapproved memory text.
+                    "owner": r.get::<_, Option<String>>(9)?,
                 }))
             })
             .map_err(GateError::from)?;
