@@ -554,7 +554,7 @@ pub async fn add_chunk(
     // Seatbelt (Seatbelt): under BRAIN_WRITE_POSTURE=review the agent-facing
     // write surface proposes instead of inserting — no `knowledge` row until
     // an operator approves.
-    if crate::config::write_posture() == "review" {
+    if crate::handlers::effective_write_posture(&principal.0) == "review" {
         let proposal = crate::handlers::gate::create_proposal(
             s.clone(),
             principal.0.clone(),
@@ -1073,7 +1073,7 @@ pub async fn ingest_memory(
     // Seatbelt (Seatbelt): under BRAIN_WRITE_POSTURE=review the capture
     // proposes instead of inserting — one proposal per request (the raw
     // content), no `knowledge` row until an operator approves.
-    if crate::config::write_posture() == "review" {
+    if crate::handlers::effective_write_posture(&principal.0) == "review" {
         let proposal = crate::handlers::gate::create_proposal(
             s.clone(),
             principal.0.clone(),
@@ -1821,7 +1821,7 @@ pub(crate) async fn ingest_markdown(
     // proposes instead of inserting — one proposal per chunk (capped), the
     // connector fetch loop inherits this automatically. No `knowledge` row
     // until an operator approves.
-    if crate::config::write_posture() == "review" {
+    if crate::handlers::effective_write_posture(&principal.0) == "review" {
         const MAX_REVIEW_CHUNKS: usize = 50;
         if chunks.len() > MAX_REVIEW_CHUNKS {
             return Err(AppError::BadRequest(

@@ -545,6 +545,50 @@ pub fn authorize(
     }
 }
 
+/// Whether a principal is a recognized AGENT class — the class the
+/// human-promotion invariant is about.
+///
+/// Two shapes count, and only two:
+///
+/// 1. the typed `AgentLoopback` principal the two-lane deployment mints (the
+///    second line of the token file, the one the gateway carries), and
+/// 2. a JWT carrying the seeded `agent` role.
+///
+/// What does NOT count is a role-less JWT with write scope, and that is a
+/// deliberate ceiling rather than an oversight: the server cannot tell an agent
+/// from a human holding the same token, so a deployment that mints agent JWTs
+/// WITHOUT the `agent` role is relying on `BRAIN_WRITE_POSTURE=review` — which
+/// still works, and is still an operator choice.
+pub fn agent_class(principal: &Option<crate::auth::Principal>) -> bool {
+    principal.as_ref().is_some_and(|p| {
+        p.kind == crate::auth::PrincipalKind::AgentLoopback
+            || p.roles.iter().any(|r| r == AGENT_PRESET_ROLE)
+    })
+}
+
+/// The role name the agent class is recognized by.
+const AGENT_PRESET_ROLE: &str = "agent";
+
+/// The write posture that applies to THIS principal.
+///
+/// `BRAIN_WRITE_POSTURE` decides it for everyone else, verbatim — the knob keeps
+/// its name, its `open` default and its meaning, and an operator's deliberate
+/// direct write still inserts. For a recognized agent class the answer is
+/// `review` regardless of the knob: the human-promotion invariant is a property
+/// of WHO is writing, not of how the process happened to be launched. A default
+/// launch (`cargo run`, a hand-started binary) is `open`, so an env-dependent
+/// invariant is not an invariant.
+///
+/// The single seam every agent-facing write surface reads, so the six call
+/// sites cannot drift apart and no future surface can forget the class.
+pub fn effective_write_posture(principal: &Option<crate::auth::Principal>) -> &'static str {
+    if agent_class(principal) {
+        "review"
+    } else {
+        crate::config::write_posture()
+    }
+}
+
 /// Log-safe principal identifier: a truncated SHA-256 of `sub`, never the raw
 /// identifier (GDPR personal-data class; parity with the recall `query_hash`
 /// rule). Local logs only — OTLP attributes were already hash-only.

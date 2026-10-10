@@ -1,5 +1,44 @@
 # Agent Execution Log — brain-server
 
+> **R106 "Identity": agent writes are reviewed and labelled BY IDENTITY.**
+> The human-promotion invariant was a deployment posture: `write_posture()`
+> defaults to `open`, so all six agent-facing write surfaces inserted directly
+> unless an operator had set `BRAIN_WRITE_POSTURE=review`. The installer writes
+> `review` into a NEW plist — but a manual or default launch, which is how a
+> development host and every `cargo run` starts, is `open`. Nothing in the
+> server knew whether a write came from an agent, so the same binary promoted
+> for one launch and proposed for the next.
+>
+> **`effective_write_posture(principal)` is now the single seam**, read by all
+> six call sites (and only by them — a structural grep is the discipline, not
+> the promise). A recognized agent class is proposal-only under BOTH postures:
+> the typed `AgentLoopback` principal of the two-lane token file, or a JWT
+> carrying the `agent` role. Everyone else sees the knob verbatim, so an
+> operator's deliberate direct write still inserts under `open` — pinned in the
+> same file, because "make agents propose" that quietly becomes "make everyone
+> propose" is a different product.
+>
+> **The label follows the same seam.** `origin_context` on the plain-ingest
+> path chose the row's taint label from the WIRE, so a channel-captured write
+> could assert `owner` and land under operator-import provenance. For the agent
+> class the server derives it (`channel`); the assertion only stands for the
+> classes that are not agents. Derived after the closed-vocabulary check, so an
+> agent sending `origin_context: "banana"` still gets the documented 400 rather
+> than a silently-relabelled write.
+>
+> **The ceiling is stated, not implied.** A role-less JWT with write scope is
+> NOT recognized as an agent class: the server cannot tell an agent from a human
+> holding the same token, so a deployment minting agent JWTs without the `agent`
+> role is relying on the posture knob — which still works, and is still the
+> operator's call. Also found on the way: the Loom embed pre-pass read the RAW
+> env posture, so the agent class would have paid to embed rows it never
+> stores; it reads the resolved per-principal posture now.
+>
+> **ponytail:** the knob keeps its name, its `open` default and its meaning for
+> everyone else — no posture rename, no new identity type, no quorum or UX
+> change, no migration; `/add`'s manual-vocabulary law and the operator write
+> path are untouched.
+
 > **R104 "Identity": the MCP bridge stops inheriting the operator.** The `mcp`
 > binary resolved its bearer as `BRAIN_TOKEN_FILE` → `BRAIN_TOKEN` → the default
 > install file and took the FIRST token — which in the installer's two-lane file

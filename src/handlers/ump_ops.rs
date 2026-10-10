@@ -125,7 +125,7 @@ pub async fn remember(
     // Seatbelt (Seatbelt): under BRAIN_WRITE_POSTURE=review the agent write
     // proposes instead of inserting; UMP writes are agent-originated by
     // definition, so the proposal carries source `agent`.
-    if crate::config::write_posture() == "review" {
+    if crate::handlers::effective_write_posture(&principal.0) == "review" {
         let p = super::gate::create_proposal(
             state,
             principal.0.clone(),
@@ -675,7 +675,7 @@ pub async fn revise(
     // Seatbelt (Seatbelt): under review posture the revision proposes instead
     // of inserting — supersession is deferred to approval time (the approve
     // path already handles it). The old chunk stays current until then.
-    if crate::config::write_posture() == "review" {
+    if crate::handlers::effective_write_posture(&principal.0) == "review" {
         let p = super::gate::create_proposal(
             state,
             principal.0.clone(),

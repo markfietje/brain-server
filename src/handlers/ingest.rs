@@ -136,7 +136,7 @@ pub async fn ingest(
 ) -> Result<Json<serde_json::Value>, HandlerError> {
     let batch = q.format.as_deref() == Some("ump");
     let md = q.format.as_deref() == Some("ump-md");
-    let lowered: Vec<Result<(IngestRequest, crate::handlers::ump::UmpMeta), HandlerError>> =
+    let mut lowered: Vec<Result<(IngestRequest, crate::handlers::ump::UmpMeta), HandlerError>> =
         if batch {
             let value: serde_json::Value = serde_json::from_str(&body)
                 .map_err(|e| HandlerError::bad_request("invalid_body", e.to_string()))?;
@@ -207,6 +207,24 @@ pub async fn ingest(
         }
     }
 
+    // The label is DERIVED for the agent class, whatever the wire says: a
+    // channel-captured write must not be able to arrive stamped `owner` and
+    // land under operator-import provenance. The server knows who is writing —
+    // that is server-side truth, the field is the caller's claim — so the
+    // class decides here and the assertion only stands for the classes that
+    // are not agents. Everyone else is untouched, byte for byte.
+    for lowered_req in lowered.iter_mut().flatten() {
+        if crate::handlers::agent_class(&principal.0) {
+            lowered_req.0.origin_context = Some("channel".to_string());
+        }
+    }
+
+    // Resolved ONCE, here, and passed down: two independent reads of the
+    // posture in one request could disagree across an env mutation, and the
+    // sixth call site forgetting the principal is the drift this seam exists
+    // to prevent.
+    let effective_posture = crate::handlers::effective_write_posture(&principal.0);
+
     if lowered.len() == 1 {
         // was `.next().unwrap()` — trivially safe after
         // the len==1 guard, but express it without a panic fallback (the lint
@@ -216,7 +234,7 @@ pub async fn ingest(
             HandlerError::internal("single-element batch vanished before dispatch".to_string())
         })??;
         // Seatbelt (Seatbelt): review posture proposes instead of inserting.
-        if crate::config::write_posture() == "review" {
+        if crate::handlers::effective_write_posture(&principal.0) == "review" {
             return Err(propose_structured(&_state, &principal.0, req).await);
         }
         let r = ingest_one(&_state, &principal.0, req, None).await?;
@@ -233,7 +251,11 @@ pub async fn ingest(
     // stays all-`None` and every record encodes exactly as before (the
     // degradation direction is serial, never blocked).
     let mut precomputed: Vec<Option<Vec<f32>>> = vec![None; lowered.len()];
-    if crate::loom::active() && crate::config::write_posture() != "review" {
+    // The embed pre-pass runs on the direct-write path only: a batch that is
+    // proposing needs no embeddings computed at all. The posture read here is
+    // the per-PRINCIPAL one, never the raw env value — otherwise the agent
+    // class pays for embeddings it will never store.
+    if crate::loom::active() && effective_posture == "open" {
         let contents: Vec<(usize, String)> = lowered
             .iter()
             .enumerate()
@@ -262,7 +284,7 @@ pub async fn ingest(
         let Ok((req, _)) = lowered_req else {
             continue;
         };
-        let outcome = if crate::config::write_posture() == "review" {
+        let outcome = if crate::handlers::effective_write_posture(&principal.0) == "review" {
             Err(propose_structured(&_state, &principal.0, req).await)
         } else {
             // `take` so a record never clones its embedding.
