@@ -17954,6 +17954,68 @@ mod scrim {
         );
     }
 
+    /// The release witness must ask GitHub about the COMMIT the tag points at.
+    ///
+    /// `release.sh` watched `git rev-parse "$TAG"`, which for an ANNOTATED tag
+    /// (`git tag -a`, which this script creates) is the TAG OBJECT's id, not the
+    /// commit's. GitHub registers a tag-push run against the commit, so the
+    /// query returned nothing and the script reported "the tag triggered nothing
+    /// observable" — on releases whose matrix was green and whose GitHub release
+    /// was published. It fired twice (1.29.10, 1.29.11) before anyone read the
+    /// run list by hand. A witness that cries wolf on success is worse than no
+    /// witness: it teaches an operator to ignore the one signal the release line
+    /// has.
+    ///
+    /// Source-level pin, because the defect is in WHICH id is resolved — a pin
+    /// that ran the script would need a tag push and a network.
+    #[test]
+    fn release_witness_watches_the_tag_commit_not_the_tag_object() {
+        let script = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/release.sh"),
+        )
+        .expect("release.sh readable");
+        assert!(
+            script.contains(r#"SHA="$(git rev-parse "$TAG^{commit}")""#),
+            "the witness must resolve the tag to its COMMIT (`$TAG^{{commit}}`); plain \
+             `git rev-parse $TAG` is the annotated-tag OBJECT id and matches no run"
+        );
+        assert!(
+            !script.contains(r#"SHA="$(git rev-parse "$TAG")""#),
+            "the annotated-tag-object lookup is back — that is the false negative"
+        );
+    }
+
+    /// …and it must watch THIS tag's runs, not every run that ever touched the
+    /// commit. A re-cut tag on the same commit, a manual `workflow_dispatch`,
+    /// or a backfill would otherwise put a stale red in the verdict of a healthy
+    /// release — and the mirror image of the defect above: a witness that
+    /// reports red on success.
+    #[test]
+    fn release_witness_scopes_its_queries_to_the_tag() {
+        let script = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/release.sh"),
+        )
+        .expect("release.sh readable");
+        for (needle, why) in [
+            (
+                r#"--json databaseId,headBranch"#,
+                "the registration query must be able to select the tag's own runs",
+            ),
+            (
+                r#"--json status,conclusion,headBranch"#,
+                "the verdict query must be able to select the tag's own runs",
+            ),
+            (
+                r#"select(.headBranch == \"$TAG\")"#,
+                "both queries must filter on headBranch: a tag push registers under the \
+                 tag name, so that is what distinguishes this release from an older \
+                 run on the same commit",
+            ),
+        ] {
+            assert!(script.contains(needle), "{why}");
+        }
+    }
+
     /// The test-count badge drift guard EXISTS and COMPARES. `--selfcheck`
     /// cannot afford the full `cargo test` the comparison needs, so the
     /// comparison lives in `--verify-count` — and the thing this pin exists to

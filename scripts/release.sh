@@ -139,23 +139,39 @@ echo "workflow on public; release.yml publishes binaries + notes ONLY if that"
 echo "matrix is green (its own fail-closed check watches the ci.yml run for"
 echo "this SHA)."
 if command -v gh >/dev/null 2>&1; then
-  SHA="$(git rev-parse "$TAG")"
-  echo ">> watching the public runs for ${TAG}…"
-  # Registration first: an EMPTY query is not a green verdict. If the tag
-  # triggered nothing (workflow disabled, YAML error, race), claiming green
-  # here would be exactly the vacuous pass this repo keeps killing.
+  # The COMMIT the tag points at, never the tag object.
+  #
+  # This script creates an ANNOTATED tag (`git tag -a`), and `git rev-parse
+  # <annotated-tag>` returns the TAG OBJECT's id. GitHub registers a tag-push
+  # run against the COMMIT, so querying by the object id matches nothing: the
+  # witness waited its full 10 minutes and then reported "the tag triggered
+  # nothing observable" on releases whose matrix was green and whose GitHub
+  # release was published. It fired on 1.29.10 and again on 1.29.11, and both
+  # times the only reason anyone knew the release was fine was a human opening
+  # the run list by hand. A witness that cries wolf on success is worse than no
+  # witness — it teaches you to ignore the one signal the release line has.
+  SHA="$(git rev-parse "$TAG^{commit}")"
+  echo ">> watching the public runs for ${TAG} (${SHA:0:10})…"
+  # Every query is scoped to THIS tag's runs, not to every run that ever touched
+  # the commit: a tag push registers under the tag name, so `headBranch` is what
+  # separates this release from an older run on the same commit (a re-cut tag, a
+  # manual `workflow_dispatch`, a backfill). Without the scope, a stale RED from
+  # an earlier attempt would be read as this release's verdict — the mirror image
+  # of the defect above, and just as wrong.
   RUN_SEEN=""
   for _ in $(seq 1 20); do  # ≤ 10 min for the runs to register after the push
     RUN_SEEN="$(gh run list --repo markfietje/brain-server --commit "$SHA" \
-                 --limit 1 --json databaseId --jq '.[0].databaseId' 2>/dev/null || true)"
+                 --json databaseId,headBranch \
+                 --jq "[.[] | select(.headBranch == \"$TAG\")] | .[0].databaseId // empty" \
+                 2>/dev/null || true)"
     [[ -n "$RUN_SEEN" ]] && break
     sleep 30
   done
   if [[ -z "$RUN_SEEN" ]]; then
-    echo "error: no public runs registered for ${SHA:0:10} within 10 min — the tag" >&2
-    echo "       triggered nothing observable. Nothing was witnessed, and release.yml" >&2
-    echo "       cannot have published without its own fail-closed check. Inspect:" >&2
-    echo "       https://github.com/markfietje/brain-server/actions" >&2
+    echo "error: no public runs registered for ${TAG} (${SHA:0:10}) within 10 min" >&2
+    echo "       — the tag triggered nothing observable. Nothing was witnessed, and" >&2
+    echo "       release.yml cannot have published without its own fail-closed check." >&2
+    echo "       Inspect: https://github.com/markfietje/brain-server/actions" >&2
     exit 1
   fi
   DONE=0; VERDICT=""
@@ -165,7 +181,9 @@ if command -v gh >/dev/null 2>&1; then
       [[ "$ST" != "completed" ]] && DONE=0
       [[ -n "$CO" && "$CO" != "success" ]] && VERDICT="$VERDICT $CO"
     done < <(gh run list --repo markfietje/brain-server --commit "$SHA" \
-               --json status,conclusion --jq '.[] | [.status, (.conclusion // "")] | @tsv' 2>/dev/null)
+               --json status,conclusion,headBranch \
+               --jq ".[] | select(.headBranch == \"$TAG\") | [.status, (.conclusion // \"\")] | @tsv" \
+               2>/dev/null)
     [[ "$DONE" == 1 ]] && break
     sleep 30
   done
