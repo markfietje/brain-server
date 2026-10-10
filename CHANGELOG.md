@@ -4,6 +4,201 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.11] — 2026-10-10 — "Identity": who is asking, not what the env says
+
+Covers every commit from tag `v1.29.10` (`f64d7256`) to this release —
+`git log v1.29.10..v1.29.11` reproduces the range. Eight rounds, every one of
+them an authorization or confidentiality gap on data the server already held.
+No schema change, no new route, zero new dependency edges.
+
+### R103 — the role-less seam: the posture is an input, and approval is a role act
+
+`authorize_role` returned `Ok(())` for every principal whose `roles` claim is
+empty, so `BRAIN_RBAC_ROLELESS_POSTURE` was resolved, validated, printed at boot
+and echoed by `/ops/authz/explain` — and read by nothing. Under `deny` a
+role-less principal is now refused at every role gate, **and** its record-read
+gate compiles to the empty permit, so "gets nothing" is literal rather than a
+promise in a table.
+
+`approve`/`reject` are refused for a role-less principal under **both**
+postures — not a `deny`-only behaviour a deployment could opt back into,
+because the chain it closes needs no misconfiguration. Observed red-first: a
+claim-less write token called `/ingest/proposal` and then
+`/proposals/{id}/approve?digest=…` and got **200
+`{"status":"approved","chunk_id":1}`** — promoted memory, zero humans, quorum
+1, principal-independent digest. Now 403, proposal still `pending`, no
+`knowledge` row written.
+
+Seven routes carry an approval-class gate, so the authz matrix's deliberately
+role-less write class now asserts the refusal on those rows
+(`APPROVAL_ROLE_ROWS`, pinned against `AUTHZ_GATES` so a renamed route fails
+loudly instead of quietly losing its cell).
+
+### R102 — the Signal draft-approve lane approves drafts
+
+`draft_proposal_row` selected `WHERE id=?1` with no kind predicate, so a
+`[draft N] approve <digest>` message could flip **any** pending proposal —
+a `kcs_publish` article or a `complaint_remedy` — to `approved` while the
+branch that actually publishes or applies it never runs. Observed red-first: a
+pending `kcs_publish` proposal answered **200** through this lane.
+
+The kind now travels with the row (rather than being filtered in SQL, which
+could only answer "no such proposal" — a lie about a row that exists, and it
+loses the audit evidence), the lane refuses before it reads the content, and
+`approve_draft_tx` keeps the CAS and gains `AND kind='draft'` beside it.
+
+**The audit row this lane claimed to write was being rolled back**: both
+refusal arms recorded `Denied` *through* the transaction and then returned
+`Err`, so the un-committed transaction took the evidence with it. The
+digest-mismatch arm has always been a 409 with no audit row behind it. Both now
+drop the tx first and write on the connection, and the corrected claim is
+pinned.
+
+### R101 — export and the review queue disclose to reviewers and owners only
+
+`GET /export` was a field decision pretending to be a row decision: redaction
+replaced `knowledge[].content` and nothing else, so a foreign row still shipped
+its title, source, owner and origin — and `bundle.proposals` shipped verbatim,
+because the bundle's proposal projection never read the `owner` column the
+table has carried since the QaQueue migration. A redacted row is now REPLACED
+by a bare `{"redacted": true}` stub (no id — an id is a handle on a row the
+caller may not read), across both collections, with a `withheld` object
+counting what was taken out per collection so the envelope never under-reports
+itself. The graph narrows by the ids the caller can see.
+
+`GET /proposals` is owner-bound (the record gate's resolved owner set rides
+into the query); `GET /quarantine` and `GET /decayed` are review POSTURES and
+now ask `review_flags_allowed`, which the tree already carried for exactly this
+decision. The operator export is byte-identical, a shared-pool reviewer role
+still reviews the whole queue, and an admin-scoped principal keeps both scans.
+
+### R104 — the MCP bridge stops inheriting the operator
+
+The `mcp` binary took the FIRST token its source offered, which in the
+installer's two-lane file (line 1 operator, line 2 agent) is the operator's.
+Every LLM tool call therefore arrived as the `None` principal — the superuser —
+with `BRAIN_MCP_SCOPE` (a process-local name filter, default `full`, set by
+nothing) the only thing in between. `BRAIN_MCP_IDENTITY` ∈ `agent` (default) |
+`operator`, parsed fail-closed like the scope, including rejecting an empty
+value. A single-token deployment keeps working and NAMES its ceiling on the
+startup line, because a missing identity is not a crash — a crash would push
+operators back to a hand-rolled env that skips the resolver.
+
+### R106 — agent writes are reviewed and labelled by identity, not by env
+
+The human-promotion invariant was a deployment posture: `write_posture()`
+defaults to `open`, so all six agent-facing write surfaces inserted directly
+unless an operator had set `BRAIN_WRITE_POSTURE=review`. A manual or default
+launch — a development host, every `cargo run` — is `open`, and nothing in the
+server knew whether a write came from an agent. `effective_write_posture` is
+now the single seam: a recognized agent class (the typed `AgentLoopback`
+principal, or a JWT carrying the `agent` role) is proposal-only under both
+postures; everyone else sees the knob verbatim, so an operator's deliberate
+direct write still inserts.
+
+The label follows the same seam: `origin_context` chose the row's taint label
+from the wire, so channel-captured content could assert `owner` and land under
+operator-import provenance. For the agent class the server derives it.
+
+### R105 — a bearer stops leaving in cleartext, including by accident
+
+- `https://` in `BRAIN_URL` was a **silent downgrade**: the dependency-free
+  client stripped the scheme and defaulted the port, so the operator's
+  explicitly secure request became a plain `TcpStream` to port 80 with the
+  bearer on it and no signal. It speaks no TLS, so the answer is a refusal
+  (`HTTPS_BASE_REFUSED`, a fixed string).
+- A non-loopback plain-HTTP base was a cleartext bearer by construction; these
+  binaries are loopback-only by contract, so it refuses too
+  (`REMOTE_BASE_REFUSED`). **Deliberate behavior change** for anyone pointing a
+  client at a LAN server over plain HTTP — off-host means the steward harness,
+  which can do TLS.
+- The alert and Art-19 DSAR sinks enforce no scheme; both now refuse at the
+  boot guard that already checks their secrets, transport checked FIRST, with
+  no opt-out.
+- `hardened_egress_builder` now carries `.no_proxy()`: reqwest honours
+  `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`, and a proxy routes a PINNED sink
+  around its pin.
+
+### R107 — `tools_allowed` binds at the UMP verb seam
+
+The field shipped stored-and-surfaced with enforcement deferred to v1.24; it
+never arrived. Every preset's chosen tool set described intent rather than
+policy — the `agent` role, granted no `ump.forget`, could still erase a row.
+`authorize_tool` is the principal-side twin of `cap_gate`, run by the six UMP
+entry points. Several roles are the union of their grants, `"*"` is every
+tool, a role that does not DECLARE the field is unrestricted, and a role-less
+principal is untouched. The `AgentLoopback` principal carries the `agent` role,
+so the agent class is now refused at `ump.remember`, `ump.revise` and
+`ump.forget` — and the matrix says so.
+
+### R95 — `publish` is a capability, not a wall
+
+`publish` was not in `CAN_ACTIONS`, `Role::validate` rejects any `can` item
+outside it, and no preset carried it — so KCS article publication was
+impossible for every role-bearing principal, **including `admin`**, while every
+role-less principal passed. It is now a real capability, granted deliberately to
+the four presets that already carry `approve` and to no others: approval does
+not imply publication. The deny-only class stays declared and is now empty, and
+the two pins that froze the old decision now assert **both** halves of the new
+one.
+
+### Release notes
+
+**Security fixes**
+
+- A write-scoped, claim-less principal can no longer propose and then approve
+  its own memory (observed 200 → now 403, with the proposal left pending).
+- `BRAIN_RBAC_ROLELESS_POSTURE=deny` now has enforcement: every role gate, and
+  the record-read gate (no row matches at any owner or scope).
+- `[draft N] approve` can no longer approve a non-draft proposal, and its
+  refusals actually leave an audit row.
+- `/export` no longer ships a foreign row's title, source, owner or proposal
+  body, and no longer ships the graph of rows the caller cannot read.
+- `/proposals`, `/quarantine` and `/decayed` are owner-bound or
+  reviewer-posture, not plain reads.
+- The MCP bridge presents the AGENT token by default instead of inheriting the
+  operator's; a single-token deployment says so at startup.
+- Agent-class writes are proposal-only and server-labelled regardless of
+  `BRAIN_WRITE_POSTURE`.
+- `https://` bases, non-loopback plain-HTTP bases and cleartext webhook sinks
+  all refuse; ambient proxy env vars can no longer route around the egress DNS
+  pin.
+- `tools_allowed` is enforced, so a role can no longer reach a UMP verb it was
+  not granted.
+- `publish` is grantable again: KCS publication was impossible for every
+  role-bearing principal.
+
+**Improvements**
+
+- `authorize_role` and `authorize_tool` decide their semantics once, beside the
+  gates the call sites already run, so no future surface can invent its own.
+- The export envelope gains one additive `withheld` object (no format bump).
+- `BRAIN_MCP_IDENTITY` fails closed on an unknown or empty value, matching
+  `BRAIN_MCP_SCOPE`.
+
+**Engineering record**
+
+- Red-first, every round: each behavioural pin was observed failing against the
+  pre-fix tree — 200 `{"status":"approved"}` for the self-approval chain, 200
+  for the wrong-kind Signal approval, the foreign export body and title in the
+  payload, another subject's pending proposal in the review queue, 403 for the
+  role-less scan — and green after.
+- Neighbouring behaviour pinned in the same file wherever a surface narrowed:
+  the operator export is byte-identical, the shared-pool reviewer still reviews
+  the whole queue, loopback keeps the review scans, a real draft still approves
+  through the Signal lane, the tools a role does hold still work.
+- The authz matrix's class cells were updated with the new denials and pinned
+  against the gate table, so a renamed route fails loudly rather than losing
+  its cell quietly.
+- Gates: `cargo test --features bench,migrate --no-fail-fast` green (3262 pins,
+  badge machine-derived); clippy `--features bench -D warnings` clean; fmt
+  clean; lipstyk 0 findings; docs-truth LOW=17 (pre-existing, unmoved);
+  env-truth clean; doc-links 547 resolve.
+- No schema change, no new route, zero new dependency edges. R86–R90 remain
+  parked under the operator's no-fork directive.
+- This release makes no compliance, conformity, certification, or
+  risk-elimination claim.
+
 ## [1.29.10] — 2026-10-10 — "Reach": target authority on writes, and the read gate where it was missing
 
 Covers every commit from tag `v1.29.9` (`224d28ff`) to this release —
