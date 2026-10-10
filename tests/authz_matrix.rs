@@ -575,6 +575,21 @@ const SSE_SOFT: &[&str] = &["/ump/subscribe"];
 /// pool) — the read class therefore 403s here even though the table says
 /// Read. The handler doc-comment pins the layout split.
 const LAYOUT_CONDITIONAL: &[&str] = &["/consolidate/propose"];
+/// Rows whose role gate asks for an APPROVAL capability (`approve`/`reject`).
+/// A principal that carries no role at all is refused on these even when its
+/// scope grants Write: disposing of a proposal is a role act, and the matrix's
+/// `write` class is deliberately role-less. Every entry here is checked
+/// against `AUTHZ_GATES` by `approval_role_rows_are_real_write_rows`, so a
+/// renamed route fails loudly instead of quietly losing its cell.
+const APPROVAL_ROLE_ROWS: &[&str] = &[
+    "/proposals/{id}/approve",
+    "/proposals/{id}/reject",
+    "/kcs/articles/{id}/approve",
+    "/workflow/runs/{id}/answer",
+    "/workflow/runs/{id}/steering",
+    "/workflow/runs/{id}/status-ref",
+    "/workflow/runs/{id}/rewind",
+];
 /// Row whose pre-gate body validation answers 400 before the gate runs
 /// (the mount body must be a valid bridge bundle; the gate itself is
 /// admin + audited).
@@ -740,6 +755,30 @@ async fn send(
 }
 
 /// THE NET. Every AUTHZ_GATES row × the seven principal classes.
+/// The approval-role list is hand-maintained, so it gets its own pin: every
+/// entry must be a real Write row in the gate table (a renamed route fails
+/// here rather than silently dropping its class cell), and the list must not
+/// be empty — an empty list would make the write-cell branch unreachable and
+/// the self-approval gap return with a green suite.
+#[test]
+fn approval_role_rows_are_real_write_rows() {
+    assert!(
+        !APPROVAL_ROLE_ROWS.is_empty(),
+        "the approval-role row list must not empty out"
+    );
+    for template in APPROVAL_ROLE_ROWS {
+        let action = AUTHZ_GATES
+            .iter()
+            .find(|(t, _)| t == template)
+            .map(|(_, a)| *a)
+            .unwrap_or_else(|| panic!("{template} is not an AUTHZ_GATES row"));
+        assert_eq!(
+            action, "Write",
+            "{template} is pinned as an approval row but the table calls it {action}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn authz_matrix_rows_x_classes_through_composed_app() {
     let srv = build_server();
@@ -875,6 +914,12 @@ async fn authz_matrix_rows_x_classes_through_composed_app() {
                 StatusCode::FORBIDDEN,
                 "{method} {template} (write) is the GDL role-gated exception"
             );
+        } else if can_write && APPROVAL_ROLE_ROWS.contains(&template) {
+            // Disposing of a proposal is a role act, so the ROLE-LESS write
+            // class is refused here even though its scope grants Write. This is
+            // the row that proves the rule bites: without it a claim-less token
+            // proposes and then approves its own memory.
+            denied(st, "write (role-less approve row)");
         } else if can_write && LAYOUT_CONDITIONAL.contains(&template) {
             assert_eq!(
                 st,

@@ -6293,7 +6293,10 @@ Final paragraph after the rule.";
         ] {
             assert!(ok(&solo, cap), "solo can {cap}");
         }
-        // A principal with NO roles is untouched (back-compat: authorize only).
+        // A principal with NO roles is untouched at every non-approval gate
+        // (back-compat: `authorize` alone) — but approval is a role act, so a
+        // claim-less token is refused there. The posture itself defaults to
+        // `pass`; `deny` is asserted in `tests/roleless_seam_pins.rs`.
         let nora = auth::Principal {
             sub: "op".to_string(),
             tenant: "team-alpha".to_string(),
@@ -6303,7 +6306,18 @@ Final paragraph after the rule.";
             manages: vec![],
             kind: auth::PrincipalKind::Jwt,
         };
-        assert!(ok(&nora, "approve"), "no-roles principal not role-gated");
+        for cap in ["workflow", "calibrate", "dsar_export", "purge"] {
+            assert!(
+                ok(&nora, cap),
+                "no-roles principal keeps passing the non-approval gate `{cap}`"
+            );
+        }
+        for cap in ["approve", "reject"] {
+            assert!(
+                !ok(&nora, cap),
+                "a principal that cannot name a role must not dispose of a proposal (`{cap}`)"
+            );
+        }
     }
 
     /// `role_resolved_from_jwt_claim` — a JWT with a `roles`
@@ -14050,7 +14064,9 @@ Final paragraph after the rule.";
         }
 
         // The SAME reviewer WITH the acme grant: the promote path runs
-        // unchanged (the re-auth can only deny, never widen).
+        // unchanged (the re-auth can only deny, never widen). The `solo` role
+        // carries `approve`, so this reviewer is an approval-class principal —
+        // a role-less one is refused at the role gate before the re-auth runs.
         let scoped = auth::Principal {
             sub: "acme-reviewer".into(),
             tenant: "team-alpha".into(),
@@ -14059,7 +14075,7 @@ Final paragraph after the rule.";
                 auth::Scope::parse("write:team-alpha/acme").unwrap(),
             ],
             jti: "jti-reauth-2".into(),
-            roles: vec![],
+            roles: vec!["solo".into()],
             manages: vec![],
             kind: auth::PrincipalKind::Jwt,
         };

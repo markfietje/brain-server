@@ -559,13 +559,22 @@ pub fn egress_allow_private() -> Result<bool, String> {
 /// this round : the deny posture for a principal whose `roles` claim is EMPTY.
 ///
 /// **The default is `pass`, and that is load-bearing.** A principal with no
-/// roles is byte-identical to pre-this round behaviour, and two shipped pins in
-/// `tests/authz_matrix.rs` require the single-token operator to keep reaching
-/// Admin routes. Flipping the default would be a breaking release dressed as a
-/// security fix. An operator who has minted roles at their IdP and wants "a
-/// token with no roles now gets nothing" sets `deny`; a deployment cannot get
-/// there by accident, because an unknown value refuses the boot rather than
-/// degrading (the `BRAIN_WRITE_POSTURE` / `BRAIN_EGRESS_ALLOW_PRIVATE` pattern).
+/// roles keeps reaching the non-approval role gates exactly as before, and two
+/// shipped pins in `tests/authz_matrix.rs` require the single-token operator to
+/// keep reaching Admin routes. Flipping the default would be a breaking release
+/// dressed as a security fix. An operator who has minted roles at their IdP and
+/// wants "a token with no roles now gets nothing" sets `deny`; a deployment
+/// cannot get there by accident, because an unknown value refuses the boot
+/// rather than degrading (the `BRAIN_WRITE_POSTURE` /
+/// `BRAIN_EGRESS_ALLOW_PRIVATE` pattern).
+///
+/// **Read by an enforcement path, twice.** `authorize_role` refuses every role
+/// gate for a role-less principal under `deny`, and `record_read_gate` compiles
+/// its record permit to the empty permit — so "gets nothing" is literal rather
+/// than a promise in a table. One posture, one answer: this function is the only
+/// place it is resolved. `approve`/`reject` are refused for a role-less
+/// principal under BOTH postures, which is a separate rule living beside this
+/// one, not an effect of it.
 pub fn rbac_roleless_posture() -> Result<&'static str, String> {
     match std::env::var("BRAIN_RBAC_ROLELESS_POSTURE")
         .unwrap_or_default()

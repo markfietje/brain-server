@@ -1857,24 +1857,42 @@ impl RecordReadGate {
 /// closed, never an owner drop). Admin (scope filter `None`) and
 /// loopback/opaque stay unrestricted; role-based gates are unchanged.
 /// Errors inside either degrade to the empty permit (fail closed).
+///
+/// ## The role-less arm also reads the posture
+///
+/// `BRAIN_RBAC_ROLELESS_POSTURE=deny` promises in `docs/configuration.md` that
+/// "a token with no roles gets nothing". Enforcing it only at
+/// `authorize_role` would leave the promise half-true — the role gates would
+/// refuse while every read surface still served the token's own rows — so the
+/// same knob is read here, and `deny` compiles to the empty permit (no row
+/// matches at any owner or scope). An unreadable posture fails closed for the
+/// same reason an unreadable role store does. `pass`, admin-scoped and
+/// loopback/opaque principals are untouched.
 pub fn record_read_gate(
     principal: &Option<crate::auth::Principal>,
     pool: &crate::Pool,
 ) -> RecordReadGate {
     match principal {
         None => RecordReadGate::unrestricted(),
-        Some(pr) if pr.roles.is_empty() => scope_filter(principal)
-            .map(|sc| {
-                if pr.sub.trim().is_empty() {
-                    RecordReadGate::empty_permit()
-                } else {
-                    RecordReadGate {
-                        access_scopes: Some(sc),
-                        owner_in: Some(vec![pr.sub.clone()]),
+        Some(pr) if pr.roles.is_empty() => match crate::config::rbac_roleless_posture() {
+            Ok("deny") => RecordReadGate::empty_permit(),
+            Err(e) => {
+                tracing::warn!(error = %e, "role-less posture unreadable — record reads fail closed");
+                RecordReadGate::empty_permit()
+            }
+            Ok(_) => scope_filter(principal)
+                .map(|sc| {
+                    if pr.sub.trim().is_empty() {
+                        RecordReadGate::empty_permit()
+                    } else {
+                        RecordReadGate {
+                            access_scopes: Some(sc),
+                            owner_in: Some(vec![pr.sub.clone()]),
+                        }
                     }
-                }
-            })
-            .unwrap_or_else(RecordReadGate::unrestricted),
+                })
+                .unwrap_or_else(RecordReadGate::unrestricted),
+        },
         Some(_) => role_retrieval_gate(principal, pool)
             .map(|g| RecordReadGate {
                 access_scopes: g.access_scopes,

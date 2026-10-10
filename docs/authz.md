@@ -183,11 +183,35 @@ lane is unchanged, as is the loopback/opaque operator path.
 
 `BRAIN_RBAC_ROLELESS_POSTURE` = `pass` (default) | `deny`.
 
-`pass` is the shipped back-compat: a principal with no roles passes role gates.
-`deny` is the opt-in for a deployment that has minted roles at its IdP and wants
-a role-less token to get nothing. An **unknown value refuses boot** (the
-`BRAIN_WRITE_POSTURE` pattern). The resolved value is printed at boot and
-echoed on `explain`.
+`pass` is the shipped back-compat: a principal with no roles passes role gates
+**except** the two that dispose of a proposal (see below). `deny` is the opt-in
+for a deployment that has minted roles at its IdP and wants a role-less token to
+get nothing — every role gate AND every record read (its gate compiles to the
+empty permit: no row matches at any owner or scope). An **unknown value refuses
+boot** (the `BRAIN_WRITE_POSTURE` pattern). The resolved value is printed at
+boot and echoed on `explain`.
+
+## A role-less token cannot dispose of a proposal
+
+`approve` and `reject` are **role acts**. A principal whose `roles` claim is
+empty is refused on both under *either* posture — the knob above is not the
+thing that switches this off, because the failure it closes needs no
+misconfiguration: a write-scoped claim-less token could otherwise call
+`/ingest/proposal` (a Write) and then `/proposals/{id}/approve` (also a Write,
+whose role gate passed on the empty claim) and promote memory with zero humans,
+quorum 1, and a principal-independent digest. The seeded `agent` role already
+excludes `approve`, so this closes the claim-less gap only; every role-bearing
+principal is unchanged, and the opaque/loopback operator (`None`) is not
+role-gated at all.
+
+Both guards live in one seam (`authorize_role`), next to the
+approval-capability list, so they cannot drift apart.
+
+`GET /ops/authz/explain?route=…` reports the **action/scope** gate's verdict
+and echoes the posture. It does not compute the role layer: a route's role
+capability is not derivable from its path (`/proposals/{id}/approve` also
+demands `publish`, conditionally on the body), so the receipt stops at the
+seam it can measure and says which seam that is.
 
 ## Denial audit rows
 

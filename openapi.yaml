@@ -6497,7 +6497,13 @@ paths:
         "what would another role get": given a role set, "which gates would
         these clear" is the reconnaissance tool this surface refuses to be.
         A route with no gate row answers a probe-blind 404. Role-less posture
-        (BRAIN_RBAC_ROLELESS_POSTURE) is echoed on every response.
+        (BRAIN_RBAC_ROLELESS_POSTURE) is echoed on every response. The verdict
+        is the ACTION/scope gate's: the role-capability layer lives in the
+        handler and is not derivable from a path (one route's capability
+        depends on the request body), so this surface reports the posture and
+        stops there. For the caller's own principal that means a role-less
+        principal is additionally refused at `approve`/`reject` under every
+        posture, and — under `deny` — at every role gate and every record read.
       operationId: explainAuthzVerdict
       security: [{ bearerAuth: [] }]
       parameters:

@@ -578,15 +578,42 @@ pub fn can_read_domain(principal: &Option<crate::auth::Principal>, domain: &str)
     }
 }
 
+/// The capabilities that dispose of a proposal. A principal that cannot name
+/// a role cannot dispose of one: `approve`/`reject` are refused for a role-less
+/// caller under every posture. Shared with the read seam's posture check so the
+/// two guards cannot drift apart.
+pub(crate) const APPROVAL_CAPABILITIES: [&str; 2] = ["approve", "reject"];
+
 /// the action-gate layer on top of `authorize`. When the
 /// principal carries a `roles` claim, the requested `can`-capability must be
 /// in at least one resolved role's allowlist or the action is FORBIDDEN (403)
-/// — the server enforces even if a client hid/disabled the button. A principal
-/// with **no** roles (or an opaque/loopback principal) is untouched: `authorize`
-/// remains the only gate (back-compat byte-identical). Deny-by-default: a role
-/// whose `can` omits the capability (e.g. an `agent` calling approve) is
+/// — the server enforces even if a client hid/disabled the button. Deny-by-default:
+/// a role whose `can` omits the capability (e.g. an `agent` calling approve) is
 /// refused. Call AFTER `authorize` and AFTER the pool is resolved (the role
 /// store reads from the pool).
+///
+/// ## The role-less arm
+///
+/// A principal with **no** roles used to return `Ok(())` unconditionally, which
+/// made `BRAIN_RBAC_ROLELESS_POSTURE` a reported configuration rather than an
+/// authorization input: resolved, validated, printed at boot, echoed by
+/// `/ops/authz/explain` — and read by nothing. Two guards now bind here, in
+/// this one seam:
+///
+/// 1. **The posture is finally an input.** `deny` refuses every role gate for a
+///    role-less principal, which is what `docs/configuration.md` has always
+///    promised. `pass` (the shipped default) leaves this arm byte-identical to
+///    before, because roles stay *additional* restrictions rather than a
+///    default-deny for a deployment whose IdP omits the claim.
+/// 2. **Approval is a role act.** `approve`/`reject` are refused for a
+///    role-less principal under BOTH postures. Without this, the chain is:
+///    role-less write token → `/ingest/proposal` (a Write) →
+///    `/proposals/{id}/approve` (a Write whose role gate passed on an empty
+///    claim) → promoted memory, zero humans, quorum defaulting to 1 and a
+///    principal-independent digest. The seeded `agent` role already excludes
+///    `approve`, so this closes the claim-less gap and nothing else — every
+///    role-bearing principal is unchanged, and an opaque/loopback principal
+///    (`None`) returns above both guards.
 pub fn authorize_role(
     principal: &Option<crate::auth::Principal>,
     pool: &crate::Pool,
@@ -594,12 +621,28 @@ pub fn authorize_role(
 ) -> Result<(), HandlerError> {
     let Some(p) = principal else { return Ok(()) };
     if p.roles.is_empty() {
-        // Role-less principals pass role gates: roles are additional
-        // restrictions for those who hold them, not a default-deny when the
-        // IdP omits the claim. Role governance binds the roles the IdP
-        // asserts; minting is the IdP's trust decision, scopes still bind
-        // every action. (A deployment that needs role-less denial enforces
-        // it at issuance, not here.)
+        match crate::config::rbac_roleless_posture() {
+            Ok("deny") => {
+                return Err(HandlerError::forbidden(
+                    crate::auth::Action::Write,
+                    &p.tenant,
+                    "global",
+                ));
+            }
+            Ok(_) => {}
+            // An unreadable posture is not a reason to hand out authority:
+            // the boot guard already refuses to start on an invalid value, so
+            // reaching this arm means the environment changed under a live
+            // process. Fail closed, loudly.
+            Err(e) => return Err(HandlerError::internal(format!("role-less posture: {e}"))),
+        }
+        if APPROVAL_CAPABILITIES.contains(&capability) {
+            return Err(HandlerError::forbidden(
+                crate::auth::Action::Write,
+                &p.tenant,
+                "global",
+            ));
+        }
         return Ok(());
     }
     let conn = pool.get().map_err(HandlerError::db_down)?;

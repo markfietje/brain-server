@@ -1,5 +1,56 @@
 # Agent Execution Log — brain-server
 
+> **R103 "Seam": the role-less principal gets an answer, and approval
+> becomes a role act.** `authorize_role` returned `Ok(())` for every
+> principal whose `roles` claim is empty, so `BRAIN_RBAC_ROLELESS_POSTURE`
+> was resolved, validated, printed at boot and echoed by
+> `/ops/authz/explain` — and read by nothing. The knob was a reported
+> configuration, not an authorization input. Two guards, one seam.
+>
+> **(1) The posture is finally an input.** Under `deny`, a role-less
+> principal is refused at every role gate, AND `record_read_gate` compiles
+> its record permit to the empty permit — no row matches at any owner or
+> scope, which is what `docs/configuration.md` has always promised. The
+> enforcement arm alone would have left the promise half-true: the gates
+> refusing while every read surface still served the token's own rows. An
+> unreadable posture fails closed (boot already refuses an unknown value,
+> so reaching that arm means the environment moved under a live process).
+> `pass` is byte-identical to before, and the opaque/loopback principal
+> (`None`) returns above both guards.
+>
+> **(2) Approval is a role act.** `approve`/`reject` are refused for a
+> role-less principal under BOTH postures — not a `deny`-only behavior a
+> deployment could opt back into, because the chain it closes needs no
+> misconfiguration. Observed red-first against the live tree: a claim-less
+> write token called `/ingest/proposal` and then
+> `/proposals/{id}/approve?digest=…` and got **200
+> `{"status":"approved","chunk_id":1}`** — promoted memory, zero humans,
+> quorum 1, principal-independent digest. Now 403, with the proposal still
+> `pending` and no `knowledge` row written; `reject` 403s the same way. The
+> seeded `agent` role already excludes `approve`, so this closes the
+> claim-less gap only.
+>
+> **The blast radius was measured, not guessed.** Seven routes carry an
+> approval-class role gate (`/proposals/{id}/approve|reject`,
+> `/kcs/articles/{id}/approve`, `/workflow/runs/{id}/answer|steering|
+> status-ref|rewind`), and the authz matrix's `write` class is deliberately
+> role-less — so those rows now assert the refusal instead of the pass,
+> under `APPROVAL_ROLE_ROWS`, which has its own pin
+> (`approval_role_rows_are_real_write_rows`) so a renamed route fails loudly
+> rather than quietly losing its cell. Two shipped pins that encoded the old
+> rule were flipped honestly: the role-less arm of
+> `authorize_role_gates_can_allowlist` (passes four non-approval gates,
+> refused two approval ones) and the domain-scoped reviewer in
+> `approve_reauths_row_domain_before_the_cas` now carries `solo`, so the test
+> still measures the re-auth and not the role gate.
+>
+> **ponytail:** no schema change, no new route, no wire change (the explain
+> receipt is scoped in place rather than gaining a field — its verdict is
+> the ACTION gate's, and the role layer is not derivable from a path: one
+> route's capability depends on the request body), no role-vocabulary
+> change, no quorum change, no IdP requirement; R86–R90 stay parked; nothing
+> here certifies compliance.
+
 > **R100 "Reach": the read gate on the four surfaces that never lowered
 > it — and R93 before it, target authority on UMP writes.** Both close
 > authorization gaps found by the fresh 2026-10-09 security pass; both are
