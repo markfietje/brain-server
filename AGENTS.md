@@ -1,5 +1,32 @@
 # Agent Execution Log — brain-server
 
+> **R102 "Lane": the Signal draft-approve command approves drafts.**
+> `draft_proposal_row` selected `WHERE id=?1` with **no kind predicate**, so a
+> `[draft N] approve <digest>` message could flip ANY pending proposal to
+> `approved` — a `kcs_publish` article or a `complaint_remedy` marked decided
+> while the branch that actually publishes or applies it never runs. Observed
+> red-first: a pending `kcs_publish` proposal answered **200** through this
+> lane. Now the kind travels with the row, the lane refuses anything that is
+> not `kind='draft'` before it reads the content, and the refusal is a loud
+> `409 proposal_not_draft` plus one audited `Denied` row. `approve_draft_tx`
+> keeps the CAS and gains `AND kind='draft'` beside it, so the invariant holds
+> even for a future caller that forgets the check; the digest bind and the
+> concurrent-approve race are untouched and still pinned.
+>
+> **The audit row this lane claimed to write was being rolled back.** Both
+> refusal arms recorded `Denied` THROUGH the transaction and then returned
+> `Err`, so the un-committed transaction took the evidence with it — the
+> digest-mismatch arm has always been a 409 with no audit row behind it. Both
+> now drop the tx first and write on the connection, and
+> `draft_approve_digest_mismatch_is_audited_as_denied` pins the corrected
+> claim so the next arm added cannot inherit the mistake.
+>
+> **ponytail:** no schema change, no new route, no wire change beyond the
+> refusal reason joining the existing 409 vocabulary, no new Signal command,
+> no quorum redesign, no auth-protocol change on the webhook lane; the
+> neighbours (digest bind, non-pending refusal, a real draft still approving)
+> are pinned in the same module so "fixed" cannot mean "refused everything".
+
 > **R103 "Seam": the role-less principal gets an answer, and approval
 > becomes a role act.** `authorize_role` returned `Ok(())` for every
 > principal whose `roles` claim is empty, so `BRAIN_RBAC_ROLELESS_POSTURE`

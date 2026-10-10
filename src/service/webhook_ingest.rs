@@ -81,16 +81,20 @@ pub(crate) fn signal_flood_count(conn: &Connection) -> rusqlite::Result<i64> {
     )
 }
 
-/// The proposal's (content, status) inside the CALLER'S tx — the digest
+/// The proposal's (content, status, kind) inside the CALLER'S tx — the digest
 /// gate's input. None when the id is unknown.
+/// The kind travels with the row rather than being filtered in SQL so the
+/// caller can refuse a foreign kind LOUDLY — a filtered SELECT could only
+/// answer "no such proposal", which is a lie about a proposal that very much
+/// exists, and it would lose the audit evidence the refusal must write.
 pub(crate) fn draft_proposal_row(
     tx: &Connection,
     proposal_id: i64,
-) -> rusqlite::Result<Option<(String, String)>> {
+) -> rusqlite::Result<Option<(String, String, String)>> {
     tx.query_row(
-        "SELECT content, status FROM proposals WHERE id=?1",
+        "SELECT content, status, kind FROM proposals WHERE id=?1",
         params![proposal_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )
     .optional()
 }
@@ -99,10 +103,15 @@ pub(crate) fn draft_proposal_row(
 /// ONLY while still pending (the status predicate closes the TOCTOU with a
 /// concurrent gate approve). Returns the affected count — the caller owns
 /// the n==0 refusal and the evidence.
+///
+/// The `kind` predicate is the second fence on the same WHERE: the caller's
+/// refusal is a decision, this is the invariant. A future caller that forgets
+/// to check the kind still cannot move a `kcs_publish` or `complaint_remedy`
+/// row through this lane.
 pub(crate) fn approve_draft_tx(tx: &Connection, proposal_id: i64) -> rusqlite::Result<usize> {
     tx.execute(
         "UPDATE proposals SET status='approved', decided_at=strftime('%s','now')
-          WHERE id=?1 AND status='pending'",
+          WHERE id=?1 AND status='pending' AND kind='draft'",
         params![proposal_id],
     )
 }
@@ -120,6 +129,39 @@ pub(crate) fn file_pending_draft(
         params![content, created_at],
     )?;
     Ok(conn.last_insert_rowid())
+}
+
+#[cfg(test)]
+/// File a pending proposal of an ARBITRARY kind. The lane's counterpart to
+/// `file_pending_draft`: the wrong-kind refusals need real rows of the kinds
+/// that used to be approvable through this lane. The SQL lives HERE, beside
+/// the draft helper, because the handler tree may not carry a statement —
+/// `service::pins::no_sql_in_handlers_enforced` counts keywords over the whole
+/// handler file, test fixture included.
+pub(crate) fn file_pending_kind(
+    conn: &Connection,
+    kind: &str,
+    content: &str,
+    created_at: i64,
+) -> rusqlite::Result<i64> {
+    conn.execute(
+        "INSERT INTO proposals(kind, content, created_at, novelty, status) VALUES (?1, ?2, ?3, 0.5, 'pending')",
+        params![kind, content, created_at],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+#[cfg(test)]
+/// The denied-audit row count — the lane's refusal-evidence assertion read.
+/// It lives here for the same reason the seeding helper does: the handler tree
+/// may not carry a statement, and the SQL-inventory pin counts keywords over
+/// the whole handler file, test fixture and comments included.
+pub(crate) fn denied_audit_count(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM audit_events WHERE status = 'denied'",
+        [],
+        |r| r.get(0),
+    )
 }
 
 #[cfg(test)]

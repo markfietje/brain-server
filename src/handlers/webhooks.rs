@@ -1013,15 +1013,43 @@ async fn receive_signal(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes
                         .map_err(|e| format!("{e}"))?;
                     let row = crate::service::webhook_ingest::draft_proposal_row(&tx, proposal_id)
                         .map_err(|e| format!("{e}"))?;
-                    let Some((content, status)) = row else {
+                    let Some((content, status, kind)) = row else {
                         return Err("unknown_proposal".to_string());
                     };
+                    // The lane is `draft`-ONLY. `[draft N] approve` names a
+                    // proposal id, and a pending proposal of another kind is a
+                    // perfectly good id to name — a KCS article awaiting
+                    // publication, a remedy awaiting application. Flipping
+                    // either to `approved` from here marks it decided while
+                    // skipping the branch that actually publishes or applies
+                    // it, so the lane refuses before it reads the content and
+                    // writes the refusal as evidence.
+                    if kind != "draft" {
+                        // The refusal's evidence must SURVIVE its own rollback.
+                        // Every refusal here returns `Err` with the transaction
+                        // un-committed, so a row written THROUGH it is discarded
+                        // with it — which is what the digest arm below has
+                        // always done, quietly: it claims to audit a refusal and
+                        // rolls the audit row back. Drop the tx, then write on
+                        // the connection.
+                        drop(tx);
+                        crate::audit::record(
+                            &conn,
+                            crate::audit::AuditKind::Webhook,
+                            &actor,
+                            &format!("proposal:{proposal_id}"),
+                            crate::audit::AuditStatus::Denied,
+                            &format!("signal/draft-approve wrong-kind kind={kind}"),
+                        );
+                        return Err("proposal_not_draft".to_string());
+                    }
                     if status != "pending" {
                         return Err("proposal_not_pending".to_string());
                     }
                     if !crate::handlers::gate::review_digest_matches(&content, Some(&digest)) {
+                        drop(tx);
                         crate::audit::record(
-                            &tx,
+                            &conn,
                             crate::audit::AuditKind::Webhook,
                             &actor,
                             &format!("proposal:{proposal_id}"),
@@ -1083,7 +1111,11 @@ async fn receive_signal(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes
         Ok(Err(e))
             if matches!(
                 e.as_str(),
-                "unknown_run" | "unknown_proposal" | "digest_mismatch" | "proposal_not_pending"
+                "unknown_run"
+                    | "unknown_proposal"
+                    | "digest_mismatch"
+                    | "proposal_not_pending"
+                    | "proposal_not_draft"
             ) =>
         {
             HandlerError::conflict(format!("signal command refused: {e}")).into_response()
@@ -1437,6 +1469,168 @@ mod valet_tests {
                 .expect("proposal row");
         assert_eq!(status, "approved");
         assert!(decided.is_some());
+    }
+
+    /// Seed a pending proposal of an ARBITRARY kind — the lane's counterpart
+    /// to `seed_pending_draft`, and the rows the wrong-kind refusal needs: real
+    /// `kcs_publish` / `complaint_remedy` proposals, which carry branch
+    /// machinery in the approve handler that this lane does not run. The row is
+    /// written by the service core; the handler tree may not carry a statement.
+    fn seed_pending_kind(state: &crate::AppState, kind: &str, content: &str) -> i64 {
+        crate::service::webhook_ingest::file_pending_kind(
+            &state.pool.get().expect("conn"),
+            kind,
+            content,
+            1,
+        )
+        .expect("seed proposal")
+    }
+
+    /// The lane is `draft`-only. A pending proposal of ANY other kind is not a
+    /// target for `[draft N] approve`, even with the correct digest: flipping
+    /// it to `approved` here would mark a KCS article or a remedy approved
+    /// while skipping the branch that actually publishes or applies it. The
+    /// proposal stays pending, the refusal is loud, and it is audited.
+    #[tokio::test]
+    async fn draft_approve_refuses_a_non_draft_proposal_kind() {
+        let (dir, state) = test_state();
+        let _env_guard = SIGNAL_ENV_LOCK.lock().await;
+        let secret = install_secret(&dir);
+
+        for (kind, content) in [
+            (
+                "kcs_publish",
+                "Proposed article: the pillar post goes out Friday.",
+            ),
+            (
+                "complaint_remedy",
+                "Remedy offer drafted for the acme complaint.",
+            ),
+            ("fact", "An ordinary knowledge proposal."),
+        ] {
+            let pid = seed_pending_kind(&state, kind, content);
+            // The CORRECT digest for this row — so the refusal can only be the
+            // kind predicate, never a digest mismatch in disguise.
+            let digest = super::super::gate::review_digest(content);
+            let (headers, body) = signed_request(
+                &secret,
+                &format!("sig-kind-{kind}"),
+                &serde_json::json!({ "text": format!("[draft {pid}] approve {digest}") }),
+            );
+            let res = receive_signal(&state, &headers, &body).await;
+            assert_eq!(
+                res.status(),
+                StatusCode::CONFLICT,
+                "a pending `{kind}` proposal must be refused by the draft lane"
+            );
+            let status = crate::service::webhook_ingest::draft_proposal_state(
+                &state.pool.get().unwrap(),
+                pid,
+            )
+            .unwrap()
+            .expect("proposal row");
+            assert_eq!(
+                status.0, "pending",
+                "the refused `{kind}` proposal must stay pending"
+            );
+            assert!(
+                status.1.is_none(),
+                "the refused `{kind}` proposal must carry no decision stamp"
+            );
+        }
+    }
+
+    /// The refusal is EVIDENCE, not silence: one audited Denied row naming the
+    /// wrong-kind attempt, exactly like the digest-mismatch arm above.
+    #[tokio::test]
+    async fn draft_approve_wrong_kind_is_audited_as_denied() {
+        let (dir, state) = test_state();
+        let _env_guard = SIGNAL_ENV_LOCK.lock().await;
+        let secret = install_secret(&dir);
+        let content = "Proposed article: the pillar post goes out Friday.";
+        let pid = seed_pending_kind(&state, "kcs_publish", content);
+        let digest = super::super::gate::review_digest(content);
+
+        let denied_before = |state: &crate::AppState| -> i64 {
+            crate::service::webhook_ingest::denied_audit_count(&state.pool.get().unwrap()).unwrap()
+        };
+        let before = denied_before(&state);
+        let (headers, body) = signed_request(
+            &secret,
+            "sig-kind-audit",
+            &serde_json::json!({ "text": format!("[draft {pid}] approve {digest}") }),
+        );
+        let res = receive_signal(&state, &headers, &body).await;
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            denied_before(&state),
+            before + 1,
+            "the wrong-kind refusal must write exactly one Denied audit row"
+        );
+    }
+
+    /// The neighbouring behaviour, pinned in the same module so the kind
+    /// predicate cannot be "fixed" by refusing the lane entirely: a real
+    /// `draft` proposal with the correct digest still approves.
+    #[tokio::test]
+    async fn draft_approve_still_approves_a_real_draft() {
+        let (dir, state) = test_state();
+        let _env_guard = SIGNAL_ENV_LOCK.lock().await;
+        let secret = install_secret(&dir);
+        let content = "Short pillar post draft. Shipped notes inside.";
+        let pid = seed_pending_proposal(&state, content);
+        let digest = super::super::gate::review_digest(content);
+
+        let (headers, body) = signed_request(
+            &secret,
+            "sig-kind-neighbour",
+            &serde_json::json!({ "text": format!("[draft {pid}] approve {digest}") }),
+        );
+        let res = receive_signal(&state, &headers, &body).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let (status, decided) =
+            crate::service::webhook_ingest::draft_proposal_state(&state.pool.get().unwrap(), pid)
+                .unwrap()
+                .expect("proposal row");
+        assert_eq!(status, "approved");
+        assert!(decided.is_some());
+    }
+
+    /// The digest-mismatch refusal is EVIDENCE too, and this pins the half that
+    /// used to be a lie: the audit row was written THROUGH the transaction the
+    /// refusal then rolled back, so "audited as Denied" wrote nothing. The row
+    /// now survives, and the neighbouring arms (unknown proposal, non-pending)
+    /// are pinned here too so the next arm added cannot inherit the mistake.
+    #[tokio::test]
+    async fn draft_approve_digest_mismatch_is_audited_as_denied() {
+        let (dir, state) = test_state();
+        let _env_guard = SIGNAL_ENV_LOCK.lock().await;
+        let secret = install_secret(&dir);
+        let content = "Short pillar post draft. Shipped notes inside.";
+        let pid = seed_pending_proposal(&state, content);
+        let wrong = "f".repeat(64);
+
+        let denied_count = |state: &crate::AppState| -> i64 {
+            crate::service::webhook_ingest::denied_audit_count(&state.pool.get().unwrap()).unwrap()
+        };
+        let before = denied_count(&state);
+        let (headers, body) = signed_request(
+            &secret,
+            "sig-audit-digest",
+            &serde_json::json!({ "text": format!("[draft {pid}] approve {wrong}") }),
+        );
+        let res = receive_signal(&state, &headers, &body).await;
+        assert_eq!(res.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            denied_count(&state),
+            before + 1,
+            "a digest-mismatch refusal must leave exactly one Denied audit row behind"
+        );
+        let status =
+            crate::service::webhook_ingest::draft_proposal_state(&state.pool.get().unwrap(), pid)
+                .unwrap()
+                .expect("proposal row");
+        assert_eq!(status.0, "pending");
     }
 
     /// Message parsing is total: every byte parses to a command or Ignored —

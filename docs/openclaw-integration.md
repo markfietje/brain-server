@@ -444,9 +444,11 @@ content plan (CSV) ──scripts/import-content-plan.ts──► valet/reminder 
                 │                                   (score in console + brief)
                 ▼
    approve in console — or by Signal: [draft N] approve <content_digest>
-                │
-                ▼
-     approved draft + evening capture notes ──► brain valet brief (next morning)
+                 │   (draft proposals ONLY — any other proposal kind is
+                 │    refused and audited; the digest is not a capability)
+                 │
+                 ▼
+      approved draft + evening capture notes ──► brain valet brief (next morning)
 ```
 
 The OpenClaw harness is the **drafting seat**: the agent (with this plugin's
