@@ -10,14 +10,14 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 
 <p align="center">
 
-  <a href="https://github.com/markfietje/brain-server/actions/workflows/ci.yml?query=branch%3Av1.29.9">
-    <img alt="CI (release v1.29.9)" src="https://github.com/markfietje/brain-server/actions/workflows/ci.yml/badge.svg?branch=v1.29.9">
+  <a href="https://github.com/markfietje/brain-server/actions/workflows/ci.yml?query=branch%3Av1.29.10">
+    <img alt="CI (release v1.29.10)" src="https://github.com/markfietje/brain-server/actions/workflows/ci.yml/badge.svg?branch=v1.29.10">
   </a>
   <a href="https://github.com/markfietje/brain-server/releases/latest">
     <img alt="Latest release" src="https://img.shields.io/github/v/release/markfietje/brain-server?include_prereleases&sort=semver">
   </a>
   <a href="#">
-    <img alt="Version 1.29.9" src="https://img.shields.io/badge/version-1.29.9-blue.svg">
+    <img alt="Version 1.29.10" src="https://img.shields.io/badge/version-1.29.10-blue.svg">
   </a>
   <a href="https://markfietje.github.io/brain-server/">
     <img alt="Documentation" src="https://img.shields.io/badge/docs-brain--server-1f6feb.svg">
@@ -31,16 +31,16 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 <p align="center">
 
   <a href="#verification-and-evidence">
-    <img alt="3209 tests passed" src="https://img.shields.io/badge/tests-3209%20passed-brightgreen.svg">
+    <img alt="3213 tests passed" src="https://img.shields.io/badge/tests-3213%20passed-brightgreen.svg">
   </a>
   <a href="docs/universal-memory-protocol.md">
     <img alt="UMP 1.0 L3 verified" src="https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg">
   </a>
-  <a href="sbom/brain-server-1.29.9.cdx.json">
+  <a href="sbom/brain-server-1.29.10.cdx.json">
     <img alt="CycloneDX 1.5 SBOM" src="https://img.shields.io/badge/SBOM-CycloneDX%201.5-013243.svg">
   </a>
   <a href="openapi.yaml">
-    <img alt="OpenAPI 1.29.9" src="https://img.shields.io/badge/OpenAPI-1.29.9-6b4bff.svg">
+    <img alt="OpenAPI 1.29.10" src="https://img.shields.io/badge/OpenAPI-1.29.10-6b4bff.svg">
   </a>
   <a href="SECURITY.md">
     <img alt="Security policy" src="https://img.shields.io/badge/security--policy-1f6feb.svg">

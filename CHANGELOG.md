@@ -4,6 +4,97 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.10] — 2026-10-10 — "Reach": target authority on writes, and the read gate where it was missing
+
+Covers every commit from tag `v1.29.9` (`224d28ff`) to this release —
+`git log v1.29.9..v1.29.10` reproduces the range. Two rounds, both closing
+authorization gaps on data the server already held. No schema change, no new
+route, no wire change, zero new dependency edges.
+
+### R93 — UMP mutations are authorized against the row, not the verb
+
+`revise`, `forget`, and `feedback` checked general Write and then mutated a
+caller-selected id, so a write-scoped principal could revise, supersede,
+soft-forget, or hard-erase **any** row. All three now resolve the record gate —
+the same `(owner, access_scope)` pair every read surface filters on, keyed on
+the SQL columns and never the client-controlled `ump_meta` overlay — and refuse
+probe-blind, so the write surface is not an id-existence oracle for private data.
+No-role JWTs mutate their own rows only; an absent or empty subject fails closed.
+
+`hard: true` is the `/purge` act and now says so: it additionally requires Admin
+scope **and** the purge role capability, and a capability bearer is always
+refused, because no admin verb exists in the capability vocabulary. Those checks
+run before row resolution, so a 401/403 decides on the caller alone. Legal hold
+remains the second, independent fence inside the transaction.
+
+`feedback` joins the same seam: `record_feedback` upserts on
+`(chunk_id, COALESCE(session,''))`, so two principals' NULL-session feedback on
+one row overwrote each other — owner field included.
+
+### R100 — The read gate, on the four surfaces that never lowered it
+
+`record_read_gate` was consumed by nine read surfaces; four did not lower it —
+legacy `GET /search`, `/graph/entity/{name}`, `/graph/relations`,
+`/graph/traverse`, and `POST /decision/{id}/evaluate`. A no-role read JWT read
+other subjects' private rows through every one.
+
+`/search` assigns the gate into its lowered filters using the exact `/recall`
+idiom. The graph trio binds the owner/scope predicate at the `LEFT JOIN knowledge`
+seam the domain scope already binds, through one shared renderer; traverse
+compiles it into **both** the seed and the recursive step, so a foreign private
+edge neither renders nor is walked through. `/decision/{id}/evaluate` mirrors the
+`/procedure/{id}/steps` belt-and-braces: row metadata plus the record gate before
+any stored rule text or evaluation leaves.
+
+The same seam surfaced a pre-existing defect: the traverse scope template
+formatted `?{ph}` with `ph` already carrying `?N`, so `??N` was a SQLite syntax
+error and the scoped walk had answered 500 since the `?N` refactor landed. An
+authz-matrix cell expecting "neither 401 nor 403" had been reading that 500 as a
+pass. Fixed.
+
+### Release notes
+
+**Security fixes**
+
+- A write-scoped principal can no longer revise, supersede, forget, or hard-erase
+  another subject's memory by naming its id. Probe-blind refusals keep the write
+  surface from confirming that a private id exists.
+- Hard forget carries the `/purge` destructive authority — Admin scope plus the
+  purge role capability — instead of riding on general Write, closing the
+  capability-token route to the chunk-erase path.
+- Cross-principal feedback overwrite on the NULL-session key is gated before it
+  lands.
+- A no-role read JWT no longer reads another subject's private rows through
+  legacy `/search`, the three graph routes, or `/decision/{id}/evaluate`.
+- The graph traverse no longer answers 500 for scoped (JWT) callers; the authz
+  matrix's pass-cell that was reading that 500 as a pass is now honest.
+
+**Improvements**
+
+- One shared gate renderer (`graph_read::record_gate_sql`) lowers the resolved
+  gate into a parameterized SQL predicate for the graph reads, with NULL columns
+  never matching and an empty permit compiling to `1=0`.
+
+### Engineering record
+
+- Red-first, both rounds. `tests/ump_target_authz_pins.rs` and
+  `tests/read_gate_completion_pins.rs` were observed failing against the
+  pre-fix tree and showing the live leaks — a foreign private row surfacing in
+  `/search`, a foreign edge listed by `/graph/relations`, a foreign private
+  decision rule evaluating — before the fix, green after, with owner, admin, and
+  empty-subject postures asserted per surface.
+- R100's exit criterion was a route-table sweep: every Read row re-checked
+  against the `knowledge` table. The remaining ungated content surfaces are
+  exactly the next round's scope (export and the proposals/quarantine/decayed
+  review listings); `/stats`, `/metrics`, and `/classify` are counts-only;
+  `/consolidate/propose` is Admin-gated in shim mode by design.
+- No role-behavior change, no schema/route/wire change, no new query engine, no
+  new dependency edge. `docs/authz.md`, `docs/mcp.md`,
+  `docs/universal-memory-protocol.md`, and the OpenAPI surface list are updated
+  in-commit to match.
+- This release makes no compliance, conformity, certification, or
+  risk-elimination claim.
+
 ## [1.29.9] — 2026-10-09 — "Ledger": the dist check ships as a script, not inline
 
 Covers every commit from tag `v1.29.8` (`e63e59e`) to this release —

@@ -1,5 +1,54 @@
 # Agent Execution Log — brain-server
 
+> **R100 "Reach": the read gate on the four surfaces that never lowered
+> it — and R93 before it, target authority on UMP writes.** Both close
+> authorization gaps found by the fresh 2026-10-09 security pass; both are
+> red-first behavioural pins. No schema change, no new route, no wire
+> change, zero new dependency edges.
+>
+> **R93 — a write verb was standing in for authority over a row.**
+> `revise`, `forget` and `feedback` checked general Write and then mutated
+> a caller-selected id, so any write-scoped principal could revise,
+> supersede, soft-forget or hard-erase **any** row; a capability token
+> carrying only a write verb reached the chunk-erase path at write scope
+> (the MCP `ump.forget` seam). All three now resolve the record gate — the
+> R85 seam, the same `(owner, access_scope)` pair every read surface
+> filters on, keyed on the SQL columns and never the client-controlled
+> `ump_meta` overlay — and refuse probe-blind, so the write surface is not
+> an id-existence oracle for private data. `hard: true` is the `/purge`
+> act and now says so: Admin scope **plus** the purge role capability, with
+> a capability bearer always refused because no admin verb exists in that
+> vocabulary, checked before row resolution so a 401/403 decides on the
+> caller alone. Legal hold stays the second, independent fence inside the
+> transaction. `feedback` joins the seam because `record_feedback` upserts
+> on `(chunk_id, COALESCE(session,''))` — two principals' NULL-session
+> feedback on one row overwrote each other, owner field included.
+> Red-first: `tests/ump_target_authz_pins.rs` observed failing against the
+> pre-fix tree before the fix.
+>
+> **R100 — nine read surfaces consumed the gate; four never lowered it.**
+> Legacy `GET /search`, `/graph/entity/{name}`, `/graph/relations`,
+> `/graph/traverse` and `POST /decision/{id}/evaluate` each read another
+> subject's private rows for a no-role read JWT. `/search` assigns the gate
+> into its lowered filters using the exact `/recall` idiom; the graph trio
+> binds the owner/scope predicate at the `LEFT JOIN knowledge` seam the
+> domain scope already binds, through one shared renderer, with traverse
+> compiling it into **both** the seed and the recursive step so a foreign
+> private edge neither renders nor is walked through; `/decision/{id}/evaluate`
+> mirrors the `/procedure/{id}/steps` belt-and-braces. The same seam found a
+> pre-existing defect: the traverse scope template formatted `?{ph}` with
+> `ph` already carrying `?N`, so `??N` was a SQLite syntax error and the
+> scoped walk had answered 500 since the `?N` refactor — an authz-matrix cell
+> expecting "neither 401 nor 403" had been reading that 500 as a pass.
+> Red-first: `tests/read_gate_completion_pins.rs`, observed red against the
+> live leaks before the fix. Exit criterion was a route-table sweep, not an
+> assertion: every Read row re-checked against the `knowledge` table, with
+> the remaining ungated content surfaces recorded as the next round's scope.
+>
+> **ponytail:** no role-behavior change, no schema/route/wire change, no new
+> query engine, no new dependency; R86–R90 stay parked under the operator's
+> no-fork directive; nothing here certifies compliance.
+
 > **R83 "Grammar" — the attribute tier learns the space around `=`.**
 > Second round of the parallel programme (lane L2 developed in worktree
 > `brain-L2`, L0 shipped; fork lane parked under the operator's
