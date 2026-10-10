@@ -2432,6 +2432,13 @@ async fn probe_blind_404_on_foreign_run() {
 /// roles, so the empty-roles skip never fires) — those speak the denied
 /// vocabulary. Admin rows 403 outright.
 const ROLE_GATED_FOR_AGENT: &[&str] = &[
+    // The agent preset's `tools_allowed` is now ENFORCED, and it names
+    // ump.recall / ump.get / ump.feedback only. So the agent class reaches
+    // those three and is refused at the verbs it was never granted — which is
+    // the point of the field having been decorative until now.
+    "/ump/remember",
+    "/ump/revise",
+    "/ump/forget",
     // reviewer postures, not reads — see REVIEWER_POSTURE_ROWS
     "/quarantine",
     "/decayed",

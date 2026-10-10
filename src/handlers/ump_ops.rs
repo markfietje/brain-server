@@ -63,6 +63,9 @@ pub async fn remember(
 ) -> Result<Json<Value>, HandlerError> {
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
     super::cap_gate(&cap.0, "write")?;
+    // `tools_allowed` is a role grant, not a description: this is the v1.24
+    // promise, enforced beside the gates this entry point already runs.
+    super::authorize_tool(&principal.0, &state.pool, "ump.remember")?;
     // §3.3: a partial record; tolerate both `{record: …}` and a bare record.
     let rec = body.get("record").unwrap_or(&body);
     let (req, mut meta) =
@@ -310,6 +313,9 @@ pub async fn get_memory(
     // the label predicate does the scoping.
     let pool = crate::handlers::resolve_domain_pool(&state.registry, domain.as_deref())
         .unwrap_or(state.pool.clone());
+    // `tools_allowed` is a role grant, not a description: this is the v1.24
+    // promise, enforced beside the gates this entry point already runs.
+    super::authorize_tool(&principal.0, &pool, "ump.get")?;
     let record = tokio::task::spawn_blocking(move || -> Result<Option<Value>, HandlerError> {
         let conn = pool.get().map_err(HandlerError::db_down)?;
         let rid = resolve_row_id(&conn, &id_arg)?;
@@ -487,6 +493,9 @@ pub async fn recall(
     let signer = ump::operator_signing_key();
     let pk: Option<[u8; 32]> = signer.as_ref().map(|(_, sk)| sk.verifying_key().to_bytes());
     let pool = state.pool.clone();
+    // `tools_allowed` is a role grant, not a description: this is the v1.24
+    // promise, enforced beside the gates this entry point already runs.
+    super::authorize_tool(&principal.0, &pool, "ump.recall")?;
     let now_unix = chrono::Utc::now().timestamp();
     let results = tokio::task::spawn_blocking(move || -> Result<Vec<Value>, HandlerError> {
         let conn = pool.get().map_err(HandlerError::db_down)?;
@@ -621,6 +630,9 @@ pub async fn revise(
     // read the role store; a conn must not be held across a second pool.get).
     let record_gate = super::gate::record_read_gate(&principal.0, &state.pool);
     let pool = state.pool.clone();
+    // `tools_allowed` is a role grant, not a description: this is the v1.24
+    // promise, enforced beside the gates this entry point already runs.
+    super::authorize_tool(&principal.0, &pool, "ump.revise")?;
     let old_id = tokio::task::spawn_blocking(
         move || -> Result<(i64, crate::handlers::ingest::IngestRequest), HandlerError> {
             let conn = pool.get().map_err(HandlerError::db_down)?;
@@ -768,6 +780,9 @@ pub async fn forget(
     // pool; a held conn must not sit under a second pool.get).
     let record_gate = super::gate::record_read_gate(&principal.0, &state.pool);
     let pool = state.pool.clone();
+    // `tools_allowed` is a role grant, not a description: this is the v1.24
+    // promise, enforced beside the gates this entry point already runs.
+    super::authorize_tool(&principal.0, &pool, "ump.forget")?;
     let id = tokio::task::spawn_blocking(move || -> Result<i64, HandlerError> {
         let mut conn = pool.get().map_err(HandlerError::db_down)?;
         let id = resolve_row_id(&conn, &id_arg)?;
@@ -873,6 +888,9 @@ pub async fn feedback(
     // pool; a held conn must not sit under a second pool.get).
     let record_gate = super::gate::record_read_gate(&principal.0, &state.pool);
     let pool = state.pool.clone();
+    // `tools_allowed` is a role grant, not a description: this is the v1.24
+    // promise, enforced beside the gates this entry point already runs.
+    super::authorize_tool(&principal.0, &pool, "ump.feedback")?;
     tokio::task::spawn_blocking(move || -> Result<(), HandlerError> {
         let conn = pool.get().map_err(HandlerError::db_down)?;
         let id = resolve_row_id(&conn, &id_arg)?;

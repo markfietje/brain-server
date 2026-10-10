@@ -16,9 +16,14 @@
 //! Cortex RBAC). The `reports` agent-tree needs a source (`manages` JWT claim or
 //! a small table); large hierarchies may need a managed directory (v2.x SCIM).
 //! The MCP `tools_allowed` field is **stored + surfaced** via
-//! the role API now; server-side enforcement at the MCP surface is v1.24, the
-//! same "store now, enforce later" discipline the `connectors_allowed` profile
-//! field shipped with (v1.21 stored, v1.24 enforces).
+//! the role API. It is ENFORCED now at the UMP verb seam:
+//! `handlers::authorize_tool` is the principal-side twin of the capability
+//! `cap_gate`, called by the six UMP entry points (`ump.remember`, `ump.get`,
+//! `ump.recall`, `ump.revise`, `ump.forget`, `ump.feedback`). Several roles
+//! are the union of their grants; `"*"` is every tool; a role that does not
+//! DECLARE the field is unrestricted (narrowing is opt-in, and the field was
+//! never enforced, so an absent set must not silently disarm a role); a
+//! role-less principal is untouched — the action seam governs that class.
 
 use rusqlite::Connection;
 
@@ -96,9 +101,10 @@ pub struct Role {
     /// Panels hidden unconditionally (e.g. capacity from non-admins).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub panels_hidden: Option<Vec<String>>,
-    /// The MCP `ump.*` tools this role may invoke. **Stored + surfaced**
-    /// via the role API now; enforcement at the MCP surface is v1.24 (the
-    /// `connectors_allowed` deferred-enforcement precedent). `"*"` = all.
+    /// The MCP `ump.*` tools this role may invoke. Stored, surfaced, and
+    /// ENFORCED at the UMP verb seam (`handlers::authorize_tool`). `None` =
+    /// unrestricted (this role does not narrow itself); `Some` = exactly this
+    /// set; `"*"` = every tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools_allowed: Option<Vec<String>>,
 }

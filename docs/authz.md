@@ -213,6 +213,28 @@ capability is not derivable from its path (`/proposals/{id}/approve` also
 demands `publish`, conditionally on the body), so the receipt stops at the
 seam it can measure and says which seam that is.
 
+## `tools_allowed` is enforced
+
+The role field is no longer a description. Every UMP verb entry point —
+`ump.remember`, `ump.get`, `ump.recall`, `ump.revise`, `ump.forget`,
+`ump.feedback` — runs `authorize_tool` beside the gates it already had, so a
+role that grants no `ump.forget` is refused there even when its `can`
+allowlist grants `write` and its scope grants Write on the domain.
+
+The semantics, in one place because no call site invents its own:
+
+- **Several roles are the union** of their tool sets.
+- **`"*"` is every tool.**
+- **A role that does not declare the field is unrestricted.** Narrowing is
+  opt-in; the field was never enforced, so an absent set must not silently
+  disarm a hand-made role.
+- **A role-less principal is untouched** — the action seam governs that class,
+  and the two must not disagree about who they govern.
+
+The practical effect on the seeded presets: the `agent` role reaches
+`ump.recall`, `ump.get` and `ump.feedback` and is refused at remember, revise
+and forget. That is what the preset said all along.
+
 ## What `read` no longer implies
 
 Two surfaces outside ordinary retrieval, closed together because they leak the

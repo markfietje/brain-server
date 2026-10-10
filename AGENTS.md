@@ -1,5 +1,34 @@
 # Agent Execution Log — brain-server
 
+> **R107 "Tools": `tools_allowed` stops being a description.** The field
+> shipped stored-and-surfaced with enforcement deferred to v1.24, under an
+> explicit "store now, enforce later" note. It never arrived: the UMP entry
+> points read nothing, so every preset's carefully chosen tool set — `agent`:
+> `ump.recall|get|feedback`; `supervisor`: plus `ump.revise|remember`; `exec`:
+> `ump.recall` alone — described intent rather than policy. A role that grants
+> no `ump.forget` could still erase a row through `/ump/forget`.
+>
+> **`authorize_tool` is the principal-side twin of `cap_gate`**: one
+> predicate beside the gates the six entry points already run, no new
+> mechanism. The semantics are decided once, in the seam, because a call site
+> that invents its own is how a field becomes decorative a second time:
+> several roles are the **union** of their grants; `"*"` is every tool; a role
+> that does not DECLARE the field is **unrestricted** (narrowing is opt-in, and
+> since the field was never enforced an absent set must not silently disarm a
+> hand-made role); a role-less principal is untouched, because the action seam
+> governs that class and the two must not disagree about who they govern.
+>
+> **The neighbour that keeps this honest:** the preset the matrix exercises
+> changed behaviour with it. The `AgentLoopback` principal carries the `agent`
+> role, whose tool set omits remember/revise/forget — so the agent class is now
+> refused at those three UMP verbs, and the matrix says so
+> (`ROLE_GATED_FOR_AGENT`). A field that is enforced and a matrix that still
+> expects the old answers would disagree; both changed in the same commit.
+>
+> **ponytail:** no new tool vocabulary parsing, no MCP-protocol change, no
+> per-tool granularity beyond the stored field, no role-vocabulary change; the
+> stored fixtures are untouched.
+
 > **R105 "Cleartext": a bearer stops leaving in cleartext — including by
 > accident.** Three ways the operator's own configuration could put a
 > credential on the wire in the open, none of which the tree refused.

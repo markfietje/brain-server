@@ -622,7 +622,59 @@ pub fn can_read_domain(principal: &Option<crate::auth::Principal>, domain: &str)
     }
 }
 
-/// The capabilities that dispose of a proposal. A principal that cannot name
+/// The `tools_allowed` gate — the v1.24 promise, kept since the field shipped.
+///
+/// The field was stored and surfaced through the role API while enforcement was
+/// deferred, so every preset's carefully chosen tool set (`agent`:
+/// recall/get/feedback; `supervisor`: plus revise/remember) described intent
+/// rather than policy: the MCP verb seam read nothing. This is the
+/// principal-side twin of `cap_gate` — one predicate beside the gates the UMP
+/// entry points already run, no new mechanism.
+///
+/// Semantics, chosen once here so no call site invents its own:
+/// - **several roles = the UNION** of their tool sets. A role is a grant, so
+///   holding any role that allows the tool is what allows it.
+/// - **`tools_allowed: None` (undeclared) = unrestricted.** The field is
+///   optional and was never enforced, so a hand-made role that never set it
+///   must not silently lose every tool — that would be a security change
+///   disguised as a missing default.
+/// - **`"*"` = every tool**, the existing convention.
+/// - **a role-less principal is untouched.** Its seam is the action gate
+///   (`authorize_role`), not this one, and the two must not disagree about who
+///   they govern.
+pub fn authorize_tool(
+    principal: &Option<crate::auth::Principal>,
+    pool: &crate::Pool,
+    tool: &str,
+) -> Result<(), HandlerError> {
+    let Some(p) = principal else { return Ok(()) };
+    if p.roles.is_empty() {
+        return Ok(());
+    }
+    let conn = pool.get().map_err(HandlerError::db_down)?;
+    let roles = crate::role::resolve(&conn, &p.roles)
+        .map_err(|e| HandlerError::internal(format!("role store: {e}")))?;
+    // A role that does not declare the field is UNRESTRICTED, so a principal
+    // holding one alongside a narrow role keeps its reach: narrowing is
+    // something a role opts into, and the union of "everything" and "some" is
+    // everything. (The alternative — treating an absent set as empty — would
+    // silently disarm every hand-made role that never set the field.)
+    for role in &roles {
+        let Some(set) = role.tools_allowed.as_deref() else {
+            return Ok(());
+        };
+        if set.iter().any(|t| t == "*" || t == tool) {
+            return Ok(());
+        }
+    }
+    Err(HandlerError::forbidden(
+        crate::auth::Action::Write,
+        &p.tenant,
+        "global",
+    ))
+}
+
+/// The capability that disposes of a proposal. A principal that cannot name
 /// a role cannot dispose of one: `approve`/`reject` are refused for a role-less
 /// caller under every posture. Shared with the read seam's posture check so the
 /// two guards cannot drift apart.
