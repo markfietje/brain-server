@@ -91,6 +91,22 @@ impl McpScope {
 /// calls) the default is `full`.
 static SCOPE: std::sync::OnceLock<McpScope> = std::sync::OnceLock::new();
 
+/// The boot-time identity. Set exactly once by `main`. Before that (pre-boot
+/// calls) the default is the AGENT lane — the conservative answer, and the one
+/// that keeps a pre-boot tool call from arriving as the superuser.
+static IDENTITY: std::sync::OnceLock<McpIdentity> = std::sync::OnceLock::new();
+
+fn mcp_identity() -> McpIdentity {
+    *IDENTITY.get().unwrap_or(&McpIdentity::Agent)
+}
+
+/// The bearer this call presents, resolved per call so a rotated file is
+/// picked up without a restart (the source ladder is unchanged; only the lane
+/// is).
+fn auth() -> Option<String> {
+    auth_token(mcp_identity())
+}
+
 fn scope() -> McpScope {
     *SCOPE.get().unwrap_or(&McpScope::Full)
 }
@@ -136,34 +152,179 @@ fn base_url() -> String {
     std::env::var("BRAIN_URL").unwrap_or_else(|_| DEFAULT_URL.to_string())
 }
 
+/// Which lane the bridge presents to the server.
+///
+/// The two-lane deployment (the installer's convention: line 1 of the token
+/// file is the operator's, line 2 is the agent's) made "take the first token"
+/// mean "be the operator": every LLM tool call then arrived as the `None`
+/// principal — the superuser — so a model's tool call sat one scope grant away
+/// from the Admin surface, with `BRAIN_MCP_SCOPE` the only thing in between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpIdentity {
+    /// The default: the agent lane, which the server authenticates as the
+    /// typed `AgentLoopback` principal — Admin routes refuse it by class.
+    Agent,
+    /// The operator lane, on an explicit request. An operator running the
+    /// bridge as their own steward needs the Admin surface, and says so.
+    Operator,
+}
+
+impl McpIdentity {
+    /// Parse `BRAIN_MCP_IDENTITY` fail-closed, exactly like the scope above:
+    /// unset → `agent`; anything but `agent`/`operator` is an error the caller
+    /// turns into a loud exit. Defaulting an unknown value to the operator would
+    /// put the defect straight back behind a typo.
+    fn parse(value: Option<&str>) -> Result<McpIdentity, String> {
+        let Some(v) = value else {
+            return Ok(McpIdentity::Agent);
+        };
+        match v.trim() {
+            "agent" => Ok(McpIdentity::Agent),
+            "operator" => Ok(McpIdentity::Operator),
+            // An EMPTY value is an error here, not an unset: the scope parser
+            // above refuses `BRAIN_MCP_SCOPE=""` the same way, and two knobs
+            // with different rules for "" is how a typo becomes a silent
+            // posture.
+            other => Err(format!(
+                "unknown BRAIN_MCP_IDENTITY value: {} (expected `agent` or `operator`)",
+                sanitize_echo(other)
+            )),
+        }
+    }
+
+    fn from_env() -> Result<McpIdentity, String> {
+        McpIdentity::parse(std::env::var("BRAIN_MCP_IDENTITY").ok().as_deref())
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            McpIdentity::Agent => "agent",
+            McpIdentity::Operator => "operator",
+        }
+    }
+}
+
+/// What the bridge resolved, and whether the resolution had to compromise.
+#[derive(Debug, PartialEq, Eq)]
+struct ResolvedBearer {
+    token: Option<String>,
+    /// How many whitespace-separated lanes the source offered.
+    lanes: usize,
+    /// True when the agent identity asked for the agent lane and the source had
+    /// only one — i.e. the bridge is presenting the operator's token under an
+    /// agent default, which is the ambient-authority posture.
+    degraded: bool,
+}
+
+/// Pure: token source text + identity → the bearer to present. Split on
+/// whitespace, because that is what the server's own token set does (so a
+/// two-line file and a space-separated rotation list behave identically).
+fn resolve_bearer(source: &str, identity: McpIdentity) -> ResolvedBearer {
+    let lanes: Vec<&str> = source.split_whitespace().collect();
+    let picked = match identity {
+        McpIdentity::Agent if lanes.len() >= 2 => lanes.get(1),
+        McpIdentity::Agent => lanes.first(),
+        McpIdentity::Operator => lanes.first(),
+    };
+    ResolvedBearer {
+        degraded: identity == McpIdentity::Agent && lanes.len() < 2 && !lanes.is_empty(),
+        token: picked.map(|t| (*t).to_string()),
+        lanes: lanes.len(),
+    }
+}
+
+/// The operator's only view of which lane the bridge presents. The degraded
+/// arm names the ceiling in the log rather than leaving it to be discovered.
+fn boot_receipt(identity: McpIdentity, resolved: &ResolvedBearer) -> String {
+    let mut line = format!("mcp: identity={} lanes={}", identity.name(), resolved.lanes);
+    if resolved.degraded {
+        line.push_str(
+            " — single-token source, so the OPERATOR token is being presented under the \
+             agent default (ambient authority; set BRAIN_MCP_IDENTITY=operator to mean it, \
+             or BRAIN_MCP_SCOPE=read to bound it)",
+        );
+    }
+    line
+}
+
+/// The token source the ladder would read, without resolving a lane — used by
+/// the boot receipt so the warning reflects what is actually on disk. Same
+/// order as `auth_token`; the first non-empty source wins.
+fn configured_token_source() -> Option<String> {
+    if let Ok(path) = std::env::var("BRAIN_TOKEN_FILE") {
+        let p = path.trim();
+        if let Ok(s) = std::fs::read_to_string(p)
+            && !s.split_whitespace().next().is_none()
+        {
+            return Some(s);
+        }
+    }
+    if let Ok(t) = std::env::var("BRAIN_TOKEN")
+        && !t.split_whitespace().next().is_none()
+    {
+        return Some(t);
+    }
+    let default_path = dirs_home().join(".config/brain-server/auth-token");
+    std::fs::read_to_string(&default_path)
+        .ok()
+        .filter(|s| s.split_whitespace().next().is_some())
+}
+
 /// Resolve the bearer token for authenticated routes, mirroring the server's
-/// `AUTH_TOKEN_FILE` → `AUTH_TOKEN` ladder (see `src/config.rs`).
+/// `AUTH_TOKEN_FILE` → `AUTH_TOKEN` ladder (see `src/config.rs`) and then
+/// taking the lane the identity asks for.
 ///
 /// 1. `BRAIN_TOKEN_FILE` — explicit path to a `0600`-mode secret file.
 /// 2. `BRAIN_TOKEN` — raw env var (dev convenience).
 /// 3. `~/.config/brain-server/auth-token` — default install path written by
 ///    `scripts/install-service.sh`. Zero-config for the common case.
-fn auth_token() -> Option<String> {
+///
+/// The ORDER is unchanged; only the LANE is. The installer writes the operator
+/// first and the agent second, so this binary no longer picks the operator up
+/// by accident — see [`McpIdentity`].
+fn auth_token(identity: McpIdentity) -> Option<String> {
+    let mut resolved = None;
     if let Ok(path) = std::env::var("BRAIN_TOKEN_FILE") {
         let p = path.trim();
-        if let Ok(s) = std::fs::read_to_string(p)
-            && let Some(t) = http::first_token(&s)
-        {
-            return Some(t);
+        if let Ok(s) = std::fs::read_to_string(p) {
+            let r = resolve_bearer(&s, identity);
+            if r.token.is_some() {
+                report_degraded_once(&r, identity);
+                resolved = r.token;
+            }
         }
     }
-    if let Ok(t) = std::env::var("BRAIN_TOKEN")
-        && let Some(t) = http::first_token(&t)
+    if resolved.is_none()
+        && let Ok(t) = std::env::var("BRAIN_TOKEN")
     {
-        return Some(t);
+        let r = resolve_bearer(&t, identity);
+        if r.token.is_some() {
+            report_degraded_once(&r, identity);
+            resolved = r.token;
+        }
     }
-    let default_path = dirs_home().join(".config/brain-server/auth-token");
-    if let Ok(s) = std::fs::read_to_string(&default_path)
-        && let Some(t) = http::first_token(&s)
-    {
-        return Some(t);
+    if resolved.is_none() {
+        let default_path = dirs_home().join(".config/brain-server/auth-token");
+        if let Ok(s) = std::fs::read_to_string(&default_path) {
+            let r = resolve_bearer(&s, identity);
+            if r.token.is_some() {
+                report_degraded_once(&r, identity);
+                resolved = r.token;
+            }
+        }
     }
-    None
+    resolved
+}
+
+/// One warning per process, on stderr, the first time a degraded resolution
+/// happens: the receipt line at boot may have been computed from a source that
+/// did not resolve at all.
+fn report_degraded_once(resolved: &ResolvedBearer, identity: McpIdentity) {
+    use std::sync::OnceLock;
+    static SAID: OnceLock<()> = OnceLock::new();
+    if resolved.degraded && SAID.set(()).is_ok() {
+        eprintln!("{}", boot_receipt(identity, resolved));
+    }
 }
 
 /// Minimal HOME discovery (no `dirs` dependency in the bin crates).
@@ -186,7 +347,28 @@ fn main() {
         }
     };
     let _ = SCOPE.set(boot_scope);
+    // Identity second, same fail-closed shape: an unknown BRAIN_MCP_IDENTITY
+    // refuses to start rather than degrading to whichever lane is convenient.
+    let boot_identity = match McpIdentity::from_env() {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("mcp: {e}");
+            std::process::exit(1);
+        }
+    };
+    let _ = IDENTITY.set(boot_identity);
     eprintln!("mcp: scope={}", boot_scope.name());
+    eprintln!("mcp: identity={}", boot_identity.name());
+    // Name the ceiling at boot when the resolved source turns out to be
+    // single-lane under the agent default.
+    if let Some(source) = configured_token_source()
+        && resolve_bearer(&source, boot_identity).degraded
+    {
+        eprintln!(
+            "{}",
+            boot_receipt(boot_identity, &resolve_bearer(&source, boot_identity))
+        );
+    }
     if http_mode_requested() {
         if let Err(e) = run_http() {
             eprintln!("mcp: {e}");
@@ -862,14 +1044,14 @@ fn tool_ump_call(name: &str, args: &serde_json::Value) -> Result<String, String>
         ump_route(name).ok_or_else(|| format!("unknown ump tool: {}", sanitize_echo(name)))?;
     let path = ump_path(name, args)?;
     let resp = match method {
-        "GET" => get(&base_url(), &path, &[], auth_token().as_deref())?,
+        "GET" => get(&base_url(), &path, &[], auth().as_deref())?,
         _ => post(
             &base_url(),
             &path,
             &[],
             "application/json",
             &args.to_string(),
-            auth_token().as_deref(),
+            auth().as_deref(),
         )?,
     };
     Ok(format_response(resp.status, &resp.body))
@@ -884,7 +1066,7 @@ fn tool_brain_search(args: &serde_json::Value) -> Result<String, String> {
         &[],
         "application/json",
         &body,
-        auth_token().as_deref(),
+        auth().as_deref(),
     )?;
     Ok(format_response(resp.status, &resp.body))
 }
@@ -898,7 +1080,7 @@ fn tool_brain_recall(args: &serde_json::Value) -> Result<String, String> {
         &[],
         "application/json",
         &body,
-        auth_token().as_deref(),
+        auth().as_deref(),
     )?;
     Ok(format_response(resp.status, &resp.body))
 }
@@ -989,7 +1171,7 @@ fn tool_brain_ingest(args: &serde_json::Value) -> Result<String, String> {
             &[],
             "application/json",
             &body.to_string(),
-            auth_token().as_deref(),
+            auth().as_deref(),
         )?;
         return Ok(format_response(resp.status, &resp.body));
     }
@@ -1004,7 +1186,7 @@ fn tool_brain_ingest(args: &serde_json::Value) -> Result<String, String> {
             &[],
             "application/json",
             &body,
-            auth_token().as_deref(),
+            auth().as_deref(),
         )?
     } else {
         let q = source
@@ -1017,7 +1199,7 @@ fn tool_brain_ingest(args: &serde_json::Value) -> Result<String, String> {
             &q,
             "text/plain",
             &content,
-            auth_token().as_deref(),
+            auth().as_deref(),
         )?
     };
     Ok(format_response(resp.status, &resp.body))
@@ -2216,5 +2398,167 @@ mod tests {
             .filter(|t| t.get("x-brain-scope").is_none())
             .count();
         assert_eq!(clean, tools.len() - 5, "every other tool is untouched");
+    }
+
+    // ── the identity the bridge presents ──────────────────────────────────
+    //
+    // The bridge used to take the FIRST token its source offered, which in the
+    // two-lane deployment is the OPERATOR's: every LLM tool call arrived at the
+    // server as the `None` principal (the superuser), so `BRAIN_MCP_SCOPE` was
+    // the only thing between a model's tool call and the Admin surface. These
+    // pins are on the pure resolver — no env, no filesystem, no server — so
+    // they cannot pass while the wiring around them is wrong.
+
+    /// A two-lane token file (the installer's convention: line 1 operator,
+    /// line 2 agent) plus the default identity means the AGENT bearer. The
+    /// whole point: the default must not be the superuser.
+    #[test]
+    fn a_two_lane_source_resolves_the_agent_bearer_by_default() {
+        let resolved = resolve_bearer("operator-token\nagent-token\n", McpIdentity::Agent);
+        assert_eq!(
+            resolved.token.as_deref(),
+            Some("agent-token"),
+            "the default identity is the agent lane, never the operator's"
+        );
+        assert!(
+            !resolved.degraded,
+            "a genuine two-lane source is not a degraded posture"
+        );
+        assert_eq!(resolved.lanes, 2);
+    }
+
+    /// The explicit override still reaches the operator — this is an operator
+    /// control, not a removal. Someone running the bridge as their own steward
+    /// needs the Admin surface, and the env var says so out loud.
+    #[test]
+    fn an_explicit_operator_identity_still_takes_the_first_lane() {
+        let resolved = resolve_bearer("operator-token\nagent-token\n", McpIdentity::Operator);
+        assert_eq!(resolved.token.as_deref(), Some("operator-token"));
+        assert_eq!(resolved.lanes, 2);
+        assert!(
+            !resolved.degraded,
+            "an operator who asked for the operator lane is not degraded"
+        );
+    }
+
+    /// The single-token deployment has no agent lane to take. Today's behavior
+    /// is kept — the bridge still works — but the ceiling is NAMED rather than
+    /// discovered later: every call is the superuser, and only
+    /// `BRAIN_MCP_SCOPE=read` stands between it and Admin.
+    #[test]
+    fn a_single_lane_source_keeps_working_and_names_the_ceiling() {
+        let resolved = resolve_bearer("only-token\n", McpIdentity::Agent);
+        assert_eq!(
+            resolved.token.as_deref(),
+            Some("only-token"),
+            "a single-lane deployment must keep working"
+        );
+        assert_eq!(resolved.lanes, 1);
+        assert!(
+            resolved.degraded,
+            "a single-lane source under the agent identity IS the ambient-authority \
+             posture, and the resolution says so"
+        );
+    }
+
+    /// An unknown identity refuses, exactly like an unknown scope. Silently
+    /// defaulting to the operator here would put back the defect with a
+    /// typo'd env var.
+    #[test]
+    fn an_unknown_identity_refuses_rather_than_defaulting() {
+        assert!(McpIdentity::parse(Some("admin")).is_err());
+        assert!(McpIdentity::parse(Some("")).is_err());
+        assert_eq!(McpIdentity::parse(None).expect("unset"), McpIdentity::Agent);
+        assert_eq!(
+            McpIdentity::parse(Some("agent")).expect("agent"),
+            McpIdentity::Agent
+        );
+        assert_eq!(
+            McpIdentity::parse(Some("operator")).expect("operator"),
+            McpIdentity::Operator
+        );
+    }
+
+    /// Whitespace, not newlines, splits the source (the server accepts every
+    /// whitespace slot), and an empty source resolves to nothing rather than
+    /// to an empty bearer.
+    #[test]
+    fn bearer_resolution_tolerates_the_documented_token_shapes() {
+        assert_eq!(
+            resolve_bearer("  solo-token  ", McpIdentity::Agent)
+                .token
+                .as_deref(),
+            Some("solo-token")
+        );
+        assert!(
+            resolve_bearer("   \n\t ", McpIdentity::Agent)
+                .token
+                .is_none()
+        );
+        assert!(resolve_bearer("", McpIdentity::Agent).token.is_none());
+        let many = resolve_bearer("a\nb\nc\n", McpIdentity::Agent);
+        assert_eq!(many.token.as_deref(), Some("b"));
+        assert_eq!(many.lanes, 3, "the lane count is the source's, not a cap");
+    }
+
+    /// The boot line is the operator's only view of which lane the bridge is
+    /// presenting — so it must name the identity, and the degraded posture when
+    /// it applies.
+    #[test]
+    fn the_boot_receipt_names_the_identity_and_the_degraded_posture() {
+        let degraded = resolve_bearer("only\n", McpIdentity::Agent);
+        let line = boot_receipt(McpIdentity::Agent, &degraded);
+        assert!(line.contains("identity=agent"), "{line}");
+        assert!(
+            line.contains("ambient authority"),
+            "the single-lane ceiling must be visible in the receipt, not only in a comment: {line}"
+        );
+        let clean = resolve_bearer("a\nb\n", McpIdentity::Agent);
+        let line = boot_receipt(McpIdentity::Agent, &clean);
+        assert!(line.contains("identity=agent"), "{line}");
+        assert!(!line.contains("ambient authority"), "{line}");
+    }
+
+    /// A pure resolver is only worth something if the binary USES it: this
+    /// reads the real source and fails if any request path still calls
+    /// `auth_token()` directly (i.e. forgot to pass an identity and slid back
+    /// onto "first token wins"). The count is asserted too, so deleting every
+    /// authenticated call would fail here rather than pass vacuously.
+    #[test]
+    fn every_request_path_resolves_through_the_identity() {
+        // The PRODUCTION region only: a scan that counted the test module would
+        // count this pin's own text — the failure mode where a guard names the
+        // thing it is looking for and then matches itself.
+        let src: &str = include_str!("mcp.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap_or("");
+        let calls = src
+            .lines()
+            .filter(|l| {
+                l.contains("auth_token(")
+                    && !l.trim_start().starts_with("fn auth_token")
+                    && !l.trim_start().starts_with("///")
+                    && !l.trim_start().starts_with("//!")
+            })
+            .count();
+        assert_eq!(
+            calls, 1,
+            "exactly one `auth_token(` call may remain — inside `auth()`, the \
+             identity-aware wrapper"
+        );
+        assert!(
+            src.contains("fn auth() -> Option<String>"),
+            "the wrapper the call sites share"
+        );
+        let presented = src
+            .lines()
+            .filter(|l| l.contains("auth().as_deref()"))
+            .count();
+        assert!(
+            presented >= 7,
+            "the authenticated request paths must all present the resolved bearer, saw \
+             {presented}"
+        );
     }
 }

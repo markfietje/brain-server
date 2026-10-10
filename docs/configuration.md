@@ -231,6 +231,7 @@ server process — so they sit outside the main table.
 |---|---|---|
 | `BRAIN_URL` | `http://127.0.0.1:8765` | Base URL every client-side binary addresses (`brain`, `mcp`, `bench`, the connector stubs) |
 | `BRAIN_MCP_SCOPE` | `full` | MCP dispatch scope (`read\|full`, fail-closed parse): `read` refuses `brain_ingest`, `ump.remember`, `ump.revise`, `ump.forget` at the dispatch seam and annotates them `x-brain-scope: read-denied` in `tools/list` |
+| `BRAIN_MCP_IDENTITY` | `agent` | Which lane of the token file the `mcp` binary presents (`agent\|operator`, fail-closed parse — an unknown or empty value refuses to start). In the installer's two-lane file (line 1 operator, line 2 agent) the default takes **line 2**, so a model's tool call authenticates as the typed `AgentLoopback` principal and Admin routes refuse it by class; `operator` takes line 1 explicitly. A single-token file has no agent lane, so the bridge keeps working and names the ambient-authority posture on its startup line — `BRAIN_MCP_SCOPE=read` is what bounds it |
 | `BRAIN_GH_APP_TOKEN` | — | GitHub App installation token for `brain-connector-gh` (the binary refuses to run on the placeholder) |
 | `BRAIN_EVAL_JUDGMENTS` | — | Judged-query fixture path for `bench --eval` (missing file fails the eval run) |
 

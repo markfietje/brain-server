@@ -1,5 +1,47 @@
 # Agent Execution Log — brain-server
 
+> **R104 "Identity": the MCP bridge stops inheriting the operator.** The `mcp`
+> binary resolved its bearer as `BRAIN_TOKEN_FILE` → `BRAIN_TOKEN` → the default
+> install file and took the FIRST token — which in the installer's two-lane file
+> (line 1 operator, line 2 agent) is the **operator's**. Every LLM tool call
+> therefore arrived as the `None` principal: the superuser. `BRAIN_MCP_SCOPE`
+> was a process-local NAME filter (`full` by default, set by nothing) standing
+> between a model's tool call and the whole Admin surface — a Rule-of-Two
+> violation dressed as a convenience default.
+>
+> **The lane is now chosen, and the agent lane is the default.** The token
+> source ladder is untouched (same three steps, same order); only the LANE
+> changed. `BRAIN_MCP_IDENTITY` ∈ `agent` | `operator`, parsed fail-closed like
+> `BRAIN_MCP_SCOPE` — including rejecting an EMPTY value, because two knobs
+> with different rules for `""` is how a typo becomes a silent posture. Under
+> the default, a two-lane source yields line 2: the server authenticates it as
+> the typed `AgentLoopback` principal and refuses Admin routes by class.
+> `operator` is an explicit operator choice, not a removal — someone running
+> the bridge as their own steward needs the Admin surface and says so.
+>
+> **The single-token deployment keeps working and NAMES its ceiling.** There is
+> no agent lane to take, so the bridge takes the only token and the startup
+> line says `identity=agent lanes=1 — single-token source, so the OPERATOR token
+> is being presented …`: ambient authority, disclosed rather than discovered
+> later, with `BRAIN_MCP_SCOPE=read` named as what bounds it. A missing
+> identity is not a crash — a crash would push operators back to a hand-rolled
+> env that skips the whole resolver.
+>
+> **The wiring is pinned, not just the resolver.** The resolver itself is pure
+> (no env, no filesystem, no server), so the pins cannot pass while the code
+> around them is wrong; a structural pin then reads the production region of
+> `src/bin/mcp.rs` and fails if any request path calls `auth_token()` directly
+> again — i.e. forgets the identity and slides back onto first-token-wins. It
+> scans the region BEFORE `#[cfg(test)]` on purpose: the first cut counted the
+> test module and matched its own text.
+>
+> **ponytail:** no server-side change (the typed `AgentLoopback` principal
+> already existed and the middleware already classifies it), no auth-protocol
+> change, no token rotation, no signing or pinning service, no installer
+> artifact setting the new knob — `agent` is the default and `operator` is a
+> per-host choice. No claim that this protects a compromised host: it removes
+> the ambient superuser, nothing more.
+
 > **R101 "Desk": the export and the review queue disclose to reviewers and
 > owners only.** Four surfaces the read gate never reached, closed together
 > because they leak the same thing by different routes.

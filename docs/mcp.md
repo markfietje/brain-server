@@ -39,7 +39,19 @@ What you need to run it:
 3. **An MCP-capable host** (Claude Desktop, an IDE, an agent framework). Point
    it at the `stdin`/`stdout` of the `mcp` process — it's a stdio server, so
    there is nothing to install into the OS; the host spawns it.
-4. **Scope (optional, v1.28.67 "Pin").** `BRAIN_MCP_SCOPE` ∈ `read` | `full`
+4. **Identity (`BRAIN_MCP_IDENTITY`, default `agent`).** Which lane of the
+   token file the bridge presents. In the two-lane deployment the installer
+   writes — line 1 operator, line 2 agent — the bridge takes **line 2**, so a
+   model's tool call arrives as the typed `AgentLoopback` principal and Admin
+   routes refuse it by class. `operator` takes line 1 explicitly (an operator
+   running the bridge as their own steward); an unknown value — including an
+   empty one — refuses to start, matching `BRAIN_MCP_SCOPE`. On a SINGLE-token
+   file there is no agent lane to take, so the bridge keeps working and says so
+   at startup (`mcp: identity=agent lanes=1 — single-token source, so the
+   OPERATOR token is being presented …`): that is the ambient-authority posture,
+   and `BRAIN_MCP_SCOPE=read` is what bounds it. No installer artifact sets it
+   — `agent` is the default, `operator` is a per-host operator choice.
+5. **Scope (optional, v1.28.67 "Pin").** `BRAIN_MCP_SCOPE` ∈ `read` | `full`
     (default `full`). Under `read`, the five write verbs — `brain_ingest`,
     `ump.remember`, `ump.revise`, `ump.forget`, `ump.feedback` — refuse at dispatch with
    `tool_out_of_scope` and `tools/list` annotates them
@@ -246,9 +258,13 @@ curl -s http://127.0.0.1:8766/mcp \
 - The MCP binary is **clientside** — in stdio mode it performs no listening and
   no network binds; it only makes outbound HTTP calls to the configured server,
   inheriting the server's auth, PII redaction, and audit on every read/write.
-- It applies the same token-file resolution and never logs the token.
+- It applies the same token-file resolution and never logs the token. Which
+  LANE it takes is `BRAIN_MCP_IDENTITY` (default `agent`): in the two-lane
+  deployment that is the agent's token, not the operator's — an LLM tool call
+  does not arrive as the superuser by default.
 - There is no separate credential; whoever can invoke the binary acts as the
-  configured principal on the server.
+  configured principal on the server. On a single-token file that principal is
+  the operator, and the startup line names it.
 - **HTTP mode changes the bind posture**: `MCP_TRANSPORT=http` / `MCP_HTTP_ADDR`
   opens a listener (loopback by default). Anything that can reach that port can
   drive the same tools, so set `MCP_HTTP_TOKEN` whenever the listener is not
