@@ -1,5 +1,45 @@
 # Agent Execution Log — brain-server
 
+> **R105 "Cleartext": a bearer stops leaving in cleartext — including by
+> accident.** Three ways the operator's own configuration could put a
+> credential on the wire in the open, none of which the tree refused.
+>
+> **(1) `https://` was a SILENT DOWNGRADE.** The dependency-free client
+> (`bin_common/http.rs`, shared by `brain`, `mcp`, `bench` and the connector
+> stubs) stripped the scheme and defaulted the port, so an operator who wrote
+> `BRAIN_URL=https://brain.example.com` got a plain `TcpStream` to port 80 with
+> `Authorization: Bearer <operator token>` on it — and no signal that the
+> request they asked to be secure was not. It speaks no TLS, so the honest
+> answer is a refusal: `HTTPS_BASE_REFUSED`, a FIXED string (a caller may match
+> it, and a URL does not belong in a logged error).
+>
+> **(2) A non-loopback plain-HTTP base was a cleartext bearer by
+> construction.** These binaries are loopback-only by contract — the steward
+> harness already refuses non-loopback plain HTTP — so a remote authority now
+> refuses with `REMOTE_BASE_REFUSED` too. Loopback is checked as an IP or the
+> literal `localhost`, never as a name that "resolves locally": resolution is
+> not this layer's job, and guessing would be a pin in the wrong direction.
+> **This is a deliberate behavior change** for anyone pointing a client at a
+> LAN server over plain HTTP: off-host means the harness, which can do TLS.
+>
+> **(3) A cleartext sink was accepted, and ambient proxy env could route around
+> the DNS pin.** The alert and Art-19 DSAR sinks enforce no scheme, so a
+> signed, subject-bearing payload could go out over `http://`. Both now refuse
+> at the boot guard that ALREADY checks their secrets — and transport is
+> checked FIRST, because an unsigned send over https and a signed send over http
+> are the same leak with different paperwork. No opt-out: that is a posture an
+> operator should not get to pick in an env var. The guard reads the live sink
+> strings itself rather than taking presence bits, because a caller resolving
+> the URL could pass `false`. And `hardened_egress_builder` now carries
+> `.no_proxy()`, the same reason the provider client already did: reqwest
+> honours `HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`, and a proxy in the
+> environment routes a PINNED sink through a third party and around its pin.
+>
+> **ponytail:** no TLS implementation in a dependency-free client — refusal,
+> not a new dependency; no proxy support knob; no DNS change; loopback
+> defaults are byte-identical (pinned); the refusals are fixed strings, and the
+> sinks keep their existing resolve → validate → pin discipline.
+
 > **R106 "Identity": agent writes are reviewed and labelled BY IDENTITY.**
 > The human-promotion invariant was a deployment posture: `write_posture()`
 > defaults to `open`, so all six agent-facing write surfaces inserted directly

@@ -1684,6 +1684,25 @@ impl WebhookSigningPosture {
     }
 }
 
+/// Whether a configured sink URL is refused for TRANSPORT: anything that is
+/// not `https://` puts a signed, subject-bearing payload (an alert, an Art-19
+/// DSAR notification) on the wire in cleartext. Pure over the URL string so the
+/// boot guard and the send path can consult one rule.
+///
+/// `https://` is the ONLY admitted scheme. There is no opt-out: a cleartext
+/// sink for a payload that names a data subject is not a posture an operator
+/// can pick in an env var, it is a leak with a switch.
+pub fn sink_scheme_refused(url: Option<&str>) -> bool {
+    url.is_some_and(|u| !u.trim().to_ascii_lowercase().starts_with("https://"))
+}
+
+/// The refusal text for a cleartext sink. Fixed string, same reason as the
+/// client's base refusal: a caller may match it, and a URL does not belong in
+/// an error that will be logged.
+pub const SINK_SCHEME_REFUSED: &str = "a webhook sink URL must be https:// — this sink carries signed, subject-bearing \
+     payloads, and cleartext would put them on the wire in the open. There is no \
+     opt-out; unset the sink or point it at an https endpoint";
+
 pub fn webhook_boot_guard(
     alert_url: bool,
     alert_secret: bool,
@@ -1691,6 +1710,16 @@ pub fn webhook_boot_guard(
     dsar_secret: bool,
     require: bool,
 ) -> Result<WebhookSigningPosture, String> {
+    // Transport first: a cleartext sink refuses whatever its signing posture,
+    // because an unsigned send over https and a SIGNED send over http are the
+    // same leak with different paperwork. The URLs are read from the live env
+    // here on purpose — the guard already takes presence bits, and a caller
+    // that had to resolve the URL string itself would be free to pass `false`.
+    if sink_scheme_refused(alert_webhook_url().as_deref())
+        || sink_scheme_refused(dsar_webhook_url().as_deref())
+    {
+        return Err(SINK_SCHEME_REFUSED.to_string());
+    }
     if dsar_url && !dsar_secret {
         return Err(
             "BRAIN_DSAR_WEBHOOK_URL is set but BRAIN_DSAR_WEBHOOK_SECRET is not — \
@@ -1887,6 +1916,65 @@ impl QualityConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cleartext sink carries signed, subject-bearing payloads (an alert, an
+    /// Art-19 DSAR notification). `https://` is the only admitted scheme and
+    /// there is no opt-out, so the refusal is measured on the rule itself.
+    #[test]
+    fn a_cleartext_sink_url_is_refused_and_https_is_not() {
+        assert!(sink_scheme_refused(Some("http://sink.example.com/hook")));
+        assert!(sink_scheme_refused(Some("sink.example.com/hook")));
+        assert!(sink_scheme_refused(Some("ftp://sink.example.com")));
+        assert!(sink_scheme_refused(Some("")));
+        assert!(!sink_scheme_refused(Some("https://sink.example.com/hook")));
+        assert!(!sink_scheme_refused(Some("  HTTPS://sink.example.com  ")));
+        assert!(
+            !sink_scheme_refused(None),
+            "an unset sink is not a cleartext sink"
+        );
+    }
+
+    /// The refusal reaches the BOOT, which is where an operator finds it — not
+    /// the send path, where it would surface as a failed purge notification.
+    #[test]
+    fn the_boot_guard_refuses_a_cleartext_sink_before_any_signing_posture() {
+        // Env-driven because the guard reads the live sinks by design (a caller
+        // that resolved the URL itself could pass `false`).
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prior_alert = std::env::var("BRAIN_ALERT_WEBHOOK_URL").ok();
+        let prior_dsar = std::env::var("BRAIN_DSAR_WEBHOOK_URL").ok();
+        let prior_secret = std::env::var("BRAIN_DSAR_WEBHOOK_SECRET").ok();
+        // SAFETY: every read of these vars in this test runs under ENV_LOCK,
+        // and no other test in this module touches them.
+        unsafe {
+            std::env::set_var("BRAIN_DSAR_WEBHOOK_SECRET", "s3cret");
+            std::env::set_var("BRAIN_DSAR_WEBHOOK_URL", "http://sink.example.com/dsar");
+        }
+        let refused = webhook_boot_guard(true, true, true, true, true)
+            .expect_err("a cleartext DSAR sink must refuse the boot");
+        assert_eq!(refused.as_str(), SINK_SCHEME_REFUSED);
+        // Same guard, https sink, fully configured: it passes.
+        unsafe { std::env::set_var("BRAIN_DSAR_WEBHOOK_URL", "https://sink.example.com/dsar") };
+        assert!(
+            webhook_boot_guard(true, true, true, true, true).is_ok(),
+            "an https sink with its secret must boot"
+        );
+        // restore — the pin leaves the environment exactly as it found it
+        let restore = |name: &str, prior: Option<String>| {
+            // SAFETY: same lock discipline as the sets above.
+            unsafe {
+                if let Some(v) = prior {
+                    std::env::set_var(name, v);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        };
+        restore("BRAIN_ALERT_WEBHOOK_URL", prior_alert);
+        restore("BRAIN_DSAR_WEBHOOK_URL", prior_dsar);
+        restore("BRAIN_DSAR_WEBHOOK_SECRET", prior_secret);
+    }
 
     /// Counting WARN subscriber: the boot-warning pin scopes it with
     /// `with_default`, so no global subscriber state is touched.

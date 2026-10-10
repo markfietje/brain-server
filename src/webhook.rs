@@ -305,6 +305,14 @@ pub fn egress_client() -> reqwest::Client {
 fn hardened_egress_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        // The resolved-and-pinned address set below is meaningful ONLY for a
+        // direct connection. reqwest honours ambient `HTTP_PROXY` /
+        // `HTTPS_PROXY` / `ALL_PROXY` by default, so a proxy in the
+        // environment would route the pinned sink through a third party and
+        // route around the pin — the same reason the provider client already
+        // carries `.no_proxy()`. Kept here so every egress client built from
+        // this builder inherits it, including the pinned variants.
+        .no_proxy()
         // A stalled sink must not wedge the drain worker or accumulate
         // ignored hangs. Connect is bounded (5 s) and the whole request
         // is capped at (15 s).
