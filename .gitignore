@@ -127,6 +127,13 @@ audit-chain.key
 # dep-research scratch (crate extraction) — never commit
 .depcheck/
 
+# drill scratch: local drill transcripts and their driver scripts. They are
+# evidence FOR the round that ran them, not artifacts it ships, and an
+# untracked directory here makes release.sh's clean-tree check refuse — which
+# is the gate working. The round's real evidence is the red-first pin in
+# tests/, not the transcript that produced it.
+scratch/
+
 # AGENTS.md is deliberately NOT ignored. It is tracked and published (added
 # 64abca7; the same blob is in both origin/main and public/main), and public
 # source cites it as its authority (src/workflow/channels.rs:19,
