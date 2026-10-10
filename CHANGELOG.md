@@ -176,7 +176,7 @@ one.
 - `BRAIN_MCP_IDENTITY` fails closed on an unknown or empty value, matching
   `BRAIN_MCP_SCOPE`.
 
-**Engineering record**
+### Engineering record
 
 - Red-first, every round: each behavioural pin was observed failing against the
   pre-fix tree — 200 `{"status":"approved"}` for the self-approval chain, 200
