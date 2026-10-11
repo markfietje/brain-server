@@ -67,6 +67,11 @@ pub fn link_evidence(
 ///      idempotent: a second call with the same pair touches 0 rows.
 ///   3. Audit the resolution (no PII — hash of the loser's content_hash).
 ///
+/// Legal hold: a `to_chunk` under an active hold REFUSES the whole resolution
+/// (before the first write, so no link row survives) — `valid_to` is the same
+/// bi-temporal mechanic the replace sweep in `server/router/memory.rs` gates,
+/// and the same `409 legal_hold_active` fence `/purge` uses.
+///
 /// The `valid_to` population is what makes the existing `/recall` bi-temporal
 /// filter `(k.valid_to IS NULL OR k.valid_to > ?at)` exclude the old chunk by
 /// default while `?at=<before-resolution>` still returns it. No new retrieval
@@ -84,6 +89,13 @@ pub fn resolve_supersession(
     if from_chunk == to_chunk {
         anyhow::bail!("supersession cannot be self-referential (chunk {from_chunk})");
     }
+    // Setting `valid_to` drops the loser out of DEFAULT recall — the same
+    // bi-temporal mechanic (and the same evidence-destruction risk) as the
+    // replace sweep in `server/router/memory.rs`, which gates for this reason:
+    // "held evidence must not be destroyed by routine supersession." Refuse
+    // BEFORE the first write so a held pair leaves no link row behind.
+    crate::legal_hold::refuse_if_held(tx, &[to_chunk])
+        .map_err(|e| anyhow::anyhow!("{}: {}", e.inner.code, e.inner.message))?;
     // 1. Record the typed link (idempotent; UNIQUE constraint enforces it).
     link_evidence(tx, from_chunk, to_chunk, LINK_SUPERSEDES)?;
     // 2. Expire the prior fact ONLY if not already expired. This makes the
@@ -565,6 +577,18 @@ mod tests {
              CREATE TABLE source_revisions(id INTEGER PRIMARY KEY, source_id INTEGER, revision TEXT, state TEXT);
              CREATE TABLE evidence_links(id INTEGER PRIMARY KEY, from_chunk INTEGER, to_chunk INTEGER, kind TEXT,
                 UNIQUE(from_chunk, to_chunk, kind));
+             -- resolve_supersession gates on legal_hold::refuse_if_held, which
+             -- fails closed when the table is absent — the minimal fixture
+             -- declares it (shape mirrors migration.rs) so the sweep tests
+             -- exercise the real guard.
+             CREATE TABLE legal_holds(
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                knowledge_id INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                held_by TEXT,
+                held_at INTEGER NOT NULL,
+                released_at INTEGER
+             );
              -- v1.6.0: resolve_supersession calls audit::record_tenant, which
              -- is best-effort but needs the table to exist to write a row.
              CREATE TABLE audit_events(
@@ -824,6 +848,67 @@ mod tests {
             vt, first,
             "timestamp must NOT be overwritten by the second call"
         );
+    }
+
+    /// AUDIT R2-02 — a legally-held chunk must not be expired from current
+    /// recall by consolidation supersession.
+    ///
+    /// `src/consolidate.rs` contains NO `legal_hold` reference at all
+    /// (`grep -n "legal_hold" src/consolidate.rs src/handlers/consolidate.rs`
+    /// exits 1), while the comparable "routine supersession" sweep in
+    /// `src/server/router/memory.rs:1909-1916` DOES gate on
+    /// `refuse_if_held` for exactly this reason:
+    ///
+    ///   "The replace sweep is an erasure path: a held chunk refuses the
+    ///    whole re-ingest — held evidence must not be destroyed by routine
+    ///    supersession."
+    ///
+    /// Setting `valid_to` is the same bi-temporal mechanic: the chunk drops
+    /// out of default recall. Reachable from `POST /consolidate/apply` and
+    /// from the approve path with `?supersedes=`; both need only `Write`
+    /// scope — no proposal, no role gate.
+    ///
+    /// This FAILS on current main (d517cf67).
+    #[test]
+    fn resolve_supersession_refuses_a_legally_held_chunk() {
+        // Uses the REAL migrated schema (the sibling `db()` helper is a
+        // minimal in-memory table set with no legal_holds table at all, so it
+        // could not express this hold).
+        let pool = {
+            let tmp = tempfile::NamedTempFile::new().unwrap();
+            crate::register_sqlite_vec::register_sqlite_vec();
+            let mgr = crate::pool::SqliteConnectionManager::file(tmp.path());
+            let pool = r2d2::Pool::builder().max_size(1).build(mgr).unwrap();
+            crate::migration::run_migration(&mut pool.get().unwrap(), 0).unwrap();
+            std::mem::forget(tmp); // keep the file alive for the pool
+            pool
+        };
+        let mut c = pool.get().unwrap();
+        c.execute(
+            "INSERT INTO knowledge(id, content, content_hash) VALUES
+                (1, 'held fact', 'h1'),
+                (2, 'new fact', 'h2')",
+            [],
+        )
+        .unwrap();
+        c.execute(
+            "INSERT INTO legal_holds(knowledge_id, reason, held_by, held_at)
+             VALUES (1, 'case-42 litigation', 'dpo', 1)",
+            [],
+        )
+        .unwrap();
+
+        let tx = c.transaction().unwrap();
+        let result = resolve_supersession(&tx, 2, 1, "2026-10-11T00:00:00Z");
+
+        assert!(
+            result.is_err(),
+            "C5 BROKEN: resolve_supersession expired a LEGALLY-HELD chunk. \
+             Expected a legal-hold refusal (409 legal_hold_active), got Ok({:?}). \
+             The chunk silently leaves current recall while /purge still refuses it.",
+            result.map(|n| n.to_string())
+        );
+        tx.rollback().unwrap();
     }
 
     #[test]

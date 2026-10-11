@@ -15,8 +15,10 @@
 //! `PRAGMA foreign_keys=ON`; the Quarry move's map, written from the schema):
 //! - `handover_offers.run_id` (NOT NULL) → deleted before the parent;
 //! - `case_notes.run_id` (NOT NULL) → deleted before the parent (run arm),
-//!   plus the subject arms (author / addressee / content) across ALL runs;
-//!   `parent_note_id` is a soft self-reference (no declared FK, no hazard);
+//!   plus the subject arms (author / addressee / content) across all runs a
+//!   legal hold does NOT freeze (the arms carry the `frozen` gate themselves,
+//!   since they run outside the run loop); `parent_note_id` is a soft
+//!   self-reference (no declared FK, no hazard);
 //! - `crm_cases.run_id` (NULLable) → UNLINKED (`run_id = NULL`), the
 //!   external CRM case itself is out of reach by design;
 //! - `case_status_refs.run_id` → PURGED for erased runs, REVOKED for runs a
@@ -237,13 +239,43 @@ pub(crate) fn sweep_subject(
     // direction), and the content arm matches the proposals-sweep posture
     // (a `LIKE %subject%` over stored text, not a semantic owner join).
     // Run-level dependents above took their rows already.
+    //
+    // A hold freezes a run AND everything hanging off it, so these two arms —
+    // which sit OUTSIDE the `frozen` continue above and would otherwise run
+    // unconditionally — carry the gate themselves (`run_id NOT IN (held)`).
+    // Without it a held run's note dies while the certificate lists that run
+    // as retained: the certificate under-reports the destruction, the worst
+    // direction for a regulated claim. The gate is keyed on the RUN, never on
+    // the text: a note on a free run still dies when it merely MENTIONS the
+    // subject. `run_id` is NOT NULL, so the `NOT IN` has no NULL hole.
+    let held: Vec<i64> = frozen.iter().copied().collect();
+    let held_gate = if held.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " AND run_id NOT IN ({})",
+            std::iter::repeat_n("?", held.len())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    // `?1` is the arm's own key; the held run ids follow it, one per `?` in
+    // `held_gate`. With no holds the tail is empty and the SQL is the
+    // unconditional arm it has always been.
+    let held_args = |first: rusqlite::types::Value| -> Vec<rusqlite::types::Value> {
+        std::iter::once(first)
+            .chain(held.iter().copied().map(rusqlite::types::Value::from))
+            .collect()
+    };
     report.channel_rows += tx.execute(
-        "DELETE FROM case_notes WHERE author = ?1 OR addressed_to = ?1",
-        rusqlite::params![subject],
+        &format!("DELETE FROM case_notes WHERE (author = ?1 OR addressed_to = ?1){held_gate}"),
+        rusqlite::params_from_iter(held_args(subject.to_string().into()).iter()),
     )?;
     report.channel_rows += tx.execute(
-        "DELETE FROM case_notes WHERE content LIKE ?1 ESCAPE '\\'",
-        rusqlite::params![crate::workflow::kcs::like_contains_pattern(subject)],
+        &format!("DELETE FROM case_notes WHERE content LIKE ?1 ESCAPE '\\'{held_gate}"),
+        rusqlite::params_from_iter(
+            held_args(crate::workflow::kcs::like_contains_pattern(subject).into()).iter(),
+        ),
     )?;
     let mut stmt =
         tx.prepare("SELECT id, roster_json FROM shifts WHERE roster_json LIKE ?1 ESCAPE '\\'")?;
@@ -441,6 +473,104 @@ mod tests {
         tx.commit().unwrap();
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM workflow_runs"), 1);
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM legal_holds"), 1);
+    }
+
+    /// AUDIT R2-01 — a legal hold must freeze a held run's `case_notes`
+    /// from the DSAR sweep, not just the run row.
+    ///
+    /// The pin above (`legal_hold_freezes_run_from_dsar_sweep`) seeds no
+    /// `case_notes`, so the principal arms at sweep.rs:240-247 are never
+    /// exercised under a hold. They sit OUTSIDE the `frozen` continue at
+    /// :129-134, so they run unconditionally.
+    ///
+    /// This FAILS on current main (d517cf67): the note is erased while the
+    /// run survives and the certificate reports the run as deferred —
+    /// i.e. the erasure certificate under-reports what was destroyed.
+    #[test]
+    fn legal_hold_freezes_run_case_notes_from_dsar_sweep() {
+        let (pool, _tmp) = db();
+        let mut conn = pool.get().unwrap();
+        let run = seed_run(&conn, "acme", r#"{"who":"jane"}"#);
+        // Authored BY the subject, so the `author = ?1` arm at :241 matches
+        // it directly — no LIKE, no subtlety.
+        conn.execute(
+            "INSERT INTO case_notes(domain, run_id, author, kind, content, created_at)
+             VALUES ('acme', ?1, 'jane', 'note', 'subject own annotation', 1)",
+            rusqlite::params![run],
+        )
+        .unwrap();
+        let note = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO legal_holds(knowledge_id, reason, held_by, held_at)
+             VALUES (-?1, 'case-42 litigation', 'dpo', 1)",
+            rusqlite::params![run],
+        )
+        .unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let rep = sweep_subject(&tx, "jane").unwrap();
+        tx.commit().unwrap();
+
+        // Control: the run row IS correctly held. That part of the promise
+        // holds today.
+        assert_eq!(rep.runs_deleted, 0, "control: no run deleted");
+        assert_eq!(
+            count(
+                &conn,
+                &format!("SELECT COUNT(*) FROM workflow_runs WHERE id={run}")
+            ),
+            1,
+            "control: the held run itself must survive"
+        );
+        assert_eq!(
+            rep.deferred.len(),
+            1,
+            "control: the run was reported deferred"
+        );
+
+        // The finding: its case note did NOT survive.
+        assert_eq!(
+            count(
+                &conn,
+                &format!("SELECT COUNT(*) FROM case_notes WHERE id={note}")
+            ),
+            1,
+            "C5 BROKEN: a legally-held run's case note (id {note}, run {run}) was \
+             erased by the DSAR sweep. The run survived and the certificate reported \
+             it as retained, so the certificate under-reports the destruction."
+        );
+    }
+
+    /// Isolation pin for the fix: the SAME principal arm must still erase a
+    /// note on a run that carries NO legal hold. A fix that simply deletes
+    /// the arm would pass the finding above and silently break erasure.
+    #[test]
+    fn dsar_still_erases_case_notes_on_an_unheld_run() {
+        let (pool, _tmp) = db();
+        let mut conn = pool.get().unwrap();
+        let run = seed_run(&conn, "acme", r#"{"who":"jane"}"#);
+        conn.execute(
+            "INSERT INTO case_notes(domain, run_id, author, kind, content, created_at)
+             VALUES ('acme', ?1, 'jane', 'note', 'subject own annotation', 1)",
+            rusqlite::params![run],
+        )
+        .unwrap();
+        let note = conn.last_insert_rowid();
+        // deliberately NO legal_holds row
+
+        let tx = conn.transaction().unwrap();
+        sweep_subject(&tx, "jane").unwrap();
+        tx.commit().unwrap();
+
+        assert_eq!(
+            count(
+                &conn,
+                &format!("SELECT COUNT(*) FROM case_notes WHERE id={note}")
+            ),
+            0,
+            "an unheld run's subject-authored note MUST still be erased — the \
+             finding is the missing hold gate, not that the arm runs"
+        );
     }
 
     #[test]
