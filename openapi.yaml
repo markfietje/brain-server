@@ -1600,6 +1600,20 @@ paths:
                 domain:
                   type: string
                   pattern: "^[a-z0-9][a-z0-9_-]{0,62}$"
+                origin_context:
+                  type: string
+                  enum: [owner, channel]
+                  default: owner
+                  description: >
+                    Taint label, the closed vocabulary /ingest enforces.
+                    `channel` stores the rows as `channel-capture` so recall
+                    labels and the plugin's exclude posture treat them as
+                    captured traffic; an unknown value is a 400
+                    invalid_origin_context, never a silent de-taint.
+                    The agent class is refused on this route outright (403):
+                    procedures are operator-authored and later EXECUTED by
+                    decision evaluation, and their shape cannot ride the
+                    proposal wire.
       responses:
         "200":
           description: Procedure created
@@ -1611,7 +1625,8 @@ paths:
                   id: { type: integer, description: Root chunk id. }
                   status: { type: string, example: created }
                   step_ids: { type: array, items: { type: integer } }
-        "400": { description: Empty/oversized title, content, step, or too many steps }
+        "400": { description: Empty/oversized title, content, step, too many steps, or an unknown origin_context value }
+        "403": { description: The agent class is refused (procedures are operator-authored runbooks) }
         "413": { description: Content exceeds MAX_CONTENT bytes }
   /procedure/{id}/steps:
     get:

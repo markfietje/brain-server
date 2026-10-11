@@ -7323,6 +7323,12 @@ export interface operations {
                         is_decision?: boolean;
                     }[];
                     domain?: string;
+                    /**
+                     * @description Taint label, the closed vocabulary /ingest enforces. `channel` stores the rows as `channel-capture` so recall labels and the plugin's exclude posture treat them as captured traffic; an unknown value is a 400 invalid_origin_context, never a silent de-taint. The agent class is refused on this route outright (403): procedures are operator-authored and later EXECUTED by decision evaluation, and their shape cannot ride the proposal wire.
+                     * @default owner
+                     * @enum {string}
+                     */
+                    origin_context?: "owner" | "channel";
                 };
             };
         };
@@ -7344,6 +7350,13 @@ export interface operations {
             };
             /** @description Empty/oversized title */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The agent class is refused (procedures are operator-authored runbooks) */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

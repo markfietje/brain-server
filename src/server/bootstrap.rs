@@ -980,10 +980,21 @@ pub fn bootstrap() -> Result<BootOutcome> {
     // `from_fn_with_state` + the same values mirrored into AppState.
     let key_dir = auth::jwks::resolve_key_dir();
     let key_store = auth::jwks::KeyStore::load(&key_dir).unwrap_or_else(|e| {
-        warn!("JWT key load failed ({e}); falling back to opaque-token mode");
+        warn!("JWT key load failed ({e}); an issuer-configured boot refuses below — the opaque downgrade is no longer silent");
         auth::jwks::KeyStore::default()
     });
     let auth_mode = auth::AuthMode::from_env(key_store.len());
+    // The F4-03 guard: an issuer with zero keys must REFUSE the boot, not
+    // slide into opaque-token mode where every bearer is the superuser. The
+    // resolution mirrors `from_env`'s own issuer read, so the refusal fires
+    // exactly when `from_env` would have downgraded despite the operator's
+    // explicit JWT configuration.
+    if let Some(reason) = auth::AuthMode::downgrade_refusal(
+        std::env::var("BRAIN_JWT_ISSUER").ok().as_deref(),
+        key_store.len(),
+    ) {
+        return Err(anyhow::anyhow!(reason));
+    }
     // the UMP operator Ed25519 signing key dir FAILS CLOSED on a
     // group/world-readable key file (same posture as every other secret — a
     // world-readable key still mints capability tokens, so "warn and mint"

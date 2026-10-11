@@ -164,6 +164,26 @@ pub struct ApplyResponse {
     pub rejected: Vec<String>,
 }
 
+/// The agent class mutates retrieval state only through the proposal
+/// pipeline. A supersession decides what current memory IS (it writes
+/// `valid_to`) and an undo decides what it was — both are the human's act,
+/// and this lane has no approver to hold it, so the class is refused rather
+/// than proposed: a proposal cannot express a supersession link, so the
+/// proposal pipeline is not a downgrade, it is a different verb. R106's
+/// class law named six surfaces; these are the two that had forgotten it.
+fn refuse_agent_class(principal: &Option<crate::auth::Principal>) -> Result<(), HandlerError> {
+    if let Some(p) = principal.as_ref()
+        && super::agent_class(principal)
+    {
+        return Err(HandlerError::forbidden(
+            crate::auth::Action::Write,
+            &p.tenant,
+            "global",
+        ));
+    }
+    Ok(())
+}
+
 /// `POST /consolidate/apply` — record operator-chosen links. Unknown kinds and
 /// self-links are rejected per link (reported, not fatal). No content changes.
 pub async fn apply(
@@ -173,6 +193,7 @@ pub async fn apply(
 ) -> Result<Json<ApplyResponse>, HandlerError> {
     // write gate. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
+    refuse_agent_class(&principal.0)?;
     let pool = state.pool.clone();
     let links = req.links;
     let now_utc = chrono::Utc::now().to_rfc3339();
@@ -249,6 +270,7 @@ pub async fn undo(
 ) -> Result<Json<UndoResponse>, HandlerError> {
     // write gate. `None` (no JWT) = superuser.
     super::authorize(&principal.0, crate::auth::Action::Write, "", "global")?;
+    refuse_agent_class(&principal.0)?;
     let pool = state.pool.clone();
     let chunks = req.old_chunks;
     let (undone, rejected) = tokio::task::spawn_blocking(move || -> Result<_, HandlerError> {

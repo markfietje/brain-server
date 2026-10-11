@@ -1,5 +1,42 @@
 # Agent Execution Log — brain-server
 
+> **R115 "Seventh": the two surfaces that had forgotten the class, and the
+> posture collapse that never got its refusal.** The eleventh pass (six
+> parallel lanes against baseline `b23e1cf0`) found the R106 invariant's own
+> doc promise — "no future surface can forget the class" — falsified twice,
+> and closed both at the seam.
+>
+> 1. **`/consolidate/apply|undo` gated on bare Write scope**, and the agent
+>    principal carries `write:*/global`: a loopback agent could expire any
+>    knowledge row from recall via `supersedes` and restore it via undo,
+>    under either write posture, with no approver anywhere in the lane. A
+>    proposal cannot express a supersession link, so the class is REFUSED
+>    rather than proposed. *(Pin `consolidate_apply_refuses_the_agent_class`,
+>    red-proofed by stashing the refusal — the agent walked the route 200.)*
+> 2. **`POST /procedure` wrote operator-grade knowledge with no class
+>    seam** — rows hard-coded `origin='operator'`/`source='manual'`, later
+>    EXECUTED by `/decision/{id}/evaluate`, exposed to the model through the
+>    plugin's `brain_memory_procedure_store`. Procedures cannot ride the
+>    proposal wire (root + ordered steps), so the class is refused outright;
+>    the request gains the closed-vocabulary `origin_context` (`owner` |
+>    `channel`), typo → 400 `invalid_origin_context`, never silent de-taint.
+> 3. **The agent preset dropped `reject`**: disposing of pending proposals —
+>    its own or a human's queued capture — is a review-queue act. The
+>    matrix's agent cell flipped in the same commit
+>    (`agent_class_cannot_reject_its_own_proposal` observes the 403 and the
+>    surviving pending row).
+> 4. **F4-03 closed at last** (open-unrouted since the tenth pass): an
+>    issuer-configured boot with zero JWT keys REFUSES instead of silently
+>    becoming the every-bearer-superuser opaque posture
+>    (`AuthMode::downgrade_refusal`, pinned both directions).
+>
+> **ponytail:** no new seam — `agent_class`/`effective_write_posture` already
+> existed and their doc already promised this; no route, schema, or
+> role-vocabulary change beyond the one preset's `can` list; the wire delta
+> is the additive `origin_context` request field + 403 arm on `/procedure`
+> (openapi + regenerated `schema.d.ts`); zero new dependency edges; matrix
+> rows added with reasons.
+
 > **R114 "Six": six audit findings closed at the root, not the symptom.** A
 > second adversarial pass (baseline `d517cf67`) found six defects, each with a
 > red-first reproduction, and every fix is at the boundary that owns the

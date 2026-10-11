@@ -323,7 +323,7 @@ pub const PRESETS_RAW: &[(&str, &str)] = &[
     ),
     (
         "agent",
-        r#"{"name":"agent","description":"Front-line worker: reads and writes across the shared memory pool (no Admin, no approve), the gateway's standing identity","scopes":["private","domain","team"],"owner_filter":"all","can":["read","write","reject"],"panels_default":["overview","ingest","recall","health"],"panels_hidden":["audit","subjects"],"tools_allowed":["ump.recall","ump.get","ump.feedback"]}"#,
+        r#"{"name":"agent","description":"Front-line worker: reads and writes across the shared memory pool (no Admin, no approve, no reject — the review queue is not the agent's to prune), the gateway's standing identity","scopes":["private","domain","team"],"owner_filter":"all","can":["read","write"],"panels_default":["overview","ingest","recall","health"],"panels_hidden":["audit","subjects"],"tools_allowed":["ump.recall","ump.get","ump.feedback"]}"#,
     ),
     (
         "workflow-operator",

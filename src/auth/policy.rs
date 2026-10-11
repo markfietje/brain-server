@@ -131,9 +131,13 @@ impl Principal {
     /// grants exactly `can:["workflow"]`. The agent is nonetheless refused on
     /// the workflow surfaces, but for the correct and much more boring reason:
     /// the agent's own preset role (`agent`) holds
-    /// `can:["read","write","reject"]`, which does not include it. Engine
+    /// `can:["read","write"]`, which does not include it. Engine
     /// surfaces stay operator-side; the ceiling is the agent ROLE, not the
-    /// verb. `r47_no_comment_claims_workflow_is_ungrantable` holds it.
+    /// verb. `r47_no_comment_claims_workflow_is_ungrantable` holds it. R115
+    /// narrowing: the preset now holds `can:["read","write"]` — `reject` left
+    /// with it, because disposing of pending proposals (its own or a human's
+    /// capture) is a review-queue act and the queue is not the agent's to
+    /// prune.
     pub fn agent_loopback() -> Self {
         Principal {
             sub: AGENT_LOOPBACK_SUB.to_string(),

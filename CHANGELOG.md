@@ -4,6 +4,41 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R115 "Seventh" — the two surfaces that had forgotten the class
+
+The eleventh pass found the R106 class law's own doc promise ("no future
+surface can forget the class") falsified twice, plus the standing F4-03
+posture collapse still unrouted. All closed at the seam.
+
+- **`/consolidate/apply` and `/consolidate/undo` refused the agent class.**
+  Both gated on bare Write scope, and the agent principal carries
+  `write:*/global`, so a loopback agent could expire any knowledge row from
+  recall via `supersedes` (and restore it via undo) under either write
+  posture, with no human anywhere — the one lane where no approver class
+  existed at all. A proposal cannot express a supersession link, so the class
+  is refused rather than proposed. *(Red-first: with the refusal stashed the
+  agent walked the route with 200.)*
+- **`POST /procedure` refused the agent class and gained the taint input.**
+  A stored procedure is later EXECUTED with operator-grade authority by
+  `/decision/{id}/evaluate`, and its root + ordered steps cannot ride the
+  proposal wire — so the class is refused outright. The request also accepts
+  `origin_context` (`owner` | `channel`, default `owner`) with the same
+  closed vocabulary and the same 400 `/ingest` enforces, so a capture-derived
+  runbook can be labelled and a typo cannot silently de-taint.
+- **The agent preset no longer grants `reject`.** Disposing of pending
+  proposals — its own or a human's queued capture — is a review-queue act,
+  and the queue is not the agent's to prune. The authz matrix's agent cell
+  flipped in the same commit; approve was already refused.
+- **An issuer-configured boot with zero JWT keys now REFUSES** (register
+  F4-03, open since the tenth pass): the old behavior silently downgraded to
+  opaque-token mode, where the middleware's operator arm treats every bearer
+  as the superuser. The refusal names the remedy: provision the key dir or
+  unset `BRAIN_JWT_ISSUER`.
+
+Wire: additive `origin_context` request field + 403 arm on `/procedure`
+(openapi + regenerated `schema.d.ts`). No route, schema, or role-vocabulary
+change; no new dependency.
+
 ## [Unreleased] — R114 "Six" — six audit findings closed at the root
 
 A second adversarial pass found six defects, each reproduced red-first and each

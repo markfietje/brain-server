@@ -33,6 +33,13 @@ pub struct ProcedureRequest {
     /// Optional domain scoping (defaults to 'global').
     #[serde(default)]
     pub domain: Option<String>,
+    /// Optional taint label, the closed vocabulary `/ingest` enforces:
+    /// `owner` (default) or `channel`. `channel` stores the rows as
+    /// `channel-capture` so recall labels and the plugin's exclude posture
+    /// treat them as captured traffic; an unknown value is a 400, never a
+    /// silent de-taint.
+    #[serde(default)]
+    pub origin_context: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -155,6 +162,36 @@ pub async fn create(
         "",
         domain.as_deref().unwrap_or("global"),
     )?;
+    // The class seam: procedures are operator-authored runbooks — the plugin's
+    // own store tool documents that trust basis — and a stored rule is later
+    // EXECUTED with operator-grade authority by `/decision/{id}/evaluate`, so
+    // the agent class is refused outright. A procedure's root + ordered steps
+    // cannot ride the proposal wire, so "propose instead" is not available;
+    // refusal is the only honest posture for the class.
+    if super::agent_class(&principal.0) {
+        return Err(HandlerError::forbidden(
+            crate::auth::Action::Write,
+            principal
+                .0
+                .as_ref()
+                .map(|p| p.tenant.as_str())
+                .unwrap_or("global"),
+            domain.as_deref().unwrap_or("global"),
+        ));
+    }
+    // Taint input: the same closed vocabulary and the same 400 the /ingest
+    // seam enforces, so a capture-derived runbook can be labelled as such and
+    // a typo cannot silently de-taint itself.
+    let origin = match req.origin_context.as_deref() {
+        None | Some("owner") => "operator",
+        Some("channel") => "channel-capture",
+        Some(other) => {
+            return Err(HandlerError::bad_request(
+                "invalid_origin_context",
+                format!("origin_context must be \"owner\" or \"channel\", got \"{other}\""),
+            ));
+        }
+    };
     let domain_for_embed = domain.clone();
 
     let pool = crate::handlers::resolve_domain_pool(&state.registry, domain.as_deref())
@@ -179,6 +216,7 @@ pub async fn create(
                 root_quarantine,
                 &step_quarantine,
                 &owner,
+                origin,
             )
             .map_err(|e| HandlerError::internal(e.to_string()))?;
             tx.commit()

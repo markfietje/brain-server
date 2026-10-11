@@ -314,3 +314,172 @@ fn the_identity_rule_covers_the_agent_class_and_nobody_else() {
         "a non-agent principal sees the configured posture verbatim"
     );
 }
+
+// ── R115 "Seventh": the two surfaces that had forgotten the class ───────
+
+/// Consolidation decides what current memory IS: `supersedes` writes
+/// `valid_to`, dropping a row from default recall, and `undo` restores it.
+/// Both are the human's act and the lane has no approver, so the agent class
+/// is refused — red-first: the agent bearer passed the bare Write gate and
+/// expired rows directly.
+#[tokio::test]
+async fn consolidate_apply_refuses_the_agent_class() {
+    let srv = build_server();
+    let (st, body) = post(
+        &srv,
+        AGENT_TOKEN,
+        "/consolidate/apply",
+        r#"{"links":[{"from_chunk":1,"to_chunk":2,"kind":"supersedes"}]}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "the agent class must not mutate retrieval state directly: {st} {body}"
+    );
+    // The refusal is the class, not the route: the operator still reaches it.
+    let (st, body) = post(
+        &srv,
+        OP_TOKEN,
+        "/consolidate/apply",
+        r#"{"links":[{"from_chunk":9999,"to_chunk":9998,"kind":"references"}]}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the operator's consolidation route must remain reachable (unknown ids are \
+         per-link rejections, not refusals): {st} {body}"
+    );
+}
+
+#[tokio::test]
+async fn consolidate_undo_refuses_the_agent_class() {
+    let srv = build_server();
+    let (st, body) = post(
+        &srv,
+        AGENT_TOKEN,
+        "/consolidate/undo",
+        r#"{"old_chunks":[1]}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{body}");
+    let (st, body) = post(&srv, OP_TOKEN, "/consolidate/undo", r#"{"old_chunks":[1]}"#).await;
+    assert_eq!(st, StatusCode::OK, "operator undo stays reachable: {body}");
+}
+
+/// A stored procedure is later EXECUTED with operator-grade authority by
+/// `/decision/{id}/evaluate`, and a procedure's root + ordered steps cannot
+/// ride the proposal wire — so the class is refused outright.
+#[tokio::test]
+async fn procedure_write_refuses_the_agent_class() {
+    let srv = build_server();
+    let (st, body) = post(
+        &srv,
+        AGENT_TOKEN,
+        "/procedure",
+        r#"{"title":"agent runbook","content":"steps the agent wants to persist","steps":[]}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "the agent class must not write operator-grade knowledge: {st} {body}"
+    );
+    assert_eq!(knowledge_count(&srv), 0, "the refusal precedes every write");
+    let (st, body) = post(
+        &srv,
+        OP_TOKEN,
+        "/procedure",
+        r#"{"title":"operator runbook","content":"deliberate operator procedure","steps":[]}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "the operator's lane is untouched: {body}"
+    );
+}
+
+/// The taint input rides the same closed vocabulary `/ingest` enforces: a
+/// capture-derived runbook can be labelled as such, and a typo is a 400 —
+/// never a silent de-taint.
+#[tokio::test]
+async fn procedure_origin_context_follows_the_closed_vocabulary() {
+    let srv = build_server();
+    let (st, body) = post(
+        &srv,
+        OP_TOKEN,
+        "/procedure",
+        r#"{"title":"captured runbook","content":"distilled from channel traffic","steps":[],"origin_context":"channel"}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(
+        last_origin(&srv),
+        "channel-capture",
+        "the channel label must reach the stored rows"
+    );
+    let (st, body) = post(
+        &srv,
+        OP_TOKEN,
+        "/procedure",
+        r#"{"title":"typo runbook","content":"a mistyped label must not de-taint","steps":[],"origin_context":"chanel"}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    let text = serde_json::to_string(&body).unwrap_or_default();
+    assert!(
+        text.contains("invalid_origin_context"),
+        "the refusal reuses /ingest's error code: {text}"
+    );
+}
+
+/// The reject decision: the preset no longer holds `reject`. An agent can
+/// queue its own capture, but it cannot then prune the human's review queue —
+/// not even of its own proposal.
+#[tokio::test]
+async fn agent_class_cannot_reject_its_own_proposal() {
+    let srv = build_server();
+    let (st, body) = post(
+        &srv,
+        AGENT_TOKEN,
+        "/ingest",
+        r#"{"title":"agent capture","content":"the agent captured this","domain":"global"}"#,
+    )
+    .await;
+    assert!(
+        st == StatusCode::OK || st == StatusCode::ACCEPTED,
+        "queued: {st} {body}"
+    );
+    let id = body["proposal_id"].as_i64().expect("proposal id in body");
+    let (st, body) = post(&srv, AGENT_TOKEN, &format!("/proposals/{id}/reject"), "{}").await;
+    assert_eq!(
+        st,
+        StatusCode::FORBIDDEN,
+        "reject is a review-queue act and the queue is not the agent's to prune: {st} {body}"
+    );
+    assert_eq!(
+        pending_proposal_count(&srv),
+        1,
+        "the proposal survives the refused rejection"
+    );
+}
+
+/// The vocabulary-level statement of the same decision, so a future preset
+/// edit cannot re-arm the power silently.
+#[test]
+fn agent_preset_grants_neither_approve_nor_reject() {
+    let (_, json) = brain_server::role::PRESETS_RAW
+        .iter()
+        .find(|(name, _)| *name == "agent")
+        .expect("the agent preset exists");
+    let v: serde_json::Value = serde_json::from_str(json).expect("preset parses");
+    let can = v["can"].as_array().expect("can is an array");
+    for refused in ["approve", "reject"] {
+        assert!(
+            !can.iter().any(|c| c.as_str() == Some(refused)),
+            "the agent preset must not grant `{refused}`: {can:?}"
+        );
+    }
+}

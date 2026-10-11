@@ -94,6 +94,31 @@ impl AuthMode {
         }
     }
 
+    /// The one downgrade that must not happen quietly: an issuer WITHOUT
+    /// keys resolves to `Opaque`, where the middleware's operator arm treats
+    /// EVERY bearer as the superuser. That is a posture collapse wearing a
+    /// fallback's clothes, so the boot refuses and names the remedy.
+    /// `Some(reason)` is fatal at startup; `None` proceeds (an unbound
+    /// issuer is the supported opaque posture; keys present means JWT).
+    /// The issuer string must be resolved the same way `from_env` resolves
+    /// it (raw env value; trim/empty rules live here).
+    pub fn downgrade_refusal(jwt_issuer_raw: Option<&str>, keys_loaded: usize) -> Option<String> {
+        let has_issuer = jwt_issuer_raw
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if has_issuer && keys_loaded == 0 {
+            Some(
+                "fatal auth config: BRAIN_JWT_ISSUER is set but zero JWT keys loaded — \
+                 refusing the silent downgrade to opaque-token mode (where every bearer \
+                 authenticates as the superuser); provision the key dir or unset \
+                 BRAIN_JWT_ISSUER"
+                    .to_string(),
+            )
+        } else {
+            None
+        }
+    }
+
     pub fn is_jwt(self) -> bool {
         self == AuthMode::Jwt
     }
@@ -386,6 +411,36 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::NamedTempFile;
+
+    /// R115 (register F4-03): the issuer-configured, zero-keys boot must
+    /// refuse rather than downgrade to the every-bearer-superuser posture.
+    #[test]
+    fn issuer_configured_with_zero_keys_names_the_downgrade_refusal() {
+        let r = AuthMode::downgrade_refusal(Some("https://idp.example.com"), 0);
+        let reason = r.expect("an issuer with zero keys must refuse");
+        assert!(
+            reason.contains("BRAIN_JWT_ISSUER") && reason.contains("zero JWT keys"),
+            "the refusal names the knob and the condition: {reason}"
+        );
+    }
+
+    /// Anti-vacuity, both neighbours: the supported unbound posture (no
+    /// issuer) still boots opaque, and a loaded key set still resolves JWT.
+    #[test]
+    fn the_downgrade_refusal_does_not_fire_on_the_unbound_or_healthy_arms() {
+        assert!(
+            AuthMode::downgrade_refusal(None, 0).is_none(),
+            "no issuer = the supported opaque posture, not a refusal"
+        );
+        assert!(
+            AuthMode::downgrade_refusal(Some(""), 0).is_none(),
+            "an empty issuer value is unbound, not configured"
+        );
+        assert!(
+            AuthMode::downgrade_refusal(Some("https://idp.example.com"), 2).is_none(),
+            "issuer + keys = JWT mode, no refusal"
+        );
+    }
 
     fn write_token_file(contents: &str) -> NamedTempFile {
         let mut f = NamedTempFile::new().unwrap();

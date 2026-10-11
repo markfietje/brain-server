@@ -2432,6 +2432,19 @@ async fn probe_blind_404_on_foreign_run() {
 /// roles, so the empty-roles skip never fires) — those speak the denied
 /// vocabulary. Admin rows 403 outright.
 const ROLE_GATED_FOR_AGENT: &[&str] = &[
+    // R115: consolidation mutates retrieval state (supersession writes
+    // `valid_to`; undo restores it) with no approver anywhere in the lane —
+    // the human-promotion invariant's seventh surface, refused by class.
+    "/consolidate/apply",
+    "/consolidate/undo",
+    // R115: a stored procedure is EXECUTED with operator-grade authority by
+    // `/decision/{id}/evaluate`, and its root + ordered steps cannot ride the
+    // proposal wire — so the class is refused, not proposed.
+    "/procedure",
+    // R115: the agent preset no longer holds `reject`. Disposing of pending
+    // proposals — its own or a human's queued capture — is a review-queue
+    // act, and the queue is not the agent's to prune.
+    "/proposals/{id}/reject",
     // The agent preset's `tools_allowed` is now ENFORCED, and it names
     // ump.recall / ump.get / ump.feedback only. So the agent class reaches
     // those three and is refused at the verbs it was never granted — which is
@@ -2446,7 +2459,7 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     // the agent is refused here is NOT that `workflow` is ungrantable —
     // CAN_ACTIONS does name it and the `workflow-operator` preset holds it
     // (the old comment here said otherwise, and was wrong). The agent is
-    // refused because its own preset role holds can:["read","write","reject"],
+    // refused because its own preset role holds can:["read","write"],
     // which does not include `workflow`. Same verdict, correct reason.
     "/workflow/runs",
     "/workflow/runs/{id}",
@@ -2516,7 +2529,7 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     "/workflow/decision-evals/{id}",
     // The create loop, all five paths. Every surface here demands the
     // `workflow` role on top of the scope gate, so the agent class is refused
-    // 403 on all of them: its own preset holds can:["read","write","reject"],
+    // 403 on all of them: its own preset holds can:["read","write"],
     // and that set does not include `workflow`.
     //
     // The reads are listed for a real reason rather than for coverage. The
@@ -2570,11 +2583,11 @@ const ROLE_GATED_FOR_AGENT: &[&str] = &[
     // NOT workflow-gated (verified: the relay `workflow` sites both live in
     // post_handover_offer; accept/decline + mesh's post_delegation_result
     // carry only the scope gate — they pass for this class on Write)
-    // approve / translate / purge / dsar_export — note `reject` is NOT
-    // here: the `agent` preset role CAN reject (its own drafts), so the
-    // reject route passes the role gate for this class; nor is
-    // `/kcs/articles/{id}/publish` — its retract branch carries only the
-    // Write scope (the 409 there is pass-path route vocabulary)
+    // approve / translate / purge / dsar_export — `reject` JOINED the array
+    // in R115 (the preset no longer holds it; see the head of this list);
+    // nor is `/kcs/articles/{id}/publish` listed — its retract branch
+    // carries only the Write scope (the 409 there is pass-path route
+    // vocabulary)
     "/proposals/{id}/approve",
     "/kcs/articles/{id}/approve",
     "/kcs/translate",

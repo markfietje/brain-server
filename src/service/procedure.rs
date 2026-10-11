@@ -64,7 +64,8 @@ impl From<rusqlite::Error> for ProcedureError {
 /// but can't be aborts the tx); the `next_step` edges are written only when
 /// the ROOT is clean, and their `ON CONFLICT DO UPDATE` makes a re-ingest
 /// of the same pair idempotent. `domain` defaults to `global`; `origin` is
-/// `operator`, `source` `manual` — both verbatim.
+/// `operator` (or `channel-capture` when the caller labelled the runbook
+/// captured traffic), `source` `manual` — both verbatim.
 #[allow(clippy::too_many_arguments)] // the (pii-less) screen flags + owner ride alongside the write params; a struct would add ceremony to the single call site
 pub(crate) fn store_procedure(
     tx: &rusqlite::Transaction<'_>,
@@ -75,13 +76,20 @@ pub(crate) fn store_procedure(
     root_quarantine: bool,
     step_quarantine: &[bool],
     owner: &Option<String>,
+    origin: &str,
 ) -> Result<(i64, Vec<i64>), ProcedureError> {
     // Root chunk: memory_kind = 'procedure'.
     let content_hash = crate::audit::hash(&format!("{title}|{content}"));
     tx.execute(
         "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, origin)
-         VALUES (?1, ?2, ?3, 'manual', ?4, 'procedure', 'operator')",
-        params![title, content, content_hash, domain.unwrap_or("global")],
+         VALUES (?1, ?2, ?3, 'manual', ?4, 'procedure', ?5)",
+        params![
+            title,
+            content,
+            content_hash,
+            domain.unwrap_or("global"),
+            origin
+        ],
     )
     .map_err(|e| ProcedureError::Storage(format!("procedure insert failed: {e}")))?;
     let root_id = tx.last_insert_rowid();
@@ -107,14 +115,15 @@ pub(crate) fn store_procedure(
         let kind_str = step_kind.as_str();
         tx.execute(
             "INSERT INTO knowledge (title, content, content_hash, source, domain, node_kind, parent_id, origin)
-             VALUES (?1, ?2, ?3, 'manual', ?4, ?5, ?6, 'operator')",
+             VALUES (?1, ?2, ?3, 'manual', ?4, ?5, ?6, ?7)",
             params![
                 step_title,
                 step_content,
                 hash,
                 domain.unwrap_or("global"),
                 kind_str,
-                root_id
+                root_id,
+                origin
             ],
         )
         .map_err(|e| ProcedureError::Storage(format!("step insert failed: {e}")))?;
