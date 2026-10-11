@@ -8592,7 +8592,9 @@ Final paragraph after the rule.";
             .await
             .unwrap();
         let status = resp.status();
-        let body_bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 1 << 20)
+            .await
+            .unwrap();
         assert_eq!(
             status,
             axum::http::StatusCode::CREATED,

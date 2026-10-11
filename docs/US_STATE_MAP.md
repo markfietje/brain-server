@@ -178,11 +178,23 @@ these change the component's posture (the header's "no comprehensive federal
 AI law" stands — these are EOs and rulemaking, not statutes), but a
 deployer-facing register should no longer say they are unverifiable.
 
-**Export controls (L9-15): UNKNOWN → measured.** The 2026 FR sweep found
-**no BIS model-weights rule** (chip/chokepoint rulemaking continues). This
-component is not a weights distributor; the row moves from "unknown" to
-"none found in the FR sweep as of 2026-10-06 — watch", which is a dated
-observation, not a permanent fact.
+**Export controls (L9-15 + T4-07 reconciled, 2026-10-12): no BIS
+model-weights rule IN FORCE.** The tenth pass's T4-07 ("false negative — 90
+FR 4544 exists") and this map's "none found" were both half-right, and the
+reconciliation is: **90 FR 4544 (published 2025-01-15)** — the "Framework
+for Artificial Intelligence Diffusion" IFR, which CREATED ECCN 4E091 for
+advanced AI model weights — was **RESCINDED before its effective date**
+(withdrawal published 2025-05-15, 90 FR 25384; BIS announced 2025-05-13 it
+would not enforce and would re-propose). So the rule exists as a historical
+document and its ECCN exists in the numbering, but the license requirement
+is NOT in force — "no model-weights rule in effect" remains the operative
+truth, now with the instrument named instead of merely absent from a sweep.
+**Provenance: search-unavailable from this environment** (the FR API sweep
+of 2026-10-06 plus the ninth pass's live verification are the evidence;
+the 2026-10-12 re-check was bot-walled, federalregister.gov
+unblock-redirected — the row stands on the 2026-10-06 measurement). Watch:
+BIS's promised replacement rulemaking is the reopen trigger. This component
+is not a weights distributor; component risk stays unchanged.
 
 **CT CART (L9-16): live on date arithmetic, statute still unread.** General
 duties (PA 26-15) went live **2026-10-01** — five days before this

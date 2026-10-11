@@ -38,12 +38,13 @@ The law, three sentences:
 
 | Guard | Subject | Class | Owed |
 |---|---|---|---|
-| `the_ingest_audit_row_precedes_its_commit` | `ingest_memory` (the audit-before-commit ordering) | structural (offset) | a crash-injection drill (the sibling add-arm's rollback-twin shape) |
-| `the_edge_history_surface_is_bounded_and_discloses` | `get_edge_history` (the cap + `truncated` disclosure) | structural (substring) | a behavioral cap assertion through the composed app with `EDGE_HISTORY_MAX`+1 versions |
+| `the_ingest_audit_row_precedes_its_commit` | `ingest_memory` (the audit-before-commit ordering) | structural (offset) | RETIRED to `the_ingest_lands_its_evidence_row_on_the_chain` (the behavioral arm through the real app; the offset pin stays as the regression lock) |
+| `the_edge_history_surface_is_bounded_and_discloses` | `get_edge_history` (the cap + `truncated` disclosure) | structural (substring) | RETIRED to `the_edge_history_cap_bounds_and_discloses` (EDGE_HISTORY_MAX+5 through the real app; the wiring pin stays) |
 | The rate-limit wiring pin | `tools/signal-gateway/tests/s8_04_rate_limit_wired.rs` (the `apply_rate_limit(app,` literal) | structural (substring) | an env-conditioned wrap satisfies the behavioral e2e while production stays off — the wrap should be unconditional by construction |
 | The Art 50 wiring check | `src/reg_watch.rs` (file-granular over four classes) | structural (file-granular) | per-emission-point wiring assertions (the behavioral provenance meta-test is the real guard today) |
 | The release/CI band pin | `tests/lock_discipline_pins.rs` (`the_release_and_ci_band_carries_its_gates`) | structural (substring over the workflow YAML) | behavioral: the workflows only execute on the runner — the red-proof for each arm is the register row it closes (F4-13/14/16/17/22), observed open in the tree before the change |
-| Mutable container base images | `Dockerfile` (`rust:1-bookworm`, `debian:bookworm-slim`), `docker-compose.yml` (`oauth2-proxy:latest`) | none — OPEN | digest pins (`@sha256:…`) require resolving real digests from the registry at merge time: an external act, recorded owed (F4-19) |
-| cargo-audit staleness | `.cargo/audit.toml` prose re-check triggers, no gate | none — OPEN | `--deny warnings` flips CI red on the standing yanked-crate warning; the gate needs the ignore list pruned FIRST (a lockfile decision), recorded owed (F4-21) |
-| WCAG evidence tags | `docs/trust/wcag22-aa-checklist.md` cites client-lane gates as shell evidence | none — OPEN | retarget the evidence tags to the shipping artifact (the shell a11y lane), owed (F4-15) |
-| Crate islands census | 5 of 13 `crates/` members unconsumed, unpinned | none — OPEN | `crates_consumed_set_is_pinned` with a per-entry reason (F4-18) |
+| Mutable container base images | `Dockerfile`, `docker-compose.yml` | structural (`the_release_and_ci_band_carries_its_gates` digest arm) | LANDED (F4-19): the three bases digest-pinned against registry-resolved digests; Dependabot `docker` ecosystem opens the bump PRs |
+| cargo-audit staleness | `.cargo/audit.toml` ignore list | structural (`no_ignored_advisory_is_fixed_in_the_current_lock`) | LANDED (F4-21): each ignore carries its crate inline; the pin fails when the crate leaves every tracked lockfile |
+| WCAG evidence tags | `docs/trust/wcag22-aa-checklist.md` | docs (scope banner) | PARTIAL (F4-15): the evidence-lane scope is stated honestly; the three mechanical gates' port to `shell/tests/` stays open |
+| Crate islands census | 4 `crates/` members unconsumed | structural (`crates_consumed_set_is_pinned`) | LANDED (F4-18): consumed + islands pinned with per-entry reasons |
+| The router's SQL mass | `src/server/router/memory.rs` (F4-08's 52 call shapes) | structural (`the_router_sql_census_is_pinned`, EQUALITY — any delta is loud) | the Cornerstone-order migration to the service layer remains the staged plan; the census makes the delta a named act meanwhile |

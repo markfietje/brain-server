@@ -1,6 +1,51 @@
 # Agent Execution Log — brain-server
 
-> **R120 "Conduit": the CI/supply-chain band lands its gates.** The F4-13…23
+> **R121 "Second Pass" + R122 "Conduit II": the closures attacked, the owed
+> rows landed.** The twelfth pass (a dedicated adversarial lane against
+> R115-R120's own diffs) found what a second pass exists to find, and the
+> owed-conversions batch landed alongside it.
+>
+> **The pass's findings, all closed same-session:**
+> 1. **The R116 taint inheritance was strippable** — `deep_merge` guarded
+>    only `id`/`integrity`, so a `{origin:null}` patch overwrote the emitted
+>    base and laundered a captured row in one call. The skip-list now guards
+>    `origin`/`untrusted` too (the pin extends the revise drill with the
+>    exact patch). 2. **R118's fixture-v2 was one-sided on the PLUGIN lane** —
+>    `INVISIBLE_CLASSES` stayed v1 (the "fails CI by design" claim is false
+>    there: the plugin's vitest runs nowhere in this repo — S9-07 biting).
+>    The lane moved to v2 and the fork suite runs it (72/72). 3.
+>    **`console_due` emitted the valet label raw**; it rides the read seam
+>    now. 4. **`AGENT_TOKEN_FILE`'s runtime reader bypassed the mode law**
+>    (boot enforced, mtime reload did not); it refuses now, and the boot
+>    message names the mode before the reader can disguise it as empty. 5.
+>    **THREAT_MODEL's "raw stored bytes" digest wording was false** —
+>    corrected to the read-canonical truth (the PII ceiling itself stands).
+>    6. Verdict asymmetry on `/add` + structured `/ingest` FILED (register
+>    line, not silently aged). The other four closures verified HELD.
+>
+> **The owed rows landed:** the two structural pins' behavioral conversions
+> (`the_ingest_lands_its_evidence_row_on_the_chain`,
+> `the_edge_history_cap_bounds_and_discloses` — real app, real fixtures);
+> the F4-19 digest pins (all three bases pinned against registry-resolved
+> digests + a Dependabot `docker` ecosystem); the F4-21 staleness gate
+> (`no_ignored_advisory_is_fixed_in_the_current_lock` — each ignore names
+> its crate inline); the F4-18 islands census
+> (`crates_consumed_set_is_pinned`, per-entry reasons); the F4-15 WCAG
+> scope banner; **F4-05's remaining half** (domain create + import each
+> write their chain row — the import REPLACES a corpus and wrote zero);
+> **the F4-08 census** (the router's 52 rusqlite shapes pinned at EQUALITY —
+> any delta is a named act; the migration stays staged in the register).
+> The regulatory band: T4-07 reconciled (90 FR 4544/ECCN 4E091 rescinded
+> pre-effect — "no rule in force" is the operative truth, the map row names
+> the instrument) and L4-15 (the CRA runbook carries an
+> APPLICABILITY-FIRST banner; the duty is conditional, the clocks accurate).
+>
+> **ponytail:** one deep_merge skip-list extension, one regex, two read-seam
+> calls, one reader guard, and pins — the owed conversions reuse the
+> existing harness; the census is equality-not-floor by design; no new
+> knob, no abstraction, no dependency.
+
+> **R120 "Conduit": the CI/supply-chain band lands its gates** The F4-13…23
 > row cluster from the tenth pass — mechanical, runner-side, and open for two
 > rounds because no round owned the workflows.
 >

@@ -11,6 +11,30 @@
 > Rehearsal: `scripts/cra-report-drill.sh` (timed tabletop; baseline record at
 > the bottom of this file).
 
+## APPLICABILITY FIRST — the duty table below is CONDITIONAL (register L4-15)
+
+Art 14 binds **economic operators** (the manufacturer that places the
+product with digital elements on the Union market; importer/distributor
+duties chain downstream). Brain-server is a COMPONENT a deployer builds and
+runs locally — so:
+
+- **Self-host only, never distributed**: you are very likely NOT a
+  manufacturer under the CRA; the clocks below probably do NOT bind you.
+  This runbook then stays as a documented non-claim — keep it for the day
+  that changes, file nothing, and record the non-claim in your own
+  compliance register.
+- **You distribute builds** (ship binaries/images to anyone else, Union or
+  not with Union customers): placing on the market makes the
+  manufacturer-shaped duties REAL for you, and this runbook is your drill
+  card as written.
+- **In between** (you operate for an organization that internal-deploys to
+  others in the same legal person): roles shift — the applicability call is
+  counsel's, and this file deliberately does not answer it for you.
+
+The clocks and channels below are ACCURATE either way; only the DUTY to use
+them is conditional. What this runbook does NOT discharge is unchanged: it
+is evidence and process, not a legal conclusion.
+
 ## When this runbook fires (trigger taxonomy)
 
 Two distinct triggers, two clocks, one channel pair:

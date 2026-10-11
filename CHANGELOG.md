@@ -4,6 +4,23 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R121/R122 "Second Pass" — the closures attacked, the owed rows landed
+
+The twelfth pass re-attacked R115-R120's own diffs and found six findings,
+all closed: the revise taint was strippable by a null-origin patch
+(`deep_merge` now guards `origin`/`untrusted` as server-authoritative);
+the plugin's invisible-set stayed on v1 when the fixture moved (lane fixed,
+fork suite runs it); `console_due` and the agent-file runtime reader now
+ride the read seam and the 0600 law; the THREAT_MODEL digest wording was
+corrected to the read-canonical truth. The owed conversions landed: the two
+structural pins' behavioral drills (chain-growth, edge-history cap through
+the real app), the F4-19 digest pins + Dependabot docker, the F4-21
+audit-staleness gate, the F4-18 islands census, the F4-15 scope banner,
+F4-05's remaining half (domain create/import audit rows), and the F4-08
+router SQL census (equality-pinned at 52). Regulatory: T4-07 reconciled
+(ECCN 4E091's rule rescinded pre-effect) and the CRA runbook gained the
+applicability-first banner.
+
 ## [Unreleased] — R120 "Conduit" — the CI/supply-chain band lands its gates
 
 - **Published releases carry `SHA256SUMS`** over every staged file
