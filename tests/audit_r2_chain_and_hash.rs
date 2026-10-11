@@ -48,6 +48,20 @@ fn install_chain_key() {
     );
 }
 
+/// The chain key is PROCESS-GLOBAL state, and this target both installs it
+/// (`install_chain_key`) and asserts properties that depend on WHICH state
+/// is live (`hash` determinism within a test). Cargo runs a binary's tests
+/// on parallel threads, so a test could observe the key appear mid-run —
+/// the separation pin flapped exactly that way in the full lane (two
+/// different digests for one input inside a single `assert_eq`). Every
+/// test here holds this lock: the file's assertions are serial against the
+/// shared key state.
+static KEY_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_key_state() -> std::sync::MutexGuard<'static, ()> {
+    KEY_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// `src/audit/mod.rs:182`:
 ///
 ///     pub fn hash(s: &str) -> String {
@@ -67,6 +81,7 @@ fn install_chain_key() {
 /// `workflow/case_status.rs:88` uses `Hmac::new_from_slice(salt)`.
 #[test]
 fn audit_hash_is_reversible_by_dictionary_attack() {
+    let _key_state = lock_key_state();
     install_chain_key();
     // The attacker's model of the target population — exactly the classes the
     // module doc names ("content, token, uri-with-secret") plus subject ids.
@@ -128,6 +143,7 @@ fn audit_hash_is_reversible_by_dictionary_attack() {
 /// remain pseudonymised, and the product's own answer is to configure a key.
 #[test]
 fn audit_hash_is_recoverable_without_a_chain_key() {
+    let _key_state = lock_key_state();
     let corpus = ["carol@example.com", "bob@example.com"];
     // Simulate the keyless (pre-fix) construction directly.
     use sha2::{Digest, Sha256};
@@ -157,6 +173,7 @@ fn audit_hash_is_recoverable_without_a_chain_key() {
 /// about RECOVERABILITY, not about collisions.
 #[test]
 fn audit_hash_still_separates_distinct_inputs() {
+    let _key_state = lock_key_state();
     assert_ne!(hash("alice@example.com"), hash("bob@example.com"));
     assert_eq!(hash("alice@example.com"), hash("alice@example.com"));
 }
@@ -185,6 +202,7 @@ fn audit_hash_still_separates_distinct_inputs() {
 /// `verify_chain` still returns TRUE.
 #[test]
 fn legacy_chain_does_not_commit_status_or_detail_hash() {
+    let _key_state = lock_key_state();
     for (label, sql) in [
         (
             "status",
@@ -223,6 +241,7 @@ fn legacy_chain_does_not_commit_status_or_detail_hash() {
 /// that length-prefixes `chain_link` must not weaken actor/target_hash.
 #[test]
 fn legacy_chain_still_detects_the_fields_it_commits() {
+    let _key_state = lock_key_state();
     for sql in [
         "UPDATE audit_events SET actor = 'mallory' WHERE id = 1",
         "UPDATE audit_events SET target_hash = 'deadbeef' WHERE id = 1",
@@ -303,6 +322,7 @@ fn db_with_legacy_chain() -> rusqlite::Connection {
 /// rewritten.
 #[test]
 fn unmigrated_legacy_chain_still_verifies_and_stays_legacy() {
+    let _key_state = lock_key_state();
     let db = db_with_legacy_chain();
     assert!(
         verify_chain(&db),
@@ -356,6 +376,7 @@ fn unmigrated_legacy_chain_still_verifies_and_stays_legacy() {
 /// the format, so `reanchor_to_hmac` refuses without one.
 #[test]
 fn reaudit_replays_a_legacy_chain_and_then_commits_status_and_detail() {
+    let _key_state = lock_key_state();
     install_chain_key();
     let db = db_with_legacy_chain();
     assert!(
@@ -392,6 +413,7 @@ fn reaudit_replays_a_legacy_chain_and_then_commits_status_and_detail() {
 /// freshly-verifying one.
 #[test]
 fn reaudit_refuses_a_broken_chain() {
+    let _key_state = lock_key_state();
     install_chain_key();
     let db = db_with_legacy_chain();
     db.execute("UPDATE audit_events SET actor = 'mallory' WHERE id = 2", [])

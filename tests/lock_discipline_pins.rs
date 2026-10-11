@@ -406,7 +406,9 @@ fn the_release_and_ci_band_carries_its_gates() {
     // F4-16: the shell type-check runs AFTER the supply-chain gates.
     let shell = read(".github/workflows/shell.yml");
     let audit = shell.find("pnpm audit --prod").expect("shell audit step");
-    let check = shell.find("Svelte check (strict)").expect("svelte-check step");
+    let check = shell
+        .find("Svelte check (strict)")
+        .expect("svelte-check step");
     assert!(
         audit < check,
         "the supply-chain audits must precede the type-check (F4-16: one red \
