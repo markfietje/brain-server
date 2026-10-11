@@ -3,9 +3,13 @@
 //! Every audit row stores **identifiers and hashes only** — never raw indexed
 //! content, token values, or secret-file contents. The `record` helper is a
 //! one-liner callers use at trust boundaries (auth, ingest, webhook verification,
-//! reconcile, backup). Hashing uses SHA-256 (upgraded from xxh3-64 so
-//! a stored `target_hash`/`detail_hash`/`query_hash` derived from low-entropy
-//! content is not offline-recoverable).
+//! reconcile, backup). Hashing is SHA-256 (upgraded from xxh3-64) and is
+//! **keyed (HMAC-SHA256) whenever a chain key is installed** — that keying,
+//! not the digest width, is what makes a stored `target_hash`/`detail_hash`/
+//! `query_hash` derived from low-entropy content non-offline-recoverable: an
+//! attacker holding only a DB backup cannot dictionary-attack a value they
+//! cannot MAC. Keyless deployments fall back to unkeyed SHA-256, which is
+//! pseudonymisation, NOT anonymisation — see [`hash`].
 //!
 //! Security hardening columns:
 //! - `tenant_id` column (default 'global') enables per-tenant scoping at the
@@ -20,7 +24,15 @@
 //! Two evidence-format layers sit on top of the original chain (both gated
 //! on a per-DB **epoch** stamped in `schema_meta`: absent/`legacy` = the
 //! historical 5-field SHA-256 link, byte-identical to every chain written
-//! before the epoch system existed; `hmac256` = the re-anchored scheme):
+//! before the epoch system existed; `sha7` = the corrected 7-field link;
+//! `hmac256` = the re-anchored scheme):
+//! - **7-field links:** the `sha7` link is SHA-256 over the prior row's
+//!   `(ts, kind, actor, target_hash, status, detail_hash, prev_hash)`,
+//!   length-prefixed so no separator an attacker-controlled string could
+//!   shift. It closes the gap the 5-field `legacy` link left — `status` and
+//!   `detail_hash` were OUTSIDE its preimage, so an audit row's outcome could
+//!   be rewritten undetected. It is still **unkeyed**: field coverage is what
+//!   it adds, keying is `hmac256`.
 //! - **8-field keyed links:** the `hmac256` link is HMAC-SHA256 over
 //!   the prior row's `(id, ts, kind, actor, target_hash, status, detail_hash,
 //!   prev_hash)` — the full row — so a recomputed chain must reproduce every
@@ -34,10 +46,21 @@
 //!   is detected, and `backup::restore` compares pre/post pins to disclose a
 //!   rolled-back chain.
 //!
+//! Which format a DB uses is decided ONCE, by its first audit row, and then
+//! frozen in the stamp:
+//! - An **unstamped DB that already has rows** is a pre-`sha7` chain: it stays
+//!   `legacy`, byte-for-byte, forever. Its links are recomputed exactly as they
+//!   always were, so **upgrading the binary never makes an existing chain fail
+//!   `verify_chain`** — the single most dangerous outcome of a chain-format
+//!   change on evidence an operator is regulated on.
+//! - An **unstamped DB with no rows** has no format to preserve, so the first
+//!   append stamps `sha7` in the same tx ([`record_tenant_checked`]). New
+//!   evidence is never written in the weaker form again.
+//! - [`bootstrap_epoch`] still takes a row-less DB straight to `hmac256` when a
+//!   chain key is available, so production boot reaches the keyed epoch first.
+//!
 //! An existing chain is NEVER silently converted — the format flips only via
-//! the offline `brain-server --re-audit` re-anchor (see [`reanchor_to_hmac`]);
-//! a fresh (row-less) DB bootstraps directly to `hmac256` when a key is
-//! available ([`bootstrap_epoch`]).
+//! the offline `brain-server --re-audit` re-anchor (see [`reanchor_to_hmac`]).
 //!
 //! Schema (additive migration in `main.rs::run_migration`):
 //! ```sql
@@ -174,13 +197,34 @@ impl AuditStatus {
     }
 }
 
-/// Hash an identifier/detail string with SHA-256. Used so the audit log never
-/// stores the raw value (content, token, uri-with-secret, etc.). The value fed
-/// in may itself be a pre-computed digest; the SHA-256 wrapper guarantees the
-/// stored form is not a fast non-cryptographic fingerprint of low-entropy data
-/// (see the module doc).
+/// Hash an identifier/detail string. Used so the audit log never stores the
+/// raw value (content, token, uri-with-secret, etc.). The value fed in may
+/// itself be a pre-computed digest.
+///
+/// **Keyed when a chain key is installed** (the `init_chain_key` ladder: env →
+/// 0600 key file → generated). Under a key this is HMAC-SHA256 over
+/// `brain-audit-hash|<value>` — domain-separated from the chain-link and pin
+/// MACs that share the key — so a stored digest of low-entropy content cannot
+/// be dictionary-attacked by an attacker holding only a DB backup: they cannot
+/// compute candidate MACs without the key. This is what makes the
+/// "not offline-recoverable" claim in the module doc true.
+///
+/// **Unkeyed when no chain key is installed:** the historical plain SHA-256,
+/// byte-identical to every digest written before this change, so keyless and
+/// legacy deployments keep working unchanged. That form IS offline
+/// dictionary-recoverable — a keyless deployment is pseudonymised, not
+/// anonymised, and the module doc no longer claims otherwise.
 pub fn hash(s: &str) -> String {
-    hex_encode(&Sha256::digest(s.as_bytes()))
+    match chain_key() {
+        Some(key) => {
+            let mut mac = Hmac::<Sha256>::new_from_slice(key.as_ref())
+                .expect("HMAC accepts keys of any length");
+            mac.update(b"brain-audit-hash|");
+            mac.update(s.as_bytes());
+            hex_encode(&mac.finalize().into_bytes())
+        }
+        None => hex_encode(&Sha256::digest(s.as_bytes())),
+    }
 }
 
 /// SHA-256 hex digest of the chain-link payload. The payload is the
@@ -205,17 +249,24 @@ fn chain_link(ts: &str, kind: &str, actor: &str, target_hash: &str, prev_hash: &
 //
 // The chain's FORMAT is per-DB state stamped in `schema_meta`: the epoch.
 // `legacy` (or absent) keeps the byte-identical 5-field SHA-256 link every
-// release before 1.27.31 wrote; `hmac256` is the re-anchored 8-field
-// HMAC-SHA256 link. Nothing flips an existing chain implicitly — only
-// [`reanchor_to_hmac`] (the offline `--re-audit`) or [`bootstrap_epoch`]
-// (row-less fresh DB, key available) writes the epoch stamp.
+// release before 1.27.31 wrote; `sha7` is the corrected 7-field link (the
+// first append to an unstamped, row-less DB stamps it); `hmac256` is the
+// re-anchored 8-field HMAC-SHA256 link. Nothing flips an existing chain
+// implicitly — only [`reanchor_to_hmac`] (the offline `--re-audit`) or
+// [`bootstrap_epoch`] (row-less fresh DB, key available) writes the stamp
+// for a DB that already has a format to keep.
 
-/// `schema_meta` key holding the chain epoch (`legacy` | `hmac256`).
+/// `schema_meta` key holding the chain epoch (`legacy` | `sha7` | `hmac256`).
 pub const EPOCH_META_KEY: &str = "audit_chain_epoch";
 /// `schema_meta` key holding the head pin (JSON [`HeadPin`]).
 pub const HEAD_PIN_META_KEY: &str = "audit_chain_head";
 /// Epoch value: the historical 5-field SHA-256 link (default when unstamped).
 pub const EPOCH_LEGACY: &str = "legacy";
+/// Epoch value: unkeyed SHA-256 over all seven link-committed fields — the
+/// corrected link. Still unkeyed: what it adds over `legacy` is field
+/// COVERAGE (`status` and `detail_hash` are inside the preimage), not a key.
+/// A keyless deployment that can be re-anchored should be, to `hmac256`.
+pub const EPOCH_SHA7: &str = "sha7";
 /// Epoch value: HMAC-SHA256 over the full 8-field row.
 pub const EPOCH_HMAC: &str = "hmac256";
 
@@ -224,6 +275,8 @@ pub const EPOCH_HMAC: &str = "hmac256";
 pub enum ChainEpoch {
     /// 5-field SHA-256 links — byte-identical to pre-1.27.31 chains.
     Legacy,
+    /// 7-field SHA-256 links — [`chain_link_sha7`], the corrected link.
+    Sha7,
     /// 8-field HMAC-SHA256 links — requires [`chain_key`].
     Hmac256,
 }
@@ -231,8 +284,10 @@ pub enum ChainEpoch {
 /// Read the DB's chain epoch. Tolerant by design: a missing `schema_meta`
 /// table, a missing key, or an unrecognized value all read as `Legacy` (the
 /// historical default — every chain in existence before 1.27.31 is legacy,
-/// so absence IS the legacy answer). An unrecognized non-empty value is
-/// warned about: it can only come from tampering or a newer binary.
+/// so absence IS the legacy answer, and a chain that HAS rows must never be
+/// reinterpreted under a link format it was not written with). An
+/// unrecognized non-empty value is warned about: it can only come from
+/// tampering or a newer binary.
 fn read_epoch(conn: &Connection) -> ChainEpoch {
     let v: Option<String> = conn
         .query_row(
@@ -243,6 +298,7 @@ fn read_epoch(conn: &Connection) -> ChainEpoch {
         .ok();
     match v.as_deref() {
         Some(EPOCH_HMAC) => ChainEpoch::Hmac256,
+        Some(EPOCH_SHA7) => ChainEpoch::Sha7,
         Some(EPOCH_LEGACY) | None => ChainEpoch::Legacy,
         Some(other) => {
             tracing::warn!("audit chain epoch '{other}' unrecognized — reading as legacy");
@@ -256,6 +312,8 @@ fn read_epoch(conn: &Connection) -> ChainEpoch {
 enum Scheme {
     /// Historical 5-field SHA-256.
     Legacy,
+    /// 7-field SHA-256 — the corrected unkeyed link.
+    Sha7,
     /// 8-field HMAC-SHA256 keyed by the process chain key.
     Hmac(Arc<[u8; 32]>),
 }
@@ -264,6 +322,7 @@ enum Scheme {
 fn scheme_epoch(scheme: &Scheme) -> &'static str {
     match scheme {
         Scheme::Legacy => EPOCH_LEGACY,
+        Scheme::Sha7 => EPOCH_SHA7,
         Scheme::Hmac(_) => EPOCH_HMAC,
     }
 }
@@ -275,6 +334,7 @@ fn scheme_epoch(scheme: &Scheme) -> &'static str {
 fn current_scheme(conn: &Connection) -> Option<Scheme> {
     match read_epoch(conn) {
         ChainEpoch::Legacy => Some(Scheme::Legacy),
+        ChainEpoch::Sha7 => Some(Scheme::Sha7),
         ChainEpoch::Hmac256 => chain_key().map(Scheme::Hmac),
     }
 }
@@ -306,8 +366,35 @@ fn row_link(scheme: &Scheme, row: &ChainRowFull) -> String {
             &row.target_hash,
             row.prev_hash.as_deref().unwrap_or(""),
         ),
+        Scheme::Sha7 => chain_link_sha7(row),
         Scheme::Hmac(key) => chain_link_hmac(key.as_ref(), row),
     }
+}
+
+/// SHA-256 over the seven link-committed fields — the `sha7` epoch's link, and
+/// the correction to [`chain_link`]: that one leaves `status` and
+/// `detail_hash` outside the preimage, so a legacy chain's audit OUTCOME can
+/// be rewritten with the chain still verifying.
+///
+/// Length-prefixed exactly like [`chain_link_hmac`] (u64 LE byte-length before
+/// each field) so no separator an attacker-controlled `actor`/`kind` string
+/// could shift. `id` stays excluded for the same reason [`chain_link`]
+/// excludes it: a renumbered restore keeps its chain.
+fn chain_link_sha7(row: &ChainRowFull) -> String {
+    let mut h = Sha256::new();
+    for field in [
+        row.ts.as_bytes(),
+        row.kind.as_bytes(),
+        row.actor.as_bytes(),
+        row.target_hash.as_bytes(),
+        row.status.as_bytes(),
+        row.detail_hash.as_bytes(),
+        row.prev_hash.as_deref().unwrap_or("").as_bytes(),
+    ] {
+        h.update((field.len() as u64).to_le_bytes());
+        h.update(field);
+    }
+    hex_encode(&h.finalize())
 }
 
 /// HMAC-SHA256 over the FULL row. Length-prefixed fields (u64 LE
@@ -522,7 +609,7 @@ impl HeadPin {
         let hash = row_link(scheme, row);
         let epoch = scheme_epoch(scheme).to_string();
         let mac = match scheme {
-            Scheme::Legacy => None,
+            Scheme::Legacy | Scheme::Sha7 => None,
             Scheme::Hmac(key) => Some(pin_mac(key.as_ref(), &epoch, id, &hash)),
         };
         Self {
@@ -635,6 +722,26 @@ fn write_genesis_pin(conn: &Connection, pin: &HeadPin) -> bool {
 
 fn delete_pin(conn: &Connection, key: &str) {
     let _ = conn.execute(&format!("DELETE FROM schema_meta WHERE key = '{key}'"), []);
+}
+
+/// Persist the chain epoch. Creates `schema_meta` when absent (unit-test DBs
+/// and pre-v0.9 fixtures), like [`write_pin`]. Called ONLY from the first
+/// append to a row-less chain (inside the audit tx), which is the one moment a
+/// DB has no format to preserve: from then on the stamp is the format, and no
+/// code path rewrites it for a chain that already has rows except the
+/// explicit [`reanchor_to_hmac`].
+fn write_epoch_stamp(conn: &Connection, epoch: &str) -> bool {
+    conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT);")
+        .is_ok()
+        && conn
+            .execute(
+                &format!(
+                    "INSERT INTO schema_meta(key, value) VALUES ('{EPOCH_META_KEY}', ?1)
+                     ON CONFLICT(key) DO UPDATE SET value = ?1"
+                ),
+                params![epoch],
+            )
+            .is_ok()
 }
 
 /// The legacy-scheme pin for a DB's CURRENT tip — used by the
@@ -893,16 +1000,31 @@ pub fn record_tenant_checked(
         } else {
             None
         };
-        let scheme = match epoch.as_deref() {
-            None | Some(EPOCH_LEGACY) => Scheme::Legacy,
-            Some(EPOCH_HMAC) => Scheme::Hmac(chain_key().ok_or(AuditWriteError::Key)?),
-            Some(_) => return Err(AuditWriteError::Epoch),
-        };
         let tip = conn.query_row(
             "SELECT id, ts, kind, actor, target_hash, status, detail_hash, prev_hash FROM audit_events ORDER BY id DESC LIMIT 1",
             [], map_full_row,
         ).optional().map_err(|_| AuditWriteError::Tip)?;
         let is_first_row = tip.is_none();
+        let scheme = match epoch.as_deref() {
+            // An unstamped DB that already has rows is a pre-`sha7` chain:
+            // fall through to `legacy` below and keep recomputing its links
+            // byte-for-byte, so upgrading the binary cannot make an existing
+            // chain fail verify. An unstamped DB with NO rows has no format to
+            // preserve — this first append picks the corrected 7-field link and
+            // stamps it in the same tx, so new evidence is never written in the
+            // weaker form again. Production reaches `hmac256` first via
+            // `bootstrap_epoch` at boot (a row-less DB + a chain key).
+            None if is_first_row => {
+                if !write_epoch_stamp(conn, EPOCH_SHA7) {
+                    return Err(AuditWriteError::Epoch);
+                }
+                Scheme::Sha7
+            }
+            None | Some(EPOCH_LEGACY) => Scheme::Legacy,
+            Some(EPOCH_SHA7) => Scheme::Sha7,
+            Some(EPOCH_HMAC) => Scheme::Hmac(chain_key().ok_or(AuditWriteError::Key)?),
+            Some(_) => return Err(AuditWriteError::Epoch),
+        };
         let prev_hash = tip.map(|row| row_link(&scheme, &row));
         let target_hash = hash(target);
         let detail_hash = hash(detail);
@@ -1301,7 +1423,7 @@ fn verify_chain_inner(conn: &Connection, require_pin_macs: bool) -> bool {
         return false;
     };
     let keyed_mac = match &scheme {
-        Scheme::Legacy => None,
+        Scheme::Legacy | Scheme::Sha7 => None,
         Scheme::Hmac(key) => Some(*key.as_ref()),
     };
     let mut stmt = match conn.prepare(
@@ -1355,9 +1477,9 @@ fn verify_chain_inner(conn: &Connection, require_pin_macs: bool) -> bool {
     // pin is state an attacker with SQL write access could otherwise
     // rewrite at will (it lives in the same DB it guards). The MAC key is
     // the chain key: already outside the DB, already required to forge a
-    // link. Skipped for legacy-epoch chains (no key exists; the legacy
-    // posture keeps its documented weaker pins) and for the one-shot
-    // upgrade walk that re-stamps old mac-less pins.
+    // link. Skipped for legacy- and sha7-epoch chains (the write path commits
+    // no key for them; their posture keeps the documented weaker pins) and for
+    // the one-shot upgrade walk that re-stamps old mac-less pins.
     if let (Some(key), true) = (&keyed_mac, require_pin_macs) {
         let head = read_head_pin(conn);
         let genesis = read_genesis_pin(conn);
@@ -1603,7 +1725,7 @@ pub fn upgrade_pins(conn: &Connection) -> bool {
         let head = read_head_pin(conn);
         let genesis = read_genesis_pin(conn);
         let macs_done = match &scheme {
-            Scheme::Legacy => true,
+            Scheme::Legacy | Scheme::Sha7 => true,
             Scheme::Hmac(_) => {
                 head.as_ref().is_some_and(|p| p.mac.is_some())
                     && genesis.as_ref().is_some_and(|p| p.mac.is_some())
@@ -2373,8 +2495,12 @@ mod tests {
         );
         let audit_link: Option<String> = tx
             .query_row(
-                "SELECT ts, kind, actor, target_hash, prev_hash FROM audit_events WHERE target_hash = ?1",
-                params![crate::audit::hash("audit-event")],
+                "SELECT ts, kind, actor, target_hash, prev_hash FROM audit_events WHERE actor = 'api' ORDER BY id DESC LIMIT 1",
+                // Selected by ACTOR, not by a recomputed `hash(...)`: `hash()` is
+                // keyed when a chain key is installed and this test holds no key
+                // gate, so a parallel key change made the lookup miss and the
+                // assertion silently degraded. Actor is the stable identity.
+                [],
                 |r| {
                     Ok(chain_link(
                         &r.get::<_, String>(0)?,
@@ -2428,9 +2554,22 @@ mod tests {
         assert!(verify_chain(&db), "NULL-prefix then chained rows verifies");
         // …then erase the LAST row's backref mid-chain (the tamper the rule
         // exists for — a prior non-NULL backref exists, so the prefix is over).
+        //
+        // Select the row by POSITION, never by recomputing `hash("c2")`:
+        // `hash()` is keyed when a chain key is installed and this test holds
+        // no key gate, so a parallel test installing or removing a key made
+        // the lookup miss (or hit another row) and the tamper went undetected.
+        // `ORDER BY id DESC LIMIT 1` is what "the last row" actually means.
+        let last_id: i64 = db
+            .query_row(
+                "SELECT id FROM audit_events ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .expect("last row id");
         db.execute(
-            "UPDATE audit_events SET prev_hash = NULL WHERE target_hash = ?1",
-            params![crate::audit::hash("c2")],
+            "UPDATE audit_events SET prev_hash = NULL WHERE id = ?1",
+            params![last_id],
         )
         .unwrap();
         assert!(
@@ -2566,9 +2705,19 @@ mod tests {
         assert_eq!(page0.len(), 4);
         assert_eq!(page1.len(), 4);
         assert_eq!(page2.len(), 2);
+        // Newest-first must be asserted on the ORDER KEY, not inferred from
+        // `target_hash`. This test used `page0[0].target_hash >
+        // page0[3].target_hash` as a proxy for descending id — which only held
+        // while `hash()` was plain SHA-256 and the targets were `c0..c9` (their
+        // digests happened to sort the same way). `hash()` is now KEYED when a
+        // chain key is installed, so the digest order is unrelated to insertion
+        // order and the proxy became a coin flip that flaked whenever a
+        // parallel test installed a key. Assert the real property: descending id.
         assert!(
-            page0[0].target_hash > page0[3].target_hash,
-            "descending by id"
+            page0[0].id > page0[3].id,
+            "newest-first: page0[0] must be the higher id (got {} vs {})",
+            page0[0].id,
+            page0[3].id
         );
         // No overlap / no gap: the union is exactly ids 1..=10.
         let all: Vec<i64> = [page0, page1, page2]
@@ -2917,7 +3066,7 @@ mod tests {
         let pin1 = read_head_pin(&db).expect("pin after first write");
         assert_eq!(pin1.id, 1);
         assert_eq!(pin1.hash, chain_head(&db).expect("head"));
-        assert_eq!(pin1.epoch, EPOCH_LEGACY);
+        assert_eq!(pin1.epoch, EPOCH_SHA7);
         record(&db, AuditKind::Ingest, "api", "c2", AuditStatus::Ok, "d2");
         let pin2 = read_head_pin(&db).expect("pin after second write");
         assert_eq!(pin2.id, 2, "the pin follows the tip");
@@ -3256,12 +3405,14 @@ mod tests {
         set_chain_key_for_test(None);
     }
 
-    /// Legacy chains get the STRUCTURAL genesis (no key exists to MAC with):
-    /// prefix deletion is detected by id+hash alone, pin rewriting is not
-    /// (the documented legacy ceiling — the keyed epoch is the upgrade path).
+    /// An UNKEYED epoch's genesis is structural (no key exists to MAC
+    /// with): prefix deletion is detected by id+hash alone, pin rewriting is
+    /// not (the documented unkeyed ceiling — the keyed epoch is the upgrade
+    /// path). No key installed → the first append stamps the unkeyed `sha7`
+    /// epoch.
     #[test]
     fn legacy_genesis_is_structural_only() {
-        let db = db_with_meta(); // no key installed → legacy epoch
+        let db = db_with_meta(); // no key installed → unkeyed (sha7) epoch
         for i in 1..=3 {
             record(
                 &db,
@@ -3344,7 +3495,7 @@ mod tests {
     }
 
     /// Fresh-DB bootstrap: only a row-less DB with a key available starts on
-    /// hmac256; anything with history stays legacy until --re-audit.
+    /// hmac256; anything with history keeps its own epoch until --re-audit.
     #[test]
     fn bootstrap_epoch_only_for_fresh_dbs_with_key() {
         let _gate = key_gate();
@@ -3361,8 +3512,9 @@ mod tests {
         // Already stamped → idempotent no-op.
         assert!(!bootstrap_epoch(&fresh));
 
-        // Key + rows → stays legacy (evidence format changes only via
-        // --re-audit).
+        // Key + rows → keeps its own epoch (evidence format changes only via
+        // --re-audit). The key is irrelevant here: this chain's FIRST append
+        // already happened, unstamped, and stamped the corrected `sha7` link.
         let historical = db_with_meta();
         record(
             &historical,
@@ -3373,7 +3525,7 @@ mod tests {
             "d1",
         );
         assert!(!bootstrap_epoch(&historical));
-        assert_eq!(read_epoch(&historical), ChainEpoch::Legacy);
+        assert_eq!(read_epoch(&historical), ChainEpoch::Sha7);
         set_chain_key_for_test(None);
     }
 }
