@@ -84,10 +84,23 @@ fn scalar_meta(conn: &Connection, key: &str) -> Option<String> {
 /// rows it could not read would certify a census it never took.
 pub fn fingerprint(conn: &Connection) -> Result<AnchorV1, String> {
     // Knowledge census: streaming, memory-bounded — the live DB's content
-    // column is the whole point, so it is hashed row-by-row (audit::hash's
-    // SHA-256, re-used verbatim) and rolled into one root. Ordering by id
-    // makes the walk deterministic; quarantined rows are business rows too
-    // and are included.
+    // column is the whole point, so it is hashed row-by-row and rolled into
+    // one root. Ordering by id makes the walk deterministic; quarantined rows
+    // are business rows too and are included.
+    //
+    // The per-row digest is deliberately PLAIN, UNKEYED SHA-256 — NOT
+    // `crate::audit::hash`, which is keyed whenever a chain key is installed.
+    // An anchor is recorded OFF-HOST and re-verified later (on another
+    // process, possibly another host), so its root must depend only on the
+    // DATA. Folding a keyed hash in here made the fingerprint a function of
+    // the process-global chain key: a key rotation, a regenerated
+    // `audit-chain.key`, or a concurrently-running test that installs one all
+    // change the root for byte-identical content, and `--verify` reports
+    // "moved" — indistinguishable from real tamper. Keying also buys nothing
+    // for this caller: an attacker able to rewrite `knowledge` rows on the
+    // host can read the key too, so a keyed root would not resist an attacker
+    // who is already there, while an unkeyed one still detects any change
+    // made without host access (the threat the anchor actually covers).
     let mut root = Sha256::new();
     let mut stmt = conn
         .prepare("SELECT id, content FROM knowledge ORDER BY id")
@@ -104,7 +117,8 @@ pub fn fingerprint(conn: &Connection) -> Result<AnchorV1, String> {
         knowledge_rows += 1;
         root.update(id.to_string().as_bytes());
         root.update(b"\x1f");
-        root.update(crate::audit::hash(&content).as_bytes());
+        // Plain SHA-256 hex — see the note above on why this is NOT keyed.
+        root.update(crate::audit::hex_encode(&Sha256::digest(content.as_bytes())).as_bytes());
         root.update(b"\x1e");
     }
     Ok(AnchorV1 {
@@ -257,6 +271,60 @@ mod pins {
         let mut conn = Connection::open(&path).expect("open temp db");
         crate::migration::run_migration(&mut conn, 0).expect("migrate temp db");
         (path, conn)
+    }
+
+    /// The anchor's `knowledge_root` must depend ONLY on the data — never on
+    /// the process-global chain key.
+    ///
+    /// Regression pin for a real defect: `fingerprint()` folded the (now
+    /// keyed) `crate::audit::hash` into the census root, so installing,
+    /// rotating, or regenerating `audit-chain.key` changed the root for
+    /// byte-identical content and `--verify` reported "moved" — which is
+    /// indistinguishable from real tamper, and flaked the audit/anchor test
+    /// suites whenever a test mutated the key in parallel.
+    ///
+    /// An anchor is recorded off-host and re-checked on another process or
+    /// host, so stability across those boundaries is the property it must
+    /// have. Keying buys nothing here: an attacker who can rewrite `knowledge`
+    /// on the host can read the key too.
+    #[test]
+    fn anchor_root_is_independent_of_the_chain_key() {
+        let (_path, conn) = anchored_db("keyindep");
+        conn.execute(
+            "INSERT INTO knowledge (title, content, content_hash, domain) \
+             VALUES ('t', 'body under a key', 'x', 'global')",
+            [],
+        )
+        .expect("insert row");
+
+        // No key installed.
+        let without_key = fingerprint(&conn)
+            .expect("fingerprint (no key)")
+            .knowledge_root;
+
+        // Install a key, then a DIFFERENT one.
+        crate::audit::set_chain_key_for_test(Some([1u8; 32]));
+        let with_key_a = fingerprint(&conn)
+            .expect("fingerprint (key A)")
+            .knowledge_root;
+        crate::audit::set_chain_key_for_test(Some([2u8; 32]));
+        let with_key_b = fingerprint(&conn)
+            .expect("fingerprint (key B)")
+            .knowledge_root;
+        crate::audit::set_chain_key_for_test(None);
+
+        assert_eq!(
+            without_key, with_key_a,
+            "installing a chain key changed the anchor root for identical content — \
+             an anchor recorded before the key existed would fail --verify as \
+             'moved' (tamper) when nothing changed"
+        );
+        assert_eq!(
+            with_key_a, with_key_b,
+            "ROTATING the chain key changed the anchor root for identical content — \
+             key rotation is a routine operator action and must not invalidate a \
+             recorded anchor"
+        );
     }
 
     #[test]
