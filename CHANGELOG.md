@@ -4,6 +4,22 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R119 "Gatewright" — the process round, two passes overdue
+
+- **`docs/gate-law-register.md`** — the standing artifact the audits kept
+  finding missing: every guard carries a row with its red-proof and its
+  class (behavioral / structural / exhaustive); structural rows are
+  regression locks with an `owed` column naming the behavioral conversion
+  that retires them. Seeded with the ten standing guards and the four
+  text-bound rows (the two lowtide wiring pins, the rate-limit literal, the
+  file-granular Art 50 check). Anti-rot pin included.
+- **Docs truth**: the COMPLIANCE.md PHI row states the read-time boundary
+  honestly (no write-time vault; raw PHI at rest behind volume encryption),
+  and the DSAR deadline constants are relabelled as the operator-windowed
+  processing deadline (Art 17 sets no clock).
+- **Register hygiene**: F4-05 corrected to PARTIALLY CLOSED; R111 joined
+  `SHIPPED_ROUNDS`.
+
 ## [Unreleased] — R118 "Lowtide" — the LOW band closes before it ages
 
 Eight known-LOW defects, one batch, each a bounded read, a parse, a header,

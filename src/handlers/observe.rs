@@ -154,7 +154,7 @@ pub struct DsarResponse {
     pub status: &'static str,
     /// when the request was created (ledger `created_at`).
     pub created_at: i64,
-    /// the computed Art 17 erasure deadline
+    /// the computed DSAR processing deadline (the operator window; Art 17 itself sets no clock)
     /// (`created_at + window`) — the client clock's source of truth. `0` in a
     /// dry-run preview (no ledger row, no deadline).
     pub deadline: i64,

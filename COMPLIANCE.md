@@ -679,7 +679,7 @@ provably isolated to it, and is built on a strict-mode masking layer for PHI.
 | Integrity (§164.312(c)(1)) | Supersede-not-delete + per-row content hash + UMP §2.8 signature verify-on-read (§9) |
 | Transmission security (§164.312(e)(1)) | Loopback-first (data physically never leaves the host); TLS is the operator's reverse-proxy layer |
 | Minimum necessary (§164.502(b)) | `access_scope` + PII read-path redaction (`redact_content` for non-admin); `GET /proposals` review before any write promotes |
-| PHI tokenization | v1.14.2 strict masking writes one-way `[redacted:*]` placeholders, not raw PHI, at the write boundary |
+| PHI tokenization | v1.14.2 strict masking is a READ-TIME boundary, not a write-time vault: ingest screens for PII and FLAGS rows (`pii`), the scanner re-runs over the stored text, and `redact_content` writes one-way `[redacted:*]` placeholders for non-admin readers — raw PHI stays at rest in the local DB (the volume-encryption boundary, THREAT_MODEL §4) and full text reaches loopback/admin readers BY DESIGN. No write-time placeholder vault exists |
 | Storage limitation / retention | per-domain + per-kind TTL policy (v1.21 profiles) now **reportable**: `GET /retention/report` is the Art 5(1)(e)/HIPAA retention-schedule evidence (kind → ttl_days → count → 30d-expiring) |
 | Breach deferral / litigation hold | `legal_holds` freezes a chunk against every erasure path (decay skip, `/purge` + `/dsar` `409 legal_hold_active`) until released — the WORM-lite posture for a pending matter |
 | Business Associate note | BAA is a contractual layer between the covered entity and the operator; brain-server provides the technical-file evidence the BAA's compliance annex refers to. |

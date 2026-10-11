@@ -136,7 +136,7 @@ impl From<crate::service::purge::PurgeError> for DsarError {
     }
 }
 
-/// the DSAR Art 17 erasure deadline — `created_at` +
+/// the DSAR request's own processing deadline — `created_at` +
 /// the operator's window, a pure mirror of `gate::proposal_deadline`. The
 /// client countdown ticks against this absolute deadline, so an operator's
 /// `BRAIN_DSAR_WINDOW_DAYS` override is authoritative (no client window guess).

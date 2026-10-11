@@ -8358,6 +8358,37 @@ Final paragraph after the rule.";
         );
     }
 
+    /// The gate-law register exists and names the guards whose teeth the
+    /// tree relies on — including the four text-bound rows with their owed
+    /// conversions (the D8-02 process fix: a guard cannot be added without
+    /// a row, and a structural row stays until its behavioral conversion
+    /// lands).
+    #[test]
+    fn the_gate_law_register_names_the_known_guards() {
+        let reg = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/docs/gate-law-register.md"
+        ));
+        for must_name in [
+            "no_sql_in_handlers_enforced",
+            "stored_text_fields_pass_the_read_seam",
+            "invisible_set_fixture_is_exhaustive_truth",
+            "the_ingest_audit_row_precedes_its_commit",
+            "the_edge_history_surface_is_bounded_and_discloses",
+            "apply_rate_limit(app,",
+            "reg_watch",
+        ] {
+            assert!(
+                reg.contains(must_name),
+                "the gate-law register must carry the row for `{must_name}`"
+            );
+        }
+        assert!(
+            reg.contains("Owed") && reg.contains("text-bound"),
+            "the register's text-bound section carries the owed conversions"
+        );
+    }
+
     /// The edge-history lineage is bounded like every sibling list surface,
     /// and names its ceiling (`truncated`) instead of clamping silently.
     /// Wiring lock (the R9-03 class): the constant + the disclosure must
@@ -18538,10 +18569,10 @@ mod scrim {
             false
         }
 
-        const SHIPPED_ROUNDS: [&str; 33] = [
+        const SHIPPED_ROUNDS: [&str; 34] = [
             "R68", "R69", "R70", "R72", "R73", "R74", "R75", "R76", "R77", "R78", "R79", "R80",
             "R81", "R82", "R83", "R84", "R93", "R95", "R97", "R98", "R99", "R100", "R101", "R102",
-            "R103", "R104", "R105", "R106", "R107", "R108", "R109", "R112", "R114",
+            "R103", "R104", "R105", "R106", "R107", "R108", "R109", "R111", "R112", "R114",
         ];
         // The boundary law above is load-bearing for lane-qualified IDs: a
         // lane-suffixed routing must not read as the shipped bare ID, while

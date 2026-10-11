@@ -1,5 +1,33 @@
 # Agent Execution Log — brain-server
 
+> **R119 "Gatewright": the process round, two passes overdue.** D8-02
+> ("enforcement is the uniform weak link — 3 of the top 10 are guards passing
+> while violated") has been OPEN-UNROUTED since the eighth pass; its fix was
+> never a patch but a standing artifact.
+>
+> 1. **`docs/gate-law-register.md` exists.** The law: a guard lands with its
+>    row, its red-proof, and its class — behavioral, structural, or
+>    exhaustive. A structural row is a regression lock, never proof, and
+>    carries an `owed` column naming the behavioral conversion that retires
+>    it. Seeded with the ten standing guards (each red-proof recorded) and
+>    the four text-bound rows: the two R118 wiring pins, the R9-03
+>    rate-limit literal, and the R9-04 file-granular Art 50 check.
+>    *(Anti-rot pin `the_gate_law_register_names_the_known_guards`.)*
+> 2. **The docs-truth fixes**: the COMPLIANCE.md PHI row now states the
+>    read-time truth (raw PHI at rest behind volume encryption; no
+>    write-time vault — the sentence the tenth pass called vacuous is
+>    gone), and `dsar_deadline` is relabelled as the DSAR processing
+>    deadline the operator window governs (Art 17 sets no clock).
+> 3. **The register hygiene**: F4-05 corrected to PARTIALLY CLOSED (the
+>    `release_quarantine` half silently closed at `memory.rs:2748`; import +
+>    create still write zero audit rows), and R111 joined `SHIPPED_ROUNDS`
+>    (two commits — the shell rendering steps — that the array had skipped).
+>
+> **ponytail:** a markdown table and one anti-rot pin — not a framework; the
+> R9-03/R9-04 conversions are RECORDED as owed, not churned into the tools
+> crate this round; no code behavior change beyond the two doc-truth
+> relabels.
+
 > **R118 "Lowtide": the LOW band closes before it ages into ceilings.** Eight
 > known-LOW defects, one batch, each a bounded read, a parse, a header, or a
 > gate — red-first pins in EXISTING files (no second test file, no knob, no
