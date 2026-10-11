@@ -1,5 +1,88 @@
 # Agent Execution Log — brain-server
 
+> **R114 "Six": six audit findings closed at the root, not the symptom.** A
+> second adversarial pass (baseline `d517cf67`) found six defects, each with a
+> red-first reproduction, and every fix is at the boundary that owns the
+> property — no guard bolted onto the symptom.
+>
+> 1. **A legal hold froze a `workflow_run` but not its `case_notes`.** The DSAR
+>    sweep skipped held runs inside its loop, then ran two
+>    subject-keyed `DELETE FROM case_notes` arms *outside* it. The run
+>    survived and the certificate reported it as retained, so the erasure
+>    certificate under-reported what was destroyed — the worst direction for a
+>    regulated claim. The arms now carry the `frozen` gate themselves, keyed on
+>    `run_id` so a note on a free run still dies when it merely *mentions* the
+>    subject. *(Pin `legal_hold_freezes_run_case_notes_from_dsar_sweep`, control
+>    `dsar_still_erases_case_notes_on_an_unheld_run`.)*
+> 2. **Consolidation expired legally-held chunks.** `resolve_supersession`
+>    wrote `valid_to` with no hold gate at all — `grep legal_hold` in
+>    `consolidate.rs` returned nothing — while the comparable "routine
+>    supersession" sweep in `memory.rs` *does* gate, for the stated reason that
+>    "held evidence must not be destroyed by routine supersession". Reachable
+>    from `/consolidate/apply` and the approve path on `Write` scope alone. Now
+>    refuses via the existing `refuse_if_held`, before any mutation.
+> 3. **`audit::hash` was unsalted SHA-256**, so a stored `target_hash` was
+>    recoverable from a bare DB backup by dictionary attack — falsifying the
+>    module's own doc claim that low-entropy content is "not offline
+>    recoverable". Now HMAC-keyed when a chain key is installed, unkeyed
+>    retained as the keyless fallback. *(Pin
+>    `audit_hash_is_reversible_by_dictionary_attack`, which installs a real key
+>    so it cannot pass by falling through to the unkeyed branch; control
+>    `audit_hash_is_recoverable_without_a_chain_key` keeps the pre-fix property
+>    honest.)*
+> 4. **A legacy audit chain did not commit `status` or `detail_hash`.** The 7-field
+>    tamper battery only ever ran under the keyed epoch, so a row's *outcome*
+>    could be rewritten undetected on every deployment that has not run
+>    `--re-audit` — which is all of them, since `read_epoch` maps an absent
+>    stamp to `legacy`. A new **`sha7` epoch** commits all seven
+>    length-prefixed fields. `chain_link` is deliberately UNCHANGED: widening it
+>    in place would make every existing chain fail `verify_chain`. The stamp
+>    lands only on the first append to a chain with no history, so **an
+>    unmigrated legacy database still verifies** — pinned by
+>    `unmigrated_legacy_chain_still_verifies_and_stays_legacy` (no false alarm)
+>    and `reaudit_replays_a_legacy_chain_and_then_commits_status_and_detail`.
+> 5. **The bi-temporal `?at=` filter compared two incompatible formats.** The
+>    write side stored raw `to_rfc3339()` (`'T'`, 0x54); the read side compares
+>    against `normalize_since` (space, 0x20). Every same-day question was
+>    decided by the separator byte: facts valid at the instant were *excluded*,
+>    and superseded facts were reported *current* — the direction that
+>    over-reports to a DSAR auditor. `stamp_evidence` now normalizes on the way
+>    in; idempotent, and an unparseable value is preserved rather than nulled (a
+>    NULL `valid_from` would match every `?at=`).
+> 6. **The Signal webhook's `[draft N] approve` lane skipped the approval
+>    quorum.** It ran kind + status + digest and then a bare
+>    `UPDATE … WHERE status='pending'`, so `BRAIN_APPROVAL_QUORUM=2` — a
+>    documented two-person control — *silently stopped applying*: one delivery
+>    decided a proposal the gate verb would hold at `pending_second`, with no
+>    error and no audit of the bypass. The lane now runs the same
+>    `quorum_gate`. The quorum actor is a reserved constant
+>    (`service:signal-webhook`), **not** the per-delivery id: a fresh
+>    Standard-Webhooks id per message would let "send the text twice" register
+>    as two distinct principals — two-person control on paper only. A repeat
+>    delivery is now `SamePrincipal` → 409, so the promoting eye can only be a
+>    human at `/proposals/{id}/approve`.
+>
+> **Two follow-on defects found and fixed while landing these**, both caused by
+> fix 3 and both caught by running the suite repeatedly rather than once:
+> - The **anchor** folded the now-keyed `hash` into its off-host fingerprint, so
+>   installing or *rotating* `audit-chain.key` changed the root for
+>   byte-identical content and `--verify` reported "moved" — indistinguishable
+>   from real tamper. The census now uses plain unkeyed SHA-256; keying bought
+>   nothing there, since an attacker who can rewrite `knowledge` can read the
+>   key. *(Pin `anchor_root_is_independent_of_the_chain_key`, red-first.)*
+> - `recent_tenant_paginates_with_offset` inferred newest-first order from
+>   `target_hash` string comparison — a coin flip once the digests were keyed.
+>   It now asserts the order key it actually means (descending `id`).
+>
+> **ponytail:** no new dependency, no schema change, no wire change, no route
+> change; the audit module's change is EXTEND-don't-weaken (`chain_link`
+> untouched, a sibling pin still holds it at five fields), the byte-purity pin
+> is re-pinned with the reason recorded in `tests/external_claim_pins.rs`;
+> findings 2 and 4 are deliberately left at the *other* secondary gaps
+> (row-domain re-auth / `authorize_role` / TTL on the HMAC lane) because on a
+> lane with no principal they are undefined, not merely unimplemented —
+> deciding them is an operator's design call, not a call-site patch.
+
 > **R108 "Sealed": certified erasure covers the rolling snapshots.** The
 > integrity scheduler wrote UNENCRYPTED `VACUUM INTO` snapshots every 6 h,
 > kept four, beside the live DB; `shred` deliberately skipped them (B11):

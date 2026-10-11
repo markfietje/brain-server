@@ -4,6 +4,47 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R114 "Six" — six audit findings closed at the root
+
+A second adversarial pass found six defects, each reproduced red-first and each
+fixed at the boundary that owns the property.
+
+- **A legal hold froze a `workflow_run` but not its `case_notes`.** The DSAR
+  sweep's subject-keyed arms ran outside the frozen-run loop, so a held run's
+  notes were erased while the run survived and the certificate reported it as
+  retained — the erasure certificate under-reported the destruction. The arms
+  now carry the hold gate, keyed on `run_id`.
+- **Consolidation expired legally-held chunks.** `resolve_supersession` had no
+  hold gate, reachable on `Write` scope alone from `/consolidate/apply` and the
+  approve path. Now refuses before any mutation, matching the existing fence on
+  the comparable re-ingest sweep.
+- **`audit::hash` was unsalted SHA-256**, so a stored `target_hash` was
+  dictionary-recoverable from a database backup alone. Now HMAC-keyed when a
+  chain key is installed; the unkeyed digest is retained for keyless
+  deployments, which remain pseudonymised, not anonymised.
+- **A legacy audit chain did not commit `status`/`detail_hash`**, so an audit
+  row's outcome could be rewritten undetected on any deployment that has not
+  run `--re-audit`. A new `sha7` epoch commits all seven fields,
+  length-prefixed. `chain_link` is unchanged and an unmigrated legacy chain
+  still verifies — no false "tamper" alarm on upgrade.
+- **The bi-temporal `?at=` recall filter compared two incompatible timestamp
+  formats** (`T`-separated on write, space-separated on read), so same-day
+  comparisons were decided by the separator byte: valid facts were excluded and
+  superseded facts were reported current. Stamps are normalized on write now.
+- **The Signal webhook's draft-approve lane skipped the approval quorum.**
+  `BRAIN_APPROVAL_QUORUM=2` silently stopped applying there — one delivery
+  decided a proposal the gate verb would hold — with no error and no audit of
+  the bypass. The lane now runs the same quorum gate, under a reserved machine
+  actor so a replayed delivery cannot pass as a second principal.
+
+Two follow-on defects surfaced while landing these and are fixed here: the
+off-host anchor fingerprint depended on the process-global chain key (so key
+rotation falsely reported tamper), and a pagination test inferred row order from
+digest strings rather than the order key.
+
+ponytail: no new dependency, no schema or wire change, no route change; the
+audit module is extended rather than rewritten.
+
 ## [Unreleased] — R99 "Loopback" — retire the public HTTP opt-in
 
 `BIND_PUBLIC=1` / `true` remains compatible through **2027-04-11**, then is
