@@ -758,7 +758,11 @@ pub(crate) fn stored_lint_json(conn: &Connection, id: i64) -> Option<String> {
 mod tests {
     use super::*;
 
-    static QUORUM_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // The quorum pins below take the crate-wide env fence
+    // (`crate::test_support::lock_env`), not a lock of their own:
+    // `BRAIN_APPROVAL_QUORUM` is read per call by every approve path, and a
+    // second fence over one env var is no fence at all — the Signal lane's
+    // quorum pin (handlers::webhooks) moves the same var.
 
     /// The provenance ref's mode extraction: the closed modes read,
     /// everything else (NULL absent at the caller, malformed JSON, wrong
@@ -793,7 +797,7 @@ mod tests {
 
     #[test]
     fn approval_quorum_parses_fail_closed() {
-        let _guard = QUORUM_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_support::lock_env();
         let prev = std::env::var("BRAIN_APPROVAL_QUORUM").ok();
         unsafe { std::env::remove_var("BRAIN_APPROVAL_QUORUM") };
         assert_eq!(approval_quorum(), Ok(1));
@@ -807,7 +811,7 @@ mod tests {
     #[test]
     fn quorum_gate_defers_first_and_refuses_same_principal() {
         crate::register_sqlite_vec::register_sqlite_vec();
-        let _guard = QUORUM_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = crate::test_support::lock_env();
         let prev = std::env::var("BRAIN_APPROVAL_QUORUM").ok();
         unsafe { std::env::set_var("BRAIN_APPROVAL_QUORUM", "2") };
         let mut conn = rusqlite::Connection::open_in_memory().expect("db");

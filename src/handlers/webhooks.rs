@@ -781,6 +781,13 @@ fn load_signal_secret() -> Option<Vec<u8>> {
 /// not a guarantee: the relay backs off on the 503 and retries later.
 pub(crate) const SIGNAL_MAX_PER_HOUR: i64 = 1_000;
 
+/// The quorum act's actor label on this lane. Reserved to the machine and
+/// CONSTANT, so no delivery can ever be a "second principal" against another
+/// delivery; a human's `sub` (`principal_label`) is a different string by
+/// construction, and even a hypothetical byte-collision fails CLOSED — the
+/// quorum refuses a same-principal repeat rather than promoting.
+const SIGNAL_QUORUM_ACTOR: &str = "service:signal-webhook";
+
 /// The verified, sanitized payload of one inbound Signal command.
 #[derive(Debug, PartialEq, Eq)]
 enum SignalCommand {
@@ -951,6 +958,8 @@ async fn receive_signal(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes
     let actor = format!("signal:{id}");
     enum Outcome {
         Steering,
+        // The first eye under BRAIN_APPROVAL_QUORUM=2: chained, undecided.
+        PendingSecond { proposal_id: i64 },
         Approved { proposal_id: i64 },
         Ignored,
     }
@@ -1058,6 +1067,47 @@ async fn receive_signal(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes
                         );
                         return Err("digest_mismatch".to_string());
                     }
+                    // Second eyes: the same two-person control the gate verb
+                    // applies to this identical transition. The lane is
+                    // HMAC-authenticated — there is no `Principal` to label —
+                    // so the act is attributed to a RESERVED service identity,
+                    // never the per-delivery `signal:{id}` actor: a delivery id
+                    // is fresh on every message, so an id-shaped actor would
+                    // make delivery #2 a "distinct principal" and promote on
+                    // the second ping, which is not a second person at all.
+                    // One reserved label means every delivery is the SAME
+                    // principal: the first records the chained row and defers,
+                    // and the second is refused as a same-principal repeat —
+                    // so the promoting eye can only be a human reviewer.
+                    match crate::service::review::quorum_gate(
+                        &tx,
+                        proposal_id,
+                        SIGNAL_QUORUM_ACTOR,
+                        crate::audit::DEFAULT_TENANT,
+                    )
+                    .map_err(|e| e.to_string())?
+                    {
+                        crate::service::review::Quorum::Promote => {}
+                        crate::service::review::Quorum::PendingSecond => {
+                            // COMMIT: the chained first-approval row IS the
+                            // evidence, and rolling it back would turn the
+                            // deferral into a no-op an operator cannot see.
+                            tx.commit().map_err(|e| format!("{e}"))?;
+                            return Ok(Outcome::PendingSecond { proposal_id });
+                        }
+                        crate::service::review::Quorum::SamePrincipal => {
+                            drop(tx);
+                            crate::audit::record(
+                                &conn,
+                                crate::audit::AuditKind::Webhook,
+                                &actor,
+                                &format!("proposal:{proposal_id}"),
+                                crate::audit::AuditStatus::Denied,
+                                "signal/draft-approve quorum-same-principal",
+                            );
+                            return Err("quorum_same_principal".to_string());
+                        }
+                    }
                     let n = crate::service::webhook_ingest::approve_draft_tx(&tx, proposal_id)
                         .map_err(|e| format!("{e}"))?;
                     if n == 0 {
@@ -1100,6 +1150,11 @@ async fn receive_signal(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes
             axum::Json(json!({ "status": "approved", "proposal_id": proposal_id })),
         )
             .into_response(),
+        Ok(Ok(Outcome::PendingSecond { proposal_id })) => (
+            StatusCode::OK,
+            axum::Json(json!({ "status": "pending_second", "proposal_id": proposal_id })),
+        )
+            .into_response(),
         Ok(Ok(Outcome::Ignored)) => {
             (StatusCode::OK, axum::Json(json!({ "status": "ignored" }))).into_response()
         }
@@ -1116,6 +1171,7 @@ async fn receive_signal(state: &Arc<AppState>, headers: &HeaderMap, body: &Bytes
                     | "digest_mismatch"
                     | "proposal_not_pending"
                     | "proposal_not_draft"
+                    | "quorum_same_principal"
             ) =>
         {
             HandlerError::conflict(format!("signal command refused: {e}")).into_response()
@@ -1588,6 +1644,175 @@ mod valet_tests {
         );
         let res = receive_signal(&state, &headers, &body).await;
         assert_eq!(res.status(), StatusCode::OK);
+        let (status, decided) =
+            crate::service::webhook_ingest::draft_proposal_state(&state.pool.get().unwrap(), pid)
+                .unwrap()
+                .expect("proposal row");
+        assert_eq!(status, "approved");
+        assert!(decided.is_some());
+    }
+
+    /// The second-eyes pins below need a runtime they can `block_on` while a
+    /// `std` env guard is alive, so they are plain `#[test]`s driving a
+    /// current-thread runtime (identical to `#[tokio::test]`'s own runtime)
+    /// rather than async tests holding a std guard across `.await`.
+    fn test_runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime")
+    }
+
+    /// The (status, body) of a handler response — the wire state is half of
+    /// every second-eyes assertion below.
+    async fn body_bytes(res: axum::response::Response) -> (StatusCode, serde_json::Value) {
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .expect("buffered body");
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// Restore the quorum knob to what it was before a pin moved it.
+    fn restore_quorum_env(prev: Option<String>) {
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("BRAIN_APPROVAL_QUORUM", v) };
+        } else {
+            unsafe { std::env::remove_var("BRAIN_APPROVAL_QUORUM") };
+        }
+    }
+
+    /// SECOND EYES, on the Signal lane. `BRAIN_APPROVAL_QUORUM=2` is the
+    /// operator's two-person control: `POST /proposals/{id}/approve` defers its
+    /// first approval to a second, distinct principal. This lane reaches the
+    /// SAME `pending → approved` transition, so the same control must bind
+    /// here — otherwise an operator who set the knob believes two-person rule
+    /// is in force while ONE phone message promotes the draft, with no error
+    /// and no record that the second eye was skipped.
+    #[test]
+    fn signal_draft_approve_defers_to_a_second_eye_under_quorum_two() {
+        let (dir, state) = test_state();
+        let content = "Short pillar post draft. Shipped notes inside.";
+        let pid = seed_pending_proposal(&state, content);
+        let digest = super::super::gate::review_digest(content);
+        let text = format!("[draft {pid}] approve {digest}");
+
+        let (first, second) = {
+            // The crate-wide env fence (`lib.rs`: every test that mutates a
+            // process env var takes THIS lock) — `quorum_gate` reads the knob
+            // per call, so it must not move under a concurrent reader.
+            let _env = crate::test_support::lock_env();
+            let prev = std::env::var("BRAIN_APPROVAL_QUORUM").ok();
+            // SAFETY: the shared env fence is held for the whole block.
+            unsafe { std::env::set_var("BRAIN_APPROVAL_QUORUM", "2") };
+            let rt = test_runtime();
+            let out = rt.block_on(async {
+                let _sig = SIGNAL_ENV_LOCK.lock().await;
+                let secret = install_secret(&dir);
+                let one = signed_request(
+                    &secret,
+                    "sig-quorum-1",
+                    &serde_json::json!({ "text": text }),
+                );
+                let first = body_bytes(receive_signal(&state, &one.0, &one.1).await).await;
+                // A SECOND delivery, same machine, same digest: the machine
+                // must not be able to supply its own second eye either.
+                let two = signed_request(
+                    &secret,
+                    "sig-quorum-2",
+                    &serde_json::json!({ "text": text }),
+                );
+                let second = body_bytes(receive_signal(&state, &two.0, &two.1).await).await;
+                (first, second)
+            });
+            restore_quorum_env(prev);
+            out
+        };
+
+        assert_eq!(
+            first.0,
+            StatusCode::OK,
+            "the first eye is not an error — it is the gate path's `pending_second` 200"
+        );
+        assert_eq!(
+            first.1["status"], "pending_second",
+            "ONE Signal delivery fully approved under BRAIN_APPROVAL_QUORUM=2 — the lane \
+             bypasses the two-person control the gate verb applies to the same transition; \
+             body: {first:?}"
+        );
+        assert_eq!(first.1["proposal_id"], pid, "body: {first:?}");
+
+        let (status, decided) =
+            crate::service::webhook_ingest::draft_proposal_state(&state.pool.get().unwrap(), pid)
+                .unwrap()
+                .expect("proposal row");
+        assert_eq!(
+            status, "pending",
+            "a deferred first eye must leave the proposal pending, not decided"
+        );
+        assert!(
+            decided.is_none(),
+            "a deferred first eye must not stamp a decision time"
+        );
+
+        // The machine cannot be the second eye: it is the same principal
+        // twice. A distinct second eye has to come from a human reviewer.
+        assert_eq!(
+            second.0,
+            StatusCode::CONFLICT,
+            "a repeat delivery from the SAME principal must be refused, not promoted; body: {second:?}"
+        );
+        let (status, _) =
+            crate::service::webhook_ingest::draft_proposal_state(&state.pool.get().unwrap(), pid)
+                .unwrap()
+                .expect("proposal row");
+        assert_eq!(
+            status, "pending",
+            "a refused same-principal repeat must leave the proposal pending"
+        );
+    }
+
+    /// ISOLATION — the shipped default. With no `BRAIN_APPROVAL_QUORUM` the lane
+    /// approves on ONE delivery, exactly as it always has: a fix that made the
+    /// Signal lane always demand two approvals would break every deployment
+    /// that never set the knob. The var is REMOVED explicitly so the pin cannot
+    /// pass by inheriting a leaked `2` from a sibling test.
+    #[test]
+    fn signal_draft_approve_approves_on_one_delivery_without_quorum() {
+        let (dir, state) = test_state();
+        let content = "Short pillar post draft. Shipped notes inside.";
+        let pid = seed_pending_proposal(&state, content);
+        let digest = super::super::gate::review_digest(content);
+
+        let res = {
+            let _env = crate::test_support::lock_env();
+            let prev = std::env::var("BRAIN_APPROVAL_QUORUM").ok();
+            // SAFETY: the shared env fence is held for the whole block.
+            unsafe { std::env::remove_var("BRAIN_APPROVAL_QUORUM") };
+            let rt = test_runtime();
+            let out = rt.block_on(async {
+                let _sig = SIGNAL_ENV_LOCK.lock().await;
+                let secret = install_secret(&dir);
+                let req = signed_request(
+                    &secret,
+                    "sig-noquorum",
+                    &serde_json::json!({ "text": format!("[draft {pid}] approve {digest}") }),
+                );
+                body_bytes(receive_signal(&state, &req.0, &req.1).await).await
+            });
+            restore_quorum_env(prev);
+            out
+        };
+
+        assert_eq!(res.0, StatusCode::OK, "body: {res:?}");
+        assert_eq!(
+            res.1["status"], "approved",
+            "with the knob unset (the shipped default) ONE delivery must still approve; \
+             the quorum fix must not become an always-two rule; body: {res:?}"
+        );
         let (status, decided) =
             crate::service::webhook_ingest::draft_proposal_state(&state.pool.get().unwrap(), pid)
                 .unwrap()

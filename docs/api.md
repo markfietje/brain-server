@@ -414,7 +414,7 @@ bridge:
 | POST | `/workflow/valet/due` | The crank: fires due `valet/*` envelopes (idempotent per `valet-{run}-{due_at}`), re-arms repeats via CAS, enqueues metadata-only alert envelopes. Write + `workflow` role. |
 | GET | `/workflow/valet/brief` | Today's derived context: due/overdue, pending drafts with ADVISORY lint scores, evening notes. Read + `workflow` role. |
 | PUT | `/workflow/valet/consent` | The one-subject Outreach-lite registry (subject `owner`, channel `signal` only). Write + `workflow` role. |
-| POST | `/webhooks/{kind}` (kind `signal`) | Inbound Signal commands from the relay: `[case N] text` → screened steering; `[draft N] approve <digest>` → digest-bound approval (Gateweld crosses into Signal), `kind='draft'` proposals ONLY — another kind is refused `409 proposal_not_draft` and audited. HMAC + replay-capped. |
+| POST | `/webhooks/{kind}` (kind `signal`) | Inbound Signal commands from the relay: `[case N] text` → screened steering; `[draft N] approve <digest>` → digest-bound approval (Gateweld crosses into Signal), `kind='draft'` proposals ONLY — another kind is refused `409 proposal_not_draft` and audited. Under `BRAIN_APPROVAL_QUORUM=2` the same two-person control the gate verb applies binds here too: the first delivery answers `200 {"status":"pending_second"}` and decides nothing, and a repeat from the lane's own reserved service identity is refused `409 quorum_same_principal` — the second eye has to be a human reviewer. HMAC + replay-capped. |
 
 CLI: `brain valet add|due|brief|consent`. Relay: `tools/valet-relay/` (holds
 no brain credentials — pinned by `relay_holds_no_brain_credentials`).
