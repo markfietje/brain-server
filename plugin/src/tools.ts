@@ -16,10 +16,8 @@ import { Check } from "typebox/value";
 import {
   BrainClient,
   describeBrainError,
-  type BrainApproveResult,
   type BrainProposal,
   type BrainRecallHit,
-  type BrainRejectResult,
   type BrainTraverseResult,
 } from "./brain-client.js";
 import type { ResolvedBrainConfig } from "./config.js";
@@ -810,74 +808,12 @@ export function registerBrainTools(
       { name: "brain_memory_proposal_list" },
     );
 
-    const memoryProposalDecideParamsSchema = Type.Object({
-      id: Type.Integer({ description: "Proposal id from brain_memory_proposal_list." }),
-      decision: Type.Union([Type.Literal("approve"), Type.Literal("reject")]),
-      supersedes: Type.Optional(
-        Type.Integer({
-          description:
-            "On approve: atomically expire this older chunk id in the same transaction (supersession).",
-        }),
-      ),
-    });
-
-    api.registerTool(
-      {
-        name: "brain_memory_proposal_decide",
-        label: "Memory Proposal Decide",
-        description:
-          "Approve or reject a captured proposal. Approving promotes it to memory (recallable); rejecting drops it (audited). This is the human-review gate for captureMode 'proposal'.",
-        parameters: memoryProposalDecideParamsSchema,
-        async execute(_toolCallId, params) {
-          const c = liveCfg();
-          const p = checkedParams(memoryProposalDecideParamsSchema, params ?? {});
-          if (typeof p.id !== "number" || (p.decision !== "approve" && p.decision !== "reject")) {
-            return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: "Both id and decision (approve|reject) are required.",
-                },
-              ],
-              details: { decided: false },
-            };
-          }
-          try {
-            if (p.decision === "approve") {
-              const res: BrainApproveResult = await client.approveProposal({
-                id: p.id,
-                ...(p.supersedes !== undefined ? { supersedes: p.supersedes } : {}),
-                timeoutMs: c.requestTimeoutMs,
-              });
-              return {
-                content: [
-                  {
-                    type: "text" as const,
-                    text: `Approved proposal #${res.proposalId} -> chunk #${res.chunkId}.${res.superseded !== null ? ` Superseded chunk #${res.superseded}.` : ""}`,
-                  },
-                ],
-                details: { decided: true, ...res },
-              };
-            }
-            const res: BrainRejectResult = await client.rejectProposal({
-              id: p.id,
-              timeoutMs: c.requestTimeoutMs,
-            });
-            return {
-              content: [{ type: "text" as const, text: `Rejected proposal #${res.proposalId}.` }],
-              details: { decided: true, ...res },
-            };
-          } catch (err) {
-            return {
-              content: [
-                { type: "text" as const, text: `Decide failed: ${describeBrainError(err)}` },
-              ],
-              details: { decided: false, error: describeBrainError(err) },
-            };
-          }
-        },
-      },
-      { name: "brain_memory_proposal_decide" },
-    );
+    // The decide tool is GONE, deliberately (brain-server R115/R118): the
+    // review queue is not the model's to prune. The server role-gates BOTH
+    // verbs to humans — the agent class holds neither `approve` nor `reject`,
+    // and approve additionally demands the content digest the queue list
+    // never carried, so the tool advertised a promotion it could never
+    // perform. A human decides; the model watches the queue through
+    // brain_memory_proposal_list.
   }
 }

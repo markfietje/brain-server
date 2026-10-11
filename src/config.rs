@@ -1214,7 +1214,14 @@ pub const AUDIT_CHAIN_CACHE_TTL_SECS: u64 = 60;
 pub fn auth_token() -> Option<String> {
     if let Ok(path) = std::env::var("AUTH_TOKEN_FILE") {
         let path = path.trim();
-        if let Ok(s) = std::fs::read_to_string(path) {
+        // The documented 0600 law, enforced on the read path (the valet-relay
+        // sibling's shape): a group/world-readable token file is refused, not
+        // read — a leaked operator credential must not look like a working
+        // configuration. The boot's misconfigured-fatal (below) names the
+        // remedy when no env fallback exists.
+        if let Err(e) = crate::secret_file::check_secret_permissions(std::path::Path::new(path)) {
+            eprintln!("⚠️ refusing AUTH_TOKEN_FILE {path}: {e} — chmod 600 it");
+        } else if let Ok(s) = std::fs::read_to_string(path) {
             // Return the multi-token set as a single string; `auth_middleware`
             // splits on whitespace when comparing. Non-empty file => auth on.
             let s = s.trim();
@@ -1282,17 +1289,29 @@ pub fn backup_passphrase() -> Option<Vec<u8>> {
 /// loopback default is unchanged when no file is configured at all.
 pub fn auth_token_misconfigured() -> Option<String> {
     let path = auth_token_file()?;
-    let file_ok = std::fs::read_to_string(&path)
-        .map(|s| !s.trim().is_empty())
-        .unwrap_or(false);
-    if file_ok {
-        return None;
-    }
     let env_fallback = std::env::var("AUTH_TOKEN")
         .ok()
         .filter(|s| !s.trim().is_empty())
         .is_some();
     if env_fallback {
+        // the ladder keeps auth ON through any file failure — checked FIRST
+        // so the arms below are the no-fallback refusal shapes only.
+        return None;
+    }
+    // A group/world-readable token file is the same misconfiguration class
+    // as a missing one: the read path refuses it, so boot must too (with the
+    // same remedy named) instead of degrading to no-auth silently.
+    if let Err(e) = crate::secret_file::check_secret_permissions(&path) {
+        return Some(format!(
+            "AUTH_TOKEN_FILE={} fails the secret-file law ({e}) — chmod 600 it, \
+             set AUTH_TOKEN, or unset AUTH_TOKEN_FILE.",
+            path.display()
+        ));
+    }
+    let file_ok = std::fs::read_to_string(&path)
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if file_ok {
         return None;
     }
     Some(format!(
@@ -2647,6 +2666,48 @@ pub(crate) mod tests {
     /// is fatal ONLY when there is no AUTH_TOKEN env fallback — the ladder
     /// (file → env) must keep auth ON, and the no-file default stays off.
     /// Save/restore pattern as in capacity.rs (parallel-runner safe).
+    /// The 0600 law on the token file read path: a group/world-readable
+    /// AUTH_TOKEN_FILE is refused, not read — and a compliant file loads.
+    #[test]
+    fn a_world_readable_auth_token_file_is_refused_not_read() {
+        let _env = TOKEN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("AUTH_TOKEN_FILE").ok();
+        let dir = tempfile::tempdir().unwrap();
+        let loose = dir.path().join("loose-token");
+        std::fs::write(&loose, "op-token\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        unsafe { std::env::set_var("AUTH_TOKEN_FILE", &loose) };
+        assert_eq!(
+            auth_token(),
+            None,
+            "a world-readable token file must NOT be served as a working credential"
+        );
+        assert!(
+            auth_token_misconfigured().is_some(),
+            "no env fallback: the law failure refuses the boot"
+        );
+        // anti-vacuity: the SAME bytes at 0600 load.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&loose, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert_eq!(
+            auth_token().as_deref(),
+            Some("op-token"),
+            "a compliant token file loads normally"
+        );
+        assert_eq!(auth_token_misconfigured(), None);
+        match prev {
+            Some(v) => unsafe { std::env::set_var("AUTH_TOKEN_FILE", v) },
+            None => unsafe { std::env::remove_var("AUTH_TOKEN_FILE") },
+        }
+    }
+
     #[test]
     fn auth_token_misconfigured_fail_closed_ladder() {
         let _env = TOKEN_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -2655,6 +2716,13 @@ pub(crate) mod tests {
 
         let valid = std::env::temp_dir().join("brain-test-valid-token");
         std::fs::write(&valid, "tok\n").unwrap();
+        // the token file joins the 0600 law at creation — the fixture is a
+        // compliant deployment, not a world-readable one.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&valid, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let missing = std::env::temp_dir().join("brain-test-missing-token");
         let _ = std::fs::remove_file(&missing);
 

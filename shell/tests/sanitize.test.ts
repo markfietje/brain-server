@@ -26,10 +26,10 @@ for (const fixtureClass of fixture.classes) {
 const visibleSamples = fixture['visible-samples'].map((sample) =>
 	String.fromCodePoint(Number.parseInt(sample, 16))
 );
-const explicitNoncanonicalNegatives = [
-	0x2064,
-	...Array.from({ length: 6 }, (_, index) => 0x206a + index)
-];
+// The fixture-v2 additions (invisible-plus U+2064, deprecated-format
+// U+206A–206F, musical-format U+1D173–1D17A) moved INTO the canonical set,
+// so they are no longer non-canonical negatives.
+const explicitNoncanonicalNegatives: number[] = [];
 
 test('shell_invisible_set_matches_canonical_fixture_exactly', () => {
 	const mismatches: string[] = [];

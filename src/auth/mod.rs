@@ -693,6 +693,16 @@ mod tests {
         let ag_file = dir.path().join("agent-token");
         std::fs::write(&op_file, "operator-one\n").unwrap();
         std::fs::write(&ag_file, "agent-one\n").unwrap();
+        // both files join the 0600 law at creation — the fixture models a
+        // compliant deployment, and the read path now refuses to serve a
+        // world-readable token file (the swap below re-applies the mode).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for f in [&op_file, &ag_file] {
+                std::fs::set_permissions(f, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+        }
         let saved_op = std::env::var("AUTH_TOKEN_FILE").ok();
         let saved_ag = std::env::var("AGENT_TOKEN_FILE").ok();
         unsafe {
@@ -711,6 +721,11 @@ mod tests {
         // byte-identical and untouched.
         std::thread::sleep(std::time::Duration::from_millis(1100));
         std::fs::write(&ag_file, "agent-two\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&ag_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
 
         let rotated = store.reload_if_changed();
         assert!(rotated, "an agent-file swap alone is a rotation");

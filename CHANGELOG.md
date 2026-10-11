@@ -4,6 +4,38 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R118 "Lowtide" — the LOW band closes before it ages
+
+Eight known-LOW defects, one batch, each a bounded read, a parse, a header,
+or a gate.
+
+- **The invisible-Unicode set gained its three missing classes** (INVISIBLE
+  PLUS U+2064, deprecated format U+206A–206F, musical format U+1D173–1D17A)
+  across the canonical fixture (v2), the Rust set, and the shell regex in
+  one change — the exhaustive all-scalars pin forces the sync.
+- **The Art-19 webhook's `subject` passes the invisible/control strip**
+  before riding to an external receiver.
+- **`/ingest/memory`'s audit row commits WITH the write** — the post-commit
+  second-connection form was a crash window that left a durable memory with
+  no chain row.
+- **The tokenless bridge-mount arm enforces timestamp freshness + a replay
+  claim** — the same pair the receiver arm enforces; a captured signed
+  envelope can no longer remount the bridge forever.
+- **Per-domain databases are created 0600** — registry creation and import,
+  enforced after the pool build (the red-first pin caught the first
+  placement tightening a file that did not exist yet).
+- **`AUTH_TOKEN_FILE`'s documented 0600 is enforced on the read path** — a
+  world-readable token file is refused, not served; boot refuses it when no
+  `AUTH_TOKEN` fallback exists.
+- **The edge-history lineage is bounded** (`EDGE_HISTORY_MAX` = 500) and
+  discloses truncation instead of clamping silently.
+- **`brain_memory_proposal_decide` is removed** (plugin 0.6.14) — the
+  review queue is not the model's to prune; the server role-gates both
+  verbs to humans and approve demanded a digest the tool never sent.
+
+Wire: additive `truncated` field on the edge-history response. No route,
+schema, or dependency change.
+
 ## [Unreleased] — R117 "Console" — the approver sees the bytes the digest binds
 
 Three lanes rendered stored content for a human without the seam the

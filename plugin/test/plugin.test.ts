@@ -184,17 +184,20 @@ describe("plugin registration", () => {
     expect(tools.has("brain_memory_graph_traverse")).toBe(true);
     // v0.3.0: proposal review tools are gated behind config.proposalTools (off by default).
     expect(tools.has("brain_memory_proposal_list")).toBe(false);
-    expect(tools.has("brain_memory_proposal_decide")).toBe(false);
     // v0.4.0: procedural tools (runbooks / decision trees) are always registered.
     expect(tools.has("brain_memory_procedure_get")).toBe(true);
     expect(tools.has("brain_memory_procedure_store")).toBe(true);
     expect(tools.has("brain_memory_decision_evaluate")).toBe(true);
   });
 
-  test("registers the proposal review tools when config.proposalTools is true", () => {
+  test("registers the proposal review tool when config.proposalTools is true — and the decide tool is gone for good", () => {
     const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
     expect(tools.has("brain_memory_proposal_list")).toBe(true);
-    expect(tools.has("brain_memory_proposal_decide")).toBe(true);
+    // The review queue is not the model's to prune: the server role-gates
+    // BOTH verbs to humans (the agent class holds neither approve nor
+    // reject), so the decide tool shipped advertising a promotion it could
+    // never perform. It does not come back.
+    expect(tools.has("brain_memory_proposal_decide")).toBe(false);
   });
 
   test("registers a static memory capability (prompt-cached system guidance)", () => {
@@ -818,37 +821,6 @@ describe("v0.3.0 — graph traverse, proposal review, advanced recall, corpus su
     expect(text).toContain("#42");
     expect(text).toContain("prefers dark mode");
     expect((res as { details: { count: number } }).details.count).toBe(1);
-  });
-
-  test("brain_memory_proposal_decide approve promotes and forwards supersedes", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(
-        mockResponse({ proposal_id: 42, chunk_id: 99, status: "approved", superseded: 7 }),
-      );
-    const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
-    const res = await tools
-      .get("brain_memory_proposal_decide")!
-      .execute("call-1", { id: 42, decision: "approve", supersedes: 7 });
-    const url = (fetchMock.mock.calls[0]?.[0] as string) ?? "";
-    expect(url).toContain("/proposals/42/approve");
-    expect(url).toContain("supersedes=7");
-    const text = (res as { content: Array<{ text: string }> }).content[0]?.text ?? "";
-    expect(text).toContain("chunk #99");
-    expect((res as { details: { decided: boolean } }).details.decided).toBe(true);
-  });
-
-  test("brain_memory_proposal_decide reject drops the proposal", async () => {
-    const fetchMock = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(mockResponse({ proposal_id: 42, status: "rejected" }));
-    const { tools } = registerPlugin({ agents: ["main"], proposalTools: true });
-    const res = await tools
-      .get("brain_memory_proposal_decide")!
-      .execute("call-1", { id: 42, decision: "reject" });
-    const url = (fetchMock.mock.calls[0]?.[0] as string) ?? "";
-    expect(url).toContain("/proposals/42/reject");
-    expect((res as { details: { decided: boolean } }).details.decided).toBe(true);
   });
 
   test("brain_memory_recall forwards the v0.3.0 advanced params", async () => {

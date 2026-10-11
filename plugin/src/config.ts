@@ -64,7 +64,8 @@ export const brainConfigSchema = Type.Object({
   autoRecallGraph: Type.Optional(Type.Boolean()),
   autoRecallMaxContextTokens: Type.Optional(Type.Integer({ minimum: 0, maximum: 8_000 })),
   // v0.3.0: expose the human review-queue tools (brain_memory_proposal_list /
-  // brain_memory_proposal_decide). Off by default — promoting a capture to memory is
+  // the decide tool is gone: the queue is not the model's to prune). Off by
+  // default — reviewing captures is an operator posture.
   // an operator action, so the agent must not gain it unless explicitly opted in.
   proposalTools: Type.Optional(Type.Boolean()),
 

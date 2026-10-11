@@ -4,6 +4,29 @@ All notable changes to the plugin. Semantic-versioned (patch = behavioral
 fix/security, minor = feature, major = breaking). Mirror of the OpenClaw
 extension at `extensions/brain-server`.
 
+## [0.6.14] — 2026-10-12
+
+### Removed
+
+- **`brain_memory_proposal_decide` is gone, deliberately.** The review queue
+  is not the model's to prune: the server role-gates BOTH verbs to humans
+  (the agent class holds neither `approve` nor `reject`), and `approve`
+  additionally demands the content digest the queue list never carried — so
+  the tool advertised a promotion it could never perform. The model watches
+  the queue through `brain_memory_proposal_list`; a human decides.
+
+### Changed
+
+- **`brain_memory_get` labels captured memory and honors the exclude
+  posture**: a by-id read is model context exactly like a recall hit, so a
+  `channel-capture` row renders its `[memory | channel-capture]` prefix and
+  is dropped under `untrustedOrigins: "exclude"`. Graph relations carry a
+  per-edge capture marker.
+- **`brain_memory_store` threads the turn's chat type** — a channel-grouped
+  turn's model-driven store carries the same taint the autoCapture hook
+  applies (recorded at `before_prompt_build`), so the tool lane cannot
+  launder what the turn is.
+
 ## [0.6.13] — 2026-10-09
 
 ### Added

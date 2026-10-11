@@ -20,7 +20,6 @@
       "brain_memory_graph_entity",
       "brain_memory_graph_traverse",
       "brain_memory_proposal_list",
-      "brain_memory_proposal_decide",
       "brain_memory_procedure_get",
       "brain_memory_procedure_store",
       "brain_memory_decision_evaluate"
@@ -145,7 +144,7 @@
       "proposalTools": {
         "type": "boolean",
         "default": false,
-        "description": "Expose the brain_memory_proposal_list / brain_memory_proposal_decide tools so the agent can close the review loop on captureMode:'proposal'. Off by default — promoting a capture to memory is an operator action."
+        "description": "Expose the brain_memory_proposal_list tool so the agent can watch the capture review queue (captureMode:'proposal'). Off by default — deciding a capture is a HUMAN act; the server role-gates both verbs to humans."
       },
       "teamBridge": {
         "type": "boolean",

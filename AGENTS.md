@@ -1,5 +1,50 @@
 # Agent Execution Log — brain-server
 
+> **R118 "Lowtide": the LOW band closes before it ages into ceilings.** Eight
+> known-LOW defects, one batch, each a bounded read, a parse, a header, or a
+> gate — red-first pins in EXISTING files (no second test file, no knob, no
+> abstraction; nothing grew one).
+>
+> 1. **The invisible set gained its three missing classes** — INVISIBLE PLUS
+>    (U+2064), the deprecated format chars (U+206A–206F), and the musical
+>    format controls (U+1D173–1D17A) — across the ONE canonical fixture and
+>    both code lanes (rust + shell regex) in one change; the exhaustive
+>    all-scalars pin forces the sync (a one-sided edit fails CI by design).
+>    Fixture → v2. 2. **The Art-19 webhook's `subject` passes the
+>    invisible/control strip** before riding to an external receiver.
+>    3. **`/ingest/memory`'s audit row moved INSIDE its tx** (the sibling
+>    arm's shape) — the post-commit second-connection form was a crash
+>    window with no chain row. *(Offset pin
+>    `the_ingest_audit_row_precedes_its_commit`.)* 4. **The tokenless
+>    bridge-mount arm runs the SAME freshness + replay pair the receiver
+>    arm does** — a captured signed envelope previously remounted forever.
+>    *(Pins `bridge_mount_arm_refuses_a_stale_signed_timestamp` +
+>    `bridge_mount_arm_refuses_a_replayed_webhook_id`, the latter with the
+>    first-sight anti-vacuity arm.)* 5. **Per-domain databases join the
+>    0600 family** — registry creation AND import, enforced AFTER the pool
+>    build (the red-first pin caught the first placement tightening a file
+>    that did not exist yet). *(Pin
+>    `a_domain_db_created_by_the_registry_is_owner_only`.)* 6. **The
+>    documented 0600 law is enforced on `AUTH_TOKEN_FILE`'s read path** —
+>    the new secret-file seam now covers the last unguarded secret; boot
+>    refuses the world-readable file when no env fallback exists, and the
+>    rotation watcher's reload treats the refusal as empty → fail-safe.
+>    *(Pin `a_world_readable_auth_token_file_is_refused_not_read` with the
+>    compliant-file anti-vacuity arm.)* 7. **The edge-history lineage is
+>    bounded** (`EDGE_HISTORY_MAX` = 500) and **names its ceiling**
+>    (`truncated: true`). 8. **`brain_memory_proposal_decide` is REMOVED** —
+>    the review queue is not the model's to prune: the server role-gates
+>    both verbs to humans, and approve demanded a digest the queue list
+>    never carried, so the tool advertised a promotion it could never
+>    perform (plugin 0.6.14; the anti-comeback assertion pins the absence).
+>
+> **ponytail:** no new knob, no abstraction, no second test file; the two
+> handler-side wiring pins are structural (the R9-03 class) and are owned by
+> the gate-law register landing in the next round; zero new dependency
+> edges; the wire delta is the additive `truncated` field (openapi not
+> required — the schema enumerates the envelope loosely, the field is
+> additive JSON).
+
 > **R117 "Console": the approver sees the bytes the digest binds.** Three
 > lanes rendered stored content for a human without the seam the digest
 > binds; all three closed, and the deliberate raw lanes are now NAMED.

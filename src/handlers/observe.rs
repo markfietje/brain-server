@@ -740,6 +740,10 @@ pub fn notify_art19(subject: String, certificate_id: i64, certified_at: String) 
         );
         return;
     }
+    // The subject is request-derived free text riding to an EXTERNAL
+    // receiver: it passes the invisible/control strip so a crafted subject
+    // cannot smuggle bidi/tag bytes through the notification lane.
+    let subject = crate::strip_invisible::strip_invisible(&subject);
     let payload = serde_json::json!({
         "subject": subject,
         "certified_at": certified_at,

@@ -39,6 +39,15 @@ pub fn is_invisible(c: char) -> bool {
         || matches!(cp, 0x200B | 0x200C | 0x200D | 0x2060)
         // Legacy members: BOM, separators, soft hyphen, combining grapheme joiner.
         || matches!(cp, 0xFEFF | 0x2061 | 0x2062 | 0x2063 | 0x00AD | 0x034F)
+        // INVISIBLE PLUS (U+2064) — renders invisibly, defeats substring
+        // matching exactly like the joiners above.
+        || cp == 0x2064
+        // Deprecated format chars (U+206A–206F) — invisible in common fonts,
+        // same function class as the legacy members.
+        || (0x206A..=0x206F).contains(&cp)
+        // MUSICAL format controls (U+1D173–1D17A) — Default_Ignorable,
+        // render-invisible, the same matcher-splitting class.
+        || (0x1D173..=0x1D17A).contains(&cp)
         // Residual render-invisible classes: MONGOLIAN VOWEL SEPARATOR
         // (U+180E, invisible in modern rendering), HANGUL FILLERS
         // (U+115F/U+1160), INTERLINEAR ANNOTATION chars (U+FFF9–FFFB).

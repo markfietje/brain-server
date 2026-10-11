@@ -488,6 +488,9 @@ pub async fn import_domain(
         let _ = std::fs::remove_file(&temp_path);
         HandlerError::internal(format!("rename import: {e}"))
     })?;
+    // The imported DB joins the 0600 family at creation — the rename landed
+    // bytes that never passed the registry's own mode enforcement.
+    crate::server::bootstrap::enforce_private_mode(&final_path);
 
     // Open the imported DB via the registry so migration runs and the pool
     // is cached. This is the validity check: if the bytes weren't a real

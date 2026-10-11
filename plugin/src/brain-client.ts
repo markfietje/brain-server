@@ -249,17 +249,6 @@ export type BrainProposal = {
   decidedAt?: number | null;
 };
 
-/** Result of approving a proposal (`POST /proposals/{id}/approve`). */
-export type BrainApproveResult = {
-  proposalId: number;
-  chunkId: number;
-  status: "approved";
-  superseded: number | null;
-};
-
-/** Result of rejecting a proposal (`POST /proposals/{id}/reject`). */
-export type BrainRejectResult = { proposalId: number; status: "rejected" };
-
 // ---------------------------------------------------------------------------
 // Wire shapes (server serializes snake_case — see API_CONTRACT.md)
 // ---------------------------------------------------------------------------
@@ -392,15 +381,6 @@ type ProposalWire = {
   critical_secs: number;
   decided_at?: number | null;
 };
-
-type ApproveResponseWire = {
-  proposal_id: number;
-  chunk_id: number;
-  status: "approved";
-  superseded: number | null;
-};
-
-type RejectResponseWire = { proposal_id: number; status: "rejected" };
 
 // `/graph/entity/{name}` returns 200 with `{ error: "Entity not found" }` on a
 // miss rather than a 4xx, so the client must null-check the parsed body.
@@ -836,52 +816,6 @@ export class BrainClient {
       params.timeoutMs,
     );
     return (res ?? []).map(mapProposalWire);
-  }
-
-  /**
-   * Approve a queued proposal (`POST /proposals/{id}/approve`), promoting it to
-   * a real `knowledge` row recallable by `/recall`. Optional `supersedes`
-   * atomically expires an older chunk in the same transaction. Operator action —
-   * the plugin gates which agents may call this.
-   */
-  async approveProposal(params: {
-    id: number;
-    supersedes?: number;
-    timeoutMs?: number;
-  }): Promise<BrainApproveResult> {
-    const path = `/proposals/${encodeURIComponent(String(params.id))}/approve`;
-    const query =
-      params.supersedes !== undefined
-        ? `?supersedes=${encodeURIComponent(String(params.supersedes))}`
-        : "";
-    const res = await this.fetchJson<ApproveResponseWire>(
-      `${path}${query}`,
-      "POST",
-      undefined,
-      params.timeoutMs,
-    );
-    return {
-      proposalId: res?.proposal_id ?? params.id,
-      chunkId: res?.chunk_id ?? 0,
-      status: "approved",
-      ...(res?.superseded !== undefined && res.superseded !== null
-        ? { superseded: res.superseded }
-        : { superseded: null }),
-    };
-  }
-
-  /**
-   * Reject a queued proposal (`POST /proposals/{id}/reject`). Audited in the
-   * hash chain but never becomes memory. Operator action.
-   */
-  async rejectProposal(params: { id: number; timeoutMs?: number }): Promise<BrainRejectResult> {
-    const res = await this.fetchJson<RejectResponseWire>(
-      `/proposals/${encodeURIComponent(String(params.id))}/reject`,
-      "POST",
-      undefined,
-      params.timeoutMs,
-    );
-    return { proposalId: res?.proposal_id ?? params.id, status: "rejected" };
   }
 
   // --------------------------------------------------------------------------

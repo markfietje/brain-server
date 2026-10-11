@@ -1142,6 +1142,7 @@ pub(crate) fn validate_bridge_mount_body(
 /// `post_plugin_mount` when the caller holds NO bearer: the bridge identity +
 /// config-digest are verified here, then the evidence row lands through the
 /// SAME audit path. Reused, never duplicated: one route, two authentications.
+#[derive(Debug)]
 pub(crate) struct BridgeMountIdentity {
     pub kind: String,
     pub tenant: String,
@@ -1171,6 +1172,22 @@ pub(crate) fn verify_bridge_mount(
     let dir = connector_config_dir();
     for cfg in channels::discover_bridge_configs(&dir) {
         if channels::verify_bridge_signature(&cfg.webhook_secret, &id, &ts, body, &sig) {
+            let actor = format!("channel-mount:{}/{}", cfg.kind, cfg.tenant);
+            // Freshness: the signed timestamp must sit inside the replay
+            // window — the SAME pair the receiver arm enforces. Without it a
+            // captured signed envelope remounts the bridge forever.
+            // (`timestamp_skew_ok` runs the deny/audit lane on both failure
+            // arms itself, so the `?` loses nothing.)
+            timestamp_skew_ok(state, &ts, &actor)?;
+            // Replay claim keyed on (bridge, delivery id): a replayed signed
+            // mount envelope claims once, and every replay is refused — the
+            // claim store failing closed, never admitting.
+            let queue = WebhookQueue::new(Arc::new(state.pool.clone()));
+            let claim = format!("bridge-mount/{}/{}:{}", cfg.kind, cfg.tenant, id);
+            if !queue.seen_claim(&claim).unwrap_or(false) {
+                deny_channel(state, &actor, "replayed mount delivery");
+                return None;
+            }
             // SHA-256 over the config FILE bytes (server-recomputed digest).
             use sha2::Digest;
             let config_sha256 = match std::fs::read(config_path(&dir, &cfg)) {
@@ -1485,5 +1502,164 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod mount_gate_tests {
+    use super::*;
+
+    /// The mount arm's freshness + replay pair, red-first (the register's
+    /// bridge-mount row): the tokenless arm verified the HMAC and STOPPED —
+    /// a captured signed envelope remounted the bridge forever, each replay
+    /// a serialized append plus head-pin churn. Now the SAME pair the
+    /// receiver arm enforces runs here.
+    fn mount_state() -> (Arc<AppState>, tempfile::TempDir) {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("brain.db");
+        let mgr = crate::pool::SqliteConnectionManager::file(&db_path);
+        let pool: crate::Pool = r2d2::Pool::builder().max_size(2).build(mgr).unwrap();
+        crate::migration::run_migration(&mut pool.get().unwrap(), crate::config::DB_MMAP_SIZE_MIB)
+            .unwrap();
+        let model: Arc<dyn crate::embed::Embedder> =
+            Arc::new(crate::embed::StaticEmbedder::new(crate::config::MODEL_ID).unwrap());
+        let state = Arc::new(AppState {
+            token_store: crate::auth::TokenStore::default(),
+            jwt_middleware_state: Arc::new(
+                crate::server::router::auth::JwtMiddlewareState::opaque_for_tests(
+                    pool.clone(),
+                    db_path.clone(),
+                ),
+            ),
+            cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
+            loom: Default::default(),
+            model,
+            registry: crate::domain_registry::DomainRegistry::new(pool.clone(), &db_path, false),
+            pool: pool.clone(),
+            db_path,
+            connection_tracker: Arc::new(crate::http_limit::ConnectionTracker::new()),
+            rate_limiter: Arc::new(crate::http_limit::RateLimiter::new()),
+            snapshot: crate::integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: crate::auth::AuthMode::Opaque,
+            key_store: crate::auth::jwks::KeyStore::default(),
+            revocation_cache: Arc::new(crate::auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: crate::handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(crate::config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(crate::config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: crate::alert::ChainWatchState::default(),
+            concurrency: &crate::concurrency::CONCURRENCY,
+        });
+        (state, dir)
+    }
+
+    /// Sign `v1,<b64(hmac)>` over `{id}.{ts}.{body}` and lay down a 0600
+    /// bridge config the discoverer will find.
+    fn mount_fixture(
+        dir: &std::path::Path,
+        body: &[u8],
+        id: &str,
+        ts: &str,
+    ) -> (String, std::path::PathBuf) {
+        use base64::Engine;
+        use hmac::{Hmac, KeyInit, Mac};
+        type HmacSha256 = Hmac<sha2::Sha256>;
+        let secret = b"mount-secret";
+        let mut mac = HmacSha256::new_from_slice(secret).unwrap();
+        mac.update(format!("{id}.{ts}.").as_bytes());
+        mac.update(body);
+        let sig = format!(
+            "v1,{}",
+            base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
+        );
+        let cfg_dir = dir.join("connectors");
+        std::fs::create_dir_all(&cfg_dir).unwrap();
+        let cfg_path = cfg_dir.join("channel-signal-acme.json");
+        std::fs::write(
+            &cfg_path,
+            r#"{"domain":"acme","webhook_secret":"mount-secret"}"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&cfg_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        (sig, cfg_dir)
+    }
+
+    fn mount_headers(id: &str, ts: &str, sig: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("webhook-id", id.parse().unwrap());
+        h.insert("webhook-timestamp", ts.parse().unwrap());
+        h.insert("webhook-signature", sig.parse().unwrap());
+        h
+    }
+
+    static MOUNT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn bridge_mount_arm_refuses_a_stale_signed_timestamp() {
+        let _env = MOUNT_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (state, dir) = mount_state();
+        let body = br#"{"plugin":"signal"}"#;
+        let stale = (std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - WEBHOOK_TS_FUTURE_SKEW_SECS
+            - 10)
+            .to_string();
+        let (sig, cfg_dir) = mount_fixture(dir.path(), body, "mount-stale-1", &stale);
+        // SAFETY: single-threaded under the env lock.
+        unsafe { std::env::set_var("BRAIN_CONNECTOR_CONFIG_DIR", &cfg_dir) };
+        let got = verify_bridge_mount(
+            &state,
+            &mount_headers("mount-stale-1", &stale, &sig),
+            &Bytes::from_static(body),
+        );
+        unsafe { std::env::remove_var("BRAIN_CONNECTOR_CONFIG_DIR") };
+        assert!(
+            got.is_none(),
+            "a valid HMAC with an out-of-window timestamp must NOT mount: {got:?}"
+        );
+    }
+
+    #[test]
+    fn bridge_mount_arm_refuses_a_replayed_webhook_id() {
+        let _env = MOUNT_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let (state, dir) = mount_state();
+        let body = br#"{"plugin":"signal"}"#;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .to_string();
+        let (sig, cfg_dir) = mount_fixture(dir.path(), body, "mount-replay-1", &now);
+        unsafe { std::env::set_var("BRAIN_CONNECTOR_CONFIG_DIR", &cfg_dir) };
+        let first = verify_bridge_mount(
+            &state,
+            &mount_headers("mount-replay-1", &now, &sig),
+            &Bytes::from_static(body),
+        );
+        let replay = verify_bridge_mount(
+            &state,
+            &mount_headers("mount-replay-1", &now, &sig),
+            &Bytes::from_static(body),
+        );
+        unsafe { std::env::remove_var("BRAIN_CONNECTOR_CONFIG_DIR") };
+        assert!(
+            first.is_some(),
+            "the FIRST sight of a fresh signed envelope mounts (the anti-vacuity arm)"
+        );
+        assert!(
+            replay.is_none(),
+            "the replayed delivery must NOT mount again"
+        );
     }
 }

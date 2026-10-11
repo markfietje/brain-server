@@ -8331,6 +8331,55 @@ Final paragraph after the rule.";
         }
     }
 
+    /// The ingest evidence row commits WITH the write: inside
+    /// `ingest_memory`'s closure the last `audit::record` precedes the last
+    /// `tx.commit()` — the post-commit second-connection form was a crash
+    /// window that left a durable memory with no chain row while
+    /// `verify_chain` stayed green. A wiring lock (the text-bound class the
+    /// gate-law register owns); the sibling arm at the plain-add site is the
+    /// behavioral reference shape.
+    #[test]
+    fn the_ingest_audit_row_precedes_its_commit() {
+        let router_mem_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/server/router/memory.rs"
+        ));
+        let body = handler_body(router_mem_src, "ingest_memory")
+            .unwrap_or_else(|| panic!("`fn ingest_memory` not found"));
+        let audit = body
+            .rfind("audit::record(")
+            .unwrap_or_else(|| panic!("ingest_memory writes no audit row"));
+        let commit = body
+            .rfind("tx.commit()")
+            .unwrap_or_else(|| panic!("ingest_memory never commits"));
+        assert!(
+            audit < commit,
+            "the ingest evidence row must be recorded BEFORE the commit (a              post-commit audit is a crash window with no chain row)"
+        );
+    }
+
+    /// The edge-history lineage is bounded like every sibling list surface,
+    /// and names its ceiling (`truncated`) instead of clamping silently.
+    /// Wiring lock (the R9-03 class): the constant + the disclosure must
+    /// both be present in the handler body.
+    #[test]
+    fn the_edge_history_surface_is_bounded_and_discloses() {
+        let router_mem_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/server/router/memory.rs"
+        ));
+        let body = handler_body(router_mem_src, "get_edge_history")
+            .unwrap_or_else(|| panic!("`fn get_edge_history` not found"));
+        assert!(
+            body.contains("EDGE_HISTORY_MAX"),
+            "the lineage query must bind the named cap"
+        );
+        assert!(
+            body.contains("truncated"),
+            "a capped lineage must disclose the truncation"
+        );
+    }
+
     /// Extract the body of `async fn {name}` (brace-balanced, string-aware) so
     /// the wiring guard can assert the gate lives inside the handler.
     /// F7-07: the source is comment-stripped FIRST (string-aware, line +

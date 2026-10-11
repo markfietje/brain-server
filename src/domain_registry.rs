@@ -279,6 +279,11 @@ fn open_with_migration(path: &Path) -> Result<BrainPool, DomainRegistryError> {
     let mut conn = pool
         .get()
         .map_err(|e| DomainRegistryError::Open(e.to_string()))?;
+    // The 0600 family: a per-domain database is the same tenant evidence the
+    // main DB is. AFTER the pool build — SQLite creates the file, so a mode
+    // pass before it would tighten nothing (the red-first pin caught the
+    // first placement doing exactly that).
+    crate::server::bootstrap::enforce_private_mode(path);
     crate::migration::run_migration(&mut conn, config::DB_MMAP_SIZE_MIB)
         .map_err(|e| DomainRegistryError::Migration(e.to_string()))?;
     // A FRESH domain DB (zero audit rows) starts
@@ -529,5 +534,38 @@ mod tests {
         assert!(reg2.pool_for("seeded-but-cold").is_ok());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    /// A per-domain database joins the 0600 family at creation — the same
+    /// tenant evidence the main DB is. Red-first: the registry created the
+    /// file 0644 and nothing ever tightened it.
+    #[cfg(unix)]
+    #[test]
+    fn a_domain_db_created_by_the_registry_is_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("brain-work.db");
+        let _pool = open_with_migration(&path).expect("registry opens the domain db");
+        let mode = std::fs::metadata(&path)
+            .map(|m| m.permissions().mode())
+            .unwrap_or(0);
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "a domain db must be owner-only, got mode {mode:o}"
+        );
+        // Idempotence arm: a second open (the registry caches pools) keeps
+        // the file compliant rather than erroring on an already-tight file.
+        let _pool2 = open_with_migration(&path).expect("re-open is idempotent");
+        let mode2 = std::fs::metadata(&path)
+            .map(|m| m.permissions().mode())
+            .unwrap_or(0);
+        assert_eq!(mode2 & 0o077, 0, "still owner-only after the re-open");
     }
 }

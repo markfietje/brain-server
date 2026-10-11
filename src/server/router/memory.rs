@@ -1322,6 +1322,19 @@ pub async fn ingest_memory(
                     eprintln!("⚠️ quarantine flag failed — rolling back chunk {chunk_id}");
                     continue;
                 }
+                // audit successful ingest (hash only) — INSIDE the tx, so the
+                // write and its evidence commit or roll back together: the
+                // post-commit form was a crash window that left a durable
+                // memory with no chain row while verify_chain stayed green
+                // (the sibling ingest arm's shape).
+                audit::record(
+                    &tx,
+                    audit::AuditKind::Ingest,
+                    "api",
+                    &content_hash,
+                    audit::AuditStatus::Ok,
+                    &source_uri,
+                );
                 if tx.commit().is_ok() {
                     added += 1;
                     chunk_ids.push(chunk_id);
@@ -1332,15 +1345,6 @@ pub async fn ingest_memory(
                     if quarantine {
                         quarantined_chunk_ids.push(chunk_id);
                     }
-                    // audit successful ingest (hash only).
-                    audit::record(
-                        &conn,
-                        audit::AuditKind::Ingest,
-                        "api",
-                        &content_hash,
-                        audit::AuditStatus::Ok,
-                        &source_uri,
-                    );
                 }
             }
         }
@@ -3164,6 +3168,12 @@ pub fn relations_for(
 /// Admin-gated at the row level (the history is operator evidence, not a
 /// regular read); the call is audit-recorded (`AuditKind::GraphRead`) so the
 /// retrieval of retired PII-bearing labels is itself on the chain.
+/// The edge-history surface is bounded like every sibling list surface (the
+/// one unbounded `ORDER BY r.id` in an otherwise capped family); a lineage
+/// that reaches the ceiling sets `truncated: true` rather than clamping
+/// silently.
+const EDGE_HISTORY_MAX: usize = 500;
+
 pub(crate) async fn get_edge_history(
     State(state): State<Arc<AppState>>,
     principal: crate::handlers::auth::OptPrincipal,
@@ -3217,11 +3227,12 @@ pub(crate) async fn get_edge_history(
                  JOIN entities e2 ON r.to_entity_id = e2.id
                  WHERE r.from_entity_id = ?1 AND r.to_entity_id = ?2
                    AND r.relation_type = ?3
-                 ORDER BY r.id",
+                 ORDER BY r.id
+                 LIMIT ?4",
             )
             .map_err(|e| AppError::Internal(e.to_string()))?;
         let versions: Vec<serde_json::Value> = stmt
-            .query_map(params![from_id, to_id, kind], |r| {
+            .query_map(params![from_id, to_id, kind, EDGE_HISTORY_MAX as i64], |r| {
                 let from_name = r.get::<_, String>(0)?;
                 let to_name = r.get::<_, String>(1)?;
                 let rel = r.get::<_, String>(2)?;
@@ -3267,12 +3278,16 @@ pub(crate) async fn get_edge_history(
         {
             tracing::warn!("edge-history audit record dropped (id {id}) — evidence gap");
         }
+        let truncated = versions.len() >= EDGE_HISTORY_MAX;
         Ok(serde_json::json!({
             "relation_id": versions[0]["relation_id"],
             "from_entity": versions[0]["from_entity"],
             "to_entity": versions[0]["to_entity"],
             "relation_type": kind,
             "current": versions.iter().find(|v| v["current"] == true),
+            // the bounded lineage names its ceiling: a silent clamp would be
+            // its own defect (the response must under-report NOTHING).
+            "truncated": truncated,
             "versions": versions,
         }))
     })

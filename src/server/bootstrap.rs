@@ -74,7 +74,7 @@ pub const BIND_PUBLIC_REMOVAL_DATE: &str = "2027-04-11";
 /// pre-migration backup, and its marker. Idempotent (heals artefacts created
 /// before the law), warn-and-continue on failure — mode is defence-in-depth
 /// on multi-user hosts, not boot correctness. No-op outside Unix.
-fn enforce_private_mode(path: &std::path::Path) {
+pub(crate) fn enforce_private_mode(path: &std::path::Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
