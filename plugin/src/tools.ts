@@ -568,9 +568,7 @@ export function registerBrainTools(
                     // The taint marker per relation (R116): the graph family
                     // renders captured content, so the edge says so.
                     const tag =
-                      r.origin && r.origin !== "owner"
-                        ? ` [${sanitizeForBlock(r.origin)}]`
-                        : "";
+                      r.origin && r.origin !== "owner" ? ` [${sanitizeForBlock(r.origin)}]` : "";
                     return `\n  - ${r.direction === "out" ? "→" : "←"} ${sanitizeForBlock(r.relation_type).trim()} ${sanitizeForBlock(r.to_entity).trim()}${tag}`;
                   })
                   .join("");

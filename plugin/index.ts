@@ -215,17 +215,14 @@ export default definePluginEntry({
     // ------------------------------------------------------------------------
     // Deterministic recall hook — the reason this costs zero decision tokens.
     // ------------------------------------------------------------------------
-    api.on(
-      "before_prompt_build",
-      async (_event, ctx) => {
-        // R116: the label recorder — runs on EVERY turn (independent of the
-        // autoRecall gate below), because the tool lane reads it later.
-        const gate = mapCtx(ctx);
-        currentTurnOrigin =
-          gate.chatType === "group" || gate.chatType === "channel" ? "channel" : "owner";
-        return undefined;
-      },
-    );
+    api.on("before_prompt_build", async (_event, ctx) => {
+      // R116: the label recorder — runs on EVERY turn (independent of the
+      // autoRecall gate below), because the tool lane reads it later.
+      const gate = mapCtx(ctx);
+      currentTurnOrigin =
+        gate.chatType === "group" || gate.chatType === "channel" ? "channel" : "owner";
+      return undefined;
+    });
 
     api.on(
       "before_prompt_build",
