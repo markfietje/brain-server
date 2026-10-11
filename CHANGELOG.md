@@ -4,6 +4,29 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R97 "Verity II" — the no-LLM boundary, stated where the claims are
+
+The operator decision (2026-10-11, on verified Oct-2026 research): the GDL
+provider dispatch STAYS — so the docs stop implying it doesn't. Every absolute
+"no LLM / zero-token" claim now carries the boundary beside it: memory
+operations (recall, search, ingest, approval) are deterministic and
+zero-token, and the one model-shaped capability is the OPTIONAL
+operator-launched GDL provider lane (`BRAIN_GDL_PROVIDER_*`) — operator-
+launched, ticket-only, server-owned profile (R34), execution-integrity
+controls (R35), output never auto-promoting (the human gate decides), and
+local-endpoint-capable so nothing need egress. SECURITY.md's stamp moves
+(2026-10-11, R97) with the corrected posture; THREAT_MODEL gains the
+boundary row; README, faq, human-in-the-loop, overview, and
+memory-lifecycle carry the sentence beside their claims.
+
+Pin (red-proven both directions — stripping the marker from any claim file
+fails): `docs_truth::pins::no_llm_claims_carry_the_provider_boundary` —
+claim and disclosure must co-occur per file, with the claim-file set
+floored at five so the pin's scope cannot silently shrink.
+
+ponytail: no code change beyond the pin, no route/wire/schema change, no
+posture change — the lane was kept by decision; only the claims caught up.
+
 ## [1.29.12] — 2026-10-11 — "Sealed": the chain's head, the LOW debt, and the rolling snapshots
 
 Covers every commit from tag `v1.29.11` (`6cd21643`) to this release —
@@ -231,9 +254,8 @@ docs-truth LOW=17 unmoved; env-truth clean; 547 doc links resolve; full
 - `pinned_alg` is non-optional: an undeclared JWT key record cannot fall back
   to whitelist-only family behavior.
 
-**Behaviour changes (disclosed)**
-
-- Writing a v1 backup now requires `--allow-weak-legacy` (reads unchanged).
+- Writing a v1 backup now requires `--allow-weak-legacy` (reads unchanged) —
+  the weak legacy writer is an explicit opt-in.
 - The integrity scheduler retains NO unencrypted snapshot: with
   `BRAIN_BACKUP_PASSPHRASE_FILE` set it writes sealed v3 bundles restorable
   via `brain restore`; without it, the integrity check runs and nothing is
@@ -242,12 +264,13 @@ docs-truth LOW=17 unmoved; env-truth clean; 547 doc links resolve; full
 - `SetSensitiveHeadersLayer` runs outside `TraceLayer`; `/auth/refresh` 200s
   carry `Cache-Control: no-store`.
 
-**Operational**
+**Improvements**
 
-- `cargo-cyclonedx` is version-pinned in the release workflow; the release
-  witness now watches the tag's commit with tag-scoped queries (this is the
-  first release through the corrected witness).
-- `/health/db` reports `backup.retention` (`encrypted` | `check-only`).
+- `cargo-cyclonedx` is version-pinned in the release workflow, and the
+  release witness now watches the tag's commit with tag-scoped queries.
+- `/health/db` reports `backup.retention` (`encrypted` | `check-only`), and
+  the pre-tag selfcheck gate compares the openapi version pair and the
+  README OpenAPI badge against the crate version.
 
 ## [1.29.11] — 2026-10-10 — "Identity": who is asking, not what the env says
 
