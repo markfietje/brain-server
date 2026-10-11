@@ -147,6 +147,9 @@ pub(crate) struct ChunkRecord {
     /// the ingest kind (`k.source`) — seam-sanitized at the emission
     /// boundary on both by-id and batch paths.
     pub source: Option<String>,
+    /// the taint label (`k.origin`) — `channel-capture` rides the wire so
+    /// every by-id/batch consumer can see captured traffic (recall parity).
+    pub origin: Option<String>,
     /// the raw `created_at` TEXT — by-id path only.
     pub created_at: Option<String>,
 }
@@ -164,7 +167,8 @@ pub(crate) fn chunk_in_domain(
     let r = conn.query_row(
         "SELECT k.id, k.title, k.content, k.source, k.document_id, k.chunk_index,
                 k.heading_path, k.line_start, k.line_end, k.created_at,
-                s.uri, sr.id, k.pii, k.flagged, k.domain, k.owner, k.access_scope
+                s.uri, sr.id, k.pii, k.flagged, k.domain, k.owner, k.access_scope,
+                k.origin
          FROM knowledge k
          LEFT JOIN sources s ON k.source_id = s.id
          LEFT JOIN source_revisions sr ON k.revision_id = sr.id
@@ -189,6 +193,7 @@ pub(crate) fn chunk_in_domain(
                 domain: row.get(14)?,
                 owner: row.get(15)?,
                 access_scope: row.get(16)?,
+                origin: row.get(17)?,
             })
         },
     );
@@ -225,7 +230,7 @@ pub(crate) fn chunks_in_domain(
     let sql = format!(
         "SELECT k.id, k.title, k.content, k.document_id, k.chunk_index,\
                 k.heading_path, k.line_start, k.line_end, s.uri, sr.id, k.pii,\
-                k.flagged, k.domain, k.owner, k.access_scope, k.source \
+                k.flagged, k.domain, k.owner, k.access_scope, k.source, k.origin \
          FROM knowledge k \
          LEFT JOIN sources s ON k.source_id = s.id \
          LEFT JOIN source_revisions sr ON k.revision_id = sr.id \
@@ -261,6 +266,7 @@ pub(crate) fn chunks_in_domain(
             // seam-sanitized at the emission boundary). created_at stays
             // by-id-only (no consumer need demonstrated).
             source: row.get(15)?,
+            origin: row.get(16)?,
             created_at: None,
         })
     })?;

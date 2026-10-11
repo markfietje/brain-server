@@ -343,7 +343,15 @@ pub fn lower_ump(record: &Value) -> Result<(IngestRequest, crate::handlers::ump:
         title: row["title"].as_str().unwrap_or("untitled").to_string(),
         content: row["content"].as_str().unwrap_or_default().to_string(),
         domain: None,
-        origin_context: None,
+        // The taint travels WITH the record: only the capture value
+        // is honored, so a peer (or a revise's own emitted base) can label
+        // captured traffic but can never assert owner-grade provenance
+        // through this field — anything else de-labels to the author-class
+        // derivation, never to a claim.
+        origin_context: match record["origin"].as_str() {
+            Some("channel-capture") => Some("channel".to_string()),
+            _ => None,
+        },
         entities,
         relations,
         memory_kind: row["memory_kind"].as_str().map(|s| s.to_string()),

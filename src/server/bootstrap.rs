@@ -984,7 +984,7 @@ pub fn bootstrap() -> Result<BootOutcome> {
         auth::jwks::KeyStore::default()
     });
     let auth_mode = auth::AuthMode::from_env(key_store.len());
-    // The F4-03 guard: an issuer with zero keys must REFUSE the boot, not
+    // The downgrade guard: an issuer with zero keys must REFUSE the boot, not
     // slide into opaque-token mode where every bearer is the superuser. The
     // resolution mirrors `from_env`'s own issuer read, so the refusal fires
     // exactly when `from_env` would have downgraded despite the operator's

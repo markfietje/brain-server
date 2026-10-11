@@ -700,7 +700,9 @@ pub async fn revise(
                 domain: new_req.domain,
                 title: None,
                 source_prompt: None,
-                origin_context: None,
+                // the inherited taint rides the review path too: the
+                // proposal badge shows the capture the revision came from.
+                origin_context: new_req.origin_context,
             },
         )
         .await?;

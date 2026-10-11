@@ -115,6 +115,24 @@ async fn post(
     )
 }
 
+async fn get(srv: &TestServer, token: &str, path: &str) -> (StatusCode, serde_json::Value) {
+    let req = Request::builder()
+        .method(axum::http::Method::GET)
+        .uri(path)
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let resp = app(srv.state.clone()).oneshot(req).await.expect("oneshot");
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("body");
+    (
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+    )
+}
+
 fn knowledge_count(srv: &TestServer) -> i64 {
     srv.state
         .pool
@@ -482,4 +500,193 @@ fn agent_preset_grants_neither_approve_nor_reject() {
             "the agent preset must not grant `{refused}`: {can:?}"
         );
     }
+}
+
+// ── R116 "Carriage": the taint survives the trip ────────────────────────
+
+async fn store_captured_row(srv: &TestServer, content: &str) -> i64 {
+    let (st, body) = post(
+        srv,
+        OP_TOKEN,
+        "/ingest",
+        &format!(
+            r#"{{"title":"capture","content":"{content}","domain":"global","origin_context":"channel"}}"#
+        ),
+    )
+    .await;
+    assert_eq!(
+        st,
+        StatusCode::OK,
+        "operator capture stores directly: {body}"
+    );
+    body["id"].as_i64().expect("numeric id in ingest response")
+}
+
+/// The laundering seam, closed: a `channel-capture` row revised over UMP
+/// re-emerges with the capture label, not the author-class default. Red-first
+/// (F11-02): the revision dropped the label and the supersede retired the
+/// labeled original.
+#[tokio::test]
+async fn revise_carries_the_superseded_rows_taint() {
+    let srv = build_server();
+    let old_id = store_captured_row(&srv, "the channel said the meeting moved to tuesday").await;
+    // Fetch the record so the patch changes the text (identical content is a
+    // no-op revise — the id is content-addressed).
+    let (st, rec) = get(&srv, OP_TOKEN, &format!("/ump/memory/{old_id}")).await;
+    assert_eq!(st, StatusCode::OK, "{rec}");
+    let text = rec["record"]["body"]["text"]
+        .as_str()
+        .expect("record body text");
+    let (st, body) = post(
+        &srv,
+        OP_TOKEN,
+        "/ump/revise",
+        &format!(
+            r#"{{"id":"{}","patch":{{"body":{{"text":"{} (amended wednesday)"}}}}}}"#,
+            old_id,
+            text.replace('"', "\\\""),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "revise accepted: {body}");
+    // The new row is the one whose content carries the amendment.
+    let new_origin: String = srv
+        .state
+        .pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT origin FROM knowledge WHERE content LIKE '%amended wednesday%'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the revised row exists");
+    assert_eq!(
+        new_origin, "channel-capture",
+        "the revision inherits the superseded row's capture taint"
+    );
+}
+
+/// The derivation moved INTO the proposal seam: an agent asserting `owner` on
+/// any proposal surface is overridden to channel-grade, and a typo'd value is
+/// a 400 — the `/ingest` vocabulary, one seam for all four surfaces.
+#[tokio::test]
+async fn proposal_origin_is_derived_not_asserted() {
+    let srv = build_server();
+    let (st, body) = post(
+        &srv,
+        AGENT_TOKEN,
+        "/ingest/proposal",
+        r#"{"content":"agent claims this is owner-authored","kind":"fact","origin_context":"owner"}"#,
+    )
+    .await;
+    assert!(
+        st == StatusCode::OK || st == StatusCode::ACCEPTED,
+        "queued: {st} {body}"
+    );
+    let source: String = srv
+        .state
+        .pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT source FROM proposals ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+    assert_eq!(
+        source, "channel-capture",
+        "the agent class's proposal is channel-grade regardless of the assertion"
+    );
+    let (st, body) = post(
+        &srv,
+        OP_TOKEN,
+        "/ingest/proposal",
+        r#"{"content":"typo'd label","kind":"fact","origin_context":"chanel"}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    assert!(
+        serde_json::to_string(&body)
+            .unwrap_or_default()
+            .contains("invalid_origin_context"),
+        "the typo cannot silently de-taint itself: {body}"
+    );
+}
+
+/// The label rides every content-returning wire: by-id reads, suggestions,
+/// graph edges, and UMP records.
+#[tokio::test]
+async fn a_channel_captured_row_is_labeled_on_every_wire() {
+    let srv = build_server();
+    let id = store_captured_row(&srv, "the vitamin d3 dosage guidance from the channel").await;
+
+    // by-id
+    let (st, body) = get(&srv, OP_TOKEN, &format!("/get/{id}")).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["origin"], "channel-capture", "by-id carries the label");
+
+    // UMP record
+    let (st, rec) = get(&srv, OP_TOKEN, &format!("/ump/memory/{id}")).await;
+    assert_eq!(st, StatusCode::OK, "{rec}");
+    assert_eq!(
+        rec["record"]["origin"], "channel-capture",
+        "the record carries the label"
+    );
+    assert_eq!(
+        rec["record"]["untrusted"], true,
+        "the record marks the capture boolean"
+    );
+}
+
+#[tokio::test]
+async fn suggest_hits_carry_the_capture_label() {
+    let srv = build_server();
+    store_captured_row(
+        &srv,
+        "the quarterly planning guidance from the channel thread",
+    )
+    .await;
+    let (st, body) = post(
+        &srv,
+        OP_TOKEN,
+        "/suggest",
+        r#"{"context":"quarterly planning guidance","k":3}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let hits = body["suggestions"].as_array().expect("suggestions array");
+    assert!(
+        !hits.is_empty(),
+        "the captured row is retrievable so the label assertion is not vacuous"
+    );
+    assert!(
+        hits.iter().any(|h| h["origin"] == "channel-capture"),
+        "a suggested captured hit carries the taint label: {hits:?}"
+    );
+}
+
+#[tokio::test]
+async fn graph_edges_label_captured_rows() {
+    let srv = build_server();
+    let (st, body) = post(
+        &srv,
+        OP_TOKEN,
+        "/ingest",
+        r#"{"title":"capture","content":"the channel discussed glucosamine dosing","domain":"global","origin_context":"channel","entities":[{"name":"glucosamine","type":"supplement"},{"name":"joint health","type":"topic"}],"relations":[{"from":"glucosamine","to":"joint health","type":"relates_to"}]}"#,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (st, body) = get(&srv, OP_TOKEN, "/graph/entity/glucosamine").await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let rels = body["relations"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !rels.is_empty(),
+        "the captured row wrote an edge so the assertion is not vacuous: {body}"
+    );
+    assert!(
+        rels.iter().any(|r| r["origin"] == "channel-capture"),
+        "graph edges carry the underlying row's taint: {rels:?}"
+    );
 }

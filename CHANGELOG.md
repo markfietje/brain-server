@@ -4,6 +4,33 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R116 "Carriage" — the taint survives the trip
+
+The capture label (`origin: channel-capture`) was recall-only: revised away
+at `/ump/revise` and absent from by-id, suggestion, graph, UMP-record, and
+DSAR wires. R116 carries it everywhere, additively, with no new machinery.
+
+- **`/ump/revise` inherits the superseded row's origin** — the record engine
+  emits `origin` (+ `untrusted` on the capture value; id-safe: the
+  content-addressed id hashes `domain\0text` only), `lower_ump` honors only
+  the capture value, and both revise branches carry it. Export→import
+  round-trips the label.
+- **The proposal seam owns the vocabulary and the derivation** —
+  `create_proposal` 400s unknown `origin_context` values (the `/ingest`
+  code) and derives `channel` for the agent class, closing the three router
+  sites that hard-coded `None` and the caller-asserted label on
+  `/ingest/proposal`.
+- **The label rides every content-returning wire** — `/get/{id}`,
+  `/multi-get`, `/suggest` hits, graph entity/relations edges, UMP records,
+  and the DSAR Art-15 bundle (+ `by_origin` census). The plugin's
+  `brain_memory_get` honors the exclude posture and labels; graph relations
+  mark captured edges; `brain_memory_store` threads the turn's chat type so
+  a channel-grouped turn's store cannot launder it. Traverse stays
+  unlabeled by stated ceiling (a hop aggregates multiple edges).
+
+Wire: additive response fields (openapi + regenerated `schema.d.ts`). No
+route, schema, or dependency change.
+
 ## [Unreleased] — R115 "Seventh" — the two surfaces that had forgotten the class
 
 The eleventh pass found the R106 class law's own doc promise ("no future

@@ -238,7 +238,8 @@ mod tests {
                 knowledge_id INTEGER, superseded_at TIMESTAMP);
              -- v1.27.16 (F-06): the bounded-query joins through knowledge for
              -- the domain-scope atom; a bare fixture keeps the table (empty).
-             CREATE TABLE knowledge(id INTEGER PRIMARY KEY, domain TEXT);",
+             -- the edge projection also emits k.origin.
+             CREATE TABLE knowledge(id INTEGER PRIMARY KEY, domain TEXT, origin TEXT);",
         )
         .unwrap();
         c.execute("INSERT INTO entities(id, name) VALUES (1, 'hub')", [])
@@ -18546,8 +18547,12 @@ mod scrim {
         // `rfind(HEADER)` above cannot see it — the law is EXTENDED to the
         // new table, not dodged by it.
         const HEADER9: &str = "| ID | Finding | Sev | Disposition |";
+        // The ELEVENTH-pass table (2026-10-12) reuses this exact header, so
+        // `rfind` would take the wrong table — the same ambiguity the tenth
+        // pass's shared header created. `find` takes the FIRST occurrence
+        // (the ninth); the eleventh arm below takes the last.
         let start9 = register
-            .rfind(HEADER9)
+            .find(HEADER9)
             .expect("the ninth-pass findings table header must exist in AUDIT.md");
         let tail9 = &register[start9..];
         let table9 = match tail9.find("\n## ") {
@@ -18690,6 +18695,88 @@ mod scrim {
             );
         }
         for (id, disposition) in &rows10 {
+            let declared = declared_disposition(disposition);
+            let claims_open = declared.contains("OPEN");
+            let named: Vec<&str> = SHIPPED_ROUNDS
+                .iter()
+                .copied()
+                .filter(|r| names_shipped_round(declared, r))
+                .collect();
+            assert!(
+                !(claims_open && !named.is_empty()),
+                "`{id}` is OPEN but names a round that already shipped \
+                 ({}) — say UNROUTED, or name the round that will. \
+                 Disposition: {}",
+                named.join(", "),
+                &disposition[..disposition.len().min(160)]
+            );
+        }
+
+        // ELEVENTH-PASS TABLE (2026-10-12): the same law, the same arms, its
+        // own slice — and the table that made the ninth arm's `rfind`
+        // ambiguous, because it reused the ninth's exact header. `rfind`
+        // takes the LAST occurrence (the newest table), which is the law's
+        // own drift tripwire: a future pass appending a twelfth table with
+        // this header lands here and this arm must be extended to it, not
+        // silently re-aimed.
+        let start11 = register
+            .rfind(HEADER9)
+            .expect("the eleventh-pass findings table header must exist in AUDIT.md");
+        let tail11 = &register[start11..];
+        let table11 = match tail11.find("\n## ") {
+            Some(end) => &tail11[..end],
+            None => tail11,
+        };
+        let mut rows11: Vec<(String, String)> = Vec::new();
+        for line in table11.lines() {
+            let mut cells = line.splitn(4, '|');
+            let (Some(_), Some(id), Some(_), Some(disposition)) =
+                (cells.next(), cells.next(), cells.next(), cells.next())
+            else {
+                continue;
+            };
+            let id = id.trim();
+            let is_id = !id.is_empty()
+                && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                && id.contains('-')
+                && id.chars().next().is_some_and(|c| c.is_ascii_uppercase());
+            if is_id {
+                rows11.push((id.to_string(), disposition.to_string()));
+            }
+        }
+        assert!(
+            rows11.len() >= 15 && rows11.len() < 50,
+            "parsed {} rows from the eleventh-pass table — the slice is wrong",
+            rows11.len()
+        );
+        assert!(
+            rows11.iter().any(|(i, _)| i == "F11-01") && rows11.iter().any(|(i, _)| i == "F11-05"),
+            "the sliced eleventh-pass table does not carry its anchor ids \
+             (F11-01, F11-05) — the scope is wrong"
+        );
+        let mut by_id11: std::collections::BTreeMap<&str, usize> =
+            std::collections::BTreeMap::new();
+        for (id, _) in &rows11 {
+            *by_id11.entry(id.as_str()).or_insert(0) += 1;
+        }
+        let dups11: Vec<(&str, usize)> = by_id11
+            .iter()
+            .filter(|(_, count)| **count > 1)
+            .map(|(id, count)| (*id, *count))
+            .collect();
+        assert!(
+            dups11.is_empty(),
+            "these eleventh-pass ids appear more than once: {dups11:?}"
+        );
+        for (id, disposition) in &rows11 {
+            assert!(
+                STATUSES.iter().any(|s| disposition.contains(s)),
+                "eleventh-pass register row `{id}` carries no recognised \
+                 disposition keyword. Disposition: {}",
+                &disposition[..disposition.len().min(120)]
+            );
+        }
+        for (id, disposition) in &rows11 {
             let declared = declared_disposition(disposition);
             let claims_open = declared.contains("OPEN");
             let named: Vec<&str> = SHIPPED_ROUNDS

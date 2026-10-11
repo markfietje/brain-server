@@ -116,13 +116,32 @@ pub async fn ingest_proposal(
 pub(crate) async fn create_proposal(
     state: Arc<AppState>,
     principal: Option<crate::auth::Principal>,
-    req: ProposalRequest,
+    mut req: ProposalRequest,
 ) -> Result<ProposalResponse, HandlerError> {
     let domain = req
         .domain
         .filter(|d| !d.trim().is_empty())
         .unwrap_or_else(|| "global".to_string());
     super::authorize(&principal, crate::auth::Action::Write, "", &domain)?;
+    // The taint input, the closed vocabulary `/ingest` enforces — ONE seam
+    // for every proposal surface (`/ingest/proposal`, the router capture
+    // sites, the UMP revise lane): an unknown value is a 400, never a
+    // silent "not tainted".
+    if let Some(o) = req.origin_context.as_deref()
+        && o != "owner"
+        && o != "channel"
+    {
+        return Err(HandlerError::bad_request(
+            "invalid_origin_context",
+            format!("origin_context must be \"owner\" or \"channel\", got \"{o}\""),
+        ));
+    }
+    // And the label is DERIVED for the agent class (the class law, now at
+    // the proposal seam itself instead of only /ingest): whatever the caller
+    // asserted, an agent's capture is channel-grade.
+    if crate::handlers::agent_class(&principal) {
+        req.origin_context = Some("channel".to_string());
+    }
     let content = req.content.trim().to_string();
     if content.is_empty() {
         return Err(HandlerError::bad_request(

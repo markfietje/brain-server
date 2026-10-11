@@ -412,8 +412,8 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
 
-    /// R115 (register F4-03): the issuer-configured, zero-keys boot must
-    /// refuse rather than downgrade to the every-bearer-superuser posture.
+    /// The issuer-configured, zero-keys boot must refuse rather than
+    /// downgrade to the every-bearer-superuser posture.
     #[test]
     fn issuer_configured_with_zero_keys_names_the_downgrade_refusal() {
         let r = AuthMode::downgrade_refusal(Some("https://idp.example.com"), 0);

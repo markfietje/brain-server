@@ -85,6 +85,11 @@ pub struct SuggestionHit {
     /// parity). Serialized `true` so the consuming agent enforces the
     /// instruction/data boundary on suggested content too.
     pub untrusted: bool,
+    /// The capture taint label (`channel-capture`), recall/search parity
+    /// (recall parity): the exclude posture keys on this value, so a suggested hit
+    /// must carry it or the posture cannot act on the anticipation surface.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     pub provenance: SuggestionProvenance,
 }
 
@@ -219,6 +224,7 @@ pub async fn suggest(
                     score: r.score,
                     domain: domain_label.clone(),
                     untrusted: true,
+                    origin: r.origin,
                     provenance: SuggestionProvenance {
                         reason: "anticipated",
                         session: session.clone(),
@@ -621,6 +627,7 @@ mod tests {
             score: 0.5,
             domain: None,
             untrusted: true,
+            origin: Some("channel-capture".to_string()),
             provenance: SuggestionProvenance {
                 reason: "anticipated",
                 session: None,

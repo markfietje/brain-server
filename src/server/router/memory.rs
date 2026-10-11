@@ -2468,6 +2468,10 @@ pub async fn get_chunk(
             // marker is the truth, the operator decides (no filtering
             // change: by-id is an operator/review surface).
             "flagged": rec.flagged,
+            // the taint label, recall parity: a by-id read of
+            // captured traffic says so on the wire instead of relying on
+            // the consumer having used recall.
+            "origin": rec.origin,
         });
         // belt-and-braces — re-authorize against the
         // row's OWN domain, and run the record gate (the recall
@@ -2580,6 +2584,8 @@ pub async fn multi_get(
                 "revision_id": rec.revision_id,
                 // per-row quarantine marker (same vocabulary recall emits).
                 "flagged": rec.flagged,
+                // the taint label, the /get convergence.
+                "origin": rec.origin,
             });
             // drop (not error) rows whose domain the
             // principal may not read and rows the record gate denies — a
@@ -2947,7 +2953,7 @@ pub fn entity_relations(
     };
     let mut stmt = conn
         .prepare(&format!(
-            "SELECT e.name, r.relation_type, CASE WHEN r.from_entity_id = ?1 THEN 'out' ELSE 'in' END as dir
+            "SELECT e.name, r.relation_type, CASE WHEN r.from_entity_id = ?1 THEN 'out' ELSE 'in' END as dir, k.origin
              FROM relationships r
              JOIN entities e ON (r.to_entity_id = e.id OR r.from_entity_id = e.id)
              LEFT JOIN knowledge k ON r.knowledge_id = k.id
@@ -2974,7 +2980,10 @@ pub fn entity_relations(
             Ok(serde_json::json!({
                 "to_entity": crate::gate::sanitize_read_cow(&name, pii, principal).into_owned(),
                 "relation_type": crate::gate::sanitize_read_cow(&rel, pii, principal).into_owned(),
-                "direction": r.get::<_, String>(2)?
+                "direction": r.get::<_, String>(2)?,
+                // the taint label of the underlying row: the graph
+                // family renders captured content, so the edge says so.
+                "origin": r.get::<_, Option<String>>(3)?
             }))
         })
         .map_err(|e| AppError::Internal(e.to_string()))?
@@ -3070,7 +3079,7 @@ pub fn relations_for(
     };
     let query = if is_from {
         format!(
-            "SELECT e.name, r.relation_type FROM relationships r
+            "SELECT e.name, r.relation_type, k.origin FROM relationships r
          JOIN entities e ON r.to_entity_id = e.id
          LEFT JOIN knowledge k ON r.knowledge_id = k.id
          WHERE r.from_entity_id = (SELECT id FROM entities WHERE name = ?1)
@@ -3081,7 +3090,7 @@ pub fn relations_for(
         )
     } else {
         format!(
-            "SELECT e.name, r.relation_type FROM relationships r
+            "SELECT e.name, r.relation_type, k.origin FROM relationships r
          JOIN entities e ON r.from_entity_id = e.id
          LEFT JOIN knowledge k ON r.knowledge_id = k.id
          WHERE r.to_entity_id = (SELECT id FROM entities WHERE name = ?1)
@@ -3112,6 +3121,8 @@ pub fn relations_for(
                 "entity": crate::gate::sanitize_read_cow(&name, pii, principal).into_owned(),
                 "relation": crate::gate::sanitize_read_cow(&rel, pii, principal).into_owned(),
                 "direction": direction,
+                // the taint label of the underlying row.
+                "origin": r.get::<_, Option<String>>(2)?,
             }))
         })
         .map_err(|e| AppError::Internal(e.to_string()))?

@@ -167,6 +167,15 @@ pub fn to_ump(row: &Value, domain: &str, entities: &Value, relations: &Value) ->
     if let Some(rels) = rels {
         rec["relations"] = Value::Array(rels);
     }
+    // The taint label rides the record: id-safe, because the
+    // content-addressed id hashes `domain\0text` only — labeling never moves
+    // a record's identity. `untrusted` marks the capture value so a peer
+    // consumer gets the recall-parity boolean without re-deriving it.
+    let origin = row["origin"].as_str();
+    rec["origin"] = json!(origin);
+    if origin == Some("channel-capture") {
+        rec["untrusted"] = json!(true);
+    }
     rec
 }
 

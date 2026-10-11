@@ -434,7 +434,7 @@ pub fn build_export_bundle(
     let mut rows: Vec<serde_json::Value> = Vec::new();
     let mut stmt = tx.prepare(
         "SELECT id, content, node_kind, assertion_kind, confidence,
-                owner, observed_at, valid_from, valid_to, lawful_basis, purpose
+                owner, observed_at, valid_from, valid_to, lawful_basis, purpose, origin
          FROM knowledge WHERE id IN (?1)",
     )?;
     for id in roots.iter().chain(derived.iter().map(|(d, _)| d)) {
@@ -453,12 +453,26 @@ pub fn build_export_bundle(
                 // tags surfaced on the export/DSAR bundle (Art 5/6 evidence).
                 "lawful_basis": row.get::<_, Option<String>>(9)?,
                 "purpose": row.get::<_, Option<String>>(10)?,
+                // the taint label: the subject/DPO sees which shipped rows
+                // were captured from channel traffic (export parity).
+                "origin": row.get::<_, Option<String>>(11)?,
             }))
         })?;
         for v in q.flatten() {
             rows.push(v);
         }
     }
+    // The per-origin census the export envelope carries (parity): the DPO's
+    // at-a-glance view of how much of the subject's disclosed corpus was
+    // captured traffic vs operator-authored.
+    let by_origin = rows.iter().fold(
+        std::collections::BTreeMap::<String, usize>::new(),
+        |mut m, r| {
+            let key = r["origin"].as_str().unwrap_or("unspecified").to_string();
+            *m.entry(key).or_default() += 1;
+            m
+        },
+    );
     // Channel rows the subject can access under Art 15 — the SAME three
     // match arms the purge's sweep erases (author / addressee / content),
     // so what the certificate erases and what the bundle discloses stay
@@ -498,6 +512,8 @@ pub fn build_export_bundle(
         "region": crate::storage_layout::region(),
         "subject": subject,
         "knowledge": rows,
+        // the per-origin census, export-envelope parity.
+        "by_origin": by_origin,
         "channel_notes": notes,
     })
     .to_string())
@@ -1216,7 +1232,8 @@ mod tests {
                 valid_from TEXT,
                 valid_to TEXT,
                 lawful_basis TEXT,
-                purpose TEXT
+                purpose TEXT,
+                origin TEXT
              );
              CREATE TABLE evidence_links (
                 kind TEXT,
@@ -1314,6 +1331,36 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM dsar_requests", [], |r| r.get(0))
             .unwrap();
         assert_eq!(led, 1, "no ledger row written");
+    }
+
+    /// The bundle discloses the capture taint — a shipped row says it
+    /// was captured from channel traffic, and the `by_origin` census gives
+    /// the DPO the at-a-glance split (export-envelope parity).
+    #[test]
+    fn dsar_bundle_discloses_the_capture_label() {
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::migration::run_migration(&mut conn, 1).unwrap();
+        conn.execute_batch(
+            "INSERT INTO knowledge(id, content, content_hash, owner, origin) VALUES
+                 (1, 'captured note', 'h1', 'alice@example.com', 'channel-capture'),
+                 (2, 'operator note', 'h2', 'alice@example.com', 'operator');",
+        )
+        .unwrap();
+        let tx = conn.transaction().unwrap();
+        let bundle: serde_json::Value = serde_json::from_str(
+            &build_export_bundle(&tx, "alice@example.com", &[1, 2], &[]).unwrap(),
+        )
+        .unwrap();
+        let rows = bundle["knowledge"].as_array().unwrap();
+        assert_eq!(
+            rows[0]["origin"], "channel-capture",
+            "the captured row ships its label"
+        );
+        assert_eq!(rows[1]["origin"], "operator");
+        let by_origin = bundle["by_origin"].as_object().unwrap();
+        assert_eq!(by_origin["channel-capture"], 1);
+        assert_eq!(by_origin["operator"], 1);
     }
 
     /// `build_export_bundle` is behavior-preserving — the

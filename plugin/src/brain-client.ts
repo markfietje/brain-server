@@ -173,6 +173,10 @@ export type BrainChunk = {
   created_at?: string;
   source_uri?: string;
   revision_id?: number;
+  /** quarantine marker, recall parity (R116 wire labels). */
+  flagged?: boolean;
+  /** the capture taint label — rides by-id reads since R116. */
+  origin?: string;
 };
 
 /** Deterministic span-verification result (`POST /verify`, v1.5). */
@@ -187,7 +191,13 @@ export type BrainVerifyResult = {
 export type BrainGraphEntity = {
   name: string;
   type?: string;
-  relations: Array<{ to_entity: string; relation_type: string; direction: string }>;
+  relations: Array<{
+    to_entity: string;
+    relation_type: string;
+    direction: string;
+    /** the taint label of the underlying row (R116). */
+    origin?: string;
+  }>;
 };
 
 /** One row of a multi-hop graph traversal (`GET /graph/traverse`). */
@@ -398,7 +408,12 @@ type GraphEntityResponseWire =
   | {
       name: string;
       type: string;
-      relations: Array<{ to_entity: string; relation_type: string; direction: string }>;
+      relations: Array<{
+        to_entity: string;
+        relation_type: string;
+        direction: string;
+        origin?: string;
+      }>;
     }
   | { error: string };
 

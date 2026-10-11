@@ -169,8 +169,8 @@ pub struct ApplyResponse {
 /// `valid_to`) and an undo decides what it was — both are the human's act,
 /// and this lane has no approver to hold it, so the class is refused rather
 /// than proposed: a proposal cannot express a supersession link, so the
-/// proposal pipeline is not a downgrade, it is a different verb. R106's
-/// class law named six surfaces; these are the two that had forgotten it.
+/// proposal pipeline is not a downgrade, it is a different verb. The class
+/// law named six surfaces; these are the two that had forgotten it.
 fn refuse_agent_class(principal: &Option<crate::auth::Principal>) -> Result<(), HandlerError> {
     if let Some(p) = principal.as_ref()
         && super::agent_class(principal)

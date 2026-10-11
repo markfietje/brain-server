@@ -141,6 +141,7 @@ export function registerBrainTools(
   client: BrainClient,
   liveCfg: LiveCfg,
   proposalTools: boolean,
+  turnOrigin: () => "owner" | "channel",
 ): void {
   const memoryRecallParamsSchema = Type.Object({
     query: Type.String({ description: "Search query" }),
@@ -366,6 +367,11 @@ export function registerBrainTools(
               ...(p.domain ? { domain: p.domain } : {}),
               ...(Array.isArray(p.entities) ? { entities: p.entities } : {}),
               ...(Array.isArray(p.relations) ? { relations: p.relations } : {}),
+              // The turn's chat-type fact rides the tool lane too (R116):
+              // a channel-grouped turn's model-driven store carries the same
+              // taint the autoCapture hook applies, so the tool cannot
+              // launder what the turn is.
+              originContext: turnOrigin(),
               timeoutMs: c.requestTimeoutMs,
             });
           } else {
@@ -373,6 +379,7 @@ export function registerBrainTools(
               content: text,
               source: "brain_memory_store",
               ...(p.title?.trim() ? { sourcePrompt: p.title.trim() } : {}),
+              originContext: turnOrigin(),
               timeoutMs: c.requestTimeoutMs,
             });
             res = { id: prop.id, status: prop.status };
@@ -482,18 +489,34 @@ export function registerBrainTools(
               details: { found: false, id: p.id },
             };
           }
+          // The exclude posture applies HERE too (R116): a by-id read is model
+          // context exactly like a recall hit, so captured traffic the
+          // operator excluded cannot re-enter through its id.
+          if (c.untrustedOrigins === "exclude" && chunk.origin === "channel-capture") {
+            return {
+              content: [{ type: "text" as const, text: `No memory with id ${p.id}.` }],
+              details: { found: false, id: p.id, excludedByPosture: true },
+            };
+          }
           const title = chunk.title?.trim() ? `\n${sanitizeForBlock(chunk.title)}` : "";
+          // And the label rides the text (recall parity): a by-id read of
+          // captured traffic says so in the model's context.
+          const originTag =
+            chunk.origin && chunk.origin !== "owner"
+              ? `[memory | ${sanitizeForBlock(chunk.origin)}]`
+              : "";
           return {
             content: [
               {
                 type: "text" as const,
-                text: `Memory ${chunk.id}:${title}\n${sanitizeForBlock(chunk.content)}`,
+                text: `Memory ${chunk.id}:${title}\n${originTag ? originTag + "\n" : ""}${sanitizeForBlock(chunk.content)}`,
               },
             ],
             details: {
               found: true,
               id: chunk.id,
               title: chunk.title ? sanitizeForBlock(chunk.title) : chunk.title,
+              origin: chunk.origin,
             },
           };
         } catch (err) {
@@ -541,10 +564,15 @@ export function registerBrainTools(
             entity.relations.length === 0
               ? " (no relations)"
               : entity.relations
-                  .map(
-                    (r) =>
-                      `\n  - ${r.direction === "out" ? "→" : "←"} ${sanitizeForBlock(r.relation_type).trim()} ${sanitizeForBlock(r.to_entity).trim()}`,
-                  )
+                  .map((r) => {
+                    // The taint marker per relation (R116): the graph family
+                    // renders captured content, so the edge says so.
+                    const tag =
+                      r.origin && r.origin !== "owner"
+                        ? ` [${sanitizeForBlock(r.origin)}]`
+                        : "";
+                    return `\n  - ${r.direction === "out" ? "→" : "←"} ${sanitizeForBlock(r.relation_type).trim()} ${sanitizeForBlock(r.to_entity).trim()}${tag}`;
+                  })
                   .join("");
           return {
             content: [

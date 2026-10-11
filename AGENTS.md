@@ -1,5 +1,50 @@
 # Agent Execution Log — brain-server
 
+> **R116 "Carriage": the taint survives the trip.** The eleventh pass found
+> the ONE label the architecture deliberately carries (owner vs
+> channel-capture) actively stripped at `/ump/revise` and absent from four
+> wire surfaces — taint laundering with one API call. All closed by CARRYING
+> the label, never by adding machinery.
+>
+> 1. **`/ump/revise` inherited the superseded row's origin.** The record
+>    engine now emits `origin` (+ `untrusted` on the capture value) —
+>    id-safe, the content id hashes `domain\0text` only — and `lower_ump`
+>    honors only the capture value, so a peer can label its own traffic but
+>    can never assert owner-grade provenance through the field. Both revise
+>    branches (direct + review) inherit; export→import round-trips the label.
+>    *(Pin `revise_carries_the_superseded_rows_taint`.)*
+> 2. **The proposal seam derives the label, not the callers.** The closed
+>    vocabulary + the agent-class derivation moved INTO `create_proposal` —
+>    one seam covering `/ingest/proposal` and the three router sites that
+>    hard-coded `None`. Typo → 400 `invalid_origin_context`; an agent
+>    asserting `owner` lands channel-grade regardless.
+>    *(Pin `proposal_origin_is_derived_not_asserted`.)*
+> 3. **The label rides every content-returning wire**: `/get/{id}` +
+>    `/multi-get` (the fetch core gained the column), `/suggest` hits (the
+>    exclude posture can finally act on the anticipation surface), graph
+>    entity/relations edges, UMP records, and the DSAR Art-15 bundle (+ a
+>    `by_origin` census, export parity). The plugin's `brain_memory_get`
+>    applies the exclude posture and labels; graph relations carry a
+>    per-edge capture marker; `brain_memory_store` threads the TURN's
+>    chat-type fact (recorded at before_prompt_build) so a channel-grouped
+>    turn's model-driven store cannot launder what the turn is.
+>    Traverse is the stated exception: a hop aggregates multiple edges, so
+>    a per-path label would be ambiguous by construction (THREAT_MODEL row
+>    lands with the console round's docs).
+>    *(Pins `a_channel_captured_row_is_labeled_on_every_wire`,
+>    `suggest_hits_carry_the_capture_label`, `graph_edges_label_captured_rows`,
+>    `dsar_bundle_discloses_the_capture_label`.)*
+>
+> **ponytail:** one boolean label, no lattice — this round is carriage, not
+> machinery; the record `origin` field is additive and id-safe (verified
+> against the content-addressing law); wire deltas are additive response
+> fields (openapi + regenerated `schema.d.ts`); the register pin EXTENDED to
+> the eleventh-pass table (the ninth arm's `rfind` had silently re-aimed at
+> the new table — now `find` for the ninth, `rfind` as the newest-table
+> tripwire, an eleventh arm with its own anchors); zero new dependency
+> edges. The plugin TS edits ride the canonical surface; the fork's vitest
+> lane is the owed execution (sync follows the commit).
+
 > **R115 "Seventh": the two surfaces that had forgotten the class, and the
 > posture collapse that never got its refusal.** The eleventh pass (six
 > parallel lanes against baseline `b23e1cf0`) found the R106 invariant's own
