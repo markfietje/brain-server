@@ -1718,7 +1718,15 @@ fn fts_search(
     );
     // Lexical precision: when a structured `lex` query is supplied, the FTS
     // retriever matches on it instead of the bare (often semantic) query.
-    let fts_q = filters.lex.as_deref().unwrap_or(q);
+    // The bare fallback is QUOTED per term (the `compile_lex` discipline):
+    // operator words and stray quotes in caller input are terms, never FTS5
+    // syntax — a raw query can no longer widen into a union or die as a
+    // swallowed syntax error that reads as zero results.
+    let fts_q = filters
+        .lex
+        .as_deref()
+        .map(|compiled| compiled.to_string())
+        .unwrap_or_else(|| query::quote_bare_fts_query(q));
     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(fts_q.to_string())];
     if !filters.sources.is_empty() {
         let ph = std::iter::repeat_n("?", filters.sources.len())

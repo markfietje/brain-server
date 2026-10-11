@@ -114,7 +114,7 @@ impl Fixture {
         let keys = vec![VerifyingKey {
             kid: KID.to_string(),
             alg: Algorithm::RS256,
-            pinned_alg: Some(Algorithm::RS256),
+            pinned_alg: Algorithm::RS256,
             decoding_key: jsonwebtoken::DecodingKey::from_rsa_pem(pem.as_bytes())
                 .expect("build decoding key from RSA PEM"),
         }];

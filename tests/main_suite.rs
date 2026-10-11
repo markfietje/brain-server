@@ -5879,6 +5879,128 @@ Final paragraph after the rule.";
         );
     }
 
+    /// Token-bearing responses are `Cache-Control: no-store`: a rotated
+    /// access+refresh pair must never be satisfiable from a shared or
+    /// intermediary cache. Drives the REAL handler (JWT mode, real keypair,
+    /// migrated pool) and consumes `into_response()` so the assertion pins
+    /// the emitted header, not the handler's return shape.
+    #[tokio::test]
+    async fn refresh_token_pair_is_no_store() {
+        use axum::response::IntoResponse;
+        use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key_dir = dir.path().join("keys");
+        std::fs::create_dir_all(&key_dir).expect("mkdir keys");
+        let mut rng = rand::rngs::ThreadRng::default();
+        let priv_key = rsa::RsaPrivateKey::new(&mut rng, 2048).expect("test keypair");
+        let pub_pem = rsa::RsaPublicKey::from(&priv_key)
+            .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
+            .unwrap();
+        let priv_pem = priv_key.to_pkcs8_pem(rsa::pkcs8::LineEnding::LF).unwrap();
+        std::fs::write(key_dir.join("test-kid.pem"), pub_pem.as_bytes()).unwrap();
+        let key_path = key_dir.join("test-kid.key");
+        std::fs::write(&key_path, priv_pem.as_bytes()).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let key_store = auth::jwks::KeyStore::load(&key_dir).expect("load test keys");
+
+        register_sqlite_vec();
+        let pool: brain_server::Pool = r2d2::Pool::builder()
+            .build(SqliteConnectionManager::memory())
+            .expect("pool");
+        {
+            let mut conn = pool.get().unwrap();
+            run_migration(&mut conn, config::DB_MMAP_SIZE_MIB).expect("migrate");
+        }
+        let db_path = dir.path().join("db.sqlite");
+        let jwt_mid = std::sync::Arc::new(JwtMiddlewareState {
+            auth_mode: auth::AuthMode::Jwt,
+            key_store: key_store.clone(),
+            jwt_issuer: "https://brain.test/".to_string(),
+            jwt_audience: "brain-server".to_string(),
+            jwt_azp: None,
+            pool: pool.clone(),
+            revocation_cache: std::sync::Arc::new(auth::revocation::RevocationCache::new()),
+            db_path: db_path.clone(),
+            principal_rate_limiter: std::sync::Arc::new(RateLimiter::new()),
+        });
+        let state = std::sync::Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: jwt_mid.clone(),
+            cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
+            loom: Default::default(),
+            model: std::sync::Arc::new(
+                brain_server::embed::StaticEmbedder::new(brain_server::config::MODEL_ID)
+                    .expect("model"),
+            ),
+            registry: domain_registry::DomainRegistry::new(pool.clone(), &db_path, true),
+            pool: pool.clone(),
+            db_path: db_path.clone(),
+            connection_tracker: std::sync::Arc::new(ConnectionTracker::new()),
+            rate_limiter: std::sync::Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Jwt,
+            key_store: key_store.clone(),
+            revocation_cache: std::sync::Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: "https://brain.test/".to_string(),
+            jwt_audience: "brain-server".to_string(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(16).0,
+            alert_events: tokio::sync::broadcast::channel(16).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
+        });
+
+        // Mint a presented refresh token the way `mint_pair` does: typ
+        // "refresh", no scopes/roles, a fresh chain id.
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let claims = auth::jwt::Claims {
+            iss: "https://brain.test/".to_string(),
+            aud: "brain-server".to_string(),
+            sub: "user:refresh-pin".to_string(),
+            jti: "presented-jti".to_string(),
+            iat: now,
+            nbf: now,
+            exp: now + 3600,
+            tenant: "team-alpha".to_string(),
+            scopes: Vec::new(),
+            roles: Vec::new(),
+            manages: Vec::new(),
+            chain: Some("pin-chain-no-store".to_string()),
+            azp: None,
+        };
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("test-kid".to_string());
+        header.typ = Some("refresh".to_string());
+        let encoding = EncodingKey::from_rsa_pem(priv_pem.as_bytes()).unwrap();
+        let presented = encode(&header, &claims, &encoding).unwrap();
+
+        let resp = handlers::auth::refresh(
+            axum::extract::State(state),
+            axum::Json(handlers::auth::RefreshRequest {
+                refresh_token: presented,
+            }),
+        )
+        .await
+        .expect("a valid presented refresh token rotates")
+        .into_response();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CACHE_CONTROL)
+                .map(|v| v.to_str().unwrap()),
+            Some("no-store"),
+            "the rotated token pair must carry Cache-Control: no-store"
+        );
+    }
+
     /// M6.2 — fallback fan-out: when no centroid clears the confidence
     /// threshold, the recall handler federates across every known domain
     /// (non-strict). We exercise the pure routing primitive directly —
@@ -18357,10 +18479,10 @@ mod scrim {
             false
         }
 
-        const SHIPPED_ROUNDS: [&str; 27] = [
+        const SHIPPED_ROUNDS: [&str; 28] = [
             "R68", "R69", "R70", "R72", "R73", "R74", "R75", "R76", "R77", "R78", "R79", "R80",
             "R81", "R82", "R83", "R84", "R93", "R100", "R101", "R102", "R103", "R104", "R105",
-            "R106", "R107", "R95", "R112",
+            "R106", "R107", "R109", "R95", "R112",
         ];
         // The boundary law above is load-bearing for lane-qualified IDs: a
         // lane-suffixed routing must not read as the shipped bare ID, while

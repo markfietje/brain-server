@@ -323,7 +323,7 @@ fn parse_public_pem(kid: &str, pem: &str) -> Result<(Algorithm, VerifyingKey), L
         let verifying = VerifyingKey {
             kid: kid.to_string(),
             alg: Algorithm::RS256,
-            pinned_alg: Some(Algorithm::RS256),
+            pinned_alg: Algorithm::RS256,
             decoding_key,
         };
         return Ok((Algorithm::RS256, verifying));
@@ -338,7 +338,7 @@ fn parse_public_pem(kid: &str, pem: &str) -> Result<(Algorithm, VerifyingKey), L
             // ceiling: deployments needing ES384 can name the kid's alg
             // explicitly in a sidecar file; that's a v1.3 concern.
             alg: Algorithm::ES256,
-            pinned_alg: Some(Algorithm::ES256),
+            pinned_alg: Algorithm::ES256,
             decoding_key,
         };
         return Ok((Algorithm::ES256, verifying));
@@ -348,7 +348,7 @@ fn parse_public_pem(kid: &str, pem: &str) -> Result<(Algorithm, VerifyingKey), L
         let verifying = VerifyingKey {
             kid: kid.to_string(),
             alg: Algorithm::EdDSA,
-            pinned_alg: Some(Algorithm::EdDSA),
+            pinned_alg: Algorithm::EdDSA,
             decoding_key,
         };
         return Ok((Algorithm::EdDSA, verifying));
@@ -544,5 +544,24 @@ mod tests {
             Ok(_) => panic!("expected DuplicateKid, load succeeded"),
             Err(e) => panic!("expected DuplicateKid, got {e}"),
         }
+    }
+
+    /// The load path DERIVES the pinned alg from the PEM's key shape — the
+    /// pin is not metadata an importer could forget to set. This is the
+    /// producer-side twin of the non-optional `VerifyingKey::pinned_alg`:
+    /// the type says a record must name its family, this says the only
+    /// producer names it from the key itself.
+    #[test]
+    fn pem_load_pins_the_family_alg_from_the_key_shape() {
+        let dir = tempdir().unwrap();
+        write_keypair(dir.path(), "kid-pin");
+        let store = KeyStore::load(dir.path()).unwrap();
+        let keys = store.verifying_keys();
+        assert_eq!(keys.len(), 1, "exactly the one seeded key");
+        assert_eq!(keys[0].pinned_alg, Algorithm::RS256);
+        assert_eq!(
+            keys[0].pinned_alg, keys[0].alg,
+            "the record's declared alg and its pin are ONE derivation"
+        );
     }
 }

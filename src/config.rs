@@ -1933,7 +1933,7 @@ impl QualityConfig {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// A cleartext sink carries signed, subject-bearing payloads (an alert, an
@@ -2686,8 +2686,11 @@ mod tests {
     // ── Twokeys: the agent token source (pins travel with `auth_token_sets`) ──
 
     /// Serializes the env-var mutations in this module's Twokeys pins —
-    /// the save/restore pattern alone still races under the parallel runner.
-    static TOKEN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// the save/restore pattern alone still races under the parallel
+    /// runner. `pub(crate)`: the auth module's agent-file rotation pin
+    /// mutates the SAME vars (`AUTH_TOKEN_FILE`/`AGENT_TOKEN_FILE`), and
+    /// two fences over one env var are no fence at all.
+    pub(crate) static TOKEN_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn set_or_remove_env(key: &str, value: Option<String>) {
         if let Some(v) = value {

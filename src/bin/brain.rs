@@ -290,7 +290,7 @@ const SUBCOMMANDS: &[Subcommand] = &[
         name: "backup",
         json: false,
         run: cmd_backup,
-        usage: "brain backup <out-path> [--passphrase-file PATH] [--format v1|v2|v3]",
+        usage: "brain backup <out-path> [--passphrase-file PATH] [--format v1|v2|v3] [--allow-weak-legacy (v1 writes only)]",
     },
     Subcommand {
         name: "restore",
@@ -605,6 +605,10 @@ const BOOL_FLAGS: &[&str] = &[
     "replace",
     "with-case-status",
     "return",
+    // `brain backup --format v1 --allow-weak-legacy`: the explicit opt-in for
+    // the weak legacy WRITER (unsalted fast KDF + deterministic nonce). A bool
+    // flag because it takes no value — it names a posture, not a parameter.
+    "allow-weak-legacy",
     // `brain census --print-baseline`: the deliberate re-anchor. A bool flag
     // because it takes no value — it re-anchors against the compiled-in corpus,
     // never against something a caller supplies.
@@ -3970,17 +3974,37 @@ fn resolve_passphrase(
     std::fs::read(&path).map_err(|e| format!("cannot read passphrase file {path}: {e}"))
 }
 
-/// `brain backup <out-path> [--passphrase-file PATH] [--format v1|v2|v3]`
+/// `brain backup <out-path> [--passphrase-file PATH] [--format v1|v2|v3
+/// --allow-weak-legacy]` — the legacy flag gates ONLY the v1 write; reads
+/// never need it.
 fn cmd_backup(args: &[String]) -> Result<(), String> {
     let (positionals, flags) = parse_flags(args)?;
     let out = positionals.first().cloned().ok_or_else(|| {
-        "usage: brain backup <out-path> [--passphrase-file PATH] [--format v1|v2|v3]".to_string()
+        "usage: brain backup <out-path> [--passphrase-file PATH] [--format v1|v2|v3] [--allow-weak-legacy (required for v1 writes)]".to_string()
     })?;
     let pass = resolve_passphrase(&flags)?;
     let format = match flags.get("format").and_then(|o| o.clone()).as_deref() {
         None | Some("v3") => brain_server::backup::BackupFormat::V3,
         Some("v2") => brain_server::backup::BackupFormat::V2,
-        Some("v1") => brain_server::backup::BackupFormat::V1,
+        Some("v1") => {
+            // The v1 writer derives key AND nonce from the passphrase with an
+            // unsalted fast KDF and second-granularity deterministic nonce —
+            // offline-brute-forceable and one bad second from catastrophic
+            // GCM nonce reuse. It stays reachable for operators who must
+            // interoperate with an old reader, but only as an explicit,
+            // named-in-the-refusal opt-in. Reads are unaffected: v1 files
+            // restore and verify exactly as before.
+            if !flags.contains_key("allow-weak-legacy") {
+                return Err(
+                    "writing the v1 backup format requires --allow-weak-legacy: v1 derives \
+                     key+nonce from the passphrase with an unsalted fast KDF (offline \
+                     brute-forceable; second-granularity nonce reuse). Prefer the default \
+                     v3. v1 files remain restorable without any flag."
+                        .to_string(),
+                );
+            }
+            brain_server::backup::BackupFormat::V1
+        }
         Some(v) => return Err(format!("unknown backup format {v:?} (use v1, v2 or v3)")),
     };
     let db = default_db_path();
@@ -7663,4 +7687,39 @@ fn http_contains_injection(text: &str) -> bool {
     ]
     .iter()
     .any(|p| lower.contains(p))
+}
+
+/// The weak-legacy writer gate: `--format v1` without `--allow-weak-legacy`
+/// refuses BEFORE any database is opened (the refusal names the flag and the
+/// weakness); v1 READS never need the flag. Red-proof: delete the gate arm
+/// and this fails because the call proceeds instead of refusing.
+#[test]
+fn v1_backup_write_requires_allow_weak_legacy() {
+    use std::io::Write;
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let pass = tmp.path().join("passphrase");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut f = std::fs::File::create(&pass).expect("create passphrase file");
+        f.write_all(b"a-passphrase\n").expect("write passphrase");
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .expect("0600");
+    }
+    let out = tmp.path().join("never-written.bak");
+    let err = cmd_backup(&[
+        out.to_string_lossy().into_owned(),
+        "--passphrase-file".to_string(),
+        pass.to_string_lossy().into_owned(),
+        "--format".to_string(),
+        "v1".to_string(),
+    ])
+    .expect_err("v1 write without --allow-weak-legacy must refuse");
+    assert!(
+        err.contains("allow-weak-legacy"),
+        "the refusal must name the flag, got: {err}"
+    );
+    assert!(
+        !out.exists(),
+        "the refusal happens before any backup file is written"
+    );
 }

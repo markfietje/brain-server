@@ -360,3 +360,27 @@ fn git_dependencies_ride_a_pinned_rev() {
         );
     }
 }
+
+/// Every `cargo install` in the RELEASE workflow names a version: a release
+/// that resolves its toolchain from crates.io HEAD is a release whose SBOM
+/// generator (cargo-cyclonedx) or cross-linker can change behaviour between
+/// two tags with no diff in this repo. The siblings (cross, mdbook) always
+/// pinned; cargo-cyclonedx was the bare one.
+#[test]
+fn r109_release_workflow_installs_are_version_pinned() {
+    let yml = read(".github/workflows/release.yml");
+    let installs: Vec<&str> = yml
+        .lines()
+        .filter(|l| l.contains("cargo install"))
+        .collect();
+    assert!(
+        !installs.is_empty(),
+        "the release workflow must still install its tools somewhere"
+    );
+    for line in &installs {
+        assert!(
+            line.contains("--version"),
+            "release.yml runs an UNPINNED cargo install: {line}"
+        );
+    }
+}

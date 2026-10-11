@@ -149,6 +149,13 @@ struct TokenState {
     /// mtime of the file when `tokens` was last loaded. `None` until the first
     /// successful load — used to detect rotation.
     mtime: Option<SystemTime>,
+    /// mtime of the `AGENT_TOKEN_FILE` when `agent` was last loaded — the
+    /// agent lane is watched in its own right, so swapping the agent file
+    /// takes effect at the next poll WITHOUT waiting for an operator-file
+    /// rotation or a restart. `None` when no agent file is configured (the
+    /// agent bearer rides line 2 of the operator file, whose rotation is
+    /// `mtime` above).
+    agent_mtime: Option<SystemTime>,
     /// True once any load (successful or not) has run. Used by fail-safe: only
     /// preserve the cache after the first load completes.
     initialized: bool,
@@ -186,6 +193,8 @@ impl TokenStore {
         if let Some(p) = &file {
             state.mtime = std::fs::metadata(p).and_then(|m| m.modified()).ok();
         }
+        state.agent_mtime = config::agent_token_file()
+            .and_then(|p| std::fs::metadata(&p).and_then(|m| m.modified()).ok());
         Self {
             inner: Arc::new(RwLock::new(state)),
             file,
@@ -292,28 +301,29 @@ impl TokenStore {
     }
 
     /// Reload from disk via [`config::auth_token_sets`] (BOTH lanes —
-    /// Twokeys) if the file's mtime advanced since the last load.
-    /// Fail-safe: if the file is missing/unreadable/empty AFTER a successful
-    /// initial load, keep the cached tokens. Returns `true` when a real
-    /// rotation happened (caller may audit + log).
+    /// Twokeys) if EITHER watched file's mtime advanced since the last
+    /// load: the operator file AND the `AGENT_TOKEN_FILE`, each in its own
+    /// right. Fail-safe: if the operator set comes back empty AFTER a
+    /// successful initial load, keep the cached tokens. Returns `true` when
+    /// a real rotation happened (caller may audit + log).
     ///
-    /// The agent lane rides the operator file when it is line 2; an
-    /// `AGENT_TOKEN_FILE` source is re-read here too, so an agent-file swap
-    /// takes effect at the next operator-file rotation (boot-time otherwise —
-    /// the watcher follows one file).
+    /// The agent lane rides the operator file when it is line 2 (no
+    /// `AGENT_TOKEN_FILE` configured — that file's mtime is `None` and the
+    /// operator-file arm covers it); a dedicated agent file is watched
+    /// directly, so swapping it takes effect at the NEXT POLL, not at the
+    /// next operator rotation or a restart.
     pub fn reload_if_changed(&self) -> bool {
-        let path = match &self.file {
-            Some(p) => p.clone(),
-            None => return false,
+        let op_mtime = self
+            .file
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).and_then(|m| m.modified()).ok());
+        let agent_mtime = config::agent_token_file()
+            .and_then(|p| std::fs::metadata(&p).and_then(|m| m.modified()).ok());
+        let (prev_op, prev_agent) = match crate::concurrency::rwlock_read_measured(&self.inner) {
+            Ok(g) => (g.mtime, g.agent_mtime),
+            Err(_) => return false, // unreadable state: nothing to compare against
         };
-        let new_mtime = match std::fs::metadata(&path).and_then(|m| m.modified()) {
-            Ok(m) => m,
-            Err(_) => return false, // fail-safe: keep cache
-        };
-        let prev_mtime = crate::concurrency::rwlock_read_measured(&self.inner)
-            .ok()
-            .and_then(|s| s.mtime);
-        if Some(new_mtime) == prev_mtime {
+        if op_mtime == prev_op && agent_mtime == prev_agent {
             return false;
         }
         let (operators, agent) = config::auth_token_sets();
@@ -325,9 +335,12 @@ impl TokenStore {
             .map(|g| g.tokens != fresh_set || g.agent != agent)
             .unwrap_or(true);
         if let Ok(mut guard) = crate::concurrency::rwlock_write_measured(&self.inner) {
+            // Single assignments under one exclusive guard — no await, no
+            // call-outs (sync fn, compile-level).
             guard.tokens = fresh_set;
             guard.agent = agent;
-            guard.mtime = Some(new_mtime);
+            guard.mtime = op_mtime;
+            guard.agent_mtime = agent_mtime;
         }
         changed
     }
@@ -391,6 +404,7 @@ mod tests {
                 tokens: initial_tokens.into_iter().collect(),
                 agent: None,
                 mtime,
+                agent_mtime: None,
                 initialized: true,
             })),
             file: Some(path),
@@ -476,6 +490,7 @@ mod tests {
             tokens: std::collections::HashSet::from(["only-token".to_string()]),
             agent: None,
             mtime: None,
+            agent_mtime: None,
             initialized: true,
         };
         let inner = Arc::new(RwLock::new(state));
@@ -606,5 +621,62 @@ mod tests {
             check_secret_permissions(&missing).is_err(),
             "unstatable file cannot be validated"
         );
+    }
+
+    /// A swapped `AGENT_TOKEN_FILE` takes effect at the NEXT POLL, not at the
+    /// next operator-file rotation or a restart: the watcher follows the agent
+    /// file's mtime in its own right. Pre-fix this returned `false` (the
+    /// operator file was untouched) and the stale agent bearer stayed live
+    /// until restart.
+    #[test]
+    fn agent_file_swap_takes_effect_without_operator_rotation() {
+        let _env = crate::config::tests::TOKEN_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let op_file = dir.path().join("auth-token");
+        let ag_file = dir.path().join("agent-token");
+        std::fs::write(&op_file, "operator-one\n").unwrap();
+        std::fs::write(&ag_file, "agent-one\n").unwrap();
+        let saved_op = std::env::var("AUTH_TOKEN_FILE").ok();
+        let saved_ag = std::env::var("AGENT_TOKEN_FILE").ok();
+        unsafe {
+            std::env::set_var("AUTH_TOKEN_FILE", &op_file);
+            std::env::set_var("AGENT_TOKEN_FILE", &ag_file);
+        }
+        let store = TokenStore::from_file(Some(op_file.clone()));
+        assert_eq!(
+            store.agent_token().as_deref(),
+            Some("agent-one"),
+            "fixture: the initial agent bearer loaded from the agent file"
+        );
+
+        // Swap ONLY the agent file (sleep past the 1-s mtime granularity the
+        // rotation tests already contend with), leaving the operator file
+        // byte-identical and untouched.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(&ag_file, "agent-two\n").unwrap();
+
+        let rotated = store.reload_if_changed();
+        assert!(rotated, "an agent-file swap alone is a rotation");
+        assert_eq!(
+            store.agent_token().as_deref(),
+            Some("agent-two"),
+            "the NEW agent bearer is live at the next poll"
+        );
+
+        // Restore env before releasing the fence.
+        unsafe {
+            if let Some(v) = saved_op {
+                std::env::set_var("AUTH_TOKEN_FILE", v);
+            } else {
+                std::env::remove_var("AUTH_TOKEN_FILE");
+            }
+            if let Some(v) = saved_ag {
+                std::env::set_var("AGENT_TOKEN_FILE", v);
+            } else {
+                std::env::remove_var("AGENT_TOKEN_FILE");
+            }
+        }
     }
 }

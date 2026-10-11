@@ -276,11 +276,12 @@ pub struct VerifyingKey {
     /// header's `alg` at verification (`alg_mismatch_for_kid` on a mismatch).
     /// This closes the family slack where an RSA kid (recorded RS256) would
     /// verify an RS384 token signed with the same key — a token's alg is
-    /// attacker-controlled, the record's is not. Every load-path record
-    /// declares its alg (auto-detected from the PEM's key shape), so no
-    /// re-import is needed; `None` is the additive escape hatch for a future
-    /// record without a declaration (it keeps the whitelist-only behavior).
-    pub pinned_alg: Option<Algorithm>,
+    /// attacker-controlled, the record's is not. NON-OPTIONAL by type: every
+    /// record is built by `jwks::parse_public_pem`, which DERIVES the alg
+    /// from the PEM's key shape, so a load path that cannot name its family
+    /// has no business constructing a verifier — the escape hatch that kept
+    /// the whitelist-only behavior for an undeclared record is gone.
+    pub pinned_alg: Algorithm,
     pub decoding_key: DecodingKey,
 }
 
@@ -406,10 +407,10 @@ pub fn verify_access_token(
     // Per-kid algorithm pinning: the key record's declared alg is the
     // authority, the header's is attacker-controlled. A mismatch is refused
     // BEFORE any signature work — the RS-family slack (an RS256 kid
-    // verifying an RS384 token) closes here.
-    if let Some(pinned) = key.pinned_alg
-        && pinned != header.alg
-    {
+    // verifying an RS384 token) closes here. The record's alg is derived
+    // from the PEM's key shape at load, so EVERY record pins; there is no
+    // undeclared-record arm left to reach the whitelist-only behavior.
+    if key.pinned_alg != header.alg {
         return Err(AuthError::AlgMismatchForKid(kid));
     }
 
@@ -553,7 +554,7 @@ mod tests {
         VerifyingKey {
             kid: kid.to_string(),
             alg: Algorithm::RS256,
-            pinned_alg: Some(Algorithm::RS256),
+            pinned_alg: Algorithm::RS256,
             decoding_key: DecodingKey::from_rsa_pem(pem.as_bytes())
                 .expect("build decoding key from RSA PEM"),
         }
@@ -653,26 +654,36 @@ mod tests {
         );
     }
 
-    /// The additive escape hatch: a key record WITHOUT a declared alg keeps
-    /// the whitelist-only family behavior (the per-kid comparison applies
-    /// only when the record declares an alg).
+    /// The escape hatch is GONE by type: a record without a declared alg
+    /// used to keep the whitelist-only family behavior, and nothing in the
+    /// tree could express why that was safe. `pinned_alg` is non-optional
+    /// now, so an undeclared record cannot be constructed — reintroducing
+    /// the `Option` fails this module's own construction sites at compile
+    /// time. The behavioural edge (a pinned kid refusing a same-family
+    /// variant) is `rsa_kid_rejects_different_rs_variant` above.
     #[test]
-    fn unpinned_kid_keeps_family_behavior() {
+    fn pinned_alg_is_non_optional_by_type() {
+        // Compiles only because every construction site names a family. The
+        // assertion pins the ONE producer's derivation: the PEM's key shape
+        // decides, and `alg` and `pinned_alg` agree by construction.
         let (priv_key, pub_key) = test_keypair();
         let pem = pub_key
             .to_public_key_pem(rsa::pkcs8::LineEnding::LF)
             .unwrap();
-        let unpinned = vec![VerifyingKey {
-            kid: "unpinned-kid".to_string(),
+        let key = VerifyingKey {
+            kid: "pinned-kid".to_string(),
             alg: Algorithm::RS256,
-            pinned_alg: None,
+            pinned_alg: Algorithm::RS256,
             decoding_key: DecodingKey::from_rsa_pem(pem.as_bytes()).unwrap(),
-        }];
-        // RS384 with the same RSA key verifies (RS384 is whitelisted), and
-        // the pinning comparison never fires.
-        let raw = sign(&priv_key, Algorithm::RS384, Some("unpinned-kid"), |_| {});
-        verify_access_token(&raw, &unpinned, ISS, AUD, None, TokenType::Access)
-            .expect("an unpinned kid keeps family behavior");
+        };
+        // Same-family variant still refuses through the record's pin.
+        let raw = sign(&priv_key, Algorithm::RS384, Some("pinned-kid"), |_| {});
+        let err = verify_access_token(&raw, &[key], ISS, AUD, None, TokenType::Access).unwrap_err();
+        assert!(
+            matches!(err, AuthError::AlgMismatchForKid(ref k) if k == "pinned-kid"),
+            "a constructed record must pin its family, got {err:?}"
+        );
+        drop(priv_key);
     }
 
     #[test]

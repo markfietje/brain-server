@@ -726,7 +726,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List quarantined (flagged) chunks (v0.9.7 Guard) */
+        /**
+         * List quarantined (flagged) chunks (v0.9.7 Guard)
+         * @description A REVIEWER posture, not a read: the queue is content the screen judged unfit, across every owner. Loopback/opaque operators and principals holding Admin on their own tenant may list it; a read- or write-scoped JWT is refused 403.
+         */
         get: operations["listQuarantine"];
         put?: never;
         post?: never;
@@ -976,7 +979,7 @@ export interface paths {
         };
         /**
          * List the review queue (v1.14.0 M1)
-         * @description The human review queue. v1.20.23 adds `decided_at` (the decision timestamp, `null` while pending — the reviewer calibration signal) and an optional `since` window so a client can fetch a bounded 7/30-day decision set in one request. v1.28.53 "Triage": every row carries its `domain` residency label, and an optional `domain` query param scopes the queue — the read gate checks the REQUESTED domain (fail-closed 403 for a foreign one; loopback/opaque unchanged), so a site-scoped reviewer works only their own queue. Absent → the legacy global-authorized queue.
+         * @description The human review queue. v1.20.23 adds `decided_at` (the decision timestamp, `null` while pending — the reviewer calibration signal) and an optional `since` window so a client can fetch a bounded 7/30-day decision set in one request. v1.28.53 "Triage": every row carries its `domain` residency label, and an optional `domain` query param scopes the queue — the read gate checks the REQUESTED domain (fail-closed 403 for a foreign one; loopback/opaque unchanged), so a site-scoped reviewer works only their own queue. Absent → the legacy global-authorized queue. The queue is OWNER-BOUND as well: the record gate's resolved owner set rides into the query, so a principal with no roles reads its own pending proposals and a role whose `owner_filter` opens the shared pool still reviews everyone's.
          */
         get: operations["listProposals"];
         put?: never;
@@ -1050,7 +1053,7 @@ export interface paths {
         };
         /**
          * List decayed chunks for operator review (v1.14.0 M2)
-         * @description Chunks whose effective expiry (own `expires_at`, else the kind-level retention default derived from `created_at`) is in the past. Each row carries a `reason` (`per_chunk` or `kind_policy`) so the operator sees *why* a chunk is decayed. Nothing is deleted autonomously; the operator reviews and purges explicitly. v1.20.18: bounded by `limit`/`offset`.
+         * @description Chunks whose effective expiry (own `expires_at`, else the kind-level retention default derived from `created_at`) is in the past. Each row carries a `reason` (`per_chunk` or `kind_policy`) so the operator sees *why* a chunk is decayed. Nothing is deleted autonomously; the operator reviews and purges explicitly. v1.20.18: bounded by `limit`/`offset`. A REVIEWER posture, not a read — same rule as the quarantine queue: loopback/opaque operators and principals holding Admin on their own tenant; a read- or write-scoped JWT is refused 403.
          */
         get: operations["listDecayed"];
         put?: never;
@@ -1806,7 +1809,7 @@ export interface paths {
         };
         /**
          * Portable JSON export for data portability (v1.14.0 M2)
-         * @description Live `knowledge` rows + graph + proposals ledger. v1.17.1 "Govern" M4: `?format=ump` re-renders the payload as UMP wire records (Universal Memory Protocol 1.0, github.com/edihasaj/universal-memory-protocol). v1.18.2 "Transparency" M1: each `knowledge` row carries `source` (ingest kind) + `origin` (human|model|imported), and the envelope adds `export_format_version: 2` + a `provenance_summary` (total / by_origin / by_source) for the Art 50 model-vs-human transparency bridge. v1.20.17 "Scrub" M2: with a `redact_owner` query param that doesn't match a row's `owner`, that row's `content` is redacted (`[redacted]`) — a cross-owner export never leaks another subject's chunk body. v1.20.19 "Vault": there is no `pii_map` vault to resolve — PII control is deterministic output redaction, so raw PII is never exported.
+         * @description Live `knowledge` rows + graph + proposals ledger. v1.17.1 "Govern" M4: `?format=ump` re-renders the payload as UMP wire records (Universal Memory Protocol 1.0, github.com/edihasaj/universal-memory-protocol). v1.18.2 "Transparency" M1: each `knowledge` row carries `source` (ingest kind) + `origin` (human|model|imported), and the envelope adds `export_format_version: 2` + a `provenance_summary` (total / by_origin / by_source) for the Art 50 model-vs-human transparency bridge. v1.20.17 "Scrub" M2: with a `redact_owner` query param that doesn't match a row's `owner`, that row's `content` is redacted (`[redacted]`) — a cross-owner export never leaks another subject's chunk body. v1.20.19 "Vault": there is no `pii_map` vault to resolve — PII control is deterministic output redaction, so raw PII is never exported. The §2.7 redaction is now a ROW decision, not a field decision: a row the caller does not own — in `knowledge` OR in `proposals`, which are unapproved memory bodies — is replaced wholesale by `{"redacted": true}` (title, source, owner and the rest included), and the graph is narrowed to the edges and entities the surviving rows reference. A `withheld` object counts what was taken out per collection, so the envelope never under-reports itself. The operator export (loopback/opaque) is unchanged: nothing withheld, every row verbatim.
          */
         get: operations["exportData"];
         put?: never;
@@ -3286,7 +3289,7 @@ export interface paths {
         };
         /**
          * Explain this caller's own RBAC verdict for a route (Admin on global; audited)
-         * @description R47: the operator-facing half of the RBAC round. Returns the gate row for a route PATTERN, the required action, and the verdict for the CALLER'S OWN principal with a closed reason. Deliberately never answers "what would another role get": given a role set, "which gates would these clear" is the reconnaissance tool this surface refuses to be. A route with no gate row answers a probe-blind 404. Role-less posture (BRAIN_RBAC_ROLELESS_POSTURE) is echoed on every response.
+         * @description R47: the operator-facing half of the RBAC round. Returns the gate row for a route PATTERN, the required action, and the verdict for the CALLER'S OWN principal with a closed reason. Deliberately never answers "what would another role get": given a role set, "which gates would these clear" is the reconnaissance tool this surface refuses to be. A route with no gate row answers a probe-blind 404. Role-less posture (BRAIN_RBAC_ROLELESS_POSTURE) is echoed on every response. The verdict is the ACTION/scope gate's: the role-capability layer lives in the handler and is not derivable from a path (one route's capability depends on the request body), so this surface reports the posture and stops there. For the caller's own principal that means a role-less principal is additionally refused at `approve`/`reject` under every posture, and — under `deny` — at every role gate and every record read.
          */
         get: operations["explainAuthzVerdict"];
         put?: never;
@@ -9923,6 +9926,8 @@ export interface operations {
             /** @description Fresh token pair */
             200: {
                 headers: {
+                    /** @description Always `no-store` — a rotated credential pair must never be served from a shared or intermediary cache. */
+                    "Cache-Control"?: "no-store";
                     [name: string]: unknown;
                 };
                 content: {

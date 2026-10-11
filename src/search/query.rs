@@ -224,32 +224,54 @@ impl LexSpec {
 /// expose a `near` field if ranking-by-proximity is ever needed.
 pub fn compile_lex(spec: &LexSpec) -> String {
     let mut parts: Vec<String> = Vec::new();
-    let quote = |s: &str| format!("\"{}\"", s.replace('"', ""));
     for t in &spec.terms {
         let t = t.trim();
         if !t.is_empty() {
-            parts.push(quote(t));
+            parts.push(quote_fts_term(t));
         }
     }
     for p in &spec.phrases {
         let p = p.trim();
         if !p.is_empty() {
-            parts.push(quote(p));
+            parts.push(quote_fts_term(p));
         }
     }
     for c in &spec.code {
         let c = c.trim();
         if !c.is_empty() {
-            parts.push(quote(c));
+            parts.push(quote_fts_term(c));
         }
     }
     for e in &spec.exclude {
         let e = e.trim();
         if !e.is_empty() {
-            parts.push(format!("-{}", quote(e)));
+            parts.push(format!("-{}", quote_fts_term(e)));
         }
     }
     parts.join(" ")
+}
+
+/// Quote ONE FTS5 term: strip the delimiter, wrap in double quotes. The
+/// single quoter both MATCH producers use — structured (`compile_lex`) and
+/// the bare-query fallback (`quote_bare_fts_query`) — so caller input can
+/// never inject FTS5 operators or become unparseable syntax, whichever door
+/// it arrived by.
+fn quote_fts_term(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', ""))
+}
+
+/// Compile a bare (free-form) query string into a quoted FTS5 MATCH
+/// expression — the same discipline `compile_lex` applies to structured
+/// terms, extended to the semantic-query fallback `fts_search` uses when no
+/// `lex` spec was supplied: each whitespace-separated token is quoted, so
+/// `OR`/`NEAR`/`*`/stray quotes in a raw query are TERMS, never operators
+/// and never a syntax error the row iterator would silently swallow as zero
+/// results.
+pub fn quote_bare_fts_query(raw: &str) -> String {
+    raw.split_whitespace()
+        .map(quote_fts_term)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 // ── the `source` retrieval-filter contract ───────────

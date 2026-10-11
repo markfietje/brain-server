@@ -1270,3 +1270,25 @@ fn r47_r47_touches_neither_the_r46_crate_nor_the_role_vocabulary() {
         "the preset count is frozen at 13 — E2 forbids adding, removing or editing one"
     );
 }
+
+/// The sensitive-header marking must run BEFORE `TraceLayer` sees the
+/// request. `.layer()` applies bottom-to-top, so the layer registered LATER
+/// in source is the OUTER one and runs first: `SetSensitiveHeadersLayer`
+/// must sit after `TraceLayer` in the builder chain, or the marking only
+/// lands once tracing has already observed the request — and any future
+/// header-logging span would print the bearer in the clear. Pinned by line
+/// number (the r47 idiom) because the order IS the control.
+#[test]
+fn r109_sensitive_headers_mark_before_trace_layer_sees_the_request() {
+    let src = read_repo("src/server/router/mod.rs");
+    let trace = line_of(&src, "TraceLayer::new_for_http()")
+        .expect("TraceLayer must stay registered in app()");
+    let sensitive = line_of(&src, "SetSensitiveHeadersLayer::new")
+        .expect("SetSensitiveHeadersLayer must stay registered in app()");
+    assert!(
+        sensitive > trace,
+        "SetSensitiveHeadersLayer is at source line {sensitive} but TraceLayer is at {trace}; \
+         the marking layer must be registered AFTER TraceLayer so it is the OUTER layer and \
+         runs before any tracing observes the Authorization header"
+    );
+}

@@ -1,5 +1,54 @@
 # Agent Execution Log — brain-server
 
+> **R109 "LOW debt": eight known-LOW defects closed before they age into
+> ceilings.** One batch, one theme — each item a bounded read, a parse, a
+> header, or a gate; red-first pins in EXISTING files (the ponytail forbids a
+> second test file, a knob, or an abstraction, and nothing grew one).
+>
+> **(1) The FTS5 bare-query fallback reaches the MATCH verbatim.** With no
+> structured `lex` spec, the raw semantic query hit `MATCH ?1` unquoted, so
+> `OR`/`NEAR`/`*` were OPERATORS (caller input widening a query into a
+> union) and a stray quote was a SYNTAX ERROR the row iterator swallowed as
+> zero results with no signal. The fallback now compiles through the ONE
+> per-term quoter `compile_lex` already used (`quote_fts_term`, shared);
+> both pins observed red first (the union returned the row; the error
+> returned silence). **(2) The v1 backup WRITER is an explicit opt-in** —
+> `--format v1` without `--allow-weak-legacy` refuses before any database is
+> opened, naming the unsalted-KDF/deterministic-nonce weakness; reads never
+> need the flag. **(3) `pinned_alg` is non-optional by type**: every record
+> comes from `parse_public_pem`, which DERIVES the alg from the PEM's key
+> shape, so the `None` escape hatch (undeclared record = whitelist-only
+> family slack) is gone; the red is the compiler. **(4) The rotation watcher
+> follows `AGENT_TOKEN_FILE` in its own right** — both files' mtimes are
+> polled, and the bootstrap spawn gate covers an agent-file-only deployment;
+> a swapped agent file takes effect at the NEXT POLL, not the next operator
+> rotation or a restart (red-proven by toggling back to operator-only
+> gating). **(5) `/auth/refresh` 200s carry `Cache-Control: no-store`** — a
+> rotated credential pair must never be served from a shared cache; pin
+> drives the REAL handler in JWT mode (observed red `left: None`); the
+> openapi response-header block is additive and `schema.d.ts` is regenerated
+> (the regen also carried PRE-EXISTING stale descriptions forward — the
+> committed schema had drifted before this round; parity restored, not
+> newly broken). **(6) `SetSensitiveHeadersLayer` sits OUTSIDE
+> `TraceLayer`** — `.layer()` is bottom-to-top, so the marking registered
+> before Trace landed after tracing had seen the request; pinned by line
+> number (the r47 idiom). **(7) `cargo-cyclonedx` pins `--version 0.5.9
+> --locked`** like cross/mdbook already did — a release must not resolve its
+> SBOM generator from crates.io HEAD (pin observed red naming the bare
+> line). **(8) `bin_common` response reads are bounded** at 256 MiB
+> fail-closed (generous by design: `brain ump export` rides this path) —
+> unbounded `read_to_end` was an OOM lever for a compromised server.
+>
+> **Filing note:** the `release.sh` witness defect originally "Filed for
+> R109" was ALREADY fixed out-of-band (`bac45160`, tag-commit resolution +
+> tag-scoped queries, two red-first pins) and is re-filed in the programme
+> doc — not absorbed as a ninth item.
+>
+> **ponytail:** no new knob, no abstraction, no second test file; no wire
+> change beyond the additive response-header documentation (openapi +
+> regenerated schema.d.ts); no schema-version or role-vocabulary change; zero
+> new dependency edges; badge re-derived from the full lane, never hand-typed.
+
 > **R112 "Pins": the chain learns to see its own head.** The v1.29.11 audit
 > replay found three residuals; all three close here, red-first. (1) **The
 > genesis pin.** The head pin anchors the TIP, so deleting the OLDEST rows

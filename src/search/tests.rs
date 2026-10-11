@@ -838,3 +838,65 @@ fn overfetch_covers_quarantine_bound() {
     assert!(super::vec_overfetch(5) >= 5 + super::QUARANTINED_OVERFETCH);
     assert!(super::vec_overfetch(100) >= 100);
 }
+
+// ── the bare-query FTS fallback is quoted like the structured path ──────
+// A raw `q` with no structured `lex` used to reach `MATCH ?1` verbatim, so
+// `OR`/`NEAR`/`*` were parsed as FTS5 OPERATORS and a stray quote was a
+// syntax error the row iterator silently swallowed as zero results. The
+// fallback must compile through the same per-term quoter `compile_lex`
+// uses (search/query.rs): operator words become literal terms and no
+// caller string can be FTS5 syntax.
+
+fn fts_db() -> rusqlite::Connection {
+    crate::register_sqlite_vec::register_sqlite_vec();
+    let mut db = rusqlite::Connection::open_in_memory().expect("open in-memory DB");
+    crate::migration::run_migration(&mut db, 1).expect("run migration");
+    db.execute(
+        "INSERT INTO knowledge (content, source, content_hash)
+         VALUES ('alpha beta gamma', 'manual', 'h1')",
+        [],
+    )
+    .expect("seed knowledge row");
+    db
+}
+
+#[test]
+fn bare_fts_query_treats_operator_words_as_terms() {
+    let db = fts_db();
+    // Control: a plain two-term query still matches (implicit AND before
+    // and after — quoting changes nothing for benign input).
+    let hit = fts_search(&db, "alpha beta", 10, &SearchFilters::default())
+        .expect("plain query")
+        .len();
+    assert_eq!(hit, 1, "plain multi-term query must still match");
+
+    // `OR` is a TERM now, not the union operator: the seeded row does not
+    // contain the literal token `OR`, so quoting makes the query require it
+    // and match nothing. Unquoted, FTS5 parsed the union and returned the row.
+    let union = fts_search(&db, "alpha OR beta", 10, &SearchFilters::default())
+        .expect("operator-word query")
+        .len();
+    assert_eq!(union, 0, "`OR` in a raw query must be a literal term");
+
+    // `*` likewise: the prefix-syntax arm dies, the literal token is sought.
+    let star = fts_search(&db, "alph*", 10, &SearchFilters::default())
+        .expect("star query")
+        .len();
+    assert_eq!(star, 0, "`*` in a raw query must be a literal term");
+}
+
+#[test]
+fn bare_fts_query_syntax_errors_no_longer_silently_empty() {
+    let db = fts_db();
+    // A trailing quote is an FTS5 SYNTAX error when fed verbatim to MATCH:
+    // the step error is swallowed by the row filter and the caller saw zero
+    // results with no signal. Quoted, the stray quote is stripped and the
+    // term matches the seeded row.
+    let hit = fts_search(&db, "gamma\"", 10, &SearchFilters::default())
+        .expect("quote-bearing query")
+        .len();
+    assert_eq!(
+        hit, 1,
+        "a stray quote must degrade to a term, not a swallowed syntax error"
+    );
+}

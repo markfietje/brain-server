@@ -55,7 +55,7 @@ jobs:
         # ~/.cargo/bin (version-keyed) — compiling it from source on the
         # tag's critical path used to add minutes to EVERY release.
         run: |
-          command -v cargo-cyclonedx >/dev/null 2>&1 || cargo install cargo-cyclonedx --locked
+          command -v cargo-cyclonedx >/dev/null 2>&1 || cargo install cargo-cyclonedx --version 0.5.9 --locked
           ./scripts/sbom.sh
         continue-on-error: true
 

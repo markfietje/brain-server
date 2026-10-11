@@ -861,7 +861,11 @@ pub fn bootstrap() -> Result<BootOutcome> {
     // cached, fail-safe bearer-token store + hot rotation.
     // The watcher polls `AUTH_TOKEN_FILE` mtime every 5s and reloads on change.
     let token_store = TokenStore::new();
-    if token_store.has_file() {
+    // The watcher follows BOTH token files (operator file + AGENT_TOKEN_FILE,
+    // each by mtime): either source being configured makes rotation-watching
+    // meaningful, and an agent-file-only deployment no longer waits for a
+    // restart on every agent-token swap.
+    if token_store.has_file() || config::agent_token_file().is_some() {
         auth::spawn_rotation_watcher(token_store.clone(), db_path.clone());
         info!("token rotation watcher started");
     }

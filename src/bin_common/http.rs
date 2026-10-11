@@ -250,12 +250,35 @@ fn request(
         .write_all(&wire)
         .map_err(|e| format!("request write failed: {e}"))?;
 
-    let mut raw = Vec::new();
-    stream
-        .read_to_end(&mut raw)
-        .map_err(|e| format!("response read failed: {e}"))?;
+    let raw = read_response_bounded(&mut stream, MAX_RESPONSE_BYTES)?;
     let text = String::from_utf8_lossy(&raw).into_owned();
     parse_response(&text)
+}
+
+/// Ceiling on ONE response body read from the kernel: this client is
+/// loopback-only, but a confused or compromised server must not be able to
+/// stream the CLI into unbounded memory. Generous by design — `brain ump
+/// export` pulls the full-record projection of a large deployment through
+/// this path, so the bound sits far above any legitimate export, and an
+/// exactly-at-the-bound body is refused too (fail-closed: the reader cannot
+/// distinguish "exactly N" from "N and more behind it").
+pub(crate) const MAX_RESPONSE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Read one response body, refusing at `cap` bytes. The cap is a parameter
+/// so the bound itself is testable at a small scale; production always
+/// passes [`MAX_RESPONSE_BYTES`].
+fn read_response_bounded(stream: &mut TcpStream, cap: u64) -> Result<Vec<u8>, String> {
+    let mut raw = Vec::new();
+    let n = (&mut *stream)
+        .take(cap)
+        .read_to_end(&mut raw)
+        .map_err(|e| format!("response read failed: {e}"))?;
+    if n as u64 >= cap {
+        return Err(format!(
+            "response exceeds the {cap}-byte read bound; refusing to buffer it"
+        ));
+    }
+    Ok(raw)
 }
 
 fn parse_response(text: &str) -> Result<HttpResponse, String> {
@@ -327,7 +350,10 @@ fn decode_chunked(body: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{HTTPS_BASE_REFUSED, REMOTE_BASE_REFUSED, first_token, parse_base};
+    use super::{
+        HTTPS_BASE_REFUSED, MAX_RESPONSE_BYTES, REMOTE_BASE_REFUSED, first_token, parse_base,
+        read_response_bounded,
+    };
 
     /// Token files may carry multiple newline-separated rotation slots (the
     /// server accepts every slot); a client must send exactly ONE — the old
@@ -403,5 +429,63 @@ mod tests {
                 "{base} is loopback and must keep working"
             );
         }
+    }
+
+    /// The read bound fires: a server that streams past the cap gets a
+    /// REFUSAL, not an unbounded buffer. The cap is exercised at a small
+    /// scale (the parameter exists for exactly this); the production value
+    /// is pinned below.
+    #[test]
+    fn a_response_past_the_bound_is_refused_not_buffered() {
+        use std::io::Write as _;
+        use std::net::TcpListener;
+        let body = "x".repeat(4096);
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let addr = server.local_addr().expect("addr");
+        let payload = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let payload2 = payload.clone(); // clone BEFORE the first thread takes ownership
+        let writer = std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = server.accept() {
+                let _ = sock.write_all(payload.as_bytes());
+            }
+        });
+        let mut stream = std::net::TcpStream::connect(addr).expect("connect");
+        let over =
+            read_response_bounded(&mut stream, 2048).expect_err("a body past the cap must refuse");
+        assert!(
+            over.contains("read bound"),
+            "the refusal names the bound, got: {over}"
+        );
+        writer.join().expect("server thread");
+
+        // The same body under a larger cap reads whole.
+        let server = TcpListener::bind("127.0.0.1:0").expect("bind loopback 2");
+        let addr = server.local_addr().expect("addr 2");
+        let writer = std::thread::spawn(move || {
+            if let Ok((mut sock, _)) = server.accept() {
+                let _ = sock.write_all(payload2.as_bytes());
+            }
+        });
+        let mut stream = std::net::TcpStream::connect(addr).expect("connect 2");
+        let raw = read_response_bounded(&mut stream, 64 * 1024).expect("under the cap reads");
+        assert!(
+            raw.len() > 4096,
+            "headers plus body arrived, got {}",
+            raw.len()
+        );
+        writer.join().expect("server thread 2");
+    }
+
+    /// The production ceiling is a DECISION, not an accident: 256 MiB sits
+    /// far above any legitimate `ump export` of the full-record projection
+    /// while still bounding what a compromised server can make the CLI
+    /// buffer. Moving it is a product call, recorded here.
+    #[test]
+    fn the_production_read_bound_is_256mib() {
+        assert_eq!(MAX_RESPONSE_BYTES, 256 * 1024 * 1024);
     }
 }

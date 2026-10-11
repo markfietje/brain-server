@@ -4016,6 +4016,12 @@ paths:
       responses:
         "200":
           description: Fresh token pair
+          headers:
+            Cache-Control:
+              description: Always `no-store` — a rotated credential pair must never be served from a shared or intermediary cache.
+              schema:
+                type: string
+                const: no-store
           content:
             application/json:
               schema:

@@ -249,17 +249,23 @@ pub fn app(state: Arc<AppState>) -> Router {
         },
         auth::rbac_middleware,
     ))
-    .layer(SetSensitiveHeadersLayer::new([
-        axum::http::header::AUTHORIZATION,
-        axum::http::header::COOKIE,
-        axum::http::header::SET_COOKIE,
-    ]))
     .layer(CompressionLayer::new())
     .layer(middleware::from_fn(request_id_middleware))
     .layer(PropagateRequestIdLayer::new(
         axum::http::HeaderName::from_static("x-request-id"),
     ))
     .layer(TraceLayer::new_for_http())
+    // Sensitive-header marking is registered AFTER (so OUTSIDE, so BEFORE)
+    // TraceLayer: requests flow outermost→inward, and the marking must
+    // already be on the request when tracing first observes it — otherwise
+    // any header-logging span prints the bearer in the clear. The order is
+    // pinned by `r109_sensitive_headers_mark_before_trace_layer_sees_the_
+    // request` (tests/rbac_evaluation_pins.rs).
+    .layer(SetSensitiveHeadersLayer::new([
+        axum::http::header::AUTHORIZATION,
+        axum::http::header::COOKIE,
+        axum::http::header::SET_COOKIE,
+    ]))
     // Security layers
     .layer(state.cors.clone())
     .layer(middleware::from_fn_with_state(

@@ -4,6 +4,81 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R109 "LOW debt" — eight known-LOW defects closed before they age into ceilings
+
+One batch, one theme: each item a bounded read, a parse, a header, or a gate.
+Every pin red-first where a runtime exists; the one item whose fix is a TYPE
+(`pinned_alg` non-optional) has the compiler as its red. No new knob, no new
+abstraction, no second test file — anything that would have grown one was cut.
+
+- **FTS5 bare-query fallback is quoted like the structured path**
+  (`src/search/query.rs`, `src/search/mod.rs`): a raw `q` with no structured
+  `lex` used to reach `MATCH ?1` verbatim, so `OR`/`NEAR`/`*` were parsed as
+  FTS5 OPERATORS (a caller could widen a query into a union) and a stray quote
+  was a syntax error the row iterator silently swallowed as zero results. The
+  fallback now compiles through the same per-term quoter `compile_lex` uses
+  (the shared `quote_fts_term`). Pins:
+  `bare_fts_query_treats_operator_words_as_terms`,
+  `bare_fts_query_syntax_errors_no_longer_silently_empty` (both observed red
+  against the unfixed tree: union returned the row; the syntax error returned
+  silence).
+- **v1 backup writes require `--allow-weak-legacy`** (`src/bin/brain.rs`):
+  v1's unsalted fast KDF + second-granularity deterministic nonce are
+  offline-brute-forceable; the writer is now an explicit opt-in that refuses
+  BEFORE any database is opened, naming the weakness and the flag. Reads are
+  unchanged — v1 files restore and verify with no flag.
+  Pin: `v1_backup_write_requires_allow_weak_legacy`.
+- **`pinned_alg` is non-optional** (`src/auth/jwt.rs`, `src/auth/jwks.rs`):
+  every record is built by `parse_public_pem`, which DERIVES the alg from the
+  PEM's key shape — the `None` escape hatch (an undeclared record keeping
+  whitelist-only family slack) could not be expressed safely and is gone by
+  type. The hatch's test is replaced by
+  `pinned_alg_is_non_optional_by_type` + the producer-side
+  `pem_load_pins_the_family_alg_from_the_key_shape`. Red-proof is the
+  compiler: reintroducing `Option` without `Some` at the three PEM sites
+  breaks the build.
+- **The rotation watcher follows `AGENT_TOKEN_FILE` too**
+  (`src/auth/mod.rs`, `src/server/bootstrap.rs`): the watcher polled the
+  operator file's mtime only, so a swapped agent file waited for an
+  operator-file rotation or a restart — and an agent-file-only deployment
+  never got a watcher at all. Both files are now watched in their own right
+  and the spawn gate covers either source. Pin (red-proven by toggling back
+  to operator-only gating):
+  `agent_file_swap_takes_effect_without_operator_rotation`.
+- **`/auth/refresh` 200 responses carry `Cache-Control: no-store`**
+  (`src/handlers/auth.rs`): a rotated credential pair must never be served
+  from a shared or intermediary cache. Additive openapi response-header block
+  + regenerated `shell/src/lib/api/schema.d.ts` (the regen also carried
+  pre-existing stale description text forward — the committed schema had
+  drifted from `openapi.yaml` before this round; parity is restored, not
+  newly broken). Pin: `refresh_token_pair_is_no_store` (drives the REAL
+  handler in JWT mode; observed red with `left: None`).
+- **`SetSensitiveHeadersLayer` moved OUTSIDE `TraceLayer`**
+  (`src/server/router/mod.rs`): `.layer()` applies bottom-to-top, so the
+  marking layer registered before `TraceLayer` only landed after tracing had
+  already observed the request — any future header-logging span would print
+  the bearer in the clear. Pinned by line number (the r47 idiom):
+  `r109_sensitive_headers_mark_before_trace_layer_sees_the_request`.
+- **`cargo-cyclonedx` is version-pinned like its siblings**
+  (`.github/workflows/release.yml`): `--version 0.5.9 --locked` (the locally
+  measured tool — the version SECURITY.md's SBOM path describes). A release
+  must not resolve its SBOM generator from crates.io HEAD. Pin:
+  `r109_release_workflow_installs_are_version_pinned` (observed red naming
+  the bare line).
+- **Bounded response read in `bin_common`** (`src/bin_common/http.rs`): the
+  dependency-free client read response bodies with unbounded `read_to_end` —
+  a compromised or confused server could stream the CLI into OOM. Reads are
+  capped at 256 MiB (generous by design: `brain ump export` pulls the
+  full-record projection through this path), fail-closed at exactly-the-cap.
+  Pins: `a_response_past_the_bound_is_refused_not_buffered`,
+  `the_production_read_bound_is_256mib`.
+
+ponytail: no new config knob, no new abstraction, no second test file, no
+wire change beyond the additive response-header documentation, no schema
+change, zero new dependency edges. The `release.sh` witness item originally
+filed for this round was already fixed out-of-band (`bac45160`) and is
+re-filed in the programme doc, NOT absorbed as a ninth item.
+
 ## [Unreleased] — R112 "Pins" — the chain sees its own head
 
 Three residuals from the v1.29.11 security-audit replay, closed red-first. No

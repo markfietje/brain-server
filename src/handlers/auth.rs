@@ -159,11 +159,13 @@ fn mint_pair(
 }
 
 /// `POST /auth/refresh`. Verifies the presented refresh token, detects reuse,
-/// rotates the chain, returns a fresh access + refresh token pair.
+/// rotates the chain, returns a fresh access + refresh token pair. The 200
+/// carries `Cache-Control: no-store` — a credential issuance must never be
+/// served from a shared or intermediary cache.
 pub async fn refresh(
     State(s): State<Arc<AppState>>,
     Json(req): Json<RefreshRequest>,
-) -> Result<Json<TokenPair>, AuthHandlerError> {
+) -> Result<(axum::http::HeaderMap, Json<TokenPair>), AuthHandlerError> {
     let mode = s.auth_mode;
     if !mode.is_jwt() {
         return Err(AuthHandlerError::jwt_unavailable());
@@ -246,7 +248,16 @@ pub async fn refresh(
     .await
     .map_err(|_| AuthHandlerError::internal())?;
     let _ = refresh_token; // consumed by verification above
-    result.map(Json)
+    // A rotated token pair is a credential issuance: a shared or
+    // intermediary cache must never answer this route for a later
+    // requester. `no-store` is the cache directive for exactly that, and it
+    // rides the SUCCESS response (an error body carries no credential).
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    result.map(|pair| (headers, Json(pair)))
 }
 
 /// `POST /auth/logout`. Adds the request's access-token `jti` to the denylist.

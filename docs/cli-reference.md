@@ -129,7 +129,7 @@ on the HTTP API or the client console.
 
 | Command | Purpose |
 |---|---|
-| `brain backup <out-path>` [`--passphrase-file PATH`] [`--format v1\|v2\|v3`] | Encrypted AES-256-GCM backup (checksummed, excludes secrets; v3 is the current format — header bytes are GCM AAD). DB path is taken from `BRAIN_DB_PATH`/default, not a positional. A passphrase is required. |
+| `brain backup <out-path>` [`--passphrase-file PATH`] [`--format v1\|v2\|v3`] [`--allow-weak-legacy`] | Encrypted AES-256-GCM backup (checksummed, excludes secrets; v3 is the current format — header bytes are GCM AAD). DB path is taken from `BRAIN_DB_PATH`/default, not a positional. A passphrase is required. Writing `--format v1` additionally requires `--allow-weak-legacy` (v1's unsalted fast KDF + deterministic nonce are offline-brute-forceable); v1/v2 files remain readable with no flag. |
 | `brain restore <in-path>` [`--passphrase-file PATH`] [`--force`] [`--yes`] [`--allow-chainless`] | Restore from an encrypted backup. Always prompts unless `--yes` (`--force` skips only the liveness probe, never the human gate). A chain-less image (no `audit_events` table) REFUSES without `--allow-chainless`; the flag restores with a loud disclosure. Legacy-epoch (unkeyed) chains are marked `forgeable: true` until the operator re-anchors the chain (`brain-server --re-audit` — the SERVER binary's offline mode, not a `brain` flag). |
 
 ## Warm standby (v1.28.61)
