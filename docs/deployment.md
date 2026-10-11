@@ -768,6 +768,6 @@ unmeasured parts labelled as such, in
 
 ### Pilot caveats (honest ceilings)
 
-- **Residency panel today shows DB file + `BRAIN_REGION` stamp, not per-tenant key isolation** — per-tenant keys (SQLCipher + KMS, `BRAIN_TENANT_KEY_FILE` per tenant) ship in v3.7 (Q1 2027). See `COMPLIANCE.md` §10.3 / `THREAT_MODEL.md`.
+- **Residency panel today shows the DB file + `BRAIN_REGION` stamp, not per-tenant key isolation.** SQLite page encryption and a database-key/KMS lifecycle are not part of the accepted design; operator-managed volume encryption is the offline at-rest boundary. `brain doctor` checks FileVault on macOS and active LUKS mappings on Linux when it can identify the database volume, otherwise it reports unverified. See `COMPLIANCE.md` §10.3 / `THREAT_MODEL.md`.
 - **Rate limiting is loopback-scoped until v2.1.** The shared loopback bucket (X-A10 / S2-40) is correct for loopback. Any **internet-facing pilot requires per-principal rate buckets** (carry until v2.1) — put the reverse proxy's per-IP limit in front and note the gate in the deployment runbook.
 - **"Enterprise-pilot-ready" is subject to operator attestation.** ISO 42001 / SOC 2 Type II attestation remains an external operator audit; the repo provides the posture, not the certificate. See `COMPLIANCE.md` header + §6.1.

@@ -90,7 +90,7 @@ top. The server core (retrieval, graph, governance) is stable and heavily tested
 |---|---|
 | **v2.0 "Cortex"** | Multi-team tenancy — the first externally-pilotable release (consumes the v1.2 AuthN/AuthZ foundation) |
 | **v2.x** | Distributed revocation, limits/regions, federation |
-| **v3.x** | Sovereign + survive (resilience), federated deployments — including per-tenant key isolation (SQLCipher + KMS, a `BRAIN_TENANT_KEY_FILE` per tenant), planned for v3.7 (see the residency panel in [deployment.md](./deployment.md)) |
+| **v3.x** | Sovereign + survive (resilience), federated deployments — per-tenant application-level DB keys are not in the accepted design; the at-rest boundary remains operator-managed volume encryption (see the residency panel in [deployment.md](./deployment.md)) |
 | **v4.0** | Sovereign standard |
 
 The v1.19–v1.29 intermediate milestones (profiles, regulated modes, roles,

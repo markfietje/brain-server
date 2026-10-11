@@ -306,7 +306,7 @@ documented residual-risk decision with an owner, not an omission.
 | **LLM01 has no prevention** | OWASP 2026's own position: no engineering fix exists. The screen + classifier degrade against adaptive attackers; the load-bearing defenses are architectural (segregation, gates, least-privilege) | Ops (retrain classifier; re-run adaptive evals per threat-model change) |
 | **Adaptive white-box classifier evasion (GCG-class)** | ~100% adaptive ASR for ModernBERT-class encoders in 2026 research — beats any hardened encoder. The `untrusted` segregation + approval gate are the surviving controls | Platform (v1.21+ re-evaluation) |
 | **Per-principal consumption quotas (LLM06)** | Tenancy work | v2.0 "Cortex" |
-| **At-rest encryption (LLM02)** | LUKS/FileVault documented posture; SQLCipher = v2.x | v2.0 "Cortex" |
+| **At-rest encryption (LLM02)** | Operator-managed volume encryption (LUKS/FileVault); live SQLite files remain plaintext while mounted and `brain doctor` reports supported local states | Current operator boundary |
 | **mTLS for webhook receivers (ASI07)** | Operator option today; A2A-bound later | v2.0 "Cortex" |
 | **Full multi-team tenancy + SSO (ASI03)** | Consumes the v1.2 AuthN/AuthZ foundation | v2.0 "Cortex" |
 | **A2A federation / remote agent identity (ASI07)** | The first-party Standard Webhooks handshake (v1.20.4) is the 2026-compliant boundary until then | v2.0 "Cortex" |

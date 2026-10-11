@@ -5035,6 +5035,175 @@ fn fmt_count(n: i64) -> String {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum VolumeEncryption {
+    Encrypted(String),
+    NotDetected(String),
+    Unknown(String),
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn parse_filevault_info(output: &str) -> VolumeEncryption {
+    let Some(value) = output
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("FileVault:"))
+        .map(str::trim)
+    else {
+        return VolumeEncryption::Unknown("diskutil did not report FileVault state".into());
+    };
+    match value.split_whitespace().next() {
+        Some("Yes") => VolumeEncryption::Encrypted("FileVault".into()),
+        Some("No") => {
+            VolumeEncryption::NotDetected("FileVault is off for the database volume".into())
+        }
+        _ => VolumeEncryption::Unknown("diskutil returned an unrecognized FileVault state".into()),
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn parse_cryptsetup_status(source: &str, output: &str) -> VolumeEncryption {
+    if !source.starts_with("/dev/mapper/") {
+        if source.starts_with("/dev/") && !source.starts_with("/dev/dm-") {
+            return VolumeEncryption::NotDetected(
+                "the database volume is not mounted from a supported encrypted mapper".into(),
+            );
+        }
+        return VolumeEncryption::Unknown(
+            "findmnt did not return a directly inspectable block-device mapping".into(),
+        );
+    }
+    let kind = output
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("type:"))
+        .map(str::trim);
+    match kind {
+        Some(kind)
+            if ["LUKS", "PLAIN", "BITLK"]
+                .iter()
+                .any(|prefix| kind.starts_with(prefix)) =>
+        {
+            VolumeEncryption::Encrypted(kind.to_string())
+        }
+        _ => VolumeEncryption::Unknown(
+            "cryptsetup did not confirm an active encrypted mapping".into(),
+        ),
+    }
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn existing_volume_path(path: &Path) -> &Path {
+    let mut current = path;
+    while !current.exists() {
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        current = parent;
+    }
+    current
+}
+
+#[cfg(target_os = "macos")]
+fn volume_encryption_for_macos(path: &Path) -> VolumeEncryption {
+    let target = existing_volume_path(path);
+    let df = match std::process::Command::new("/bin/df")
+        .args(["-P"])
+        .arg(target)
+        .output()
+    {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).into_owned(),
+        _ => {
+            return VolumeEncryption::Unknown(
+                "could not identify the database volume with df".into(),
+            );
+        }
+    };
+    let Some(device) = df
+        .lines()
+        .last()
+        .and_then(|line| line.split_whitespace().next())
+    else {
+        return VolumeEncryption::Unknown("df returned no database volume".into());
+    };
+    match std::process::Command::new("/usr/sbin/diskutil")
+        .args(["info", device])
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            parse_filevault_info(&String::from_utf8_lossy(&out.stdout))
+        }
+        _ => VolumeEncryption::Unknown("diskutil could not report the database volume".into()),
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn volume_encryption_for_linux(path: &Path) -> VolumeEncryption {
+    let target = existing_volume_path(path);
+    let mount = match std::process::Command::new("findmnt")
+        .args(["--noheadings", "--raw", "--output", "SOURCE", "--target"])
+        .arg(target)
+        .output()
+    {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+        _ => {
+            return VolumeEncryption::Unknown(
+                "findmnt could not identify the database volume".into(),
+            );
+        }
+    };
+    if !mount.starts_with("/dev/mapper/") {
+        return parse_cryptsetup_status(&mount, "");
+    }
+    match std::process::Command::new("cryptsetup")
+        .args(["status", mount.trim_start_matches("/dev/mapper/")])
+        .output()
+    {
+        Ok(out) if out.status.success() => {
+            parse_cryptsetup_status(&mount, &String::from_utf8_lossy(&out.stdout))
+        }
+        _ => VolumeEncryption::Unknown("cryptsetup could not confirm the mapped volume".into()),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn volume_encryption_unsupported(_path: &Path) -> VolumeEncryption {
+    VolumeEncryption::Unknown(
+        "automatic volume-encryption detection is unsupported on this OS".into(),
+    )
+}
+
+fn volume_encryption_for(path: &Path) -> VolumeEncryption {
+    #[cfg(target_os = "macos")]
+    {
+        volume_encryption_for_macos(path)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        volume_encryption_for_linux(path)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        volume_encryption_unsupported(path)
+    }
+}
+
+fn at_rest_status_text(status: &VolumeEncryption) -> String {
+    match status {
+        VolumeEncryption::Encrypted(kind) => format!(
+            "[✓] at-rest volume encryption detected ({kind}); SQLite DB/WAL/SHM are plaintext while mounted"
+        ),
+        VolumeEncryption::NotDetected(reason) => format!(
+            "[!] at-rest volume encryption not detected ({reason}); SQLite DB/WAL/SHM are plaintext while mounted — enable and verify OS volume encryption"
+        ),
+        VolumeEncryption::Unknown(reason) => format!(
+            "[?] at-rest volume encryption could not be verified ({reason}); treat the volume as unverified; SQLite DB/WAL/SHM are plaintext while mounted"
+        ),
+    }
+}
+
+fn print_at_rest_status(path: &Path) {
+    println!("  {}", at_rest_status_text(&volume_encryption_for(path)));
+}
+
 fn cmd_doctor(args: &[String]) -> Result<(), String> {
     // `brain doctor --backup <path> [--passphrase-file PATH]` — verify-only mode.
     let (positionals, flags) = parse_flags(args)?;
@@ -5111,6 +5280,7 @@ fn cmd_doctor(args: &[String]) -> Result<(), String> {
     if !exists {
         println!("      (file not present; server will create it on first run)");
     }
+    print_at_rest_status(&db);
 
     // 4. DB health (optional, only if reachable)
     if reachable {
@@ -7722,4 +7892,35 @@ fn v1_backup_write_requires_allow_weak_legacy() {
         !out.exists(),
         "the refusal happens before any backup file is written"
     );
+}
+
+#[test]
+fn at_rest_doctor_distinguishes_detected_missing_and_unknown_encryption() {
+    let filevault = parse_filevault_info("FileVault: Yes (Unlocked)\n");
+    assert!(matches!(&filevault, VolumeEncryption::Encrypted(_)));
+    assert!(at_rest_status_text(&filevault).contains("detected (FileVault)"));
+
+    let off = parse_filevault_info("FileVault: No\n");
+    assert!(matches!(&off, VolumeEncryption::NotDetected(_)));
+    assert!(at_rest_status_text(&off).contains("not detected"));
+
+    let luks = parse_cryptsetup_status("/dev/mapper/brain", "type: LUKS2\n");
+    assert_eq!(luks, VolumeEncryption::Encrypted("LUKS2".into()));
+    assert!(at_rest_status_text(&luks).contains("detected (LUKS2)"));
+
+    let unknown = parse_cryptsetup_status(
+        "/dev/mapper/brain",
+        "Device /dev/mapper/brain is not active.\n",
+    );
+    assert!(matches!(&unknown, VolumeEncryption::Unknown(_)));
+    assert!(at_rest_status_text(&unknown).contains("could not be verified"));
+    let overlay = parse_cryptsetup_status("overlay", "");
+    assert!(matches!(&overlay, VolumeEncryption::Unknown(_)));
+    let plain_device = parse_cryptsetup_status("/dev/nvme0n1p2", "");
+    assert!(matches!(&plain_device, VolumeEncryption::NotDetected(_)));
+    for line in
+        [&filevault, &off, &luks, &unknown, &overlay, &plain_device].map(at_rest_status_text)
+    {
+        assert!(line.contains("SQLite DB/WAL/SHM are plaintext while mounted"));
+    }
 }

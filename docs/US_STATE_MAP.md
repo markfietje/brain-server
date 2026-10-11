@@ -36,7 +36,7 @@ Status date: 2026-09-14. Verify dates against primary sources before a filing. N
 - Public notices: `GET /.well-known/ai-notice` (Art 50 pattern, reusable for US disclosure copy), `GET /.well-known/ai-literacy`, `GET /.well-known/cop-notice`.
 - ADMT kit: `scripts/admt-kit.sh <chunk-id>` assembles get + audit rows for an assessor.
 
-Ceilings (do not hide in a pilot): no app-level encryption at rest (operator full-disk LUKS/FileVault), single-process chain, read events off by default in loopback, backups are a third copy - you must run purge-aware rotation, trace endpoint serves recorded events only (no backfill pre-v1.15).
+Ceilings (do not hide in a pilot): no app-level encryption at rest (operator volume encryption is the offline boundary; `brain doctor` reports supported states and unverified stacks), single-process chain, read events off by default in loopback, backups are a third copy - you must run purge-aware rotation, trace endpoint serves recorded events only (no backfill pre-v1.15).
 
 ## Enacted / scheduled with direct private-sector duties
 

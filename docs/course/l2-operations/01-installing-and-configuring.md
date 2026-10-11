@@ -27,8 +27,10 @@ brain doctor
 ```
 
 `brain doctor` is the one health command worth memorizing. It checks the
-service, the database, and readiness in one pass, and it can verify a
-backup file at the same time.
+service, the database, and readiness in one pass, reports the local database
+volume's FileVault/LUKS state where it can verify it, and can verify a backup
+file. A warning or unverified result means the volume must be checked with the
+host operating system; the database and WAL files are plaintext while mounted.
 
 ## The honest answer about remote access
 

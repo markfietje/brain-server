@@ -4,6 +4,22 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R98 "Volume Check" — observe the accepted at-rest boundary
+
+The operator decision is **no SQLCipher and no server database key**. SQLite
+DB/WAL/SHM remain plaintext while mounted; OS volume encryption (FileVault on
+macOS, LUKS on Linux) is the single-host offline at-rest boundary. `brain
+doctor` now reports detected FileVault state or an active LUKS mapper, and
+reports unsupported, layered, or otherwise unverified cases without claiming
+the volume is encrypted. Its report names the live SQLite plaintext ceiling,
+does not confuse local CLI checks with a remote server's storage, and keeps
+normal health behavior non-blocking. Recovery uses the separate
+passphrase-encrypted v3 backup path; there is no database-key loss lockout.
+
+Pin: `at_rest_doctor_distinguishes_detected_missing_and_unknown_encryption`
+in `src/bin/brain.rs` covers FileVault, LUKS, and unknown output. No DB format,
+wire, schema, key derivation, dependency, or live database changes.
+
 ## [Unreleased] — R97 "Verity II" — the no-LLM boundary, stated where the claims are
 
 The operator decision (2026-10-11, on verified Oct-2026 research): the GDL

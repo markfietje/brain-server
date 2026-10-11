@@ -90,7 +90,8 @@ pub struct JsonWebKey {
     pub alg: &'static str,
     pub kid: String,
     /// `use`: "sig" (signature). Always signature for us — never "enc".
-    /// We never emit JWE in v1.2 (claims aren't secret; SQLCipher is v3.7).
+    /// We never emit JWE in v1.2 (claims aren't secret; database page
+    /// encryption is not part of the accepted at-rest design).
     #[serde(rename = "use")]
     pub use_: &'static str,
     // RSA params (present only when kty == "RSA").

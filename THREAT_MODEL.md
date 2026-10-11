@@ -4,12 +4,9 @@
 + Cheat Sheet Series (Context7-verified 2026-07-26), NIST SP 800-63B (digital
 identity), NIST SP 800-207 (zero-trust architecture).
 
-**Coverage current through:** R77 (2026-10-06), which folds in the R68–R76
-remediation programme and the ninth-pass closures. The v1.28.63–.75 hardening
-line (§5b) is folded in; per-release detail lives in `CHANGELOG.md` and the
-close-out in `docs/AUDIT.md`. (Stamp moved here by R77 — the T9-03 finding
-was that R75/R76 shipped security controls with this stamp and SECURITY.md's
-still at older dates, violating the same-commit law both files declare.)
+**Coverage current through:** R98 (2026-10-11), including the observed
+operator-managed volume-encryption boundary for plaintext SQLite files.
+Per-release detail lives in `CHANGELOG.md` and the close-out in `docs/AUDIT.md`.
 **Stamp policy:** every release that moves a security-relevant row in this
 file moves this stamp in the same commit — staleness is self-declaring by the
 version gap (do not trust a stamp N releases behind HEAD).
@@ -65,9 +62,10 @@ model, not a substitute.
 **Trust boundaries crossed:**
 1. **Internet → reverse proxy** — TLS termination, IP allowlist, per-IP rate limit.
 2. **Reverse proxy → brain-server** — loopback only; AuthN/AuthZ at the app.
-3. **brain-server → filesystem** — same host; assumes disk not tampered (LUKS
-   recommended for full-disk encryption; SQLCipher for at-rest app encryption
-   lands in v3.7).
+3. **brain-server → filesystem** — same host; SQLite DB/WAL/SHM are plaintext
+   while mounted. The operator-managed FileVault/LUKS volume is the offline
+   at-rest boundary; `brain doctor` reports supported states or says
+   unverified. No SQLCipher/database key or plaintext fallback exists.
 4. **brain-server → peer brain-server** (A2A, v3.7) — untrusted; mTLS + JWS
    verified, scoped capability, data residency allowlist.
 
@@ -80,7 +78,7 @@ model, not a substitute.
 | Threat | Attack | Mitigation | Status |
 |---|---|---|---|
 | **S**poofing | Attacker forges tenant identity | JWT/JWS verify + tenant from signed claim (v1.2) | ✅ |
-| **T**ampering | Direct DB edit on disk | Filesystem perms; SQLCipher + KMS (v3.7) | 🚧 |
+| **T**ampering | Direct DB edit on disk | Filesystem perms; OS volume encryption protects offline media, not a running host | ✅ operator boundary |
 | **T**ampering | Modify a proposal between display and approval | Approve carries the SHA-256 `content_digest` of the read-canonical form; any drift → `409` inside the tx (v1.27.12) | ✅ |
 | **R**epudiation | "I didn't write that" | Audit hash chain (v1.1 M2.3) | ✅ |
 | **I**nformation disclosure | Tenant A reads tenant B | Per-tenant files + AuthZ at data layer (v1.0+v1.2) | ✅ |
@@ -194,20 +192,18 @@ a `ponytail:` comment naming the ceiling and upgrade path.
    (grep-verified), and multi-db mode is the recommended path for true
    multi-tenant deployments.
 
-2. **No encryption at rest before v3.7.** Mitigation: filesystem encryption
-   (LUKS/FileVault/BitLocker) recommended in deployment checklist. Risk: a
-   disk image captures plaintext DBs. Accepted because: brain-server targets
-   single-host trusted-disk deployments; SQLCipher is the v3.7 fix.
-   Standing statement (the preflight line's docs truth): the live DB AND its
-   `.bak` safety snapshots are PLAINTEXT on the primary host — the encryption
-   law covers the warm-standby FOLLOWER only. Full-disk encryption (LUKS/
-   FileVault) is the standing recommendation for the primary. NARROWED for
-   the ROLLING snapshots: the integrity scheduler retains only SEALED v3
-   bundles (Argon2id/AES-256-GCM, restorable via `brain restore`) when
+2. **SQLite has no page encryption.** Mitigation: OS volume encryption
+   (FileVault/LUKS) is the accepted single-host boundary. `brain doctor`
+   identifies FileVault state on macOS and active LUKS mappings on Linux;
+   unsupported or layered storage reports unverified, never green. Risk: DB
+   and WAL/SHM copies are plaintext while the volume is unlocked, and an
+   unverified volume must be treated as unencrypted. There is no SQLCipher
+   rollout, database key, or plaintext fallback. The live DB remains plaintext
+   at the SQLite layer. The R108 rolling-snapshot writer retains only SEALED
+   v3 bundles (Argon2id/AES-256-GCM, restorable via `brain restore`) when
    `BRAIN_BACKUP_PASSPHRASE_FILE` is configured, and retains NOTHING
-   (integrity check only) when it is not — no code path writes an
-   unencrypted retained snapshot. The restore-time safety `.bak` and any
-   pre-upgrade legacy snapshots stay plaintext operator-level residue.
+   (integrity check only) otherwise. Restore-time safety `.bak` files and
+   pre-upgrade legacy snapshots remain plaintext operator-level residue.
 
 2b. **The audit chain detects tampering, not host compromise.** The HMAC
    chain key and the chain pins (head + genesis) share the host with the DB:

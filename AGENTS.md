@@ -63,6 +63,25 @@
 > **ponytail:** nothing beyond docs + the pin; R113's spec-only threat-class
 > rows stay untriggered; no new knob.
 
+> **R98 "Volume Check": make the selected at-rest boundary observable.** The
+> operator decision is NO SQLCipher and NO database key: SQLite DB/WAL/SHM
+> stay plaintext while mounted; FileVault/LUKS volume encryption protects
+> offline storage. `brain doctor` identifies FileVault for the volume holding
+> its local DB path on macOS and an active LUKS mapper on Linux; unsupported,
+> layered, or ambiguous mappings report unverified (never green). It states
+> the plaintext-while-mounted ceiling and cannot attest remote server storage.
+> No DB format, wire/schema, key lifecycle, new dependency, or live DB drill.
+> The separate R108 backup posture is the recovery artifact; losing an
+> application DB key cannot lock out the live DB because none exists.
+>
+> **Pin:** `at_rest_doctor_distinguishes_detected_missing_and_unknown_encryption`
+> in `src/bin/brain.rs`, with FileVault/LUKS/unknown fixtures. The check is
+> informative and non-blocking; `brain doctor` still reports server health.
+>
+> **ponytail:** no SQLCipher, server key, new dependency, or live-DB drill;
+> one direct OS-volume probe per supported platform, one inline behavioral pin,
+> and unknown/layered states stay explicitly unverified.
+
 > **R109 "LOW debt": eight known-LOW defects closed before they age into
 > ceilings.** One batch, one theme — each item a bounded read, a parse, a
 > header, or a gate; red-first pins in EXISTING files (the ponytail forbids a

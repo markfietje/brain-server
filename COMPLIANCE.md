@@ -626,7 +626,9 @@ more useful than implying the layer is deeper than it is:
 - Read events default off in loopback mode (personal-use contract); JWT mode
   on. A loopback deployment must set `BRAIN_AUDIT_READ_EVENTS=on` explicitly
   to collect read traces.
-- No PII encryption at rest — full-disk encryption is the operator's layer.
+- No application-level PII or SQLite page encryption. The operator-managed
+  volume is the offline at-rest layer; `brain doctor` reports supported local
+  volume states and identifies unverified stacks.
 - DSAR export is brain-server JSON (the `?format=ump` wire form covers the
   `/export` portability path, not the DSAR certificate envelope).
 - This file is a documented posture, not a certification.
@@ -704,7 +706,7 @@ the boundary, encryption, and monitoring layers the operator positions.
 |---|---|
 | AC (Access Control) | JWT/OIDC/JWKS + opaque bearer; per-route AuthZ matrix; record-level `access_scope` (v1.14) |
 | AU (Audit & Accountability) | Hash-chained audit (§3), `/audit/verify`, `/metrics` continuous-monitoring feed, replayable `/recall/{id}/trace` (v1.15) |
-| SC-28 (Protection at Rest) | No application-level encryption at rest — full-disk encryption is the operator's layer (explicitly documented, not assumed) |
+| SC-28 (Protection at Rest) | No application-level encryption at rest — operator-managed volume encryption is the boundary, with supported states surfaced by `brain doctor`; SQLite files are plaintext while mounted |
 | SC-7 (Boundary Protection) | Loopback-first binding (data physically never leaves the host); the network boundary + TLS terminate at the operator's reverse proxy |
 | SI-12 (Information Handling) | Retention classes + `GET /retention/report` (v1.22) demonstrate storage-limitation; DSAR locate→purge→certificate (§4) is the deletion path |
 | IR (Incident Response) | The hash-chained audit + tombstones supply the forensic evidence an IR plan consumes; legal hold preserves evidence during a response |

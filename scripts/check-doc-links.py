@@ -17,7 +17,7 @@ checked = 0
 for md in sorted(DOCS.rglob("*.md")):
     for target in LINK.findall(md.read_text(encoding="utf-8", errors="replace")):
         checked += 1
-        resolved = (md.parent / target).resolve()
+        resolved = (md.resolve().parent / target).resolve()
         if not resolved.is_file():
             broken.append(f"{md}: {target}")
 

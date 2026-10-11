@@ -87,7 +87,7 @@ Full threat model in [`THREAT_MODEL.md`](./THREAT_MODEL.md). Summary here.
 | **S**poofing | Agent → brain-server, brain-server → peer (A2A) | Bearer token (v1.1) / JWT/JWS (v1.2); mTLS (v3.7) | ✅ / 🚧 |
 | **T**ampering | Audit log, content at rest, JWT payload | Hash-chained audit (v1.1 M2.3); parameterized SQL (all versions); JWS signature (v1.2) | ✅ |
 | **R**epudiation | "Who did this write?" | Append-only audit with `(actor, ts, hash, prev_hash)` (v1.1 M2) | ✅ |
-| **I**nformation disclosure | Cross-tenant leak, PII egress | Per-tenant file isolation (v1.0); AuthZ layer (v1.2); record-level `access_scope` + owner (v1.14, JWT-mode deny-by-default filter); deterministic PII output redaction (v1.14, no write-time placeholder vault — v1.20.19); SQLCipher + per-field encryption (v3.7) | ✅ / 🚧 |
+| **I**nformation disclosure | Cross-tenant leak, PII egress | Per-tenant file isolation (v1.0); AuthZ layer (v1.2); record-level `access_scope` + owner (v1.14, JWT-mode deny-by-default filter); deterministic PII output redaction (v1.14, no write-time placeholder vault — v1.20.19); operator volume encryption for offline media; no SQLite page encryption | ✅ boundary / operator |
 | **D**enial of service | Burst, large body, vector query | Body limit + per-IP limiter (v0.9.4); per-tenant + tiered limiter (v2.1) | ✅ / 🚧 |
 | **E**levation of privilege | Token scope escalation | Constant-time token compare (v1.1); AuthZ trait with deny-by-default (v1.2) | ✅ |
 
@@ -147,7 +147,7 @@ ownership... log access control failures."
 | HMAC-SHA256 for webhook verification (v0.9.7) | `webhook.rs` | ✅ |
 | Keyed audit chain (v1.27.31 "AuditRepair"): links are HMAC-SHA256 over the FULL row (id, ts, kind, actor, target_hash, status, detail_hash, prev_hash) under a key that never lives in the DB — a DB-only attacker cannot forge links; head pin `(id, hash)` detects truncation/extension; the format flips only via the announced `--re-audit` re-anchor (an audit chain is evidence). Genesis pin (same family): anchors the FIRST row so head-deletion is detected, and both pins carry MACs under the keyed epoch — pin rewrite/removal is behind the key | `audit.rs` | ✅ v1.27.31 + pins |
 | Webhook replay window (opt-in, v1.20.4 G6): `BRAIN_WEBHOOK_TIMESTAMP_REQUIRED=1` demands the Standard Webhooks header set (`webhook-id`/`webhook-timestamp`/`webhook-signature`) and verifies `v1,<base64>` HMAC-SHA256 over `{id}.{timestamp}.{raw body}` in constant time — the timestamp rides inside the HMAC, so a replay cannot re-stamp it. **GitHub's replay protection is `x-github-delivery` idempotency, not a timestamp** (its sender is a trusted third party); first-party senders opt into the hard window via the spec headers + flag. Default unchanged (legacy `sha256=` path). | `verify_standard_signature` + `receive_standard` | ✅ |
-| SQLCipher at rest (AES-256 per-page) | KMS trait | 🚧 v3.7 |
+| Live DB pages encrypted by SQLite | none; DB/WAL/SHM are plaintext | Operator OS volume is the accepted at-rest boundary; `brain doctor` observes supported states |
 | No hardcoded secrets (env / file / KMS) | all of `config.rs` | ✅ |
 | Dependency timing sidechannels (RSA "Marvin", RUSTSEC-2023-0071) | documented accept: `.cargo/audit.toml`; EdDSA keys avoid RSA (supported since v1.2) | ✅ accepted |
 
@@ -378,14 +378,27 @@ unit test in `src/auth/jwt.rs` (14 tests covering the full failure matrix).
 | JWT revocation key | `(jti, iss)` | ✅ v1.2 |
 | Webhook verification | HMAC-SHA256 | ✅ |
 | Backup encryption | AES-256-GCM | ✅ |
-| Database at rest | SQLCipher AES-256 per-page | 🚧 v3.7 |
+| Database at rest | OS-managed encrypted volume (operator responsibility) | ✅ boundary; checked by `brain doctor` where supported |
 | Per-field PII encryption | AES-256-GCM via HKDF-derived key | 🚧 v3.7 |
 | TLS termination | TLS 1.3 (reverse proxy) | ✅ (operator) |
 | mTLS service-to-service | TLS 1.3 + SPIFFE/SPIRE-compatible identity | 🚧 v3.7 |
 
-**No encryption at rest today** — SQLite files are plaintext. For encryption
-before v3.7: filesystem encryption (LUKS, FileVault, BitLocker) or `sqlcipher`
-via proxy.
+**SQLite does not encrypt the live database.** The accepted single-host
+boundary is operating-system volume encryption (FileVault on macOS, LUKS on
+Linux). `brain doctor` checks the volume containing the local database path:
+it reports FileVault state on macOS and an active LUKS mapper on Linux; if the
+platform or device stack cannot be confirmed, it reports the state as
+unverified. “Not detected” means the check found no supported encryption
+mapping; it is not a claim about hardware encryption. The check does not
+inspect a remote server's disk when `brain doctor` is run from another host.
+
+While the volume is unlocked, SQLite database, WAL, and SHM files remain
+plaintext and readable to processes with filesystem access. OS volume
+encryption protects offline storage and copied physical media; it does not
+protect a running, unlocked host or replace file permissions. There is no
+server database key or SQLCipher fallback. Losing a database key therefore
+cannot lock out the live DB; recovery from a failed host depends on the OS
+volume's recovery posture and the separate passphrase-encrypted v3 backup.
 
 ## UMP identity + capability tokens (v1.17.3)
 
@@ -680,7 +693,7 @@ controls brain-server maps to, for procurement.
 |---|---|
 | **SOC 2 Type II** | CC6.1 (auth), CC6.3 (AuthZ), CC7.1 (audit), CC7.2 (monitoring), CC3.3 (key rotation v3.7) |
 | **ISO 27001:2022** | A.5.15 (access control), A.5.16 (identity management), A.8.2 (privileges), A.8.15 (logging), A.8.24 (cryptography) |
-| **GDPR** | Art. 25 (privacy by design — local-first), Art. 30 (audit trail), Art. 32 (encryption at rest via v3.7 SQLCipher) |
+| **GDPR** | Art. 25 (privacy by design — local-first), Art. 30 (audit trail), Art. 32 (operator-managed encrypted volume; plaintext SQLite while mounted) |
 | **HIPAA Security Rule** | §164.312(a)(1) access control, §164.312(b) audit, §164.312(e)(2)(ii) encryption |
 | **PCI DSS v4.0** | Req 7 (least privilege), Req 8 (auth), Req 10 (logging), Req 3 (encryption at rest) |
 
@@ -734,7 +747,7 @@ rulings) — the runbook's quarterly re-check rule applies.
 - [ ] Confirm `x-request-id` appears in aggregated logs.
 - [ ] Enable systemd hardening drop-ins (sample in `scripts/`).
 - [ ] For multi-tenant: complete the v1.2 + v2.0 + v2.1 release chain first.
-- [ ] For compliance: configure external KMS (v3.7) for SQLCipher keys.
+- [ ] For offline-device protection: enable OS volume encryption on every volume holding a database, WAL/SHM, or temporary database copy; confirm with `brain doctor` where supported.
 - [ ] For federation: deploy mTLS + JWKS (v3.7) before opening A2A to peers.
 
 ---
@@ -808,7 +821,7 @@ rulings) — the runbook's quarterly re-check rule applies.
 | 1.1 | 2026-07-28 | Per-tenant audit + SHA-256 hash chain; fail-safe file-watch token rotation; rolling backups + `/health` integrity; graceful-shutdown drain cap + WAL checkpoint; RSS watchdog; Prometheus `/metrics` exporter |
 | 2.0 (planned) | 2026-Q4 | Multi-team tenancy consuming v1.2 AuthZ; team namespace in paths |
 | 2.1 (planned) | 2026-Q4 | Per-tenant + tiered rate limiting; Redis impl; cost tracking; quota alerts |
-| 3.7 (planned) | 2027-Q1 | A2A federation over mTLS; SQLCipher + KMS abstraction; per-field PII encryption; differential privacy |
+| 3.7 (planned) | 2027-Q1 | A2A federation over mTLS; per-field PII encryption; differential privacy (no SQLCipher/KMS database-key commitment) |
 | 1.0.1 | 2026-07-26 | Structured-ingest auto-create bug fix; systemd deploy on openclaw |
 | 1.0.0 | 2026-07-26 | Multi-domain + cross-domain RRF + domain lifecycle + boot-time legacy cutover |
 | 0.9.9 | 2026-07-25 | Capacity envelopes; migration rehearsal tool; storage layout |

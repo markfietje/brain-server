@@ -12,7 +12,7 @@ on the HTTP API or the client console.
 
 | Command | Purpose |
 |---|---|
-| `brain doctor` [`--backup <path> [--passphrase-file PATH]`] | Health + readiness; optionally verify a backup file |
+| `brain doctor` [`--backup <path> [--passphrase-file PATH]`] | Health + readiness, local DB-volume encryption status (where supported); optionally verify a backup file |
 | `brain kb build --domain <d> --out <dir> [--db <path>] [--base-url <url>] [--with-case-status] [--locales en,de,fr,es,nl]` | Build the public KB as a static artifact from published articles (deterministic bytes + SHA-256 manifest carrying the Art 50(2) provenance seal; sign before hosting). `--with-case-status` also emits the live `status/{ref}.json|.html` case-status pages; `--locales` emits per-locale pages with hreflang alternates |
 | `brain status` | Counts, model, version |
 | `brain check-consistency` | Report duplicates, conflicts, stale sources, near-duplicates |
