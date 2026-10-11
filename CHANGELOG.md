@@ -4,7 +4,18 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
-## [Unreleased] — R108 "Sealed" — certified erasure covers the rolling snapshots
+## [1.29.12] — 2026-10-11 — "Sealed": the chain's head, the LOW debt, and the rolling snapshots
+
+Covers every commit from tag `v1.29.11` (`6cd21643`) to this release —
+`git log v1.29.11..v1.29.12` reproduces the range. Three rounds: R112 (the
+audit-chain genesis pin + pin MACs, from the v1.29.11 audit replay), R109
+(the eight-item LOW-debt batch), R108 (sealed rolling snapshots — certified
+erasure covers them). One additive response-header documentation change
+(`/auth/refresh` `Cache-Control: no-store`); no schema-version change, no
+new route, zero new dependency edges. Full-lane evidence per round in each
+section; badge re-derived at the release commit.
+
+### R108 — sealed rolling snapshots
 
 The integrity scheduler wrote UNENCRYPTED `VACUUM INTO` snapshots every 6 h,
 kept four, beside the live DB — and `shred` deliberately skipped them — so
@@ -53,7 +64,7 @@ redesign, no route/wire change beyond the additive `/health/db`
 `backup.retention` field (openapi description enriched; schema.d.ts
 regenerated), no new dependency edges.
 
-## [Unreleased] — R109 "LOW debt" — eight known-LOW defects closed before they age into ceilings
+### R109 — the LOW-debt batch
 
 One batch, one theme: each item a bounded read, a parse, a header, or a gate.
 Every pin red-first where a runtime exists; the one item whose fix is a TYPE
@@ -128,7 +139,7 @@ change, zero new dependency edges. The `release.sh` witness item originally
 filed for this round was already fixed out-of-band (`bac45160`) and is
 re-filed in the programme doc, NOT absorbed as a ninth item.
 
-## [Unreleased] — R112 "Pins" — the chain sees its own head
+### R112 — the chain learns to see its own head
 
 Three residuals from the v1.29.11 security-audit replay, closed red-first. No
 route, wire, or role-vocabulary change; zero new dependency edges.
@@ -190,6 +201,43 @@ finding + controls + the stated ceiling). `CHAIN_MODULE_SHA256` re-recorded
 **3282** (`--verify-count` OK); fmt + clippy (bench + default) clean;
 docs-truth LOW=17 unmoved; env-truth clean; 547 doc links resolve; full
 `bench,migrate` lane 61 result lines / 0 FAILED.
+
+### Release notes
+
+**Security fixes**
+
+- Deleting the OLDEST audit rows is no longer undetectable: a genesis pin
+  anchors the chain's first row beside the head pin, and `verify` answers
+  `ok:false` naming the mismatch.
+- Both audit-chain pins carry HMAC MACs under the keyed epoch — rewriting or
+  deleting a pin to bless a truncation is behind the key, and a non-empty
+  keyed chain refuses a missing/invalid pin.
+- The FTS5 bare-query fallback is quoted: `OR`/`NEAR`/`*` in a caller query
+  are terms, not operators, and a stray quote is no longer a silently
+  swallowed syntax error.
+- The rotation watcher follows `AGENT_TOKEN_FILE` too — a swapped agent file
+  takes effect at the next poll, not the next operator rotation or a restart.
+- `bin_common` response reads are bounded (256 MiB, fail-closed).
+- `pinned_alg` is non-optional: an undeclared JWT key record cannot fall back
+  to whitelist-only family behavior.
+
+**Behaviour changes (disclosed)**
+
+- Writing a v1 backup now requires `--allow-weak-legacy` (reads unchanged).
+- The integrity scheduler retains NO unencrypted snapshot: with
+  `BRAIN_BACKUP_PASSPHRASE_FILE` set it writes sealed v3 bundles restorable
+  via `brain restore`; without it, the integrity check runs and nothing is
+  retained. Legacy plaintext `*.snapshot-*.bak` files are disclosed at boot,
+  never deleted.
+- `SetSensitiveHeadersLayer` runs outside `TraceLayer`; `/auth/refresh` 200s
+  carry `Cache-Control: no-store`.
+
+**Operational**
+
+- `cargo-cyclonedx` is version-pinned in the release workflow; the release
+  witness now watches the tag's commit with tag-scoped queries (this is the
+  first release through the corrected witness).
+- `/health/db` reports `backup.retention` (`encrypted` | `check-only`).
 
 ## [1.29.11] — 2026-10-10 — "Identity": who is asking, not what the env says
 
