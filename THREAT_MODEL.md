@@ -201,7 +201,13 @@ a `ponytail:` comment naming the ceiling and upgrade path.
    Standing statement (the preflight line's docs truth): the live DB AND its
    `.bak` safety snapshots are PLAINTEXT on the primary host — the encryption
    law covers the warm-standby FOLLOWER only. Full-disk encryption (LUKS/
-   FileVault) is the standing recommendation for the primary.
+   FileVault) is the standing recommendation for the primary. NARROWED for
+   the ROLLING snapshots: the integrity scheduler retains only SEALED v3
+   bundles (Argon2id/AES-256-GCM, restorable via `brain restore`) when
+   `BRAIN_BACKUP_PASSPHRASE_FILE` is configured, and retains NOTHING
+   (integrity check only) when it is not — no code path writes an
+   unencrypted retained snapshot. The restore-time safety `.bak` and any
+   pre-upgrade legacy snapshots stay plaintext operator-level residue.
 
 2b. **The audit chain detects tampering, not host compromise.** The HMAC
    chain key and the chain pins (head + genesis) share the host with the DB:
@@ -436,8 +442,9 @@ architecture):
   fork's pinned-host DNS resolution sit outside the validated client
   (operator-configured endpoints — disclosed in §5).
 - The audit chain detects SQL/application-level tampering, not host
-  compromise; the live DB and `.bak` snapshots stay plaintext on the primary
-  (§4 items 2/2b). Model-manifest pinning is boot-time-only (load-time
+  compromise; the live DB and `.bak` safety snapshots stay plaintext on the
+  primary (§4 items 2/2b) — while the SCHEDULER's rolling snapshots are
+  sealed-or-absent by construction (no plaintext retained artifact). Model-manifest pinning is boot-time-only (load-time
   re-verification is host-compromise territory — the same ceiling).
   NARROWED (v1.28.91 "Notary"): `brain anchor` extends detection past the
   SQL layer — an OFF-HOST recorded state fingerprint (chain head +

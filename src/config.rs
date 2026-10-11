@@ -1251,6 +1251,28 @@ pub fn auth_token_file() -> Option<std::path::PathBuf> {
         .map(std::path::PathBuf::from)
 }
 
+/// The backup/snapshot passphrase file (`BRAIN_BACKUP_PASSPHRASE_FILE`) —
+/// the SAME seam the `brain backup` / `brain restore` CLI reads, so one
+/// operator file serves both the manual transport path and the integrity
+/// scheduler's sealed snapshots. Owner-only (0600) by the shared secret-file
+/// law; read once at scheduler spawn (rotation = restart, disclosed). `None`
+/// when unset — the scheduler then runs its integrity check WITHOUT
+/// retaining a snapshot, because an unencrypted retained snapshot beside a
+/// database that just certified an erasure is a leak, not a recovery asset.
+pub fn backup_passphrase() -> Option<Vec<u8>> {
+    let path = std::path::PathBuf::from(
+        std::env::var("BRAIN_BACKUP_PASSPHRASE_FILE")
+            .ok()?
+            .trim()
+            .to_string(),
+    );
+    if path.as_os_str().is_empty() {
+        return None;
+    }
+    crate::secret_file::check_secret_permissions(&path).ok()?;
+    std::fs::read(&path).ok().filter(|b| !b.is_empty())
+}
+
 /// when `AUTH_TOKEN_FILE` is explicitly
 /// set but cannot yield tokens (missing, unreadable, or empty) AND no
 /// `AUTH_TOKEN` env fallback is configured, the server would otherwise start

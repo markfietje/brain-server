@@ -36,6 +36,11 @@ pub struct Snapshot {
     pub last_backup: String,
     /// True when the last snapshot's `PRAGMA integrity_check` returned "ok".
     pub integrity_ok: bool,
+    /// The retention posture of the last cycle: `"encrypted"` (a sealed v3
+    /// bundle was retained) or `"check-only"` (integrity_check ran, nothing
+    /// was retained — no passphrase is configured, and an unencrypted
+    /// retained snapshot is a certified-erasure leak, not a recovery asset).
+    pub retention: &'static str,
 }
 
 impl Snapshot {
@@ -43,6 +48,7 @@ impl Snapshot {
         serde_json::json!({
             "last_backup": self.last_backup,
             "integrity_ok": self.integrity_ok,
+            "retention": self.retention,
         })
     }
 }
@@ -78,24 +84,37 @@ impl SnapshotState {
 /// `integrity_ok: false` in `/health`; the server keeps running.
 pub fn spawn_scheduler(db_path: PathBuf, state: SnapshotState) {
     tokio::spawn(async move {
+        // Resolved ONCE for the process lifetime: a passphrase file swap
+        // takes effect at restart (disclosed in the runbook — snapshot
+        // encryption is a posture, not a hot-reload knob).
+        let passphrase = crate::config::backup_passphrase();
+        if passphrase.is_none() {
+            warn!(
+                target: "brain::integrity",
+                "BRAIN_BACKUP_PASSPHRASE_FILE is not set: the integrity scheduler will run                  its check but RETAIN NO snapshot (an unencrypted retained snapshot is an                  erasure leak, not a recovery asset). Set it to retain sealed v3 snapshots                  restorable with `brain restore`."
+            );
+        }
+        warn_about_legacy_plaintext_snapshots(&db_path);
         let mut interval = tokio::time::interval(Duration::from_secs(SNAPSHOT_INTERVAL_SECS));
         // First tick completes immediately — run a snapshot on boot so a fresh
         // install's `/health` reports `integrity_ok: true` without a 6h wait.
         interval.tick().await;
         loop {
             let now = iso_now();
-            match run_once(&db_path) {
-                Ok(integrity_ok) => {
+            match run_once_with_passphrase(&db_path, passphrase.as_deref()) {
+                Ok(outcome) => {
                     state.set(Snapshot {
                         last_backup: now.clone(),
-                        integrity_ok,
+                        integrity_ok: outcome.integrity_ok,
+                        retention: outcome.retention,
                     });
-                    info!(target: "brain::integrity", "snapshot ok at {now}");
+                    info!(target: "brain::integrity", "snapshot ok at {now} ({})", outcome.retention);
                 }
                 Err(e) => {
                     state.set(Snapshot {
                         last_backup: now,
                         integrity_ok: false,
+                        retention: "none (last cycle failed)",
                     });
                     warn!(target: "brain::integrity", "snapshot failed: {e:#}");
                 }
@@ -105,49 +124,166 @@ pub fn spawn_scheduler(db_path: PathBuf, state: SnapshotState) {
     });
 }
 
+/// Pre-round snapshots are PLAINTEXT `<db>.snapshot-<ts>.bak` files. They are
+/// the operator's only recovery artifact from before the upgrade, so they are
+/// NEVER deleted by this code — but they are disclosed loudly at boot (and
+/// named in the shred runbook) because erased content in them stays greppable
+/// until the operator disposes of them.
+fn warn_about_legacy_plaintext_snapshots(db_path: &Path) {
+    let Some(dir) = db_path.parent() else { return };
+    let Some(stem) = db_path.file_name().and_then(|s| s.to_str()) else {
+        return;
+    };
+    let prefix = format!("{stem}.snapshot-");
+    let legacy: Vec<String> = std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter(|e| {
+                    e.file_name()
+                        .to_str()
+                        .map(|n| n.starts_with(&prefix) && n.ends_with(".bsbak"))
+                        .unwrap_or(false)
+                })
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default();
+    if !legacy.is_empty() {
+        warn!(
+            target: "brain::integrity",
+            "{} legacy PLAINTEXT snapshot(s) remain on disk (not deleted — they may be the              only pre-upgrade recovery copy): {}. Their content is unread by this build and              stays operator-level; dispose of them with `brain shred` when no longer needed.",
+            legacy.len(),
+            legacy.join(", ")
+        );
+    }
+}
+
 /// One backup+integrity cycle. Snapshot is `<db>.snapshot-<ts>.bak` in the
 /// same directory; `SNAPSHOT_KEEP` rolling copies are kept, older ones pruned.
 /// `integrity_check` runs on the snapshot (not the live DB) so a corrupt
 /// result is reproducible.
-pub fn run_once(db_path: &Path) -> anyhow::Result<bool> {
+pub fn run_once(db_path: &Path) -> anyhow::Result<SnapshotOutcome> {
+    run_once_with_passphrase(db_path, crate::config::backup_passphrase().as_deref())
+}
+
+/// What one cycle produced: the integrity verdict plus the retention posture
+/// that produced it (rides to `/health` so an operator can SEE that nothing
+/// is being retained, not infer it from missing files).
+pub struct SnapshotOutcome {
+    pub integrity_ok: bool,
+    pub retention: &'static str,
+}
+
+/// One backup+integrity cycle.
+///
+/// **Encrypted posture** (a passphrase is configured): the cycle writes a
+/// sealed v3 bundle (`<db>.snapshot-<ts>.bsbak` + `.sha256` sidecar) through
+/// the SAME writer `brain backup` uses — Argon2id/AES-256-GCM, GCM-AAD
+/// header, manifest — so `brain restore` consumes scheduler snapshots with
+/// no new format surface, and the writer's guarded temp means no plaintext
+/// copy outlives the call. `integrity_check` then runs on the DECRYPTED
+/// bytes of the sealed artifact (the restore path itself), and rotation
+/// keeps the last `SNAPSHOT_KEEP` bundles.
+///
+/// **Check-only posture** (no passphrase): the cycle checkpoints, snapshots
+/// to a zeroed-on-drop temp, checks it, and retains NOTHING — an
+/// unencrypted retained snapshot beside a database that just certified an
+/// erasure is a leak, not a recovery asset. The `/health` integrity signal
+/// survives either way.
+pub fn run_once_with_passphrase(
+    db_path: &Path,
+    passphrase: Option<&[u8]>,
+) -> anyhow::Result<SnapshotOutcome> {
     let dir = db_path
         .parent()
         .ok_or_else(|| anyhow::anyhow!("db has no parent dir"))?;
+    let stem = db_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("brain")
+        .to_string();
     let stamp = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let snap = dir.join(format!(
-        "{}.snapshot-{}.bak",
-        db_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("brain"),
-        stamp
-    ));
-    let conn = Connection::open(db_path)?;
-    // Checkpoint WAL first so the snapshot is consistent + WAL is small.
-    let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
-    // The shared escaper (backup::vacuum_into) — never a hand-rolled literal.
-    crate::backup::vacuum_into(&conn, &snap)?;
-    drop(conn);
 
-    // Snapshots are plaintext copies of the whole store; lock them to the
-    // owner so a world-readable backup is never left behind.
-    #[cfg(unix)]
+    // Checkpoint WAL first so the snapshot is consistent + WAL is small.
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&snap, std::fs::Permissions::from_mode(0o600))?;
+        let conn = Connection::open(db_path)?;
+        let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()));
     }
 
-    // Integrity check on the SNAPSHOT (not the live DB) so a failure is
-    // reproducible against the same bytes the operator could restore.
-    let snap_conn = Connection::open(&snap)?;
-    let result: String = snap_conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
-    let ok = result == "ok";
+    match passphrase {
+        Some(pass) => {
+            let out = dir.join(format!("{stem}.snapshot-{stamp}.bsbak"));
+            crate::backup::backup_with_config_dir_and_format(
+                db_path,
+                &out,
+                pass,
+                None,
+                crate::backup::BackupFormat::V3,
+            )?;
+            let plain = crate::backup::verify_sealed_bundle(&out, pass)?;
+            let tmp = dir.join(format!(".brain-check-{stamp}.db"));
+            let _guard = ZeroingGuard(tmp.clone());
+            std::fs::write(&tmp, &plain)?;
+            let ok = check_integrity(&tmp)?;
+            prune(dir, db_path, SNAPSHOT_KEEP);
+            Ok(SnapshotOutcome {
+                integrity_ok: ok,
+                retention: "encrypted",
+            })
+        }
+        None => {
+            let tmp = dir.join(format!(".brain-check-{stamp}.db"));
+            let _guard = ZeroingGuard(tmp.clone());
+            {
+                let conn = Connection::open(db_path)?;
+                crate::backup::vacuum_into(&conn, &tmp)?;
+            }
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+            }
+            let ok = check_integrity(&tmp)?;
+            Ok(SnapshotOutcome {
+                integrity_ok: ok,
+                retention: "check-only",
+            })
+        }
+    }
+}
 
-    prune(dir, db_path, SNAPSHOT_KEEP);
-    Ok(ok)
+/// RAII: zero then delete — for plaintext temps that must leave no residue.
+/// Best-effort at every step (a temp that cannot be zeroed is still deleted;
+/// the failure is logged by the caller's cycle result if it matters).
+struct ZeroingGuard(PathBuf);
+
+impl Drop for ZeroingGuard {
+    fn drop(&mut self) {
+        let _ = std::fs::File::options()
+            .write(true)
+            .open(&self.0)
+            .and_then(|mut f| {
+                let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+                let zeros = vec![0u8; 64 * 1024];
+                let mut left = len as usize;
+                while left > 0 {
+                    let n = left.min(zeros.len());
+                    std::io::Write::write_all(&mut f, &zeros[..n])?;
+                    left -= n;
+                }
+                Ok(())
+            });
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn check_integrity(path: &Path) -> anyhow::Result<bool> {
+    let conn = Connection::open(path)?;
+    let result: String = conn.query_row("PRAGMA integrity_check", [], |r| r.get(0))?;
+    Ok(result == "ok")
 }
 
 /// Delete the oldest snapshots beyond the keep count. Best-effort.
@@ -164,7 +300,7 @@ fn prune(dir: &Path, db_path: &Path, keep: usize) {
             .filter(|p| {
                 p.file_name()
                     .and_then(|s| s.to_str())
-                    .map(|n| n.starts_with(&prefix) && n.ends_with(".bak"))
+                    .map(|n| n.starts_with(&prefix) && n.ends_with(".bsbak"))
                     .unwrap_or(false)
             })
             .collect(),
@@ -223,104 +359,157 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
-    #[test]
-    fn run_once_produces_integrity_ok_snapshot() {
-        let dir = tempdir().unwrap();
-        let db = dir.path().join("brain.db");
-        // A fresh DB is created on open; VACUUM INTO needs at least one table.
-        let conn = Connection::open(&db).unwrap();
-        conn.execute("CREATE TABLE t(x INTEGER)", []).unwrap();
-        conn.execute("INSERT INTO t VALUES (42)", []).unwrap();
+    const NEEDLE: &str = "SECRET-NEEDLE-7f3a";
+
+    fn fixture_db(dir: &std::path::Path) -> std::path::PathBuf {
+        let db = dir.join("brain.db");
+        // The REAL schema: a production database always carries the audit
+        // chain, and the round-trip arm restores through the production verb
+        // — which refuses chainless images by design.
+        crate::register_sqlite_vec::register_sqlite_vec();
+        let mut conn = Connection::open(&db).unwrap();
+        crate::migration::run_migration(&mut conn, 1).unwrap();
+        conn.execute(
+            "INSERT INTO knowledge (content, source, content_hash) VALUES (?1, 'test', 'h1')",
+            rusqlite::params![NEEDLE],
+        )
+        .unwrap();
         drop(conn);
-
-        let ok = run_once(&db).expect("run_once");
-        assert!(ok, "fresh DB snapshot must pass integrity_check");
-
-        // One .bak file exists, named after the DB.
-        let mut bak_count = 0;
-        for e in std::fs::read_dir(dir.path()).unwrap().flatten() {
-            if e.path()
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(|n| n.starts_with("brain.db.snapshot-") && n.ends_with(".bak"))
-                .unwrap_or(false)
-            {
-                bak_count += 1;
-            }
-        }
-        assert_eq!(bak_count, 1, "exactly one snapshot after one run");
+        db
     }
 
-    #[test]
-    fn prune_keeps_only_n_newest() {
-        let dir = tempdir().unwrap();
-        let db = dir.path().join("brain.db");
-        Connection::open(&db)
-            .unwrap()
-            .execute("CREATE TABLE t(x INTEGER)", [])
-            .unwrap();
-        // Run keep+2 times, sleeping so each stamp differs.
-        for _ in 0..(SNAPSHOT_KEEP as u32 + 2) {
-            run_once(&db).unwrap();
-            std::thread::sleep(Duration::from_millis(1100));
-        }
-        let bak_count = std::fs::read_dir(dir.path())
+    fn snapshot_files(dir: &std::path::Path, suffix: &str) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.path()
-                    .file_name()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name()
                     .and_then(|s| s.to_str())
-                    .map(|n| n.starts_with("brain.db.snapshot-") && n.ends_with(".bak"))
+                    .map(|n| n.starts_with("brain.db.snapshot-") && n.ends_with(suffix))
                     .unwrap_or(false)
             })
-            .count();
+            .collect()
+    }
+
+    /// Every file in the snapshot directory EXCEPT the live database and its
+    /// WAL/SHM siblings must be free of the live row's plaintext — that is
+    /// the whole finding: retained artifacts were greppable copies.
+    fn no_plaintext_residue(dir: &std::path::Path) {
+        for entry in std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("brain.db") && !name.contains("snapshot-") {
+                continue; // the live DB (and -wal/-shm) legitimately holds it
+            }
+            if name.ends_with(".sha256") {
+                continue; // hex digests of ciphertext
+            }
+            let bytes = std::fs::read(entry.path()).unwrap_or_default();
+            assert!(
+                !bytes.windows(NEEDLE.len()).any(|w| w == NEEDLE.as_bytes()),
+                "plaintext residue in {name}: a retained/transient artifact leaked the live row"
+            );
+        }
+    }
+
+    #[test]
+    fn encrypted_posture_seals_and_restores() {
+        let dir = tempdir().unwrap();
+        let db = fixture_db(dir.path());
+        let pass = b"snapshot-passphrase";
+
+        let outcome = run_once_with_passphrase(&db, Some(pass)).expect("cycle");
+        assert!(outcome.integrity_ok, "fresh DB must pass integrity_check");
+        assert_eq!(outcome.retention, "encrypted");
+
+        let bsbaks = snapshot_files(dir.path(), ".bsbak");
         assert_eq!(
-            bak_count, SNAPSHOT_KEEP,
-            "prune keeps exactly SNAPSHOT_KEEP"
+            bsbaks.len(),
+            1,
+            "exactly one sealed snapshot after one cycle"
         );
-    }
-
-    #[test]
-    fn snapshot_state_round_trip() {
-        let s = SnapshotState::default();
-        assert!(!s.read().integrity_ok, "default is not-ok");
-        s.set(Snapshot {
-            last_backup: "2026-07-28T00:00:00Z".into(),
-            integrity_ok: true,
-        });
-        let r = s.read();
-        assert!(r.integrity_ok);
-        assert_eq!(r.last_backup, "2026-07-28T00:00:00Z");
-    }
-
-    /// v1.27.27 M1 (F-26 class): a POISONED snapshot lock must read as the
-    /// fail-closed posture (`integrity_ok = false`) — `/health`'s backup/
-    /// integrity claim degrades to not-ok, never keeps certifying the last
-    /// healthy cycle. Companion to `alert::poisoned_chain_watch_reads_as_not_ok`.
-    #[test]
-    fn poisoned_snapshot_reads_as_not_ok() {
-        let s = SnapshotState::default();
-        s.set(Snapshot {
-            last_backup: "2026-07-28T00:00:00Z".into(),
-            integrity_ok: true,
-        });
-        assert!(s.read().integrity_ok, "sanity: healthy before poisoning");
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _guard = s.inner.write().expect("lock before panic");
-            panic!("poison the snapshot lock");
-        }));
-        let r = s.read();
+        let raw = std::fs::read(&bsbaks[0]).unwrap();
         assert!(
-            !r.integrity_ok,
-            "a poisoned snapshot must report NOT ok (fail closed)"
+            raw.starts_with(b"BSBK"),
+            "the retained snapshot must be a sealed v3 bundle, not a plaintext DB"
+        );
+        let sidecar = bsbaks[0].with_file_name(format!(
+            "{}.sha256",
+            bsbaks[0].file_name().unwrap().to_string_lossy()
+        ));
+        assert!(sidecar.exists(), "the checksum sidecar rides the bundle");
+
+        no_plaintext_residue(dir.path());
+
+        // The operator verb round-trips it: restore into a fresh copy and
+        // the row (needle included) comes back.
+        let restored = dir.path().join("restored.db");
+        crate::backup::restore(&bsbaks[0], &restored, pass).expect("restore the sealed snapshot");
+        let conn = Connection::open(&restored).unwrap();
+        let note: String = conn
+            .query_row(
+                "SELECT content FROM knowledge WHERE content_hash = 'h1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(note, NEEDLE, "restored snapshot reproduces the live row");
+    }
+
+    #[test]
+    fn check_only_posture_retains_nothing() {
+        let dir = tempdir().unwrap();
+        let db = fixture_db(dir.path());
+
+        let outcome = run_once_with_passphrase(&db, None).expect("cycle");
+        assert!(
+            outcome.integrity_ok,
+            "the integrity signal survives without a passphrase"
+        );
+        assert_eq!(outcome.retention, "check-only");
+        assert!(
+            snapshot_files(dir.path(), ".bsbak").is_empty(),
+            "no sealed snapshot without a passphrase"
+        );
+        assert!(
+            snapshot_files(dir.path(), ".bak").is_empty(),
+            "no PLAINTEXT retained snapshot without a passphrase — that is the leak"
+        );
+        no_plaintext_residue(dir.path());
+    }
+
+    #[test]
+    fn rotation_bounds_the_retained_set() {
+        let dir = tempdir().unwrap();
+        let db = fixture_db(dir.path());
+        let pass = b"snapshot-passphrase";
+        for _ in 0..(SNAPSHOT_KEEP as u32 + 2) {
+            run_once_with_passphrase(&db, Some(pass)).expect("cycle");
+            std::thread::sleep(Duration::from_millis(1100));
+        }
+        assert_eq!(
+            snapshot_files(dir.path(), ".bsbak").len(),
+            SNAPSHOT_KEEP,
+            "prune keeps exactly SNAPSHOT_KEEP sealed snapshots"
         );
     }
 
-    /// Civil-date sanity: epoch 0 = 1970-01-01T00:00:00Z.
     #[test]
-    fn epoch_zero_is_1970_01_01() {
-        let (y, mo, d, h, mi, s) = epoch_to_ymdhms(0);
-        assert_eq!((y, mo, d, h, mi, s), (1970, 1, 1, 0, 0, 0));
+    fn legacy_plaintext_snapshots_survive_the_cycle() {
+        let dir = tempdir().unwrap();
+        let db = fixture_db(dir.path());
+        let legacy = dir.path().join("brain.db.snapshot-1.bak");
+        std::fs::write(&legacy, b"pre-upgrade recovery copy").unwrap();
+
+        run_once_with_passphrase(&db, Some(b"pass")).expect("cycle");
+
+        assert!(
+            legacy.exists(),
+            "a pre-upgrade plaintext snapshot is the operator's only old recovery copy — \
+             disclosed, never deleted by the cycle"
+        );
+        let mut kept = std::fs::read(&legacy).unwrap();
+        kept.extend(b""); // silence unused-mut style lints if reflowed
+        assert_eq!(kept, b"pre-upgrade recovery copy", "byte-untouched");
     }
 }

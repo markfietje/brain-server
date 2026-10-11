@@ -1,5 +1,51 @@
 # Agent Execution Log — brain-server
 
+> **R108 "Sealed": certified erasure covers the rolling snapshots.** The
+> integrity scheduler wrote UNENCRYPTED `VACUUM INTO` snapshots every 6 h,
+> kept four, beside the live DB; `shred` deliberately skipped them (B11):
+> erased content stayed greppable ≤ ~24 h, indefinitely in the last
+> snapshot if the server stopped. Under the R98-decided posture (no
+> SQLCipher — volume encryption is the at-rest boundary, observability in
+> its own round) the snapshot lane closes:
+>
+> **Two postures, no third.** With `BRAIN_BACKUP_PASSPHRASE_FILE` set (the
+> SAME file seam `brain backup`/`restore` read — server-side FILE-ONLY by
+> the secret-file law, 0600, resolved once at boot), the cycle writes a
+> sealed v3 bundle (`<db>.snapshot-<ts>.bsbak` + `.sha256`) through the
+> PRODUCTION writer — Argon2id, AES-256-GCM, AAD header, manifest — so
+> `brain restore` consumes scheduler snapshots with zero new format
+> surface. `integrity_check` runs on the DECRYPTED bytes via a new
+> `backup::verify_sealed_bundle` seam (restore's checksum + manifest-xxh3
+> checks, reused not duplicated) on a zero-on-drop temp. Without the
+> passphrase the cycle retains NOTHING: checkpoint → zero-on-drop temp →
+> check → gone. **An unencrypted retained snapshot is an erasure leak, not
+> a recovery asset — no code path writes one anymore.** `/health/db`
+> gains `backup.retention` (`encrypted`|`check-only`); boot warns the
+> unconfigured posture by name.
+>
+> **The migration is non-destructive and disclosed:** legacy plaintext
+> `<db>.snapshot-*.bak` files are NEVER deleted (they may be the only
+> pre-upgrade recovery copy) — a boot warn names them, and `shred.rs`'s
+> ceiling note now carries the split truth (rolling snapshots
+> sealed-or-absent; restore-time `.bak` + legacy files operator-level).
+> Deployments that relied on plaintext retention get check-only until they
+> set the env — the finding's teeth, stated in the CHANGELOG.
+>
+> **Pins, red-first** (three observed RED against a scaffold preserving
+> the pre-round body; the legacy-survival control green both sides as the
+> anti-vacuity arm): `encrypted_posture_seals_and_restores` (needle absent
+> from every non-DB file, BSBK magic + sidecar, production-verb restore
+> round-trip — the chainless-image law caught the bare fixture RED first,
+> and the fixture now runs the REAL migration), `check_only_posture_
+> retains_nothing`, `rotation_bounds_the_retained_set`,
+> `legacy_plaintext_snapshots_survive_the_cycle` (byte-untouched). The two
+> pre-round pins asserting the plaintext premise flipped in-commit.
+>
+> **ponytail:** no live-DB encryption, no new key derivation, no scheduler
+> redesign, no route change; the wire delta is the additive `backup.retention`
+> field (openapi description enriched + schema.d.ts regenerated); zero new
+> dependency edges.
+
 > **R109 "LOW debt": eight known-LOW defects closed before they age into
 > ceilings.** One batch, one theme — each item a bounded read, a parse, a
 > header, or a gate; red-first pins in EXISTING files (the ponytail forbids a

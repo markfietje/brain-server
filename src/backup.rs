@@ -839,6 +839,30 @@ pub struct RestoreDisclosure {
 /// Restore with the DEFAULT posture: a chain-less image REFUSES
 /// (the key-lifecycle release's disclosure law — the old certify-nothing
 /// silently path dies). See [`restore_with_options`].
+/// Verify a sealed bundle the way `restore` would — checksum sidecar,
+/// decryption, manifest xxh3 — and hand back the decrypted snapshot bytes.
+/// The integrity scheduler's check runs on THESE bytes so it verifies the
+/// artifact an operator would actually restore, not a pre-encryption sibling.
+pub(crate) fn verify_sealed_bundle(cipher_path: &Path, passphrase: &[u8]) -> Result<Vec<u8>> {
+    let full = fs::read(cipher_path).with_context(|| format!("read {cipher_path:?}"))?;
+    verify_checksum(cipher_path, &full)?;
+    let (manifest, snapshot) = decrypt_backup(&full, passphrase)?;
+    let actual_hash = format!("{:016x}", xxh3_64(&snapshot));
+    let db_component = manifest
+        .components
+        .iter()
+        .find(|c| c.name == "brain.db")
+        .context("manifest missing brain.db component")?;
+    if db_component.xxh3 != actual_hash {
+        anyhow::bail!(
+            "snapshot integrity check failed: manifest xxh3 {} != actual {}",
+            db_component.xxh3,
+            actual_hash
+        );
+    }
+    Ok(snapshot)
+}
+
 pub fn restore(cipher_path: &Path, db_path: &Path, passphrase: &[u8]) -> Result<RestoreDisclosure> {
     restore_with_options(cipher_path, db_path, passphrase, false)
 }

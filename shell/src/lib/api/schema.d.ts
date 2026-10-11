@@ -5738,7 +5738,7 @@ export interface operations {
                             idle_connections?: number;
                             busy_connections?: number;
                         };
-                        /** @description Last backup+integrity snapshot state */
+                        /** @description Last backup+integrity snapshot state — `last_backup`, `integrity_ok`, and `retention` (`encrypted` when sealed v3 snapshots are retained; `check-only` when no passphrase is configured and nothing is retained). */
                         backup?: Record<string, never>;
                         webhook?: {
                             replay_secs?: number;

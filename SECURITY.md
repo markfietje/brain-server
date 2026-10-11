@@ -47,10 +47,13 @@ at [`/.well-known/security.txt`](http://127.0.0.1:8765/.well-known/security.txt)
   is disk encryption's problem. Destroying every row AND both pins reads
   as a fresh install — that total-destruction case is the off-host
   `brain anchor` fingerprint's job.
-- The live DB and its `.bak` snapshots are PLAINTEXT on the primary; the
-  encryption law covers the warm-standby follower only. LUKS/FileVault is
-  the standing recommendation. A report demonstrating ".bak extraction on
-  a stolen disk" is a known ceiling, not a bounty shape.
+- The live DB and its restore-time `.bak` safety snapshots are PLAINTEXT on
+  the primary; the encryption law covers the warm-standby follower only.
+  LUKS/FileVault is the standing recommendation. A report demonstrating
+  ".bak extraction on a stolen disk" is a known ceiling, not a bounty shape.
+  The integrity scheduler's ROLLING snapshots are NOT part of that ceiling:
+  they are sealed v3 bundles (set `BRAIN_BACKUP_PASSPHRASE_FILE`) or not
+  retained at all — erased content does not stay greppable in them.
 
 **Image / beacon exfiltration is in scope.** If you find any surface that
 automatically FETCHES a remote URL that model-controlled content influenced —

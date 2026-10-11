@@ -26,10 +26,14 @@
 //!  * no subject knowledge: residue is subject-independent (the rows are
 //!    already gone; this drops orphaned page images wherever they sit);
 //!  * no scheduling: operator-invoked only — no background worker, ever;
-//!  * nothing OUTSIDE the SQL layer: filesystem copies, `<db>.bak`
-//!    snapshots, standby follower chunks, and SSD wear-leveling keep
-//!    whatever they captured (operator-level disposal, disclosed on every
-//!    invocation);
+//!  * nothing OUTSIDE the SQL layer: filesystem copies, the restore-time
+//!    `<db>.bak` safety snapshot, any pre-upgrade legacy
+//!    `<db>.snapshot-*.bak` files (disclosed at boot, never deleted by the
+//!    server), standby follower chunks, and SSD wear-leveling keep whatever
+//!    they captured (operator-level disposal, disclosed on every invocation).
+//!    The integrity scheduler's ROLLING snapshots are no longer residue:
+//!    they are sealed v3 bundles or not written at all, so a purge followed
+//!    by a scheduler cycle leaves nothing greppable behind;
 //!  * not a quiet-period requirement: concurrent server writes merely
 //!    serialize behind the write lock (busy_timeout), but the honest
 //!    guidance is to run it in a quiet moment — VACUUM holds the writer.

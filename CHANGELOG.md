@@ -4,6 +4,55 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R108 "Sealed" — certified erasure covers the rolling snapshots
+
+The integrity scheduler wrote UNENCRYPTED `VACUUM INTO` snapshots every 6 h,
+kept four, beside the live DB — and `shred` deliberately skipped them — so
+erased content stayed greppable ≤ ~24 h (indefinitely in the last snapshot if
+the server stopped). B11 closes under the R98-decided posture (no SQLCipher;
+volume encryption is the at-rest boundary, made observable by its own round):
+
+- **With `BRAIN_BACKUP_PASSPHRASE_FILE` set** (the SAME file seam `brain
+  backup`/`restore` read; server-side file-only, 0600 by the shared
+  secret-file law, resolved once at boot), the cycle writes a SEALED v3
+  bundle — `<db>.snapshot-<ts>.bsbak` + `.sha256` sidecar — through the
+  production writer: Argon2id KDF, AES-256-GCM, GCM-AAD header, manifest.
+  `brain restore` consumes scheduler snapshots with no new format surface.
+  `integrity_check` runs on the DECRYPTED bytes of the sealed artifact (the
+  restore path itself, via a new `backup::verify_sealed_bundle` seam that
+  reuses restore's checksum + manifest-xxh3 checks), on a zero-on-drop
+  temp. Rotation still bounds the retained set at four.
+- **Without the passphrase, the cycle retains NOTHING**: checkpoint →
+  guarded zero-on-drop temp → `integrity_check` → gone. The `/health`
+  integrity signal survives; the plaintext retained snapshot — an erasure
+  leak, not a recovery asset — no longer exists on any code path. A boot
+  `warn` names the env and the posture; `/health/db` reports
+  `backup.retention` (`encrypted` | `check-only`).
+- **Legacy plaintext `<db>.snapshot-*.bak` files are disclosed, never
+  deleted** (they may be the operator's only pre-upgrade recovery copy): a
+  boot `warn` names them; the shred runbook and `shred.rs`'s ceiling note
+  now carry the split truth (rolling snapshots sealed-or-absent; restore
+  `.bak` + legacy files stay operator-level).
+- **Behaviour change, disclosed**: deployments that relied on plaintext
+  snapshot retention get check-only until they set the env — that is the
+  finding's teeth, not a regression to absorb.
+
+Pins (`src/integrity.rs`), red-first against the preserved pre-round body:
+`encrypted_posture_seals_and_restores` (needle absent from every non-DB
+file; BSBK magic + sidecar; `brain restore` round-trips the row through the
+production verb — including the chainless-image refusal caught red against
+a bare fixture, fixed by giving the fixture the REAL schema),
+`check_only_posture_retains_nothing`, `rotation_bounds_the_retained_set`,
+and the anti-vacuity control `legacy_plaintext_snapshots_survive_the_cycle`
+(byte-untouched). The two pre-round pins that asserted the plaintext
+premise were flipped in the same commit.
+
+ponytail: no live-DB encryption (R98 decided against SQLCipher), no new key
+derivation (Argon2id/AES-GCM reused from the backup writer), no scheduler
+redesign, no route/wire change beyond the additive `/health/db`
+`backup.retention` field (openapi description enriched; schema.d.ts
+regenerated), no new dependency edges.
+
 ## [Unreleased] — R109 "LOW debt" — eight known-LOW defects closed before they age into ceilings
 
 One batch, one theme: each item a bounded read, a parse, a header, or a gate.

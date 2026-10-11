@@ -74,7 +74,13 @@ paths:
                       connections: { type: integer }
                       idle_connections: { type: integer }
                       busy_connections: { type: integer }
-                  backup: { type: object, description: Last backup+integrity snapshot state }
+                  backup:
+                    type: object
+                    description: >-
+                      Last backup+integrity snapshot state — `last_backup`,
+                      `integrity_ok`, and `retention` (`encrypted` when sealed
+                      v3 snapshots are retained; `check-only` when no
+                      passphrase is configured and nothing is retained).
                   webhook:
                     type: object
                     properties:
