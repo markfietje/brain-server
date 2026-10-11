@@ -4,6 +4,25 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R120 "Conduit" — the CI/supply-chain band lands its gates
+
+- **Published releases carry `SHA256SUMS`** over every staged file
+  (fail-closed coverage check), shipped by `files: dist/*`.
+- **The green gate iterates every publication workflow** (ci/shell/codeql/
+  fuzz/docs): an existing red run on the tagged SHA refuses the publish;
+  paths-filtered skips are named and accepted.
+- **The shell type-check runs after the supply-chain gates** (one red check
+  used to skip 13 steps including both audits).
+- **`check-doc-links.py` is file-anchored and CI-invoked** (from a foreign
+  cwd it scanned nothing and exited 0; from no lane was it ever run).
+- **CodeQL analyzes the plugin/shell TypeScript** — the model-output parser
+  was SAST-invisible.
+- **The badges UMP arm reads the gate's case-arm**, not the comment that a
+  deleted gate left green.
+- Recorded owed in the gate-law register: container digest pins (external
+  act), audit staleness gate (needs the ignore list pruned first), WCAG
+  evidence retarget, crate-islands census.
+
 ## [Unreleased] — R119 "Gatewright" — the process round, two passes overdue
 
 - **`docs/gate-law-register.md`** — the standing artifact the audits kept

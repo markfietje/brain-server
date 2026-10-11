@@ -384,3 +384,45 @@ fn r109_release_workflow_installs_are_version_pinned() {
         );
     }
 }
+
+/// R120 "Conduit": the release/supply-chain band, pinned structurally (the
+/// CI-shape home — same class as the lanes above). Each arm names the row it
+/// closes.
+#[test]
+fn the_release_and_ci_band_carries_its_gates() {
+    let release = read(".github/workflows/release.yml");
+    // F4-13: a published release carries a checksum manifest over EVERY
+    // staged file, generated before the release step.
+    assert!(
+        release.contains("sha256sum --binary * > SHA256SUMS"),
+        "release.yml must publish a SHA256SUMS manifest (F4-13)"
+    );
+    // F4-14: the green gate iterates the publication workflows, not ci.yml
+    // alone (a shell/codeql red must not ship).
+    assert!(
+        release.contains("for WF in ci.yml shell.yml codeql.yml fuzz.yml docs.yml"),
+        "the release gate must iterate every publication workflow (F4-14)"
+    );
+    // F4-16: the shell type-check runs AFTER the supply-chain gates.
+    let shell = read(".github/workflows/shell.yml");
+    let audit = shell.find("pnpm audit --prod").expect("shell audit step");
+    let check = shell.find("Svelte check (strict)").expect("svelte-check step");
+    assert!(
+        audit < check,
+        "the supply-chain audits must precede the type-check (F4-16: one red \
+         check used to skip 13 steps)"
+    );
+    // F4-22: the model-output-parsing TS ships through CodeQL.
+    let codeql = read(".github/workflows/codeql.yml");
+    assert!(
+        codeql.contains("javascript-typescript"),
+        "CodeQL must analyze the plugin/shell TypeScript (F4-22)"
+    );
+    // F4-17: the link checker is invoked by a lane (it existed, uninvoked,
+    // and vacuumed from any cwd but the root).
+    let ci = read(".github/workflows/ci.yml");
+    assert!(
+        ci.contains("scripts/check-doc-links.py"),
+        "ci.yml must invoke the doc-links checker (F4-17)"
+    );
+}

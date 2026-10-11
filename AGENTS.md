@@ -1,5 +1,37 @@
 # Agent Execution Log — brain-server
 
+> **R120 "Conduit": the CI/supply-chain band lands its gates.** The F4-13…23
+> row cluster from the tenth pass — mechanical, runner-side, and open for two
+> rounds because no round owned the workflows.
+>
+> 1. **A published release carries `SHA256SUMS`** over every staged file
+>    (fail-closed: the manifest must cover the full dist set), generated
+>    before the release step — `files: dist/*` ships it. *(F4-13.)*
+> 2. **The green gate iterates every publication workflow** (`ci.yml
+>    shell.yml codeql.yml fuzz.yml docs.yml`): an existing red run on the
+>    tagged SHA refuses the publish; a paths-filtered skip is named and
+>    accepted. *(F4-14.)*
+> 3. **The shell type-check runs AFTER the supply-chain gates** — one red
+>    `svelte-check` used to starve 13 steps including both audits.
+>    *(F4-16.)*
+> 4. **`check-doc-links.py` is anchored on its own file location** (from a
+>    foreign cwd it scanned nothing and exited 0) **and is invoked by the
+>    ci.yml docs-gates step**. *(F4-17.)*
+> 5. **CodeQL gains the TypeScript lane** over `plugin/` + `shell/src` —
+>    the code that parses model output was SAST-invisible. *(F4-22.)*
+> 6. **The badges UMP arm reads the case-arm at the gate itself** (fixed
+>    string), not the comment above it that a deleted gate left green.
+>    *(F4-23; `--selfcheck` green on the new anchor.)*
+>
+> **Recorded owed, not churned** (the gate-law register's text-bound
+> section): F4-19 digest pins (resolving real registry digests is an
+> external act), F4-21 audit staleness (the ignore list needs pruning
+> first — a lockfile decision), F4-15 WCAG evidence retarget, F4-18 crate
+> islands pin. All four are rows with owners now, not silent gaps.
+>
+> **ponytail:** workflow YAML + one script anchor + one structural pin in
+> the existing CI-shape file; no server code, no schema, no dependency.
+
 > **R119 "Gatewright": the process round, two passes overdue.** D8-02
 > ("enforcement is the uniform weak link — 3 of the top 10 are guards passing
 > while violated") has been OPEN-UNROUTED since the eighth pass; its fix was

@@ -113,3 +113,28 @@ jobs:
       - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
         with:
           category: "/language:rust"
+
+  # F4-22: the code that PARSES MODEL OUTPUT (`plugin/src/format.ts` and the
+  # team-bridge) and the Tauri shell UI are TypeScript — SAST covered Rust
+  # only, undisclosed. JS/TS extracts without a build, so this job needs no
+  # tracer and no toolchain dance.
+  analyze-typescript:
+    name: Analyze (TypeScript)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: github/codeql-action/init@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+          config: |
+            paths:
+              - plugin
+              - shell/src
+      - uses: github/codeql-action/analyze@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4
+        with:
+          category: "/language:javascript-typescript"

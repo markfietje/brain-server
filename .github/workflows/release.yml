@@ -279,7 +279,42 @@ jobs:
         run: |
           set -e
           SHA="${{ github.sha }}"
-          echo ">> verifying ci.yml green on ${SHA:0:10}…"
+          # F4-14: EVERY publication workflow is gated, not ci.yml alone —
+          # shell/codeql/fuzz/docs runs can be red without blocking publish
+          # only when they do not exist for the SHA (paths-filtered workflows
+          # legitimately skip); a run that EXISTS and did not conclude
+          # success refuses the publish.
+          echo ">> verifying CI green on ${SHA:0:10} (every publication workflow)…"
+          for WF in ci.yml shell.yml codeql.yml fuzz.yml docs.yml; do
+            RUN_ID=""
+            for _ in $(seq 1 20); do
+              RUN_ID="$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=${SHA}" \
+                --jq "[.workflow_runs[] | select(.path == \".github/workflows/$WF\")][0].id" \
+                2>/dev/null || true)"
+              [[ -n "$RUN_ID" && "$RUN_ID" != "null" ]] && break
+              # A paths-filtered workflow may legitimately have NO run for
+              # this SHA — give the trigger a moment, then accept absence.
+              sleep 15
+              [[ $_ -ge 4 ]] && break
+            done
+            [[ -z "$RUN_ID" || "$RUN_ID" == "null" ]] && { echo ">> $WF: no run for $SHA (paths-filtered skip) — ok"; continue; }
+            STATUS=""; CONCLUSION=""
+            for _ in $(seq 1 120); do
+              LINE="$(gh api "repos/${{ github.repository }}/actions/runs/${RUN_ID}" \
+                --jq '[.status, (.conclusion // "")] | @tsv' 2>/dev/null || true)"
+              if [[ -n "$LINE" ]]; then
+                STATUS="${LINE%%$'\t'*}"
+                CONCLUSION="${LINE##*$'\t'}"
+              fi
+              [[ "$STATUS" == "completed" ]] && break
+              sleep 30
+            done
+            if [[ "$STATUS" != "completed" || "$CONCLUSION" != "success" ]]; then
+              echo "::error::$WF run #$RUN_ID on $SHA is '${STATUS:-unreachable}/${CONCLUSION:-none}' — a red publication workflow must never ship. Refusing to publish (fail-closed)."
+              exit 1
+            fi
+            echo ">> $WF green on ${SHA:0:10} (run #$RUN_ID)."
+          done
           RUN_ID=""
           for _ in $(seq 1 20); do
             RUN_ID="$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=${SHA}" \
@@ -333,6 +368,23 @@ jobs:
           name: dist-darwin-x86_64
           path: dist
           merge-multiple: true
+
+      - name: Publish SHA256SUMS for every staged artifact
+        # F4-13: the release-artifact integrity manifest — a downloader
+        # verifies WHAT they fetched against a manifest shipped beside it
+        # (the install path's `verify_signature` was handed only
+        # locally-built binaries; a published release carried no checksums
+        # at all). Signature/attestation stays an open row; this is the
+        # integrity floor.
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --binary * > SHA256SUMS
+          # fail-closed: the manifest names EVERY staged file (itself excluded)
+          count="$(ls | grep -vc '^SHA256SUMS$')"
+          lines="$(wc -l < SHA256SUMS)"
+          [[ "$count" == "$lines" ]] || { echo "::error::SHA256SUMS covers $lines of $count staged files"; exit 1; }
+          cat SHA256SUMS
 
       - name: Generate release notes from CHANGELOG
         # The published body is USER-FACING, not the engineering log. The

@@ -2,13 +2,17 @@
 """Resolve every relative markdown link under docs/ against the filesystem.
 
 Anchors and URLs are skipped; only relative paths ending in .md are checked.
-Run from the repo root: python3 scripts/check-doc-links.py
+Run from anywhere: python3 scripts/check-doc-links.py (the docs root is file-anchored)
 """
 import pathlib
 import re
 import sys
 
-DOCS = pathlib.Path("docs")
+# Anchored on THIS FILE's location, not the cwd: invoked from any directory
+# (a runner, a hook, a shell sitting in shell/) must resolve the same tree.
+# The cwd anchor was the register's F4-17 defect — from a foreign cwd the
+# checker scanned nothing and exited 0.
+DOCS = pathlib.Path(__file__).resolve().parent.parent / "docs"
 LINK = re.compile(r"\]\((\.{0,2}/[^)#]*?\.md)(?:#[^)]*)?\)")
 
 broken: list[str] = []

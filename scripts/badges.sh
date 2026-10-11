@@ -175,7 +175,10 @@ if [[ "${1:-}" == "--selfcheck" ]]; then
   # this script (v1.28.87 derive-or-drop). Two-sided guard: the gate must
   # still exist in ci.yml, and the README must present the level as
   # CI-derived (not a bare asserted "L3").
-  if ! grep -q 'UMP 1.0 / L3' "$REPO/.github/workflows/ci.yml"; then
+  # The fixed string is the case-arm at the gate itself — the COMMENT above
+  # it also carries "UMP 1.0 / L3", which is exactly how a deleted gate kept
+  # this check green (the register's F4-23).
+  if ! grep -F -q '*"UMP 1.0 / L3"*)' "$REPO/.github/workflows/ci.yml"; then
     echo "ERR: UMP conformance gate missing from .github/workflows/ci.yml — README L3 claim is now self-attested, reword it" >&2
     exit 1
   fi
@@ -225,7 +228,7 @@ TESTS="$(test_count)"
 # missing, the level drops to self-attested LOUDLY (stderr) instead of
 # silently keeping the badge.
 ump_level() {
-  if grep -q 'UMP 1.0 / L3' "$REPO/.github/workflows/ci.yml" 2>/dev/null; then
+  if grep -F -q '*"UMP 1.0 / L3"*)' "$REPO/.github/workflows/ci.yml" 2>/dev/null; then
     printf 'L3'
   else
     echo "WARN: UMP conformance gate absent from .github/workflows/ci.yml — level is SELF-ATTESTED, not CI-derived" >&2

@@ -149,6 +149,7 @@ jobs:
           command -v rg >/dev/null || sudo apt-get install -y ripgrep
           command -v rg >/dev/null || { echo "::error::ripgrep (rg) is required by scripts/env-truth.sh"; exit 1; }
           bash scripts/docs-truth.sh
+          python3 scripts/check-doc-links.py
           bash scripts/env-truth.sh --selfcheck
 
   engine-crates:
