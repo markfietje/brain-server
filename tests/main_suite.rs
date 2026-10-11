@@ -8358,6 +8358,296 @@ Final paragraph after the rule.";
         );
     }
 
+    /// A local full-state harness for the round's behavioral drills (the
+    /// tokenless loopback posture: the None principal is the superuser).
+    fn drill_state() -> Arc<AppState> {
+        brain_server::register_sqlite_vec::register_sqlite_vec();
+        let tmp = tempfile::NamedTempFile::new().expect("temp file");
+        let mgr = SqliteConnectionManager::file(tmp.path());
+        let pool: brain_server::Pool = r2d2::Pool::builder().max_size(4).build(mgr).expect("pool");
+        run_migration(&mut pool.get().unwrap(), config::DB_MMAP_SIZE_MIB).expect("migration");
+        let model: Arc<dyn brain_server::embed::Embedder> = Arc::new(
+            brain_server::embed::StaticEmbedder::new(brain_server::config::MODEL_ID)
+                .expect("model"),
+        );
+        Arc::new(AppState {
+            token_store: auth::TokenStore::new(),
+            jwt_middleware_state: Arc::new(JwtMiddlewareState::opaque_for_tests(
+                pool.clone(),
+                tmp.path().to_path_buf(),
+            )),
+            cors: tower_http::cors::CorsLayer::new(),
+            durability: Default::default(),
+            loom: Default::default(),
+            model,
+            registry: domain_registry::DomainRegistry::new(pool.clone(), tmp.path(), false),
+            pool,
+            db_path: tmp.path().to_path_buf(),
+            connection_tracker: Arc::new(ConnectionTracker::new()),
+            rate_limiter: Arc::new(RateLimiter::new()),
+            snapshot: integrity::SnapshotState::default(),
+            audit_chain_cache: Arc::new(std::sync::Mutex::new(None)),
+            auth_mode: auth::AuthMode::Opaque,
+            key_store: auth::jwks::KeyStore::load(std::path::Path::new("/nonexistent"))
+                .expect("empty key store"),
+            revocation_cache: Arc::new(auth::revocation::RevocationCache::new()),
+            jwt_issuer: String::new(),
+            jwt_audience: String::new(),
+            oidc_config: handlers::well_known::OidcConfig::unconfigured(),
+            ump_events: tokio::sync::broadcast::channel(config::UMP_EVENT_BUFFER).0,
+            alert_events: tokio::sync::broadcast::channel(config::ALERT_EVENT_BUFFER).0,
+            alert_seq: std::sync::atomic::AtomicU64::new(0),
+            chain_watch: alert::ChainWatchState::default(),
+            concurrency: &brain_server::concurrency::CONCURRENCY,
+        })
+    }
+
+    /// The behavioral arm of the audit-before-commit law: an ingest through
+    /// the REAL app lands its evidence row on the chain (the offset pin
+    /// stays the regression lock; this proves the property end to end).
+    #[tokio::test]
+    async fn the_ingest_lands_its_evidence_row_on_the_chain() {
+        use tower::ServiceExt;
+        let state = drill_state();
+        let app = brain_server::server::router::app(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/ingest/memory")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"entries":[{"text":"the drill ingests one memory","title":"drill"}]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK, "ingest ok");
+        let conn = state.pool.get().unwrap();
+        let evidence: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'ingest'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            evidence >= 1,
+            "the ingest evidence row must be ON the chain (the crash-window              closure, proven behaviorally)"
+        );
+        assert!(
+            brain_server::audit::verify_chain(&conn),
+            "the chain stays green with the evidence row present"
+        );
+    }
+
+    /// The edge-history cap through the REAL app: a lineage past
+    /// `EDGE_HISTORY_MAX` answers with the bounded page AND the
+    /// `truncated` disclosure (the wiring pin's behavioral conversion).
+    #[tokio::test]
+    async fn the_edge_history_cap_bounds_and_discloses() {
+        use tower::ServiceExt;
+        let state = drill_state();
+        {
+            let conn = state.pool.get().unwrap();
+            conn.execute(
+                "INSERT INTO entities (name, entity_type) VALUES ('cap_a','t'),('cap_b','t')",
+                [],
+            )
+            .unwrap();
+            let a: i64 = conn
+                .query_row("SELECT id FROM entities WHERE name='cap_a'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            let b: i64 = conn
+                .query_row("SELECT id FROM entities WHERE name='cap_b'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap();
+            for i in 0..(brain_server::server::router::memory::EDGE_HISTORY_MAX + 5) {
+                conn.execute(
+                    "INSERT INTO relationships (from_entity_id, to_entity_id, relation_type,                       valid_at, created_at, superseded_at) VALUES (?1, ?2, 'employed_by', ?3, ?3,                       CASE WHEN ?4 = 0 THEN NULL ELSE '2025-01-01 00:00:00' END)",
+                    rusqlite::params![
+                        a,
+                        b,
+                        format!("2020-01-{:02} 00:00:00", 1 + (i % 28)),
+                        // 0 only for the LAST version (open current); every
+                        // earlier version is stamped superseded.
+                        (i + 1 != brain_server::server::router::memory::EDGE_HISTORY_MAX + 4)
+                            as i64,
+                    ],
+                )
+                .unwrap();
+            }
+            let versions: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM relationships WHERE from_entity_id=?1 AND to_entity_id=?2",
+                    rusqlite::params![a, b],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(
+                versions as usize > brain_server::server::router::memory::EDGE_HISTORY_MAX,
+                "fixture: the lineage exceeds the cap"
+            );
+        }
+        let app = brain_server::server::router::app(state.clone());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/graph/relationships/1/history")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), 8 << 20)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let versions = body["versions"].as_array().expect("versions array");
+        assert_eq!(
+            versions.len(),
+            brain_server::server::router::memory::EDGE_HISTORY_MAX,
+            "the lineage is bounded at the named cap"
+        );
+        assert_eq!(
+            body["truncated"], true,
+            "a clamped lineage DISCLOSES the truncation"
+        );
+    }
+
+    /// F4-05's remaining half, closed behaviorally: the domain lifecycle's
+    /// two silent acts — create and import — now land their evidence rows
+    /// (the import REPLACES an entire corpus via a file rename, and until
+    /// this round wrote zero chain rows for it).
+    #[tokio::test]
+    async fn domain_create_and_import_each_write_an_audit_row() {
+        use tower::ServiceExt;
+        let state = drill_state();
+        let app = brain_server::server::router::app(state.clone());
+
+        // CREATE
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/domains")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"name":"audit-domain"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            resp.status() == axum::http::StatusCode::CREATED
+                || resp.status() == axum::http::StatusCode::OK,
+            "create accepted"
+        );
+        // (target_label is stored hashed — `target_hash` — so the fresh-DB
+        // census counts the reconcile kind itself.)
+        let created: i64 = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind='reconcile'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(created, 1, "the create act is ON the chain");
+
+        // IMPORT (a fresh domain; the body is a real SQLite file). The name
+        // is unique per run AND cleaned up after: the import lane writes the
+        // domain file into the registry's real domain dir, so a fixed name
+        // would collide with the previous run's leftover.
+        let unique = format!(
+            "import-dom-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .subsec_nanos()
+        );
+        let import_uri = format!("/domains/{unique}/import");
+        let import_db = tempfile::NamedTempFile::new().unwrap();
+        rusqlite::Connection::open(import_db.path())
+            .unwrap()
+            .execute_batch("CREATE TABLE t(x);")
+            .unwrap();
+        let bytes = std::fs::read(import_db.path()).unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(&import_uri)
+                    .header("content-type", "application/octet-stream")
+                    .body(Body::from(bytes))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body_bytes = axum::body::to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        assert_eq!(
+            status,
+            axum::http::StatusCode::CREATED,
+            "import ok: {}",
+            String::from_utf8_lossy(&body_bytes)
+        );
+        let imported: i64 = state
+            .pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind='reconcile'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            imported, 2,
+            "the corpus-replacing import is ON the chain (create + import)"
+        );
+        // the census now includes this run's two rows; a later drill in the
+        // same process would see them too — hence the unique name.
+    }
+
+    /// F4-08's staging step: the router's SQL mass is a CENSUS, not a
+    /// secret. `no_sql_in_handlers_enforced` walks `src/handlers` only, and
+    /// `src/server/router/memory.rs` holds the elephant — this pin counts
+    /// the same call shapes over its production region and asserts the
+    /// count EXACTLY (any SQL added or removed here must update this
+    /// number in the same commit: the migration to the service layer is the
+    /// register's staged plan, and a silent delta is how it rots). Equality,
+    /// not a floor: a migration lowers the number and MUST be visible.
+    #[test]
+    fn the_router_sql_census_is_pinned() {
+        let src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/server/router/memory.rs"
+        ));
+        let production = src.split("#[cfg(test)]").next().unwrap_or(src);
+        const TOKENS: &[&str] = &[
+            ".execute_batch(",
+            ".execute(",
+            ".query_row(",
+            ".query_row_and_then(",
+            ".query_map(",
+            ".prepare(",
+            ".prepare_cached(",
+        ];
+        let count: usize = TOKENS.iter().map(|t| production.matches(t).count()).sum();
+        assert_eq!(
+            count, 52,
+            "the router's rusqlite call-shape census moved — F4-08's staged              migration requires the delta to be a named act (update this              census in the same commit as the SQL change)"
+        );
+    }
+
     /// The gate-law register exists and names the guards whose teeth the
     /// tree relies on — including the four text-bound rows with their owed
     /// conversions (the D8-02 process fix: a guard cannot be added without

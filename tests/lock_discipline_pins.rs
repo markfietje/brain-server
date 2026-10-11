@@ -427,4 +427,139 @@ fn the_release_and_ci_band_carries_its_gates() {
         ci.contains("scripts/check-doc-links.py"),
         "ci.yml must invoke the doc-links checker (F4-17)"
     );
+    // F4-19: the Docker bases are digest-pinned — a floating tag on the
+    // image that holds the IdP client secret (oauth2-proxy) or compiles the
+    // shipped binary (rust) is the trust chain's mutable input.
+    let dockerfile = read("Dockerfile");
+    let compose = read("docker-compose.yml");
+    for (image, marker) in [
+        ("rust:1-bookworm", "rust:1-bookworm@sha256:"),
+        ("debian:bookworm-slim", "debian:bookworm-slim@sha256:"),
+        ("oauth2-proxy:latest", "oauth2-proxy:latest@sha256:"),
+    ] {
+        assert!(
+            dockerfile.contains(marker) || compose.contains(marker),
+            "the `{image}` base must be digest-pinned (@sha256:…) — Dependabot              opens the bump PRs (F4-19)"
+        );
+    }
+}
+
+/// F4-21: the audit-ignore list's re-check triggers are now MACHINE-evaluated
+/// for the one case a lockfile can decide — an advisory whose crate is GONE
+/// from every tracked lockfile is fixed-or-removed, and suppressing it
+/// indefinitely is a hole, not a tolerance. Each ignore entry carries its
+/// crate inline (see .cargo/audit.toml); the pin parses the pair and walks
+/// the tracked lockfiles. Red-proof: deleting a crate from every lock while
+/// keeping its ignore fires this by construction (the crate-presence walk
+/// IS the assertion).
+#[test]
+fn no_ignored_advisory_is_fixed_in_the_current_lock() {
+    let audit_toml = read(".cargo/audit.toml");
+    let mut pairs: Vec<(String, String)> = Vec::new();
+    for line in audit_toml.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("\"RUSTSEC-") {
+            let id = format!("RUSTSEC-{}", rest.trim_end_matches(','));
+            // the inline crate annotation: `# crate — reason` or `# crate —reason`
+            let after = line.split('#').nth(1).unwrap_or("");
+            let crate_name = after
+                .trim()
+                .split([' ', '—', ','])
+                .next()
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            assert!(
+                !crate_name.is_empty(),
+                "{id} carries no inline crate annotation — the staleness pin \
+                 cannot evaluate it; annotate `\"{id}\", # <crate> — reason`"
+            );
+            pairs.push((id, crate_name));
+        }
+    }
+    assert!(
+        pairs.len() >= 4,
+        "the ignore list shrank without its register row: {} entries",
+        pairs.len()
+    );
+    let locks = [
+        "Cargo.lock",
+        "shell/src-tauri/Cargo.lock",
+        "tools/channel-bridge/Cargo.lock",
+        "tools/signal-gateway/Cargo.lock",
+        "crates/Cargo.lock",
+    ];
+    for (id, crate_name) in pairs {
+        let present = locks
+            .iter()
+            .any(|l| read(l).contains(&format!("name = \"{crate_name}\"")));
+        assert!(
+            present,
+            "{id} ignores {crate_name}, but that crate is in NO tracked \
+             lockfile — the advisory is fixed-or-removed; prune the ignore \
+             (and its register row) instead of suppressing it forever"
+        );
+    }
+}
+
+/// F4-18: the crate-islands census. A `crates/` member that no workspace
+/// consumes is either a live island (documented, per-entry reason) or dead
+/// weight waiting to rot — this pin pins the SET, so a member joining or
+/// leaving the island list is a named act, never silent. Consumed = some
+/// tracked manifest carries a `path =` reference into the member's
+/// directory (the only consumption pattern in this tree).
+#[test]
+fn crates_consumed_set_is_pinned() {
+    let root_manifest = read("Cargo.toml");
+    let harness_manifest = read("tools/steward-harness/Cargo.toml");
+    let workspace_manifest = read("crates/Cargo.toml");
+    let all_manifests = format!("{root_manifest}\n{harness_manifest}\n{workspace_manifest}");
+
+    // The consumed census: the crates/ members with a path consumer outside
+    // their own manifest (measured, not assumed — each row was grep-verified).
+    let consumed = [
+        "brain-engine-sdk",        // root + steward-harness (harness-kernel feature)
+        "brain-evidence-core",     // root
+        "legal-rules-db",          // root
+        "brain-delivery-core",     // root
+        "brain-consensus-core",    // root
+        "brain-executor-core",     // root
+        "brain-evolve-core",       // root
+        "brain-troubleshoot-core", // steward-harness
+        "gold-sets",               // steward-harness
+    ];
+    for member in consumed {
+        assert!(
+            root_manifest.contains(&format!("crates/{member}"))
+                || harness_manifest.contains(&format!("crates/{member}")),
+            "`{member}` is listed as consumed but no workspace manifest \
+             references crates/{member} — update the census"
+        );
+    }
+
+    // The ISLANDS: unconsumed, with the per-entry reason the register owes.
+    // `brain-fuzz` is the nightly-only fuzz workspace (its own Cargo.lock is
+    // gitignored by design); the three *-core members are domain engines
+    // reserved by the product roadmap, unwired deliberately.
+    let islands = [
+        "brain-aftersales-core",
+        "brain-care-core",
+        "brain-interview-core",
+        "brain-fuzz",
+    ];
+    for member in islands {
+        let referenced_elsewhere = all_manifests
+            .replace(&format!("\"{member}\""), "")
+            .contains(&format!("crates/{member}"));
+        assert!(
+            !root_manifest.contains(&format!("crates/{member}\"\n"))
+                && !harness_manifest.contains(&format!("crates/{member}")),
+            "`{member}` is listed as an ISLAND but a workspace consumes it — \
+             move it to the consumed census"
+        );
+        assert!(
+            !referenced_elsewhere || workspace_manifest.contains(&format!("\"{member}\"")),
+            "`{member}` gained a consumer — wire it or document it"
+        );
+    }
 }

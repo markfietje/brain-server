@@ -1194,7 +1194,11 @@ pub(crate) fn console_due(
         .map(|d| {
             serde_json::json!({
                 "run_id": d.run_id,
-                "what": d.state.what,
+                // the label rides the read seam like every bridge emission —
+                // write-time screening CLASSIFIES, it never strips, so a
+                // bidi-bearing `what` would otherwise reach the console raw
+                // (the sibling pending-queue lesson).
+                "what": crate::gate::sanitize_read(&d.state.what, false, &None),
                 "due_at": d.state.due_at,
                 "overdue_secs": now.saturating_sub(d.state.due_at),
             })

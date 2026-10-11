@@ -48,9 +48,13 @@
 #
 # Re-check with: cargo audit (exit 0 required for green CI).
 [advisories]
+# Each ignore carries its crate inline: the staleness pin
+# (`no_ignored_advisory_is_fixed_in_the_current_lock`, tests/lock_discipline_pins.rs)
+# parses that annotation and fails when the crate is gone from every tracked
+# lockfile — a fixed-and-removed advisory must not stay suppressed forever.
 ignore = [
-    "RUSTSEC-2023-0071",
-    "RUSTSEC-2024-0436",
-    "RUSTSEC-2024-0429",
-    "RUSTSEC-2025-0119",
+    "RUSTSEC-2023-0071", # rsa — the Marvin timing model (X-C7); no fixed upstream
+    "RUSTSEC-2024-0436", # paste — clears when tokenizers drops paste
+    "RUSTSEC-2024-0429", # glib — clears when tauri bumps gtk >= 0.19 / glib >= 0.20
+    "RUSTSEC-2025-0119", # number_prefix — clears when model2vec-rs ships hf-hub >= 0.5
 ]

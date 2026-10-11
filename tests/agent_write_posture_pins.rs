@@ -565,6 +565,44 @@ async fn revise_carries_the_superseded_rows_taint() {
         new_origin, "channel-capture",
         "the revision inherits the superseded row's capture taint"
     );
+
+    // The twelfth pass's hole, closed: a patch that CARRIES `origin` (null
+    // or any other value) must not strip the label — the taint is
+    // server-authoritative, exactly like `id`/`integrity`. Red-first: the
+    // deep_merge skip-list lacked the key and a `{origin: null}` patch
+    // laundered the row in one call.
+    let (st, rec) = get(&srv, OP_TOKEN, &format!("/ump/memory/{old_id}")).await;
+    assert_eq!(st, StatusCode::OK, "{rec}");
+    let text = rec["record"]["body"]["text"]
+        .as_str()
+        .expect("record body text");
+    let (st, body) = post(
+        &srv,
+        OP_TOKEN,
+        "/ump/revise",
+        &format!(
+            r#"{{"id":"{}","patch":{{"origin":null,"body":{{"text":"{} (amended a second time)"}}}}}}"#,
+            old_id,
+            text.replace('"', "\\\""),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "revise accepted: {body}");
+    let stripped_origin: String = srv
+        .state
+        .pool
+        .get()
+        .unwrap()
+        .query_row(
+            "SELECT origin FROM knowledge WHERE content LIKE '%a second time%'",
+            [],
+            |r| r.get(0),
+        )
+        .expect("the twice-revised row exists");
+    assert_eq!(
+        stripped_origin, "channel-capture",
+        "a patch cannot strip the capture taint — the label is          server-authoritative"
+    );
 }
 
 /// The derivation moved INTO the proposal seam: an agent asserting `owner` on

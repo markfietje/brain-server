@@ -99,3 +99,12 @@ updates:
     directory: /shell/src-tauri
     schedule:
       interval: weekly
+
+  # The Docker bases are the trust chain's last unpinned third-party inputs
+  # (the register's F4-19): oauth2-proxy holds the IdP client secret,
+  # rust:1-bookworm compiles the shipped binary. Digest pins ride the
+  # manifests; Dependabot opens the bump PRs.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

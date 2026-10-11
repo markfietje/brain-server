@@ -58,7 +58,7 @@ services:
   # Auth0) and hands the session to brain-server. See docs/proxy-sso.md for
   # the full guide incl. Caddy forward-auth and Authentik alternatives.
   oauth2-proxy:
-    image: quay.io/oauth2-proxy/oauth2-proxy:latest
+    image: quay.io/oauth2-proxy/oauth2-proxy:latest@sha256:8498b0d0ef0a7b29686414000a08aee467f02d0299c9ed1e006a8f33fc017916
     profiles: ["sso"]
     ports:
       - "127.0.0.1:4180:4180"

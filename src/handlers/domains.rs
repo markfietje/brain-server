@@ -192,9 +192,25 @@ pub async fn create_domain(
         .register(&name)
         .map_err(super::map_domain_error)?;
 
+    let domain_label = name.clone();
+    let actor_label = crate::handlers::recall::principal_label(&principal.0);
     let is_new = tokio::task::spawn_blocking(move || -> Result<bool, HandlerError> {
         let conn = pool.get().map_err(HandlerError::db_down)?;
-        Ok(crate::service::domains_admin::is_empty_store(&conn))
+        let is_new = crate::service::domains_admin::is_empty_store(&conn);
+        // The lifecycle's first act carries its evidence row: a durable,
+        // memory-bearing domain comes into being ON the chain (the
+        // register's domain-lifecycle audit row — create half).
+        if is_new {
+            crate::audit::record(
+                &conn,
+                crate::audit::AuditKind::Reconcile,
+                actor_label.trim(),
+                &format!("domain:{domain_label}"),
+                crate::audit::AuditStatus::Ok,
+                "domain created",
+            );
+        }
+        Ok(is_new)
     })
     .await
     .map_err(|e| HandlerError::internal(format!("task join error: {e}")))??;
@@ -507,6 +523,28 @@ pub async fn import_domain(
     }
 
     let n = bytes.len();
+    // The import's evidence row lands IN the imported store: an entire
+    // corpus was just replaced by a file rename, and until now that act
+    // wrote zero chain rows (the register's domain-lifecycle audit row —
+    // import half). Best-effort failure of the row is impossible-by-shape
+    // (record returns Option); a store that refuses the row still imports,
+    // loudly logged.
+    {
+        let import_pool = state
+            .registry
+            .pool_for(&name)
+            .map_err(super::map_domain_error)?;
+        let import_conn = import_pool.get().map_err(HandlerError::db_down)?;
+        crate::audit::record(
+            &import_conn,
+            crate::audit::AuditKind::Reconcile,
+            crate::handlers::recall::principal_label(&principal.0).trim(),
+            &format!("domain:{name}"),
+            crate::audit::AuditStatus::Ok,
+            &format!("domain imported, {n} bytes"),
+        );
+    }
+
     Ok((
         StatusCode::CREATED,
         Json(serde_json::json!({ "name": name, "imported": true, "bytes": n })),

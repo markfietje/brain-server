@@ -197,7 +197,7 @@ function stripSentinels(s: string): string {
  * supplementary-plane form.
  */
 export const INVISIBLE_CLASSES =
-  /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}\uFE00-\uFE0F\u061C\u2060-\u2063\u00AD\u034F\u180E\u115F\u1160\uFFF9-\uFFFB]/gu;
+  /[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF\u{E0000}-\u{E007F}\u{E0100}-\u{E01EF}\uFE00-\uFE0F\u061C\u2060-\u2064\u206A-\u206F\u00AD\u034F\u180E\u115F\u1160\uFFF9-\uFFFB\u{1D173}-\u{1D17A}]/gu;
 
 /**
  * R-01 (v1.28.85 + remainder): the hostile-ELEMENT mirror of the server

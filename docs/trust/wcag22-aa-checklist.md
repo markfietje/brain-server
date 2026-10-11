@@ -7,6 +7,17 @@ ceiling entry — anything else fails the build. Statuses are re-verified each
 release; flipping a line without evidence is the process bug this gate exists
 to catch.
 
+**Evidence-lane scope (stated 2026-10-12, register F4-15):** the mechanical
+gates cited below walk `client/` sources (`client/src/a11y.rs`), which ships
+in NO release artifact — the artifacts are the server binaries + SBOM. The
+evidence tags are therefore release-GATE evidence, not shipped-surface
+evidence: the Tauri shell ships the UI, and its a11y lane is the vitest
+suite in `shell/tests/` (the sanitize + attribute-canary families), which
+carries no WCAG gate yet. A criterion line is honest about its lane: the
+`focus_never_obscured_by_docks`-family pins gate the CLIENT surface only
+until the three mechanical gates are ported to `shell/tests/` — that port
+is the open row, owned in the gate-law register.
+
 ## Perceivable
 
 - 1.1.1 Non-text Content — PASS: axe scan; icon-only buttons carry aria-labels from the locale bundle

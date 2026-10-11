@@ -1344,6 +1344,17 @@ pub fn agent_token_file() -> Option<std::path::PathBuf> {
 
 fn agent_file_token() -> Option<String> {
     let path = agent_token_file()?;
+    // The 0600 law on the agent lane's runtime reader, mirroring the
+    // operator lane: boot refuses a world-readable file, and
+    // `reload_if_changed` re-reads HERE on mtime advance — a post-boot swap
+    // that opens the mode must not re-admit the credential.
+    if let Err(e) = crate::secret_file::check_secret_permissions(&path) {
+        eprintln!(
+            "⚠️ refusing AGENT_TOKEN_FILE {}: {e} — chmod 600 it",
+            path.display()
+        );
+        return None;
+    }
     std::fs::read_to_string(path)
         .ok()
         .map(|s| s.trim().to_string())
@@ -1357,17 +1368,23 @@ fn agent_file_token() -> Option<String> {
 /// start.
 pub fn agent_token_misconfigured() -> Option<String> {
     let path = agent_token_file()?;
+    // The law check runs only when the file EXISTS — a missing file is the
+    // "missing" misconfiguration below, and a world-readable one must be
+    // NAMED as the law failure it is (the runtime reader now refuses it,
+    // which would otherwise reach that arm disguised as empty).
+    if path.exists()
+        && let Err(e) = crate::secret_file::check_secret_permissions(&path)
+    {
+        return Some(format!(
+            "AGENT_TOKEN_FILE={} — {e}; refusing to start with a leaked agent credential \
+             on disk. `chmod 600` the file or unset AGENT_TOKEN_FILE.",
+            path.display()
+        ));
+    }
     if agent_file_token().is_none() {
         return Some(format!(
             "AGENT_TOKEN_FILE={} is set but missing, unreadable, or empty — fix the file \
              or unset AGENT_TOKEN_FILE.",
-            path.display()
-        ));
-    }
-    if let Err(e) = crate::secret_file::check_secret_permissions(&path) {
-        return Some(format!(
-            "AGENT_TOKEN_FILE={} — {e}; refusing to start with a leaked agent credential \
-             on disk. `chmod 600` the file or unset AGENT_TOKEN_FILE.",
             path.display()
         ));
     }

@@ -599,12 +599,15 @@ pub struct ReviseRequest {
 
 /// Deep merge: object patches recurse; anything else overwrites. `id`/
 /// `integrity` in a patch are ignored — the server is authoritative for
-/// those (content-addressing + signing are never client-controlled).
+/// those (content-addressing + signing are never client-controlled). So are
+/// `origin`/`untrusted`: the taint label is INHERITED from the superseded
+/// row, and a `{origin: null}` patch would otherwise overwrite the emitted
+/// base and launder a captured row in one call (the twelfth pass's hole).
 fn deep_merge(base: Value, patch: &Value) -> Value {
     match (base, patch) {
         (Value::Object(mut b), Value::Object(p)) => {
             for (k, v) in p {
-                if k == "id" || k == "integrity" {
+                if matches!(k.as_str(), "id" | "integrity" | "origin" | "untrusted") {
                     continue;
                 }
                 let existing = b.get(k).cloned().unwrap_or(Value::Null);

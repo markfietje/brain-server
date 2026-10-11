@@ -18,7 +18,7 @@
 #         curl http://127.0.0.1:8765/health
 
 # ── Stage 1: bake the HF model cache (offline boot) ────────────────────────
-FROM debian:bookworm-slim AS model
+FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587 AS model
 
 # Pinned revision of minishlab/potion-retrieval-32M resolved from the main
 # branch. `resolve/<commit>/<file>` URLs are immutable, so a future upstream
@@ -45,7 +45,7 @@ RUN set -eux; \
     find "$BASE" -type f -o -type l | sort
 
 # ── Stage 2: compile the Rust binaries ──────────────────────────────────────
-FROM rust:1-bookworm AS builder
+FROM rust:1-bookworm@sha256:114c7a4425406451c2866b6aafe69fe29b1b298832db1277d411ac73c82d04d6 AS builder
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends build-essential pkg-config libssl-dev ca-certificates \
@@ -65,7 +65,7 @@ RUN cargo build --release --locked \
        done
 
 # ── Stage 3: minimal runtime ────────────────────────────────────────────────
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \

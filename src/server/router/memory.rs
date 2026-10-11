@@ -3171,8 +3171,9 @@ pub fn relations_for(
 /// The edge-history surface is bounded like every sibling list surface (the
 /// one unbounded `ORDER BY r.id` in an otherwise capped family); a lineage
 /// that reaches the ceiling sets `truncated: true` rather than clamping
-/// silently.
-const EDGE_HISTORY_MAX: usize = 500;
+/// silently. Public: the bound is wire-visible (the response discloses it)
+/// and the behavioral pin asserts against the same constant.
+pub const EDGE_HISTORY_MAX: usize = 500;
 
 pub(crate) async fn get_edge_history(
     State(state): State<Arc<AppState>>,
