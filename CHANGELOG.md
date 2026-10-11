@@ -7,7 +7,17 @@ are consistent at that tag.
 ## [1.29.12] — 2026-10-11 — "Sealed": the chain's head, the LOW debt, and the rolling snapshots
 
 Covers every commit from tag `v1.29.11` (`6cd21643`) to this release —
-`git log v1.29.11..v1.29.12` reproduces the range. Three rounds: R112 (the
+`git log v1.29.11..v1.29.12` reproduces the range.
+
+**Tag event, recorded:** the first `v1.29.12` tag push (`f7b1af2f`) ran a
+RED matrix — the release prep bumped `Cargo.toml` without the `openapi.yaml`
+`info.version`/`x-api-version` pair or the README OpenAPI badge, and the
+lib's `docs_truth` pin fails every lane on that mismatch. Nothing published
+(the fail-closed release workflow held). With nothing shipped under it, the
+operator chose a re-cut over a version burn: the tag was deleted and
+re-created at the fixed commit. The gap is now guarded pre-tag — the openapi
+pair and README OpenAPI badge are compared against the crate version by
+`scripts/badges.sh --selfcheck`, the gate that actually runs before a tag. Three rounds: R112 (the
 audit-chain genesis pin + pin MACs, from the v1.29.11 audit replay), R109
 (the eight-item LOW-debt batch), R108 (sealed rolling snapshots — certified
 erasure covers them). One additive response-header documentation change

@@ -40,7 +40,7 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
     <img alt="CycloneDX 1.5 SBOM" src="https://img.shields.io/badge/SBOM-CycloneDX%201.5-013243.svg">
   </a>
   <a href="openapi.yaml">
-    <img alt="OpenAPI 1.29.11" src="https://img.shields.io/badge/OpenAPI-1.29.11-6b4bff.svg">
+    <img alt="OpenAPI 1.29.12" src="https://img.shields.io/badge/OpenAPI-1.29.12-6b4bff.svg">
   </a>
   <a href="SECURITY.md">
     <img alt="Security policy" src="https://img.shields.io/badge/security--policy-1f6feb.svg">

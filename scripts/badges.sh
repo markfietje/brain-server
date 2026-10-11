@@ -116,6 +116,28 @@ if [[ "${1:-}" == "--selfcheck" ]]; then
     echo "ERR: README version badge drifts from Cargo.toml '$CARGO_VERSION' — run scripts/badges.sh and paste the block" >&2
     exit 1
   fi
+  # 2b. (v1.29.12 lesson) the OpenAPI pair and the README's OpenAPI badge ride
+  #     the crate version too — the lib's docs_truth pin polices them, but the
+  #     pre-tag gate never ran cargo, so a release tag shipped a red matrix on
+  #     all six feature lanes. This arm is the cheap pre-tag compare.
+  local_openapi_version() {
+    sed -n 's/^  version: //p' "$REPO/openapi.yaml" | head -1
+  }
+  local_api_version() {
+    sed -n 's/^  x-api-version: "//;s/"$//p' "$REPO/openapi.yaml" | head -1
+  }
+  if [[ "$(local_openapi_version)" != "$CARGO_VERSION" ]]; then
+    echo "ERR: openapi.yaml info.version ($(local_openapi_version)) drifts from Cargo.toml '$CARGO_VERSION' — the lib docs_truth pin fails every lane on this" >&2
+    exit 1
+  fi
+  if [[ "$(local_api_version)" != "$CARGO_VERSION" ]]; then
+    echo "ERR: openapi.yaml x-api-version ($(local_api_version)) drifts from Cargo.toml '$CARGO_VERSION'" >&2
+    exit 1
+  fi
+  if ! grep -q "badge/OpenAPI-${CARGO_VERSION}-" "$README"; then
+    echo "ERR: README OpenAPI badge drifts from the crate version '$CARGO_VERSION'" >&2
+    exit 1
+  fi
   # The test-count badge cannot be compared here without a full cargo run, so
   # --selfcheck does NOT claim to verify it (see the header). What it CAN do —
   # and now does, scoped to the badge line rather than the whole file — is
