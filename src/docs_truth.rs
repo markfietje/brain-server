@@ -784,4 +784,44 @@ mod pins {
              2026-12-02 is the Art 50(2) legacy-marking grace END, not this start"
         );
     }
+
+    /// Every file carrying an absolute "no LLM / zero-token" claim must also
+    /// carry the provider-lane disclosure (the R97 boundary sentence): the
+    /// claim is TRUE of memory operations, and the one model-shaped capability
+    /// is disclosed in the same file rather than only in SECURITY.md. A claim
+    /// file without the disclosure reads as a product-wide absolute the tree
+    /// does not have.
+    #[test]
+    fn no_llm_claims_carry_the_provider_boundary() {
+        let marker = "operator-launched GDL provider lane";
+        let claim_files = [
+            "README.md",
+            "docs/faq.md",
+            "docs/human-in-the-loop.md",
+            "docs/overview.md",
+            "docs/memory-lifecycle.md",
+            "SECURITY.md",
+        ];
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut claims_found = 0usize;
+        for rel in claim_files {
+            let Ok(text) = std::fs::read_to_string(repo.join(rel)) else {
+                panic!("{rel} must exist");
+            };
+            let lower = text.to_lowercase();
+            let claims = lower.contains("no llm") || lower.contains("zero-token");
+            if !claims {
+                continue;
+            }
+            claims_found += 1;
+            assert!(
+                text.contains(marker),
+                "{rel} carries an absolute no-LLM/zero-token claim without the                  provider-lane disclosure (expected the marker: `{marker}`)"
+            );
+        }
+        assert!(
+            claims_found >= 5,
+            "the claim-file set shrank to {claims_found} — update the pin's file list              deliberately, never by drift"
+        );
+    }
 }

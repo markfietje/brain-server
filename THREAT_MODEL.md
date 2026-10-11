@@ -267,6 +267,7 @@ disciplinary:
 
 | Surface | Where the model is bound | Why content cannot move it |
 |---|---|---|
+| The no-LLM posture, stated exactly | Memory operations (recall/search/ingest/approval) run no LLM; the OPTIONAL operator-launched GDL provider lane (`BRAIN_GDL_PROVIDER_*`) is the one provider call the server can make — operator-launched, ticket-only, R34/R35-controlled, output never auto-promoting (human gate), local-endpoint-capable | R34/R35 rows below; docs truth R97 |
 | LLM provider stream | per-`HttpProvider` field, read off `self` at the send seam | `ProviderRequest` carries **no `model` field**, so a request cannot name a model. |
 | Injection screen / ONNX | process-wide `LazyLock`, copied unconditionally into every `Screen` | Content selects the **verdict**; there is no second model to select. |
 | Embedder | chosen once at boot from the retrieval profile | The model is a property of the concrete type bound into `AppState`. |

@@ -258,7 +258,9 @@ Follow the documented procedure in [Human in the loop §7](./human-in-the-loop.m
   so a human can decide; nothing auto-approves.
 - **Deterministic, not learned.** Screen, scoring, PII scan, chunking, and
   temporal extraction are heuristic/deterministic — zero tokens, no LLM, no
-  background worker. That is the design constraint, not a limitation.
+  background worker. That is the design constraint, not a limitation. (The one
+  provider call the server can make is the OPTIONAL operator-launched GDL provider lane,
+  outside this pipeline and behind the same human gates.)
 - **Dedup is exact, not semantic.** `content_hash` (xxh3-64) catches identical
   re-ingests, not paraphrases — near-duplicates are a *review* concern
   (`check-consistency`), not a write-time one.
@@ -290,7 +292,8 @@ context fills". Consumers derive context on demand instead:
   is what derivation anchors on when present, but automatic N-event checkpoint
   emission is **not implemented yet**.
 - **LLM-side compaction is the consumer's contract** — brain-server never
-  summarizes (zero-token rule). The consumer calls the derivation API and
+  summarizes (zero-token rule; the OPTIONAL operator-launched GDL provider lane is the
+  disclosed exception, and it is not the recall path). The consumer calls the derivation API and
   compresses the returned window on its side.
 - **Rewind replaces rotation** — a wrong turn is a branch
   (`POST /workflow/runs/{id}/rewind`), never a new session; history stays

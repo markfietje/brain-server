@@ -46,6 +46,23 @@
 > field (openapi description enriched + schema.d.ts regenerated); zero new
 > dependency edges.
 
+> **R97 "Verity II": the no-LLM boundary, stated where the claims are.** The
+> decision (2026-10-11, on arXiv-verified Oct-2026 research): the GDL provider
+> dispatch STAYS, so the docs stop implying it doesn't. Every absolute "no
+> LLM / zero-token" claim now carries the boundary sentence beside it — the
+> deterministic zero-token memory core, the OPTIONAL operator-launched GDL
+> provider lane (`BRAIN_GDL_PROVIDER_*`, R34/R35-controlled, output never
+> auto-promoting, local-endpoint-capable) — across README, faq,
+> human-in-the-loop, overview, memory-lifecycle, SECURITY (stamp moved to
+> 2026-10-11/R97 per the policy), and THREAT_MODEL (boundary row). The pin
+> `no_llm_claims_carry_the_provider_boundary` holds claim and disclosure
+> co-occurring per file, floored at five claim files, red-proven both
+> directions. No code, no wire, no posture change — only the claims caught
+> up to the decided truth.
+>
+> **ponytail:** nothing beyond docs + the pin; R113's spec-only threat-class
+> rows stay untriggered; no new knob.
+
 > **R109 "LOW debt": eight known-LOW defects closed before they age into
 > ceilings.** One batch, one theme — each item a bounded read, a parse, a
 > header, or a gate; red-first pins in EXISTING files (the ponytail forbids a

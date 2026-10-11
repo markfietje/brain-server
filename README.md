@@ -7,6 +7,13 @@ Brain Server is a **self-hosted AI agent memory server** for systems where incor
 It provides **deterministic hybrid retrieval, human-gated memory promotion, provenance, tamper-evident audit, quarantine, verifiable deletion, and least-privilege access** in a single Rust/Axum server.
 
 > **No hosted memory service. No embedding API required. No LLM required in the hot recall path. No data leaves the system by default.**
+>
+> Memory operations — recall, search, ingest, approval — are deterministic and
+> zero-token. Separately, an OPTIONAL **operator-launched GDL provider lane**
+> (`BRAIN_GDL_PROVIDER_*`) can call a configured HTTP provider for GDL workflow
+> runs under server-owned controls; its output **never auto-promotes** (a human
+> gate decides), and pointing it at a local endpoint keeps memory from leaving
+> the host at all.
 
 <p align="center">
 
@@ -31,7 +38,7 @@ It provides **deterministic hybrid retrieval, human-gated memory promotion, prov
 <p align="center">
 
   <a href="#verification-and-evidence">
-    <img alt="3297 tests passed" src="https://img.shields.io/badge/tests-3297%20passed-brightgreen.svg">
+    <img alt="3298 tests passed" src="https://img.shields.io/badge/tests-3298%20passed-brightgreen.svg">
   </a>
   <a href="docs/universal-memory-protocol.md">
     <img alt="UMP 1.0 L3 verified" src="https://img.shields.io/badge/UMP%201.0-L3%20verified-success.svg">

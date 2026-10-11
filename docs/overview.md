@@ -59,7 +59,9 @@ v2.0 "Cortex" milestone).
 Every turn, the agent calls one `/recall` and gets the evidence to inject. No LLM
 decides whether to recall, and no LLM extracts memories on write. Token accounting:
 **0 decision tokens, 0 embedding tokens.** Only the capped returned snippets cost
-context.
+context. Outside recall, the OPTIONAL operator-launched GDL provider lane
+can call a configured HTTP provider for GDL workflow runs — operator-launched,
+human-gated, and local-endpoint-capable.
 
 ### ② Local embeddings — offline, private, ~free on CPU
 The default profile uses `potion-retrieval-32M` via `model2vec` — a **static**

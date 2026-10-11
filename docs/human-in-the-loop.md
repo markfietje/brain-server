@@ -61,13 +61,16 @@ behaviour* of the machine does not push the operator into them:
 
 > **The invariant:** nothing here auto-promotes, auto-decays-away, or auto-deletes. The
 > human decides. Zero tokens, no LLM, no background worker decides what becomes memory.
+> The OPTIONAL operator-launched GDL provider lane never changes this: its output is a
+> proposal-grade artifact behind the same human gate, never an auto-promotion.
 
 ---
 
 ## 2. What reaches the human, and what never does
 
 Brain Server is deterministic by design — *recall* and *retrieval* run with no LLM in the
-hot path. But **write-back** — the decision of whether a captured fragment becomes part of
+hot path (the OPTIONAL operator-launched GDL provider lane for GDL runs is the one provider call
+the server can make, and it sits outside recall/retrieval entirely). But **write-back** — the decision of whether a captured fragment becomes part of
 the permanent memory — is a *human* decision. That is the boundary, and it is deliberate.
 
 ### The human decides (write-back gate)

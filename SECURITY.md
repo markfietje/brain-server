@@ -1,6 +1,6 @@
 # Security Policy
 
-**Last reviewed:** 2026-10-06 (R77 "Verity") against OWASP Top 10:**2025** + Cheat Sheet Series (ninth-pass closures folded in: the revoke verb's loud `operator_bearer_unrevocable` refusal for the opaque superuser, the legal-holds LIKE fence, the bind-posture doc truth; R76's two messaging-edge controls — alert-sink timestamp freshness and the outermost gateway rate limit — now recorded in THREAT_MODEL §5b, backfilled here because they shipped with no stamp move, which is what T9-03 filed; R34 GDL provider boundary and R35 GDL launch execution-integrity controls retained)
+**Last reviewed:** 2026-10-11 (R97 "Verity II") against OWASP Top 10:**2025** + Cheat Sheet Series — the no-LLM posture now states the boundary exactly: memory operations (recall, search, ingest, approval) are deterministic and zero-token, and the one model-shaped capability is the OPTIONAL operator-launched GDL provider lane (`BRAIN_GDL_PROVIDER_*`), operator-launched, ticket-only, server-owned profile (R34), execution-integrity controls (R35), its output never auto-promoting — the human gate decides — and local-endpoint-capable so nothing need egress. (R77's ninth-pass closures and the retained R34/R35 control rows stand as recorded below.)
 **Stamp policy:** this "Last reviewed" line moves in the same commit as any security-relevant claim it covers — a stamp N releases behind HEAD is itself a finding.
 (Context7-verified), OWASP Multi-Tenant Security Cheat Sheet, OWASP JSON Web
 Token Cheat Sheet, OWASP Secrets Management Cheat Sheet, OWASP gRPC + Microservices

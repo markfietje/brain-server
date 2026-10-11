@@ -8,7 +8,7 @@ Frequently asked questions about **Brain Server** — the local-first governed d
 A local-first governed decision and memory substrate for AI agents. It gives an agent a second brain that lives on the operator's own device — private, offline-capable, deterministic, and free to run.
 
 **Is it really free?**
-Yes — **zero per-query cost**. Recall uses a *static, local embedding model* and a deterministic pipeline. There is no LLM or embedding API charged on every read and write. Token accounting: **0 decision tokens, 0 embedding tokens.**
+Yes — **zero per-query cost**. Recall uses a *static, local embedding model* and a deterministic pipeline. There is no LLM or embedding API charged on every read and write. Token accounting: **0 decision tokens, 0 embedding tokens.** Memory operations never call an LLM; the one model-shaped thing the server can do is the OPTIONAL operator-launched GDL provider lane (`BRAIN_GDL_PROVIDER_*`) for GDL workflow runs — operator-launched, output human-gated, and local-endpoint-capable so nothing need egress.
 
 **Where does my data live?**
 On your device. There is no cloud and no telemetry to third parties. Outbound HTTP is opt-in and off unless configured (an Art 19 DSAR webhook and an optional system-alert webhook, plus opt-in connectors and the GDL provider lane — see [architecture.md](./architecture.md)'s egress list).
