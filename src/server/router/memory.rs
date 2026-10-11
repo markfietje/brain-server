@@ -236,6 +236,11 @@ struct AddResponse {
     /// count of dedup-skipped entries.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     duplicates_skipped: Option<i64>,
+    /// rows the write-time screen flagged (the `Quarantine`/`Reject`
+    /// verdict), so the caller sees the verdict without a /quarantine
+    /// round-trip — the discovery surface is no longer the queue alone.
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    quarantined_chunk_ids: Vec<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
@@ -1158,6 +1163,7 @@ pub async fn ingest_memory(
         // response can name what it just wrote (the old `entry_id` was the
         // COUNT of added rows — useless for delete/verify round-trips).
         let mut chunk_ids: Vec<i64> = Vec::new();
+        let mut quarantined_chunk_ids: Vec<i64> = Vec::new();
 
         for (text, title) in entries {
             let content_hash = format!("{:016x}", xxh3_64(text.as_bytes()));
@@ -1319,6 +1325,13 @@ pub async fn ingest_memory(
                 if tx.commit().is_ok() {
                     added += 1;
                     chunk_ids.push(chunk_id);
+                    // the verdict surfaces on the response (the register's
+                    // visibility-asymmetry row): a caller that just stored
+                    // injection-flagged content hears so without a
+                    // /quarantine round-trip.
+                    if quarantine {
+                        quarantined_chunk_ids.push(chunk_id);
+                    }
                     // audit successful ingest (hash only).
                     audit::record(
                         &conn,
@@ -1340,6 +1353,7 @@ pub async fn ingest_memory(
             chunk_ids,
             entries_added: Some(added as i64),
             duplicates_skipped: Some(duplicates as i64),
+            quarantined_chunk_ids,
             error: if duplicates > 0 {
                 Some(format!("{} duplicates skipped", duplicates))
             } else {
@@ -1362,6 +1376,9 @@ pub async fn ingest_memory(
                     "chunk_ids": resp.chunk_ids,
                     "entries_added": added,
                     "duplicates_skipped": resp.duplicates_skipped.unwrap_or(0),
+                    // the screen verdict, additive: flagged row ids (empty
+                    // when every entry screened clean).
+                    "quarantined_chunk_ids": resp.quarantined_chunk_ids,
                     "entry_id": resp.chunk_id,
                     "similarity_score": 1.0
                 })),

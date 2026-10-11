@@ -1,5 +1,39 @@
 # Agent Execution Log — brain-server
 
+> **R117 "Console": the approver sees the bytes the digest binds.** Three
+> lanes rendered stored content for a human without the seam the digest
+> binds; all three closed, and the deliberate raw lanes are now NAMED.
+>
+> 1. **The channel console's pending queue rode raw.** A Slack/Teams approver
+>    saw bidi overrides, markdown-image beacons, and fence-sentinel literals
+>    while the digest beside them bound the stripped canonical form —
+>    display and approval bound different bytes. `console_pending` now
+>    emits the canonical form; the machine table gained its row.
+>    *(Pin `console_pending_shows_the_digest_bound_bytes`.)*
+> 2. **`/export?format=ump-md` was the one EchoLeak-live sink** — a markdown
+>    document rendered from verbatim rows. The projection rides the read
+>    seam now; the JSON export stays byte-verbatim (portability) and the
+>    DSAR bundle content is stripped + labeled `untrusted`. The
+>    `sanitize_stored` doc's false "export previews" claim is rewritten to
+>    the named-exceptions truth.
+> 3. **The verdict stopped being invisible.** `/ingest/memory`'s response
+>    carries `quarantined_chunk_ids` — the register's visibility-asymmetry
+>    row closed: the caller hears the screen verdict without a
+>    `/quarantine` round-trip.
+>
+> **The ceilings are stated, not implied** (THREAT_MODEL §5b + stamps): the
+> approval digest binds RAW stored bytes while non-admin displays mask PII —
+> "approve exactly the bytes shown" is false for PII rows BY DESIGN;
+> `BRAIN_APPROVAL_QUORUM=2` is capability-split, not principal-split —
+> quorum does not bind KCS publication or complaint remedies; traverse hops
+> stay unlabeled (a hop aggregates multiple edges — a per-path label would
+> be ambiguous by construction).
+>
+> **ponytail:** the seam and the strip pair already existed — this round is
+> wiring and one additive response field; no new sanitizer, no new knob;
+> wire deltas additive (openapi + regenerated `schema.d.ts`); zero new
+> dependency edges.
+
 > **R116 "Carriage": the taint survives the trip.** The eleventh pass found
 > the ONE label the architecture deliberately carries (owner vs
 > channel-capture) actively stripped at `/ump/revise` and absent from four

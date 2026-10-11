@@ -439,9 +439,15 @@ pub fn build_export_bundle(
     )?;
     for id in roots.iter().chain(derived.iter().map(|(d, _)| d)) {
         let q = stmt.query_map(params![id], |row| {
+            // The bundle rides the read seam (fetch-only strip: invisible
+            // Unicode, markdown image/anchor refs, hostile elements,
+            // sentinels — never a content substitute): a DPO's ticketing or
+            // mail tool auto-renders what it receives, so the bundle cannot
+            // carry live image beacons even though it goes to a person.
+            let content: String = row.get(1)?;
             Ok(serde_json::json!({
                 "id": row.get::<_, i64>(0)?,
-                "content": row.get::<_, String>(1)?,
+                "content": crate::gate::sanitize_read(&content, false, &None),
                 "memory_kind": row.get::<_, String>(2)?,
                 "assertion_kind": row.get::<_, String>(3)?,
                 "confidence": row.get::<_, f32>(4)?,
@@ -491,12 +497,13 @@ pub fn build_export_bundle(
             crate::workflow::kcs::like_contains_pattern(subject)
         ],
         |row| {
+            let content: String = row.get(4)?;
             Ok(serde_json::json!({
                 "id": row.get::<_, i64>(0)?,
                 "run_id": row.get::<_, i64>(1)?,
                 "kind": row.get::<_, String>(2)?,
                 "author": row.get::<_, String>(3)?,
-                "content": row.get::<_, String>(4)?,
+                "content": crate::gate::sanitize_read(&content, false, &None),
                 "addressed_to": row.get::<_, Option<String>>(5)?,
                 "created_at": row.get::<_, i64>(6)?,
             }))
@@ -511,6 +518,9 @@ pub fn build_export_bundle(
         // the residency stamp on the DSAR bundle too.
         "region": crate::storage_layout::region(),
         "subject": subject,
+        // untrusted-evidence parity with /export: the bundle is the
+        // subject's data, never instructions to whatever renders it.
+        "untrusted": true,
         "knowledge": rows,
         // the per-origin census, export-envelope parity.
         "by_origin": by_origin,

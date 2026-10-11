@@ -6007,6 +6007,8 @@ export interface operations {
                         entries_added?: number;
                         /** @description Dedup-skipped entries. v1.13.3. */
                         duplicates_skipped?: number;
+                        /** @description Row ids the write-time injection screen flagged (`Quarantine`/`Reject` verdicts), additive — the caller sees the verdict without a /quarantine round-trip. Empty when every entry screened clean. */
+                        quarantined_chunk_ids?: number[];
                         /**
                          * @deprecated
                          * @description Deprecated alias of chunk_id (was previously the count added).

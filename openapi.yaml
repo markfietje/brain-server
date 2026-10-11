@@ -292,6 +292,14 @@ paths:
                     description: All inserted rowids this request. v1.13.3.
                   entries_added: { type: integer, description: Chunks actually inserted. v1.13.3. }
                   duplicates_skipped: { type: integer, description: Dedup-skipped entries. v1.13.3. }
+                  quarantined_chunk_ids:
+                    type: array
+                    items: { type: integer }
+                    description: >
+                      Row ids the write-time injection screen flagged
+                      (`Quarantine`/`Reject` verdicts), additive — the caller
+                      sees the verdict without a /quarantine round-trip. Empty
+                      when every entry screened clean.
                   entry_id:
                     type: integer
                     nullable: true

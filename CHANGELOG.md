@@ -4,6 +4,33 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R117 "Console" — the approver sees the bytes the digest binds
+
+Three lanes rendered stored content for a human without the seam the
+approval digest binds; all three closed, and the deliberately-raw lanes are
+now named ceilings instead of undocumented divergences.
+
+- **The channel console's pending queue rides the read seam.** A
+  Slack/Teams approver previously saw bidi overrides, markdown-image
+  beacons, and fence-sentinel literals while the digest beside them bound
+  the stripped canonical form. The shown bytes and the bound bytes are the
+  same now; the read-seam machine table gained the row.
+- **`/export?format=ump-md` rides the read seam** — it is a rendered
+  document, the one export lane that meets a renderer, so stored
+  image-beacon markdown can no longer ride it. The JSON export stays
+  byte-verbatim (the portability decision) and the DSAR Art-15 bundle's
+  content is stripped + the envelope labeled `untrusted`.
+- **`/ingest/memory`'s response carries `quarantined_chunk_ids`** — the
+  screen verdict surfaces at the call site instead of being discoverable
+  only through the review queue.
+- **The ceilings are stated** (THREAT_MODEL §5b + stamps): the digest binds
+  raw stored bytes while non-admin displays mask PII (deliberate);
+  `BRAIN_APPROVAL_QUORUM=2` is capability-split, not principal-split;
+  traverse hops stay unlabeled by construction.
+
+Wire: additive `quarantined_chunk_ids` response field (openapi + regenerated
+`schema.d.ts`). No route, schema, or dependency change.
+
 ## [Unreleased] — R116 "Carriage" — the taint survives the trip
 
 The capture label (`origin: channel-capture`) was recall-only: revised away

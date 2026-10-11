@@ -8190,6 +8190,10 @@ Final paragraph after the rule.";
         ));
         let handlers_mod_src =
             include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/handlers/mod.rs"));
+        let channels_src = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/workflow/channels.rs"
+        ));
         let audit_src = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/src/server/router/core.rs"
@@ -8311,6 +8315,11 @@ Final paragraph after the rule.";
                 "sanitize_value_strings",
             ),
             (delivery_src, "get_delivery_trace", "sanitize_value_strings"),
+            // The channel console's pending queue: the Slack/Teams approver
+            // renders proposal content AND the digest beside it — the shown
+            // bytes must be the digest-bound (canonical) form, so the row
+            // requires the seam in the emission loop itself.
+            (channels_src, "console_pending", "sanitize_read"),
         ];
         for (src, name, seam) in sites {
             let body = handler_body(src, name)

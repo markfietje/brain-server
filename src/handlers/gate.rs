@@ -2893,6 +2893,14 @@ fn render_ump_md(body: &serde_json::Value, redact_owner: Option<&str>) -> Result
         .unwrap_or_default()
         .iter()
         .map(crate::handlers::ump::record_to_markdown)
+        .map(|md| {
+            // The markdown projection is a rendered document: whatever
+            // renders it will auto-fetch images and honor bidi — the one
+            // export lane where the stored-verbatim posture meets a
+            // renderer, so it rides the read seam (the JSON export above
+            // stays byte-faithful by the portability decision).
+            md.map(|m| crate::gate::sanitize_read(&m, false, &None))
+        })
         .collect::<Result<Vec<String>, String>>()?;
     Ok(parts.join(crate::handlers::ump::MD_RECORD_SEP))
 }

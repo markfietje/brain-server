@@ -1162,10 +1162,16 @@ pub(crate) fn console_pending(
     drop(stmt);
     let mut out = Vec::with_capacity(rows.len());
     for (id, kind, content, created_at) in rows {
+        // The read seam, canonical form: what the bridge renders must be the
+        // SAME bytes the digest binds (review_digest computes over the
+        // sanitized canonical form), so an approver in Slack/Teams never sees
+        // bidi overrides, markdown-image beacons, or fence-sentinel literals
+        // while approving the fingerprint of a stripped view.
+        let shown = crate::gate::sanitize_read(&content, false, &None);
         out.push(serde_json::json!({
             "id": id,
             "kind": kind,
-            "content": content,
+            "content": shown,
             "digest": review_digest(&content),
             "created_at": created_at,
         }));
@@ -3368,6 +3374,49 @@ mod tests {
         assert_eq!(
             review_digest("approve me"),
             crate::handlers::gate::review_digest("approve me")
+        );
+    }
+
+    // ── THE PIN: the console shows the digest-bound bytes. Hostile stored
+    //    content (bidi override, markdown-image beacon, fence-sentinel
+    //    literal) must NOT ride to the bridge raw — the shown form is the
+    //    canonical form the digest binds, so display and approval bind the
+    //    same bytes. Red-first: the emission loop passed stored content
+    //    through verbatim while the digest beside it bound the stripped view.
+    #[test]
+    fn console_pending_shows_the_digest_bound_bytes() {
+        let conn = db();
+        let hostile = format!(
+            "clean prose \u{202e}[redacted-look]{reversed}!\u{202c} then ![pixel](https://evil.example/p.png) and {sent} === marker",
+            reversed = "gnidaolnu",
+            sent = crate::fence::FENCE_BEGIN,
+        );
+        conn.execute(
+            "INSERT INTO proposals(kind, content, novelty, salience, created_at, owner)
+             VALUES ('draft', ?1, 0.5, 0.5, 1000, 'p')",
+            params![hostile],
+        )
+        .unwrap();
+        let rows = console_pending(&conn, MAX_CONSOLE_PENDING).unwrap();
+        assert_eq!(rows.len(), 1);
+        let shown = rows[0]["content"].as_str().unwrap();
+        assert!(
+            !shown.contains('\u{202e}') && !shown.contains('\u{202c}'),
+            "bidi overrides never ride to the bridge: {shown:?}"
+        );
+        assert!(
+            !shown.contains("![](https://evil.example/p.png)")
+                && !shown.contains("![pixel](https://evil.example/p.png)"),
+            "markdown-image beacons are stripped, not rendered: {shown:?}"
+        );
+        assert!(
+            !shown.contains(crate::fence::FENCE_BEGIN),
+            "fence-sentinel literals cannot survive to a rendering client: {shown:?}"
+        );
+        assert_eq!(
+            rows[0]["digest"],
+            serde_json::json!(review_digest(&hostile)),
+            "the digest beside the shown bytes still binds the canonical form"
         );
     }
 

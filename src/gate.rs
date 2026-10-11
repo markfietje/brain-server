@@ -1155,7 +1155,12 @@ pub fn sanitize_read_opt(
 
 /// the single read boundary for stored text. Every
 /// field of every response that carries stored content goes through this —
-/// recall, search, get, quarantine, proposals, suggest, UMP, export previews.
+/// recall, search, get, quarantine, proposals, suggest, UMP interactive
+/// reads. The BYTE-FAITHFUL exceptions are deliberate and named: the JSON
+/// `/export` body (DSAR portability — the label travels, never a sanitizer)
+/// and the DSAR Art-15 bundle, both carrying `untrusted: true` instead; the
+/// `ump-md` markdown projection DOES ride this seam (it is a rendered
+/// document, the one export lane that meets a renderer).
 /// Named alias of [`sanitize_read`] so the wiring meta-test (`stored_text_fields_
 /// pass_the_read_seam`) has one symbol to require at every serialization site.
 pub fn sanitize_stored(s: &str, pii: bool, principal: &Option<crate::auth::Principal>) -> String {
