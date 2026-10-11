@@ -63,6 +63,24 @@
 > **ponytail:** nothing beyond docs + the pin; R113's spec-only threat-class
 > rows stay untriggered; no new knob.
 
+> **R99 "Loopback": retire the public plain-HTTP opt-in.** `BIND_PUBLIC=1`
+> remains available through 2027-04-11 under the recorded migration window,
+> but an active non-loopback bind now emits a loud startup warning and
+> `/ready` returns `bind_public: deprecated`. Operators migrate to
+> `BIND_HOST=127.0.0.1` behind a TLS-terminating reverse proxy; the server
+> still refuses non-loopback binds without auth. The removal date and Docker
+> migration limits are documented in `docs/deployment.md`.
+>
+> **Red-first pin:** `bind_public_deprecation_is_limited_to_the_public_opt_in_path`
+> covers all-interface, site-IP, invalid-host fallback, loopback, `=0`, and
+> unset neighbors. `ready_body_exposes_webhook_signing_posture` also pins the
+> additive readiness deprecation marker and its absence on the normal path.
+> `SHIPPED_ROUNDS` includes R99.
+>
+> **ponytail:** no TLS stack, dependency, new bind knob, or auth relaxation;
+> retain the legacy behavior for the dated window, then remove the opt-in per
+> the documented migration path.
+
 > **R98 "Volume Check": make the selected at-rest boundary observable.** The
 > operator decision is NO SQLCipher and NO database key: SQLite DB/WAL/SHM
 > stay plaintext while mounted; FileVault/LUKS volume encryption protects

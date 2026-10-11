@@ -3,11 +3,9 @@
 #   docker compose up -d                          # API-first pilot, loopback only
 #   docker compose --profile sso up -d            # + OAuth2-Proxy SSO edge
 #
-# The server is loopback-safe by default (BIND_HOST=127.0.0.1, refused 0.0.0.0
-# unless BIND_PUBLIC=1). Inside the container we MUST bind 0.0.0.0 to be
-# reachable via the published port — so BIND_PUBLIC=1 is set explicitly, and
-# the host-side port is published on 127.0.0.1 only. Public exposure should
-# happen at the SSO proxy, not here. See docs/proxy-sso.md.
+# Legacy container network binding uses BIND_PUBLIC=1 and is deprecated through
+# 2027-04-11. The host-side port stays loopback-only; public TLS belongs at the
+# host proxy. Migrate container deployments before the removal date.
 
 name: brain-server
 

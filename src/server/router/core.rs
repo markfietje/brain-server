@@ -196,8 +196,9 @@ pub(crate) fn ready_body(
     db_ok: bool,
     signing: crate::config::WebhookSigningPosture,
     gdl_provider: crate::config::GdlProviderPosture,
+    public_bind_deprecated: bool,
 ) -> serde_json::Value {
-    serde_json::json!({
+    let mut body = serde_json::json!({
         "status": if db_ok && gdl_provider != crate::config::GdlProviderPosture::Invalid {
             "OK"
         } else {
@@ -205,7 +206,11 @@ pub(crate) fn ready_body(
         },
         "webhook_signing": signing.as_ready_str(),
         "gdl_provider": gdl_provider.as_ready_str(),
-    })
+    });
+    if public_bind_deprecated {
+        body["bind_public"] = serde_json::Value::String("deprecated".to_string());
+    }
+    body
 }
 
 pub(crate) async fn ready(State(s): State<Arc<AppState>>) -> impl axum::response::IntoResponse {
@@ -225,6 +230,12 @@ pub(crate) async fn ready(State(s): State<Arc<AppState>>) -> impl axum::response
         db_ok,
         crate::config::current_webhook_signing_posture(),
         crate::config::gdl_provider_posture(),
+        crate::server::bootstrap::public_bind_deprecation_active_from(
+            std::env::var("BIND_HOST").ok().as_deref(),
+            std::env::var(crate::config::BIND_PUBLIC_OPT_IN)
+                .ok()
+                .as_deref(),
+        ),
     ))
 }
 
@@ -1005,6 +1016,7 @@ mod ready_body_tests {
             true,
             WebhookSigningPosture::On,
             GdlProviderPosture::Configured,
+            false,
         );
         assert_eq!(on["status"], serde_json::Value::String("OK".to_string()));
         assert_eq!(
@@ -1015,6 +1027,7 @@ mod ready_body_tests {
             true,
             WebhookSigningPosture::Off,
             GdlProviderPosture::Disabled,
+            false,
         );
         assert_eq!(off["status"], serde_json::Value::String("OK".to_string()));
         assert_eq!(
@@ -1025,13 +1038,28 @@ mod ready_body_tests {
             false,
             WebhookSigningPosture::On,
             GdlProviderPosture::Configured,
+            false,
         );
         assert_eq!(
             down["status"],
             serde_json::Value::String("NOT_READY".to_string())
         );
-        let invalid = ready_body(true, WebhookSigningPosture::On, GdlProviderPosture::Invalid);
+        let invalid = ready_body(
+            true,
+            WebhookSigningPosture::On,
+            GdlProviderPosture::Invalid,
+            false,
+        );
         assert_eq!(invalid["status"], "NOT_READY");
         assert_eq!(invalid["gdl_provider"], "invalid");
+
+        let deprecated = ready_body(
+            true,
+            WebhookSigningPosture::On,
+            GdlProviderPosture::Disabled,
+            true,
+        );
+        assert_eq!(deprecated["bind_public"], "deprecated");
+        assert!(on.get("bind_public").is_none());
     }
 }

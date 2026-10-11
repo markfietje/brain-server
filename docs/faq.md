@@ -63,8 +63,8 @@ Use the GitHub Security Advisories tab. Do **not** file public issues for securi
 **I get `exit 137` on first run (macOS).**
 A `com.apple.provenance` xattr makes Gatekeeper SIGKILL freshly copied executables. Use `scripts/install-service.sh` — it strips the xattr. See **[Installation](./deployment.md)**.
 
-**The server won't bind `0.0.0.0`.**
-By design. Set `BIND_PUBLIC=1` to bind publicly. See **[Configuration](./configuration.md)**.
+**How do I provide remote access?**
+Bind brain-server to `127.0.0.1` and put a TLS-terminating reverse proxy in front. The legacy `BIND_PUBLIC=1` public HTTP opt-in is deprecated through 2027-04-11; while it remains available, startup and `/ready` mark it deprecated. See **[Deployment](./deployment.md#public-bind-deprecation)**.
 
 ## Next steps
 

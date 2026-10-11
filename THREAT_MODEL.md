@@ -4,8 +4,9 @@
 + Cheat Sheet Series (Context7-verified 2026-07-26), NIST SP 800-63B (digital
 identity), NIST SP 800-207 (zero-trust architecture).
 
-**Coverage current through:** R98 (2026-10-11), including the observed
-operator-managed volume-encryption boundary for plaintext SQLite files.
+**Coverage current through:** R99 (2026-10-11), including the observed
+operator-managed volume-encryption boundary for plaintext SQLite files and
+the scheduled retirement of the public plain-HTTP bind opt-in.
 Per-release detail lives in `CHANGELOG.md` and the close-out in `docs/AUDIT.md`.
 **Stamp policy:** every release that moves a security-relevant row in this
 file moves this stamp in the same commit — staleness is self-declaring by the
@@ -182,6 +183,15 @@ The `tenant` claim is verified by signature before any data-access call.
 ---
 
 ## 4. Residual risk (acceptances)
+
+### A26-08 — public plain-HTTP bind lifecycle (R99)
+
+The legacy `BIND_PUBLIC=1` opt-in can expose the authenticated API over plain
+HTTP. During the migration window ending 2027-04-11, this mode remains
+available but startup logs and `/ready` disclose the deprecation. The supported
+topology is a loopback server behind a reverse proxy that terminates TLS.
+Non-loopback binds without authentication still fail closed. The residual
+window is bounded by the stated removal date and documented migration steps.
 
 These are explicit risk acceptances, not bugs. Each is documented in code with
 a `ponytail:` comment naming the ceiling and upgrade path.

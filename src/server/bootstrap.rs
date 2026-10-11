@@ -54,6 +54,9 @@ pub struct Bootstrap {
     pub addr: SocketAddr,
 }
 
+/// `BIND_PUBLIC=1` is retained through this date, then scheduled for removal.
+pub const BIND_PUBLIC_REMOVAL_DATE: &str = "2027-04-11";
+
 /// The server world-state: pool, registries, JWT material, event buses.
 /// Constructed once by `bootstrap()`; consumed by every handler via
 /// `State<Arc<AppState>>`. Fields are `pub`: the same-workspace binaries
@@ -1200,6 +1203,16 @@ pub fn bootstrap() -> Result<BootOutcome> {
         }
     };
 
+    if public_bind_deprecation_active_from(
+        Some(&bind_host),
+        Some(if public_opt_in { "1" } else { "0" }),
+    ) {
+        eprintln!(
+            "DEPRECATION: BIND_PUBLIC public HTTP exposure is scheduled for removal on {}. Migrate to BIND_HOST=127.0.0.1 behind a reverse proxy that terminates TLS; see docs/deployment.md#public-bind-deprecation.",
+            BIND_PUBLIC_REMOVAL_DATE
+        );
+    }
+
     // refuse to serve on a non-loopback bind with no auth.
     // Runs after `addr` resolves + `auth_mode` is known, before the socket is
     // bound. The guard is a pure function (unit-tested) so the startup path
@@ -1336,6 +1349,20 @@ pub fn resolve_bind_port() -> Result<u16, String> {
 /// `Option<&str>` input is `std::env::var(..).ok().as_deref()`.
 pub fn public_bind_opt_in_from(value: Option<&str>) -> bool {
     matches!(value, Some("1") | Some("true"))
+}
+
+/// True when the deprecated opt-in is actually used for a non-loopback bind.
+/// An invalid host plus the opt-in resolves to 0.0.0.0 in the boot path.
+pub fn public_bind_deprecation_active_from(
+    bind_host: Option<&str>,
+    public_opt_in: Option<&str>,
+) -> bool {
+    public_bind_opt_in_from(public_opt_in)
+        && bind_host
+            .unwrap_or("127.0.0.1")
+            .parse::<std::net::IpAddr>()
+            .map(|ip| !ip.is_loopback())
+            .unwrap_or(true)
 }
 
 /// Handle CLI flags before any side effect. Prints version/usage and exits;
@@ -1578,6 +1605,34 @@ mod tests {
         // and prove nothing. Both armed values are the documented pair.
         assert!(public_bind_opt_in_from(Some("1")));
         assert!(public_bind_opt_in_from(Some("true")));
+    }
+
+    /// R99 red-first pin: the legacy public mode emits a deprecation only
+    /// when it actually selects a non-loopback address; loopback and the
+    /// tier profiles' explicit BIND_PUBLIC=0 remain quiet.
+    #[test]
+    fn bind_public_deprecation_is_limited_to_the_public_opt_in_path() {
+        assert!(public_bind_deprecation_active_from(
+            Some("0.0.0.0"),
+            Some("1")
+        ));
+        assert!(public_bind_deprecation_active_from(
+            Some("192.168.1.20"),
+            Some("true")
+        ));
+        assert!(public_bind_deprecation_active_from(
+            Some("not-an-ip"),
+            Some("1")
+        ));
+        assert!(!public_bind_deprecation_active_from(
+            Some("127.0.0.1"),
+            Some("1")
+        ));
+        assert!(!public_bind_deprecation_active_from(
+            Some("0.0.0.0"),
+            Some("0")
+        ));
+        assert!(!public_bind_deprecation_active_from(Some("0.0.0.0"), None));
     }
 
     /// The production read site must resolve the opt-in through the

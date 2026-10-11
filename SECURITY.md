@@ -1,6 +1,6 @@
 # Security Policy
 
-**Last reviewed:** 2026-10-11 (R97 "Verity II") against OWASP Top 10:**2025** + Cheat Sheet Series — the no-LLM posture now states the boundary exactly: memory operations (recall, search, ingest, approval) are deterministic and zero-token, and the one model-shaped capability is the OPTIONAL operator-launched GDL provider lane (`BRAIN_GDL_PROVIDER_*`), operator-launched, ticket-only, server-owned profile (R34), execution-integrity controls (R35), its output never auto-promoting — the human gate decides — and local-endpoint-capable so nothing need egress. (R77's ninth-pass closures and the retained R34/R35 control rows stand as recorded below.)
+**Last reviewed:** 2026-10-11 (R99 "Loopback": public HTTP opt-in deprecation and proxy migration) against OWASP Top 10:**2025** + Cheat Sheet Series. The R97 no-LLM boundary remains: memory operations (recall, search, ingest, approval) are deterministic and zero-token, and the one model-shaped capability is the OPTIONAL operator-launched GDL provider lane (`BRAIN_GDL_PROVIDER_*`), operator-launched, ticket-only, server-owned profile (R34), execution-integrity controls (R35), its output never auto-promoting — the human gate decides — and local-endpoint-capable so nothing need egress. (R77's ninth-pass closures and the retained R34/R35 control rows stand as recorded below.)
 **Stamp policy:** this "Last reviewed" line moves in the same commit as any security-relevant claim it covers — a stamp N releases behind HEAD is itself a finding.
 (Context7-verified), OWASP Multi-Tenant Security Cheat Sheet, OWASP JSON Web
 Token Cheat Sheet, OWASP Secrets Management Cheat Sheet, OWASP gRPC + Microservices
@@ -586,8 +586,9 @@ Cloudflare). The brain-server Rust binary speaks HTTP on loopback only.
 - OCSP stapling.
 - HSTS header (`max-age=63072000; includeSubDomains; preload`) at the edge.
   brain-server has no TLS knob — TLS terminates at the reverse proxy / SSO
-  edge; the server is loopback by default and refuses `0.0.0.0` unless
-  `BIND_PUBLIC=1`.
+  edge; loopback is the supported direct bind. `BIND_PUBLIC=1` is deprecated
+  through 2027-04-11 and emits startup/readiness signals while the migration
+  window remains open; see `docs/deployment.md#public-bind-deprecation`.
 - Per-IP rate limit at the edge.
 - Certificate rotation (Let's Encrypt / ACME on Caddy is fine).
 - mTLS for service-to-service when A2A lands (v3.7) — client cert signed by
@@ -738,7 +739,7 @@ rulings) — the runbook's quarterly re-check rule applies.
       but not unlimited scrape traffic).
 - [ ] Set `CORS_ORIGINS` to exact production origins (no wildcards).
 - [ ] Terminate TLS at the reverse proxy / SSO edge. brain-server has no TLS
-      knob (loopback default, `0.0.0.0` refused unless `BIND_PUBLIC=1`).
+      knob; use loopback and remove deprecated `BIND_PUBLIC` by 2027-04-11.
 - [ ] Configure proxy: TLS 1.3 min, modern cipher suite, OCSP stapling.
 - [ ] Configure proxy: per-IP rate limit (defense against unauthenticated floods).
 - [ ] Enable `BRAIN_MULTI_DB=true` for multi-tenant isolation (file-per-tenant).

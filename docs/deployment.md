@@ -45,7 +45,7 @@ Brain Server is configured through environment variables (all resolved in
 
 | Variable | Default | Description |
 |---|---|---|
-| `BIND_HOST` | `127.0.0.1` | Bind address. `0.0.0.0` without `BIND_PUBLIC` logs a loud warning and still binds (the opt-in is env *presence* — any value counts); an unparseable host without `BIND_PUBLIC` refuses boot; any non-loopback bind with no auth configured refuses boot |
+| `BIND_HOST` | `127.0.0.1` | Bind address. Loopback is the supported direct bind. `BIND_PUBLIC=1` (or `true`) temporarily enables public HTTP and emits a startup warning plus `/ready` marker through 2027-04-11; migrate to loopback behind a TLS-terminating reverse proxy. Non-loopback binds with no auth configured refuse boot |
 | `BIND_PORT` | `8765` | Listen port. **Fail-closed (R70/F8-10):** a present-and-malformed value refuses boot with a message naming the key, the value and the range. It used to be `.parse().unwrap_or(8765)`, so a typo silently bound the *production* port. `0` is refused specifically — it parses, but port 0 binds a kernel-chosen ephemeral port that changes every restart. Unset (or empty) still binds 8765 |
 | `BRAIN_DB_PATH` | `~/.openclaw/workspace/brain.db` | SQLite database path |
 | `CORS_ORIGINS` | `http://localhost:3000,http://localhost:8080` | CORS allowlist (scheme included) |
@@ -96,14 +96,40 @@ bearer values, secret paths, and secret-bearing URLs are not emitted.
 
 ---
 
+## Public-bind deprecation
+
+`BIND_PUBLIC=1` (also `true`) remains supported through **2027-04-11** so
+operators can migrate. When it activates a non-loopback listener, startup logs
+a deprecation warning naming the removal date and `/ready` includes
+`"bind_public":"deprecated"`. The server still requires configured auth for
+non-loopback binds.
+
+Before the removal date, move public TLS termination to a host reverse proxy
+and bind brain-server to loopback:
+
+1. Configure Caddy, nginx, or another maintained proxy to terminate TLS and
+   forward to `127.0.0.1:8765`.
+2. Set `BIND_HOST=127.0.0.1` and remove `BIND_PUBLIC`.
+3. Keep the server's auth token configured; proxy authentication does not
+   replace the server's own authorization boundary.
+4. Verify the proxy endpoint uses HTTPS and local health checks reach the
+   loopback listener.
+
+The deprecation retires this public HTTP opt-in, not authenticated loopback
+service behind a TLS proxy. Docker deployments that need a separate proxy
+container should run the proxy on the host or use a deployment topology where
+its upstream can reach the host-loopback endpoint; do not expose the server
+port directly.
+
 ## Security posture in deployment
 
-- **Loopback-safe by default** — binding `0.0.0.0` without `BIND_PUBLIC` logs a
-  loud warning (the opt-in is env *presence*); an unparseable host without
-  `BIND_PUBLIC` refuses boot. In addition (v1.20.29) the server **fails closed
-  on startup**: a non-loopback bind with no auth configured (no bearer token,
-  no JWT keys) refuses to start, so an unauthenticated superuser API is never
-  exposed off the loopback.
+- **Loopback is the supported direct bind.** `BIND_PUBLIC=1` (or `true`) is
+  deprecated through **2027-04-11**: the server keeps the legacy public HTTP
+  behavior during the migration window, logs a loud warning, and marks
+  `/ready` with `"bind_public":"deprecated"`. Configure a reverse proxy with
+  TLS on the host and bind brain-server to `127.0.0.1`; see
+  [Public-bind deprecation](#public-bind-deprecation). Non-loopback binds with
+  no auth configured still fail closed at startup.
 - **Two auth modes**:
   - **Opaque bearer** (default): `AUTH_TOKEN` / `AUTH_TOKEN_FILE`, constant-time
     compare, multiple tokens for rotation.

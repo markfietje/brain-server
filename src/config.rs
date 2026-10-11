@@ -2240,6 +2240,7 @@ pub(crate) mod tests {
                     true,
                     WebhookSigningPosture::On,
                     GdlProviderPosture::Disabled,
+                    false,
                 );
                 assert_eq!(body["status"], "OK");
                 assert_eq!(body["gdl_provider"], "disabled");
@@ -2265,6 +2266,7 @@ pub(crate) mod tests {
                     true,
                     WebhookSigningPosture::On,
                     GdlProviderPosture::Configured,
+                    false,
                 );
                 assert_eq!(body["status"], "OK");
                 assert_eq!(body["gdl_provider"], "configured");

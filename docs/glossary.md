@@ -69,7 +69,7 @@ A plain-language dictionary of the terms used throughout this wiki. Aimed at rea
 
 - **Legal hold** — an operator-set hold that suspends retention expiry and purge for affected content until explicitly released; hold paths fail closed.
 - **LexSpec** — the structured lexical query: terms, quoted phrases, exclusions (`-"..."`), and exact code paths.
-- **Loopback** — `127.0.0.1`, the local machine. Brain Server is loopback-safe by default (refuses `0.0.0.0` unless `BIND_PUBLIC=1`).
+- **Loopback** — `127.0.0.1`, the local machine. Brain Server supports direct loopback service; the deprecated public HTTP opt-in remains available through 2027-04-11.
 
 ## M
 

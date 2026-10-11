@@ -59,8 +59,9 @@ curl http://localhost:8765/health
 curl http://localhost:8765/stats
 ```
 
-> The server refuses to bind `0.0.0.0` unless `BIND_PUBLIC=1`. Loopback-safe by
-> default.
+> Loopback is the supported direct bind. `BIND_PUBLIC=1` temporarily enables
+> public HTTP through 2027-04-11 and emits deprecation signals; use a TLS
+> reverse proxy for remote access.
 
 ---
 

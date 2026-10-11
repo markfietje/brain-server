@@ -15,10 +15,10 @@
 - Runtime: `debian:bookworm-slim`, non-root user `brain` (uid 1000),
   `read_only` rootfs + tmpfs, `cap_drop: ALL`, `no-new-privileges`.
 - Healthcheck: `curl /health` (the endpoint is always auth-exempt by design).
-- Loopback-safe default preserved: `BIND_HOST=127.0.0.1`; a `0.0.0.0` bind
-  without `BIND_PUBLIC` logs a loud warning (the opt-in is env *presence*), and
-  any non-loopback bind without auth refuses to start — the run/compose
-  examples below set both `BIND_PUBLIC=1` and a token.
+- `BIND_PUBLIC=1` is deprecated through 2027-04-11. Docker examples retain
+  the legacy public bind temporarily and will emit the startup warning and
+  `/ready` marker; plan to terminate TLS at a host proxy and keep the server
+  port private. Non-loopback binds without auth refuse to start.
 
 ## Build
 

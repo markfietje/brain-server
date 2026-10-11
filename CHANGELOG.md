@@ -4,6 +4,24 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [Unreleased] — R99 "Loopback" — retire the public HTTP opt-in
+
+`BIND_PUBLIC=1` / `true` remains compatible through **2027-04-11**, then is
+scheduled for removal. When it activates a non-loopback bind, startup prints
+the removal date and migration path; `/ready` adds `bind_public: deprecated`.
+The supported remote-access topology is a loopback bind behind a reverse proxy
+that terminates TLS. Existing fail-closed refusal of non-loopback binds without
+auth remains. Migration steps and Docker topology limits are in
+`docs/deployment.md#public-bind-deprecation`.
+
+Pin: `bind_public_deprecation_is_limited_to_the_public_opt_in_path` covers the
+active public path and loopback / unset / `BIND_PUBLIC=0` neighbors. The ready
+body pin covers the signal and its absence on normal loopback readiness.
+
+ponytail: no in-process TLS, dependency, new bind knob, or auth relaxation;
+the legacy public HTTP mode is retained only through the dated migration
+window.
+
 ## [Unreleased] — R98 "Volume Check" — observe the accepted at-rest boundary
 
 The operator decision is **no SQLCipher and no server database key**. SQLite

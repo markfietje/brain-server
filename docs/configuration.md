@@ -6,7 +6,7 @@ Brain Server is configured entirely through **environment variables** — there 
 
 | Variable | Default | Description |
 |---|---|---|
-| `BIND_HOST` | `127.0.0.1` | Bind address. `0.0.0.0` without `BIND_PUBLIC` set logs a loud warning and still binds (the opt-in is env *presence* — any value, including `0`, counts); an unparseable host without `BIND_PUBLIC` refuses boot; and any non-loopback bind with no auth token configured refuses boot (`enforce_loopback_bind_guard`). |
+| `BIND_HOST` | `127.0.0.1` | Bind address. Loopback is the supported direct bind. `BIND_PUBLIC=1` (or `true`) temporarily enables public HTTP with a deprecation warning through 2027-04-11; migrate to loopback behind a TLS-terminating reverse proxy. Non-loopback binds without auth still refuse boot (`enforce_loopback_bind_guard`). |
 | `BIND_PORT` | `8765` | Listen port |
 | `BRAIN_DB_PATH` | `~/.openclaw/workspace/brain.db` | SQLite database path |
 | `BRAIN_DATA_ROOT` | — | v1.0 relocation knob — root for all on-disk paths |

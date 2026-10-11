@@ -42,7 +42,7 @@ proxy SSO also covers SAML without building it into the server.
   host machine but not from other machines. Remove that `ports:` mapping (or
   switch it to `expose:`) if you want the server reachable only inside the
   compose network under the SSO profile.
-- `BIND_HOST=0.0.0.0` + `BIND_PUBLIC=1` are set **inside the container only**
+- The legacy `BIND_HOST=0.0.0.0` + `BIND_PUBLIC=1` container bind is deprecated through 2027-04-11 and emits a startup/readiness warning. Migrate to host-loopback binding with TLS at the host proxy.
   (required to be reachable from the proxy); the host port mapping stays
   `127.0.0.1` — see `docker-compose.yml`.
 

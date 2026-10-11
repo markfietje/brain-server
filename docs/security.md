@@ -18,16 +18,10 @@ is the informational summary.
 
 ## Principles
 
-- **Loopback-safe by default.** The default bind is `127.0.0.1`. A
-  `BIND_HOST=0.0.0.0` without `BIND_PUBLIC` **armed** (`1` or `true`; since
-  R82 an explicit `0` counts as unarmed, not as set) logs a loud warning and
-  STILL binds (ninth-pass drill-verified on the LAN interface; the opt-in
-  acknowledges the warning, it is not a gate). What DOES refuse boot: an
-  unparseable host without an armed `BIND_PUBLIC`, and any non-loopback bind
-  with no auth token configured. The default posture is that the memory lives
-  on the host. (T9-02: this line previously claimed a `0.0.0.0` refusal that
-  does not exist — `docs/configuration.md` has always stated the real
-  behavior; the two docs now agree.)
+- **Loopback is the supported direct bind.** `BIND_PUBLIC=1` (or `true`)
+  temporarily retains the legacy public HTTP bind through 2027-04-11, with a
+  startup deprecation warning and `/ready` marker. Migrate to loopback behind
+  a TLS-terminating reverse proxy. Non-loopback binds without auth refuse boot.
 - **No data egress.** There is no telemetry to third parties. Outbound HTTP is
   opt-in and off unless configured: an Art 19 DSAR webhook and a system-alert
   webhook (`BRAIN_ALERT_WEBHOOK_URL`), both Standard Webhooks signed and

@@ -39,8 +39,9 @@ is the exact truth, because the docs you may find disagree and the truth is
 the one that matches the code:
 
 - Binding a non-loopback address without the explicit opt-in env
-  (`BIND_PUBLIC=1` style) produces a **warning, and the server binds
-  anyway**. It does not refuse. Two cases DO refuse: an address that cannot
+  (`BIND_PUBLIC=1` style) produces a warning and currently binds anyway; this
+  mode is deprecated through 2027-04-11 and marked in startup logs and `/ready`.
+  It does not refuse during the migration window. Two cases DO refuse: an address that cannot
   be parsed, and a non-loopback bind with no token configured at all.
 - Translation: do not rely on the bind setting as your security. Rely on
   the token, and on a reverse proxy if you need real network posture.
