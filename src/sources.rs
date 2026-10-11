@@ -139,6 +139,23 @@ pub fn link_chunks(
 pub const AUTHORITY_MANUAL: f32 = 1.0;
 pub const AUTHORITY_VAULT: f32 = 0.8;
 
+/// Normalize a temporal stamp to the one format the read side compares:
+/// `%Y-%m-%d %H:%M:%S` (UTC), exactly what [`crate::search::normalize_since`]
+/// emits for a `?at=`/`?since=` query. Callers hand us raw
+/// `Utc::now().to_rfc3339()` (`'T'` separator, `+00:00` offset), so storing the
+/// string verbatim made SQLite's lexicographic comparison decide every same-day
+/// question on the SEPARATOR byte — `'T'` (0x54) > `' '` (0x20) — which
+/// excluded facts that were valid at the instant and leaked superseded ones as
+/// current. Normalizing here fixes both halves at the write boundary.
+///
+/// Idempotent and fail-safe: an already-normalized value (including the
+/// `src/temporal.rs` extractor output, which emits this same format) passes
+/// through byte-identical, and an unparseable value is preserved verbatim rather
+/// than nulled — a NULL `valid_from` would match EVERY `?at=` query.
+fn normalize_stamp(s: &str) -> String {
+    crate::search::normalize_since(s).unwrap_or_else(|_| s.to_string())
+}
+
 /// Stamp the temporal window + authority for a freshly-linked chunk. Pure
 /// w.r.t. the tx; called once per chunk inside the existing ingest transaction
 /// (vault, manual, connector). The three temporal columns shipped in the schema
@@ -148,6 +165,10 @@ pub const AUTHORITY_VAULT: f32 = 0.8;
 /// `valid_from` is when the fact became true in the world (file mtime, issue
 /// created_at, …); `None` ⇒ treat as observed_at (no separate world-time known).
 /// `valid_to` is `None` ⇒ still current.
+///
+/// `valid_from`/`valid_to` are normalized to the read side's comparison format
+/// on the way in (see [`normalize_stamp`]); `observed_at` is display/provenance
+/// only and is never compared as a timestamp, so it is stored as given.
 pub fn stamp_evidence(
     tx: &Transaction<'_>,
     chunk_id: i64,
@@ -156,7 +177,8 @@ pub fn stamp_evidence(
     valid_to: Option<&str>,
     authority: f32,
 ) -> Result<usize> {
-    let valid_from = valid_from.unwrap_or(observed_at);
+    let valid_from = normalize_stamp(valid_from.unwrap_or(observed_at));
+    let valid_to = valid_to.map(normalize_stamp);
     tx.execute(
         "UPDATE knowledge
          SET observed_at = ?2, valid_from = ?3, valid_to = ?4,

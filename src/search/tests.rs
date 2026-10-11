@@ -900,3 +900,279 @@ fn bare_fts_query_syntax_errors_no_longer_silently_empty() {
         "a stray quote must degrade to a term, not a swallowed syntax error"
     );
 }
+
+// ── AUDIT R2-05: bi-temporal `?at=` compares two INCOMPATIBLE string formats
+// ────────────────────────────────────────────────────────────────────────────
+//
+// The WRITE side stores `valid_from` raw from `chrono::Utc::now().to_rfc3339()`
+// (`src/server/router/memory.rs:1296`, via `sources::stamp_evidence`,
+// `src/sources.rs:159-165` — which performs NO normalization):
+//
+//     stored:  "2026-10-11T12:00:00.123456789+00:00"   ← 'T' = 0x54
+//
+// The READ side compares it lexicographically against `normalize_since`
+// (`src/search/mod.rs:1660-1665`), which emits a SPACE separator:
+//
+//     query :  "2026-10-11 12:00:00"                    ← ' ' = 0x20
+//
+// `'T'` (0x54) > `' '` (0x20), so EVERY same-day comparison is decided by the
+// separator byte rather than by the timestamp. `src/temporal.rs:11-12` asserts
+// the two formats are identical; they are not.
+//
+// This is invisible to default recall (`valid_to IS NULL` is a NULL check, not
+// a comparison) and only bites the `?at=` path — the exact query a DSAR or
+// compliance auditor runs to answer "what did we know as of date X".
+#[test]
+fn audit_bitemporal_at_filter_compares_incompatible_formats() {
+    let mut db = fts_db();
+
+    // Seed exactly what production passes: RFC3339 with 'T' and an offset,
+    // through the real write boundary (`sources::stamp_evidence`).
+    let tx = db.transaction().expect("tx");
+    crate::sources::stamp_evidence(
+        &tx,
+        1,
+        "2026-10-11T12:00:00.123456789+00:00",
+        Some("2026-10-11T12:00:00.123456789+00:00"),
+        Some("2026-10-12T09:00:00.000000000+00:00"),
+        crate::sources::AUTHORITY_MANUAL,
+    )
+    .expect("stamp production-format evidence window");
+    tx.commit().expect("commit");
+
+    // The query instant, normalized exactly as `?at=` normalizes it.
+    let at = normalize_since("2026-10-11T13:00:00Z").expect("normalize at");
+    assert_eq!(at, "2026-10-11 13:00:00", "normalize_since emits a SPACE");
+
+    // The production predicate, verbatim from src/search/mod.rs:1660-1665.
+    let visible: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM knowledge k
+              WHERE (k.valid_from IS NULL OR k.valid_from <= ?1)
+                AND (k.valid_to   IS NULL OR k.valid_to   >  ?1)",
+            rusqlite::params![at],
+            |r| r.get(0),
+        )
+        .expect("count");
+
+    assert_eq!(
+        visible, 1,
+        "C4 BROKEN: the fact was valid at {at} (window 12:00Z→ next-day 09:00Z), \
+         so it MUST be visible. If `stamp_evidence` stores the caller's RFC3339 \
+         verbatim, `valid_from <= at` compares \
+         '2026-10-11T12:00:00.123456789+00:00' against '2026-10-11 13:00:00' — \
+         'T'(0x54) > ' '(0x20), so the row is EXCLUDED on the SEPARATOR byte, \
+         not on the timestamp."
+    );
+}
+
+/// The mirror image, and the more dangerous direction: a fact that HAD been
+/// superseded before the query instant is reported as still current.
+///
+/// NOTE on the fixture: `valid_from` is deliberately placed on the PREVIOUS
+/// day. Same-day `valid_from` fails its own comparison (`'T'` > `' '`) and
+/// masks the `valid_to` defect, so the row is dropped for the "wrong" reason
+/// and no leak is visible. Pinning `valid_from` to a prior day makes it
+/// compare correctly and isolates `valid_to` — which is the half that leaks.
+#[test]
+fn audit_bitemporal_at_filter_leaks_a_superseded_fact_as_current() {
+    let mut db = fts_db();
+
+    // Superseded at 09:00Z on the 11th — four hours BEFORE the query instant
+    // of 13:00Z. valid_from (10th) compares correctly; only valid_to is wrong.
+    let tx = db.transaction().expect("tx");
+    crate::sources::stamp_evidence(
+        &tx,
+        1,
+        "2026-10-11T09:00:00.000000000+00:00",
+        Some("2026-10-10T08:00:00.000000000+00:00"),
+        Some("2026-10-11T09:00:00.000000000+00:00"),
+        crate::sources::AUTHORITY_MANUAL,
+    )
+    .expect("stamp superseded evidence window");
+    tx.commit().expect("commit");
+
+    let at = normalize_since("2026-10-11T13:00:00Z").expect("normalize at");
+
+    let visible: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM knowledge k
+              WHERE (k.valid_from IS NULL OR k.valid_from <= ?1)
+                AND (k.valid_to   IS NULL OR k.valid_to   >  ?1)",
+            rusqlite::params![at],
+            |r| r.get(0),
+        )
+        .expect("count");
+
+    assert_eq!(
+        visible, 0,
+        "C4 BROKEN (leak direction): the fact was superseded at 2026-10-11 09:00Z, \
+         four hours BEFORE the query instant {at}, so it must NOT be visible. But if \
+         `stamp_evidence` stores `valid_to` raw, `valid_to > at` compares \
+         '2026-10-11T09:00:00...' against '2026-10-11 13:00:00' — at index 10, \
+         'T'(0x54) > ' '(0x20) — so the row PASSES the test and a RETIRED fact is \
+         reported as current. This is the direction that over-reports to a \
+         compliance auditor."
+    );
+}
+
+/// Isolation pin: the predicate is CORRECT when both sides share a format.
+/// This is the control that proves the finding is the format mismatch and not
+/// the SQL — a fix (normalize in `stamp_evidence`) makes both of the above
+/// pass without touching this predicate.
+#[test]
+fn audit_bitemporal_predicate_is_correct_when_formats_match() {
+    let db = fts_db();
+
+    // Same window as the leak case, but written in the READ format.
+    db.execute(
+        "UPDATE knowledge SET valid_from = '2026-10-11 08:00:00',
+                             valid_to   = '2026-10-11 09:00:00'
+         WHERE id = 1",
+        [],
+    )
+    .expect("seed space-format window");
+    let at = normalize_since("2026-10-11T13:00:00Z").expect("normalize at");
+
+    let visible: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM knowledge k
+              WHERE (k.valid_from IS NULL OR k.valid_from <= ?1)
+                AND (k.valid_to   IS NULL OR k.valid_to   >  ?1)",
+            rusqlite::params![at],
+            |r| r.get(0),
+        )
+        .expect("count");
+
+    assert_eq!(
+        visible, 0,
+        "CONTROL: with both sides in the space format the predicate is correct — \
+         the superseded fact is properly excluded. The defect is the WRITE \
+         format, not the SQL."
+    );
+}
+
+/// Format-contract pin for the write boundary: normalization is IDEMPOTENT and
+/// preserves the `src/temporal.rs` space-format input BYTE-IDENTICAL.
+///
+/// Without the idempotency half, the two reproductions above could be "fixed"
+/// by a re-parse that mangles the value `temporal::extract_interval` already
+/// emits in the target format (re-serialize it wrong, truncate it, or null it —
+/// a NULL `valid_from` matches EVERY `?at=` query). `extract_interval` output is
+/// contractually the same format `normalize_since` produces (temporal.rs:11-12);
+/// this test pins that the write path honours it instead of corrupting it.
+#[test]
+fn audit_bitemporal_stamp_normalization_is_idempotent_and_preserves_space_format() {
+    let mut db = fts_db();
+    let extracted = crate::temporal::extract_interval(
+        "was CA AG from 2011 to 2017",
+        &chrono::NaiveDate::from_ymd_opt(2026, 7, 30)
+            .unwrap()
+            .and_hms_opt(12, 0, 0)
+            .unwrap(),
+    );
+    let temporal_valid_at = extracted.valid_at.expect("extract valid_at");
+    assert_eq!(temporal_valid_at, "2011-01-01 00:00:00", "fixture");
+
+    // Pass 1: RFC3339 in (the production shape), temporal.rs space format for
+    // valid_to (the shape an ingest caller may hand us).
+    let tx = db.transaction().expect("tx");
+    crate::sources::stamp_evidence(
+        &tx,
+        1,
+        "2026-10-11T12:00:00.123456789+00:00",
+        Some("2026-10-11T12:00:00.123456789+00:00"),
+        Some(&temporal_valid_at),
+        crate::sources::AUTHORITY_MANUAL,
+    )
+    .expect("stamp pass 1");
+    tx.commit().expect("commit 1");
+    let pass1: (String, Option<String>) = db
+        .query_row(
+            "SELECT valid_from, valid_to FROM knowledge WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("read pass 1");
+    assert_eq!(
+        pass1,
+        (
+            "2026-10-11 12:00:00".to_string(),
+            Some(temporal_valid_at.clone())
+        ),
+        "RFC3339 must be normalized; the temporal.rs space format must survive \
+         byte-identical (sub-second precision is dropped, same as the read side)"
+    );
+
+    // Pass 2: re-stamp with the SAME inputs — idempotent, not drifted.
+    let tx = db.transaction().expect("tx 2");
+    crate::sources::stamp_evidence(
+        &tx,
+        1,
+        "2026-10-11T12:00:00.123456789+00:00",
+        Some("2026-10-11T12:00:00.123456789+00:00"),
+        Some(&temporal_valid_at),
+        crate::sources::AUTHORITY_MANUAL,
+    )
+    .expect("stamp pass 2");
+    tx.commit().expect("commit 2");
+    let pass2: (String, Option<String>) = db
+        .query_row(
+            "SELECT valid_from, valid_to FROM knowledge WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("read pass 2");
+    assert_eq!(pass2, pass1, "normalization must be idempotent");
+
+    // Feeding an ALREADY-normalized value back in (the re-stamp path, the
+    // `?at=` value reused as a bound, an extractor string) must also be a
+    // no-op — normalize(normalize(x)) == normalize(x), in space format.
+    let tx = db.transaction().expect("tx 3");
+    crate::sources::stamp_evidence(
+        &tx,
+        1,
+        &pass1.0,
+        Some(&pass1.0),
+        pass1.1.as_deref(),
+        crate::sources::AUTHORITY_MANUAL,
+    )
+    .expect("stamp pass 3");
+    tx.commit().expect("commit 3");
+    let pass3: (String, Option<String>) = db
+        .query_row(
+            "SELECT valid_from, valid_to FROM knowledge WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("read pass 3");
+    assert_eq!(
+        pass3, pass1,
+        "an already-normalized stamp must pass through UNCHANGED"
+    );
+
+    // Fail-safe: an unparseable stamp is preserved verbatim, never nulled. A
+    // NULL `valid_from` matches EVERY `?at=` query, which is strictly worse
+    // than a value that at least compares on its own bytes.
+    let tx = db.transaction().expect("tx 4");
+    crate::sources::stamp_evidence(
+        &tx,
+        1,
+        "2026-10-11 12:00:00",
+        Some("not-a-timestamp"),
+        None,
+        crate::sources::AUTHORITY_MANUAL,
+    )
+    .expect("stamp pass 4");
+    tx.commit().expect("commit 4");
+    let unknown: Option<String> = db
+        .query_row("SELECT valid_from FROM knowledge WHERE id = 1", [], |r| {
+            r.get(0)
+        })
+        .expect("read pass 4");
+    assert_eq!(
+        unknown.as_deref(),
+        Some("not-a-timestamp"),
+        "an unparseable stamp must be preserved, not nulled"
+    );
+}
