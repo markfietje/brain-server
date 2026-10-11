@@ -1005,8 +1005,52 @@ fn r45_0_correction_leaves_the_audit_chain_module_byte_untouched() {
 /// detection): the module's verdicts, key, epoch and check semantics are
 /// EXTENDED, not weakened — the round's own battery pins the new detection
 /// arms alongside the controls for every arm that already existed.
+///
+/// Re-recorded AGAIN by the R114 audit round (2026-10-11), on the same
+/// extend-don't-weaken footing. Three changes, each with a red-first pin that
+/// FAILED on `d517cf67` before the fix:
+///
+/// 1. **`hash()` is keyed when a chain key is installed** (HMAC-SHA256, with
+///    the unkeyed SHA-256 retained as the keyless fallback). Unkeyed SHA-256 of
+///    a low-entropy `target_hash` was recoverable from a bare DB backup by
+///    dictionary attack, falsifying the module's own doc. Pin:
+///    `audit_hash_is_reversible_by_dictionary_attack` (it also installs a real
+///    key, so it cannot pass against the unfixed code by falling through to
+///    the unkeyed branch).
+/// 2. **A new `sha7` epoch** whose link commits `status` and `detail_hash`,
+///    which `chain_link` omitted — so a legacy row's OUTCOME could be
+///    rewritten undetected. `chain_link` itself is deliberately UNCHANGED (a
+///    sibling pin still holds it at exactly five fields / four pipes), because
+///    widening it in place would make every existing chain fail `verify_chain`.
+///    The epoch is stamped only on the first append to a chain with no
+///    history, so an unmigrated legacy database still verifies — pinned by
+///    `unmigrated_legacy_chain_still_verifies_and_stays_legacy` (no false
+///    alarm) and `reaudit_replays_a_legacy_chain_and_then_commits_status_and_detail`.
+/// 3. **`chain_link_sha7`** is length-prefixed, so no attacker-controlled
+///    `actor` string can shift a field boundary — the defect the existing
+///    comment on the keyed link already described and only the keyed path had.
+///
+/// 4. **`recent_tenant_paginates_with_offset`** asserted newest-first order by
+///    comparing `target_hash` STRINGS, a proxy that only held while `hash()`
+///    was plain SHA-256 over ordered targets (`c0..c9`) and became a coin flip
+///    once the digests were keyed — it flaked the suite whenever a parallel test
+///    installed a key. It now asserts the order key it means (descending `id`).
+///    Caught by running the lib suite six times, not once.
+///
+/// 5. **Two more tests located their audit row by RECOMPUTING a now-keyed
+///    `hash(...)`** — `hash_chain_rejects_mid_chain_null_backref` (found "the
+///    last row" via `WHERE target_hash = hash("c2")`) and one chain-link
+///    assertion. Both hold no key gate, so a parallel test installing a key made
+///    the lookup MISS and the tamper under test went undetected — a test that
+///    silently stops testing. Both now select by POSITION/ACTOR (`ORDER BY id
+///    DESC LIMIT 1`), which is what they meant all along. Found by running the
+///    lib suite three times, not once.
+///
+/// Control arms kept green: `legacy_chain_still_detects_the_fields_it_commits`,
+/// `reaudit_refuses_a_broken_chain`, `hash_is_sha256_not_xxh3`, and the
+/// 129-test `--lib audit` suite.
 const CHAIN_MODULE_SHA256: &str =
-    "2b75518fbae39828580f92c7baa6b26ea944622f2da4e5c9eef8a3cb4c7bdcb8";
+    "5f2b2f9cc33a6afc2986c3e965314aa61189d24bc262a936568dea53161a5d81";
 
 /// E8's second half: the correction adds no key material and no audit row.
 #[test]
