@@ -225,9 +225,7 @@ export default definePluginEntry({
         // rides the existing handler rather than a second one.
         const turnGate = mapCtx(ctx);
         currentTurnOrigin =
-          turnGate.chatType === "group" || turnGate.chatType === "channel"
-            ? "channel"
-            : "owner";
+          turnGate.chatType === "group" || turnGate.chatType === "channel" ? "channel" : "owner";
         const c = liveCfg();
         if (!c.autoRecall || !c.enabled) {
           return undefined;
