@@ -331,6 +331,12 @@ fn is_invisible(c: char) -> bool {
         || cp == 0x061C
         || matches!(cp, 0x200B | 0x200C | 0x200D | 0x2060)
         || matches!(cp, 0xFEFF | 0x2061 | 0x2062 | 0x2063 | 0x00AD | 0x034F)
+        // INVISIBLE PLUS (U+2064), the deprecated format chars
+        // (U+206A–206F), and the musical format controls (U+1D173–1D17A) —
+        // the fixture-v2 additions, mirrored from the server set.
+        || cp == 0x2064
+        || (0x206A..=0x206F).contains(&cp)
+        || (0x1D173..=0x1D17A).contains(&cp)
         // Mirror of the server's residual-class additions: Mongolian vowel
         // separator, Hangul fillers, interlinear annotation.
         || matches!(cp, 0x180E | 0x115F | 0x1160)

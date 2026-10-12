@@ -12,7 +12,23 @@ use rusqlite::Connection;
 // Chain tamper-evidence at v1.29.11 (hmac256 epoch): controls + residuals
 // ─────────────────────────────────────────────────────────────────────────
 
+
+/// The chain key is PROCESS-GLOBAL state, and this binary both installs it
+/// (`db_hmac`) and asserts hash determinism against it
+/// (`control_audit_hash_is_sha256_not_xxh3`). Cargo runs a binary's tests
+/// on parallel threads — the sibling audit test target flapped exactly this
+/// way in the release matrix (a key install landing mid-test produced two
+/// digests for one input inside a single assert). Every test here holds
+/// this lock: the file's assertions run serial against the shared key
+/// state.
+static KEY_STATE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_key_state() -> std::sync::MutexGuard<'static, ()> {
+    KEY_STATE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn db_hmac() -> Connection {
+    let _key_state = lock_key_state();
     use std::sync::Once;
     static KEY_INIT: Once = Once::new();
     KEY_INIT.call_once(|| {
@@ -68,6 +84,7 @@ fn record_n(db: &Connection, n: usize) {
 /// tamper IS detected now — the hmac256 link commits the full 8 fields.
 #[test]
 fn control_status_and_detail_tamper_detected_hmac256() {
+    let _key_state = lock_key_state();
     let db = db_hmac();
     record_n(&db, 4);
     assert!(audit::verify_chain(&db), "baseline verifies");
@@ -85,6 +102,7 @@ fn control_status_and_detail_tamper_detected_hmac256() {
 /// CONTROL: tail truncation IS detected via the head pin.
 #[test]
 fn control_tail_truncation_detected_by_pin() {
+    let _key_state = lock_key_state();
     let db = db_hmac();
     record_n(&db, 6);
     assert!(audit::verify_chain(&db));
@@ -99,6 +117,7 @@ fn control_tail_truncation_detected_by_pin() {
 /// CONTROL: full wipe with the pin surviving IS detected.
 #[test]
 fn control_full_wipe_with_pin_detected() {
+    let _key_state = lock_key_state();
     let db = db_hmac();
     record_n(&db, 5);
     assert!(audit::verify_chain(&db));
@@ -116,6 +135,7 @@ fn control_full_wipe_with_pin_detected() {
 /// match the truncated chain is behind the chain key (outside the DB).
 #[test]
 fn head_deletion_is_detected_by_genesis_pin() {
+    let _key_state = lock_key_state();
     let db = db_hmac();
     record_n(&db, 6);
     assert!(audit::verify_chain(&db));
@@ -133,6 +153,7 @@ fn head_deletion_is_detected_by_genesis_pin() {
 /// the rewrite is invalid because the MAC key lives outside the DB.
 #[test]
 fn head_deletion_with_genesis_rewrite_is_detected() {
+    let _key_state = lock_key_state();
     let db = db_hmac();
     record_n(&db, 6);
     assert!(audit::verify_chain(&db));
@@ -162,6 +183,7 @@ fn head_deletion_with_genesis_rewrite_is_detected() {
 /// absence on a live chain is removal, not "never stamped".
 #[test]
 fn genesis_pin_row_deletion_is_detected() {
+    let _key_state = lock_key_state();
     let db = db_hmac();
     record_n(&db, 4);
     assert!(audit::verify_chain(&db));
@@ -185,6 +207,7 @@ fn genesis_pin_row_deletion_is_detected() {
 /// an external witness exists — update THREAT_MODEL §2b accordingly.
 #[test]
 fn ceiling_full_wipe_with_all_pins_deleted_reads_as_fresh() {
+    let _key_state = lock_key_state();
     let db = db_hmac();
     record_n(&db, 5);
     assert!(audit::verify_chain(&db));
@@ -202,6 +225,7 @@ fn ceiling_full_wipe_with_all_pins_deleted_reads_as_fresh() {
 /// chain that does not verify (a tampered chain is preserved for forensics).
 #[test]
 fn control_prune_refuses_broken_chain() {
+    let _key_state = lock_key_state();
     let db = db_hmac();
     record_n(&db, 4);
     // Age every row past a 1-day window so the prune has work to do.
@@ -233,6 +257,7 @@ fn control_prune_refuses_broken_chain() {
 /// 2^64 brute force of v1.15.0 is gone.
 #[test]
 fn control_audit_hash_is_sha256_not_xxh3() {
+    let _key_state = lock_key_state();
     let h = audit::hash("what is alice's salary band");
     assert_eq!(h.len(), 64, "256-bit digest rendered as 64 hex chars");
     assert_eq!(h, audit::hash("what is alice's salary band"));
@@ -249,6 +274,7 @@ fn control_audit_hash_is_sha256_not_xxh3() {
 /// tombstone `origin_id` in the deletion registry points at the true origin.
 #[test]
 fn dsar_locate_attributes_each_derived_to_its_true_root() {
+    let _key_state = lock_key_state();
     let mut db = Connection::open_in_memory().expect("db");
     db.execute_batch(
         "CREATE TABLE knowledge(id INTEGER PRIMARY KEY, owner TEXT);
@@ -300,6 +326,7 @@ fn dsar_locate_attributes_each_derived_to_its_true_root() {
 // — /recall, /search, /suggest empty; /get + /verify 404 probe-blind).
 #[test]
 fn control_audit_kind_vocabulary_exists() {
+    let _key_state = lock_key_state();
     // Keeps this file honest: the lib-facing audit surface this file exercises
     // compiles and the kinds used above are real variants.
     let k = audit::AuditKind::Ingest;
