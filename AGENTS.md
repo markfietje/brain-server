@@ -1,5 +1,14 @@
 # Agent Execution Log — brain-server
 
+> **Fork lane rider (K4-05 + K4-12, zero-conflict subset):** the TUI
+> approval projection now carries the requester-supplied `detail` — the
+> effective arguments the reviewer was never shown — sanitized, labeled,
+> and capped head+tail with the elision count named (tui lane 34/34,
+> brain extension 72/72). And `scripts/fork/install-cli-gated.sh` refuses
+> an upstream-sourced install over a diverged fork (four arms + the
+> upstream-checkout pass-through drilled). The upstream-owned K4 rows
+> (K4-01/02/08) stay parked under the zero-conflict directive.
+
 > **R121 "Second Pass" + R122 "Conduit II": the closures attacked, the owed
 > rows landed.** The twelfth pass (a dedicated adversarial lane against
 > R115-R120's own diffs) found what a second pass exists to find, and the
