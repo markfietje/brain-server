@@ -424,6 +424,17 @@ jobs:
           fi
           echo "version=${version}" >> "$GITHUB_ENV"
 
+          # 0a. The publishability gate runs FIRST, and it is the SAME script
+          #     the local test pin runs (`tests/release_notes_gate.rs`), so
+          #     the two cannot drift. It lives in one place because these
+          #     checks used to live only here — which meant the only place
+          #     they could fail was a full matrix plus four cross-builds.
+          #     v1.29.13 was refused twice at this step for two different
+          #     reasons, both `grep`-shaped and both visible locally in
+          #     under a second. The inline checks below remain as the
+          #     workflow's own copy; this call is the early, cheap refusal.
+          ./scripts/release-notes-check.sh "${version}"
+
           # 0. The section must exist.
           if ! grep -q "^## \[${version}\]" CHANGELOG.md; then
             echo "::error::CHANGELOG.md has no '## [${version}]' section."
