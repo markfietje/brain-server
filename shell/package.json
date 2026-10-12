@@ -47,7 +47,7 @@
 		"eslint": "^10.12.0",
 		"eslint-plugin-svelte": "^3.23.0",
 		"globals": "^17.13.0",
-		"jsdom": "^30.1.1",
+		"jsdom": "^30.1.2",
 		"openapi-typescript": "^7.13.0",
 		"shadcn-svelte": "^1.7.0",
 		"svelte": "^5.57.1",
