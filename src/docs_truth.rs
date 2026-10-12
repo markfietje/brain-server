@@ -824,4 +824,104 @@ mod pins {
             "the claim-file set shrank to {claims_found} — update the pin's file list              deliberately, never by drift"
         );
     }
+
+    /// R123: `docs/test-census.md` must RE-DERIVE from the tree.
+    ///
+    /// The census is the first artifact in this repo that classifies every test
+    /// in the suite; a census that can go stale is worse than none, because a
+    /// reader checks the number instead of re-deriving it. This drives the real
+    /// script (`--check`) rather than re-reading the table, so the check and
+    /// the census can never disagree about how to derive.
+    ///
+    /// IT DOES NOT POLICE ITSELF, and the exclusion is stated rather than
+    /// accidental: this pin and the census are the two things a `--check` run
+    /// would otherwise class as `structural` (both read source text), and a
+    /// census that must include its own validator cannot be used to argue that
+    /// its validator is fine. So the census's scope is `src/` + `tests/`, the
+    /// table it writes is not classified, and this pin does not assert a floor
+    /// on any class — a floor written before its population is measured is a
+    /// number nobody checked. The only thing here that can fail is DRIFT, and
+    /// the only floors are the anti-vacuity ones below, which exist to prove
+    /// the classification saw a non-empty population at all.
+    ///
+    /// RED-PROOF (run 2026-10-12, both directions, both reverted):
+    ///   - table edited: `behavioral_pin | 2848` → `| 9999 |` in
+    ///     docs/test-census.md → `--check` exits 1 and this test fails naming
+    ///     the drift;
+    ///   - tree edited: `#[test]` on `chunk_markdown`'s
+    ///     `single_paragraph_is_one_chunk` gated to `#[cfg(any())]` without
+    ///     re-deriving → the same failure.
+    ///
+    /// The census's own class rules are red-proved separately, by planting one
+    /// test of each class in `src/` plus one that matches no rule (R123, the
+    /// AGENTS.md entry). All five landed where the rules say — including the
+    /// unplantable one, which showed up in `unclassified`.
+    #[test]
+    fn the_test_census_table_re_derives_from_the_tree() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let script = repo.join("scripts/test-census.py");
+        assert!(
+            script.exists(),
+            "scripts/test-census.py is gone — the census has no method, only a table"
+        );
+        let run = std::process::Command::new("python3")
+            .arg(&script)
+            .arg("--check")
+            .current_dir(repo)
+            .output()
+            .unwrap_or_else(|e| panic!("python3 must be on PATH to derive the census: {e}"));
+        let out = format!(
+            "{}{}",
+            String::from_utf8_lossy(&run.stdout),
+            String::from_utf8_lossy(&run.stderr)
+        );
+        assert!(
+            run.status.success(),
+            "docs/test-census.md drifts from a fresh derivation — re-run \
+             `scripts/test-census.py > docs/test-census.md` and commit the result.\n{out}"
+        );
+        assert!(
+            out.contains("re-derives from the tree"),
+            "the census selfcheck passed without saying so — a --check that \
+             cannot report what it verified is a --check nobody can trust.\n{out}"
+        );
+
+        // ANTI-VACUITY. `--check` compares two strings; if the census stopped
+        // classifying anything, both strings would agree and the pin would be
+        // green over an empty measurement. So the pin asks the census what it
+        // actually saw: the population must be non-empty, every class must be
+        // represented, and the largest file must still be where it was. These
+        // are floors on the CENSUS'S OWN OUTPUT, not on the suite's classes —
+        // they say "the classifier ran and saw the tree", nothing more.
+        let json = std::process::Command::new("python3")
+            .arg(&script)
+            .arg("--json")
+            .current_dir(repo)
+            .output()
+            .expect("python3 census --json");
+        assert!(json.status.success(), "census --json must run");
+        let text = String::from_utf8_lossy(&json.stdout);
+        let total = text.matches("\"class\":").count();
+        assert!(
+            total > 3000,
+            "the census classified {total} tests — the tree carries 3399 at the \
+             commit that wrote this pin. An empty or truncated census must fail \
+             the pin, not agree with an empty table."
+        );
+        for class in [
+            "behavioral_pin",
+            "structural",
+            "control",
+            "residual_documentation",
+            "unclassified",
+        ] {
+            let n = text.matches(&format!("\"class\": \"{class}\"")).count();
+            assert!(
+                n > 0,
+                "no test classified as `{class}` — a class with an empty \
+                 population is a rule set that over-fits, and the rule text in \
+                 the script's docstring must change to say so."
+            );
+        }
+    }
 }

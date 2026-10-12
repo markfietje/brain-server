@@ -24622,3 +24622,94 @@ mod r70_seams {
         );
     }
 }
+
+/// R123: `docs/gate-law-register.md` must stay a REGISTER, not an essay.
+///
+/// **The gap this closes.** The register's first law is "a new guard lands
+/// with its row, its red-proof, and its class", and nothing read the file. The
+/// four guards that shipped in v1.29.13 landed with no row at all, and the
+/// discovery was a round of auditing rather than a failing test — which is the
+/// shape of a law nothing checks. This pin is that check.
+///
+/// Two tables, two last columns, two things that must never be empty:
+/// `Red-proof` in the standing-guards table (a guard with no teeth recorded is
+/// decoration), and `Owed` in the text-bound table (a structural row that owes
+/// nothing has silently stopped being debt).
+///
+/// RED-PROOF (run 2026-10-12, reverted): blanking the `Owed` cell of
+/// `the_salt_lock_is_never_taken_twice_in_one_test` fails the owed arm; blanking
+/// `Red-proof` on any standing-guard row fails the other. A row whose cell
+/// count is not the header's — a missing `|` that silently merges two columns —
+/// fails as UNREADABLE rather than passing, so a malformed row cannot read as a
+/// populated one.
+#[test]
+fn the_gate_law_register_rows_parse_and_carry_their_last_column() {
+    let register = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/gate-law-register.md"),
+    )
+    .expect("docs/gate-law-register.md must exist — it is the register's own law");
+
+    // (table header, the column that must be non-empty, an anti-vacuity floor on
+    // the row count). The floors are floors on ROWS PARSED, not on the register
+    // staying small: a register that shrinks below its measured population is
+    // the failure this is here to catch, and a row that stops parsing lowers the
+    // count rather than raising it.
+    let tables = [
+        (
+            "| Guard | Subject | Red-proof | Class |",
+            "Red-proof",
+            11usize,
+        ),
+        ("| Guard | Subject | Class | Owed |", "Owed", 14usize),
+    ];
+
+    for (header, column, floor) in tables {
+        let at = register
+            .find(header)
+            .unwrap_or_else(|| panic!("gate-law register lost its `{column}` table header"));
+        let tail = &register[at..];
+        let body = match tail.find("\n## ") {
+            Some(end) => &tail[..end],
+            None => tail,
+        };
+
+        let mut rows = 0usize;
+        for line in body.lines().skip(1) {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            // The `|---|` alignment row, and anything that is not a data row.
+            if line.starts_with("|-") || line.starts_with("|--") {
+                continue;
+            }
+            assert!(
+                line.starts_with('|') && line.ends_with('|'),
+                "unreadable register row (does not start and end with `|`): {line}"
+            );
+            let cells: Vec<&str> = line[1..line.len() - 1].split('|').map(str::trim).collect();
+            assert_eq!(
+                cells.len(),
+                4,
+                "unreadable register row — the `{column}` table's header has 4 \
+                 columns and this has {}: {line}",
+                cells.len()
+            );
+            assert!(
+                !cells[3].is_empty(),
+                "register row `{}` has an EMPTY `{column}` cell. {column} is not \
+                 optional: a guard with no recorded teeth is decoration, and a \
+                 structural row that owes nothing has stopped being debt.",
+                cells[0]
+            );
+            rows += 1;
+        }
+        assert!(
+            rows >= floor,
+            "the gate-law register's `{column}` table parsed {rows} rows, below \
+             its measured floor of {floor} — a row stopped parsing, or rows were \
+             deleted without a decision. Fail-closed on purpose: an unparsed row \
+             must never read as a compliant one."
+        );
+    }
+}

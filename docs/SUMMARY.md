@@ -82,6 +82,7 @@
 
 - [Repo verification tooling (the gates)](repo-verification-tooling.md)
 - [Gate-law register](gate-law-register.md)
+- [Test census (what the suite is made of)](test-census.md)
 - [Proof map](./trust/proof-map.md)
 - [Reproduce on a throwaway instance](./trust/reproduce.md)
 - [WCAG 2.2 AA checklist](./trust/wcag22-aa-checklist.md)

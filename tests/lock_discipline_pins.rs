@@ -502,21 +502,70 @@ fn no_ignored_advisory_is_fixed_in_the_current_lock() {
     }
 }
 
-/// F4-18: the crate-islands census. A `crates/` member that no workspace
-/// consumes is either a live island (documented, per-entry reason) or dead
-/// weight waiting to rot — this pin pins the SET, so a member joining or
-/// leaving the island list is a named act, never silent. Consumed = some
-/// tracked manifest carries a `path =` reference into the member's
-/// directory (the only consumption pattern in this tree).
+/// The path-dependency NAMES cargo's own resolver produced for one manifest.
+///
+/// R123 CONVERSION. This used to be `manifest.contains("crates/<member>")` — a
+/// text read, which the register's law 2 calls a regression lock, not proof,
+/// because a COMMENT naming the member satisfies it exactly as well as the
+/// dependency does. The census now asks cargo instead: only a real path
+/// dependency serialises as `"name":"…","source":null`, and a comment cannot
+/// make the resolver emit anything.
+///
+/// `--offline` first because the committed lock is complete and the resolver
+/// needs no network for it; the online retry exists so a cold CI cache is not a
+/// false red. `cargo metadata` on both manifests costs ~0.1s each here.
+///
+/// RED-PROOF (run 2026-10-12, reverted). The defect planted was the one the
+/// register's law 2 names: a member that LOOKS consumed. A comment —
+/// `# crates/brain-care-core = { path = … }` in the root Cargo.toml — plus
+/// `brain-care-core` moved from the island list to the consumed list. The OLD
+/// text condition (`root_manifest.contains("crates/brain-care-core")`)
+/// evaluated TRUE on the comment; this probe returned false and the test
+/// failed. That is the directional proof the conversion bought teeth rather
+/// than re-describing the same fact. (The other direction is not available as
+/// a drill: deleting the real dependency does not compile — `src/workflow/
+/// delivery.rs:167` names `brain_consensus_core` — so the compiler, not this
+/// pin, is the guard for a member that is used.)
+fn resolved_path_dep(manifest_rel: &str, member: &str) -> bool {
+    // Built from parts so this file's own source cannot satisfy the needle.
+    let needle = format!("\"na{}\":\"{}\",\"source\":null", "me", member);
+    for offline in [true, false] {
+        let mut cmd = std::process::Command::new("cargo");
+        cmd.args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--manifest-path",
+            manifest_rel,
+        ]);
+        if offline {
+            cmd.arg("--offline");
+        }
+        let Ok(out) = cmd.output() else {
+            panic!("cargo must be on PATH to resolve {manifest_rel}");
+        };
+        if out.status.success() {
+            return String::from_utf8_lossy(&out.stdout).contains(&needle);
+        }
+    }
+    panic!(
+        "cargo metadata could not resolve {manifest_rel} offline OR online — \
+         the islands census must fail closed, never pass on a resolver it did \
+         not get to run"
+    );
+}
+
+/// F4-18: the crate-islands census, now resolved by cargo rather than read as
+/// text (R123). A `crates/` member that no workspace consumes is either a live
+/// island (documented, per-entry reason) or dead weight waiting to rot — this
+/// pins the SET, so a member joining or leaving either list is a named act.
+/// Consumed = cargo resolves a PATH dependency on it, from the root workspace
+/// or from the steward-harness workspace (a separate workspace, so it needs
+/// its own resolution; that is why one list is not enough).
 #[test]
 fn crates_consumed_set_is_pinned() {
-    let root_manifest = read("Cargo.toml");
-    let harness_manifest = read("tools/steward-harness/Cargo.toml");
-    let workspace_manifest = read("crates/Cargo.toml");
-    let all_manifests = format!("{root_manifest}\n{harness_manifest}\n{workspace_manifest}");
-
-    // The consumed census: the crates/ members with a path consumer outside
-    // their own manifest (measured, not assumed — each row was grep-verified).
+    // The consumed census: the crates/ members cargo resolves a path edge to
+    // (measured by cargo, not grep-verified — 2026-10-12).
     let consumed = [
         "brain-engine-sdk",        // root + steward-harness (harness-kernel feature)
         "brain-evidence-core",     // root
@@ -530,10 +579,10 @@ fn crates_consumed_set_is_pinned() {
     ];
     for member in consumed {
         assert!(
-            root_manifest.contains(&format!("crates/{member}"))
-                || harness_manifest.contains(&format!("crates/{member}")),
-            "`{member}` is listed as consumed but no workspace manifest \
-             references crates/{member} — update the census"
+            resolved_path_dep("Cargo.toml", member)
+                || resolved_path_dep("tools/steward-harness/Cargo.toml", member),
+            "`{member}` is listed as consumed but cargo resolves NO path \
+             dependency on it from either workspace — update the census"
         );
     }
 
@@ -547,19 +596,25 @@ fn crates_consumed_set_is_pinned() {
         "brain-interview-core",
         "brain-fuzz",
     ];
+    // ANTI-VACUITY: the probe above can only fail if it can SEE. A needle that
+    // never matches would make every island arm pass vacuously, so the census
+    // names one member cargo is known to resolve and requires the probe to find
+    // it. If cargo's metadata format ever stops serialising path deps this way,
+    // this arm fails instead of the census quietly emptying.
+    assert!(
+        resolved_path_dep("Cargo.toml", "brain-engine-sdk")
+            && resolved_path_dep("tools/steward-harness/Cargo.toml", "gold-sets"),
+        "the path-dependency probe found nothing in either workspace — it is \
+         reading the wrong shape of `cargo metadata`, not reporting an empty \
+         dependency graph. Every island arm above would be passing vacuously."
+    );
+
     for member in islands {
-        let referenced_elsewhere = all_manifests
-            .replace(&format!("\"{member}\""), "")
-            .contains(&format!("crates/{member}"));
         assert!(
-            !root_manifest.contains(&format!("crates/{member}\"\n"))
-                && !harness_manifest.contains(&format!("crates/{member}")),
-            "`{member}` is listed as an ISLAND but a workspace consumes it — \
-             move it to the consumed census"
-        );
-        assert!(
-            !referenced_elsewhere || workspace_manifest.contains(&format!("\"{member}\"")),
-            "`{member}` gained a consumer — wire it or document it"
+            !resolved_path_dep("Cargo.toml", member)
+                && !resolved_path_dep("tools/steward-harness/Cargo.toml", member),
+            "`{member}` is listed as an ISLAND but cargo resolves a path \
+             dependency on it from a workspace — move it to the consumed census"
         );
     }
 }

@@ -1,5 +1,50 @@
 # Agent Execution Log — brain-server
 
+> **R123 "Tally": the suite is measured, and the register says who owes.**
+> The test suite is the largest artifact in this repo and nothing had ever
+> counted what it is *made of*. `scripts/test-census.py` now classifies all
+> **3401** tests in `src/` + `tests/` by five deterministic rules, and
+> `docs/test-census.md` is the committed derivation with a `--check` that
+> refuses drift. The measurement: **2849 behavioral pins (83.8%), 175
+> structural (5.1%), 58 controls (1.7%), 53 residual-documentation (1.6%),
+> 266 unclassified (7.8%)** — and the unclassified bucket is reported, not
+> hidden. Rule 4 demands POSITIVE evidence of a drive (a call that is not
+> stdlib plumbing), because "no evidence of a read" is exactly the shape of
+> the four vacuous census pins R122 shipped on first draft.
+>
+> **The register caught up with the tree.** Four guards that shipped in
+> v1.29.13 without rows now have them, including their recorded drill
+> (the two-thread env-drill owed on the salt lock; the compile-time fence
+> owed on the operator key — a signature change, named not faked). Every
+> structural row now carries an explicit **R123 decision**: one converted,
+> two already retired, three LANDED-and-kept, seven keep-and-re-date with
+> the project named. And the law gained its missing clause: an exhaustive
+> row owes nothing, because exhaustiveness IS the proof.
+>
+> **The conversion, and its teeth.** `crates_consumed_set_is_pinned` no
+> longer greps manifest text — it asks `cargo metadata` whether a PATH
+> dependency resolves, in both workspaces. Red-proof: a COMMENT naming
+> `crates/brain-care-core` plus the member moved to the consumed list
+> satisfied the old text condition and fails the new one. An anti-vacuity
+> arm names two members cargo is known to resolve, so a probe that stopped
+> seeing anything fails instead of emptying the island list quietly.
+>
+> **The register now has a pin.** Nothing read
+> `docs/gate-law-register.md` — its first law ("a new guard lands with its
+> row") was enforced by nothing, which is how four guards shipped bare.
+> `the_gate_law_register_rows_parse_and_carry_their_last_column` parses
+> both tables, refuses an empty `Red-proof`/`Owed`, and fails CLOSED on a
+> malformed row. Drilled three ways, all reverted: blanked `Owed`, blanked
+> `Red-proof`, and a row missing a column separator.
+>
+> **ponytail:** one script, one committed table, one converted pin, one
+> register pin, no new dependency (`cargo metadata` was already there; a
+> `serde_json` dev-edge would have re-locked the root for nothing), no new
+> test file, no floor written before its population was measured, and no
+> test deleted — the round's exit criterion is a measurement plus a
+> decision per row, and "we deleted N tests" would have failed it even
+> with every lane green.
+
 > **Fork lane rider (K4-05 + K4-12, zero-conflict subset):** the TUI
 > approval projection now carries the requester-supplied `detail` — the
 > effective arguments the reviewer was never shown — sanitized, labeled,
