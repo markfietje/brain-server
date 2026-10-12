@@ -47,6 +47,22 @@ hash committed, per-category results published alongside the harness that
 reproduces them. Self-reported numbers without the harness are against the
 house rules.
 
+**Addendum 2026-10-12 — the numbers moved again.** MindMemOS
+([arXiv:2608.12428](https://arxiv.org/abs/2608.12428), Huawei) self-reports
+**LOCOMO 94.03** (its schema-guided mode; 87.60 schema-free) against
+baselines it **cites from the EverOS paper under a matched configuration** —
+EverOS 93.05, Zep 85.22, MemOS 80.76, memU 66.67, Mem0 64.20 — and
+**PersonaMem 70.63** with locally re-run baselines. Two provenance caveats
+keep it in the contested column: the LOCOMO baselines are second-hand
+(cited, not re-run), and the system's recall path is LLM-planned, so its
+scores measure a different cost class entirely (~25M tokens per
+evolved-skill agent run, the paper's own table) than a deterministic
+pipeline. Recorded as the current self-reported frontier, not as comparable
+numbers — the harness remains the only comparison this repo will stand
+behind. The paper also surfaces **MemoryAgentBench FactConsolidation**
+(consolidation measurably improving fact scores) as a fixture candidate for
+the planned harness, alongside the LoCoMo/LongMemEval pair above.
+
 *The ceiling.* The shipped smoke-set floors are a regression gate, not a
 quality claim on production-sized corpora. Benchmark scores are comparable
 only through the harness, once it lands, and third-party runs may still

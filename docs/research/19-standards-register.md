@@ -19,6 +19,10 @@ Nothing in the tree would notice. There is a `reg_watch` module for the
 body's own publication during authoring, not recalled. **Verified 2026-10-04.**
 Where a designation in this repo is imprecise, that is recorded here rather
 than silently corrected, because the imprecision is itself the finding.
+**Addendum 2026-10-12:** the agent-ecosystem section below was added in a
+second pass whose entries *were* machine-fetched live against the issuing
+body or distribution point the same day — the link check the original
+authoring pass could not perform and explicitly deferred.
 
 **What "checked" means here, precisely.** Designations, titles, article numbers,
 and dates were verified against issuing-body sources (ISO, EUR-Lex, NIST,
@@ -276,6 +280,73 @@ referenced across the tree; the 2026 edition rewrote the list, so an A-number is
 edition-scoped and a control matrix that mixes editions is ambiguous. Worth
 stamping which edition each row belongs to.
 - <https://genai.owasp.org/>
+
+### OWASP Agent Control Standard (ACS) — verified 2026-10-12
+
+A newer OWASP GenAI project: a standard for **transparency and control of AI
+agents** across cloud, SaaS, and on-premises environments, distributed as a
+downloadable document and on GitHub. Verified only at landing-page level
+(existence, scope, availability) on 2026-10-12; its control set has not been
+read and no compliance mapping is claimed or attempted. Watch item alongside
+the Agentic Top 10, not a mapped framework. Feeds and status changes are
+re-triaged on the standing sweep cadence.
+
+## Agent-ecosystem protocols and agent authorization
+
+Added 2026-10-12; every entry in this section was machine-fetched against the
+source named on the day of entry, and the section exists because the MCP
+bridge and the taint-label design now interoperate with a protocol ecosystem
+that has its own spec cadence.
+
+### Model Context Protocol — specification 2026-07-28
+
+The MCP specification the bridge and plugin speak, current at version dated
+**2026-07-28** (verified against modelcontextprotocol.io the same day). The
+version introduced an **extensions** mechanism — opt-in, negotiated at
+initialization — with three notable extensions live: **Tasks** (asynchronous
+long-running operations with polling, mid-flight input, and durable handles —
+the protocol-level shape of the workflows lane), **Skills over MCP**, and
+**MCP Apps**. The spec's security principles state normatively that tool
+descriptions and annotations **are untrusted unless obtained from a trusted
+server** — the posture this repo already holds (the plugin's tools are static
+and self-authored; third-party metadata is the A2M surface, see
+[doc 22](./22-post-convergence-watch-oct-2026.md)). Wire-version drift now
+belongs on the same parity discipline as the openapi/schema regen.
+
+### Agent2Agent protocol (A2A) — v1.0, Linux Foundation
+
+Open standard for agent-to-agent discovery, delegation, and coordination —
+**Agent Cards** for identity/capability discovery, task delegation, streaming
+and multi-tenancy, explicitly *not* a tool protocol (that is MCP's lane).
+Originally Google, donated to the Linux Foundation, now under a TSC spanning
+the major vendors and joined to the Agentic AI Foundation; Apache 2.0;
+verified live 2026-10-12. Relevance: A2A is where "which agent said this"
+gets standardized across hosts — the interoperability surface the `origin`
+label will eventually have to speak to. Watch item; nothing speaks A2A here.
+
+### RFC 9449 — OAuth 2.0 Demonstrating Proof-of-Possession (DPoP)
+
+Sender-constrained bearer tokens: the client proves possession of a key per
+request, so a stolen bearer alone cannot be replayed. The standards-grade
+upgrade path past this repo's static bearer tokens (file-seam rotation is the
+shipped posture; DPoP would bind each MCP/HTTP call to a key the token file
+does not carry). Recorded as the named alternative — deliberately not
+adopted; the loopback-only deployment and two-lane token file are the
+operator's decided posture. Verified by IETF publication (September 2023).
+- <https://datatracker.ietf.org/doc/html/rfc9449>
+
+### OpenID Shared Signals and Events (SSE) — SET event streams, CAEP
+
+The OpenID working group (merge of RISC and the CAEP effort) standardizing
+**asynchronous security-event streams** between transmitters and receivers:
+Security Event Tokens over push or poll, subject management, the **CAEP**
+(Continuous Access Evaluation) profile as the motivating use case; the SSE
+Framework is an OpenID Implementer's Draft. Verified live 2026-10-12. This is
+the standards answer to the token-revocation semantics this repo implements
+by file-mtime polling and boot-time refusal: session/credential events pushed
+to relying parties instead of discovered by rotation. Watch item for the
+auth lane; nothing here consumes SETs.
+- <https://github.com/openid/sse>
 
 ## Cryptographic standards
 

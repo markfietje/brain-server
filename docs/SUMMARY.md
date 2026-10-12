@@ -130,6 +130,7 @@
 - [The Standards Register](./research/19-standards-register.md)
 - [The Agent-Memory Research Sweep, October 2026](./research/20-agent-memory-oct-2026-sweep.md)
 - [The Cloud-Agent Convergence, October 2026](./research/21-cloud-agent-convergence-oct-2026.md)
+- [The Post-Convergence Watch, October 2026](./research/22-post-convergence-watch-oct-2026.md)
 
 # Blog
 

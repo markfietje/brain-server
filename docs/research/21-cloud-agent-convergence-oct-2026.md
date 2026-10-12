@@ -34,8 +34,8 @@ Three readings, all boundary confirmations for this project:
 
 1. **The loop, the trigger, and the sandbox are harness-layer facts.** All
    three products are execution harnesses. The trigger layer (schedule,
-   webhook, repo event) lives in the harness — for this deployment, OpenClaw's
-   cron and webhooks — exactly where the R97-era boundary decision placed it.
+   webhook, repo event) lives in the harness — this deployment's host cron
+   and webhooks — exactly where the R97-era boundary decision placed it.
    Nothing here argues for triggers inside the store.
 2. **The human gate survived automation at every platform.** PR review,
    confidence-based holds, review-and-publish: the durable pattern is

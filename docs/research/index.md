@@ -26,6 +26,7 @@ cites, the **deterministic** way brain-server implements it, and the **ceiling**
 - [The Standards Register](./19-standards-register.md), every framework and regulation cited, verified against the issuing body
 - [The Agent-Memory Research Sweep, October 2026](./20-agent-memory-oct-2026-sweep.md), fourteen papers triaged against shipped behavior: validated, threatening, refused
 - [The Cloud-Agent Convergence, October 2026](./21-cloud-agent-convergence-oct-2026.md), platform sandboxes and human-gated loops verified against primary sources, five provenance papers triaged, the ecosystem measured
+- [The Post-Convergence Watch, October 2026](./22-post-convergence-watch-oct-2026.md), Loopjacking and A2M triaged against the digest law, MCP 2026-07-28 extensions, the two standing watch lanes
 
 Every mechanism is a deterministic implementation of *specific* published
 techniques over a local store, no LLM in the retrieval loop, no data egress.
