@@ -9,20 +9,20 @@ are consistent at that tag.
 Covers every commit from tag `v1.29.12` (`22f2bb15`) to this release —
 `git log v1.29.12..v1.29.13` reproduces the range. Six remediation rounds
 (R115 "Seventh", R116 "Carriage", R117 "Console", R118 "Lowtide", R119
-"Gatewright", R120 "Conduit"), a fork-lane rider (K4-05 + K4-12), and a
-dedicated twelfth pass that re-attacked the closures themselves and found
-six defects in them — all closed same-session. Zero new dependency edges;
-wire deltas are additive only (declared per section below); no
-schema-version change.
+"Gatewright", R120 "Conduit"), a fork-lane rider, and a dedicated twelfth
+pass that re-attacked the closures themselves and found six defects in
+them — all closed same-session, along with three release-lane defects this
+tag's own matrix caught. Zero new dependency edges; wire deltas are
+additive only (declared per section below); no schema-version change.
 
-### Release notes for 1.29.13
+### Release notes
 
 The eleventh pass's remediation program: six rounds closing 21 registered
 findings (five HIGH), a twelfth pass that re-attacked the closures and
 closed six more, and the CI/supply-chain band. Wire deltas additive only;
 no schema-version change; zero new dependency edges.
 
-### Security fixes
+**Security fixes**
 
 - **The agent class could mutate live knowledge directly** through
   `/consolidate/apply|undo` (bare Write gate, no approver in the lane) and
@@ -60,7 +60,7 @@ no schema-version change; zero new dependency edges.
   already declare — one package, four pointers, no manifest change and no
   new dependency edge.
 
-### Improvements
+**Improvements**
 
 - **The capture taint is carried, not just stamped**: derived at the
   proposal seam for the agent class, inherited through revisions, and
@@ -86,8 +86,8 @@ no schema-version change; zero new dependency edges.
   scope; the US map's export-controls row reconciled (ECCN 4E091's rule
   rescinded pre-effect).
 - Fork lane (zero-conflict): the TUI approval prompt shows the
-  requester-supplied detail (bounded, labeled — K4-05) and the installer
-  refuses upstream sources over a diverged fork (K4-12).
+  requester-supplied detail (bounded, labeled) and the installer refuses
+  upstream sources over a diverged fork.
 - **Two release-lane defects closed, both found by running the gate**: the
   audit-residual test target acquired its non-reentrant `KEY_STATE_LOCK`
   twice (once in the fixture, once per test), so all eleven tests blocked
@@ -119,6 +119,24 @@ no schema-version change; zero new dependency edges.
   standards register's agent-ecosystem section (MCP 2026-07-28 extensions,
   A2A v1.0, RFC 9449 DPoP, OpenID SSE/CAEP, OWASP ACS) machine-fetched
   against each issuing body.
+
+### Engineering record
+
+Internal identifiers are recorded here rather than in the published body —
+the release workflow refuses to publish notes carrying finding IDs, which is
+the right default (a reader wants the behaviour, the register wants the ID).
+
+- Rounds: R115 "Seventh", R116 "Carriage", R117 "Console", R118 "Lowtide",
+  R119 "Gatewright", R120 "Conduit", plus the R122 rider and the twelfth
+  pass that re-attacked R115–R121's own diffs.
+- Fork lane (zero-conflict subset): K4-05 (the TUI approval projection
+  carries the requester-supplied detail) and K4-12 (the installer refuses an
+  upstream-sourced install over a diverged fork).
+- This tag's release-lane fixes, all caught by running the gate rather than
+  by review: the audit-residual target's non-reentrant double-lock, the
+  unfenced process-global chain key in `anchor`'s test, and the shell's
+  `source-map-js` advisory. Proof commits: `a1658e1c`, `34932cf0`,
+  `3ffb554e`.
 
 ## [Unreleased] — R114 "Six" — six audit findings closed at the root
 
