@@ -97,6 +97,19 @@ no schema-version change; zero new dependency edges.
   path without holding it. The same file also carried a stray blank line
   that `cargo fmt --check` refused. A class sweep of all 34 static lock
   declarations in the tree found no other live instance.
+- **The process-global chain key was mutated without its fence.** The audit
+  chain's key is a process-global, so a test that installs or clears it is
+  visible to every other test on another thread. `anchor`'s key-independence
+  test flipped it (none → key A → key B → none) while nine keyed audit
+  assertions ran unfenced; `hmac_epoch_without_key_fails_closed` then failed
+  on a key it had not installed, and that panic poisoned the shared mutex —
+  **one real failure reported as nine**, red-laning the `compliance-pack`
+  release job. The second mutator now holds the gate, the gate has one
+  crate-visible definition, and a new census pin fails if any mutator is ever
+  unfenced again (red-proven: removing the fence names all three call
+  sites). No verdict, key, epoch, check, or audit row changed — the
+  audit module's scope-lock digest is re-recorded with the diff proof that
+  all four hunks sit inside `#[cfg(test)]`.
 - **New research**: the post-convergence watch (doc 22) — Loopjacking read
   in full and reproduced as a live defense verification against an isolated
   instance of the shipped binary (14/14 checks: canonical display binding,

@@ -1785,13 +1785,31 @@ mod test_key_gate {
     /// key is visible to concurrently-running tests (fresh-DB bootstraps,
     /// hmac writes), so keyed tests must hold this mutex for their whole
     /// scenario and clear the key on exit.
-    pub(super) static KEY_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ///
+    /// The census is TWO mutators, and both now hold it: this module's own
+    /// keyed tests, and `anchor::tests::anchor_root_is_independent_of_the_
+    /// chain_key`, which installs key A, then key B, then clears — and did
+    /// not fence. `hmac_epoch_without_key_fails_closed` asserts the *no-key*
+    /// path, so an unfenced flip turned it red; its panic then poisoned this
+    /// mutex and took eight sibling keyed tests down with it (observed as a
+    /// nine-failure `compliance-pack` lane, 2026-10-12, where only the first
+    /// failure had a real cause). A new mutator is a third-party edit to
+    /// this global, so it holds this lock.
+    pub(crate) static KEY_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 }
 
 #[cfg(test)]
 pub(crate) fn set_chain_key_for_test(key: Option<[u8; 32]>) {
     let mut slot = CHAIN_KEY.write().expect("chain key lock poisoned");
     *slot = key.map(Arc::new);
+}
+
+/// The fence every process-global chain-key mutator holds for its whole
+/// scenario. `pub(crate)` because the second mutator lives outside this
+/// module — one definition of "who serializes the key", not one per file.
+#[cfg(test)]
+pub(crate) fn key_gate_for_test() -> std::sync::MutexGuard<'static, ()> {
+    test_key_gate::KEY_GATE.lock().expect("key gate poisoned")
 }
 
 /// Read recent audit events (operator diagnostics only). Bounded by `limit`.
@@ -1879,6 +1897,125 @@ pub struct AuditRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The chain-key mutator census.
+    ///
+    /// `CHAIN_KEY` is process-global, so installing/clearing it inside one
+    /// test is visible to every other test running on another thread. The
+    /// keyed tests fence that with `KEY_GATE`; the fence only works while
+    /// EVERY mutator honours it, and the second mutator
+    /// (`anchor::tests::anchor_root_is_independent_of_the_chain_key`) did not
+    /// — it flipped the key under nine keyed assertions, turned
+    /// `hmac_epoch_without_key_fails_closed` red, and that test's panic then
+    /// poisoned the shared mutex so one real failure reported as nine
+    /// (observed: the `compliance-pack` lane, 2026-10-12).
+    ///
+    /// This is the structural half of that fix. The behavioural half (the
+    /// race itself) does not reproduce on demand — 30 runs of the interacting
+    /// pair stayed green even with the window widened 300× — so the durable
+    /// guard has to be the census, not the race.
+    ///
+    /// Deliberately fail-closed: it reads the tree from `CARGO_MANIFEST_DIR`
+    /// (not the cwd), scans every `src/**/*.rs`, and asserts each mutator's
+    /// enclosing function body holds the gate. The setter's own definition
+    /// and the two accessors are excluded by name, and the walk stops at the
+    /// first column-0 `}`, which is where a top-level test fn ends — an
+    /// unparseable shape fails the arm rather than passing it silently.
+    #[test]
+    fn every_process_global_chain_key_mutator_holds_the_gate() {
+        fn walks(dir: &Path, out: &mut Vec<PathBuf>) {
+            let mut entries: Vec<PathBuf> = std::fs::read_dir(dir)
+                .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+                .map(|e| e.expect("dir entry").path())
+                .collect();
+            entries.sort();
+            for path in entries {
+                if path.is_dir() {
+                    walks(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    out.push(path);
+                }
+            }
+        }
+
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut files = Vec::new();
+        walks(&root, &mut files);
+        assert!(
+            files.len() > 100,
+            "the census walked {} files — it must see the whole src tree, \
+             not a slice (a truncated walk passes vacuously)",
+            files.len()
+        );
+
+        let mut mutators: Vec<(String, usize)> = Vec::new();
+        for file in &files {
+            let text = std::fs::read_to_string(file).expect("read source");
+            for (i, line) in text.lines().enumerate() {
+                let t = line.trim_start();
+                // The mutator call, not the definition and not the accessors.
+                if !t.starts_with("set_chain_key_for_test(")
+                    && !t.contains("set_chain_key_for_test(")
+                {
+                    continue;
+                }
+                let is_definition = t.starts_with("pub(crate) fn set_chain_key_for_test");
+                let is_comment = t.starts_with("//") || t.starts_with("///");
+                if is_definition || is_comment {
+                    continue;
+                }
+                let rel = file
+                    .strip_prefix(&root)
+                    .unwrap_or(file)
+                    .display()
+                    .to_string();
+                mutators.push((rel, i + 1));
+            }
+        }
+
+        assert!(
+            mutators.len() >= 10,
+            "census found only {} chain-key mutators — it must see this \
+             module's own keyed tests, or the scan is broken",
+            mutators.len()
+        );
+
+        let unfenced: Vec<String> = mutators
+            .iter()
+            .filter(|(rel, line)| {
+                let path = root.join(rel);
+                let text = std::fs::read_to_string(&path).expect("read source");
+                // Slice from this call back to the enclosing `fn`, then
+                // forward to the fn's closing brace at column 0.
+                let lines: Vec<&str> = text.lines().collect();
+                let start = (0..*line).rev().find(|i| lines[*i].starts_with("fn "));
+                let Some(start) = start else {
+                    return true; // no enclosing fn found — fail closed
+                };
+                let end = ((*line)..lines.len())
+                    .find(|i| lines[*i] == "}")
+                    .unwrap_or(lines.len());
+                let body = lines[start..end].join("\n");
+                !body.contains("key_gate_for_test(")
+            })
+            .map(|(rel, line)| format!("{rel}:{line}"))
+            .collect();
+
+        assert!(
+            unfenced.is_empty(),
+            "every process-global chain-key mutator must hold \
+             `key_gate_for_test()` for its whole scenario; unfenced: {unfenced:?}"
+        );
+
+        // Anti-vacuity: the census must actually SEE the second mutator, the
+        // one that was missed. If a future refactor moves it, this arm fails
+        // rather than letting the census shrink around a live mutator.
+        assert!(
+            mutators.iter().any(|(rel, _)| rel.ends_with("anchor.rs")),
+            "the census no longer sees anchor.rs's chain-key mutator — \
+             either it moved (re-point this arm) or it is gone"
+        );
+    }
 
     fn db() -> Connection {
         let db = Connection::open_in_memory().expect("open in-memory DB");
@@ -2902,7 +3039,7 @@ mod tests {
     /// process-global, and a key visible to a concurrently-running fresh-DB
     /// bootstrap would flip that test's epoch. Hold → set → … → clear.
     fn key_gate() -> std::sync::MutexGuard<'static, ()> {
-        test_key_gate::KEY_GATE.lock().expect("key gate poisoned")
+        key_gate_for_test()
     }
 
     /// M2: the hmac256 link commits the FULL row — mutating any one field of a

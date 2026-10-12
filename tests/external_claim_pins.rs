@@ -1049,8 +1049,21 @@ fn r45_0_correction_leaves_the_audit_chain_module_byte_untouched() {
 /// Control arms kept green: `legacy_chain_still_detects_the_fields_it_commits`,
 /// `reaudit_refuses_a_broken_chain`, `hash_is_sha256_not_xxh3`, and the
 /// 129-test `--lib audit` suite.
+/// RE-RECORDED 2026-10-12 (the digest moved, the chain did not). A later
+/// round's release lane went red on the `compliance-pack` job: `anchor::tests`
+/// flipped the process-global chain key without the fence the keyed tests
+/// hold, so `hmac_epoch_without_key_fails_closed` failed on a key it did not
+/// install, and that panic poisoned the shared gate — one real failure
+/// reported as nine. The fix touches `src/audit/mod.rs` in four hunks, ALL of
+/// them inside `#[cfg(test)]` regions (verified by `git diff -U0`: 1788 in
+/// `mod test_key_gate`, 1807 the new `#[cfg(test)]` accessor, 1901 the new
+/// census test, 3042 the `key_gate()` helper's body). No verdict, key,
+/// epoch, check, or audit row moved — this is the extend-don't-weaken shape
+/// R112 recorded, and the module's own battery is what substantiates it: the
+/// keyed suite, the tamper controls and the unsealed-key arms all still pass,
+/// plus a new census pin that fails if any mutator is ever unfenced again.
 const CHAIN_MODULE_SHA256: &str =
-    "5f2b2f9cc33a6afc2986c3e965314aa61189d24bc262a936568dea53161a5d81";
+    "fe85c9c076bc47267261a86addfeb23096949434a1aa34efbc7369d99d91eee7";
 
 /// E8's second half: the correction adds no key material and no audit row.
 #[test]

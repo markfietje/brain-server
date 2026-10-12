@@ -289,6 +289,15 @@ mod pins {
     /// on the host can read the key too.
     #[test]
     fn anchor_root_is_independent_of_the_chain_key() {
+        // The chain key is PROCESS-GLOBAL, and this test mutates it three
+        // times (none → key A → key B → none). Without this fence it raced
+        // every keyed test in the crate: `hmac_epoch_without_key_fails_closed`
+        // asserts the no-key path, so a flip landing mid-scenario turned it
+        // red — and its panic poisoned the shared gate, so one real failure
+        // reported as nine (the `compliance-pack` lane, 2026-10-12). Same
+        // law as the sibling fences: hold it for the whole scenario, clear
+        // the key on exit.
+        let _gate = crate::audit::key_gate_for_test();
         let (_path, conn) = anchored_db("keyindep");
         conn.execute(
             "INSERT INTO knowledge (title, content, content_hash, domain) \
