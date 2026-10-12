@@ -1380,8 +1380,27 @@ mod tests {
     /// A seeded world with a real signed chain: one delivery run admitted
     /// under a policy, carrying all four enforced budget kinds, advanced once
     /// with a typed artifact (which files the proposal and seals a link).
+    ///
+    /// SELF-DEADLOCK FIX: this helper used to take the crate-wide operator-key
+    /// guard itself, while three tests in this same module take it directly
+    /// for their whole body. `std::sync::Mutex` is not reentrant, so either
+    /// group calling the other deadlocks its own thread — and the guard is
+    /// crate-wide, so the hang would take the whole test binary with it. It
+    /// has not happened yet only because none of those three calls `seed()`
+    /// today, which is one edit away and not a property anything enforces.
+    ///
+    /// So the seeded world is split: `seed_locked` REQUIRES the guard (the
+    /// compiler refuses a call site that cannot already hold it) and `seed`
+    /// acquires it for the callers that hold nothing. Same shape as
+    /// `tests/audit_residuals_v129.rs`'s keyed fixture.
     pub(crate) fn seed() -> (Connection, i64) {
         let _operator = crate::test_support::operator_key_guard();
+        seed_locked(&_operator)
+    }
+
+    /// The seeded world's body, for a caller that ALREADY holds the
+    /// operator-key guard.
+    pub(crate) fn seed_locked(_held: &crate::test_support::OperatorKeyGuard) -> (Connection, i64) {
         let mut conn = db();
         let budgets = [
             delivery::BudgetCeiling {
@@ -1527,6 +1546,90 @@ mod tests {
 
     /// A release with no artifact names nothing and does not exist; a
     /// release with no resolvable binding binds nothing and does not exist.
+    /// The operator-key-guard census.
+    ///
+    /// `std::sync::Mutex` is not reentrant and this module's guard is
+    /// CRATE-WIDE (every test in `src/` that touches the operator key takes
+    /// it), so a test that holds it and then calls `seed()` — which takes it
+    /// again — blocks its own thread forever, and every sibling behind it
+    /// hangs with it. The split above gives the safe path (`seed_locked`),
+    /// but a safe path available is not a hazard removed: nothing stopped a
+    /// lock-holder from calling `seed()`, and a planted call compiles
+    /// cleanly and then hangs. So the combination is asserted here instead.
+    ///
+    /// The needle is built from parts so this census cannot match its own
+    /// source, and comment lines are skipped so the doc text above cannot
+    /// populate the population.
+    #[test]
+    fn no_test_holds_the_operator_key_guard_and_then_seeds() {
+        let text = include_str!("releases.rs");
+        let lines: Vec<&str> = text.lines().collect();
+        let guard_needle = format!("operator_key_guard(){}", "");
+        let seed_call = format!("seed({}", "");
+
+        let offenders: Vec<String> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| {
+                let t = l.trim_start();
+                // This census does not police itself: its own name, doc text
+                // and refusal message all carry both needles, so without this
+                // it reports exactly one offender — itself.
+                t.starts_with("fn ")
+                    && !t.starts_with("fn seed")
+                    && !t.starts_with("fn no_test_holds_the_operator_key_guard_and_then_seeds")
+            })
+            .filter(|(i, _)| {
+                // The fn's own closing line is `    }` at this indent. Slicing
+                // to a column-0 `}` instead runs to the END OF THE MODULE, so
+                // every fn "contains" every guard string in the file — which is
+                // how this check's first draft reported 30 offenders out of 30.
+                let start = *i;
+                match ((start + 1)..lines.len()).find(|j| lines[*j] == "    }") {
+                    Some(end) => {
+                        let body = lines[start..end].join("\n");
+                        let holds = body.contains(guard_needle.as_str());
+                        // The CALL, in any binding shape (`let (c, i) = seed();`),
+                        // and not a comment. Requiring the line to START with
+                        // `seed(` matches almost no real call site — a census
+                        // that never fires on the shape it exists for is worse
+                        // than none.
+                        let seeds = body.lines().any(|l| {
+                            let t = l.trim_start();
+                            !t.starts_with("//") && t.contains(seed_call.as_str())
+                        });
+                        holds && seeds
+                    }
+                    // No closing line found: fail CLOSED rather than silently
+                    // skip a shape this census cannot read.
+                    None => true,
+                }
+            })
+            .map(|(i, l)| format!("releases.rs:{}: {}", i + 1, l.trim()))
+            .collect();
+
+        assert!(
+            offenders.is_empty(),
+            "a test that holds the operator-key guard and calls seed() \
+             deadlocks itself (std::sync::Mutex is not reentrant), and the \
+             guard is crate-wide so the whole binary hangs with it. Call \
+             seed_locked(&guard) instead: {offenders:?}"
+        );
+
+        // Anti-vacuity: the census must still SEE the lock-holding tests it
+        // is protecting, or it guards an empty population.
+        let holders = lines
+            .iter()
+            .filter(|l| l.contains(guard_needle.as_str()))
+            .count();
+        assert!(
+            holders >= 4,
+            "found only {holders} operator_key_guard() sites — the census must \
+             see seed(), seed_locked's callers and the direct holders, or it \
+             has gone blind to the population it exists to police."
+        );
+    }
+
     #[test]
     fn create_refuses_without_an_artifact_or_a_resolvable_binding() {
         let _operator = crate::test_support::operator_key_guard();

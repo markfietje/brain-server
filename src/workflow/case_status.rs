@@ -291,7 +291,18 @@ mod tests {
 
     /// Env vars are process-global: every salt-touching test holds this
     /// lock (poison-tolerantly) for its whole body.
+    ///
+    /// ONE accessor, so "acquires the salt lock" is a nameable act: the
+    /// census pin below then reads this file for both acquisition sites
+    /// rather than for a raw `SALT_LOCK.lock()` it might miss. `std::sync::
+    /// Mutex` is not reentrant, so a test that takes this lock directly AND
+    /// calls `conn()` (which takes it too) would deadlock its own thread;
+    /// the pin is what keeps that combination from arriving unannounced.
     static SALT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn salt_lock() -> std::sync::MutexGuard<'static, ()> {
+        SALT_LOCK.lock().unwrap_or_else(|p| p.into_inner())
+    }
 
     fn conn() -> (Connection, SaltGuard, std::sync::MutexGuard<'static, ()>) {
         let conn = Connection::open_in_memory().expect("open");
@@ -306,7 +317,7 @@ mod tests {
                 revoked_at INTEGER);",
         )
         .expect("create table");
-        let lock = SALT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let lock = salt_lock();
         let guard = SaltGuard::set("BRAIN_CASE_STATUS_KEY", "test-salt-key");
         (conn, guard, lock)
     }
@@ -387,6 +398,84 @@ mod tests {
         assert_eq!(revoked, Some(2_000));
     }
 
+    /// The salt-lock acquisition census.
+    ///
+    /// `SALT_LOCK` is not reentrant, and `conn()` acquires it. So a test that
+    /// takes the lock directly AND calls `conn()` blocks its own thread
+    /// forever — and the guard is held to the end of the enclosing scope, so
+    /// every sibling waiting behind it hangs too. That is not hypothetical in
+    /// this repo: the same class cost two release cycles today (a test target
+    /// that acquired its key lock twice; a process-global chain key flipped
+    /// without its fence).
+    ///
+    /// `conn()` RETURNS the guard, which is the right shape — a caller cannot
+    /// reach the fixture without the lock. The remaining hole is the
+    /// acquisition site beside it, so this asserts the two never meet inside
+    /// one test. It reads this file rather than trusting the count: both
+    /// acquisitions must go through `salt_lock()`, or the census is blind to
+    /// a raw `SALT_LOCK.lock()` added tomorrow.
+    #[test]
+    fn the_salt_lock_is_never_taken_twice_in_one_test() {
+        let text = include_str!("case_status.rs");
+        let lines: Vec<&str> = text.lines().collect();
+
+        // Anti-vacuity: the census must SEE both acquisition sites, or it is
+        // reading an empty population and passing for the wrong reason.
+        let acquisitions = text.matches("salt_lock()").count();
+        assert!(
+            acquisitions >= 3,
+            "found {acquisitions} salt_lock() call sites — expected the accessor \
+             plus at least the conn() fixture and one direct holder. If the \
+             accessor moved, re-point this census rather than let it pass empty."
+        );
+        // The needle is built from parts so this census cannot match its own
+        // source — the same trap the crate-test needle walks into (a counter
+        // that counts the literal it is written with counts itself).
+        let raw_needle = format!("SALT_LOCK{}.lock()", "");
+        assert!(
+            lines
+                .iter()
+                .filter(|l| {
+                    let t = l.trim_start();
+                    !t.starts_with("//") && t.contains(raw_needle.as_str())
+                })
+                .count()
+                == 1,
+            "SALT_LOCK must be acquired through salt_lock() only (the accessor \
+             itself). A raw SALT_LOCK[.]lock() elsewhere is invisible to this census."
+        );
+
+        // Every test function: does it take the lock directly AND use conn()?
+        let offenders: Vec<String> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.trim_start().starts_with("fn "))
+            .filter(|(i, _)| {
+                // `    }` is the fn's own closing line at this indent. A
+                // column-0 `}` would slice to the end of the module instead, so
+                // every fn would "contain" the whole file and match itself.
+                let start = *i;
+                match ((start + 1)..lines.len()).find(|j| lines[*j] == "    }") {
+                    Some(end) => {
+                        let body = lines[start..end].join("\n");
+                        let takes_lock =
+                            body.contains("salt_lock()") && !body.contains("fn conn()");
+                        let uses_fixture = body.contains("conn()");
+                        takes_lock && uses_fixture
+                    }
+                    None => true,
+                }
+            })
+            .map(|(i, l)| format!("case_status.rs:{}: {}", i + 1, l.trim()))
+            .collect();
+
+        assert!(
+            offenders.is_empty(),
+            "a test that takes SALT_LOCK directly and also calls conn() \
+             deadlocks itself (std::sync::Mutex is not reentrant): {offenders:?}"
+        );
+    }
+
     #[test]
     fn missing_salt_fails_closed() {
         let conn = Connection::open_in_memory().expect("open");
@@ -394,7 +483,7 @@ mod tests {
             "CREATE TABLE case_status_refs(id INTEGER PRIMARY KEY AUTOINCREMENT, run_id INTEGER NOT NULL UNIQUE, ref TEXT NOT NULL UNIQUE, salt_version INTEGER NOT NULL DEFAULT 1, minted_at INTEGER NOT NULL, rotated_at INTEGER, revoked_at INTEGER);",
         )
         .expect("create table");
-        let _lock = SALT_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let _lock = salt_lock();
         let _guard =
             SaltGuard::remove_all(&["BRAIN_CASE_STATUS_KEY_FILE", "BRAIN_CASE_STATUS_KEY"]);
         let err = mint(&conn, 5, 1_000).expect_err("no salt must refuse");
