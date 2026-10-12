@@ -23,7 +23,7 @@
 		"tauri": "tauri"
 	},
 	"dependencies": {
-		"@tauri-apps/api": "^2.12.1",
+		"@tauri-apps/api": "^2.12.2",
 		"bits-ui": "2.19.5",
 		"openapi-fetch": "^0.17.0",
 		"svelte-i18n": "^4.0.1"
