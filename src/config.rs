@@ -2719,9 +2719,8 @@ pub(crate) mod tests {
             "a compliant token file loads normally"
         );
         assert_eq!(auth_token_misconfigured(), None);
-        match prev {
-            Some(v) => unsafe { std::env::set_var("AUTH_TOKEN_FILE", v) },
-            None => unsafe { std::env::remove_var("AUTH_TOKEN_FILE") },
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("AUTH_TOKEN_FILE", v) };
         }
     }
 

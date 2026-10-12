@@ -24,6 +24,8 @@ cites, the **deterministic** way brain-server implements it, and the **ceiling**
 - [The Two-Layer Injection Screen](./17-injection-screen.md), mechanical tiers, a local classifier, quarantine as the usable middle state, and honest degradation
 - [The Cited Work](./18-cited-work.md), every source behind these mechanisms, summarized and linked
 - [The Standards Register](./19-standards-register.md), every framework and regulation cited, verified against the issuing body
+- [The Agent-Memory Research Sweep, October 2026](./20-agent-memory-oct-2026-sweep.md), fourteen papers triaged against shipped behavior: validated, threatening, refused
+- [The Cloud-Agent Convergence, October 2026](./21-cloud-agent-convergence-oct-2026.md), platform sandboxes and human-gated loops verified against primary sources, five provenance papers triaged, the ecosystem measured
 
 Every mechanism is a deterministic implementation of *specific* published
 techniques over a local store, no LLM in the retrieval loop, no data egress.

@@ -4,178 +4,83 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
-## [Unreleased] — R121/R122 "Second Pass" — the closures attacked, the owed rows landed
+## [1.29.13] — 2026-10-12 — the eleventh pass closed, then attacked
 
-The twelfth pass re-attacked R115-R120's own diffs and found six findings,
-all closed: the revise taint was strippable by a null-origin patch
-(`deep_merge` now guards `origin`/`untrusted` as server-authoritative);
-the plugin's invisible-set stayed on v1 when the fixture moved (lane fixed,
-fork suite runs it); `console_due` and the agent-file runtime reader now
-ride the read seam and the 0600 law; the THREAT_MODEL digest wording was
-corrected to the read-canonical truth. The owed conversions landed: the two
-structural pins' behavioral drills (chain-growth, edge-history cap through
-the real app), the F4-19 digest pins + Dependabot docker, the F4-21
-audit-staleness gate, the F4-18 islands census, the F4-15 scope banner,
-F4-05's remaining half (domain create/import audit rows), and the F4-08
-router SQL census (equality-pinned at 52). Regulatory: T4-07 reconciled
-(ECCN 4E091's rule rescinded pre-effect) and the CRA runbook gained the
-applicability-first banner.
+Covers every commit from tag `v1.29.12` (`22f2bb15`) to this release —
+`git log v1.29.12..v1.29.13` reproduces the range. Six remediation rounds
+(R115 "Seventh", R116 "Carriage", R117 "Console", R118 "Lowtide", R119
+"Gatewright", R120 "Conduit"), a fork-lane rider (K4-05 + K4-12), and a
+dedicated twelfth pass that re-attacked the closures themselves and found
+six defects in them — all closed same-session. Zero new dependency edges;
+wire deltas are additive only (declared per section below); no
+schema-version change.
 
-## [Unreleased] — R120 "Conduit" — the CI/supply-chain band lands its gates
+### Release notes for 1.29.13
 
-- **Published releases carry `SHA256SUMS`** over every staged file
-  (fail-closed coverage check), shipped by `files: dist/*`.
-- **The green gate iterates every publication workflow** (ci/shell/codeql/
-  fuzz/docs): an existing red run on the tagged SHA refuses the publish;
-  paths-filtered skips are named and accepted.
-- **The shell type-check runs after the supply-chain gates** (one red check
-  used to skip 13 steps including both audits).
-- **`check-doc-links.py` is file-anchored and CI-invoked** (from a foreign
-  cwd it scanned nothing and exited 0; from no lane was it ever run).
-- **CodeQL analyzes the plugin/shell TypeScript** — the model-output parser
-  was SAST-invisible.
-- **The badges UMP arm reads the gate's case-arm**, not the comment that a
-  deleted gate left green.
-- Recorded owed in the gate-law register: container digest pins (external
-  act), audit staleness gate (needs the ignore list pruned first), WCAG
-  evidence retarget, crate-islands census.
+The eleventh pass's remediation program: six rounds closing 21 registered
+findings (five HIGH), a twelfth pass that re-attacked the closures and
+closed six more, and the CI/supply-chain band. Wire deltas additive only;
+no schema-version change; zero new dependency edges.
 
-## [Unreleased] — R119 "Gatewright" — the process round, two passes overdue
+### Security fixes
 
-- **`docs/gate-law-register.md`** — the standing artifact the audits kept
-  finding missing: every guard carries a row with its red-proof and its
-  class (behavioral / structural / exhaustive); structural rows are
-  regression locks with an `owed` column naming the behavioral conversion
-  that retires them. Seeded with the ten standing guards and the four
-  text-bound rows (the two lowtide wiring pins, the rate-limit literal, the
-  file-granular Art 50 check). Anti-rot pin included.
-- **Docs truth**: the COMPLIANCE.md PHI row states the read-time boundary
-  honestly (no write-time vault; raw PHI at rest behind volume encryption),
-  and the DSAR deadline constants are relabelled as the operator-windowed
-  processing deadline (Art 17 sets no clock).
-- **Register hygiene**: F4-05 corrected to PARTIALLY CLOSED; R111 joined
-  `SHIPPED_ROUNDS`.
+- **The agent class could mutate live knowledge directly** through
+  `/consolidate/apply|undo` (bare Write gate, no approver in the lane) and
+  **`POST /procedure`** (operator-grade provenance on machine-authored
+  rules that decision evaluation then executes). Both refused by class; the
+  authz matrix pins the cells.
+- **`/ump/revise` laundered the capture taint**: a revised `channel-capture`
+  row re-emerged as owner-grade. Revisions now inherit the superseded row's
+  origin, and a patch cannot strip it (`origin`/`untrusted` are
+  server-authoritative in the merge) — the twelfth pass closed the strip
+  the first fix missed.
+- **A JWT deployment that loses its key dir served an unauthenticated
+  superuser API** (issuer configured + zero keys silently downgraded to
+  opaque-token mode). The boot now refuses and names the remedy.
+- **The channel console showed bytes the approval digest did not bind**
+  (raw bidi/markdown-image content beside a digest over the stripped form).
+  The shown bytes and the bound bytes are the same now.
+- **`/export?format=ump-md` was a live EchoLeak-class sink** (a markdown
+  document rendered from verbatim stored rows); it rides the read seam now,
+  and the DSAR bundle is stripped + labeled.
+- The agent preset dropped `reject` (the review queue is not the model's to
+  prune); `brain_memory_proposal_decide` is removed (plugin 0.6.14 — it
+  advertised a promotion it could never perform).
+- The invisible-Unicode set gained its three missing classes (fixture v2,
+  all-tree sync — including the plugin lane the twelfth pass found left on
+  v1); the Art-19 webhook subject passes the strip; the tokenless
+  bridge-mount arm enforces timestamp freshness + a replay claim;
+  `AUTH_TOKEN_FILE`'s documented 0600 law is enforced on the read path and
+  at reload; per-domain databases are created 0600.
 
-## [Unreleased] — R118 "Lowtide" — the LOW band closes before it ages
+### Improvements
 
-Eight known-LOW defects, one batch, each a bounded read, a parse, a header,
-or a gate.
-
-- **The invisible-Unicode set gained its three missing classes** (INVISIBLE
-  PLUS U+2064, deprecated format U+206A–206F, musical format U+1D173–1D17A)
-  across the canonical fixture (v2), the Rust set, and the shell regex in
-  one change — the exhaustive all-scalars pin forces the sync.
-- **The Art-19 webhook's `subject` passes the invisible/control strip**
-  before riding to an external receiver.
-- **`/ingest/memory`'s audit row commits WITH the write** — the post-commit
-  second-connection form was a crash window that left a durable memory with
-  no chain row.
-- **The tokenless bridge-mount arm enforces timestamp freshness + a replay
-  claim** — the same pair the receiver arm enforces; a captured signed
-  envelope can no longer remount the bridge forever.
-- **Per-domain databases are created 0600** — registry creation and import,
-  enforced after the pool build (the red-first pin caught the first
-  placement tightening a file that did not exist yet).
-- **`AUTH_TOKEN_FILE`'s documented 0600 is enforced on the read path** — a
-  world-readable token file is refused, not served; boot refuses it when no
-  `AUTH_TOKEN` fallback exists.
-- **The edge-history lineage is bounded** (`EDGE_HISTORY_MAX` = 500) and
-  discloses truncation instead of clamping silently.
-- **`brain_memory_proposal_decide` is removed** (plugin 0.6.14) — the
-  review queue is not the model's to prune; the server role-gates both
-  verbs to humans and approve demanded a digest the tool never sent.
-
-Wire: additive `truncated` field on the edge-history response. No route,
-schema, or dependency change.
-
-## [Unreleased] — R117 "Console" — the approver sees the bytes the digest binds
-
-Three lanes rendered stored content for a human without the seam the
-approval digest binds; all three closed, and the deliberately-raw lanes are
-now named ceilings instead of undocumented divergences.
-
-- **The channel console's pending queue rides the read seam.** A
-  Slack/Teams approver previously saw bidi overrides, markdown-image
-  beacons, and fence-sentinel literals while the digest beside them bound
-  the stripped canonical form. The shown bytes and the bound bytes are the
-  same now; the read-seam machine table gained the row.
-- **`/export?format=ump-md` rides the read seam** — it is a rendered
-  document, the one export lane that meets a renderer, so stored
-  image-beacon markdown can no longer ride it. The JSON export stays
-  byte-verbatim (the portability decision) and the DSAR Art-15 bundle's
-  content is stripped + the envelope labeled `untrusted`.
+- **The capture taint is carried, not just stamped**: derived at the
+  proposal seam for the agent class, inherited through revisions, and
+  present on `/get`, `/multi-get`, `/suggest`, graph edges, UMP records,
+  and the DSAR bundle (+ `by_origin`); the plugin honors the exclude
+  posture on every path into model context.
 - **`/ingest/memory`'s response carries `quarantined_chunk_ids`** — the
-  screen verdict surfaces at the call site instead of being discoverable
-  only through the review queue.
-- **The ceilings are stated** (THREAT_MODEL §5b + stamps): the digest binds
-  raw stored bytes while non-admin displays mask PII (deliberate);
-  `BRAIN_APPROVAL_QUORUM=2` is capability-split, not principal-split;
-  traverse hops stay unlabeled by construction.
-
-Wire: additive `quarantined_chunk_ids` response field (openapi + regenerated
-`schema.d.ts`). No route, schema, or dependency change.
-
-## [Unreleased] — R116 "Carriage" — the taint survives the trip
-
-The capture label (`origin: channel-capture`) was recall-only: revised away
-at `/ump/revise` and absent from by-id, suggestion, graph, UMP-record, and
-DSAR wires. R116 carries it everywhere, additively, with no new machinery.
-
-- **`/ump/revise` inherits the superseded row's origin** — the record engine
-  emits `origin` (+ `untrusted` on the capture value; id-safe: the
-  content-addressed id hashes `domain\0text` only), `lower_ump` honors only
-  the capture value, and both revise branches carry it. Export→import
-  round-trips the label.
-- **The proposal seam owns the vocabulary and the derivation** —
-  `create_proposal` 400s unknown `origin_context` values (the `/ingest`
-  code) and derives `channel` for the agent class, closing the three router
-  sites that hard-coded `None` and the caller-asserted label on
-  `/ingest/proposal`.
-- **The label rides every content-returning wire** — `/get/{id}`,
-  `/multi-get`, `/suggest` hits, graph entity/relations edges, UMP records,
-  and the DSAR Art-15 bundle (+ `by_origin` census). The plugin's
-  `brain_memory_get` honors the exclude posture and labels; graph relations
-  mark captured edges; `brain_memory_store` threads the turn's chat type so
-  a channel-grouped turn's store cannot launder it. Traverse stays
-  unlabeled by stated ceiling (a hop aggregates multiple edges).
-
-Wire: additive response fields (openapi + regenerated `schema.d.ts`). No
-route, schema, or dependency change.
-
-## [Unreleased] — R115 "Seventh" — the two surfaces that had forgotten the class
-
-The eleventh pass found the R106 class law's own doc promise ("no future
-surface can forget the class") falsified twice, plus the standing F4-03
-posture collapse still unrouted. All closed at the seam.
-
-- **`/consolidate/apply` and `/consolidate/undo` refused the agent class.**
-  Both gated on bare Write scope, and the agent principal carries
-  `write:*/global`, so a loopback agent could expire any knowledge row from
-  recall via `supersedes` (and restore it via undo) under either write
-  posture, with no human anywhere — the one lane where no approver class
-  existed at all. A proposal cannot express a supersession link, so the class
-  is refused rather than proposed. *(Red-first: with the refusal stashed the
-  agent walked the route with 200.)*
-- **`POST /procedure` refused the agent class and gained the taint input.**
-  A stored procedure is later EXECUTED with operator-grade authority by
-  `/decision/{id}/evaluate`, and its root + ordered steps cannot ride the
-  proposal wire — so the class is refused outright. The request also accepts
-  `origin_context` (`owner` | `channel`, default `owner`) with the same
-  closed vocabulary and the same 400 `/ingest` enforces, so a capture-derived
-  runbook can be labelled and a typo cannot silently de-taint.
-- **The agent preset no longer grants `reject`.** Disposing of pending
-  proposals — its own or a human's queued capture — is a review-queue act,
-  and the queue is not the agent's to prune. The authz matrix's agent cell
-  flipped in the same commit; approve was already refused.
-- **An issuer-configured boot with zero JWT keys now REFUSES** (register
-  F4-03, open since the tenth pass): the old behavior silently downgraded to
-  opaque-token mode, where the middleware's operator arm treats every bearer
-  as the superuser. The refusal names the remedy: provision the key dir or
-  unset `BRAIN_JWT_ISSUER`.
-
-Wire: additive `origin_context` request field + 403 arm on `/procedure`
-(openapi + regenerated `schema.d.ts`). No route, schema, or role-vocabulary
-change; no new dependency.
+  screen verdict surfaces at the call site.
+- The edge-history lineage is bounded (500) and discloses `truncated`.
+- **`docs/gate-law-register.md`**: every guard carries a row with its
+  red-proof and class; structural rows carry the owed behavioral
+  conversion. The two lowtide wiring pins' behavioral drills landed
+  (chain-growth, edge-history cap through the real app).
+- CI/supply-chain: published releases carry `SHA256SUMS`; the publish gate
+  iterates every publication workflow; the shell type-check runs after the
+  supply-chain gates; the doc-links checker is file-anchored and
+  CI-invoked; CodeQL analyzes the plugin/shell TypeScript; the Docker
+  bases are digest-pinned (+ Dependabot docker); the audit-ignore list is
+  machine-checked for staleness; the crate-islands census is pinned.
+- New docs: agent-write-posture, taint-labels (the book grows the two
+  concept pages the rounds made essential); the CRA runbook carries an
+  applicability-first banner; the WCAG checklist states its evidence-lane
+  scope; the US map's export-controls row reconciled (ECCN 4E091's rule
+  rescinded pre-effect).
+- Fork lane (zero-conflict): the TUI approval prompt shows the
+  requester-supplied detail (bounded, labeled — K4-05) and the installer
+  refuses upstream sources over a diverged fork (K4-12).
 
 ## [Unreleased] — R114 "Six" — six audit findings closed at the root
 

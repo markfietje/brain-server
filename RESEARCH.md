@@ -1,8 +1,10 @@
 # Research Foundation — brain-server
 
-All techniques verified against the latest July 2026 research. Every component
-is documented with its source paper, the implementation location, and the
-specific findings or benchmarks that validate the approach.
+Techniques verified against July 2026 research; the October 2026
+memory-governance and agentic-memory sweep is recorded as adoption decisions in
+§8, and the cloud-agent convergence check (platforms, ecosystem, regulation)
+in §9. Every component is documented with its source paper, the implementation
+location, and the specific findings or benchmarks that validate the approach.
 
 ---
 
@@ -150,6 +152,65 @@ specific findings or benchmarks that validate the approach.
 
 ---
 
+## 8. Evaluated, Not Adopted
+
+Papers assessed and deliberately not adopted, with reasons recorded so the decision is re-derivable.
+
+| Paper | Evaluated | Verdict and reasons |
+|-------|-----------|---------------------|
+| [arXiv:2610.10957](https://arxiv.org/abs/2610.10957) — TRACE: A Governance Framework for Measuring Explainability Debt in Production AI Systems (Pathak, Oct 2026) | 2026-10-12 | **Not adopted.** Its object — silent degradation of post-hoc explanations for learned-model decisions under drift — does not exist here: the core is deterministic and LLM-free, so any answer is reconstructable from its inputs, and every mutating act lands on the pinned audit chain. The Art-13-adjacent transparency duty it targets is already discharged by stronger artifacts (origin labels on every content-returning wire; the gate-law register's red-proofed guards). Single-author, single-domain case study (fraud-detection ML); aspects claimed by a provisional patent. Unrelated to §2's TRACE traversal ([2607.00339](https://arxiv.org/abs/2607.00339)) — name collision only. Revisit if score-producing, user-facing judgment features ever land. |
+| [arXiv:2610.10659](https://arxiv.org/abs/2610.10659) — Applying Security by Design at the Point of Execution: How Governed Security Requirements Affect the Security of AI-Generated Code (Farinha, Oct 2026) | 2026-10-12 | **Evaluated, not adopted — no gap; validates existing methodology.** Its mechanism (governed requirements delivered to a coding agent at the point of execution via an MCP selector, with requirement-to-code conformance tracing) is already practiced here in stronger form: AGENTS.md + per-round execution prompts are the point-of-execution delivery, and the gate-law register is the conformance trace (row + red-proof + class + owned `owed` column). The paper's own infrastructure is a thin, specialized instance of this server's product shape — governed memory recalled into agent context, with owner-origin provenance as the "governed" trust primitive and proposal-only agent writes guarding the KB; a use case, not a build item. Its honest ceiling (prompt-time delivery is advisory) is superseded by the repo's enforce-at-the-seam stance (derived origin, class refusals, digest-bound approvals). Recorded takeaway: ASVS/SSDF identifier mapping on gate-law register rows, a docs-only change if external auditability is ever wanted. |
+| [arXiv:2610.10265](https://arxiv.org/abs/2610.10265) — Stale, Misattributed, or Late: Where Personal Memory Fails Before Generation (Deng & Sinchaisri, Oct 2026) | 2026-10-12 | **Validates the core model; not adopted as mechanism.** Its three pre-generation memory failure modes map onto existing named mechanisms: *stale* is the bi-temporal validity filter (§2 — "serving only the active value of each correctly keyed slot" is exactly the `valid_at`/`invalid_at` point-in-time law, and its finding that temporal validity is a property of memory *construction* is the supersession/consolidation seam); *misattributed* is the owner-bound record gate (R100/R101 — a fact about the wrong person is a foreign-row read, refused rather than retrieved); *late* is only indirectly bounded here (static-embedding recall posture + capacity envelopes; no per-request serving-deadline SLO is enforced). Recorded hook: the paper's controlled-revision methodology could extend `bench eval` with a stale-exposure-rate metric — deterministic, hand-checkable, in the existing harness's style. |
+| [arXiv:2610.11188](https://arxiv.org/abs/2610.11188) — What to Admit and How to Present: Governing Persistent Memory in LLM Agents (Liu & Ding, Oct 2026) | 2026-10-12 | **Validates the two-seam design; no gap.** Its admission/presentation split — what enters the working context vs how it is expressed — is the split this repo already enforces as two different seams: admission = recall filters, the exclude posture, and quarantine gates; presentation = the read seam (labels on every content-returning wire, PII masking, `sanitize_stored`). Both of its designs translate adjudicated attributes into eligibility decisions via deterministic policies — the compiled-permit shape of `record_read_gate` — and its typed-unit decomposition (PS) is the chunk-kind tier that already exists. Its retraining-free, inference-time posture is this repo's "no LLM in the core" law stated as a research result. |
+| [arXiv:2610.10629](https://arxiv.org/abs/2610.10629) — The Harness as the Only Mutable Surface: Compliance-Bounded Self-Evolution of LLM Agents in Credit Pipelines, with a Measured Admission Gate (Akhtyamov, Oct 2026) | 2026-10-12 | **Validates the proposal/review/audit design; no gap.** For memory content, its reviewable-self-evolution bound is this server's ordinary path: "every adaptation is a diff with a cause and a test attached" ≈ agent writes are proposal-only, disposal is a human review-queue act, approval is quorum-gated and digest-bound, and its hash-chained record-before-deployment gate is the audit chain every mutating act already lands on. AI-Act-lane alignment: the reviewable artefact a supervisor inspects is the register + chain, not the agent's judgment. Stated ceiling: the paper governs *harness* self-edits (instruction text, tool-call logic) — that surface lives in the agent host and plugin, outside this tree. |
+| [arXiv:2610.09348](https://arxiv.org/abs/2610.09348) — Relevance Is Not Sufficiency: What Actually Closes the Evidence Gap in Long-Term Memory QA (Li & Li, Oct 2026) | 2026-10-12 | **Validates §1's coverage objective; one eval hook recorded.** Its claim — top-ranked memories can each be relevant while jointly omitting the complementary fact the answer requires — is the gap the submodular packing module already encodes (objective = relevance + coverage + representativeness, checked by `answer_in_context` rather than document recall); the paper grounds the distinction in legal-evidence scholarship and shows it bites on multi-session and temporal questions. Recorded hook: a sufficiency-gap metric (required-fact coverage, per its conformance framing) could extend `bench eval` beside precision/recall/NDCG — an operator decision, deterministic and hand-checkable. |
+| Agentic-memory architecture cluster: [Hippocam](https://arxiv.org/abs/2610.12124) (intent-structured consolidation), [QGMem](https://arxiv.org/abs/2610.11920) (event-centric memory + query-aware graph augmentation), [HGP](https://arxiv.org/abs/2610.10071) (on-device typed hybrid graph), [Memento 3](https://arxiv.org/abs/2610.11794) (revisable rulebooks as semantic memory), [SkillForge](https://arxiv.org/abs/2610.09832) (fitness-driven skill lifecycle), [Memory Type Varies](https://arxiv.org/abs/2610.11573) (per-type strategies) — all Oct 2026 | 2026-10-12 | **Landscape row for v2.0 Cortex — nothing adoptable under the no-LLM law today.** The store-side substrate these architectures assume already exists here: typed memory (`memory_kinds` ≈ episodic/semantic/procedural/procedure), the bi-temporal typed-edge graph, supersession-based consolidation, and quarantine + decay as lifecycle states (SkillForge's trial/active/stable/retired, minus the learned fitness signal). The papers' routing classifiers, consolidation policies, and credit assignment are learned components that would live in the agent, not the store — the reverse of this server's boundary. Watch item: QGMem's finding that flat memory + query-time augmentation beats eager graph construction (irrelevant relations accumulate over long histories) is the argument to weigh when v1.8 Consolidate populates the reserved node hierarchy. |
+| [arXiv:2609.32091](https://arxiv.org/abs/2609.32091) — Memory as Middleware for Self-Improving AI Agents (Jayaram, Isahagian et al., Sep 2026) | 2026-10-12 | **Validates the architectural position; machinery unevaluated, refused by default.** Its diagnosis — agents are "operationally amnesiac" and bespoke per-agent memory is the wrong fix — is an independent (IBM) argument for this repository's shape: one governed store behind plugin, bridge, and UMP. Abstract-level triage only; the middleware's internals were not read, and any learned component in the write/recall path is refused under the standing no-LLM law before evaluation. Surfaced by a targeted provenance query, outside the doc-20 lane window ([doc 21](./docs/research/21-cloud-agent-convergence-oct-2026.md)). |
+| [arXiv:2609.36373](https://arxiv.org/abs/2609.36373) — Audience-Bound Persistent Memory: Authorization Across the Memory Lifecycle (Liu, Sep 2026) | 2026-10-12 | **Validates the taint-carriage law; designated watch item.** Each memory item carries the audience present at record time; derived items inherit the intersection of their sources' audiences — the authorization-across-derivation problem R116 shipped the enforcement half of (revise inherits the superseded row's origin; peers can label their own traffic, never assert owner-grade provenance). The refinement this store lacks: intersection semantics over multi-source derivations. The shipped posture is deliberately one boolean capture label, no lattice (R116 ponytail); this paper is the first serious argument for refining it and is the designated re-triage trigger at the next monthly sweep. Mapping: the `(owner, access_scope)` pair is already the audience fact; the paper adds set algebra over derivation, not a new column. |
+| [arXiv:2609.34242](https://arxiv.org/abs/2609.34242) — Stashbird: Efficient Speaker-Indexed Memory for Conversational Agents (Biringa, Yannul et al., Sep 2026) | 2026-10-12 | **Validates provenance-linked derivation; no gap.** Links source episodes to derived memory state through explicit provenance, indexed by speaker — the per-principal attribution this store enforces on every row (`owner`, origin labels, per-edge capture markers) plus the `derived_from` evidence graph the DSAR purge and `dsar_locate` already walk. Its episodic/semantic organization is the chunk-kind tier that exists. |
+| [arXiv:2609.27279](https://arxiv.org/abs/2609.27279) — EnSIMem: Entity-Structured Indexing for Long-Term Agent Memory (Meng, Fan et al., Sep 2026) | 2026-10-12 | **Validates the entity/evidence tier's problem statement; machinery not evaluated.** Its diagnosed failure modes — generic summaries and anonymous chunks losing the entity–property–evidence binding — are exactly what the deterministic linker + entity/relations graph exist against. Its indexing model is not assessed; the problem statement is the validation. |
+| [arXiv:2609.25913](https://arxiv.org/abs/2609.25913) — EPGM: Execution Provenance for Budgeted Agent Memory Retrieval (Wang, Ju et al., Sep 2026) | 2026-10-12 | **Eval hook recorded; learned retriever refused.** Its claim — fixed-k retrieval rewards fragments while answers need the complete evidence set under a hard token budget — is the gap submodular packing encodes (coverage term + `answer_in_context` diagnostic). Recorded hook: an evidence-completeness metric in its style could extend `bench eval` beside precision/recall/NDCG — deterministic, hand-checkable, an operator decision. |
+
+---
+
+## 9. Ecosystem Posture, Verified (October 2026)
+
+The cloud-agent convergence check ([full doc](./docs/research/21-cloud-agent-convergence-oct-2026.md)):
+all claims verified against vendor documentation on **2026-10-12**, prompted by
+a circulated strategy video and settled against primary sources, not the video.
+
+- **The harness layer shipped the loop.** Claude Code "Cloud sessions" (GA
+  2026-09-23): isolated sandbox per task, secure git proxy, domain allowlists.
+  GitHub Copilot cloud agent: **Automations** — schedule or repo-event
+  triggers — plus confidence-based holds for human review. Codex Cloud:
+  per-task workspaces that outlive the operator's laptop, network presets,
+  review-and-publish before any task runs. All three are execution harnesses;
+  the trigger layer stays in the harness (OpenClaw cron/webhooks), not the
+  store — the boundary decision this table's components assume.
+- **The memory primitive is client-side by design.** Anthropic's memory tool
+  (`memory_20250818`) issues six file-commands against a `/memories` prefix
+  that *the application* maps onto storage it controls — the platform ships
+  the verb, the deployment owns the store. That is the slot this server
+  occupies; none of the platform-native stores carries attribution, human
+  gating, tamper-evident history, or certified erasure across agents.
+- **The category is now crowded; the governance axis is not.** GitHub API,
+  2026-10-12: mem0 67,005 stars, MCP servers 91,151, cognee 32,042 (pushed
+  the day of the check), graphiti 31,654, letta 25,108. "Memory layer" is a
+  funded category; what distinguishes stores is provability (provenance,
+  gating, audit, erasure) — the last twenty rounds' subject matter.
+- **The regulatory clock is running.** The remainder of the EU AI Act applies
+  from 2026-08-02 (Arts. 102–110 from 2026-07-27); Art. 50(2) synthetic-content
+  transparency 2026-12-02; GPAI grandfathering 2027-08-02; high-risk
+  record-keeping (Art. 12) 2027-12-02 / 2028-08-02. Timeline page updated
+  2026-08-31; primary-law verification remains the Standards Register's lane.
+
+Displacement: none. The check's yield is positioning evidence plus two
+operator-decision candidates (the audience-intersection re-triage of the
+boolean origin label; an ops-surface rollup of per-principal proposal,
+quarantine, and feedback outcomes), neither a component change.
+
+---
+
 ## Summary: SOTA Compliance
 
 | Component | Library / Technique | SOTA as of July 2026 |
@@ -171,7 +232,13 @@ specific findings or benchmarks that validate the approach.
 | Fuzz testing | cargo-fuzz (LLVM libFuzzer) | ✅ Standard Rust fuzzing |
 | Property testing | proptest (256+ cases) | ✅ Standard Rust property testing |
 
-**Verdict**: brain-server is 100% compliant with the latest July 2026 research
-across all 17 assessed components. Every technique uses the standard or SOTA
-approach for its domain. Ponytail ceilings are documented with upgrade paths
-for future releases.
+**Verdict**: all 16 components in the table above use the standard or SOTA
+approach for their domain, verified against July 2026 research — the table's
+stated basis, not re-swept since. The October 2026 sweep (§8) assessed the
+memory-governance, agentic-memory, and AI-Act lanes for adoption and displaced
+no component; the convergence check (§9) verified the ecosystem posture those
+components ship into — harness sandboxes, trigger-spawned loops, client-side
+memory primitives — and displaced nothing either. The table's own lanes
+(retrieval, embeddings, parsing, auth) have not been re-verified against
+post-July literature. Ponytail ceilings are documented with upgrade paths for
+future releases.

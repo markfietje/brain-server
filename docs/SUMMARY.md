@@ -20,6 +20,8 @@
 - [Who it's for — target audiences](audiences.md)
 - [One brain for the whole team](team-workflow.md)
 - [Human in the loop](human-in-the-loop.md)
+- [Agent write posture (who may write memory)](agent-write-posture.md)
+- [The capture taint (origin labels)](taint-labels.md)
 - [The memory lifecycle](memory-lifecycle.md)
 - [Architecture](architecture.md)
 - [The agent loop](agentloop.md)
@@ -79,6 +81,7 @@
 # Trust & verification
 
 - [Repo verification tooling (the gates)](repo-verification-tooling.md)
+- [Gate-law register](gate-law-register.md)
 - [Proof map](./trust/proof-map.md)
 - [Reproduce on a throwaway instance](./trust/reproduce.md)
 - [WCAG 2.2 AA checklist](./trust/wcag22-aa-checklist.md)
@@ -125,6 +128,8 @@
 - [The Two-Layer Injection Screen](./research/17-injection-screen.md)
 - [The Cited Work](./research/18-cited-work.md)
 - [The Standards Register](./research/19-standards-register.md)
+- [The Agent-Memory Research Sweep, October 2026](./research/20-agent-memory-oct-2026-sweep.md)
+- [The Cloud-Agent Convergence, October 2026](./research/21-cloud-agent-convergence-oct-2026.md)
 
 # Blog
 
