@@ -52,6 +52,13 @@ no schema-version change; zero new dependency edges.
   bridge-mount arm enforces timestamp freshness + a replay claim;
   `AUTH_TOKEN_FILE`'s documented 0600 law is enforced on the read path and
   at reload; per-domain databases are created 0600.
+- **The shell's supply-chain gate was red on a new high advisory**
+  (GHSA-68fv-2mgg-jv7q: `source-map-js` allows event-loop denial of service
+  through indexed source-map section offsets, `>=1.0.0 <1.2.2`, reached
+  transitively through `@tailwindcss/vite`→`postcss`, `css-tree` and
+  `std-env`). Re-resolved to 1.2.2 inside the range those dependents
+  already declare — one package, four pointers, no manifest change and no
+  new dependency edge.
 
 ### Improvements
 
@@ -81,6 +88,24 @@ no schema-version change; zero new dependency edges.
 - Fork lane (zero-conflict): the TUI approval prompt shows the
   requester-supplied detail (bounded, labeled — K4-05) and the installer
   refuses upstream sources over a diverged fork (K4-12).
+- **Two release-lane defects closed, both found by running the gate**: the
+  audit-residual test target acquired its non-reentrant `KEY_STATE_LOCK`
+  twice (once in the fixture, once per test), so all eleven tests blocked
+  their own threads forever and the whole `--features bench` lane hung
+  instead of reporting a failure; the guard is now a required parameter of
+  the fixture, so the compiler refuses a call site that reaches the keyed
+  path without holding it. The same file also carried a stray blank line
+  that `cargo fmt --check` refused. A class sweep of all 34 static lock
+  declarations in the tree found no other live instance.
+- **New research**: the post-convergence watch (doc 22) — Loopjacking read
+  in full and reproduced as a live defense verification against an isolated
+  instance of the shipped binary (14/14 checks: canonical display binding,
+  409 on a raw-byte digest, 400 with no digest, 403 for the maker class,
+  atomic CAS consumption), MindMemOS read in full (substrate validated,
+  LLM machinery refused), A2M as threat-input for the bridge lane, and the
+  standards register's agent-ecosystem section (MCP 2026-07-28 extensions,
+  A2A v1.0, RFC 9449 DPoP, OpenID SSE/CAEP, OWASP ACS) machine-fetched
+  against each issuing body.
 
 ## [Unreleased] — R114 "Six" — six audit findings closed at the root
 
