@@ -15,15 +15,8 @@
 		"src-tauri"
 	],
 	"compilerOptions": {
-		"allowJs": true,
-		"checkJs": true,
-		"esModuleInterop": true,
-		"forceConsistentCasingInFileNames": true,
-		"resolveJsonModule": true,
-		"skipLibCheck": true,
 		"sourceMap": true,
 		"strict": true,
-		"moduleResolution": "bundler",
 		"noUncheckedIndexedAccess": true,
 		"noImplicitOverride": true
 	}
