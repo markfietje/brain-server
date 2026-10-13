@@ -13,7 +13,7 @@
 	// alongside. The stored query_hash is a hash — never raw query text (the
 	// kernel's law); the kernel additionally sanitizes stored-trace strings
 	// server-side — the client-side strip is defense in depth.
-	import { _ } from 'svelte-i18n';
+	import { m } from '$paraglide/messages.js';
 	import { page } from '$app/state';
 	import { client, captureNextRawText } from '#lib/api/client.js';
 	import { parseRecallTrace, type RecallTraceView } from '#lib/trace.js';
@@ -93,37 +93,37 @@
 <div class="grid gap-4">
 	<div class="flex items-center justify-between gap-3">
 		<div>
-			<h1 class="mb-1">{$_('recall.trace.title')}</h1>
+			<h1 class="mb-1">{m["recall.trace.title"]()}</h1>
 			<p class="text-muted-foreground">
-				{$_('recall.trace.subtitle', { values: { id: page.params['trace_id'] ?? '' } })}
+				{m["recall.trace.subtitle"]({ id: page.params['trace_id'] ?? '' })}
 			</p>
 		</div>
 		<Button variant="ghost" size="sm" onclick={() => history.back()}>
-			{$_('common.back')}
+			{m["common.back"]()}
 		</Button>
 	</div>
 
 	{#if loading}
 		<p aria-busy="true">…</p>
 	{:else if notFound}
-		<Alert role="status" data-testid="trace-not-found">{$_('recall.trace.not_found')}</Alert>
+		<Alert role="status" data-testid="trace-not-found">{m["recall.trace.not_found"]()}</Alert>
 	{:else if failed}
-		<Alert variant="destructive" role="alert">{$_('recall.trace.error')}</Alert>
+		<Alert variant="destructive" role="alert">{m["recall.trace.error"]()}</Alert>
 	{:else if view !== null}
 		<div class="grid gap-4" data-testid="trace-view">
 			<div class="rounded-lg border p-4">
 				<dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-					<dt class="text-muted-foreground">{$_('recall.trace.fields.query_hash')}</dt>
+					<dt class="text-muted-foreground">{m["recall.trace.fields.query_hash"]()}</dt>
 					<dd class="font-mono break-all" data-testid="trace-field-query-hash">
 						{orDash(view.query_hash)}
 					</dd>
-					<dt class="text-muted-foreground">{$_('recall.trace.fields.decision')}</dt>
+					<dt class="text-muted-foreground">{m["recall.trace.fields.decision"]()}</dt>
 					<dd class="font-mono" data-testid="trace-field-decision">{orDash(view.decision)}</dd>
-					<dt class="text-muted-foreground">{$_('recall.trace.fields.actor')}</dt>
+					<dt class="text-muted-foreground">{m["recall.trace.fields.actor"]()}</dt>
 					<dd class="font-mono" data-testid="trace-field-actor">{orDash(view.actor)}</dd>
-					<dt class="text-muted-foreground">{$_('recall.trace.fields.scope')}</dt>
+					<dt class="text-muted-foreground">{m["recall.trace.fields.scope"]()}</dt>
 					<dd data-testid="trace-field-scope">{listOrDash(view.scope)}</dd>
-					<dt class="text-muted-foreground">{$_('recall.trace.fields.domains')}</dt>
+					<dt class="text-muted-foreground">{m["recall.trace.fields.domains"]()}</dt>
 					<dd data-testid="trace-field-domains">{listOrDash(view.domains_searched)}</dd>
 				</dl>
 			</div>
@@ -150,7 +150,7 @@
 									<td class="px-3 py-2">{orDash(hit.relevance)}</td>
 									<td class="px-3 py-2">{orDash(hit.assertion_kind)}</td>
 									<td class="px-3 py-2">
-										{hit.decayed === true ? $_('recall.trace.decayed_marker') : '—'}
+										{hit.decayed === true ? m["recall.trace.decayed_marker"]() : '—'}
 									</td>
 								</tr>
 							{/each}
@@ -161,13 +161,13 @@
 
 			<div class="flex items-center gap-3">
 				<Button variant="outline" size="sm" onclick={exportTrace} data-testid="trace-export">
-					{$_('recall.trace.export')}
+					{m["recall.trace.export"]()}
 				</Button>
 				<pre
 					data-testid="trace-json"
 					class="min-w-0 flex-1 overflow-x-auto rounded-lg border p-4 text-xs leading-relaxed"
 					role="figure"
-					aria-label={$_('recall.trace.title')}>{rawJson === null
+					aria-label={m["recall.trace.title"]()}>{rawJson === null
 						? ''
 						: JSON.stringify(rawJson, null, 2)}</pre
 				>

@@ -29,7 +29,7 @@
 	//
 	// No raw-HTML directive, no console, no token in any URL, no prompt rendering.
 	import { tick } from 'svelte';
-	import { _ } from 'svelte-i18n';
+	import { m } from '$paraglide/messages.js';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
 	import { client } from '#lib/api/client.js';
@@ -114,11 +114,11 @@
 	}
 
 	function statusLabel(status: ModelStatus): string {
-		return $_(`models.status.${status}`);
+		return m[`models.status.${status}`]();
 	}
 
 	function kindLabel(kind: ModelKind): string {
-		return $_(`models.kind.${kind}`);
+		return m[`models.kind.${kind}`]();
 	}
 
 	/** Display projection only. Never applied to a value that is sent back. */
@@ -155,24 +155,24 @@
 	}
 
 	function errorMessage(current: ModelRegistryStatus | null): string {
-		if (current === null) return $_('models.error.heading');
+		if (current === null) return m["models.error.heading"]();
 		switch (current.kind) {
 			case 'unauthorized':
-				return $_('models.error.401');
+				return m["models.error.401"]();
 			case 'forbidden':
-				return $_('models.error.403');
+				return m["models.error.403"]();
 			case 'not_found':
-				return $_('models.error.404');
+				return m["models.error.404"]();
 			case 'conflict':
-				return $_('models.error.409');
+				return m["models.error.409"]();
 			case 'invalid':
 				// 400 and 422 share the parser's `invalid` kind but name DIFFERENT
 				// refusals; the operator is told which one happened.
-				return current.status === 422 ? $_('models.error.422') : $_('models.error.400');
+				return current.status === 422 ? m["models.error.422"]() : m["models.error.400"]();
 			case 'server':
-				return $_('models.error.500');
+				return m["models.error.500"]();
 			default:
-				return $_('models.error.heading');
+				return m["models.error.heading"]();
 		}
 	}
 
@@ -361,25 +361,25 @@
 	{#if refParam === null}
 		<div class="grid gap-5" data-testid="models-list">
 			<div>
-				<h1>{$_('models.title')}</h1>
-				<p class="text-muted-foreground">{$_('models.heading')}</p>
+				<h1>{m["models.title"]()}</h1>
+				<p class="text-muted-foreground">{m["models.heading"]()}</p>
 			</div>
 
 			{#if listState === 'loading'}
-				<p aria-busy="true" data-testid="models-list-loading">{$_('models.loading')}</p>
+				<p aria-busy="true" data-testid="models-list-loading">{m["models.loading"]()}</p>
 			{:else if listState === 'empty'}
-				<p role="status" data-testid="models-list-empty">{$_('models.empty')}</p>
+				<p role="status" data-testid="models-list-empty">{m["models.empty"]()}</p>
 			{:else if listState === 'malformed'}
 				<Alert variant="destructive" role="alert" data-testid="models-list-malformed">
-					{$_('models.error.heading')}
+					{m["models.error.heading"]()}
 				</Alert>
 			{:else if listState === 'network'}
 				<Alert variant="destructive" role="alert" data-testid="models-list-network">
-					{$_('models.error.network')}
+					{m["models.error.network"]()}
 				</Alert>
 				<div>
 					<Button variant="outline" size="sm" onclick={retryList} data-testid="models-list-retry">
-						{$_('common.retry')}
+						{m["common.retry"]()}
 					</Button>
 				</div>
 			{:else if listState !== 'ready'}
@@ -391,25 +391,25 @@
 				{#if listStatus !== null && listStatus.retryable}
 					<div>
 						<Button variant="outline" size="sm" onclick={retryList} data-testid="models-list-retry">
-							{$_('common.retry')}
+							{m["common.retry"]()}
 						</Button>
 					</div>
 				{/if}
 			{:else}
 				<div class="overflow-x-auto rounded-lg border">
 					<table class="w-full text-sm" data-testid="models-list-table">
-						<caption class="sr-only">{$_('models.table.caption')}</caption>
+						<caption class="sr-only">{m["models.table.caption"]()}</caption>
 						<thead>
 							<tr class="border-b text-xs text-muted-foreground">
-								<th scope="col" class="px-3 py-2 text-start">{$_('models.identity.id')}</th>
-								<th scope="col" class="px-3 py-2 text-start">{$_('models.identity.version')}</th>
-								<th scope="col" class="px-3 py-2 text-start">{$_('models.identity.kind')}</th>
-								<th scope="col" class="px-3 py-2 text-start">{$_('models.identity.name')}</th>
-								<th scope="col" class="px-3 py-2 text-start">{$_('models.digest.artifact')}</th>
-								<th scope="col" class="px-3 py-2 text-start">{$_('models.digest.config')}</th>
-								<th scope="col" class="px-3 py-2 text-start">{$_('models.identity.proposedBy')}</th>
-								<th scope="col" class="px-3 py-2 text-start">{$_('models.identity.created')}</th>
-								<th scope="col" class="px-3 py-2 text-start">{$_('models.identity.updated')}</th>
+								<th scope="col" class="px-3 py-2 text-start">{m["models.identity.id"]()}</th>
+								<th scope="col" class="px-3 py-2 text-start">{m["models.identity.version"]()}</th>
+								<th scope="col" class="px-3 py-2 text-start">{m["models.identity.kind"]()}</th>
+								<th scope="col" class="px-3 py-2 text-start">{m["models.identity.name"]()}</th>
+								<th scope="col" class="px-3 py-2 text-start">{m["models.digest.artifact"]()}</th>
+								<th scope="col" class="px-3 py-2 text-start">{m["models.digest.config"]()}</th>
+								<th scope="col" class="px-3 py-2 text-start">{m["models.identity.proposedBy"]()}</th>
+								<th scope="col" class="px-3 py-2 text-start">{m["models.identity.created"]()}</th>
+								<th scope="col" class="px-3 py-2 text-start">{m["models.identity.updated"]()}</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -435,8 +435,8 @@
 									     BOOLEAN only; its value lives on the single-row read. -->
 									<td class="px-3 py-2 text-xs" data-testid="models-list-artifact">
 										{row.artifactDigestPresent
-											? $_('models.digest.presence.present')
-											: $_('models.digest.presence.absent')}
+											? m["models.digest.presence.present"]()
+											: m["models.digest.presence.absent"]()}
 									</td>
 									<td class="max-w-48 break-all px-3 py-2 font-mono text-xs">
 										{show(row.configDigest)}
@@ -457,35 +457,35 @@
 				<div>
 					<h1 bind:this={headingElement} tabindex="-1">
 						{#if detail === null}
-							{$_('models.title')}
+							{m["models.title"]()}
 						{:else}
 							{show(detail.id)}@{show(detail.version)}
 						{/if}
 					</h1>
-					<p class="text-muted-foreground">{$_('models.heading')}</p>
+					<p class="text-muted-foreground">{m["models.heading"]()}</p>
 				</div>
 				<Button variant="ghost" size="sm" href={resolve('/models')} data-testid="models-detail-back">
-					{$_('common.back')}
+					{m["common.back"]()}
 				</Button>
 			</div>
 
 			{#if detailState === 'loading'}
-				<p aria-busy="true" data-testid="models-detail-loading">{$_('models.loading')}</p>
+				<p aria-busy="true" data-testid="models-detail-loading">{m["models.loading"]()}</p>
 			{:else if detailState === 'ref_malformed'}
 				<Alert role="status" data-testid="models-detail-ref-malformed">
-					{$_('models.ref.malformed')}
+					{m["models.ref.malformed"]()}
 				</Alert>
 			{:else if detailState === 'malformed'}
 				<Alert variant="destructive" role="alert" data-testid="models-detail-malformed">
-					{$_('models.error.heading')}
+					{m["models.error.heading"]()}
 				</Alert>
 			{:else if detailState === 'network'}
 				<Alert variant="destructive" role="alert" data-testid="models-detail-network">
-					{$_('models.error.network')}
+					{m["models.error.network"]()}
 				</Alert>
 				<div>
 					<Button variant="outline" size="sm" onclick={reloadDetail} data-testid="models-detail-retry">
-						{$_('common.retry')}
+						{m["common.retry"]()}
 					</Button>
 				</div>
 			{:else if detailState !== 'ready' || detail === null}
@@ -495,7 +495,7 @@
 				{#if detailStatus !== null && detailStatus.retryable}
 					<div>
 						<Button variant="outline" size="sm" onclick={reloadDetail} data-testid="models-detail-retry">
-							{$_('common.retry')}
+							{m["common.retry"]()}
 						</Button>
 					</div>
 				{/if}
@@ -506,49 +506,49 @@
 					</p>
 
 					<Card class="gap-3 p-4">
-						<h2 class="font-semibold">{$_('models.heading')}</h2>
+						<h2 class="font-semibold">{m["models.heading"]()}</h2>
 						<dl
 							class="grid gap-2 text-sm sm:grid-cols-[12rem_1fr]"
 							data-testid="models-detail-identity"
 						>
-							<dt class="text-muted-foreground">{$_('models.identity.id')}</dt>
+							<dt class="text-muted-foreground">{m["models.identity.id"]()}</dt>
 							<dd class="font-mono">{show(detail.id)}</dd>
-							<dt class="text-muted-foreground">{$_('models.identity.version')}</dt>
+							<dt class="text-muted-foreground">{m["models.identity.version"]()}</dt>
 							<dd class="font-mono">{show(detail.version)}</dd>
-							<dt class="text-muted-foreground">{$_('models.identity.kind')}</dt>
+							<dt class="text-muted-foreground">{m["models.identity.kind"]()}</dt>
 							<dd>{kindLabel(detail.kind)}</dd>
-							<dt class="text-muted-foreground">{$_('models.identity.name')}</dt>
+							<dt class="text-muted-foreground">{m["models.identity.name"]()}</dt>
 							<dd data-testid="models-detail-name">{show(detail.name)}</dd>
-							<dt class="text-muted-foreground">{$_('models.identity.proposedBy')}</dt>
+							<dt class="text-muted-foreground">{m["models.identity.proposedBy"]()}</dt>
 							<dd class="font-mono">{show(detail.proposedBy)}</dd>
-							<dt class="text-muted-foreground">{$_('models.identity.created')}</dt>
+							<dt class="text-muted-foreground">{m["models.identity.created"]()}</dt>
 							<dd>{stamp(detail.createdAt)}</dd>
-							<dt class="text-muted-foreground">{$_('models.identity.updated')}</dt>
+							<dt class="text-muted-foreground">{m["models.identity.updated"]()}</dt>
 							<dd>{stamp(detail.updatedAt)}</dd>
 						</dl>
 						<!-- Each digest tier is its OWN labelled row. They are never
 						     merged, never substituted for one another, and an absent
 						     tier renders as absent — never as an invented value. -->
 						<dl class="grid gap-2 text-sm sm:grid-cols-[12rem_1fr]" data-testid="models-detail-digests">
-							<dt class="text-muted-foreground">{$_('models.digest.artifact')}</dt>
+							<dt class="text-muted-foreground">{m["models.digest.artifact"]()}</dt>
 							<dd class="break-all font-mono text-xs" data-testid="models-detail-digest-artifact">
 								{show(detail.artifactDigest)}
 							</dd>
-							<dt class="text-muted-foreground">{$_('models.digest.config')}</dt>
+							<dt class="text-muted-foreground">{m["models.digest.config"]()}</dt>
 							<dd class="break-all font-mono text-xs" data-testid="models-detail-digest-config">
 								{show(detail.configDigest)}
 							</dd>
-							<dt class="text-muted-foreground">{$_('models.digest.calibration')}</dt>
+							<dt class="text-muted-foreground">{m["models.digest.calibration"]()}</dt>
 							<dd class="break-all font-mono text-xs" data-testid="models-detail-digest-calibration">
 								{show(detail.calibrationRef)}
 							</dd>
-							<dt class="text-muted-foreground">{$_('models.digest.row')}</dt>
+							<dt class="text-muted-foreground">{m["models.digest.row"]()}</dt>
 							<dd class="break-all font-mono text-xs" data-testid="models-detail-digest-row">
 								{show(detail.rowDigest)}
 							</dd>
 						</dl>
 						<p class="text-sm text-muted-foreground" data-testid="models-digest-pin-note">
-							{$_('models.digest.pinNote')}
+							{m["models.digest.pinNote"]()}
 						</p>
 					</Card>
 
@@ -569,10 +569,10 @@
 							onclick={toggleEvaluation}
 							data-testid="models-detail-evaluation-toggle"
 						>
-							{$_('models.evaluation.heading')}
+							{m["models.evaluation.heading"]()}
 						</Button>
 						<p class="text-sm text-muted-foreground" data-testid="models-detail-evaluation-note">
-							{$_('models.evaluation.nonAuthoritative')}
+							{m["models.evaluation.nonAuthoritative"]()}
 						</p>
 						<ul id="models-evaluation-panel" hidden={!evaluationOpen} class="grid gap-1 text-sm">
 							{#each detail.evaluationRefs as ref, index (`${ref}-${index}`)}
@@ -585,7 +585,7 @@
 
 					<Card class="gap-3 p-4" data-testid="models-detail-actions">
 						{#if legalLifecycleActions(detail.status).length === 0}
-							<p role="status" data-testid="models-action-none">{$_('models.action.none')}</p>
+							<p role="status" data-testid="models-action-none">{m["models.action.none"]()}</p>
 						{:else}
 							<div class="flex flex-wrap gap-2">
 								{#each legalLifecycleActions(detail.status) as action (action)}
@@ -593,20 +593,20 @@
 										variant="outline"
 										disabled={proposalState === 'loading' || proposalState === 'conflict'}
 										onclick={() => void propose(action)}
-										data-testid={`models-action-${action}`}>{$_(`models.action.${action}`)}</Button
+										data-testid={`models-action-${action}`}>{m[`models.action.${action}`]()}</Button
 									>
 								{/each}
 							</div>
 						{/if}
 						<p class="text-sm text-muted-foreground" data-testid="models-proposal-remedy">
-							{$_('models.proposal.remedy')}
+							{m["models.proposal.remedy"]()}
 						</p>
 
 						{#if proposalState === 'loading'}
-							<p aria-busy="true" data-testid="models-proposal-loading">{$_('models.loading')}</p>
+							<p aria-busy="true" data-testid="models-proposal-loading">{m["models.loading"]()}</p>
 						{:else if proposalState === 'pending'}
 							<p role="status" data-testid="models-proposal-pending">
-								{$_('models.proposal.pending')}
+								{m["models.proposal.pending"]()}
 								{#if proposalId !== null}
 									<span class="font-mono" data-testid="models-proposal-id">{proposalId}</span>
 								{/if}
@@ -616,16 +616,16 @@
 							     honest affordance is to re-read. A bare retry would
 							     re-send a digest the kernel has already moved past. -->
 							<Alert role="alert" data-testid="models-proposal-conflict">
-								{$_('models.conflict.reload')}
+								{m["models.conflict.reload"]()}
 							</Alert>
 							<div>
 								<Button variant="outline" size="sm" onclick={reloadDetail} data-testid="models-detail-reload">
-									{$_('models.conflict.reload')}
+									{m["models.conflict.reload"]()}
 								</Button>
 							</div>
 						{:else if proposalState === 'network'}
 							<Alert variant="destructive" role="alert" data-testid="models-proposal-network">
-								{$_('models.error.network')}
+								{m["models.error.network"]()}
 							</Alert>
 						{:else if proposalState !== 'idle'}
 							<Alert variant="destructive" role="alert" data-testid="models-proposal-error">

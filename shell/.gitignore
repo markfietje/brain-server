@@ -5,3 +5,6 @@ src-tauri/target/
 playwright-report/
 test-results/
 vite.config.ts.timestamp-*
+
+# Paraglide compiler output — generated from project.inlang + src/lib/i18n.
+/src/paraglide

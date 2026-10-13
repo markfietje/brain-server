@@ -7,7 +7,7 @@
 	// R24 prereg FINDING 2, and the kernel contract is byte-frozen). The
 	// trace TARGET page performs the real typed read; the R25 replay UI
 	// stays deferred.
-	import { _ } from 'svelte-i18n';
+	import { m } from '$paraglide/messages.js';
 	import { resolve } from '$app/paths';
 	import { client } from '#lib/api/client.js';
 	import { sanitizeTemplateText } from '#lib/sanitize.js';
@@ -68,33 +68,33 @@
 
 <div class="grid gap-4">
 	<div>
-		<h1 class="mb-1">{$_('recall.title')}</h1>
-		<p class="text-muted-foreground">{$_('recall.subtitle')}</p>
+		<h1 class="mb-1">{m["recall.title"]()}</h1>
+		<p class="text-muted-foreground">{m["recall.subtitle"]()}</p>
 	</div>
 
 	<form onsubmit={run} class="flex gap-2">
 		<Input
 			type="search"
-			placeholder={$_('recall.placeholder')}
+			placeholder={m["recall.placeholder"]()}
 			bind:value={query}
-			aria-label={$_('recall.placeholder')}
+			aria-label={m["recall.placeholder"]()}
 			data-testid="recall-input"
 		/>
-		<Button type="submit" disabled={busy}>{$_('recall.button')}</Button>
+		<Button type="submit" disabled={busy}>{m["recall.button"]()}</Button>
 	</form>
 
 	{#if failed}
-		<Alert variant="destructive" role="alert">{$_('recall.error')}</Alert>
+		<Alert variant="destructive" role="alert">{m["recall.error"]()}</Alert>
 	{:else if abstained}
 		<Alert role="status" class="border-l-warn-border border-warn-border bg-warn-bg border-l-4">
-			{$_('recall.abstain')}
+			{m["recall.abstain"]()}
 		</Alert>
 	{:else if attempted && !busy && hits.length === 0}
-		<p class="text-muted-foreground" role="status">{$_('recall.empty')}</p>
+		<p class="text-muted-foreground" role="status">{m["recall.empty"]()}</p>
 	{:else if hits.length > 0}
 		<div class="flex items-center justify-between gap-3">
 			<p class="text-sm text-muted-foreground" role="status">
-				{$_('recall.results', { values: { count: hits.length } })}
+				{m["recall.results"]({ count: hits.length })}
 			</p>
 			{#if traceId !== null}
 				<a
@@ -102,7 +102,7 @@
 					class="text-sm font-medium text-brand underline-offset-4 hover:underline"
 					data-testid="trace-link"
 				>
-					{$_('recall.trace_link')}
+					{m["recall.trace_link"]()}
 				</a>
 			{/if}
 		</div>
@@ -115,7 +115,7 @@
 						</h2>
 						<div class="flex shrink-0 items-center gap-2">
 							{#if hit.conflict}
-								<Badge variant="destructive">{$_('recall.conflict')}</Badge>
+								<Badge variant="destructive">{m["recall.conflict"]()}</Badge>
 							{/if}
 							{#if hit.source}
 								<Badge variant="secondary">{sanitizeTemplateText(hit.source)}</Badge>

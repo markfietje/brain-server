@@ -3,7 +3,7 @@
 	// typed wire. Typed result cards, honest empty/error states — nothing
 	// invented, nothing decorated. Every rendered string passes the
 	// sanitizer (D9).
-	import { _ } from 'svelte-i18n';
+	import { m } from '$paraglide/messages.js';
 	import { client } from '#lib/api/client.js';
 	import { sanitizeTemplateText } from '#lib/sanitize.js';
 	import { Button } from '#lib/components/ui/button/index.js';
@@ -54,28 +54,28 @@
 
 <div class="grid gap-4">
 	<div>
-		<h1 class="mb-1">{$_('search.title')}</h1>
-		<p class="text-muted-foreground">{$_('search.subtitle')}</p>
+		<h1 class="mb-1">{m["search.title"]()}</h1>
+		<p class="text-muted-foreground">{m["search.subtitle"]()}</p>
 	</div>
 
 	<form onsubmit={run} class="flex gap-2">
 		<Input
 			type="search"
-			placeholder={$_('search.placeholder')}
+			placeholder={m["search.placeholder"]()}
 			bind:value={query}
-			aria-label={$_('search.placeholder')}
+			aria-label={m["search.placeholder"]()}
 			data-testid="search-input"
 		/>
-		<Button type="submit" disabled={busy}>{$_('search.button')}</Button>
+		<Button type="submit" disabled={busy}>{m["search.button"]()}</Button>
 	</form>
 
 	{#if failed}
-		<Alert variant="destructive" role="alert">{$_('search.error')}</Alert>
+		<Alert variant="destructive" role="alert">{m["search.error"]()}</Alert>
 	{:else if attempted && !busy && results.length === 0}
-		<p class="text-muted-foreground" role="status">{$_('search.empty')}</p>
+		<p class="text-muted-foreground" role="status">{m["search.empty"]()}</p>
 	{:else if results.length > 0}
 		<p class="text-sm text-muted-foreground" role="status">
-			{$_('search.results', { values: { count: results.length } })}
+			{m["search.results"]({ count: results.length })}
 		</p>
 		<div class="grid gap-3">
 			{#each results as r (r.id)}

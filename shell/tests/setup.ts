@@ -1,7 +1,5 @@
 import { cleanup } from '@testing-library/svelte';
 import { afterEach } from 'vitest';
-import { addMessages, init } from 'svelte-i18n';
-import en from '../src/lib/i18n/en.json';
 
 afterEach(() => {
 	cleanup();
@@ -29,7 +27,6 @@ if (!globalThis.ResizeObserver) {
 	} as unknown as typeof ResizeObserver;
 }
 
-// The component tests render isolated from +layout.svelte, so the i18n
-// runtime is initialized here (en; the parity test covers all five).
-addMessages('en', en);
-init({ fallbackLocale: 'en', initialLocale: 'en' });
+// No i18n runtime init is needed: Paraglide compiles every locale into
+// `src/paraglide` ahead of time, so there is nothing to register at runtime.
+// The catalogs' five-way key parity is still a red test (i18n-parity.test.ts).

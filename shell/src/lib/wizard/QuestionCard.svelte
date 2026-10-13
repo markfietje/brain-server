@@ -10,7 +10,7 @@
 	import type { WizardQuestion } from '#lib/wizard/pack.js';
 	import { sanitizeTemplateText } from '#lib/sanitize.js';
 	import { recordTouch } from '#lib/telemetry/buffer.js';
-	import { _ } from 'svelte-i18n';
+	import { m } from '$paraglide/messages.js';
 	import { Button } from '#lib/components/ui/button/index.js';
 	import { Card } from '#lib/components/ui/card/index.js';
 
@@ -172,6 +172,6 @@
 	{/if}
 
 	<Button class="mt-4 w-full" disabled={pending === null} onclick={commit}>
-		{$_('flow.continue')}
+		{m["flow.continue"]()}
 	</Button>
 </Card>

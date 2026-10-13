@@ -5,7 +5,8 @@
 	// override is LOOPBACK-ENFORCED client-side (client.ts refuses anything
 	// else — fail-safe, never fail-open) and persists SESSION-LOCAL only.
 	// Nav marks the active route with aria-current — never color alone.
-	import { _, locale, getLocaleFromNavigator } from 'svelte-i18n';
+	import { m } from '$paraglide/messages.js';
+	import { assertIsLocale, setLocale } from '$paraglide/runtime.js';
 	import { goto } from '$app/navigation';
 	import { resolve } from '$app/paths';
 	import { page } from '$app/state';
@@ -54,20 +55,20 @@
 	// command list without a second source of truth.
 	const PALETTE_GROUPS = $derived([
 		{
-			heading: $_('palette.navigate'),
+			heading: m["palette.navigate"](),
 			items: NAV.map((item) => ({
 				value: item.route,
-				label: $_(item.key),
+				label: m[item.key](),
 				Icon: item.Icon,
 				onSelect: () => runItem(() => goto(resolve(item.route)))
 			}))
 		},
 		{
-			heading: $_('palette.more'),
+			heading: m["palette.more"](),
 			items: [
 				{
 					value: 'settings',
-					label: $_('nav.settings'),
+					label: m["nav.settings"](),
 					Icon: SettingsIcon,
 					onSelect: () => runItem(() => (settingsOpen = true))
 				}
@@ -98,18 +99,26 @@
 		} catch {
 			// private mode: nothing persisted
 		}
-		const code =
-			stored && LOCALES.some((l) => l.code === stored)
-				? stored
-				: (getLocaleFromNavigator() ?? 'en');
+		// Session storage wins; otherwise the browser's own preference, narrowed
+		// to a locale the catalog set actually carries.
+		const browser = typeof navigator === 'undefined' ? '' : navigator.language.slice(0, 2);
+		const code = stored && LOCALES.some((l) => l.code === stored)
+			? stored
+			: LOCALES.some((l) => l.code === browser)
+				? browser
+				: 'en';
 		currentLocale = code;
-		void locale.set(code);
+		// Paraglide types the locale as a literal union; assert narrows the
+		// runtime string the picker produced without widening the catalog.
+		setLocale(assertIsLocale(code));
 	});
 
 	function chooseLocale(event: Event): void {
 		const code = (event.currentTarget as HTMLSelectElement).value;
 		currentLocale = code;
-		void locale.set(code);
+		// Paraglide types the locale as a literal union; assert narrows the
+		// runtime string the picker produced without widening the catalog.
+		setLocale(assertIsLocale(code));
 		try {
 			sessionStorage.setItem(LOCALE_KEY, code);
 		} catch {
@@ -136,7 +145,7 @@
 <div data-slot="app-shell" class="mx-auto w-full max-w-3xl px-5 pb-16">
 	<header class="flex items-center justify-between gap-3 pt-4" data-tauri-drag-region>
 		<span class="text-sm font-semibold tracking-tight" data-tauri-drag-region>StewardOS</span>
-		<nav aria-label={$_('nav.label')} class="flex items-center gap-1">
+		<nav aria-label={m["nav.label"]()} class="flex items-center gap-1">
 			{#each NAV as item (item.route)}
 				<a
 					href={resolve(item.route)}
@@ -144,8 +153,8 @@
 					class="rounded-md px-2.5 py-1.5 text-sm font-medium transition-colors hover:bg-muted aria-current-page:text-brand aria-current-page:font-semibold"
 				>
 					<item.Icon class="mr-1 inline size-4 align-[-2px]" aria-hidden="true" />
-					<span class="hidden sm:inline">{$_(item.key)}</span>
-					<span class="sr-only sm:hidden">{$_(item.key)}</span>
+					<span class="hidden sm:inline">{m[item.key]()}</span>
+					<span class="sr-only sm:hidden">{m[item.key]()}</span>
 				</a>
 			{/each}
 		</nav>
@@ -153,7 +162,7 @@
 			<Button
 				variant="ghost"
 				size="icon-sm"
-				aria-label={$_('palette.open')}
+				aria-label={m["palette.open"]()}
 				onclick={() => (paletteOpen = true)}
 			>
 				<CommandIcon aria-hidden="true" />
@@ -161,7 +170,7 @@
 			<Button
 				variant="ghost"
 				size="icon-sm"
-				aria-label={$_('nav.settings')}
+				aria-label={m["nav.settings"]()}
 				onclick={() => (settingsOpen = true)}
 			>
 				<SettingsIcon aria-hidden="true" />
@@ -176,34 +185,34 @@
 
 <CommandPalette
 	bind:open={paletteOpen}
-	title={$_('palette.title')}
-	placeholder={$_('palette.placeholder')}
-	emptyText={$_('palette.empty')}
+	title={m["palette.title"]()}
+	placeholder={m["palette.placeholder"]()}
+	emptyText={m["palette.empty"]()}
 	groups={PALETTE_GROUPS}
 />
 
 <Dialog
 	bind:open={settingsOpen}
-	title={$_('settings.title')}
-	description={$_('settings.description')}
-	closeLabel={$_('palette.open')}
+	title={m["settings.title"]()}
+	description={m["settings.description"]()}
+	closeLabel={m["palette.open"]()}
 >
 	<div class="grid gap-5 py-2">
 		<div class="grid gap-2">
-			<Label for="setting-origin">{$_('settings.origin.label')}</Label>
+			<Label for="setting-origin">{m["settings.origin.label"]()}</Label>
 			<div class="flex gap-2">
 				<Input id="setting-origin" bind:value={originInput} placeholder={DEFAULT_BASE} />
-				<Button onclick={saveOrigin}>{$_('settings.origin.save')}</Button>
+				<Button onclick={saveOrigin}>{m["settings.origin.save"]()}</Button>
 			</div>
-			<p class="text-xs text-muted-foreground">{$_('settings.origin.hint')}</p>
+			<p class="text-xs text-muted-foreground">{m["settings.origin.hint"]()}</p>
 			{#if originState === 'saved'}
-				<p class="text-sm text-brand" role="status">{$_('settings.origin.saved')}</p>
+				<p class="text-sm text-brand" role="status">{m["settings.origin.saved"]()}</p>
 			{:else if originState === 'invalid'}
-				<p class="text-sm text-destructive" role="alert">{$_('settings.origin.invalid')}</p>
+				<p class="text-sm text-destructive" role="alert">{m["settings.origin.invalid"]()}</p>
 			{/if}
 		</div>
 		<div class="grid gap-2">
-			<Label for="setting-locale">{$_('settings.locale.label')}</Label>
+			<Label for="setting-locale">{m["settings.locale.label"]()}</Label>
 			<!-- The native select (the open list stays the platform's own
 			     popup — the native-first control law). -->
 			<select id="setting-locale" value={currentLocale} onchange={chooseLocale}>

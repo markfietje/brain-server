@@ -108,6 +108,7 @@
 	"decisions.detail.back": "Terug naar beslissingen",
 	"decisions.detail.loading": "Beslissingstrace laden…",
 	"decisions.detail.invalid": "Deze trace-ID is geen geldige niet-negatieve geheel getal.",
+	"decisions.detail.bad_request": "Het herhaalverzoek kon niet worden begrepen.",
 	"decisions.detail.not_found": "Er is geen beslissingstrace voor deze ID.",
 	"decisions.detail.unauthorized": "Authenticatie is vereist om deze trace te lezen.",
 	"decisions.detail.forbidden": "Deze principal mag deze trace niet lezen.",

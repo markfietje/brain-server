@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { _ } from 'svelte-i18n';
+	import { m } from '$paraglide/messages.js';
 	import { resolve } from '$app/paths';
 	import { client } from '#lib/api/client.js';
 	import {
@@ -40,30 +40,30 @@
 	const requestGuard = createDecisionRequestGuard();
 
 	function statusMessage(current: DecisionStatus | null): string {
-		if (current === null) return $_('decisions.list.unknown');
+		if (current === null) return m["decisions.list.unknown"]();
 		switch (current.kind) {
 			case 'unauthorized':
-				return $_('decisions.list.unauthorized');
+				return m["decisions.list.unauthorized"]();
 			case 'forbidden':
-				return $_('decisions.list.forbidden');
+				return m["decisions.list.forbidden"]();
 			case 'not_found':
-				return $_('decisions.list.not_found');
+				return m["decisions.list.not_found"]();
 			case 'conflict':
-				return $_('decisions.list.conflict');
+				return m["decisions.list.conflict"]();
 			case 'bad_request':
-				return $_('decisions.list.bad_request');
+				return m["decisions.list.bad_request"]();
 			case 'server':
-				return $_('decisions.list.server');
+				return m["decisions.list.server"]();
 
 			default:
-				return $_('decisions.list.unknown');
+				return m["decisions.list.unknown"]();
 		}
 	}
 
 	function modeLabel(mode: DecisionRunSummary['mode']): string {
 		return mode === 'deterministic'
-			? $_('decisions.mode.deterministic')
-			: $_('decisions.mode.exploratory');
+			? m["decisions.mode.deterministic"]()
+			: m["decisions.mode.exploratory"]();
 	}
 
 	function createdLabel(seconds: number): string {
@@ -137,13 +137,13 @@
 
 <div class="grid gap-5" data-testid="decision-list">
 	<div>
-		<h1>{$_('decisions.list.title')}</h1>
-		<p class="text-muted-foreground">{$_('decisions.list.subtitle')}</p>
+		<h1>{m["decisions.list.title"]()}</h1>
+		<p class="text-muted-foreground">{m["decisions.list.subtitle"]()}</p>
 	</div>
 
 	<form class="grid gap-3 sm:grid-cols-[10rem_14rem_auto] sm:items-end" onsubmit={submit}>
 		<div class="grid gap-1.5">
-			<Label for="decision-limit">{$_('decisions.list.limit.label')}</Label>
+			<Label for="decision-limit">{m["decisions.list.limit.label"]()}</Label>
 			<Input
 				id="decision-limit"
 				type="number"
@@ -157,7 +157,7 @@
 			/>
 		</div>
 		<div class="grid gap-1.5">
-			<Label for="decision-run-id">{$_('decisions.list.run_id.label')}</Label>
+			<Label for="decision-run-id">{m["decisions.list.run_id.label"]()}</Label>
 			<Input
 				id="decision-run-id"
 				type="text"
@@ -169,23 +169,23 @@
 			/>
 		</div>
 		<Button type="submit" disabled={viewState === 'loading'} data-testid="decision-load">
-			{$_('decisions.list.load')}
+			{m["decisions.list.load"]()}
 		</Button>
-		<p id="decision-limit-help" class="sr-only">{$_('decisions.list.limit.label')}</p>
-		<p id="decision-run-id-help" class="sr-only">{$_('decisions.list.run_id.label')}</p>
+		<p id="decision-limit-help" class="sr-only">{m["decisions.list.limit.label"]()}</p>
+		<p id="decision-run-id-help" class="sr-only">{m["decisions.list.run_id.label"]()}</p>
 	</form>
 
 	{#if viewState === 'loading'}
-		<p aria-busy="true" data-testid="decision-list-loading">{$_('decisions.list.loading')}</p>
+		<p aria-busy="true" data-testid="decision-list-loading">{m["decisions.list.loading"]()}</p>
 	{:else if viewState === 'empty'}
-		<p role="status" data-testid="decision-list-empty">{$_('decisions.list.empty')}</p>
+		<p role="status" data-testid="decision-list-empty">{m["decisions.list.empty"]()}</p>
 	{:else if viewState === 'malformed'}
 		<Alert variant="destructive" role="alert" data-testid="decision-list-malformed">
-			{$_('decisions.list.malformed')}
+			{m["decisions.list.malformed"]()}
 		</Alert>
 	{:else if viewState === 'network'}
 		<Alert variant="destructive" role="alert" data-testid="decision-list-network">
-			{$_('decisions.list.network')}
+			{m["decisions.list.network"]()}
 		</Alert>
 	{:else if viewState !== 'ready'}
 		<Alert
@@ -198,31 +198,31 @@
 		{#if viewState !== 'bad_request'}
 			<div>
 				<Button variant="outline" size="sm" onclick={() => void load()}>
-					{$_('decisions.list.retry')}
+					{m["decisions.list.retry"]()}
 				</Button>
 			</div>
 		{/if}
 	{:else}
 		<p role="status" data-testid="decision-list-count">
-			{$_('decisions.list.count', { values: { count: rows.length } })}
+			{m["decisions.list.count"]({ count: rows.length })}
 		</p>
 		{#if rows.some((row) => row.mode === 'exploratory')}
 			<Alert role="status" data-testid="decision-list-nonpromotable">
-				{$_('decisions.list.nonpromotable')}
+				{m["decisions.list.nonpromotable"]()}
 			</Alert>
 		{/if}
 		<div class="overflow-x-auto rounded-lg border">
 			<table class="w-full text-sm" data-testid="decision-list-table">
-				<caption class="sr-only">{$_('decisions.list.title')}</caption>
+				<caption class="sr-only">{m["decisions.list.title"]()}</caption>
 				<thead>
 					<tr class="border-b text-xs text-muted-foreground">
-						<th scope="col" class="px-3 py-2 text-start">{$_('decisions.list.id')}</th>
-						<th scope="col" class="px-3 py-2 text-start">{$_('decisions.list.run_id')}</th>
-						<th scope="col" class="px-3 py-2 text-start">{$_('decisions.list.pipeline')}</th>
+						<th scope="col" class="px-3 py-2 text-start">{m["decisions.list.id"]()}</th>
+						<th scope="col" class="px-3 py-2 text-start">{m["decisions.list.run_id"]()}</th>
+						<th scope="col" class="px-3 py-2 text-start">{m["decisions.list.pipeline"]()}</th>
 						<th scope="col" class="px-3 py-2 text-start">Mode</th>
-						<th scope="col" class="px-3 py-2 text-start">{$_('decisions.list.config_hash')}</th>
-						<th scope="col" class="px-3 py-2 text-start">{$_('decisions.list.created')}</th>
-						<th scope="col" class="px-3 py-2 text-start">{$_('decisions.list.stages')}</th>
+						<th scope="col" class="px-3 py-2 text-start">{m["decisions.list.config_hash"]()}</th>
+						<th scope="col" class="px-3 py-2 text-start">{m["decisions.list.created"]()}</th>
+						<th scope="col" class="px-3 py-2 text-start">{m["decisions.list.stages"]()}</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -240,7 +240,7 @@
 									{modeLabel(row.mode)}
 								</Badge>
 								{#if row.mode === 'exploratory'}
-									<span class="sr-only">{$_('decisions.list.nonpromotable')}</span>
+									<span class="sr-only">{m["decisions.list.nonpromotable"]()}</span>
 								{/if}
 							</td>
 							<td class="max-w-[16rem] break-all px-3 py-2 font-mono text-xs">{row.configHash}</td>

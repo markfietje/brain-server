@@ -108,6 +108,7 @@
 	"decisions.detail.back": "Retour aux décisions",
 	"decisions.detail.loading": "Chargement de la trace…",
 	"decisions.detail.invalid": "Cet ID de trace n’est pas un entier non négatif valide.",
+	"decisions.detail.bad_request": "La requête de réexécution n'a pas pu être comprise.",
 	"decisions.detail.not_found": "Aucune trace de décision n’est stockée pour cet ID.",
 	"decisions.detail.unauthorized": "Une authentification est requise pour lire cette trace.",
 	"decisions.detail.forbidden": "Ce principal ne peut pas lire cette trace.",

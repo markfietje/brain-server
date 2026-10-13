@@ -108,6 +108,7 @@
 	"decisions.detail.back": "Zurück zu Entscheidungen",
 	"decisions.detail.loading": "Entscheidungs-Trace wird geladen…",
 	"decisions.detail.invalid": "Diese Trace-ID ist keine gültige nichtnegative Ganzzahl.",
+	"decisions.detail.bad_request": "Die Wiedergabeanfrage konnte nicht verarbeitet werden.",
 	"decisions.detail.not_found": "Für diese ID ist kein Entscheidungs-Trace gespeichert.",
 	"decisions.detail.unauthorized": "Zum Lesen dieses Entscheidungs-Trace ist eine Authentifizierung erforderlich.",
 	"decisions.detail.forbidden": "Dieser Principal darf diesen Entscheidungs-Trace nicht lesen.",

@@ -108,6 +108,7 @@
 	"decisions.detail.back": "Volver a decisiones",
 	"decisions.detail.loading": "Cargando traza…",
 	"decisions.detail.invalid": "Este ID de traza no es un entero no negativo válido.",
+	"decisions.detail.bad_request": "No se pudo interpretar la solicitud de repetición.",
 	"decisions.detail.not_found": "No hay una traza de decisión para este ID.",
 	"decisions.detail.unauthorized": "Se requiere autenticación para leer esta traza.",
 	"decisions.detail.forbidden": "Este principal no puede leer esta traza.",

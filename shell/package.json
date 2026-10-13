@@ -30,11 +30,12 @@
 		"@zag-js/combobox": "^1.46.0",
 		"@zag-js/dialog": "^1.46.0",
 		"@zag-js/svelte": "^1.46.0",
-		"openapi-fetch": "^0.17.0",
-		"svelte-i18n": "^4.0.1"
+		"openapi-fetch": "^0.17.0"
 	},
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
+		"@inlang/paraglide-js": "^2.27.0",
+		"@inlang/plugin-message-format": "^4.5.2",
 		"@internationalized/date": "^3.12.4",
 		"@lucide/svelte": "^1.55.0",
 		"@playwright/test": "^1.64.0",
