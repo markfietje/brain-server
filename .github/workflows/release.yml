@@ -634,12 +634,19 @@ jobs:
         # half-empty with only source archives.
         run: |
           set -e
+          # EVERY binary the build loops claim to produce, per platform — not
+          # just the four primaries. v1.29.15 shipped without
+          # brain-migrate-rehearse-linux-x86_64 (v1.29.14 had it) and every gate
+          # was green: the copy loop is `cp ... 2>/dev/null || true`, so a
+          # binary that did not build is silently not shipped, and the old
+          # required-list did not name it. A partial release reported success.
           for f in \
-            brain-server-linux-x86_64 \
-            brain-server-linux-aarch64 \
-            brain-server-darwin-arm64 \
-            brain-server-darwin-x86_64; do
-            [ -f "dist/$f" ] || { echo "::error::required asset missing: dist/$f"; exit 1; }
+            brain-server brain mcp bench brain-migrate-rehearse \
+            brain-connector-stub brain-connector-gh brain-connector-crm; do
+            for plat in linux-x86_64 linux-aarch64 darwin-arm64 darwin-x86_64; do
+              [ -f "dist/$f-$plat" ] || {
+                echo "::error::required asset missing: dist/$f-$plat"; exit 1; }
+            done
           done
           # The SBOM integrity gate: the merged multi-platform dist carries
           # EXACTLY the release-matched manifest — a missing, mismatched, or
