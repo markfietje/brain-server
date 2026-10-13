@@ -286,9 +286,7 @@ def parse(path):
     """Yield (name, doc, body, line) per test attribute, or die on a shape we
     cannot read (fail-closed: an unreadable shape must never be counted)."""
     rel = os.path.relpath(path, REPO)
-    text = open(path, encoding="utf-8").read()
-    lines = text.splitlines()
-    deltas = brace_deltas(text)
+    lines, deltas = load(path)
     if len(deltas) < len(lines):
         sys.exit(f"ERR {rel}: brace scanner desynced from the file's line count")
     i = 0
@@ -350,13 +348,30 @@ REPO_HINT = re.compile(r"\b(?:repo|repo_root|root|manifest_dir|workspace_root)\s
 BARE_CALL = re.compile(r"(?<![\w:.])([a-z_][A-Za-z0-9_]*)\s*\(")
 
 
+_LOADED = {}
+
+
+def load(path):
+    """(lines, brace deltas) for one file, read and scanned ONCE.
+
+    `parse` and `file_helper_bodies` both need this, and each used to open the
+    file and run the brace scanner over it itself — so every .rs in the tree was
+    read and scanned twice per census run. Measured on this tree: that alone
+    was half the wall-clock of the census pin.
+    """
+    hit = _LOADED.get(path)
+    if hit is None:
+        text = open(path, encoding="utf-8").read()
+        hit = (text.splitlines(), brace_deltas(text))
+        _LOADED[path] = hit
+    return hit
+
+
 def file_helper_bodies(path):
     """{helper name: body} for every fn in the file that is NOT nested inside a
     test body — those are that test's own local closure, not a helper another
     test can call."""
-    text = open(path, encoding="utf-8").read()
-    lines = text.splitlines()
-    deltas = brace_deltas(text)
+    lines, deltas = load(path)
     nested = []
     for i, line in enumerate(lines):
         if not ATTR.match(line):
