@@ -44,6 +44,14 @@ concurrency:
   group: codeql-${{ github.ref }}
   cancel-in-progress: true
 
+# Workflow-level least privilege. Both jobs below declare their OWN narrower
+# blocks (analyze needs security-events:write to upload results), so nothing
+# is exposed today — but without a workflow default, a job added tomorrow
+# that forgets its own block inherits the REPOSITORY default, which may be
+# read/write. Cheap to close now, and the failure mode is invisible.
+permissions:
+  contents: read
+
 jobs:
   analyze:
     name: Analyze (Rust)

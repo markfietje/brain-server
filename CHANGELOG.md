@@ -4,6 +4,82 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.15] — 2026-10-13 — the release path repairs itself
+
+Covers every commit from tag `v1.29.14` to this release. A CI and
+documentation release: no Rust behaviour changed, no wire delta, no
+schema-version change, and no new dependency edge. It exists because the
+1.29.14 release **failed and had to be repaired**, and the repairs are worth
+more than a quiet release would have been.
+
+### Release notes
+
+Restoring the main push to the release mirror turned every branch trigger back
+on, and three things that had been written while that push was off turned out
+to be quietly, wrongly true because of it. One of them made the 1.29.14
+release unshippable. This release carries the repairs, the redundancy they
+exposed, and a recorded decision for what the main push should actually arm.
+
+**Bug fixes**
+
+- **Every release was unshippable, and the fail-closed gate caught it.** The
+  docs workflow and the release workflow's own docs job held the same Pages
+  lock with cancel-in-progress, so on a tag push the release cancelled the
+  docs run — and then read its own cancellation as a red publication workflow
+  and refused to publish. The gate was right; the release was broken. The tag
+  arm was also redundant, since the release workflow already deploys docs for
+  the tagged revision, and it had been added on a premise that the mirror's
+  branch never moves.
+- **The docs build and deploy were duplicated verbatim across two workflows,
+  and the duplication is what let the bug hide.** The copies had drifted — one
+  carried the lock, one did not. There is now a single definition both call,
+  so they cannot disagree again.
+- **The release script contradicted itself**, claiming the mirror takes tags
+  only three lines above recording that the branch is pushed too. It had
+  already misdirected two agents.
+- **The mirror's sync was undocumented manual work.** Re-applying the
+  Dependabot removal by hand is exactly the step that gets forgotten, and
+  forgetting it wakes Dependabot on the mirror where every version change
+  queues the full job matrix. It is now a script, and it caught a bad manual
+  sync on its first run.
+
+**Security fixes**
+
+- **Three remotely-triggerable panics in an unused QUIC stack are no longer
+  suppressed and never were reachable.** An earlier release added audit
+  suppressions for them with the measurement that justified them; a dependency
+  re-lock then fixed all three upstream, and the suppressions were pruned
+  rather than kept. A pin now records the invariant underneath — no workspace
+  compiles a QUIC stack — and the repository compiles without any audit
+  suppression added.
+- **A supply-chain check that a comment could satisfy now asks the build
+  resolver** whether a dependency exists, and fails if its own probe stops
+  seeing anything.
+
+**Improvements**
+
+- **The test suite is classified and the classification re-derives.** All tests
+  in the server trees carry one class by written rules, and a gate refuses the
+  committed table drifting from a fresh derivation. The first classifier was
+  wrong in four ways; every one was caught by planting a test and watching it
+  land in the wrong class, never by reading the diff. The gate covers the
+  rules as well as the counts.
+- **The gate-law register has a pin.** Nothing read it, so its first law was
+  enforced by nothing — which is how four guards shipped without rows. The pin
+  parses both tables, refuses an empty proof or debt cell, and fails closed on
+  a malformed row instead of reading it as compliant.
+- **Which workflows should fire on a mirror branch push is now a recorded
+  decision** rather than a side effect nobody chose, so it cannot be
+  "optimised" away silently.
+- **Six feature lanes that were one job are now one job.** The six hand-copied
+  feature-lane jobs were byte-identical once the feature name was normalised —
+  the same duplication shape that made the previous release unshippable. They
+  are a single matrix now: same parallelism and wall-clock, but adding a lane
+  is one line and the lanes cannot drift apart.
+- **The code-scanning workflow declares its permissions at the workflow level**,
+  so a job added later without its own block inherits least privilege instead
+  of the repository default.
+
 ## [1.29.14] — 2026-10-13 — the suite is finally measured, and the CI band is bounded
 
 Covers every commit from tag `v1.29.13` (`28070084`) to this release —
