@@ -23,7 +23,7 @@
 //!
 //! Preregistration: `IMPL_R67_FEATURE_LANES_2026-09-29.md` (P67.1–P67.5).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 mod common;
@@ -81,6 +81,42 @@ fn declared_features(cargo: &str) -> Vec<String> {
 fn laned_features(workflows: &[String]) -> BTreeSet<String> {
     let mut found = BTreeSet::new();
     for text in workflows {
+        // A matrix lane names its feature through a VARIABLE, not a literal:
+        // `cargo test --all-targets --features ${{ matrix.feature }}`. The
+        // literal names live in the `strategy.matrix` list, on lines that carry
+        // no `cargo` at all — so the literal scan below cannot see them, and
+        // six real lanes read as six uncovered features.
+        //
+        // The matrix IS the coverage: one job, six features, all built. So the
+        // scan expands a matrix reference into the values that reference feeds.
+        // The guard's INTENT is unchanged — a declared feature with no lane
+        // still fails, and removing a name from the matrix list still fails it
+        // (red-proofed in this commit's history).
+        let mut matrix_values: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        let mut current: Option<String> = None;
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if let Some(name) = trimmed.strip_suffix(':') {
+                let key = name.trim();
+                if !key.starts_with('-')
+                    && key
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    current = Some(key.to_owned());
+                }
+                continue;
+            }
+            if let Some(item) = trimmed.strip_prefix("- ") {
+                if let Some(var) = current.clone() {
+                    let v = item.trim().trim_matches('"').to_owned();
+                    matrix_values.entry(var).or_default().insert(v);
+                }
+                continue;
+            }
+            current = None;
+        }
+
         for line in text.lines() {
             if !line.contains("cargo") {
                 continue;
@@ -89,6 +125,11 @@ fn laned_features(workflows: &[String]) -> BTreeSet<String> {
             {
                 if !token.is_empty() {
                     found.insert(token.to_string());
+                }
+            }
+            for (var, values) in &matrix_values {
+                if line.contains(&format!("matrix.{var}")) {
+                    found.extend(values.iter().cloned());
                 }
             }
         }
