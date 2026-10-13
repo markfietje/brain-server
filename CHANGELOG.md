@@ -4,6 +4,93 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.14] — 2026-10-13 — the suite is finally measured, and the CI band is bounded
+
+Covers every commit from tag `v1.29.13` (`28070084`) to this release —
+`git log v1.29.13..v1.29.14` reproduces the range. Two bodies of work: a
+supply-chain and CI band that made the matrix bounded and Dependabot
+reviewable, and the Tally round, which produced the first classification of
+what this suite is made of and paid down the register's structural debt.
+Zero new dependency edges; wire deltas additive only; no schema-version
+change.
+
+### Release notes
+
+The first release whose notes are backed by a measurement rather than an
+estimate. The Tally round classified all 3402 tests in the server trees into
+behavioural pins, structural reads, controls, residual documentation and a
+small unclassified remainder, and re-read its own classifier after finding it
+wrong in four ways. Alongside it: the CI matrix is now bounded, Dependabot is
+capped and grouped, and the audit gate is green on every tracked lockfile
+with no suppressions added. Wire deltas additive only; no schema-version
+change; zero new dependency edges.
+
+**Security fixes**
+
+- **Three remotely-triggerable panics in the QUIC stack were reachable
+  nowhere, but suppressed anyway, and are now neither.** The audit job
+  refuses on any advisory, and was red on four lockfiles for
+  RUSTSEC-2026-0343, 0338 and 0340. They were never reachable — quinn-proto
+  enters every lockfile only as an optional dependency behind a transport
+  feature this server does not enable, and no compiled artifact contains it.
+  The suppressions were written with the measurement that justified them and
+  then pruned the moment a re-lock fixed all three upstream, because an
+  ignore whose advisory is resolved outlives its reason and hides the next
+  one. A pin now records the invariant underneath — no workspace compiles a
+  QUIC stack — and fails if a manifest ever turns that feature on.
+
+- **A structural supply-chain pin that could be satisfied by a comment now
+  asks the resolver.** The crate-islands census read manifest text, so a
+  comment naming an unconsumed crate passed exactly as well as a real
+  dependency did. It now asks cargo whether a path dependency resolves, in
+  both workspaces, with an anti-vacuity arm so a probe that stops seeing
+  anything fails instead of quietly emptying the list.
+
+**Improvements**
+
+- **The test suite is classified, and the classification is re-derivable.**
+  A committed census assigns every test in the server trees one class by
+  written rules, and a gate refuses the table drifting from a fresh
+  derivation. Four rules in the first classifier were wrong — it read only
+  body-local source reads, only qualified calls, only whole-word markers, and
+  let a compile-time version string anchor a repo-path fixpoint — and all
+  four were caught by planting a test and watching it land in the wrong class,
+  never by reading the diff. The gate covers the rules as well as the counts,
+  so weakening one turns it red.
+
+- **The gate-law register now has a pin, which is how four guards shipped
+  without rows twice.** Nothing read the register, so its first law was
+  enforced by nothing. The pin parses both tables, refuses an empty
+  red-proof or owed cell, and fails closed on a malformed row rather than
+  reading it as compliant.
+
+- **The two latent non-reentrant-lock hazards are fenced and policed.** A
+  test fixture acquired a non-reentrant mutex twice and hung its whole target
+  without reporting a failure, and the process-global chain key was flipped
+  without the fence its nine sibling assertions hold.
+
+**Changed**
+
+- **The CI matrix is bounded.** Long-running lanes carry explicit timeouts and
+  the job set is capped, so a hang reports instead of consuming a runner.
+- **Dependabot is capped and grouped**, so the update queue is reviewable
+  rather than a firehose.
+- **The test-count badge gate could not run and now can** — it was missing a
+  separator that made its derived comparison never fire.
+- **All eight cargo lockfiles were re-resolved**, carrying `rsa` to a release
+  candidate. The generated SBOM for this release reflects that movement; it
+  is a real re-generation, not a version-string edit.
+- **The client shell moved to current major versions** — SvelteKit 3,
+  TypeScript 7, an adapter-static deployment, `bits-ui` replaced by direct
+  Zag primitives, `svelte-i18n` replaced by Paraglide, and one animation
+  package dropped.
+
+**Bug fixes**
+
+- **The docs lane's only real trigger was a branch it could not build from.**
+  It is now driven by the release tag, which is the SHA the publisher
+  actually serves.
+
 ## [1.29.13] — 2026-10-12 — the eleventh pass closed, then attacked
 
 Covers every commit from tag `v1.29.12` (`22f2bb15`) to this release —
