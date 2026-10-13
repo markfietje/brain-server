@@ -105,9 +105,21 @@ jobs:
       - name: Svelte check (strict)
         run: pnpm check
 
+      # NO `--offline` (2026-10-13). It looked like belt-and-braces next to
+      # `--locked` and was a cache-miss landmine: `--offline` only resolves
+      # from a populated cargo registry, and Swatinem/rust-cache keys on the
+      # lockfile — so ANY Cargo.lock change, a new runner image, or an evicted
+      # cache turns this step into `error: no matching package named 'aes-gcm'
+      # found / location searched: crates.io index`. Observed live on the
+      # 1.29.15 release push, where the version bump moved the lock and missed
+      # the cache. The step went green the moment the flag was dropped.
+      #
+      # `--locked` is the property that actually matters and it is retained
+      # everywhere in this repo: the lockfile may not be mutated by a build.
+      # `--offline` added no reproducibility, only a way to fail.
       - name: Build root brain-server for dedicated-port e2e
         working-directory: .
-        run: cargo build --offline --locked --bin brain-server
+        run: cargo build --locked --bin brain-server
 
       - name: Tauri fmt
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check

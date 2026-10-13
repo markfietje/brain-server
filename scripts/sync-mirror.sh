@@ -78,14 +78,32 @@ say "step 1 done — public/main is an ancestor, so the push is a fast-forward"
 say "step 2: pushing main to the mirror"
 git push public main
 
+# Step 3 — the mirror-only deletion.
+#
+# BUILT DETACHED, ON PURPOSE. The first version of this script ran `git rm` +
+# `git commit` on local main and pushed that to public. Because the commit
+# then sat on local main, the NEXT private push carried it — and its deletion
+# — into brain-server-private's history, where dependabot.yml silently
+# disappeared. It stayed missing for two syncs before --check caught it.
+#
+# A mirror-only artifact must never be an ancestor of private main, or it is
+# no longer mirror-only. So: detach, commit, push THAT sha to public, return.
+# Local main is not advanced and never holds the deletion.
 say "step 3: re-applying the mirror-only $MIRROR_FILE deletion"
+LOCAL_HEAD="$(git rev-parse HEAD)"
+git checkout --detach "$LOCAL_HEAD" >/dev/null 2>&1
 git rm -q "$MIRROR_FILE"
 git commit -q -m "dependabot: still no version updates on the release mirror
 
 Unchanged in substance: version updates belong on the private repo, where
 main moves and dependabot.yml carries per-ecosystem caps and grouping. This
 mirror re-applies the deletion on every sync — see scripts/sync-mirror.sh."
-git push public main
+MIRROR_SHA="$(git rev-parse HEAD)"
+# Fast-forward on the mirror: public/main == LOCAL_HEAD by step 1.
+git push public "$MIRROR_SHA":main >/dev/null
+git checkout main >/dev/null 2>&1
+git reset --hard "$LOCAL_HEAD" >/dev/null
+[[ -f "$MIRROR_FILE" ]] || { echo "ERR: local $MIRROR_FILE did not survive step 3" >&2; exit 1; }
 
 echo
 echo "mirror synced. verify with:  scripts/sync-mirror.sh --check"
