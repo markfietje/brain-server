@@ -108,7 +108,7 @@
 	<div
 		use:portal
 		{...dlg.getBackdropProps()}
-		class="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-in data-[state=open]:fade-in-0"
+		class="fixed inset-0 z-50 bg-black/50 data-[state=open]:animate-fade-in"
 	></div>
 	<div
 		use:portal

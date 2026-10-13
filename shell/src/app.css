@@ -1,6 +1,24 @@
 @import 'tailwindcss';
-@import 'tw-animate-css';
 @import 'shadcn-svelte/tailwind.css';
+
+/* The shell's only motion is a layer fading in as it opens (the dialog and
+   command-palette backdrops). That is one keyframe, so it is declared here in
+   Tailwind 4's native `@theme` form instead of pulling `tw-animate-css` for
+   it — one fewer dependency, and the animation lives next to the palette
+   policy it serves. `@theme` registers `--animate-*` as an `animate-*`
+   utility; the `@keyframes` it names must be top-level. */
+@theme {
+	--animate-fade-in: fade-in 150ms ease-out;
+}
+
+@keyframes fade-in {
+	from {
+		opacity: 0;
+	}
+	to {
+		opacity: 1;
+	}
+}
 
 /* UX foundation — native-first platform policy:
    The shell runs in the OS's own webview (WKWebView / WebView2 /
