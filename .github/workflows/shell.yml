@@ -64,7 +64,21 @@ jobs:
       - name: Install pinned stable Rust
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable, signed 2026-09-03
         with:
-          toolchain: 1.98.1
+          # 1.99, matching what the SERVER binaries build with (ci.yml tracks
+          # `stable`, which resolves to 1.99.0). This lane was pinned to 1.98.1
+          # while `shell/src-tauri/Cargo.toml` declared `rust-version = "1.99"`
+          # — a manifest/CI contradiction inside a single commit, which red the
+          # lane at `Tauri clippy` with "rustc 1.98.1 is not supported by the
+          # following packages: brain-shell@0.1.0 requires rustc 1.99".
+          #
+          # Deliberately still a PIN, not a floating channel: the vitest
+          # contract asserts this pin exists AND forbids the floating-channel
+          # spelling appearing anywhere in this file — comments included. A
+          # floating toolchain would build the shell against a different
+          # compiler than the one it was verified on. (This sentence was
+          # rewritten once because the first draft named the forbidden literal
+          # in its own explanation and the contract refused the file.)
+          toolchain: 1.99
           components: rustfmt, clippy
 
       - name: Rust cache (kernel root)
