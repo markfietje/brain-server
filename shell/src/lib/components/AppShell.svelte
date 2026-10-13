@@ -17,12 +17,12 @@
 	import HistoryIcon from '@lucide/svelte/icons/history';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import CommandIcon from '@lucide/svelte/icons/command';
-	import { Button } from '$lib/components/ui/button';
-	import * as Command from '$lib/components/ui/command';
-	import * as Dialog from '$lib/components/ui/dialog';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
-	import { DEFAULT_BASE, apiBase, setApiBase } from '$lib/api/client';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import * as Command from '#lib/components/ui/command/index.js';
+	import * as Dialog from '#lib/components/ui/dialog/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import { Label } from '#lib/components/ui/label/index.js';
+	import { DEFAULT_BASE, apiBase, setApiBase } from '#lib/api/client.js';
 
 	const NAV = [
 		{ route: '/overview', key: 'nav.overview', Icon: HouseIcon },

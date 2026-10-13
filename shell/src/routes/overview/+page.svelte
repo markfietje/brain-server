@@ -3,10 +3,10 @@
 	// /health (the public probe shape), /version, /stats. No cached values,
 	// no opinions: when the wire fails the honest error state shows.
 	import { _ } from 'svelte-i18n';
-	import { client } from '$lib/api/client';
-	import { Card } from '$lib/components/ui/card';
-	import { Alert } from '$lib/components/ui/alert';
-	import { Button } from '$lib/components/ui/button';
+	import { client } from '#lib/api/client.js';
+	import { Card } from '#lib/components/ui/card/index.js';
+	import { Alert } from '#lib/components/ui/alert/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
 
 	interface Health {
 		status: string;

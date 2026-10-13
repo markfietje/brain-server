@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import { _ } from 'svelte-i18n';
 	import { resolve } from '$app/paths';
-	import { client } from '$lib/api/client';
+	import { client } from '#lib/api/client.js';
 	import {
 		classifyDecisionStatus,
 		createDecisionRequestGuard,
@@ -10,12 +10,12 @@
 		parseDecisionRunList,
 		type DecisionRunSummary,
 		type DecisionStatus
-	} from '$lib/decision-run';
-	import { Alert } from '$lib/components/ui/alert';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
+	} from '#lib/decision-run.js';
+	import { Alert } from '#lib/components/ui/alert/index.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import { Label } from '#lib/components/ui/label/index.js';
 
 	type ListState =
 		| 'loading'
@@ -229,7 +229,7 @@
 					{#each rows as row (row.id)}
 						<tr class="border-b last:border-b-0" data-testid="decision-list-row">
 							<td class="px-3 py-2 font-mono tabular-nums">
-								<a href={resolve(`/decisions/${row.id}`)} data-testid="decision-list-link">
+								<a href={resolve('/decisions/[id]', { id: String(row.id) })} data-testid="decision-list-link">
 									{row.id}
 								</a>
 							</td>

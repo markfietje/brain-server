@@ -15,11 +15,11 @@
 	// server-side — the client-side strip is defense in depth.
 	import { _ } from 'svelte-i18n';
 	import { page } from '$app/state';
-	import { client, captureNextRawText } from '$lib/api/client';
-	import { parseRecallTrace, type RecallTraceView } from '$lib/trace';
-	import { sanitizeTemplateText } from '$lib/sanitize';
-	import { Button } from '$lib/components/ui/button';
-	import { Alert } from '$lib/components/ui/alert';
+	import { client, captureNextRawText } from '#lib/api/client.js';
+	import { parseRecallTrace, type RecallTraceView } from '#lib/trace.js';
+	import { sanitizeTemplateText } from '#lib/sanitize.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Alert } from '#lib/components/ui/alert/index.js';
 
 	let view = $state<RecallTraceView | null>(null);
 	let rawText = $state<string | null>(null);

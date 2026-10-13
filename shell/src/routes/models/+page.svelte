@@ -1,6 +1,6 @@
 <script lang="ts">
 	// R36 M6-S2 — the Model Registry view: the bounded listing and the single-row
-	// read, on one surface. `$lib/model-registry.ts` is the only runtime boundary
+	// read, on one surface. `#lib/model-registry.ts` is the only runtime boundary
 	// between the wire and this renderer, and it is the data contract in full.
 	//
 	// FIVE LAWS this surface is built to hold. None of them is a preference.
@@ -32,7 +32,7 @@
 	import { _ } from 'svelte-i18n';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
-	import { client } from '$lib/api/client';
+	import { client } from '#lib/api/client.js';
 	import {
 		classifyModelRegistryStatus,
 		displayText,
@@ -49,11 +49,11 @@
 		type ModelRegistryStatus,
 		type ModelStatus,
 		type ModelSummary
-	} from '$lib/model-registry';
-	import { Alert } from '$lib/components/ui/alert';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import { Card } from '$lib/components/ui/card';
+	} from '#lib/model-registry.js';
+	import { Alert } from '#lib/components/ui/alert/index.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Card } from '#lib/components/ui/card/index.js';
 
 	/** The refusal classifications the parser names, minus its `ok`. */
 	type WireState =
