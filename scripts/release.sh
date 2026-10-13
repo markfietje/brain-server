@@ -23,13 +23,22 @@
 #   public (brain-server)          — release TAGS only. This is where releases
 #                                     and their binaries are meant to live, and
 #                                     where `release.yml` must fire.
-# `main` is NOT pushed to `public`, and must not be: a tag carries its commit's
-# whole ancestry, but a branch carries everything after it too. Publishing only
-# the tag ships the released snapshot; publishing the branch would ship the
-# rounds that follow, which include work that is deliberately not public.
+# `main` IS pushed to `public` again (restored 2026-10-13). The tag-only rule
+# below was the 2026-10-06 posture, written on the assumption that this branch
+# carries rounds that must not be published. That assumption does not hold for
+# this project right now — there is no shipped product, no landing page, no
+# company, no public surface to protect — and the rule was costing the one
+# thing CI was being kept alive for: per-merge verification. Pushing `main`
+# restores it, because public-repo Actions are free where private ones are not.
 #
-# The consequence to know about: `public/main` therefore LAGS `origin/main` by
-# design, and it must not be treated as drift to be corrected.
+# Publishing unreleased work on the branch is therefore ACCEPTED here. The
+# release boundary is still the TAG, and it is the tag that gates shipping:
+# `release.yml` fail-closes unless `ci.yml` was green for the tagged SHA, so
+# a green `main` push publishes nothing at all. `main` is the review surface;
+# the tag is the release surface. Do not conflate them.
+#
+# Revisit if that ever stops being true: if this project acquires a public
+# surface or work that genuinely must not be published, restore tag-only.
 #
 # CI AND THE BILLING LAW (2026-10-06): private-repo Actions are DISABLED —
 # the free 2,000 min/month died in six days. There is no pre-tag CI run left
