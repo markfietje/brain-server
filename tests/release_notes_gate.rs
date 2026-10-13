@@ -30,6 +30,31 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Demote EVERY bold category heading to an h3, so the first one already
+/// terminates the notes block no matter which category the section leads with.
+///
+/// This used to rewrite `**Security fixes**` alone, which silently depended on
+/// that being the section's FIRST category: when the notes began with another
+/// category, the remaining bold heading kept the block alive, the gate
+/// correctly accepted it, and the test failed while testing nothing. A guard
+/// that disarms itself when the changelog's heading order changes is worse
+/// than no guard, because it still looks like one.
+const CATEGORY_NAMES: [&str; 5] = [
+    "Improvements",
+    "New",
+    "Changed",
+    "Bug fixes",
+    "Security fixes",
+];
+
+fn demote_every_category_heading(section: &str) -> String {
+    let mut out = section.to_string();
+    for name in CATEGORY_NAMES {
+        out = out.replace(&format!("**{name}**"), &format!("### {name}"));
+    }
+    out
+}
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -100,10 +125,30 @@ fn the_gate_refuses_an_empty_notes_block_and_audit_ids() {
 
     // Defect 1 — the category headings are h3, so the extractor stops at the
     // first one and the block publishes nothing.
-    let as_h3 = section.replace("**Security fixes**", "### Security fixes");
+    //
+    // EVERY category heading is demoted, not just one. This used to rewrite
+    // `**Security fixes**` alone, which silently depended on that being the
+    // section's FIRST category: when the notes began with another category,
+    // the remaining bold heading kept the block alive, the gate correctly
+    // accepted it, and the test failed while testing nothing. A guard that
+    // disarms itself when the changelog's heading order changes is worse than
+    // no guard, because it still looks like one.
+    let as_h3 = demote_every_category_heading(&section);
     assert_ne!(
         as_h3, section,
         "the section no longer uses a bold category heading"
+    );
+    // The assertion is about CATEGORY headings, not about "**" anywhere — the
+    // notes legitimately carry inline bold emphasis inside bullets, and a
+    // blanket check would fail on correct notes.
+    let surviving = CATEGORY_NAMES
+        .iter()
+        .find(|n| as_h3.contains(&format!("**{n}**")));
+    assert!(
+        surviving.is_none(),
+        "the h3 plant left {} as a bold category heading, so the block would \
+         still publish — the plant no longer builds the shape it claims to",
+        surviving.unwrap_or(&"")
     );
     let dir = scratch(
         "h3",
