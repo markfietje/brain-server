@@ -34,6 +34,25 @@ CHECK_ONLY=0
 
 say() { printf '  %s\n' "$*"; }
 
+# Step 3 builds the mirror-only commit on a DETACHED HEAD, so an interruption
+# anywhere after that point used to strand the repo off `main` — and, worse,
+# strand it exactly when the mirror is still carrying $MIRROR_FILE. On
+# 2026-10-13 a run died between the step-2 push and the step-3 push: Dependabot
+# woke on the mirror, opened a PR, and the local checkout stayed detached.
+# Restore the starting ref on the way out, whatever happened.
+ORIGINAL_HEAD="$(git rev-parse HEAD)"
+ORIGINAL_REF="$(git symbolic-ref -q HEAD || echo '')"
+restore_head() {
+  local rc=$?
+  if [[ -z "$(git symbolic-ref -q HEAD || echo '')" && -n "$ORIGINAL_REF" ]]; then
+    git symbolic-ref HEAD "$ORIGINAL_REF" >/dev/null 2>&1 || true
+    git reset --hard "$ORIGINAL_HEAD" >/dev/null 2>&1 || true
+    echo "WARN: restored HEAD to $ORIGINAL_REF — this run did not finish" >&2
+  fi
+  return $rc
+}
+trap restore_head EXIT
+
 if ! git diff --quiet || [[ -n "$(git status --porcelain)" ]]; then
   echo "ERR: working tree is dirty — commit or stash before syncing the mirror." >&2
   exit 1
@@ -54,10 +73,14 @@ if [[ $CHECK_ONLY -eq 1 ]]; then
   ahead=$(git rev-list --count public/main..main 2>/dev/null || echo 0)
   say "main is $ahead commit(s) ahead of the mirror"
   if git cat-file -e "public/main:$MIRROR_FILE" 2>/dev/null; then
-    say "WARNING: $MIRROR_FILE is PRESENT on the mirror — Dependabot will wake"
-  else
-    say "ok: $MIRROR_FILE is absent on the mirror"
+    # Fail-closed. This used to be a WARNING and still exit 0, which is how a
+    # mirror carrying Dependabot survived a --check. `--check` exists to be
+    # trusted; a warning nobody is required to read is not a check.
+    echo "ERR: $MIRROR_FILE is PRESENT on the mirror — Dependabot is awake." >&2
+    echo "     Re-run without --check to re-apply the deletion." >&2
+    exit 1
   fi
+  say "ok: $MIRROR_FILE is absent on the mirror"
   exit 0
 fi
 
@@ -104,6 +127,21 @@ git push public "$MIRROR_SHA":main >/dev/null
 git checkout main >/dev/null 2>&1
 git reset --hard "$LOCAL_HEAD" >/dev/null
 [[ -f "$MIRROR_FILE" ]] || { echo "ERR: local $MIRROR_FILE did not survive step 3" >&2; exit 1; }
+
+# Verify the MIRROR, not the local tree. The check above can only prove this
+# checkout is intact; the whole point of step 3 is what landed on the remote, and
+# that is the thing that has silently failed before. Read the ref back from the
+# remote so a push that appeared to succeed but moved nothing is caught here.
+git fetch public --quiet
+if [[ "$(git rev-parse --short public/main)" != "$(git rev-parse --short "$MIRROR_SHA")" ]]; then
+  echo "ERR: mirror is at $(git rev-parse --short public/main), expected $MIRROR_SHA" >&2
+  exit 1
+fi
+if git cat-file -e "public/main:$MIRROR_FILE" 2>/dev/null; then
+  echo "ERR: $MIRROR_FILE is STILL on the mirror after step 3 — Dependabot is awake" >&2
+  exit 1
+fi
+say "ok: mirror verified at $MIRROR_SHA with $MIRROR_FILE absent"
 
 echo
 echo "mirror synced. verify with:  scripts/sync-mirror.sh --check"
