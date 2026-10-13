@@ -7,12 +7,12 @@
 	// the committed value is TYPED like the kernel's classify_answer reads it
 	// (choice = label string, score = integer, noul = boolean) — never text.
 	// Every rendered string passes the sanitizer (D9).
-	import type { WizardQuestion } from '$lib/wizard/pack';
-	import { sanitizeTemplateText } from '$lib/sanitize';
-	import { recordTouch } from '$lib/telemetry/buffer';
+	import type { WizardQuestion } from '#lib/wizard/pack.js';
+	import { sanitizeTemplateText } from '#lib/sanitize.js';
+	import { recordTouch } from '#lib/telemetry/buffer.js';
 	import { _ } from 'svelte-i18n';
-	import { Button } from '$lib/components/ui/button';
-	import { Card } from '$lib/components/ui/card';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Card } from '#lib/components/ui/card/index.js';
 
 	interface Props {
 		question: WizardQuestion;

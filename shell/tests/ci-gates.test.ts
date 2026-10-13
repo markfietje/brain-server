@@ -55,8 +55,8 @@ test('shell_ci_contract_is_fail_closed_clean_runner_and_e2e_gated', () => {
 
 	for (const action of [
 		'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1',
-		'pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86',
-		'actions/setup-node@820762786026740c76f36085b0efc47a31fe5020',
+		'pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413',
+		'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1',
 		'Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6',
 		'dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87'
 	]) {

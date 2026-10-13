@@ -3,9 +3,9 @@
 	// ambiguous or unanswered question STOPS the flow, never invents (D1;
 	// the Art. 14-engineering posture — a human stays in command).
 	import { _ } from 'svelte-i18n';
-	import { Alert } from '$lib/components/ui/alert';
-	import { AlertTitle } from '$lib/components/ui/alert';
-	import { AlertDescription } from '$lib/components/ui/alert';
+	import { Alert } from '#lib/components/ui/alert/index.js';
+	import { AlertTitle } from '#lib/components/ui/alert/index.js';
+	import { AlertDescription } from '#lib/components/ui/alert/index.js';
 
 	interface Props {
 		questionId: string;

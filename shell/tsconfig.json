@@ -1,5 +1,19 @@
 {
-	"extends": "./.svelte-kit/tsconfig.json",
+	"extends": "$app/tsconfig",
+	"include": [
+		"src/**/*.ts",
+		"src/**/*.js",
+		"src/**/*.svelte",
+		"tests/**/*.ts",
+		"e2e/**/*.ts",
+		"*.config.ts"
+	],
+	"exclude": [
+		"build",
+		".svelte-kit",
+		"node_modules",
+		"src-tauri"
+	],
 	"compilerOptions": {
 		"allowJs": true,
 		"checkJs": true,

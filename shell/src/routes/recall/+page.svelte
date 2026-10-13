@@ -9,13 +9,13 @@
 	// stays deferred.
 	import { _ } from 'svelte-i18n';
 	import { resolve } from '$app/paths';
-	import { client } from '$lib/api/client';
-	import { sanitizeTemplateText } from '$lib/sanitize';
-	import { Button } from '$lib/components/ui/button';
-	import { Input } from '$lib/components/ui/input';
-	import { Card } from '$lib/components/ui/card';
-	import { Alert } from '$lib/components/ui/alert';
-	import { Badge } from '$lib/components/ui/badge';
+	import { client } from '#lib/api/client.js';
+	import { sanitizeTemplateText } from '#lib/sanitize.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import { Card } from '#lib/components/ui/card/index.js';
+	import { Alert } from '#lib/components/ui/alert/index.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
 
 	type RecallHitItem = {
 		id: number;
@@ -98,7 +98,7 @@
 			</p>
 			{#if traceId !== null}
 				<a
-					href={resolve(`/recall/${traceId}/trace`)}
+					href={resolve('/recall/[trace_id]/trace', { trace_id: String(traceId) })}
 					class="text-sm font-medium text-brand underline-offset-4 hover:underline"
 					data-testid="trace-link"
 				>

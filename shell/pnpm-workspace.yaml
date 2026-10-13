@@ -1,5 +1,18 @@
 overrides:
-  cookie: 0.7.2
+  # cookie 0.7.2 -> 1.1.1 (SvelteKit 3 / adapter-static 4, 2026-10-13).
+  #
+  # @sveltejs/adapter-static@4.0.0 calls `parseCookie`, which only exists in
+  # the 1.x API, but declares NO `cookie` dependency of its own — so it
+  # inherited whatever the graph resolved. That was 0.7.2 (via kit 3), whose
+  # exports are only `parse`/`serialize`, and the adapter died with
+  # `TypeError: (0, import_cookie.parseCookie) is not a function` during
+  # prerender. An upstream version skew, not a local mistake.
+  #
+  # 1.1.1 is the one version that satisfies BOTH sides: it keeps `parse` and
+  # `serialize` (what kit 3's own cookie usage needs) AND adds `parseCookie`,
+  # `parseSetCookie`, `stringifyCookie`, `stringifySetCookie`. cookie 2.x is
+  # NOT usable here — it drops `parse`/`serialize` entirely.
+  cookie: 1.1.1
   esbuild: 0.25.12
 
 # pnpm 12's build-script policy (scaffolded by pnpm itself at first

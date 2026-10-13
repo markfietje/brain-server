@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { badgeVariants, type BadgeVariant } from "./badge.js";
-	import { cn, type WithElementRef } from "$lib/utils.js";
+	import { cn, type WithElementRef } from '#lib/utils.js';
 	import type { HTMLAnchorAttributes } from "svelte/elements";
 
 	let {

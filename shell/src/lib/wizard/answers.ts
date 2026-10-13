@@ -10,7 +10,7 @@
 
 import type { ResolvedPack } from './pack';
 import { branchOf, classifyAnswer, firstStep, renderedAnswer } from './branch';
-import { exportTelemetry } from '$lib/telemetry/buffer';
+import { exportTelemetry } from '#lib/telemetry/buffer.js';
 
 export interface TypedAnswer {
 	readonly question: string;

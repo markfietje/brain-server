@@ -3,7 +3,7 @@
 	import { _ } from 'svelte-i18n';
 	import { page } from '$app/state';
 	import { resolve } from '$app/paths';
-	import { captureNextRawText, client } from '$lib/api/client';
+	import { captureNextRawText, client } from '#lib/api/client.js';
 	import {
 		classifyDecisionStatus,
 		createDecisionRequestGuard,
@@ -15,15 +15,15 @@
 		type DecisionRunDetail,
 		type DecisionStatus,
 		type ReplayAgreement
-	} from '$lib/decision-run';
-	import { sanitizeTemplateText, stripInvisible } from '$lib/sanitize';
-	import { Alert } from '$lib/components/ui/alert';
-	import { Badge } from '$lib/components/ui/badge';
-	import { Button } from '$lib/components/ui/button';
-	import { Card } from '$lib/components/ui/card';
-	import { Input } from '$lib/components/ui/input';
-	import { Label } from '$lib/components/ui/label';
-	import { Textarea } from '$lib/components/ui/textarea';
+	} from '#lib/decision-run.js';
+	import { sanitizeTemplateText, stripInvisible } from '#lib/sanitize.js';
+	import { Alert } from '#lib/components/ui/alert/index.js';
+	import { Badge } from '#lib/components/ui/badge/index.js';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Card } from '#lib/components/ui/card/index.js';
+	import { Input } from '#lib/components/ui/input/index.js';
+	import { Label } from '#lib/components/ui/label/index.js';
+	import { Textarea } from '#lib/components/ui/textarea/index.js';
 
 	type DetailState =
 		| 'loading'

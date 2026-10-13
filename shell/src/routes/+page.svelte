@@ -8,18 +8,18 @@
 	// resumes; the answers export is the evidence artifact with the
 	// local-only telemetry.
 	import { _ } from 'svelte-i18n';
-	import { fetchWizardPacks } from '$lib/api/client';
-	import { parsePack, type ResolvedPack } from '$lib/wizard/pack';
-	import { branchOf, classifyAnswer, firstStep } from '$lib/wizard/branch';
-	import { buildAnswersExport } from '$lib/wizard/answers';
-	import { saveProgress, restoreProgress, clearProgress } from '$lib/wizard/session';
-	import { beginFlow, recordAnswer, recordError, recordAbandon } from '$lib/telemetry/buffer';
-	import QuestionCard from '$lib/wizard/QuestionCard.svelte';
-	import AbstainCard from '$lib/wizard/AbstainCard.svelte';
-	import { Button } from '$lib/components/ui/button';
-	import { Alert } from '$lib/components/ui/alert';
-	import { Progress } from '$lib/components/ui/progress';
-	import { Card } from '$lib/components/ui/card';
+	import { fetchWizardPacks } from '#lib/api/client.js';
+	import { parsePack, type ResolvedPack } from '#lib/wizard/pack.js';
+	import { branchOf, classifyAnswer, firstStep } from '#lib/wizard/branch.js';
+	import { buildAnswersExport } from '#lib/wizard/answers.js';
+	import { saveProgress, restoreProgress, clearProgress } from '#lib/wizard/session.js';
+	import { beginFlow, recordAnswer, recordError, recordAbandon } from '#lib/telemetry/buffer.js';
+	import QuestionCard from '#lib/wizard/QuestionCard.svelte';
+	import AbstainCard from '#lib/wizard/AbstainCard.svelte';
+	import { Button } from '#lib/components/ui/button/index.js';
+	import { Alert } from '#lib/components/ui/alert/index.js';
+	import { Progress } from '#lib/components/ui/progress/index.js';
+	import { Card } from '#lib/components/ui/card/index.js';
 
 	interface CatalogEntry {
 		id: string;

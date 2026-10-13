@@ -1,14 +1,14 @@
 <script lang="ts">
 	import '../app.css';
 	import { addMessages, init, getLocaleFromNavigator } from 'svelte-i18n';
-	import en from '$lib/i18n/en.json';
-	import de from '$lib/i18n/de.json';
-	import fr from '$lib/i18n/fr.json';
-	import es from '$lib/i18n/es.json';
-	import nl from '$lib/i18n/nl.json';
-	import { bootstrapToken } from '$lib/api/bootstrap';
-	import { applyPlatformAttr } from '$lib/platform';
-	import AppShell from '$lib/components/AppShell.svelte';
+	import en from '#lib/i18n/en.json';
+	import de from '#lib/i18n/de.json';
+	import fr from '#lib/i18n/fr.json';
+	import es from '#lib/i18n/es.json';
+	import nl from '#lib/i18n/nl.json';
+	import { bootstrapToken } from '#lib/api/bootstrap.js';
+	import { applyPlatformAttr } from '#lib/platform.js';
+	import AppShell from '#lib/components/AppShell.svelte';
 
 	// Native platform feel: <html data-platform> keys the design tokens, and
 	// form controls stay NATIVE (the OS webview draws its own popups/combos).
