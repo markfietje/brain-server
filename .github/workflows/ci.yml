@@ -1,16 +1,52 @@
 name: CI
 
+# ── Which workflow fires on a MIRROR main push, and why ──────────────────
+# Restoring the main push on 2026-10-13 turned every `branches: [main]`
+# trigger here back on. That switch was made deliberately, but nobody then
+# examined what it turned ON — and two things that had been written while
+# main-push was OFF were quietly, wrongly true because of it:
+#
+#   * the mirror's dependabot.yml had been DELETED on the premise that main
+#     there "is parked by design and never merged";
+#   * this file's own header claimed main was "deliberately never pushed to
+#     public".
+#
+# Both were false the day the push came back, and the second had already
+# misdirected two agents. So the per-workflow decision is recorded HERE,
+# where anyone editing a trigger will read it, rather than left implicit:
+#
+#   ci.yml     main+tags+PR   YES — this IS the per-merge verification that
+#                                   restoring the main push was for.
+#   codeql.yml main           YES — security scanning per merge; alerting on
+#                                   an unmerged state is the point.
+#   shell.yml  main           YES — the client has been refactoring across
+#                                   majors; shell.yml owns that surface.
+#   docs.yml   main, PATHS    YES, but paths-filtered to book/docs/theme, so
+#                                   a kernel merge does not redeploy Pages.
+#   fuzz.yml   schedule only  NO — and it already is. Nightly corpus replay,
+#                                   not per-merge; ci.yml's engine-crates job
+#                                   replays the same corpus on every push.
+#   release.yml tags only     N/A — the release surface, gated, not mirrored.
+#
+# The one to NOT "optimise" is ci.yml on main. Narrowing it would silently
+# delete the only per-merge signal this project has, and nothing would go
+# red — it would just stop looking. That is the failure this block exists to
+# prevent.
+
 on:
   push:
     branches: [main]
-    # Release tags RUN the full matrix here, on purpose (2026-10-06 billing
-    # decision): private-repo CI is disabled (Actions minutes exhausted the
-    # 2,000/month free tier in six days), and public-repo Actions are free —
-    # so the TAG is the public CI trigger, because `main` is deliberately
-    # never pushed to public (release.sh's law: a branch would publish
-    # unreleased rounds). release.yml's publication step then fail-closes on
-    # this very run: no green ci.yml for the tagged SHA ⇒ binaries never
-    # publish. Tests-before-shipping survives the private-CI removal intact.
+    # Release tags run the full matrix here too. That was originally framed as
+    # the ONLY public trigger — private-repo Actions exhausted the 2,000/month
+    # free tier in six days (2026-10-06), public Actions are free, and at the
+    # time `main` was deliberately never pushed to public.
+    #
+    # BOTH halves of that are now false. `291bf3b8` restored the main push, and
+    # the private workflows have since been disabled outright, so this matrix on
+    # the MIRROR's `main` is the only per-merge verification the project has.
+    # release.yml still fail-closes on the TAG's run (no green ci.yml for the
+    # tagged SHA ⇒ binaries never publish), which is unchanged and is the point:
+    # `main` is the review surface, the tag is the release surface.
     tags: ['v*']
   pull_request:
     # QUEUE GUARDRAIL (2026-10-13): skip the 20-job Rust matrix for a PR that
