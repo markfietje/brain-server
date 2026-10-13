@@ -2,22 +2,27 @@ name: Build & deploy docs (mdBook → GitHub Pages)
 
 on:
   push:
+    # NO `tags:` ARM, and that is a fix rather than an omission.
+    #
+    # A tag arm was added here on 2026-10-13 on the premise that this repo's
+    # `main` is "parked by design and never merged". That premise was
+    # obsolete the same day: `291bf3b8` restored the main push. Worse, the
+    # arm made the release UNSHIPPABLE. docs.yml and release.yml's
+    # "Build & deploy docs (tagged revision)" job both hold the SAME
+    # `pages` concurrency lock with `cancel-in-progress: true`, so on a tag
+    # push the release job CANCELLED this workflow — and the release's own
+    # fail-closed gate then read that cancellation as a red publication
+    # workflow and refused to publish. Every tag would have failed the same
+    # way. Observed live on v1.29.14.
+    #
+    # The tag arm was also redundant: release.yml already builds and deploys
+    # the docs for the tagged revision, and it did so successfully while this
+    # workflow sat cancelled. Removing the arm leaves exactly ONE docs deploy
+    # per event — docs.yml for main pushes, release.yml for tags — so the
+    # shared `pages` lock still prevents a main deploy racing a tag deploy,
+    # and there is nothing left to cancel. The gate treats "no docs.yml run
+    # for this SHA" the way it already treats shell.yml and fuzz.yml.
     branches: [main]
-    # THE DOCS LANE'S ONLY REAL TRIGGER (2026-10-13).
-    #
-    # This repo is the release mirror: `main` here is parked by design
-    # (scripts/release.sh — "public/main therefore LAGS origin/main by
-    # design, and it must not be treated as drift to be corrected"), and
-    # releases reach this repo as TAGS. A `branches: [main]` filter alone
-    # therefore means this workflow fires essentially never: the live
-    # Pages build was frozen at 2026-10-07 while nine releases shipped.
-    # It was not "broken" — it was wired to a ref that stops moving.
-    #
-    # Tags are the sync mechanism for this repo, so they are the trigger.
-    # GitHub does NOT evaluate `paths` filters for tag pushes, so the tag
-    # arm below deploys unconditionally; the `paths` list stays to keep
-    # the branch arm from rebuilding on every unrelated push.
-    tags: ['v*']
     paths:
       - "book.toml"
       - "docs/**"
