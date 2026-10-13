@@ -669,50 +669,59 @@ fn manifests() -> Vec<String> {
     out
 }
 
-/// The three `quinn-proto` ignores in `.cargo/audit.toml` rest on a claim:
-/// QUIC is never COMPILED here. That claim needs its own anti-rot, because
-/// the staleness pin above cannot see it — `quinn-proto` IS present in five
-/// tracked lockfiles, so that pin stays green forever regardless of whether
-/// the code is reachable.
+/// The repo does not COMPILE a QUIC stack, and that fact is pinned rather
+/// than left to the lockfile's appearance.
 ///
-/// Two arms, deliberately split by what each can afford to prove:
+/// quinn-proto sits in five tracked lockfiles and appears in no compiled
+/// artifact: it reaches them only as an OPTIONAL dependency of reqwest 0.13
+/// behind reqwest's `http3` feature, which no workspace enables. Measured
+/// 2026-10-13 — `cargo tree --all-targets` resolves zero quinn packages in
+/// every workspace, and `target/{debug,release}/deps` hold no quinn rlib.
 ///
-///   1. TEXT — no tracked manifest may name the `http3` feature. This is the
-///      only thing OUR side controls, it covers all twenty manifests for
-///      free, and it is the edit that would actually be made (someone adding
-///      `features = ["http3"]` to a reqwest line).
-///   2. ACTIVATION — the root workspace's `cargo tree` must contain no quinn
-///      package. This is the only arm that reads what is actually COMPILED,
-///      and it costs 0.18s.
+/// This pin was written for a different reason and outlived it by one merge,
+/// which is worth recording because the sequence is the point. It first
+/// justified three `quinn-proto` audit ignores (RUSTSEC-2026-0343/0338/0340,
+/// three remotely-triggerable QUIC panics). The re-lock to quinn-proto
+/// 0.11.19 FIXED all three, at which point the ignores were dead
+/// suppressions and were pruned in the same breath — which is the rule the
+/// staleness pin above already enforces for a crate leaving every lockfile,
+/// applied here by hand for an advisory a re-lock fixed. What survived is
+/// the invariant underneath: we do not build QUIC, so its CVE surface is out
+/// of scope by construction and a future quinn advisory needs no ignore.
+///
+/// Two arms, split by what each can afford to prove:
+///
+///   1. TEXT — no tracked Cargo.toml may name the `http3` feature. This is the
+///      only thing OUR side controls, it costs nothing, and it is the edit
+///      that would actually be made. It WALKS the tree rather than listing
+///      manifests, and that is not decoration: the first draft listed seven
+///      workspace-root manifests, and its own drill planted `http3` in
+///      `crates/brain-care-core/Cargo.toml` and the pin stayed GREEN. Fourteen
+///      crate manifests and the Tauri client were invisible. A guard
+///      defeatable by a manifest it never looked at is not a guard.
+///   2. ACTIVATION — the root workspace's `cargo tree` must contain no quinn.
+///      This is the only arm that reads what is actually COMPILED (0.18s).
 ///
 ///      WHY NOT `cargo metadata`, which the islands census already pays for:
 ///      measured 2026-10-13, `cargo metadata` lists quinn, quinn-proto and
 ///      quinn-udp in `packages[]` AND in `resolve.nodes` — even with
-///      `--filter-platform`, and even though `cargo tree` reports zero and
-///      `target/{debug,release}/deps` hold no quinn rlib at all. Its package
-///      universe is a SUPERSET covering unactivated optional dependencies; it
-///      answers "could this build", not "does this build". A guard built on it
-///      would have been permanently red over a true fact.
+///      `--filter-platform`, and even when `cargo tree` reports zero. Its
+///      package universe is a SUPERSET covering unactivated optional
+///      dependencies; it answers "could this build", not "does this build". A
+///      guard built on it would have been permanently red over a true fact.
 ///
-/// RED-PROOF (run 2026-10-13, reverted by file copy). Two plants, both
-/// caught: `http3` appended to `crates/brain-care-core/Cargo.toml` (a
-/// manifest the FIRST draft's hardcoded list did not name — it stayed green,
-/// which is why this arm walks instead of enumerating) and the same token in
-/// `shell/src-tauri/Cargo.toml` (never enumerated at all). Each fires arm 1
-/// naming its file.
+/// RED-PROOF (run 2026-10-13, reverted by file copy): `http3` appended to
+/// `crates/brain-care-core/Cargo.toml` fires arm 1 naming the file, and the
+/// same token in `shell/src-tauri/Cargo.toml` — a manifest no hardcoded list
+/// named — fires it too.
 ///
-/// DRILL THAT COULD NOT BE RUN, recorded so nobody retries it: enabling
-/// `http3` on reqwest for real does not reach this pin at all — reqwest
-/// refuses to compile ("the `http3` feature is unstable, and requires
-/// `RUSTFLAGS='--cfg reqwest_unstable'`"), so the build dies first. Arm 2 is
-/// therefore unproven by plant; its ground truth is stated and re-checkable —
-/// `cargo tree --prefix none --all-targets` reports 0 quinn packages, and
-/// `target/{debug,release}/deps` hold no quinn rlib.
-///
-/// CEILING, named rather than hidden: this proves OUR manifests do not turn
-/// http3 on, not that reqwest could not start enabling it by default. A
-/// future default-on http3 would leave this pin green while arm 2 caught it —
-/// which is why arm 2 reads the resolver rather than the manifest.
+/// DRILL THAT CANNOT BE RUN, recorded so nobody retries it: enabling `http3`
+/// on reqwest for real never reaches this pin, because reqwest refuses to
+/// compile ("the `http3` feature is unstable, and requires
+/// `RUSTFLAGS='--cfg reqwest_unstable'`"). Arm 2 is therefore unproven by
+/// plant; its ground truth is stated and re-checkable — `cargo tree
+/// --prefix none --all-targets` reports zero quinn, and no quinn rlib exists
+/// under `target/`.
 #[test]
 fn no_workspace_enables_http3() {
     // WALK, do not enumerate. The first draft listed seven workspace-root

@@ -57,23 +57,4 @@ ignore = [
     "RUSTSEC-2024-0436", # paste — clears when tokenizers drops paste
     "RUSTSEC-2024-0429", # glib — clears when tauri bumps gtk >= 0.19 / glib >= 0.20
     "RUSTSEC-2025-0119", # number_prefix — clears when model2vec-rs ships hf-hub >= 0.5
-    # quinn-proto — NOT COMPILED. It reaches every lockfile here only as an
-    # OPTIONAL dependency of reqwest 0.13 behind reqwest's `http3` feature,
-    # which no workspace in this repo enables. Measured 2026-10-13:
-    # `cargo tree --all-targets` resolves ZERO quinn packages in all six
-    # workspaces, and `target/release/deps` carries zero quinn rlibs. So no
-    # shipped artifact contains the vulnerable code and the three advisories
-    # (0343 datagram-buffer panic, 0338 zero-length STREAM frame panic, 0340
-    # ACK-delay panic) are unreachable — they are in the lock only because a
-    # lockfile covers every feature combination.
-    #
-    # This is a REACHABILITY claim, so it needs its own anti-rot: the pin
-    # `no_workspace_enables_http3` (tests/lock_discipline_pins.rs) refuses a
-    # manifest that names `http3` and refuses a root resolve graph that
-    # contains quinn. Enabling http3 makes that pin red HERE, which is the
-    # moment these three entries must be re-read — not the moment some future
-    # audit notices them.
-    "RUSTSEC-2026-0343", # quinn-proto — reqwest/http3 only; never compiled; see above
-    "RUSTSEC-2026-0338", # quinn-proto — reqwest/http3 only; never compiled; see above
-    "RUSTSEC-2026-0340", # quinn-proto — reqwest/http3 only; never compiled; see above
 ]
