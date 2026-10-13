@@ -18,8 +18,8 @@
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import CommandIcon from '@lucide/svelte/icons/command';
 	import { Button } from '#lib/components/ui/button/index.js';
-	import * as Command from '#lib/components/ui/command/index.js';
-	import * as Dialog from '#lib/components/ui/dialog/index.js';
+	import { CommandPalette } from '#lib/components/ui/command/index.js';
+	import { Dialog } from '#lib/components/ui/dialog/index.js';
 	import { Input } from '#lib/components/ui/input/index.js';
 	import { Label } from '#lib/components/ui/label/index.js';
 	import { DEFAULT_BASE, apiBase, setApiBase } from '#lib/api/client.js';
@@ -49,6 +49,31 @@
 			paletteOpen = !paletteOpen;
 		}
 	}
+
+	// The palette's two groups, derived so a NAV change is reflected in the
+	// command list without a second source of truth.
+	const PALETTE_GROUPS = $derived([
+		{
+			heading: $_('palette.navigate'),
+			items: NAV.map((item) => ({
+				value: item.route,
+				label: $_(item.key),
+				Icon: item.Icon,
+				onSelect: () => runItem(() => goto(resolve(item.route)))
+			}))
+		},
+		{
+			heading: $_('palette.more'),
+			items: [
+				{
+					value: 'settings',
+					label: $_('nav.settings'),
+					Icon: SettingsIcon,
+					onSelect: () => runItem(() => (settingsOpen = true))
+				}
+			]
+		}
+	]);
 
 	function runItem(run: () => void): void {
 		paletteOpen = false;
@@ -149,57 +174,43 @@
 	</main>
 </div>
 
-<Command.Dialog bind:open={paletteOpen} title={$_('palette.title')}>
-	<Command.Input placeholder={$_('palette.placeholder')} />
-	<Command.List>
-		<Command.Empty>{$_('palette.empty')}</Command.Empty>
-		<Command.Group heading={$_('palette.navigate')}>
-			{#each NAV as item (item.route)}
-				<Command.Item onSelect={() => runItem(() => goto(resolve(item.route)))}>
-					<item.Icon aria-hidden="true" />
-					{$_(item.key)}
-				</Command.Item>
-			{/each}
-		</Command.Group>
-		<Command.Group heading={$_('palette.more')}>
-			<Command.Item onSelect={() => runItem(() => (settingsOpen = true))}>
-				<SettingsIcon aria-hidden="true" />
-				{$_('nav.settings')}
-			</Command.Item>
-		</Command.Group>
-	</Command.List>
-</Command.Dialog>
+<CommandPalette
+	bind:open={paletteOpen}
+	title={$_('palette.title')}
+	placeholder={$_('palette.placeholder')}
+	emptyText={$_('palette.empty')}
+	groups={PALETTE_GROUPS}
+/>
 
-<Dialog.Root bind:open={settingsOpen}>
-	<Dialog.Content class="sm:max-w-md">
-		<Dialog.Header>
-			<Dialog.Title>{$_('settings.title')}</Dialog.Title>
-			<Dialog.Description>{$_('settings.description')}</Dialog.Description>
-		</Dialog.Header>
-		<div class="grid gap-5 py-2">
-			<div class="grid gap-2">
-				<Label for="setting-origin">{$_('settings.origin.label')}</Label>
-				<div class="flex gap-2">
-					<Input id="setting-origin" bind:value={originInput} placeholder={DEFAULT_BASE} />
-					<Button onclick={saveOrigin}>{$_('settings.origin.save')}</Button>
-				</div>
-				<p class="text-xs text-muted-foreground">{$_('settings.origin.hint')}</p>
-				{#if originState === 'saved'}
-					<p class="text-sm text-brand" role="status">{$_('settings.origin.saved')}</p>
-				{:else if originState === 'invalid'}
-					<p class="text-sm text-destructive" role="alert">{$_('settings.origin.invalid')}</p>
-				{/if}
+<Dialog
+	bind:open={settingsOpen}
+	title={$_('settings.title')}
+	description={$_('settings.description')}
+	closeLabel={$_('palette.open')}
+>
+	<div class="grid gap-5 py-2">
+		<div class="grid gap-2">
+			<Label for="setting-origin">{$_('settings.origin.label')}</Label>
+			<div class="flex gap-2">
+				<Input id="setting-origin" bind:value={originInput} placeholder={DEFAULT_BASE} />
+				<Button onclick={saveOrigin}>{$_('settings.origin.save')}</Button>
 			</div>
-			<div class="grid gap-2">
-				<Label for="setting-locale">{$_('settings.locale.label')}</Label>
-				<!-- The native select (the open list stays the platform's own
-				     popup — the native-first control law). -->
-				<select id="setting-locale" value={currentLocale} onchange={chooseLocale}>
-					{#each LOCALES as l (l.code)}
-						<option value={l.code}>{l.name}</option>
-					{/each}
-				</select>
-			</div>
+			<p class="text-xs text-muted-foreground">{$_('settings.origin.hint')}</p>
+			{#if originState === 'saved'}
+				<p class="text-sm text-brand" role="status">{$_('settings.origin.saved')}</p>
+			{:else if originState === 'invalid'}
+				<p class="text-sm text-destructive" role="alert">{$_('settings.origin.invalid')}</p>
+			{/if}
 		</div>
-	</Dialog.Content>
-</Dialog.Root>
+		<div class="grid gap-2">
+			<Label for="setting-locale">{$_('settings.locale.label')}</Label>
+			<!-- The native select (the open list stays the platform's own
+			     popup — the native-first control law). -->
+			<select id="setting-locale" value={currentLocale} onchange={chooseLocale}>
+				{#each LOCALES as l (l.code)}
+					<option value={l.code}>{l.name}</option>
+				{/each}
+			</select>
+		</div>
+	</div>
+</Dialog>

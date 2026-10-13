@@ -7,11 +7,26 @@ afterEach(() => {
 	cleanup();
 });
 
-// jsdom does not implement scrollIntoView; the bits-ui command palette
-// calls it when selection moves. The shim keeps the palette test honest
-// about ITS subject (open + navigate), not jsdom's viewport.
+// jsdom implements neither of the two browser APIs the ⌘K palette touches.
+// Both shims keep the palette test honest about ITS subject (open, filter,
+// navigate), not about jsdom's missing viewport. Without them the suite
+// passes but Vitest reports an unhandled rejection and fails the run —
+// which is exactly what happened when the palette moved to Zag.
+
+// scrollIntoView: called when the machine moves the active option.
 if (!Element.prototype.scrollIntoView) {
 	Element.prototype.scrollIntoView = () => {};
+}
+
+// ResizeObserver: @zag-js/dialog and @zag-js/combobox both observe their
+// content to position the layer. A no-op observer is the correct stand-in —
+// the tests assert behaviour, never geometry.
+if (!globalThis.ResizeObserver) {
+	globalThis.ResizeObserver = class {
+		observe() {}
+		unobserve() {}
+		disconnect() {}
+	} as unknown as typeof ResizeObserver;
 }
 
 // The component tests render isolated from +layout.svelte, so the i18n
