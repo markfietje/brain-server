@@ -599,24 +599,37 @@ def render(rows):
     return "\n".join(lines) + "\n"
 
 
+def drift_error():
+    return (
+        f"ERR {os.path.relpath(TABLE, REPO)} drifts from a fresh derivation "
+        f"— re-run:\n  scripts/test-census.py > {os.path.relpath(TABLE, REPO)}"
+    )
+
+
 def main():
     args = sys.argv[1:]
     rows = census()
-    if "--json" in args:
-        print(json.dumps(rows, indent=2))
-        return 0
     table = render(rows)
+
     if "--check" in args:
         if not os.path.exists(TABLE):
             sys.exit(f"ERR {TABLE} missing — run scripts/test-census.py > {TABLE}")
-        live = open(TABLE, encoding="utf-8").read()
+        with open(TABLE, encoding="utf-8") as fh:
+            live = fh.read()
         if live != table:
-            sys.exit(
-                f"ERR {os.path.relpath(TABLE, REPO)} drifts from a fresh "
-                f"derivation — re-run:\n"
-                f"  scripts/test-census.py > {os.path.relpath(TABLE, REPO)}"
-            )
-        print("OK  docs/test-census.md re-derives from the tree")
+            sys.exit(drift_error())
+        # ONE spawn must answer both questions the pin asks: does the table still
+        # re-derive, and what did the classifier actually SEE? The first draft
+        # ran `--check` and `--json` as two processes and paid for a second full
+        # parse of every file in the tree (measured: 3.0s each). Under `--json`
+        # the verdict goes to stderr so stdout stays parseable.
+        print("OK  docs/test-census.md re-derives from the tree",
+              file=sys.stderr if "--json" in args else sys.stdout)
+
+    if "--json" in args:
+        print(json.dumps(rows, indent=2))
+        return 0
+    if "--check" in args:
         return 0
     sys.stdout.write(table)
     return 0

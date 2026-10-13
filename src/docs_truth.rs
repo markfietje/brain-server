@@ -885,9 +885,12 @@ mod pins {
             script.exists(),
             "scripts/test-census.py is gone — the census has no method, only a table"
         );
+        // ONE spawn answers BOTH questions: does the table re-derive, and what
+        // did the classifier actually SEE? The first draft ran `--check` and
+        // `--json` as two processes and paid for a second full parse of every
+        // file in the tree — 3.0s of Python, twice, per lane, for one fact.
         let run = std::process::Command::new("python3")
-            .arg(&script)
-            .arg("--check")
+            .args([script.as_os_str(), "--check".as_ref(), "--json".as_ref()])
             .current_dir(repo)
             .output()
             .unwrap_or_else(|e| panic!("python3 must be on PATH to derive the census: {e}"));
@@ -914,14 +917,8 @@ mod pins {
         // represented, and the largest file must still be where it was. These
         // are floors on the CENSUS'S OWN OUTPUT, not on the suite's classes —
         // they say "the classifier ran and saw the tree", nothing more.
-        let json = std::process::Command::new("python3")
-            .arg(&script)
-            .arg("--json")
-            .current_dir(repo)
-            .output()
-            .expect("python3 census --json");
-        assert!(json.status.success(), "census --json must run");
-        let text = String::from_utf8_lossy(&json.stdout);
+        // Reused from the spawn above — no second parse of the tree.
+        let text = String::from_utf8_lossy(&run.stdout);
         let total = text.matches("\"class\":").count();
         assert!(
             total > 3000,

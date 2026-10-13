@@ -526,9 +526,25 @@ fn no_ignored_advisory_is_fixed_in_the_current_lock() {
 /// a drill: deleting the real dependency does not compile — `src/workflow/
 /// delivery.rs:167` names `brain_consensus_core` — so the compiler, not this
 /// pin, is the guard for a member that is used.)
-fn resolved_path_dep(manifest_rel: &str, member: &str) -> bool {
-    // Built from parts so this file's own source cannot satisfy the needle.
-    let needle = format!("\"na{}\":\"{}\",\"source\":null", "me", member);
+/// `cargo metadata` output per manifest, resolved ONCE.
+///
+/// The first draft ran `cargo metadata` inside `resolved_path_dep`, so the
+/// census below spawned it once per member — fifteen times at ~0.3s each, for
+/// two facts about two workspaces. The resolution cannot change within a test,
+/// so it is memoised per manifest; the needle stays built from parts.
+fn metadata_for(manifest_rel: &str) -> &'static str {
+    use std::sync::OnceLock;
+    static ROOT: OnceLock<String> = OnceLock::new();
+    static HARNESS: OnceLock<String> = OnceLock::new();
+    let cell = if manifest_rel == "Cargo.toml" {
+        &ROOT
+    } else {
+        &HARNESS
+    };
+    cell.get_or_init(|| resolve_metadata(manifest_rel)).as_str()
+}
+
+fn resolve_metadata(manifest_rel: &str) -> String {
     for offline in [true, false] {
         let mut cmd = std::process::Command::new("cargo");
         cmd.args([
@@ -545,14 +561,20 @@ fn resolved_path_dep(manifest_rel: &str, member: &str) -> bool {
             panic!("cargo must be on PATH to resolve {manifest_rel}");
         };
         if out.status.success() {
-            return String::from_utf8_lossy(&out.stdout).contains(&needle);
+            return String::from_utf8_lossy(&out.stdout).into_owned();
         }
     }
     panic!(
         "cargo metadata could not resolve {manifest_rel} offline OR online — \
          the islands census must fail closed, never pass on a resolver it did \
          not get to run"
-    );
+    )
+}
+
+fn resolved_path_dep(manifest_rel: &str, member: &str) -> bool {
+    // Built from parts so this file's own source cannot satisfy the needle.
+    let needle = format!("\"na{}\":\"{}\",\"source\":null", "me", member);
+    metadata_for(manifest_rel).contains(&needle)
 }
 
 /// F4-18: the crate-islands census, now resolved by cargo rather than read as
