@@ -648,7 +648,20 @@ jobs:
           # survive the transport intact.
           ./scripts/check-dist-sbom.sh "$version" dist
 
-      - name: Create release
+      # BEST-EFFORT, AND THE JOB SAYS SO (2026-10-13). Observed on v1.29.15:
+      # all 34 assets uploaded, then the job died with `##[error]other side
+      # closed` on the action's FINAL call — the draft->published flip. The
+      # action holds one keep-alive socket across ~165MB of sequential uploads
+      # and the publish request lands on a socket the server has already
+      # closed. Every byte of work was done; one dead socket threw it away and
+      # left a fully-populated DRAFT plus a red run and no automatic recovery.
+      #
+      # So the create step is continue-on-error, and the VERDICT moves to the
+      # explicit gate below. A transport drop is not a verdict; a release that
+      # is missing, still draft, or short an asset still refuses to publish.
+      - name: Create release (best-effort; a dropped socket is not a verdict)
+        id: create
+        continue-on-error: true
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           tag_name: v${{ env.version }}
@@ -656,3 +669,63 @@ jobs:
           body_path: RELEASE_BODY.md
           files: dist/*
           fail_on_unmatched_files: false
+          # Makes a re-run idempotent: without it, re-running after a partial
+          # upload fails on assets that already exist.
+          overwrite_files: true
+
+      # Recovery for exactly the observed failure: the upload survived, the
+      # publish did not. Publishes the draft ourselves when every required
+      # asset is already present, and stays quiet when the create step
+      # succeeded and there is nothing to recover.
+      - name: Recover a draft whose upload completed but whose publish did not
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ env.version }}
+        run: |
+          set -euo pipefail
+          rel="$(gh api "repos/${{ github.repository }}/releases" --jq \
+                 "[.[] | select(.tag_name == "$TAG")][0].id // empty")"
+          if [ -z "$rel" ]; then
+            echo "::error::no release exists for $TAG — the create step produced nothing"
+            exit 1
+          fi
+          draft="$(gh api "repos/${{ github.repository }}/releases/$rel" --jq .draft)"
+          if [ "$draft" != "true" ]; then
+            echo "release $TAG is already published — nothing to recover"
+            exit 0
+          fi
+          # Only publish a draft that is actually COMPLETE. A partial draft is
+          # a real failure and must stay red.
+          for f in brain-server-linux-x86_64 brain-server-linux-aarch64 \
+                   brain-server-darwin-arm64 brain-server-darwin-x86_64; do
+            gh api "repos/${{ github.repository }}/releases/$rel/assets" --paginate \
+              --jq '.[].name' | grep -qx "$f" \
+              || { echo "::error::draft $TAG is missing $f — refusing to publish a partial release"; exit 1; }
+          done
+          echo "draft $TAG carries every required asset; publishing it"
+          gh api -X PATCH "repos/${{ github.repository }}/releases/$rel" -f draft=false >/dev/null
+          echo "published $TAG"
+
+      # The real gate. Replaces the create step's own exit status as the
+      # verdict: the release must EXIST, must NOT be a draft, and must carry
+      # every required asset. A green here means the release is genuinely
+      # shippable, however it got there.
+      - name: The published release carries every required asset (fail-closed)
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v${{ env.version }}
+        run: |
+          set -euo pipefail
+          rel="$(gh api "repos/${{ github.repository }}/releases" --jq \
+                 "[.[] | select(.tag_name == "$TAG")][0].id // empty")"
+          [ -n "$rel" ] || { echo "::error::no release for $TAG"; exit 1; }
+          draft="$(gh api "repos/${{ github.repository }}/releases/$rel" --jq .draft)"
+          [ "$draft" = "false" ] || { echo "::error::release $TAG is still a DRAFT"; exit 1; }
+          names="$(gh api "repos/${{ github.repository }}/releases/$rel/assets" --paginate --jq '.[].name')"
+          for f in brain-server-linux-x86_64 brain-server-linux-aarch64 \
+                   brain-server-darwin-arm64 brain-server-darwin-x86_64; do
+            grep -qx "$f" <<<"$names" || { echo "::error::published $TAG is missing $f"; exit 1; }
+          done
+          echo "OK  $TAG is published and carries every required asset"
