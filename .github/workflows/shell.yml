@@ -113,21 +113,30 @@ jobs:
       - name: Svelte check (strict)
         run: pnpm check
 
-      # NO `--offline` (2026-10-13). It looked like belt-and-braces next to
-      # `--locked` and was a cache-miss landmine: `--offline` only resolves
-      # from a populated cargo registry, and Swatinem/rust-cache keys on the
-      # lockfile — so ANY Cargo.lock change, a new runner image, or an evicted
-      # cache turns this step into `error: no matching package named 'aes-gcm'
-      # found / location searched: crates.io index`. Observed live on the
-      # 1.29.15 release push, where the version bump moved the lock and missed
-      # the cache. The step went green the moment the flag was dropped.
+      # `--offline` STAYS, and the cache-miss is fixed where it actually is.
       #
-      # `--locked` is the property that actually matters and it is retained
-      # everywhere in this repo: the lockfile may not be mutated by a build.
-      # `--offline` added no reproducibility, only a way to fail.
-      - name: Build root brain-server for dedicated-port e2e
+      # First attempt removed the flag, on the reasoning that `--locked` is the
+      # reproducibility property and `--offline` "only adds a way to fail".
+      # shell/tests/ci-gates.test.ts refused the workflow in one line, which
+      # was the correct answer: the flag is a CONTRACT. This lane must build
+      # the kernel binary on a clean runner without reaching for the network,
+      # and the pin says so in the test's own name — fail_closed_clean_runner.
+      # My reasoning was wrong about what the flag is FOR.
+      #
+      # What was true is why it failed: `--offline` resolves only from a
+      # populated cargo registry, and Swatinem/rust-cache keys on the lockfile
+      # — so any lock change, new runner image, or evicted cache left it with
+      # nothing and produced `no matching package named 'aes-gcm' found`. That
+      # is a CACHE-MISS problem, not a flag problem, so it is answered with a
+      # fetch: the registry is populated explicitly, `--locked` throughout, and
+      # the BUILD itself stays offline exactly as the contract requires.
+      - name: Fetch the kernel registry (populates it for the offline build)
         working-directory: .
-        run: cargo build --locked --bin brain-server
+        run: cargo fetch --locked
+
+      - name: Build root brain-server for dedicated-port e2e (offline, locked)
+        working-directory: .
+        run: cargo build --offline --locked --bin brain-server
 
       - name: Tauri fmt
         run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
