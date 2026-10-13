@@ -14,6 +14,28 @@
 # Both are ignored here so Dependabot stops attempting (and failing) the
 # impossible update each run. Revisit when dioxus-desktop or phf_generator
 # bumps land — remove the matching ignore entry then.
+#
+# ── QUEUE DISCIPLINE (2026-10-13) ──────────────────────────────────────────
+# The 2026-10-12 run opened FOURTEEN PRs at once. Each one fires ci.yml's
+# 20-job Rust matrix, so the queue reached ~400 jobs; nothing drained for
+# nine hours and runs sat `queued` (and, after a cancel, `in_progress` with
+# every step finished) until they were killed. Two changes here bound that,
+# and both are deliberate rather than incidental:
+#
+#   1. `open-pull-requests-limit` per entry — a hard ceiling on how many
+#      Dependabot PRs may be open at once, so a backlog cannot compound
+#      week over week. Dependabot's own default is 5 per ecosystem/directory.
+#   2. A catch-all group per entry — everything not already claimed by a
+#      named group lands in ONE PR instead of one-PR-per-crate. The named
+#      groups below stay first, because Dependabot matches a dependency to
+#      the FIRST group whose pattern it hits.
+#
+# Net effect: a weekly run now proposes ~8 reviewable PRs (one per entry)
+# instead of an unbounded pile, and every one of them is a batch that a
+# reviewer can reason about as a unit. This matters more here than in a
+# normal repo because the matrix is expensive AND the updates are coupled:
+# `rsa` cannot move without `pkcs1`, so isolated per-crate PRs are not
+# independently mergeable anyway.
 version: 2
 updates:
   # Automate the GitHub Actions bumps themselves (checkout/rust-cache/…)
@@ -22,6 +44,7 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
     groups:
       # The codeql-action steps are a PAIR by contract: the analyze
       # post-action loads the database the init step wrote and refuses a
@@ -33,10 +56,17 @@ updates:
       codeql-action-pair:
         patterns:
           - "github/codeql-action/*"
+      # Every remaining action bump rides together. A SHA-pin refresh is
+      # one reviewable diff; split across five PRs it is five merge
+      # decisions and five copies of the same 20-job matrix.
+      all-other-actions:
+        patterns:
+          - "*"
   - package-ecosystem: cargo
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
     groups:
       # The opentelemetry family moves as ONE unit: otlp 0.33 requires
       # opentelemetry 0.33 + sdk 0.33, so separate per-crate PRs conflict
@@ -46,7 +76,14 @@ updates:
         patterns:
           - "opentelemetry"
           - "opentelemetry_sdk"
-          - "opentelemetry-otlp"
+          - "opentelemetry_otlp"
+      # Everything else, together. The kernel's lock is one resolver
+      # graph; reviewing it as one re-lock is both faster and safer than
+      # reviewing 30 independent lockfile hunks that can never each be
+      # merged alone.
+      rest-of-kernel:
+        patterns:
+          - "*"
     ignore:
       - dependency-name: opentelemetry
         versions: [">=0.33"]
@@ -57,7 +94,7 @@ updates:
         # Remove when tracing-opentelemetry ships the 0.33 pairing.
       - dependency-name: opentelemetry_sdk
         versions: [">=0.33"]
-      - dependency-name: opentelemetry-otlp
+      - dependency-name: opentelemetry_otlp
         versions: [">=0.33"]
       - dependency-name: fastembed
         versions: [">=7"]
@@ -72,14 +109,29 @@ updates:
     directory: /crates
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      all-engine-crates:
+        patterns:
+          - "*"
   - package-ecosystem: cargo
     directory: /tools/steward-harness
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      all-harness:
+        patterns:
+          - "*"
   - package-ecosystem: cargo
     directory: /client
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      all-client:
+        patterns:
+          - "*"
     ignore:
       - dependency-name: rand
         versions: [">=0.7, <0.8.6"]
@@ -91,14 +143,28 @@ updates:
   # covered like the kernel's — pnpm for the SvelteKit app, cargo for the
   # Tauri core (committed lockfiles on both; the shell README records the
   # audit gates).
+  #
+  # The shell's npm bumps are the single worst queue contributor: five of
+  # the fourteen stuck PRs came from here, each a patch-level dev-dependency
+  # move. One grouped PR, capped at 5 open.
   - package-ecosystem: npm
     directory: /shell
     schedule:
       interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      all-shell-npm:
+        patterns:
+          - "*"
   - package-ecosystem: cargo
     directory: /shell/src-tauri
     schedule:
       interval: weekly
+    open-pull-requests-limit: 3
+    groups:
+      all-tauri-core:
+        patterns:
+          - "*"
 
   # The Docker bases are the trust chain's last unpinned third-party inputs
   # (the register's F4-19): oauth2-proxy holds the IdP client secret,
@@ -108,3 +174,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    open-pull-requests-limit: 2
+    groups:
+      all-docker-bases:
+        patterns:
+          - "*"

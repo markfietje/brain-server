@@ -13,6 +13,23 @@ on:
     # publish. Tests-before-shipping survives the private-CI removal intact.
     tags: ['v*']
   pull_request:
+    # QUEUE GUARDRAIL (2026-10-13): skip the 20-job Rust matrix for a PR that
+    # touches ONLY the shell's npm manifests. `shell.yml` owns that surface
+    # end-to-end — lint, svelte-check, vitest, the byte-stable generated
+    # client, vite build + CSP assertion, pnpm audit, tauri build, and the
+    # loopback e2e. Running the kernel matrix on top of it doubled the cost of
+    # a `jsdom` patch bump for no additional signal; five of the fourteen PRs
+    # stuck in the 2026-10-12 queue were exactly this shape.
+    #
+    # Deliberately NARROW. `paths-ignore` suppresses the workflow only when
+    # EVERY changed file matches, so shell/src/** (hand-written Svelte) and
+    # shell/src-tauri/** (Rust) are NOT listed — real shell source changes and
+    # every Tauri, crate, client and tools change still run the full matrix.
+    # The paired mitigation for total saturation is dependabot.yml: PR caps
+    # plus one grouped PR per ecosystem instead of one per crate.
+    paths-ignore:
+      - 'shell/package.json'
+      - 'shell/pnpm-lock.yaml'
 
 # Supersede stale runs: rapid successive pushes cancel the earlier matrix
 # instead of queueing N full runs behind it.
@@ -32,6 +49,7 @@ jobs:
   lint-test:
     name: fmt + clippy + test (default)
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -88,7 +106,15 @@ jobs:
           # = Linux-only) so the badge count measures the same test set on
           # every platform. Must stay in lockstep with scripts/badges.sh's
           # test_count().
-          BRAIN_TEST_COUNT="$(cargo test --features bench,migrate --no-fail-fast \
+          # `--` IS LOAD-BEARING (fixed 2026-10-13): `--skip` is a libtest
+          # harness flag, not a cargo flag. Without the separator cargo rejects
+          # the invocation with `error: unexpected argument '--skip' found`,
+          # the command substitution captures nothing, BRAIN_TEST_COUNT is
+          # empty and this gate fails closed on EVERY run. It never showed as
+          # a red badge because the step landed 2026-10-12 and no ci.yml run on
+          # main has completed since. With `--`, the derivation returns 3351,
+          # matching the badge.
+          BRAIN_TEST_COUNT="$(cargo test --features bench,migrate --no-fail-fast -- \
             --skip handlers::case_run::conformance::gdl_conformance_pack_run \
             --skip workflow::sandbox::tests::realized_paths_law_pinned_against_symlinked_temp \
             --skip landlock_write_inside_workdir_succeeds \
@@ -159,6 +185,7 @@ jobs:
     # the dependency direction the SDK line exists to establish.
     name: engine crates decoupled + green
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -190,6 +217,7 @@ jobs:
     # step, listener starvation) gates every harness release.
     name: steward-harness conformance + green
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -214,6 +242,7 @@ jobs:
     # hardening, platform translation bounds, and tier-throttle law gate here.
     name: channel-bridge conformance + green
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -241,6 +270,7 @@ jobs:
     # failing test to catch it.
     name: signal-gateway conformance + green
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -276,11 +306,12 @@ jobs:
     # nothing failing. This job runs the relay's suite on every push.
     name: valet-relay conformance + green
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
       # Shell-expanded rather than `node --test <dir>`: the runner's own glob
@@ -298,6 +329,7 @@ jobs:
     # cfg-gated tests, and enforces clippy on the feature.
     name: otel feature clippy + test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -335,6 +367,7 @@ jobs:
   feature-lane-compliance-pack:
     name: compliance-pack feature clippy + test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -352,6 +385,7 @@ jobs:
   feature-lane-multivec:
     name: multivec feature clippy + test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -374,6 +408,7 @@ jobs:
     # not a claim that layer-2 scoring is exercised in CI.
     name: injection-classifier feature clippy + test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -397,6 +432,7 @@ jobs:
     # control, which is why `feature_lane_pins.rs` pins the routing.
     name: neural-embed feature clippy + test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -417,6 +453,7 @@ jobs:
     # A precedent nobody compiles is not a precedent.
     name: loom feature clippy + test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -436,6 +473,7 @@ jobs:
     # fastembed surface the default build never sees.
     name: rerank-tier feature clippy + test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -456,6 +494,7 @@ jobs:
     # target, and the one the M2 automated-a11y grep gates run against).
     name: client fmt + clippy + test + wasm
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -504,6 +543,7 @@ jobs:
     # src/workflow/tiers.rs; this job proves each profile actually BOOTS.
     name: tier smoke (${{ matrix.tier }})
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -551,6 +591,7 @@ jobs:
     # two consecutive breaches are a regression, never weather.
     name: bench concurrency (desktop, 8 clients)
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -588,6 +629,7 @@ jobs:
     # SAME binaries sequentially on their own ports (UMP :18483, eval :18484).
     name: release build + UMP conformance + recall gate
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     env:
       # Recall steps must talk to the scratch instance, not the CLI default
       # (127.0.0.1:8765) — a misdirected seed silently ingests 0 docs.
@@ -624,7 +666,7 @@ jobs:
             sleep 1
           done
           curl -fsS http://127.0.0.1:18483/health
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
       - name: run reference conformance suite
@@ -718,6 +760,7 @@ jobs:
     # of failing the deploy.
     name: mdBook docs build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -739,6 +782,7 @@ jobs:
   audit:
     name: cargo audit
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     # The cargo-audit BINARY, not rustsec/audit-check — two token walls the
     # action cannot climb on this repo: (1) its check-run creation needs
     # checks:write, but a checks-only job permissions block implicitly sets
@@ -790,6 +834,7 @@ jobs:
     # drift apart and leave one of them unscanned.
     name: lipstyk (diff watchdog)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

@@ -3,6 +3,21 @@ name: Build & deploy docs (mdBook → GitHub Pages)
 on:
   push:
     branches: [main]
+    # THE DOCS LANE'S ONLY REAL TRIGGER (2026-10-13).
+    #
+    # This repo is the release mirror: `main` here is parked by design
+    # (scripts/release.sh — "public/main therefore LAGS origin/main by
+    # design, and it must not be treated as drift to be corrected"), and
+    # releases reach this repo as TAGS. A `branches: [main]` filter alone
+    # therefore means this workflow fires essentially never: the live
+    # Pages build was frozen at 2026-10-07 while nine releases shipped.
+    # It was not "broken" — it was wired to a ref that stops moving.
+    #
+    # Tags are the sync mechanism for this repo, so they are the trigger.
+    # GitHub does NOT evaluate `paths` filters for tag pushes, so the tag
+    # arm below deploys unconditionally; the `paths` list stays to keep
+    # the branch arm from rebuilding on every unrelated push.
+    tags: ['v*']
     paths:
       - "book.toml"
       - "docs/**"
@@ -23,6 +38,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

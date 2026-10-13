@@ -244,7 +244,13 @@ jsonwebtoken = { version = "11.1.0", default-features = false, features = ["use_
 # RSA backend for RS256 verification. 0.10 is still an RC upstream — pinned
 # deliberately so the keygen path uses the same rand_core as our `rand` 0.10
 # direct dep (the rand08 bridge alias is deleted with this bump).
-rsa = { version = "=0.10.0-rc.18" }
+#
+# rc.18 -> rc.19 is NOT a routine bump: `pkcs1` 0.8.0-rc.5 changed
+# `RsaPublicKey`/`RsaPrivateKey` from one lifetime parameter to one *generic*
+# parameter, and rc.18's `encoding.rs` still names the old form. Any re-lock
+# that moves pkcs1 to rc.5 without moving rsa here fails to COMPILE (E0107).
+# The two versions move as one; do not relax the `=` without re-pinning pkcs1.
+rsa = { version = "=0.10.0-rc.19" }
 # Random key generation (`brain key generate`) + UUIDv4 `jti` minting (v1.2.0;
 # `Uuid::new_v4()` — the comment previously said UUIDv7, the code never used
 # it. Corrected in audit G5, v1.11.0).
