@@ -1,0 +1,41 @@
+# Composite action: build the mdBook site and deploy it to GitHub Pages.
+#
+# ONE definition, two callers — docs.yml (main pushes) and release.yml (the
+# tagged revision). The job body was duplicated VERBATIM in both, and it
+# DRIFTED: release.yml's copy carried the `pages` concurrency lock and
+# docs.yml's did not. On a tag push the release job therefore cancelled the
+# docs.yml run, and release.yml's own fail-closed gate read that cancellation
+# as a red publication workflow — so every release failed. Observed live on
+# v1.29.14; the tag arm has since been removed from docs.yml, which stops the
+# collision, but the DUPLICATION is what let it hide.
+#
+# Duplicated CI configuration has no reviewer diffing two copies across
+# repositories, and nothing fails until the day the two disagree. That is the
+# whole argument for this file.
+#
+# The `pages` concurrency lock stays on the CALLER, not here: it is workflow
+# policy (cancel-in-progress), not a build step, and GitHub only honours
+# concurrency at job or workflow level anyway.
+name: 'Build + deploy docs (mdBook)'
+description: 'Build the mdBook site and deploy it to GitHub Pages'
+runs:
+  using: 'composite'
+  steps:
+    - name: cache mdbook binary
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ~/.cargo/bin/mdbook
+        key: mdbook-0.5.4
+    - name: Install mdBook (skipped on cache hit)
+      shell: bash
+      run: command -v mdbook >/dev/null 2>&1 || cargo install mdbook --version 0.5.4 --locked
+    - name: Build
+      shell: bash
+      run: mdbook build
+    - name: Upload artifact
+      uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+      with:
+        path: ./book
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

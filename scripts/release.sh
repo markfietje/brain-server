@@ -19,10 +19,15 @@
 #      from CHANGELOG.md.
 #
 # TWO REMOTES, DELIBERATELY:
-#   origin (brain-server-private)  — main. Private working history.
-#   public (brain-server)          — release TAGS only. This is where releases
-#                                     and their binaries are meant to live, and
-#                                     where `release.yml` must fire.
+#   origin (brain-server-private)  — main, and the TAGS that gate shipping.
+#                                     Private working history.
+#   public (brain-server)          — main is pushed here too (restored
+#                                     2026-10-13), plus every release TAG.
+#                                     This is where releases and their binaries
+#                                     live, and where `release.yml` must fire.
+#                                     It is NOT a byte-identical mirror: see
+#                                     scripts/sync-mirror.sh for the one file
+#                                     that differs by design.
 # `main` IS pushed to `public` again (restored 2026-10-13). The tag-only rule
 # below was the 2026-10-06 posture, written on the assumption that this branch
 # carries rounds that must not be published. That assumption does not hold for
