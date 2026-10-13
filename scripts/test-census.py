@@ -67,16 +67,22 @@ disagreement about a rule, which is arguable, rather than a matter of taste.
   were classified as a control or a residual for a word that merely
   contained one.
 
-  KNOWN CEILING, stated rather than papered over: a marker rule keys on the
-  WORD, so a test whose doc-comment merely DISCUSSES a control or a ceiling is
-  classified as one. This is not hypothetical — while writing the revision,
-  the pin documenting the CONTROLLED-vs-CONTROL fix reclassified itself
-  (behavioral → control) the moment its own prose said "the label CONTROL".
-  That is the rule working as written, and it moves a count by one, not a
-  class boundary. Fixing it needs a marker at a POSITIONAL anchor (a leading
-  `CONTROL:` label), which would then miss every marker this repo writes as a
-  mid-sentence lead-in. Ponytail: the ceiling is one test wide, and it fails
-  loud (the census re-derives and `--check` refuses) rather than silent.
+  KNOWN CEILING, stated rather than papered over, with the numbers that
+  justify leaving it alone. A marker rule keys on the WORD, so a test whose
+  doc-comment merely DISCUSSES a control or a ceiling classifies as one.
+  Two instances exist as of this commit, both recorded rather than reworded:
+  the census pin classified itself as a `control` the moment its prose said
+  "the label CONTROL", and `no_workspace_enables_http3` classified as a
+  `residual_documentation` the moment its prose said "CEILING, named rather
+  than hidden". Neither is one.
+
+  Tightening to a POSITIONAL anchor (a leading `CONTROL:` label) was measured
+  and rejected: of 105 control+residual tests today, only 33 survive it, so
+  the rule would reclassify 72 real markers — this repo writes them as
+  mid-sentence lead-ins, not as leading labels. The ceiling moves counts by a
+  handful, never a class boundary, and it fails loud (`--check` re-derives).
+  Correcting it needs a convention change across every pin's doc-comment, not
+  a regex.
 
 Scope: src/ and tests/ — the same two trees the badge's test count comes from.
 Platform-gated tests are counted as written; the badge normalizes the FIVE
