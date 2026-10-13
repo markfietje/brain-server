@@ -23,20 +23,60 @@ disagreement about a rule, which is arguable, rather than a matter of taste.
      the negative side of a pair, so a passing pin cannot be a check that
      cannot fail. Name prefix or doc-comment marker.
   3. structural — the test READS THE TREE: it opens a source file, uses
-     include_str! (or include_bytes!), or walks the manifest. Body marker,
-     because a doc-comment claim about reading source is not a read. Ordered
-     BEFORE behavioral because a source read also calls std.
-  4. behavioral_pin — POSITIVE evidence: the test's body invokes at least one
-     callable that is not stdlib/assert plumbing, i.e. it drives a real
-     subject (crate module, DB, HTTP app, process). Proof of a drive, not the
-     absence of a read.
-  5. unclassified — everything else: a test whose body invokes nothing
-     outside the assert vocabulary. We do NOT call those behavioral pins by
-     default, because "no evidence of driving a subject" is exactly the
-     shape of the four vacuous census pins this repo shipped on first draft
-     (R123). They are reported, not hidden, and the count is the honesty
-     check on the rule set: a rule set that classifies 100% is a rule set
-     that over-fits.
+     include_str!, or walks the manifest. Two shapes count, and the second
+     one is the revision this file records:
+       (a) the read is IN the test body — `fs::read_to_string`, `include_str!`,
+           `File::open`, `read_dir()`;
+       (b) the read is ONE CALL DEEP, in a helper the test calls by name
+           (`read_repo("src/…")`, `doc("README.md")`, `walk_rs_files(dir)`).
+     Shape (b) was MISSING on the first draft and undercounted the class by
+     ~120: `tests/rbac_evaluation_pins.rs` and `src/docs_truth.rs` are
+     source-scanning files whose tests all route through a helper, and the
+     body-only needle saw none of them. A one-level walk is the whole
+     indirection these files use — it is bounded, and it stops at the first
+     helper, so a helper-of-a-helper is deliberately NOT chased.
+     A helper qualifies only if it reads something REPO-SHAPED (a path built
+     from CARGO_MANIFEST_DIR / repo() / a `.rs`/`.toml`/`.md`/`.yml` literal).
+     A helper that reads RUNTIME DATA — a key file, a backup archive, an
+     HTTP dist tree the test itself produced — is not structural: driving
+     the filesystem is the behaviour under test there. A PROCESS SPAWN is
+     excluded on the same principle: running `scripts/check-dist-sbom.sh` and
+     reading its exit status DRIVES a real subject, which is behavioural.
+     Ordered BEFORE behavioral because a source read also calls std.
+  4. behavioral_pin — POSITIVE evidence: the body invokes something that is
+     not stdlib plumbing, in EITHER call shape:
+       (a) qualified — `brain_server::audit::hash(…)`, `app.oneshot(…)`;
+       (b) BARE — `verify_claim(content, claim)`, `parse_flags(args)`.
+     Shape (b) was MISSING on the first draft, which is why 261 real pins
+     were reported as `unclassified`: a bare call is how a Rust unit test
+     names its own module's subject, and `x.method()` alone would have
+     classified `flags.get("dry-run")` as a drive when it is a HashMap read.
+     Macros (`assert_eq!`, `format!`) cannot match the bare-call pattern —
+     the `!` is not whitespace — so no macro allowlist is needed for them.
+  5. unclassified — everything else: a test that drives no subject AND reads
+     no tree. We do NOT call those behavioral pins by default, because "no
+     evidence of driving a subject" is exactly the shape of the four
+     vacuous census pins this repo shipped on first draft (R123). They are
+     reported, not hidden, and the count is the honesty check on the rule
+     set: a rule set that classifies 100% is a rule set that over-fits.
+
+  The doc-marker rules (1, 2) match a STANDALONE UPPERCASE WORD, not a
+  substring. The first draft used `in`, so `CONTROLLED`, `CONTROLS`,
+  `STRIP_CONTROL_CHARS`, `CEILINGS` and
+  `_CHILD_PARENT_CEILING_LIMITS_NEW_CALLS` all read as labels — five tests
+  were classified as a control or a residual for a word that merely
+  contained one.
+
+  KNOWN CEILING, stated rather than papered over: a marker rule keys on the
+  WORD, so a test whose doc-comment merely DISCUSSES a control or a ceiling is
+  classified as one. This is not hypothetical — while writing the revision,
+  the pin documenting the CONTROLLED-vs-CONTROL fix reclassified itself
+  (behavioral → control) the moment its own prose said "the label CONTROL".
+  That is the rule working as written, and it moves a count by one, not a
+  class boundary. Fixing it needs a marker at a POSITIONAL anchor (a leading
+  `CONTROL:` label), which would then miss every marker this repo writes as a
+  mid-sentence lead-in. Ponytail: the ceiling is one test wide, and it fails
+  loud (the census re-derives and `--check` refuses) rather than silent.
 
 Scope: src/ and tests/ — the same two trees the badge's test count comes from.
 Platform-gated tests are counted as written; the badge normalizes the FIVE
@@ -64,6 +104,11 @@ RESIDUAL_MARKERS = ("CEILING", "RESIDUAL", "KNOWN LIMITATION", "NOT A DEFECT")
 RESIDUAL_NAME = re.compile(r"^(ceiling|residual)_")
 CONTROL_MARKERS = ("CONTROL",)
 CONTROL_NAME = re.compile(r"^(negative_)?control_")
+# A marker must be a STANDALONE word. The underscore is inside the excluded set
+# on purpose: Rust identifiers glue words with `_`, and `_CEILING_LIMITS_` is a
+# constant name, not a label.
+LABEL = {k: re.compile(r"(?<![A-Za-z0-9_])" + re.escape(k) + r"(?![A-Za-z0-9_])")
+         for k in RESIDUAL_MARKERS + CONTROL_MARKERS}
 
 # Rule 3. `read` is what a source read actually calls; the include_* macros
 # read a file at compile time. `File::open` / `fs::read` are the file-descriptor
@@ -74,30 +119,49 @@ STRUCTURAL_BODY = re.compile(
     r"File::open|read_to_string\()"
 )
 
-# Rule 4. The allowlist is stdlib + the assert/format vocabulary: a call to one
-# of these is plumbing, not a subject. Anything else is a drive.
+# Rule 4(a). The RECEIVER of a qualified call that is stdlib/local plumbing:
+# `fs::read_to_string` and `std::mem::size_of` reshape plumbing, they do not
+# drive a subject. Anything else (`brain_server::`, `axum::`, `serde_json::`,
+# `Tier::`, `app.`) is a subject. Only receiver names belong here — method
+# names never appear in this position, so listing `push`/`len` was dead weight.
 PLUMBING = {
-    "std", "core", "alloc", "crate", "self", "super", "Self", "env", "fs",
-    "process", "thread", "time", "path", "pathbuf", "sync", "collections",
-    "io", "net", "fmt", "str", "String", "Vec", "VecDeque", "HashMap",
-    "HashSet", "BTreeMap", "BTreeSet", "Option", "Result", "Some", "None",
-    "Ok", "Err", "Box", "Rc", "Arc", "Cow", "Path", "PathBuf", "Duration",
-    "Instant", "SystemTime", "Mutex", "RwLock", "AtomicUsize", "AtomicBool",
-    "Command", "Ordering", "Stdin", "Stdout", "Test", "Formatter", "Error",
-    "matches", "contains", "push", "len", "get", "unwrap", "expect",
-    "new", "clone", "from", "into", "to_string", "as_str", "as_ref",
-    "deref", "fmt_write", "print", "println", "eprintln", "write",
-    "read_line", "sort", "dedup", "iter", "collect", "unwrap_or",
-    "unwrap_or_else", "unwrap_or_default", "is_empty", "is_ok", "is_err",
-    "ok_or", "map", "map_err", "and_then", "ok", "err", "type_name",
-    "anyhow", "assert", "assert_eq", "assert_ne", "debug_assert",
-    "debug_assert_eq", "debug_assert_ne", "assert!", "assert_matches",
-    "format", "vec", "matches!", "unreachable", "todo", "panic", "dbg",
-    "write!", "writeln!", "e", "self_", "MIN", "MAX", "TAU", "EPSILON",
-    "abs", "sqrt", "powf", "floor", "ceil", "round", "signum", "clamp",
-    "min", "max", "split", "trim", "replace", "starts_with", "ends_with",
-    "strip_prefix", "find", "parse", "unwrap_or_insert",
+    "std", "core", "alloc", "crate", "self", "Self", "super",
+    "env", "fs", "process", "thread", "time", "path", "pathbuf", "sync",
+    "collections", "io", "net", "fmt", "str", "mem", "cmp", "convert",
+    "iter", "slice", "hash", "rc", "cell", "num", "ops", "ptr", "marker",
+    "String", "Vec", "VecDeque", "HashMap", "HashSet", "BTreeMap", "BTreeSet",
+    "Option", "Result", "Some", "None", "Box", "Rc", "Arc", "Cow", "Path",
+    "PathBuf", "Duration", "Instant", "SystemTime", "Mutex", "RwLock",
+    "AtomicUsize", "AtomicBool", "Ordering", "Stdin", "Stdout", "Formatter",
+    "Error", "Command", "Test",
 }
+
+# Rule 4(b). Names that are NOT a drive when called bare: language keywords, and
+# the value-conversion verbs that can only reshape something local. A bare call
+# to anything else is a subject. Macros are already excluded by shape (`f!(`
+# is not `f(`), which is why no macro list appears here.
+KEYWORDS = {
+    "let", "fn", "if", "match", "while", "for", "return", "mod", "use",
+    "struct", "enum", "impl", "pub", "const", "unsafe", "move", "loop",
+    "else", "await", "async", "type", "static", "ref", "in", "as", "dyn",
+    "where", "true", "false", "break", "continue",
+}
+CONVERSIONS = {
+    "into", "as_ref", "as_mut", "as_str", "as_bytes", "as_deref", "to_owned",
+    "to_string", "clone", "cloned", "copied", "deref", "borrow", "borrow_mut",
+    "unwrap", "expect", "is_ok", "is_err", "is_none", "is_some", "is_empty",
+    "ok", "err", "iter", "into_iter", "keys", "values", "get", "contains",
+    "starts_with", "ends_with", "find", "sort", "dedup", "extend", "push",
+    "pop", "insert", "remove", "clear", "len", "count", "map", "filter",
+    "fold", "any", "all", "zip", "chain", "first", "last", "next", "rev",
+    "take", "skip", "sum", "split", "lines", "chars", "char_indices", "trim",
+    "replace", "replacen", "to_lowercase", "to_uppercase", "parse", "min",
+    "max", "abs", "sqrt", "floor", "ceil", "round", "eq", "ne", "cmp",
+    "default", "collect", "unwrap_or", "unwrap_or_else", "unwrap_or_default",
+    "print", "println", "eprintln", "eprint", "read_line",
+}
+NOT_A_DRIVE = KEYWORDS | CONVERSIONS
+
 CALL = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*(?:::|\.)\s*[A-Za-z_]")
 CHAR_LIT = re.compile(r"'(?:\\.|[^\\'\n])'")
 
@@ -263,23 +327,148 @@ def parse(path):
         i = k + 1
 
 
-def drives_subject(body):
-    """Rule 4: a call that is not stdlib/assert plumbing."""
+# Rule 3(b). A read of the REPO — a source/manifest/doc/wiring file — as opposed
+# to a read of runtime data (a key file, a backup archive, a dist tree the test
+# just wrote), which is what driving the filesystem looks like when it is the
+# behaviour under test.
+# The STRICT anchor: this fn resolves a path against the repo root. Deliberately
+# NOT bare `env!(` — `env!("CARGO_PKG_VERSION")` is a compile-time string, not a
+# path, and letting it seed the fixpoint dragged every helper that could reach
+# `encrypt_v3_blob` into the repo class (`src/backup.rs`'s `verify`, which reads
+# an encrypted BACKUP, not the tree).
+REPO_ANCHOR = re.compile(
+    r'CARGO_MANIFEST_DIR|include_str!\(\s*"|\.(?:rs|toml|md|yml|yaml|json|lock)"'
+)
+
+# A LOOSE hint, valid only when the fn also calls a strict anchor somewhere
+# else in the file: `repo_root().join("src")` names no literal extension, but
+# the `repo_root()` it calls does.
+REPO_HINT = re.compile(r"\b(?:repo|repo_root|root|manifest_dir|workspace_root)\s*\(")
+
+# Rule 3(b) call shape. `(?<![\w:.])` so `x.read(` and `foo::read(` do not
+# match — only a call to a BARE helper name counts.
+BARE_CALL = re.compile(r"(?<![\w:.])([a-z_][A-Za-z0-9_]*)\s*\(")
+
+
+def file_helper_bodies(path):
+    """{helper name: body} for every fn in the file that is NOT nested inside a
+    test body — those are that test's own local closure, not a helper another
+    test can call."""
+    text = open(path, encoding="utf-8").read()
+    lines = text.splitlines()
+    deltas = brace_deltas(text)
+    nested = []
+    for i, line in enumerate(lines):
+        if not ATTR.match(line):
+            continue
+        depth = seen = 0
+        for k in range(i, len(lines)):
+            depth += deltas[k]
+            seen = seen or depth > 0
+            if seen and depth <= 0:
+                break
+        nested.append((i, k))
+    out = {}
+    for i, line in enumerate(lines):
+        fm = FN.match(line)
+        if not fm or any(a < i <= b for a, b in nested):
+            continue
+        depth = seen = 0
+        body = []
+        for k in range(i, len(lines)):
+            body.append(lines[k])
+            depth += deltas[k]
+            seen = seen or depth > 0
+            if seen and depth <= 0:
+                break
+        out.setdefault(fm.group(1), []).append("\n".join(body))
+    return out
+
+
+def repo_paths(path):
+    """(anchors, readers) for one file.
+
+    `anchors` = helper fns that resolve a path against the REPO ROOT. Resolved
+    as a fixpoint, not a one-level slice: the tree's dominant idiom is
+    `repo_root()` -> `CARGO_MANIFEST_DIR` with `read_repo(rel)` calling *that*,
+    so a strict one-level rule missed `tests/create_loop_pins.rs` entirely (12 of
+    its 27 tests read the tree and none were counted).
+
+    `readers` = anchors (or fns that CALL an anchor) that also perform a file
+    read. Requiring the read in the fn's OWN body is what keeps the bound
+    honest: a fn that reads a key file or a backup archive is not a reader, no
+    matter how repo-shaped its arguments look.
+    """
+    helpers = file_helper_bodies(path)
+    anchors = set()
+    changed = True
+    while changed:
+        changed = False
+        for name, bodies in helpers.items():
+            if name in anchors:
+                continue
+            if any(REPO_ANCHOR.search(b) for b in bodies):
+                anchors.add(name)
+                changed = True
+                continue
+            called = {c.group(1) for b in bodies for c in BARE_CALL.finditer(b)}
+            if REPO_HINT.search("\n".join(bodies)) and (anchors & called):
+                anchors.add(name)
+                changed = True
+    readers = set()
+    for name, bodies in helpers.items():
+        if not any(STRUCTURAL_BODY.search(b) for b in bodies):
+            continue
+        for b in bodies:
+            called = {c.group(1) for c in BARE_CALL.finditer(b)}
+            if REPO_ANCHOR.search(b) or (anchors & called):
+                readers.add(name)
+                break
+    return anchors, readers
+
+
+def reads_tree(body, self_name, anchors, readers):
+    """Rule 3: does this test read the TREE — in its body, or one helper deep?
+
+    Two shapes, and they are NOT one shape with an extra condition:
+
+      (a) the read is IN the body. The path must then be repo-anchored, or the
+          test is driving the filesystem (a key file, a backup archive, a dist
+          tree it just produced) — which is the behaviour, not the tree;
+      (b) the read is ONE CALL DEEP: the body calls a helper that is itself a
+          repo reader. The body carries no read needle at all in this shape,
+          which is exactly why the first draft — gated on (a) — counted none
+          of `tests/rbac_evaluation_pins.rs` or `src/docs_truth.rs`.
+    """
+    called = {c.group(1) for c in BARE_CALL.finditer(body)} - {self_name}
+    if readers & called:
+        return True
+    if not STRUCTURAL_BODY.search(body):
+        return False
+    return bool(REPO_ANCHOR.search(body) or (anchors & called))
+
+
+def drives_subject(body, self_name):
+    """Rule 4: a call that reaches a subject, in either call shape."""
     for m in CALL.finditer(body):
         if m.group(1) not in PLUMBING:
+            return True
+    for m in BARE_CALL.finditer(body):
+        name = m.group(1)
+        if name not in NOT_A_DRIVE and name != self_name:
             return True
     return False
 
 
-def classify(name, doc, body):
+def classify(name, doc, body, anchors=(), readers=()):
     upper = doc.upper()
-    if RESIDUAL_NAME.match(name) or any(m in upper for m in RESIDUAL_MARKERS):
+    if RESIDUAL_NAME.match(name) or any(LABEL[k].search(upper) for k in RESIDUAL_MARKERS):
         return "residual_documentation"
-    if CONTROL_NAME.match(name) or any(m in upper for m in CONTROL_MARKERS):
+    if CONTROL_NAME.match(name) or LABEL["CONTROL"].search(upper):
         return "control"
-    if STRUCTURAL_BODY.search(body):
+    if reads_tree(body, name, anchors, readers):
         return "structural"
-    if drives_subject(body):
+    if drives_subject(body, name):
         return "behavioral_pin"
     return "unclassified"
 
@@ -288,13 +477,14 @@ def census():
     rows = []
     for tree in TREES:
         for path in sorted(rs_files(tree)):
+            anchors, readers = repo_paths(path)
             for name, doc, body, line, rel in parse(path):
                 rows.append(
                     {
                         "file": rel,
                         "line": line,
                         "name": name,
-                        "class": classify(name, doc, body),
+                        "class": classify(name, doc, body, anchors, readers),
                     }
                 )
     return rows
@@ -339,10 +529,16 @@ def render(rows):
     a("")
     a("1. `residual_documentation` — asserts a stated limitation ON PURPOSE.")
     a("2. `control` — the anti-vacuity arm that makes a pin's failure readable.")
-    a("3. `structural` — reads the tree (source text, wiring, manifest).")
-    a("4. `behavioral_pin` — POSITIVE evidence of a drive: the body invokes at")
-    a("   least one non-stdlib callable.")
-    a("5. `unclassified` — no evidence of driving a subject. Reported, never")
+    a("3. `structural` — reads the TREE: the read is in the body, or one call")
+    a("   deep in a named helper that reads a repo-shaped file. A read of")
+    a("   runtime data (a key file, a backup the test made) is NOT structural")
+    a("   — and neither is a process spawn: running a script and reading its")
+    a("   exit status drives a real subject.")
+    a("4. `behavioral_pin` — POSITIVE evidence of a drive, in either call shape:")
+    a("   qualified (`brain_server::audit::hash`) or BARE (`verify_claim(c, q)`).")
+    a("   A bare call is how a Rust unit test names its own module's subject,")
+    a("   so a rule 4 that only accepts qualified calls misses most of this repo.")
+    a("5. `unclassified` — drives no subject and reads no tree. Reported, never")
     a("   folded into 4 by default: \"no read found\" is precisely the shape of")
     a("   the four vacuous census pins R123 shipped on first draft.")
     a("")
@@ -381,9 +577,12 @@ def render(rows):
         a("rule set, not a clean bill of health — check the rule text before")
         a("believing it.")
     else:
-        a(f"{len(unc)} tests invoke nothing outside the assert vocabulary.")
+        a(f"{len(unc)} tests drive no subject and read no tree.")
         a("They are listed so a reader can move them by adding evidence, not")
-        a("by re-deciding.")
+        a("by re-deciding. Read this bucket as \"the census could not see a"
+          " drive\", NOT as \"this test is worthless\": all six assert a")
+        a("constant or a declared bound, which is a real pin that happens to")
+        a("have no call in it.")
         a("")
         a("| Test |")
         a("|---|")

@@ -844,18 +844,39 @@ mod pins {
     /// the only floors are the anti-vacuity ones below, which exist to prove
     /// the classification saw a non-empty population at all.
     ///
-    /// RED-PROOF (run 2026-10-12, both directions, both reverted):
-    ///   - table edited: `behavioral_pin | 2848` → `| 9999 |` in
+    /// RED-PROOF (run 2026-10-12, every drill reverted, re-run after the
+    /// classifier revision below):
+    ///   - table edited: the `behavioral_pin` count changed to `| 9999 |` in
     ///     docs/test-census.md → `--check` exits 1 and this test fails naming
     ///     the drift;
-    ///   - tree edited: `#[test]` on `chunk_markdown`'s
-    ///     `single_paragraph_is_one_chunk` gated to `#[cfg(any())]` without
-    ///     re-deriving → the same failure.
+    ///   - tree edited: the `#[test]` on `verify_claim`'s
+    ///     `verify_claim_finds_case_insensitive_matches` REPLACED by
+    ///     `#[cfg(any())]` without re-deriving → the same failure. (Adding
+    ///     `#[cfg(any())]` ABOVE the attribute does NOT fire, and must not:
+    ///     the attribute is still there, so the test still exists to the
+    ///     compiler. A census that counted that edit would be counting edits,
+    ///     not tests.)
+    ///   - RULE regression: rule 4 reverted to qualified-calls-only →
+    ///     `--check` exits 1, because 261 bare-call pins leave `behavioral_pin`
+    ///     and the committed table no longer matches. The classifier's rules
+    ///     are as much under the pin as its counts.
     ///
     /// The census's own class rules are red-proved separately, by planting one
     /// test of each class in `src/` plus one that matches no rule (R123, the
-    /// AGENTS.md entry). All five landed where the rules say — including the
-    /// unplantable one, which showed up in `unclassified`.
+    /// AGENTS.md entry). Ten plants, all reverted, all landed where the rules
+    /// say — including the three NEGATIVE arms that matter most: a doc-comment
+    /// saying CONTROLLED must not read as the label CONTROL, a helper that
+    /// reads runtime DATA must not read as structural, and a process spawn
+    /// must not read as structural.
+    ///
+    /// The first draft of the classifier failed four of those and was fixed:
+    /// rule 3 saw only reads written IN the test body, so the source-scanning
+    /// files that route through a helper (`tests/rbac_evaluation_pins.rs`,
+    /// `src/docs_truth.rs`) read as behavioural; rule 4 saw only qualified
+    /// calls, so 261 bare `subject(args)` pins read as `unclassified`; the
+    /// doc-markers matched substrings, so CONTROLLED and CEILINGS read as
+    /// labels; and `env!("CARGO_PKG_VERSION")` seeded the repo-anchor fixpoint,
+    /// which swept every helper reaching `encrypt_v3_blob` into structural.
     #[test]
     fn the_test_census_table_re_derives_from_the_tree() {
         let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));

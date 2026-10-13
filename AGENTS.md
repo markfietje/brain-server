@@ -2,24 +2,42 @@
 
 > **R123 "Tally": the suite is measured, and the register says who owes.**
 > The test suite is the largest artifact in this repo and nothing had ever
-> counted what it is *made of*. `scripts/test-census.py` now classifies all
+> counted what it is *made of*. `scripts/test-census.py` classifies all
 > **3401** tests in `src/` + `tests/` by five deterministic rules, and
 > `docs/test-census.md` is the committed derivation with a `--check` that
-> refuses drift. The measurement: **2849 behavioral pins (83.8%), 175
-> structural (5.1%), 58 controls (1.7%), 53 residual-documentation (1.6%),
-> 266 unclassified (7.8%)** — and the unclassified bucket is reported, not
-> hidden. Rule 4 demands POSITIVE evidence of a drive (a call that is not
-> stdlib plumbing), because "no evidence of a read" is exactly the shape of
-> the four vacuous census pins R122 shipped on first draft.
+> refuses drift. The measurement: **2958 behavioral pins (87.0%), 333
+> structural (9.8%), 53 controls (1.6%), 51 residual-documentation (1.5%),
+> 6 unclassified (0.2%)** — and the unclassified bucket is reported, not
+> hidden. One row of that count is the census's OWN pin, filed as a `control`
+> because its doc-comment explains the CONTROLLED-vs-CONTROL distinction and
+> therefore contains the word — the marker rule's stated one-test-wide
+> ceiling, disclosed rather than reworded away.
+>
+> **The first classifier was wrong in four ways, and the round's own
+> methodology is what found them — not a careful read.** Rule 3 only saw
+> reads written IN the test body, so `tests/rbac_evaluation_pins.rs` and
+> `src/docs_truth.rs` (source-scanning files whose tests route through a
+> `read_repo`/`doc` helper) classified as *behavioral*; rule 4 only saw
+> qualified calls, so **261 real pins that call their subject bare** —
+> `verify_claim(c, q)`, `parse_flags(args)` — landed in `unclassified`; the
+> doc-markers matched SUBSTRINGS, so `CONTROLLED`, `CEILINGS` and
+> `STRIP_CONTROL_CHARS` read as labels; and `env!("CARGO_PKG_VERSION")` seeded
+> the repo-anchor fixpoint, which swept every helper reaching
+> `encrypt_v3_blob` into the structural class — including `backup.rs`'s
+> `verify`, which reads an encrypted BACKUP, not the tree. Each was found by
+> planting a test and watching the classifier get it wrong. The census now
+> carries ten plants, including the three negative arms that matter most (a
+> runtime-data read must NOT read as structural; a process spawn must NOT
+> either — running a script and reading its exit status DRIVES a subject).
 >
 > **The register caught up with the tree.** Four guards that shipped in
-> v1.29.13 without rows now have them, including their recorded drill
+> v1.29.13 without rows now have them, each with the drill it owes recorded
 > (the two-thread env-drill owed on the salt lock; the compile-time fence
 > owed on the operator key — a signature change, named not faked). Every
 > structural row now carries an explicit **R123 decision**: one converted,
-> two already retired, three LANDED-and-kept, seven keep-and-re-date with
-> the project named. And the law gained its missing clause: an exhaustive
-> row owes nothing, because exhaustiveness IS the proof.
+> two already retired, three LANDED-and-kept, seven keep-and-re-date with the
+> project named. The law gained its missing clause: an exhaustive row owes
+> nothing, because exhaustiveness IS the proof.
 >
 > **The conversion, and its teeth.** `crates_consumed_set_is_pinned` no
 > longer greps manifest text — it asks `cargo metadata` whether a PATH
@@ -27,13 +45,13 @@
 > `crates/brain-care-core` plus the member moved to the consumed list
 > satisfied the old text condition and fails the new one. An anti-vacuity
 > arm names two members cargo is known to resolve, so a probe that stopped
-> seeing anything fails instead of emptying the island list quietly.
+> seeing anything fails instead of quietly emptying the island list.
 >
 > **The register now has a pin.** Nothing read
 > `docs/gate-law-register.md` — its first law ("a new guard lands with its
 > row") was enforced by nothing, which is how four guards shipped bare.
-> `the_gate_law_register_rows_parse_and_carry_their_last_column` parses
-> both tables, refuses an empty `Red-proof`/`Owed`, and fails CLOSED on a
+> `the_gate_law_register_rows_parse_and_carry_their_last_column` parses both
+> tables, refuses an empty `Red-proof`/`Owed`, and fails CLOSED on a
 > malformed row. Drilled three ways, all reverted: blanked `Owed`, blanked
 > `Red-proof`, and a row missing a column separator.
 >
@@ -44,15 +62,6 @@
 > test deleted — the round's exit criterion is a measurement plus a
 > decision per row, and "we deleted N tests" would have failed it even
 > with every lane green.
-
-> **Fork lane rider (K4-05 + K4-12, zero-conflict subset):** the TUI
-> approval projection now carries the requester-supplied `detail` — the
-> effective arguments the reviewer was never shown — sanitized, labeled,
-> and capped head+tail with the elision count named (tui lane 34/34,
-> brain extension 72/72). And `scripts/fork/install-cli-gated.sh` refuses
-> an upstream-sourced install over a diverged fork (four arms + the
-> upstream-checkout pass-through drilled). The upstream-owned K4 rows
-> (K4-01/02/08) stay parked under the zero-conflict directive.
 
 > **R121 "Second Pass" + R122 "Conduit II": the closures attacked, the owed
 > rows landed.** The twelfth pass (a dedicated adversarial lane against
