@@ -18,6 +18,14 @@ on:
       - 'openapi.yaml'
       - 'plugin/fixtures/invisible-classes.json'
       - '.github/workflows/shell.yml'
+  # Manually runnable, and this is not a convenience (2026-10-13). Every other
+  # trigger here is paths-filtered, so this lane is UNRUNNABLE on a commit that
+  # touches none of those paths — which is exactly how the 1.29.15 release
+  # shipped with the `--offline` fix to this very file never having been
+  # executed by a runner: the fix was reasoned and verified locally, and
+  # nothing said so. `gh workflow run shell.yml --ref main` closes that, and
+  # keeps a lanes-only change from waiting on an unrelated shell edit.
+  workflow_dispatch:
 
 permissions:
   contents: read
