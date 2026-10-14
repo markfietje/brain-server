@@ -46,30 +46,199 @@ fn ledger_rows() -> Vec<(String, String, String)> {
     }
     rows
 }
-/// A `docs/` execution-plan reference named in AGENTS.md is a live
-/// reference — the file must exist in the tree a fresh clone sees.
-/// Scoped to plan/index names on purpose: past audit reports are cited in
-/// AGENTS.md too but stay untracked by design (sealed history), so a
-/// blanket `docs/*.md` check would fail clean clones over files that must
-/// never be committed. (The parallel plan was cited but absent.)
+/// Files whose prose may name an execution plan. AGENTS.md carried the
+/// round log until 2026-10-14; the retired rounds live in AGENTS_HISTORY.md,
+/// and a reference that moved out of the first file must not silently stop
+/// being checked — that gap is exactly what this pin would have grown if
+/// only AGENTS.md were scanned.
+const PLAN_NAMING_DOCS: [&str; 2] = ["AGENTS.md", "docs/AGENTS_HISTORY.md"];
+
+/// Every backtick-delimited span, WITHOUT assuming the backticks pair up.
+///
+/// `split('`').skip(1).step_by(2)` assumes an even number of backticks in
+/// the whole file. That holds for AGENTS.md and it does NOT hold for
+/// AGENTS_HISTORY.md, which carries an odd count and 2,143 code spans that
+/// straddle a `> ` blockquote continuation line. On such a file the pairing
+/// shifts at the first stray and every span after it is misaligned — the
+/// scanner keeps returning something, so it never errors, it just starts
+/// reading the wrong substrings. A green result would have meant nothing.
+///
+/// So the candidate set is the union of BOTH pairings — (0,1),(2,3),… AND
+/// (1,2),(3,4),… . Where the backticks genuinely pair, the two agree. Where
+/// they do not, the union still contains every real span, and a spurious
+/// candidate is pruned by the plan filter rather than trusted. This cannot
+/// miss a span for any stray-backtick position, which is the property the
+/// old idiom lacked.
+fn backtick_spans(src: &str) -> Vec<&str> {
+    let pos: Vec<usize> = src
+        .char_indices()
+        .filter(|(_, c)| *c == '`')
+        .map(|(i, _)| i)
+        .collect();
+    let mut out = Vec::new();
+    for start in [0usize, 1] {
+        let mut i = start;
+        while i + 1 < pos.len() {
+            out.push(&src[pos[i] + 1..pos[i + 1]]);
+            i += 2;
+        }
+    }
+    out
+}
+
+fn is_plan_ref(span: &str) -> bool {
+    let span = span.trim();
+    span.starts_with("docs/")
+        && span.ends_with(".md")
+        && !span.contains(' ')
+        && (span.contains("EXECUTION_PLAN") || span.contains("EXECUTION_INDEX"))
+}
+
+/// Plan-shaped path tokens in the RAW text, regardless of backticks.
+///
+/// The pin's claim is that a plan "named in prose" is a live reference, and
+/// prose is not obliged to use code spans. An earlier version read only
+/// backtick-delimited content, so a plan cited in plain text was invisible
+/// to it — a citation with no backticks around it passed while pointing at a
+/// file that does not exist. Scanning the raw tokens closes that: a citation
+/// escapes only by not looking like a path.
+fn raw_plan_refs(src: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for token in src
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '/' && c != '.' && c != '-' && c != '_')
+    {
+        if is_plan_ref(token) && !out.iter().any(|t| t == token) {
+            out.push(token.to_string());
+        }
+    }
+    out
+}
+
+/// A `docs/` execution-plan reference named in prose is a live reference —
+/// the file must exist in the tree a fresh clone sees. Scoped to
+/// plan/index names on purpose: past audit reports are cited in the same
+/// files but stay untracked by design (sealed history), so a blanket
+/// `docs/*.md` check would fail clean clones over files that must never be
+/// committed. (The parallel plan was cited but absent.)
+///
+/// Reads both the extracted spans and the raw text, so a citation is checked
+/// whether or not it is backticked.
 #[test]
 fn referenced_execution_plans_exist() {
-    let agents = std::fs::read_to_string(repo().join("AGENTS.md")).expect("AGENTS.md readable");
     let mut missing = Vec::new();
-    for chunk in agents.split('`').skip(1).step_by(2) {
-        let span = chunk.trim();
-        let is_plan = span.starts_with("docs/")
-            && span.ends_with(".md")
-            && !span.contains(' ')
-            && (span.contains("EXECUTION_PLAN") || span.contains("EXECUTION_INDEX"));
-        if is_plan && !repo().join(span).exists() {
-            missing.push(span.to_string());
+    for doc in PLAN_NAMING_DOCS {
+        let src =
+            std::fs::read_to_string(repo().join(doc)).unwrap_or_else(|_| panic!("{doc} readable"));
+        for span in backtick_spans(&src) {
+            let span = span.trim();
+            if is_plan_ref(span) && !repo().join(span).exists() {
+                missing.push(format!("{doc} (code span) -> {span}"));
+            }
+        }
+        for token in raw_plan_refs(&src) {
+            if !repo().join(&token).exists() {
+                missing.push(format!("{doc} (prose) -> {token}"));
+            }
         }
     }
     assert!(
         missing.is_empty(),
-        "AGENTS.md references plans that do not exist: {missing:?}"
+        "execution-plan references that do not exist: {missing:?}"
     );
+}
+
+/// The anti-vacuity arm, by PLANT rather than by live content.
+///
+/// `referenced_execution_plans_exist` asserts an empty miss list, so a
+/// scanner that stopped seeing anything would pass while checking nothing —
+/// exactly the failure the parity bug would have had. Checking live
+/// documents for that is unsound: AGENTS.md legitimately names no plan at
+/// all since the log was archived, so a content-derived arm either asserts
+/// nothing (vacuous) or demands formatting that prose does not owe.
+///
+/// So the plant is a synthetic string pushed through the same extraction
+/// under the conditions that actually broke it — a stray backtick ahead of
+/// it, a span straddling a blockquote continuation, and no backticks at
+/// all. Recovery is asserted for each. This depends on no document content,
+/// so it stays meaningful as the archive ages, and it fails the moment the
+/// extractor is narrowed.
+#[test]
+fn the_plan_extraction_recovers_a_planted_reference_under_adversarial_text() {
+    const PLANT: &str = "docs/EXECUTION_PLAN_29991231_PLANT.md";
+    let text = |body: &str| body.replace("PLANTPATH", PLANT);
+
+    // Each case names the ONE route that must recover it. Accepting either
+    // route let the raw-text fallback mask a completely broken span
+    // extractor — the arm passed while the thing it was guarding was dead.
+    let span_cases: [(&str, &str); 3] = [
+        ("plain code span", "prose `PLANTPATH` tail"),
+        (
+            "a stray backtick ahead of the plant",
+            "a ` b ` PLANTPATH` c",
+        ),
+        (
+            "several spans then the plant",
+            "`one` `two` `PLANTPATH` `three`",
+        ),
+    ];
+    for (label, body) in span_cases {
+        let body = text(body);
+        let spans = backtick_spans(&body);
+        assert!(
+            spans.iter().map(|s| s.trim()).any(|s| s == PLANT),
+            "planted reference not recovered by SPAN extraction in the {label} \
+             case; spans saw {spans:?}. The extractor has been narrowed or lost \
+             parity immunity."
+        );
+    }
+
+    // These two are the reason raw scanning exists at all: one has no
+    // backticks to find, and the other\'s span swallows the blockquote
+    // continuation, so it is an exact path in no pairing.
+    let raw_cases: [(&str, &str); 2] = [
+        ("no backticks at all", "see PLANTPATH here"),
+        (
+            "a path straddling a blockquote continuation",
+            "> open `PLANTPATH\n> continued` tail",
+        ),
+    ];
+    for (label, body) in raw_cases {
+        let body = text(body);
+        let raws = raw_plan_refs(&body);
+        assert!(
+            raws.iter().any(|t| t == PLANT),
+            "planted reference not recovered by RAW scanning in the {label} \
+             case; raw saw {raws:?}. A citation can now escape without \
+             looking like a path."
+        );
+    }
+}
+
+/// The union across the scanned documents must actually name a plan. Without
+/// this, both files could stop citing plans — legitimately, by retiring the
+/// last one — and the arms above would go quiet with nothing recording that
+/// the coverage ended. Naming the reference keeps that a decision rather
+/// than a drift.
+#[test]
+fn the_scanned_documents_still_name_at_least_one_live_execution_plan() {
+    let mut union: Vec<String> = Vec::new();
+    for doc in PLAN_NAMING_DOCS {
+        let src =
+            std::fs::read_to_string(repo().join(doc)).unwrap_or_else(|_| panic!("{doc} readable"));
+        for token in raw_plan_refs(&src) {
+            if !union.contains(&token) {
+                union.push(token);
+            }
+        }
+    }
+    assert!(
+        !union.is_empty(),
+        "no execution plan is named across {PLAN_NAMING_DOCS:?}; the existence pin \
+         is now vacuous"
+    );
+    for p in &union {
+        assert!(repo().join(p).exists(), "named plan {p} does not exist");
+    }
 }
 
 /// Parallel lanes cannot reuse a live round identifier without a lane

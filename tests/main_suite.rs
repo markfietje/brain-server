@@ -24636,12 +24636,23 @@ mod r70_seams {
 /// decoration), and `Owed` in the text-bound table (a structural row that owes
 /// nothing has silently stopped being debt).
 ///
-/// RED-PROOF (run 2026-10-12, reverted): blanking the `Owed` cell of
+/// RED-PROOF (re-run 2026-10-14, reverted): blanking the `Owed` cell of
 /// `the_salt_lock_is_never_taken_twice_in_one_test` fails the owed arm; blanking
-/// `Red-proof` on any standing-guard row fails the other. A row whose cell
+/// `Red-proof` on a standing-guard row now fails the other. A row whose cell
 /// count is not the header's — a missing `|` that silently merges two columns —
 /// fails as UNREADABLE rather than passing, so a malformed row cannot read as a
 /// populated one.
+///
+/// CORRECTION, 2026-10-14: this comment previously read "blanking `Red-proof`
+/// on any standing-guard row fails the other" and dated that drill 2026-10-12.
+/// **It did not.** The assertion read `cells[3]`, the last column, while the
+/// table config named `Red-proof` — which is the THIRD column of the
+/// standing-guards table. Blanking a `Red-proof` cell was therefore checked
+/// against the `Class` cell beside it and passed. The `Owed` drill was always
+/// real by coincidence, `Owed` being last. The config now carries the column
+/// index, and the last column is asserted separately so the two cannot drift
+/// apart again. The lesson is the one this file keeps re-learning: a recorded
+/// red-proof is a claim about a run, and the run is the proof.
 #[test]
 fn the_gate_law_register_rows_parse_and_carry_their_last_column() {
     let register = std::fs::read_to_string(
@@ -24654,16 +24665,33 @@ fn the_gate_law_register_rows_parse_and_carry_their_last_column() {
     // staying small: a register that shrinks below its measured population is
     // the failure this is here to catch, and a row that stops parsing lowers the
     // count rather than raising it.
+    //
+    // The table config carries the INDEX of the column that must be
+    // non-empty, not just its name. It carried only the name, and the
+    // assertion read `cells[3]` — the LAST column. For the text-bound table
+    // that coincidence held (`Owed` is last, so it was checked). For the
+    // standing-guards table it did NOT: `Red-proof` is the THIRD column and
+    // `Class` is last, so blanking a `Red-proof` cell was checked against
+    // the `Class` cell beside it and passed. The arm was vacuous for exactly
+    // the table the law names first, and the drill recorded in this test's
+    // doc comment claimed it fired. It did not. Found 2026-10-14 by running
+    // the drill rather than trusting the note.
     let tables = [
         (
             "| Guard | Subject | Red-proof | Class |",
             "Red-proof",
+            2usize,
             11usize,
         ),
-        ("| Guard | Subject | Class | Owed |", "Owed", 14usize),
+        (
+            "| Guard | Subject | Class | Owed |",
+            "Owed",
+            3usize,
+            14usize,
+        ),
     ];
 
-    for (header, column, floor) in tables {
+    for (header, column, col_idx, floor) in tables {
         let at = register
             .find(header)
             .unwrap_or_else(|| panic!("gate-law register lost its `{column}` table header"));
@@ -24696,10 +24724,20 @@ fn the_gate_law_register_rows_parse_and_carry_their_last_column() {
                 cells.len()
             );
             assert!(
-                !cells[3].is_empty(),
-                "register row `{}` has an EMPTY `{column}` cell. {column} is not \
+                !cells[col_idx].is_empty(),
+                "register row `{}` has an EMPTY `{column}` cell (column {}). {column} is not \
                  optional: a guard with no recorded teeth is decoration, and a \
                  structural row that owes nothing has stopped being debt.",
+                cells[0],
+                col_idx + 1
+            );
+            // The test is named for the LAST column, so hold that too rather
+            // than letting the name outrun the assertion.
+            assert!(
+                !cells[3].is_empty(),
+                "register row `{}` has an EMPTY last cell. The last column carries \
+                 the class or the debt; a blank one reads as a row that was filled \
+                 in without saying anything.",
                 cells[0]
             );
             rows += 1;
