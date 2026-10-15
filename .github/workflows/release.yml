@@ -274,6 +274,7 @@ jobs:
         # operator's terminal witness; this step's refusal is the enforcement.
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
         run: |
           set -e
           SHA="${{ github.sha }}"
@@ -286,7 +287,14 @@ jobs:
           for WF in ci.yml shell.yml codeql.yml fuzz.yml docs.yml; do
             RUN_ID=""
             for _ in $(seq 1 20); do
-              RUN_ID="$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=${SHA}" \
+              # Filter on the TAG as well as the SHA. Since `main` is also
+              # pushed to the mirror, the tagged SHA normally carries a run per
+              # workflow from the BRANCH push too, and `[0]` returned whichever
+              # the API listed first. On 2026-10-15 that was a branch CodeQL
+              # run the mirror's own next commit had CANCELLED via concurrency
+              # — a superseded run about a different trigger, read as this
+              # tag's verdict. The release was correct; the gate refused it.
+              RUN_ID="$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=${SHA}&branch=${TAG}&per_page=100" \
                 --jq "[.workflow_runs[] | select(.path == \".github/workflows/$WF\")][0].id" \
                 2>/dev/null || true)"
               [[ -n "$RUN_ID" && "$RUN_ID" != "null" ]] && break
@@ -315,7 +323,7 @@ jobs:
           done
           RUN_ID=""
           for _ in $(seq 1 20); do
-            RUN_ID="$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=${SHA}" \
+            RUN_ID="$(gh api "repos/${{ github.repository }}/actions/runs?head_sha=${SHA}&branch=${TAG}&per_page=100" \
               --jq '[.workflow_runs[] | select(.path == ".github/workflows/ci.yml")][0].id' \
               2>/dev/null || true)"
             [[ -n "$RUN_ID" && "$RUN_ID" != "null" ]] && break
@@ -688,11 +696,11 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: v${{ env.version }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
         run: |
           set -euo pipefail
           rel="$(gh api "repos/${{ github.repository }}/releases" --jq \
-                 "[.[] | select(.tag_name == "$TAG")][0].id // empty")"
+                 "[.[] | select(.tag_name == \"$TAG\")][0].id // empty")"
           if [ -z "$rel" ]; then
             echo "::error::no release exists for $TAG — the create step produced nothing"
             exit 1
@@ -722,11 +730,11 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: v${{ env.version }}
+          TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
         run: |
           set -euo pipefail
           rel="$(gh api "repos/${{ github.repository }}/releases" --jq \
-                 "[.[] | select(.tag_name == "$TAG")][0].id // empty")"
+                 "[.[] | select(.tag_name == \"$TAG\")][0].id // empty")"
           [ -n "$rel" ] || { echo "::error::no release for $TAG"; exit 1; }
           draft="$(gh api "repos/${{ github.repository }}/releases/$rel" --jq .draft)"
           [ "$draft" = "false" ] || { echo "::error::release $TAG is still a DRAFT"; exit 1; }
