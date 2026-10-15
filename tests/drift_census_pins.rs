@@ -1210,8 +1210,18 @@ fn no_tracked_file_names_an_unpublished_repository() {
     let root = repo_root();
     let mut hits = vec![];
     for dir in [
-        "evals", "docs", "src", "tests", "scripts", "tools", "crates", "client", "shell", "deploy",
+        "evals",
+        "docs",
+        "src",
+        "tests",
+        "scripts",
+        "tools",
+        "crates",
+        "client",
+        "shell",
+        "deploy",
         "plugin",
+        "shell-macos",
     ] {
         scan(&root.join(dir), UNPUBLISHED, &mut hits, &root, 0);
     }

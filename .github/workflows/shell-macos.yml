@@ -1,0 +1,145 @@
+name: shell-macos
+
+# The macOS half of the shell's build. Split out of `shell.yml` on
+# 2026-10-15, and it is ADDITIVE — `shell.yml` is untouched.
+#
+# WHY A SEPARATE LANE. FoundationModels.framework is Swift-only, so the
+# Apple-Intelligence bridge can never compile on `ubuntu-latest` — the
+# existing shell lane builds Tauri through webkit2gtk there and that stays
+# exactly as it is. What cannot be checked on Linux is whether the Swift
+# half still compiles against a given SDK, and whether the dylib links.
+#
+# WHY `xcode-27` AND NOT `macos-*`. GitHub moved to an Xcode-major runner
+# model; there is no `macos-27` label. The `xcode-27` image runs macOS
+# 27.0.1 (26A434) arm64 with the macOS 27.0 SDK — the same OS and SDK a
+# developer gets from Xcode 27 locally. `macos-latest` is macOS 26 and
+# ships only 26.x SDKs, which cannot compile the AFM 3 surface at all.
+#
+# THE TWO ASSERTIONS ARE THE POINT. Between July and September 2026 this
+# image paired the Xcode 27 SDK with a macOS 26.x HOST, and binaries built
+# for a `.macOS("27.0")` deployment target compiled cleanly and then died
+# on load: `Library not loaded: _CoreSpotlight_FoundationModels.framework`
+# — built for macOS 27.0 which is newer than running OS. Every macOS-27-only
+# symbol is a hard dyld bind, so a compile-only lane reads green while
+# nothing can actually run. Asserting the SDK alone would not have caught
+# it. Both are asserted, and both fail loudly rather than passing vacuously.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'shell/**'
+      - '.github/workflows/shell-macos.yml'
+      - 'shell-macos/**'
+  pull_request:
+    paths:
+      - 'shell/**'
+      - '.github/workflows/shell-macos.yml'
+      - 'shell-macos/**'
+  # Same reason as shell.yml: every other trigger here is paths-filtered,
+  # so this lane is UNRUNNABLE on a commit touching none of those paths —
+  # which is how a fix can be reasoned locally and never executed by a
+  # runner. `gh workflow run shell-macos.yml --ref main` closes that.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shell-macos:
+    runs-on: xcode-27
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The host-OS half of the pair. A macOS 26 host with a 27 SDK compiles
+      # every macOS-27 symbol and then fails to dyld-bind it at run time, so
+      # this is asserted BEFORE anything is built.
+      - name: Assert host OS is macOS 27
+        run: |
+          set -euo pipefail
+          major="$(sw_vers -productVersion | cut -d. -f1)"
+          echo "host macOS: $(sw_vers -productVersion)"
+          if [ "$major" -lt 27 ]; then
+            echo "::error::xcode-27 is hosting macOS ${major}; FoundationModels AFM 3 " \
+                 "symbols compile but cannot be dyld-bound. Point this job at a macOS 27 host " \
+                 "image before trusting a green run."
+            exit 1
+          fi
+
+      # The SDK half. The SDK ships with Xcode, not with the host OS, so this
+      # is a separate assertion for a separate failure: a macOS 27 host with
+      # a 26 SDK compiles nothing AFM at all, which fails later and less
+      # legibly.
+      - name: Assert the macOS 27 SDK is present
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          sdk="$(xcrun --sdk macosx --show-sdk-version)"
+          echo "macOS SDK: ${sdk}"
+          if [ "${sdk%%.*}" -lt 27 ]; then
+            echo "::error::need the macOS 27 SDK for FoundationModels AFM 3; found ${sdk}. " \
+                 "The xcode-27 image carries 27.0 by default — select it explicitly."
+            exit 1
+          fi
+          swift --version 2>&1 | head -3
+
+      # The compile gate. Deliberately a SwiftPM package rather than an
+      # app target: no bundle, no signing, no entitlements, no Info.plist —
+      # so this lane cannot be blocked by the M4 installer/signing work and
+      # cannot fail for a reason that has nothing to do with the SDK.
+      #
+      # `@available(macOS 27.0, *)` guards the AFM 3 surface so the package
+      # still builds on an older toolchain rather than hard-erroring; the
+      # assertion above is what makes the version meaningful, because without
+      # it those guards would compile the AFM 3 code out of existence and
+      # the lane would pass while testing nothing.
+      - name: Compile the FoundationModels bridge
+        working-directory: shell-macos
+        run: |
+          set -euo pipefail
+          swift build --build-tests
+          echo "--- built targets ---"
+          swift build --show-bin-path
+
+      # Run the probe's tests on this runner. These are MEASUREMENT tests —
+      # each asks the framework what it reports on the machine executing it, so
+      # a green run is a recorded number (window, languages, tool-schema cost)
+      # rather than a capability claim. The tool-schema cost especially is
+      # worth having in CI: it is the number that decides whether a four-tool
+      # surface fits the window, and it moves when the model does.
+      - name: Measure on this runner
+        working-directory: shell-macos
+        run: swift test
+
+      # The anti-vacuity arm. A build that dropped every macOS-27-only symbol
+      # on this platform would still exit 0 — which is exactly the failure the
+      # version assertions exist to make impossible, but "impossible by
+      # argument" is weaker than "impossible by measurement". This asserts the
+      # compiled object really carries undefined FoundationModels symbols, which
+      # is what proves the AFM surface was compiled rather than guarded away.
+      - name: Assert the bridge actually links FoundationModels
+        working-directory: shell-macos
+        run: |
+          set -euo pipefail
+          bin="$(swift build --show-bin-path)"
+          shopt -s nullglob
+          found=0
+          for obj in "$bin"/*.o "$bin"/*.swiftmodule; do
+            if nm -u "$obj" 2>/dev/null | grep -q "FoundationModels"; then
+              echo "FoundationModels referenced by: $(basename "$obj")"
+              found=1
+            fi
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "::error::no built object references FoundationModels. The " \
+                 "@available guards compiled the AFM surface out — check the host " \
+                 "and SDK assertions above before trusting this lane."
+            exit 1
+          fi
+          echo "OK  the built bridge really links FoundationModels"
+
+      # rustfmt/clippy for the Tauri core are already gated by shell.yml on
+      # ubuntu; this lane adds no Rust step on purpose. The one thing it
+      # uniquely proves is that the Swift half compiles and binds against
+      # the macOS 27 SDK.

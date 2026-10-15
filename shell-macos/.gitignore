@@ -1,0 +1,13 @@
+# SwiftPM build products. These are large, machine-specific, and regenerated
+# by `swift build` — the same disposition as the Rust `target/` directory and
+# the shell's `node_modules/`. Without this, a local `swift build` leaves
+# several hundred MB of object files staged for commit.
+.build/
+*.o
+*.swiftmodule
+*.swiftdoc
+*.swiftsourceinfo
+Package.resolved
+
+# The macOS lane's own log, if a local reproduction writes one.
+shell-macos-ci.log
