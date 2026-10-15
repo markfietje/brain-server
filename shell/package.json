@@ -8,7 +8,7 @@
 		"node": ">=24 <27",
 		"pnpm": ">=12 <13"
 	},
-	"packageManager": "pnpm@12.3.4",
+	"packageManager": "pnpm@12.11.2",
 	"imports": {
 		"#lib": "./src/lib/index.js",
 		"#lib/*": "./src/lib/*"
@@ -26,7 +26,7 @@
 		"tauri": "tauri"
 	},
 	"dependencies": {
-		"@tauri-apps/api": "^2.12.3",
+		"@tauri-apps/api": "^2.12.4",
 		"@zag-js/combobox": "^1.46.0",
 		"@zag-js/dialog": "^1.46.0",
 		"@zag-js/svelte": "^1.46.0",
@@ -35,19 +35,19 @@
 	"devDependencies": {
 		"@eslint/js": "^10.0.1",
 		"@inlang/paraglide-js": "^2.27.0",
-		"@inlang/plugin-message-format": "^4.5.2",
+		"@inlang/plugin-message-format": "^4.5.3",
 		"@internationalized/date": "^3.12.4",
-		"@lucide/svelte": "^1.55.0",
+		"@lucide/svelte": "^1.56.0",
 		"@playwright/test": "^1.64.0",
 		"@sveltejs/adapter-static": "^4.0.0",
 		"@sveltejs/kit": "^3.0.1",
 		"@sveltejs/vite-plugin-svelte": "^7.3.1",
 		"@tailwindcss/vite": "4.3.3",
-		"@tauri-apps/cli": "^2.12.2",
+		"@tauri-apps/cli": "^2.12.3",
 		"@testing-library/svelte": "^5.4.2",
-		"@testing-library/user-event": "^14.6.7",
+		"@testing-library/user-event": "^14.6.8",
 		"@types/node": "^26.6.5",
-		"@typescript-eslint/parser": "^8.71.1",
+		"@typescript-eslint/parser": "^8.71.2",
 		"@typescript/native": "npm:typescript@7.0.2",
 		"axe-core": "^4.14.0",
 		"cn": "^0.4.0",
@@ -63,6 +63,6 @@
 		"tailwindcss": "4.3.3",
 		"typescript": "^6.0.3",
 		"vite": "^8.3.4",
-		"vitest": "^5.0.3"
+		"vitest": "^5.0.4"
 	}
 }

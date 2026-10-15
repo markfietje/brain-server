@@ -4,6 +4,116 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.16] — 2026-10-15 — the log is archived, the gates under it were half-asserting, and the lockfiles were a day behind
+
+Covers every commit from tag `v1.29.15`. A dependency, documentation and gate
+release: no Rust behaviour changed, no wire delta, no schema-version change, and
+no new dependency edge. Two independent bodies of work, and the second one was
+only found because the first one asked whether the tree was current at all.
+
+The first: shrinking the agent-facing log dragged two gates into the light, and
+both were asserting half of what their own comments claimed. The second: that
+question answered itself. A TLS advisory landed the day after the last re-lock,
+in a crate that enters transitively, in five of seven tracked lockfiles. The
+audit job had been red since.
+
+### Release notes
+
+The file every session reads had grown to 3,958 lines, 3,717 of them a
+per-round log that the file's own footer says it does not keep there. Archiving
+it was supposed to be a file move. Extending the one gate that reads the archive
+showed that gate was built on an assumption that file does not satisfy, and that
+its anti-vacuity arm was itself vacuous. Both are fixed here, along with a
+third defect in the register's own self-check — whose recorded red-proof had
+never fired. All three were found by running the drills, not by reading them.
+
+**Improvements**
+
+- **The agent log loses 3,484 lines.** The five most recent rounds stay, because
+  they still name work owed. Everything older moved verbatim into the existing
+  history file under a banner naming the cut point. 265 KB to 29 KB — the
+  saving is context every session no longer pays to learn a build command.
+- **The check that guards execution-plan references now reads both files**, so a
+  citation that moved out of the pruned file did not silently stop being
+  verified. That was the whole reason to touch it.
+- **A plan cited in plain text is now verified too.** The check claimed a plan
+  "named in prose" must resolve, and prose does not owe code spans. A plan
+  written in bare text pointed at a file that did not exist and the check
+  reported success. Proved by planting one.
+- **The register gained the two rows it was missing**, including one for the
+  check that guards the register itself. The nearest row above named a
+  different test as the register's own check, which is how the gap survived.
+
+**Security fixes**
+
+- **A TLS advisory set landed a day after the last re-lock, in a crate that
+  enters transitively.** Four advisories against one crate, all published
+  yesterday, all fixed in the next patch: session debug output exposing TLS
+  secrets, buffered application data surviving an ECH rejection, a
+  certificate-decompression path that can allocate a gigabyte before the peer
+  authenticates, and an unauthenticated hello that can downgrade later
+  connections to classical key exchange. It reaches the tree through the
+  HTTP client, so five of seven tracked lockfiles carried it and the audit job
+  had been red since the advisories published. The fix is the patch bump the
+  lockfile was one version behind; no manifest line changed. This is the second
+  consecutive occurrence of this exact shape — the previous release took the
+  same crate from the version before.
+
+**Bug fixes**
+
+- **The reference check was built on an unsound assumption.** It split the file
+  on backticks and took every other segment, which is correct only when the
+  backticks pair up evenly. The archived history file does not: it carries an
+  odd number of them, and two thousand code spans that straddle a blockquote
+  continuation line. On such a file the pairing slips at the first stray and
+  every segment after it is misaligned — it does not error, it returns
+  plausible text that is the wrong text, so a green result would have meant
+  nothing. It now considers both pairings, which cannot miss a real span
+  wherever the stray falls. This is the same defect shape as the four the test
+  census found in its own classifier.
+- **The anti-vacuity arm was vacuous.** It accepted a reference recovered by
+  either route, so the raw-text route masked a completely dead span extractor:
+  reverting the extractor to the naive form left the arm passing. It now names
+  the single route each planted case must be recovered by, and the same
+  reversal fails. Three span-routed cases, two raw-routed, seven drills in
+  total, all reverted.
+- **The register's own check asserted the wrong column.** It tested the last
+  cell while naming a column that is third in one of the two tables, so a
+  blanked red-proof was being checked against the neighbouring cell and
+  passing. The other table's check was correct only by accident, its target
+  happening to sit last. The table configuration now carries the column index,
+  and the last column is asserted separately so a name and its assertion cannot
+  drift apart again.
+- **That check's comment claimed a drill that had never fired.** It recorded
+  the blanked-red-proof drill as run and passing in September. The drill was
+  aimed at a different test entirely, so it proved nothing about the one it
+  named. The comment now carries a dated correction rather than a silent fix.
+
+**Changed**
+
+- **Every resolvable Rust dependency is now on its latest compatible release**,
+  across all seven tracked lockfiles — roughly 150 crates, no version-floor
+  change and no new dependency edge. Before the sweep, no direct dependency was
+  behind a major; the twenty majors the audit found are all transitive and all
+  pinned by a parent's requirement, which is the resolver working correctly and
+  not drift to chase.
+- **The toolchain is current on both sides of the Tauri boundary.** The Rust
+  crate, the JavaScript API and the CLI now sit on the same release, and the
+  package manager moved forward within the range the project declares. Nothing
+  enforced that agreement before; the boundary where it could have broken is
+  exactly where a pin was missing.
+- **The npm dependencies are current, with one deliberate exception.** A bulk
+  upgrade wanted to pull the language server to the new native compiler, which
+  removes the plugin API the linter is built on. The two-compiler arrangement —
+  the current toolchain for checking, the previous one for tooling that needs
+  the plugin API — is intentional and is preserved here.
+- **The test-count badge and the test census are re-derived, not retyped.** The
+  badge moved to 3,358 because the count is derived and pins were added; the
+  census was regenerated twice, and the second pass reclassified the new plant
+  check from a source-reading pin to a behavioural one, which is the classifier
+  judging the rewrite correctly — it runs code on synthetic input rather than
+  reading the tree.
+
 ## [1.29.15] — 2026-10-13 — the release path repairs itself
 
 Covers every commit from tag `v1.29.14` to this release. A CI and
