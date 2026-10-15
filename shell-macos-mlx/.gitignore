@@ -1,0 +1,9 @@
+.build/
+.swiftpm/
+Package.resolved
+
+# MLX resolves its metallib by the RELATIVE path "default.metallib" against
+# the process CWD (METAL_PATH in device.cpp -> load_library_from_path), and
+# `swift test` runs from the package root, so the library is not found without
+# this link. Created by scripts/setup.sh; never committed.
+default.metallib

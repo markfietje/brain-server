@@ -1222,6 +1222,7 @@ fn no_tracked_file_names_an_unpublished_repository() {
         "deploy",
         "plugin",
         "shell-macos",
+        "shell-macos-mlx",
     ] {
         scan(&root.join(dir), UNPUBLISHED, &mut hits, &root, 0);
     }
