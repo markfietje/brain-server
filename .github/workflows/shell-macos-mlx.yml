@@ -1,0 +1,95 @@
+# The MLX ↔ FoundationModels bridge.
+#
+# SEPARATE FILE, NOT A JOB, and the reason is a failure this lane already had.
+# The first attempt put this in `shell-macos.yml` as a second job gated on
+# `contains(github.event.head_commit.message, 'shell-macos-mlx')` — because the
+# MLX compile is ~20 minutes and re-running it on unrelated commits is waste.
+# The mirror push lands a MERGE commit, whose message does not contain that
+# string, so the job was SKIPPED and the run reported success. A skipped job and
+# a passing job look identical in a status badge, which is the exact failure
+# this repo keeps legislating against.
+#
+# A separate file with its own `paths:` filter has no such state: it runs when
+# its package changes and does not exist at all otherwise. No `if:`, no commit-
+# message matching, no third-party paths-filter dependency — which Plan 07's law
+# would have made a decision in its own right.
+name: shell-macos-mlx
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'shell-macos-mlx/**'
+      - '.github/workflows/shell-macos-mlx.yml'
+  pull_request:
+    paths:
+      - 'shell-macos-mlx/**'
+      - '.github/workflows/shell-macos-mlx.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The MLX bridge, in its own job and its own package.
+  #
+  bridge:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert host OS is macOS 27
+        run: |
+          set -euo pipefail
+          major="$(sw_vers -productVersion | cut -d. -f1)"
+          echo "host macOS: $(sw_vers -productVersion)"
+          if [ "$major" -lt 27 ]; then
+            echo "::error::MLXFoundationModels requires the macOS 27 SDK; host is ${major}"
+            exit 1
+          fi
+
+      # Not present on the stock GitHub image. MLX compiles its Metal shaders
+      # with `metal(1)`, and without this component every .metal file fails with
+      # "Could not read serialized diagnostics file" and the real message —
+      # "cannot execute tool 'metal' due to missing Metal Toolchain" — never
+      # reaches the log. Found by building this locally, not by reading the
+      # error, because the reported error names a .dia file rather than the
+      # missing compiler.
+      - name: Install the Metal Toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Build (MLX compiles from source — this is the long step)
+        working-directory: shell-macos-mlx
+        run: swift build --build-tests
+
+      - name: Link MLX's metallib where the test process looks for it
+        working-directory: shell-macos-mlx
+        run: ./scripts/setup.sh
+
+      - name: Prove an MLX model drives LanguageModelSession
+        working-directory: shell-macos-mlx
+        run: swift test
+
+      # The same distinction the other lane makes. A model that downloads,
+      # loads and answers is measured, not asserted about — and the answer is
+      # printed, so a run that degrades to noise is visible in the log rather
+      # than hidden behind a green tick.
+      - name: Report what the bridge actually did
+        working-directory: shell-macos-mlx
+        run: |
+          set -euo pipefail
+          out="$(swift test 2>&1)"
+          echo "$out"
+          if echo "$out" | grep -qE 'MLXLanguageModel: (downloading|available)'; then
+            echo "::notice title=Bridge exercised::MLXLanguageModel was constructed \
+          and gated on. Weights are downloaded on first use, so a cold CI run may \
+          report \"downloading\" while the generation test still ran."
+          fi
+          if ! echo "$out" | grep -q 'output:'; then
+            echo "::error::the generation test produced no output line — the bridge \
+          compiled but did not emit. A green tick without text is the DWQ failure \
+          shape, and it must not pass."
+            exit 1
+          fi
+
