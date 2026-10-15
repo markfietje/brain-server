@@ -169,9 +169,26 @@ fn the_gate_refuses_an_empty_notes_block_and_audit_ids() {
     );
 
     // Defect 2 — an audit/finding ID in the published surface.
+    //
+    // The anchor is whichever bold category heading this release actually
+    // carries, not a hardcoded `**Security fixes**`. It was hardcoded, and a
+    // docs-and-gates release with no security fixes therefore had nothing for
+    // `replace` to match: the plant became a no-op and the arm refused with
+    // "could not plant the ID probe" — a gate that can only be satisfied by
+    // releases of a particular shape. Same class as the defect this test
+    // already documents twice above: an arm that depends on the content it is
+    // inspecting rather than on the rule it is testing.
+    let anchor = CATEGORY_NAMES
+        .iter()
+        .map(|n| format!("**{n}**"))
+        .find(|h| section.contains(h))
+        .expect(
+            "the section carries no bold category heading at all — the h3 plant \
+             above already asserts this, so the two disagree",
+        );
     let with_id = section.replace(
-        "**Security fixes**",
-        "**Security fixes**\n- the fork lane (K4-05) refuses upstream sources",
+        &anchor,
+        &format!("{anchor}\n- the fork lane (K4-05) refuses upstream sources"),
     );
     assert_ne!(with_id, section, "could not plant the ID probe");
     let dir = scratch(
