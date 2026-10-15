@@ -4050,7 +4050,12 @@ paths:
               description: Always `no-store` — a rotated credential pair must never be served from a shared or intermediary cache.
               schema:
                 type: string
-                const: no-store
+                # `enum`, not `const`. `const` arrived in JSON Schema 2020-12 and
+                # OpenAPI 3.1; this document declares 3.0.3, whose Schema Object has no
+                # such keyword, so a strict 3.0 validator rejects the document outright.
+                # A one-value `enum` is the 3.0 idiom and means exactly the same thing.
+                enum:
+                  - no-store
           content:
             application/json:
               schema:

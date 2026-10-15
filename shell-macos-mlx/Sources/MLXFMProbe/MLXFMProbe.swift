@@ -12,7 +12,13 @@ import MLXHuggingFace
 import MLXLLM
 import MLXLMCommon
 import HuggingFace
-import Tokenizers
+
+// `@preconcurrency`, not decoration: the target is already pinned to Swift 5
+// language mode because `#huggingFaceLanguageModel` expands to a
+// `Sendable` struct over a non-Sendable existential (see Package.swift). This
+// target is Swift-6-clean for OUR code; the remaining diagnostic is inside
+// Tokenizers, and this is the sanctioned way to say so at the import.
+@preconcurrency import Tokenizers
 
 /// A local MLX model, bridged into Apple's session API.
 ///
