@@ -4,6 +4,92 @@ All notable changes are documented here. The format is a simplified keep-a-chang
 style. Version numbers follow `Cargo.toml`; "released" means the binary and docs
 are consistent at that tag.
 
+## [1.29.17] — 2026-10-15 — the on-device model is measured now, and two "faster" models turned out to be broken
+
+Covers every commit from tag `v1.29.16`. A macOS lane, three measurements, and two
+candidate models that failed against their own vendor's numbers. No Rust behaviour
+changed, no wire delta, no schema-version change, and no new dependency edge in the
+Rust tree.
+
+### Release notes
+
+The shell needs a model, and FoundationModels.framework is Swift-only, so nothing
+about it was checkable by any existing lane — `shell.yml` runs on `ubuntu-latest` and
+builds Tauri through webkit2gtk. This release adds the macOS half in two additive
+lanes, and then uses them to replace estimation with measurement.
+
+**Improvements**
+
+- **A `xcode-27` lane for the Apple-Intelligence bridge.** Not `macos-27`: there is no
+  such label. Host OS and SDK are asserted separately, because between July and
+  September 2026 GitHub paired the Xcode 27 SDK with a macOS 26.x host — binaries
+  targeting `.macOS("27.0")` compiled cleanly and then died on dyld bind with
+  `built for macOS 27.0 which is newer than running OS`.
+- **The on-device model is measured rather than described.** On an M1 Pro it reports
+  `AFM 3 Core` with `capabilities: ["toolCalling", "guidedGeneration", "vision"]` at
+  a 4096-token window — and **no `reasoning` capability**. ~50 tok/s, 2.31 s cold
+  first token, 0.58 s warm, and an 80% warm prefix-cache hit rate read from
+  `Usage.Input.cachedTokenCount`. A window alone cannot say which model answered, and
+  a Core silently downgraded for want of memory implies different routing.
+- **An MLX model can drive `LanguageModelSession`, and that is now a build.**
+  `mlx-swift-lm` ships `MLXFoundationModels`, an adapter conforming to Apple's
+  `FoundationModels.LanguageModel`, so `MLXLanguageModel` goes directly into
+  `LanguageModelSession` with the same `Tool` protocol, the same `@Generable` guided
+  output and the same streaming. A 0.6 B Qwen was downloaded and executed through
+  that path on the runner and printed `France's capital is **Paris**.`
+- **That removes a sidecar from the design.** No Python process, no HTTP listener, no
+  UDS carve-out, one tool schema instead of two, and no fork of MLX — Qwen is standard
+  weights, which is what the two rejected candidates are not.
+
+**Bug fixes**
+
+- **A 3-bit DWQ quant of LFM2.5-24B-A2B decoded at 56 tok/s and emitted `But.
+  However. But. But.`** `mlx-lm` was proven healthy first with a known-good model, on
+  both the release and the latest main, so the quant is at fault. Its card's +31.7%
+  perplexity over plain 3-bit may well be true and still does not predict
+  degeneration. **The gate is now coherence before speed**: the bridge lane fails
+  when no output line appears, because a green tick with no text is precisely that
+  failure shape.
+- **Bonsai 2's weights cannot be loaded by a stock runtime, by design.** They are
+  stored in a Hadamard-rotated basis, and "a runtime either applies the matching
+  transform or refuses to load the file" — PrismML ships MLX and llama.cpp forks to
+  match. This also explains the older note that stock llama.cpp "emits gibberish" on
+  it: a property of the weights, not of one runtime's maturity.
+- **A CI job that silently skipped while reporting success.** The MLX job was gated
+  on the commit message, and the mirror lands a merge commit whose message does not
+  contain it. A skipped job and a passing job are the same green tick, so the gate was
+  removed rather than improved: the lane is now its own workflow with a `paths:`
+  filter, a state in which the condition cannot be wrong.
+- **The lane's first run found a defect no laptop could find.** The image is an
+  eligible platform but the device is `deviceNotEligible`, and `tokenCount(for:)`
+  throws `ModelManagerError 1046` rather than returning a number. Two of three probe
+  tests guarded for an absent model and the third had not. The lane now prints a
+  notice saying whether it measured or merely compiled, because a green run there is
+  a *toolchain* result.
+
+**Changed**
+
+- **`Adapter` is obsoleted on macOS 27** (`deprecated: 26.4, obsoleted: 27.0`). The
+  fine-tuning path is removed on the current OS, not gated — and it is easy to miss
+  because the type is still in the interface.
+- **The gate-law register carries rows for both new lanes**, each with its
+  red-proofs, and the drift census now scans `shell-macos/` and `shell-macos-mlx/`.
+- **The probe's generation test was fixed to read the last streaming snapshot**
+  rather than accumulating them; snapshot content is cumulative, so the accumulation
+  reported 241 characters for a thirty-character answer.
+
+**Notes**
+
+Four things about MLX had to be discovered rather than read, each recorded where the
+next person will hit it. The **Metal Toolchain** is an 839 MB Xcode component the
+stock runner image lacks, and its absence is reported as `Could not read serialized
+diagnostics file`, naming a `.dia` file rather than the missing compiler. The
+metallib is found by a **bare relative path** (`METAL_PATH`) that the test process
+has to be given. `#huggingFaceLanguageModel` **does not compile under Swift 6
+language mode**, because upstream generates `TokenizerBridge: Sendable` over a
+non-Sendable existential. And `HuggingFace`/`Tokenizers` are separate modules the
+macro needs, whose absence reads as `cannot find 'HuggingFace' in scope`.
+
 ## [1.29.16] — 2026-10-15 — the log is archived, the gates under it were half-asserting, and the lockfiles were a day behind
 
 Covers every commit from tag `v1.29.15`. A dependency, documentation and gate
