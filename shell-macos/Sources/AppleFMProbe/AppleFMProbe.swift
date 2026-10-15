@@ -16,7 +16,7 @@ import FoundationModels
 public struct AppleFMCapabilities: Sendable, Equatable {
     /// The on-device model, or the reason it is absent.
     public enum OnDevice: Sendable, Equatable {
-        case available(contextSize: Int, languages: Int)
+        case available(contextSize: Int, languages: Int, variant: String, capabilities: [String])
         case unavailable(reason: String)
     }
 
@@ -33,7 +33,7 @@ public struct AppleFMCapabilities: Sendable, Equatable {
 
     /// Combined input+output window the on-device model will honour.
     public var contextBudget: Int? {
-        if case let .available(contextSize, _) = onDevice { return contextSize }
+        if case let .available(contextSize, _, _, _) = onDevice { return contextSize }
         return nil
     }
 }
@@ -54,9 +54,21 @@ public enum AppleFMProbe {
             let onDevice: AppleFMCapabilities.OnDevice
             switch model.availability {
             case .available:
+                // `variant` and `capabilities` are macOS 27 surfaces. Before 27
+                // `contextSize` is back-deployed to a hard 4096 and the whole
+                // variant/capability vocabulary does not exist, so the pre-27
+                // branch reports the window and nothing it cannot know.
+                var variant = "unreported (pre-macOS 27)"
+                var capabilities: [String] = []
+                if #available(macOS 27.0, *) {
+                    variant = model.variant.displayName
+                    capabilities = Self.capabilityNames(model.capabilities)
+                }
                 onDevice = .available(
                     contextSize: model.contextSize,
-                    languages: model.supportedLanguages.count
+                    languages: model.supportedLanguages.count,
+                    variant: variant,
+                    capabilities: capabilities
                 )
             case let .unavailable(reason):
                 onDevice = .unavailable(reason: String(describing: reason))
@@ -86,6 +98,24 @@ public enum AppleFMProbe {
             supportsReasoningLevels: false,
             supportsToolChoice: false
         )
+    }
+
+    /// The 27-only capability vocabulary, as names, so a caller can log or
+    /// assert on it without importing the framework.
+    ///
+    /// `Capability` has exactly four cases — `toolCalling`, `guidedGeneration`,
+    /// `reasoning`, `vision` — and every one is `@available(macOS 27.0, *)`, so
+    /// this helper carries the same guard. The list is deliberately exhaustive:
+    /// a new case added by Apple should fail to compile here rather than be
+    /// silently reported as absent.
+    @available(macOS 27.0, *)
+    private static func capabilityNames(_ capabilities: LanguageModelCapabilities) -> [String] {
+        var names: [String] = []
+        if capabilities.contains(.toolCalling) { names.append("toolCalling") }
+        if capabilities.contains(.guidedGeneration) { names.append("guidedGeneration") }
+        if capabilities.contains(.reasoning) { names.append("reasoning") }
+        if capabilities.contains(.vision) { names.append("vision") }
+        return names
     }
 }
 

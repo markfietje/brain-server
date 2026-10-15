@@ -27,13 +27,18 @@ struct AppleFMProbeTests {
     func onDeviceWindowIsMeasuredNotAssumed() {
         let caps = AppleFMProbe.capabilities()
         switch caps.onDevice {
-        case let .available(contextSize, languages):
+        case let .available(contextSize, languages, variant, capabilities):
             #expect(contextSize > 0, "a reported window of zero is not a window")
             #expect(languages > 0, "a model reporting no languages is not usable")
             // Recorded, not asserted to a constant: the value moved from 4096
             // to something else across AFM generations, and a pin on the
             // number would break on hardware we have not seen yet.
             print("on-device window: \(contextSize) tokens; languages: \(languages)")
+            // WHICH model answered is the question the window alone cannot
+            // answer. A 4096 window is consistent with a 3B Core and with a
+            // downgraded Core Advanced, and the two imply different routing.
+            #expect(!variant.isEmpty, "an unnamed variant cannot be routed on")
+            print("variant: \(variant); capabilities: \(capabilities)")
         case let .unavailable(reason):
             // Legitimate on non-Apple-silicon or pre-26 hosts. Say so rather
             // than failing, so the lane is honest about what it ran on.
