@@ -44,6 +44,19 @@ never fired. All three were found by running the drills, not by reading them.
   check that guards the register itself. The nearest row above named a
   different test as the register's own check, which is how the gap survived.
 
+- **The Tauri boundary is now pinned, not just aligned.** Two checks hold the
+  two language sides on the same minor release, and refuse a CLI that leads the
+  API it builds against. The crate generates the interface the JavaScript calls,
+  so a skew there fails inside the running application rather than at compile
+  time — which is why nothing noticed three different patch releases sitting
+  across it.
+- **The two-compiler arrangement can no longer be collapsed by accident.** The
+  shell checks types with one compiler and lints with the previous one, because
+  the linter's parser refuses the newer one outright rather than degrading. A
+  bulk upgrade resolves both to the same version and breaks linting; that is
+  exactly what happened during this release, and a pin now holds them one major
+  apart and asserts the newer one is actually the one invoked.
+
 **Security fixes**
 
 - **A TLS advisory set landed a day after the last re-lock, in a crate that

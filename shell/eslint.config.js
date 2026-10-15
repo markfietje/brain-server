@@ -60,6 +60,23 @@ export default [
 			}
 		},
 	{
-		ignores: ['build/', '.svelte-kit/', 'src-tauri/target/', 'playwright-report/', 'node_modules/']
+		ignores: [
+			'build/',
+			'.svelte-kit/',
+			'src-tauri/target/',
+			'playwright-report/',
+			'node_modules/',
+			// The Paraglide catalog is GENERATED from project.inlang on every
+			// build and is gitignored — there is no committed file to fix. It
+			// opens with its own `/* eslint-disable */`, which this config's
+			// unused-directive reporting then flags as unused in all eight
+			// emitted modules, because a file with no violations cannot need a
+			// blanket disable. Eight warnings that survived every update
+			// because they are regenerated rather than committed, so no edit
+			// ever made them go away. They are not silenced rule-by-rule:
+			// svelte-check still typechecks the catalog, and nothing in the
+			// generated output is app code.
+			'src/paraglide/'
+		]
 	}
 ];

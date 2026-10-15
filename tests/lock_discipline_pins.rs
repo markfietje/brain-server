@@ -767,3 +767,165 @@ fn no_workspace_enables_http3() {
          bump quinn-proto or drop the ignores."
     );
 }
+
+/// The Tauri IPC boundary is a cross-language contract, and nothing enforced
+/// it.
+///
+/// Tauri generates the JavaScript side of the IPC contract from the RUST crate.
+/// `@tauri-apps/api` and the `tauri` crate are published from one repository
+/// and are expected to move together; when they drift, the JS side calls
+/// commands the installed Rust side does not expose, and the failure appears at
+/// runtime in the webview rather than at compile time.
+///
+/// This drifted to three different patch releases across the boundary (crate
+/// 2.12.1, API 2.12.3, CLI 2.12.2) with no test, script or CI step looking at
+/// either side. The invariant is major.MINOR, not patch: the crate's published
+/// contract is a minor-version line, and a patch on either side is a
+/// same-release bump by construction.
+#[test]
+fn the_tauri_rust_and_javascript_sides_agree_on_their_minor_version() {
+    // The RESOLVED crate version, not the manifest floor: the floor is a
+    // lower bound that a re-lock may legitimately raise, and comparing floors
+    // would let a stale floor pass while the built artifact drifts.
+    let lock = read("shell/src-tauri/Cargo.lock");
+    let crate_version = lock
+        .split("[[package]]")
+        .find(|blk| blk.contains("name = \"tauri\"\n"))
+        .and_then(|blk| {
+            blk.lines()
+                .find_map(|l| l.strip_prefix("version = \""))
+                .and_then(|v| v.split('"').next())
+        })
+        .unwrap_or_else(|| panic!("tauri must be present in shell/src-tauri/Cargo.lock"));
+
+    let pkg = read("shell/package.json");
+    let api_floor = pkg
+        .lines()
+        .find(|l| l.contains("\"@tauri-apps/api\""))
+        .and_then(|l| l.split_once('^').map(|(_, v)| v))
+        .and_then(|v| v.split('"').next())
+        .unwrap_or_else(|| {
+            panic!(
+                "@tauri-apps/api must be declared in shell/package.json; a floor of \
+                    nothing means this pin is comparing against a vacuum"
+            )
+        });
+
+    let minor = |v: &str| {
+        let mut it = v.split('.');
+        match (it.next(), it.next()) {
+            (Some(maj), Some(min)) => format!("{maj}.{min}"),
+            _ => panic!("version {v:?} has no major.minor to compare"),
+        }
+    };
+    assert_eq!(
+        minor(crate_version),
+        minor(api_floor),
+        "the Tauri IPC boundary is skewed: the Rust crate resolves to {crate_version} but \
+         @tauri-apps/api declares a floor of {api_floor}. These are published together and \
+         the JS side's command surface is generated from the crate, so a minor skew is a \
+         runtime failure inside the webview that no compile step in this repo can see. \
+         Move both to the same release."
+    );
+}
+
+/// The same contract names the CLI, which builds and signs the binary. Its
+/// floor is allowed to trail the API by a patch (the CLI is a build-time tool
+/// and the two are versioned on different cadences), but it must never lead it
+/// and must never sit on a different minor.
+#[test]
+fn the_tauri_cli_never_leads_the_api_it_builds() {
+    let pkg = read("shell/package.json");
+    let declared = |name: &str| {
+        pkg.lines()
+            .find(|l| l.contains(&format!("\"{name}\"")))
+            .and_then(|l| l.split_once('^').map(|(_, v)| v))
+            .and_then(|v| v.split('"').next())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| panic!("{name} must be declared in shell/package.json"))
+    };
+    let api = declared("@tauri-apps/api");
+    let cli = declared("@tauri-apps/cli");
+    let parts = |v: &str| -> Vec<u64> { v.split('.').map(|x| x.parse().unwrap_or(0)).collect() };
+    let (a, c) = (parts(&api), parts(&cli));
+    assert!(
+        c[0] == a[0] && c[1] == a[1],
+        "the Tauri CLI ({cli}) is on a different minor from the API it builds against \
+         ({api})"
+    );
+    assert!(
+        parts(&cli) <= parts(&api),
+        "the Tauri CLI ({cli}) LEADS the API ({api}). A CLI newer than the runtime contract \
+         it was built against is the one skew that cannot work."
+    );
+}
+
+/// The two-compiler arrangement is deliberate, and it is the single most
+/// breakable line in the shell's dependency set.
+///
+/// The shell typechecks with TypeScript 7's native compiler and lints with
+/// TypeScript 6. `svelte-check --tsgo` is the authority for types;
+/// `@typescript-eslint/parser` requires the previous compiler's API. Running
+/// the two as one version means choosing: on 7, the typecheck is right and the
+/// linter dies; on 6, the reverse.
+///
+/// The incompatibility is HARD, not advisory. Verified 2026-10-15 by planting
+/// it rather than reading it: raising `typescript` to 7 makes `pnpm lint` exit
+/// 2 with "typescript-eslint does not support TS 7.0." thrown from the parser
+/// at import time, before a single file is read. The published note about
+/// TS7 dropping the server-plugin API is scoped to editor language servers and
+/// understates this — the CLI refuses too.
+///
+/// This is a pin because `pnpm update --latest` resolves both specifiers to the
+/// same version. It did exactly that during the 1.29.16 sweep, and the only
+/// thing that caught it was noticing the typecheck result afterwards. A
+/// dependency bump is not a reviewer of intent.
+#[test]
+fn the_two_compiler_arrangement_is_held_apart_and_stays_held() {
+    let pkg = read("shell/package.json");
+    let declared = |name: &str| {
+        pkg.lines()
+            .find(|l| l.contains(&format!("\"{name}\"")))
+            .map(|l| l.trim().trim_end_matches(',').to_string())
+            .unwrap_or_else(|| panic!("{name} must be declared in shell/package.json"))
+    };
+    let tooling = declared("typescript");
+    let native = declared("@typescript/native");
+
+    // The native compiler is an ALIAS of the typescript package at the 7.x
+    // line. If that stops being true the arrangement has changed shape and
+    // this pin's reasoning no longer applies — so assert the shape first.
+    assert!(
+        native.contains("npm:typescript@"),
+        "@typescript/native must remain an alias of the typescript package, found {native:?}. \
+         If this changed, re-derive the arrangement rather than trusting this test."
+    );
+    let native_major = native
+        .split("npm:typescript@")
+        .nth(1)
+        .and_then(|v| v.split('.').next())
+        .and_then(|m| m.parse::<u32>().ok())
+        .unwrap_or_else(|| panic!("could not read a version out of {native:?}"));
+    let tooling_floor = tooling
+        .split_once('^')
+        .map(|(_, v)| v.trim_matches(|c| c == '"' || c == ',').to_string())
+        .unwrap_or_else(|| panic!("typescript must carry a caret floor, found {tooling:?}"));
+    let tooling_major = tooling_floor
+        .split('.')
+        .next()
+        .and_then(|m| m.parse::<u32>().ok())
+        .unwrap_or_else(|| panic!("could not read a major from {tooling_floor:?}"));
+
+    assert_eq!(
+        tooling_major,
+        native_major - 1,
+        "the tooling compiler must sit exactly one major behind the native one \
+         ({tooling_floor} vs {native}). Equal majors is the shape \
+         `pnpm update --latest` produces, and it breaks `pnpm lint` outright."
+    );
+    assert!(
+        pkg.contains("--tsgo"),
+        "the check script must invoke the native compiler, or the 7.x dependency is \
+         installed and never run"
+    );
+}
