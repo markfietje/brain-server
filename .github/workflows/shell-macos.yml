@@ -108,9 +108,37 @@ jobs:
       # rather than a capability claim. The tool-schema cost especially is
       # worth having in CI: it is the number that decides whether a four-tool
       # surface fits the window, and it moves when the model does.
+      #
+      # WHAT A GREEN RUN HERE DOES AND DOES NOT MEAN, established on this lane's
+      # first run: GitHub's `xcode-27` image is macOS 27.0.1 on Apple Silicon,
+      # so the framework compiles, links and dyld-binds — and the model is
+      # `deviceNotEligible`, so there is nothing to ask. The probe prints
+      # `unavailable` per test and passes. That is the correct outcome, and it
+      # means the measured numbers (window, schema cost, latency) come from
+      # eligible hardware and NOT from this lane. What this lane proves is the
+      # toolchain and the linkage; the next step makes the distinction visible
+      # instead of leaving a reader to infer it from a passing log.
       - name: Measure on this runner
         working-directory: shell-macos
         run: swift test
+
+      - name: Report whether this runner could actually measure
+        working-directory: shell-macos
+        run: |
+          set -euo pipefail
+          log="$(mktemp)"
+          swift test 2>&1 | tee "$log" || true
+          if grep -q 'on-device model unavailable' "$log"; then
+            echo "::notice title=This run did not measure the model::\
+          The xcode-27 image is an eligible PLATFORM (macOS 27, Apple Silicon, \
+          AFM 3 compiles and dyld-binds — the steps above prove it) but the \
+          DEVICE is not model-eligible, so window / schema-cost / latency were \
+          not taken here. Those numbers come from eligible hardware. A green run \
+          is a toolchain result, not a measurement."
+          else
+            echo "::notice title=Measured::This runner produced model numbers; \
+          they are in the log above and they re-derive on every run."
+          fi
 
       # The anti-vacuity arm. A build that dropped every macOS-27-only symbol
       # on this platform would still exit 0 — which is exactly the failure the

@@ -70,6 +70,26 @@ struct AppleFMProbeTests {
     func toolSchemaCostIsMeasured() async throws {
         #if canImport(FoundationModels)
         if #available(macOS 26.4, *) {
+            // Measured, not assumed — and the model may be legitimately ABSENT.
+            //
+            // Found by the `xcode-27` lane on its first run: the image is macOS
+            // 27 on Apple Silicon, so the framework compiles and links and
+            // dyld-binds, and `SystemLanguageModel.default.availability` is
+            // `.unavailable(deviceNotEligible)`. `tokenCount(for:)` does not
+            // return zero there — it throws `ModelManagerError 1046`. That throw
+            // is CORRECT (a measurement that cannot be taken must not report a
+            // number), so the fix belongs here, not in `measure`: this test has
+            // to skip the way its two siblings already do, rather than assume a
+            // model exists because the framework compiled.
+            //
+            // The consequence is recorded honestly: this lane proves the toolchain
+            // and the linkage, and the window/schema/latency numbers come from
+            // eligible hardware only.
+            guard case .available = SystemLanguageModel.default.availability else {
+                print("on-device model unavailable — tool schema cost not measured here")
+                return
+            }
+
             let tools: [any Tool] = [MemoryRecallTool()]
             let instructions = Instructions(
                 "You are the memory assistant for a private knowledge kernel."
