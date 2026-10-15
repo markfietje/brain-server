@@ -34,12 +34,54 @@ import HuggingFace
 @available(macOS 27.0, *)
 public enum MLXFMProbe {
 
-    /// The smallest Qwen that still exercises the real path.
+    /// The CI model: the smallest Qwen that still exercises the real path.
     ///
     /// 0.6B cannot answer anything worth reading, and is not here to. It is here
     /// because a CI runner must download weights, and a 0.6 B 4-bit pack is ~400 MB
-    /// against several GB for anything larger. Plumbing, not quality.
-    public static let smallQwen = LLMRegistry.qwen3_0_6b_4bit
+    /// against 6 GB for `reasoningQwen`. Plumbing, not quality.
+    public static let ciModel = LLMRegistry.qwen3_0_6b_4bit
+
+    /// The MEASURED model: the one Plan 03 §8.6 nominates.
+    ///
+    /// `mlx-community/Qwen3.5-9B-4bit` — 5.98 GB, standard affine 4-bit weights
+    /// and NOT a Hadamard-rotated basis, which is precisely what made Bonsai 2
+    /// and the LFM2.5 DWQ quant unloadable on a stock runtime. `qwen3_5`, so
+    /// `Qwen35.swift` in mlx-swift-lm reads it; 262,144 declared context.
+    ///
+    /// NOT a registry entry. `LLMRegistry` offers `qwen3_5_2b_4bit`,
+    /// `qwen3_5_27` and `qwen3_5_35` — the 9B is not among them, which is why
+    /// this is built from a repo id via `ModelConfiguration(id:)` rather than
+    /// guessed at as `qwen3_5_9b_4bit`. That name was written down first and
+    /// does not exist.
+    ///
+    /// `reasoningConfig` is `.thinkTagsWithEnableThinking` — the preset whose
+    /// doc comment describes exactly this family: generic <think> delimiters
+    /// toggled by the `enable_thinking` chat-template flag, default on. Qwen3.5
+    /// "operates in thinking mode by default", and this is the gap AFM 3 Core
+    /// leaves: Core reports toolCalling, guidedGeneration and vision, and NO
+    /// reasoning.
+    ///
+    /// `tokenizerSource` is OVERRIDDEN to the official repo, and that is load
+    /// bearing rather than belt-and-braces: `mlx-community`'s Qwen3.5 builds ship
+    /// `"tokenizer_class": "TokenizersBackend"` in `tokenizer_config.json` —
+    /// which is not a tokenizer class but the loader's own backend enum name, so
+    /// the runtime looks for a tokenizer by that name, finds none, and throws
+    /// `.unsupportedTokenizer("TokenizersBackend")` naming the bad value verbatim.
+    /// Both `mlx-community/Qwen3.5-9B-4bit` and `…-2B-4bit` are affected;
+    /// `Qwen/Qwen3.5-9B` and `lmstudio-community/Qwen3.5-9B-MLX-4bit` both say
+    /// `Qwen2Tokenizer`. Weights from the quantised repo, tokenizer from upstream
+    /// — so this survives mlx-community fixing their config, and says why it is
+    /// there if they do not.
+    public static let reasoningQwen = ModelConfiguration(
+        id: "mlx-community/Qwen3.5-9B-4bit",
+        tokenizerSource: .id("Qwen/Qwen3.5-9B"),
+        // The registry's own Qwen3.5 entries carry this and the first version
+        // here omitted it: without it the SECOND turn on a session throws
+        // `.runtime("No user query found in messages.")`. The empty string is
+        // not a typo — it is the family's EOT marker, and the chat template
+        // cannot place a user message without it.
+        extraEOSTokens: [""],
+        reasoningConfig: .thinkTagsWithEnableThinking)
 
     /// Build the model. Loading and any download are LAZY — the returned value
     /// reports `.downloading` until weights are on disk, which is what
@@ -48,10 +90,13 @@ public enum MLXFMProbe {
     /// Capabilities are DECLARED, not inferred: the adapter defaults to
     /// `[.guidedGeneration]` and refuses anything not listed. Declaring
     /// `.toolCalling` is the whole point here — it is the claim under test.
-    public static func model() async throws -> MLXLanguageModel {
+    public static func model(
+        configuration: ModelConfiguration = ciModel,
+        capabilities: [LanguageModelCapabilities.Capability] = [.toolCalling, .guidedGeneration]
+    ) async throws -> MLXLanguageModel {
         #huggingFaceLanguageModel(
-            configuration: smallQwen,
-            capabilities: [.toolCalling, .guidedGeneration])
+            configuration: configuration,
+            capabilities: capabilities)
     }
 
     /// One sentence about what this is, for the log.
