@@ -70,6 +70,21 @@ pub(crate) const PLAN_STRIP_MAX_LINES: usize = 24;
 pub(crate) const VERIFY_STABILITY_WINDOW_MIN: u32 = 15;
 
 /// The adversarial re-check child's own system prompt: a falsifier, not a
+/// Byte ceiling on the adversarial child's task text.
+///
+/// Named, and pinned by value, because it was a bare `2_000` literal inside a
+/// `String::truncate` — and `truncate` PANICS when the requested length is not a
+/// `char` boundary. The task is assembled from model-authored hypotheses, their
+/// sources and the plan's `re_run`, so a single multi-byte character straddling
+/// this offset aborted the machine instead of degrading. The truncation now walks
+/// down to a boundary; see `build_adversarial_task`.
+const ADVERSARIAL_TASK_BYTES: usize = 2_000;
+
+/// Character ceiling on the adversarial child's returned reason. Separate from
+/// the byte ceiling above because this one counts CHARACTERS (`chars().take`),
+/// so it cannot misalign.
+const ADVERSARIAL_REASON_CHARS: usize = 512;
+
 /// supporter. The child sees NO tools; its input is the hypothesis and
 /// the captured evidence rows, its output the agreed JSON verdict.
 const ADVERSARIAL_RECHECK_PROMPT: &str = "\
@@ -2603,26 +2618,13 @@ impl GdlDriver {
         )
     }
 
-    /// One automation episode per run. Terminal retry is read-only with respect
-    /// to provider/tool work; human edits invalidate its binding, never restart it.
-    /// ONE scoped delegation (the bounds law): a tool-less child attempts
-    /// to falsify the confirmed hypothesis from the captured evidence
-    /// rows. The child's outcome maps onto the typed finding; a
-    /// delegation fault is the honest Unavailable, never a contradiction.
-    async fn adversarial_finding(
-        &self,
-        run_id: i64,
-        case: &GdlCase,
-        episode: &str,
-        attempt: u32,
-        owner: &str,
-        cancel: &CancellationToken,
-    ) -> AdversarialFinding {
-        use crate::agentloop::subagents::{SubagentCaps, SubagentOutcome, SubagentSpec};
-        const TRUNCATE: usize = 512;
-        let Some(deps) = self.recheck.as_ref() else {
-            return AdversarialFinding::Unavailable("no delegation seam".into());
-        };
+    /// Build the adversarial child's task text.
+    ///
+    /// Extracted from `adversarial_finding` so the bounds on it are pinnable
+    /// without standing up a delegation. Every field here is model- or
+    /// operator-authored, which is what made the truncation a hazard rather
+    /// than a formatting detail.
+    fn build_adversarial_task(case: &GdlCase) -> String {
         let confirmed = case
             .hypotheses
             .iter()
@@ -2650,7 +2652,44 @@ impl GdlDriver {
              Ticket: {}",
             case.ticket
         );
-        task.truncate(2_000);
+        // `String::truncate` PANICS when the length is not a char boundary, and
+        // every field above is model- or operator-authored — so one multi-byte
+        // character straddling this offset aborted the machine instead of
+        // degrading. `floor_char_boundary` walks down to the nearest boundary,
+        // which is the idiom `chunker.rs` already uses; this is the same rule
+        // applied where the input is untrusted.
+        //
+        // The red-first pin `adversarial_task_truncation_never_splits_a_character`
+        // sweeps the padding across the whole bound, so it fails on any offset
+        // that would have split a character.
+        if task.len() > ADVERSARIAL_TASK_BYTES {
+            let cut = task.floor_char_boundary(ADVERSARIAL_TASK_BYTES);
+            task.truncate(cut);
+        }
+        task
+    }
+
+    /// One automation episode per run. Terminal retry is read-only with respect
+    /// to provider/tool work; human edits invalidate its binding, never restart it.
+    /// ONE scoped delegation (the bounds law): a tool-less child attempts
+    /// to falsify the confirmed hypothesis from the captured evidence
+    /// rows. The child's outcome maps onto the typed finding; a
+    /// delegation fault is the honest Unavailable, never a contradiction.
+    async fn adversarial_finding(
+        &self,
+        run_id: i64,
+        case: &GdlCase,
+        episode: &str,
+        attempt: u32,
+        owner: &str,
+        cancel: &CancellationToken,
+    ) -> AdversarialFinding {
+        use crate::agentloop::subagents::{SubagentCaps, SubagentOutcome, SubagentSpec};
+        const TRUNCATE: usize = 512;
+        let Some(deps) = self.recheck.as_ref() else {
+            return AdversarialFinding::Unavailable("no delegation seam".into());
+        };
+        let task = Self::build_adversarial_task(case);
         let spec = SubagentSpec {
             name: "adversarial-recheck".into(),
             system_prompt: ADVERSARIAL_RECHECK_PROMPT.into(),
@@ -5199,6 +5238,93 @@ mod tests {
     /// the bounded retries re-run the whole phase and the case routes at
     /// exhaustion, never resolves. Every delegation lands a typed row.
     #[test]
+    /// F1 (plan 12): the task text is truncated to `ADVERSARIAL_TASK_BYTES`,
+    /// and every field in it is model- or operator-authored. A truncation that
+    /// lands mid-character PANICS — and this is the whole reason the bound is
+    /// now named and pinned rather than being a bare literal.
+    ///
+    /// Red-first: written against the extracted `build_adversarial_task` BEFORE
+    /// the fix, and it failed. Every pre-existing fixture is sub-2000-byte
+    /// ASCII, which is why the defect survived — this is the first test in the
+    /// file to put a multi-byte character at the boundary.
+    #[test]
+    fn adversarial_task_truncation_never_splits_a_character() {
+        // SWEEP THE WHOLE RANGE rather than one crafted offset.
+        //
+        // The task carries a fixed prefix (the instruction header) before the
+        // hypothesis text, so the byte that lands at 2000 depends on a prefix
+        // length the test would otherwise have to know. Two drafts of this pin
+        // got that wrong: the first padded for 2000 and asserted a specific
+        // character survived — it went red for the wrong reason; the second
+        // swept pad in [1997, 2004), which is the wrong coordinate space
+        // entirely (the prefix is ~250 bytes, so the interesting padding is
+        // ~1750) and therefore passed WITHOUT EXERCISING ANYTHING.
+        //
+        // Sweeping 0..BOUND makes the prefix length irrelevant: whatever it is,
+        // some padding puts a multi-byte character across the cut.
+        //
+        // The first draft of this test padded for a boundary at 2000 and
+        // asserted the snowman survived. It went red — with "fixture lost its
+        // char", not a panic — because the cut landed in the prefix. Exactly
+        // the failure mode a single-fixture test has: it proves its own
+        // arithmetic rather than the property.
+        let longest = '☃'.len_utf8(); // 3 bytes
+        let mut caught_panic_at = None;
+
+        let _ = longest; // documented above; the sweep no longer needs it
+        for pad in 0..ADVERSARIAL_TASK_BYTES {
+            let mut statement = "a".repeat(pad);
+            statement.push('\u{2603}');
+            statement.push_str("tail");
+
+            let mut case = GdlCase::fresh("F1 fixture ticket");
+            case.hypotheses = vec![Hypothesis {
+                statement,
+                prediction: String::new(),
+                sources: vec![],
+                confidence: None,
+            }];
+
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                GdlDriver::build_adversarial_task(&case)
+            }));
+            match outcome {
+                Ok(task) => {
+                    assert!(
+                        task.len() <= ADVERSARIAL_TASK_BYTES,
+                        "pad={pad}: task exceeded the bound: {}",
+                        task.len()
+                    );
+                    assert!(
+                        std::str::from_utf8(task.as_bytes()).is_ok(),
+                        "pad={pad}: truncation produced invalid UTF-8"
+                    );
+                    assert!(!task.is_empty(), "pad={pad}: truncation emptied the task");
+                }
+                Err(_) => {
+                    caught_panic_at = Some(pad);
+                    break;
+                }
+            }
+        }
+
+        assert!(
+            caught_panic_at.is_none(),
+            "truncation PANICKED at padding {caught_panic_at:?} — String::truncate \
+             aborts when the length is not a char boundary, and every field in this \
+             task is model- or operator-authored"
+        );
+    }
+
+    /// The bound itself, by value. Raising it must turn the suite red — that is
+    /// the property F17 found missing across four bounds, and this is the first
+    /// one closed. A relational assertion would pass at any value.
+    #[test]
+    fn adversarial_task_bound_is_pinned_by_value() {
+        assert_eq!(ADVERSARIAL_TASK_BYTES, 2_000);
+        assert_eq!(ADVERSARIAL_REASON_CHARS, 512);
+    }
+
     fn adversarial_contradiction_is_a_named_gate_failure() {
         let runtime = rt();
         let contradiction = r#"{"contradicted":true,"reason":"the SEL shows the battery healthy"}"#;
