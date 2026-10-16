@@ -5237,7 +5237,6 @@ mod tests {
     /// C3: a contradictory re-check verdict is the named A4 gate failure —
     /// the bounded retries re-run the whole phase and the case routes at
     /// exhaustion, never resolves. Every delegation lands a typed row.
-    #[test]
     /// F1 (plan 12): the task text is truncated to `ADVERSARIAL_TASK_BYTES`,
     /// and every field in it is model- or operator-authored. A truncation that
     /// lands mid-character PANICS — and this is the whole reason the bound is
@@ -5325,6 +5324,7 @@ mod tests {
         assert_eq!(ADVERSARIAL_REASON_CHARS, 512);
     }
 
+    #[test]
     fn adversarial_contradiction_is_a_named_gate_failure() {
         let runtime = rt();
         let contradiction = r#"{"contradicted":true,"reason":"the SEL shows the battery healthy"}"#;

@@ -37,12 +37,12 @@ that applies them, not in prose that can drift from it.
 
 | Class | Tests | Share |
 |---|---:|---:|
-| `behavioral_pin` | 2959 | 86.9% |
+| `behavioral_pin` | 2960 | 86.8% |
 | `structural` | 338 | 9.9% |
-| `control` | 53 | 1.6% |
+| `control` | 54 | 1.6% |
 | `residual_documentation` | 51 | 1.5% |
-| `unclassified` | 6 | 0.2% |
-| **total** | **3407** | |
+| `unclassified` | 7 | 0.2% |
+| **total** | **3410** | |
 
 Scope: `src/` + `tests/`, the two trees the badge's count comes from.
 The census reads HIGHER than the README badge for two reasons, both
@@ -59,10 +59,10 @@ eleven such cases). The census counts what the compiler does.
 | File | Tests |
 |---|---:|
 | `tests/main_suite.rs` | 355 |
-| `src/workflow/gdl.rs` | 122 |
+| `src/workflow/gdl.rs` | 124 |
 | `src/workflow/decide/router.rs` | 59 |
 | `src/workflow/delivery.rs` | 54 |
-| `src/agentloop/run_loop.rs` | 51 |
+| `src/agentloop/run_loop.rs` | 52 |
 | `src/bin/mcp.rs` | 48 |
 | `src/bin/brain.rs` | 43 |
 | `src/screen.rs` | 43 |
@@ -71,7 +71,7 @@ eleven such cases). The census counts what the compiler does.
 
 ## `unclassified` — the honesty check on the rule set
 
-6 tests drive no subject and read no tree.
+7 tests drive no subject and read no tree.
 They are listed so a reader can move them by adding evidence, not
 by re-deciding. Read this bucket as "the census could not see a drive", NOT as "this test is worthless": all six assert a
 constant or a declared bound, which is a real pin that happens to
@@ -85,6 +85,7 @@ have no call in it.
 | `src/trace.rs:47` `trace_traversal_caps_are_bounded` |
 | `src/workflow/decide/router.rs:351` `alias_checkpoints_table_is_the_three_names` |
 | `src/workflow/decide/router.rs:361` `alias_bundle_repo_is_the_english_root` |
+| `src/workflow/gdl.rs:5322` `adversarial_task_bound_is_pinned_by_value` |
 
 ## What this census does NOT police
 

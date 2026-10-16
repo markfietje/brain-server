@@ -218,6 +218,17 @@ pub(crate) struct LoopDriver {
     /// append, committed-notified after COMMIT, latch released by the test.
     #[cfg(test)]
     compaction_pause: Option<CompactionPause>,
+    /// Test-only: make the compaction PROBE transaction fail before its COMMIT.
+    ///
+    /// Exists because the probe's degraded latch used to be set ~50 lines
+    /// BEFORE that commit, and the only way to observe the difference is to fail
+    /// that transaction — which cannot be induced from outside without either a
+    /// dead pool (the run cannot start) or a predictable idempotency key (the
+    /// exchange id is a fresh uuid). This seam is the same shape as
+    /// `CompactionPause`: test-only, opt-in, and it fails the tx rather than
+    /// faking a result.
+    #[cfg(test)]
+    probe_fail: Option<Arc<AtomicBool>>,
     /// The conservative-compaction latch: a degraded probe report flips it
     /// and NO further auto-compaction runs this episode. Interior-mutable —
     /// maybe_compact takes `&self`.
@@ -358,6 +369,8 @@ impl LoopDriver {
             receipt_pause: None,
             #[cfg(test)]
             compaction_pause: None,
+            #[cfg(test)]
+            probe_fail: None,
             compaction_conservative: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -1109,9 +1122,12 @@ impl LoopDriver {
         let report =
             crate::agentloop::compaction_probes::report(&pre_corpus, &post_corpus, &head_payloads);
         let degraded = report.degraded;
-        if degraded {
-            self.compaction_conservative.store(true, Ordering::Release);
-        }
+        // The latch does NOT flip here. It used to, ~50 lines above the COMMIT,
+        // which meant a failed probe transaction left every later episode
+        // permanently degraded with no row anywhere saying why. The latch is a
+        // SAFETY control, so that direction fails closed — but unexplained and
+        // unrecoverable, and the repo's law is that silence is never certified.
+        // The store moves to the success path below the await.
         let probe_payload = serde_json::json!({
             "probes": report.probes,
             "pre_hits": report.pre_hits,
@@ -1135,9 +1151,19 @@ impl LoopDriver {
             exchange.id
         );
         let pool = self.pool.clone();
+        #[cfg(test)]
+        let probe_fail = self.probe_fail.clone();
         tokio::task::spawn_blocking(move || {
             let mut conn = pool.get().map_err(persist)?;
             let mut tx = WorkflowTx::begin(&mut conn).map_err(persist)?;
+            // Test-only injected failure, BEFORE any append: nothing is written,
+            // so the row and the latch must both stay unset.
+            #[cfg(test)]
+            if probe_fail.is_some_and(|f| f.load(Ordering::Acquire)) {
+                return Err(LoopError::Persist(
+                    "compaction probe transaction failed (test seam)".into(),
+                ));
+            }
             session_log::append(
                 tx.tx(),
                 run_id,
@@ -1163,6 +1189,14 @@ impl LoopDriver {
         })
         .await
         .map_err(persist)??;
+
+        // AFTER the commit, and only then: a degraded probe report that failed to
+        // persist is not evidence that compaction is broken, so it must not turn
+        // compaction off for the rest of the process. `Ordering::Release` pairs
+        // with the `Acquire` readers in `maybe_compact`.
+        if degraded {
+            self.compaction_conservative.store(true, Ordering::Release);
+        }
         Ok(compacted)
     }
 
@@ -2696,6 +2730,117 @@ mod tests {
 
     /// C4: cancellation-before-commit vs commit-before-cancel observed
     /// separately at the R3 compaction linearization point.
+    /// F4 (plan 12): the conservative-compaction latch is a SAFETY control, so
+    /// it must only latch on a probe report that is actually DURABLE.
+    ///
+    /// It used to be set ~50 lines before the probe transaction's COMMIT. A
+    /// failed transaction therefore left every subsequent episode permanently
+    /// degraded, with no row anywhere recording why — fail-closed in direction,
+    /// but unexplained and unrecoverable.
+    ///
+    /// Driven through the real path: pressure seeded, the compaction probe run,
+    /// and the probe transaction failed by the `probe_fail` seam at the COMMIT
+    /// boundary rather than faked.
+    #[test]
+    fn a_failed_compaction_probe_tx_does_not_latch_conservative() {
+        let mut config = LoopConfig::default();
+        config.compaction.just_before_call = true;
+        // NOT `seed_compaction_pressure`: that helper writes "pressure-N xxxx…",
+        // whose head yields ONE distinct probe term. With a single probe there is
+        // no measurable baseline, `weak_baseline` holds, and the report is
+        // correctly "no signal" rather than degraded — so the latch is never set
+        // wherever the store happens to be, and the test passes either way. It
+        // did. These payloads carry DISTINCT terms so the probe has something to
+        // lose, and the scripted summary below drops them.
+        // 25 events (past the 16/episode compaction trigger), each carrying its
+        // own DISTINCT term so the head yields a full 10-probe baseline. 25
+        // distinct terms beats PROBE_COUNT=10, so every probe is present
+        // pre-compaction and the lossy summary loses all of them.
+        const TERMS: [&str; 25] = [
+            "battery",
+            "salience",
+            "firmware",
+            "throughput",
+            "rebuild",
+            "node",
+            "latency",
+            "rotation",
+            "capacity",
+            "thermal",
+            "calibration",
+            "drift",
+            "voltage",
+            "resonance",
+            "turbine",
+            "manifold",
+            "bearing",
+            "gasket",
+            "quench",
+            "purge",
+            "sinter",
+            "cullet",
+            "anode",
+            "cathode",
+            "flux",
+        ];
+        let mut f = fixture_with(vec![scripted_text("brief"), scripted_text("done")], config);
+        {
+            let mut conn = f.pool.get().unwrap();
+            let mut tx = WorkflowTx::begin(&mut conn).unwrap();
+            for (i, term) in TERMS.iter().enumerate() {
+                session_log::append(
+                    tx.tx(),
+                    1,
+                    "user",
+                    // Distinct term AND real token pressure: `admit` gates on
+                    // `should_compact(message_tokens(..))`, so short payloads
+                    // never reach the probe at all. The padding is one unbroken
+                    // run, so it contributes tokens without inventing probe
+                    // terms — the distinct word stays the only lexical signal.
+                    &format!(
+                        "runbook observation {i} mentions {term} in detail {}",
+                        "x".repeat(4_000)
+                    ),
+                    &format!("f4seed:{i}"),
+                    1,
+                )
+                .unwrap();
+            }
+            tx.commit().unwrap();
+        }
+
+        let fail = Arc::new(AtomicBool::new(true));
+        f.driver.probe_fail = Some(fail);
+        assert!(
+            !f.driver.compaction_conservative.load(Ordering::Acquire),
+            "precondition: the latch starts clear"
+        );
+
+        let cancel = CancellationToken::new();
+        let outcome = rt()
+            .block_on(f.driver.run_turns_keyed(1, "f4", "current", &cancel))
+            .expect_err("a failed probe transaction must surface, not be swallowed");
+
+        assert!(
+            !f.driver.compaction_conservative.load(Ordering::Acquire),
+            "F4: the probe tx failed, so the latch must NOT be set — otherwise every \
+             later episode is silently degraded with no row saying why ({outcome:?})"
+        );
+
+        // And nothing was written: a rolled-back tx leaves no probe row, which is
+        // the whole reason the latch cannot be trusted before the commit.
+        let conn = f.pool.get().unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events \
+                 WHERE kind = 'control:compaction_probe'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 0, "the failed probe tx wrote nothing");
+    }
+
     #[test]
     fn c4_compaction_commit_vs_cancel_boundary_observed_separately() {
         // (a) Cancellation BEFORE commit: no compaction row survives.
