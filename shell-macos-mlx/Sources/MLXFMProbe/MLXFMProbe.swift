@@ -83,6 +83,42 @@ public enum MLXFMProbe {
         extraEOSTokens: [""],
         reasoningConfig: .thinkTagsWithEnableThinking)
 
+    /// The SAME weights, thinking switched OFF. One field apart, so the comparison
+    /// is worth something.
+    ///
+    /// Added to settle an A/B that made `reasoningQwen` look unusable for the
+    /// product's actual question. With thinking on, "What are the benefits of green
+    /// tea?" yields ZERO snapshots bare and throws
+    /// `.runtime("No user query found in messages.")` with a tool attached — while
+    /// "What is the capital of France?" answers coherently BOTH ways. Same session
+    /// construction, same weights, same process, and tools are provably fine
+    /// because the short prompt used them successfully.
+    ///
+    /// So the suspect is the thinking path: reasoning tokens the adapter never
+    /// surfaces as content snapshots, and a template that stops placing the user
+    /// turn once it starts one. An open-ended question is exactly what triggers it,
+    /// which is why the short probes passed and every real use case would not.
+    /// `reasoningQwen` with the empty-string EOT token REMOVED. The A/B that says
+    /// whether that hack is helping or hurting.
+    public static let reasoningQwenNoEOT = ModelConfiguration(
+        id: "mlx-community/Qwen3.5-9B-4bit",
+        tokenizerSource: .id("Qwen/Qwen3.5-9B"),
+        reasoningConfig: .thinkTagsWithEnableThinking)
+
+    /// `reasoningQwen` at all — the registry's own entry, untouched.
+    public static let qwenFromRegistry = ModelConfiguration(
+        id: "mlx-community/Qwen3.5-9B-4bit")
+
+    public static let reasoningQwenNoThinking = ModelConfiguration(
+        id: "mlx-community/Qwen3.5-9B-4bit",
+        tokenizerSource: .id("Qwen/Qwen3.5-9B"),
+        extraEOSTokens: [""],
+        reasoningConfig: ReasoningConfig(
+            startDelimiter: "<think>",
+            endDelimiter: "</think>",
+            promptStrategy: .templateFlag(key: "enable_thinking", defaultOn: false),
+            isSpecialToken: false))
+
     /// Build the model. Loading and any download are LAZY — the returned value
     /// reports `.downloading` until weights are on disk, which is what
     /// `availability` exists to let a caller gate on.
