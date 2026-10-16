@@ -1016,6 +1016,7 @@ impl LoopDriver {
         let ceiling = self.config.compaction.max_events_per_episode;
         if committed >= ceiling as usize {
             let pool = self.pool.clone();
+            let owner = exchange.owner.to_string();
             let key = format!(
                 "run{run_id}:control:compaction_quota_exhausted:{}",
                 exchange.id
@@ -1028,6 +1029,7 @@ impl LoopDriver {
             tokio::task::spawn_blocking(move || {
                 let mut conn = pool.get().map_err(persist)?;
                 let mut tx = WorkflowTx::begin(&mut conn).map_err(persist)?;
+                session_log::verify_owner(tx.tx(), run_id, &owner).map_err(persist)?;
                 session_log::append(
                     tx.tx(),
                     run_id,
@@ -1151,11 +1153,13 @@ impl LoopDriver {
             exchange.id
         );
         let pool = self.pool.clone();
+        let owner = exchange.owner.to_string();
         #[cfg(test)]
         let probe_fail = self.probe_fail.clone();
         tokio::task::spawn_blocking(move || {
             let mut conn = pool.get().map_err(persist)?;
             let mut tx = WorkflowTx::begin(&mut conn).map_err(persist)?;
+            session_log::verify_owner(tx.tx(), run_id, &owner).map_err(persist)?;
             // Test-only injected failure, BEFORE any append: nothing is written,
             // so the row and the latch must both stay unset.
             #[cfg(test)]
@@ -4718,5 +4722,75 @@ mod tests {
         ));
         assert_eq!(payload["version"], 2);
         assert!(verify_chain(&conn), "compaction writes stay chain-verified");
+    }
+
+    /// F5: the compaction quota arm must run the ownership fence. Drives
+    /// `maybe_compact` past quota with an owner that never held the run's
+    /// claim, then asserts refusal with the fence's own error AND that no
+    /// `control:compaction_quota_exhausted` (and no probe/degraded) row
+    /// lands. An error that still wrote the row IS the defect this pins.
+    ///
+    /// Census note: names the row kinds it refuses, so files as `control`
+    /// under test-census.py's documented marker rule; the class here is
+    /// behavioral (drives the real `maybe_compact` path).
+    #[test]
+    fn compaction_quota_write_refuses_a_revoked_claim() {
+        rt().block_on(async {
+            let mut config = LoopConfig::default();
+            config.compaction.max_events_per_episode = 0;
+            let f = fixture_with(vec![scripted_text("brief"), scripted_text("done")], config);
+            seed_compaction_pressure(&f, 25, 4_000, "pressure");
+            // First, a real exchange so replay/admit have live context to
+            // reach the quota arm (its id is the receipt's exchange).
+            let receipt = f
+                .driver
+                .run_turns_keyed(1, "first", "current", &CancellationToken::new())
+                .await
+                .unwrap();
+            // The owned run released its claim at receipt; drive the quota
+            // arm with an owner that never held it.
+            let exchange = Exchange {
+                id: receipt.exchange_id,
+                owner: "never-held",
+                invocation: "test-invocation",
+            };
+            let cancel = CancellationToken::new();
+            let budget = ExchangeBudget::new(None);
+            let err = match f
+                .driver
+                .maybe_compact(1, &exchange, 1, &cancel, &budget)
+                .await
+            {
+                Ok(_) => panic!("a quota write without a claim must be refused"),
+                Err(e) => e,
+            };
+            assert!(
+                err.to_string().contains("run ownership lost or absent"),
+                "the refusal must be the fence's own, not another failure: {err:?}"
+            );
+            let conn = f.pool.get().unwrap();
+            // The first pass already named its quota stop once; a refused
+            // second drive must not name another.
+            let quota: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_session_events WHERE run_id = 1 AND kind = 'control:compaction_quota_exhausted'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                quota, 1,
+                "the refused re-drive must leave the single quota row alone"
+            );
+            let probes: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM agent_session_events WHERE run_id = 1 AND kind IN \
+                     ('control:compaction_probe','control:compaction_degraded')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(probes, 0, "no probe/degraded row from a refused drive");
+        });
     }
 }

@@ -6417,6 +6417,88 @@ mod tests {
         );
     }
 
+    /// F5: the phase advance inherits the ownership fence. Revoke the run's
+    /// claim, drive a phase pass carrying a satellite, and assert the advance
+    /// is refused with the fence's own error AND no satellite row of any of
+    /// the six kinds survives.
+    ///
+    /// This arm pins the INHERITED fence (`old.verify` at
+    /// `gdl_checkpoint.rs:631`, which calls `verify_owner`), not a new call
+    /// — its value is that it fails the moment anyone moves a satellite out
+    /// of the advance's transaction. That is a regression lock with a stated
+    /// mechanism, not coverage theatre.
+    ///
+    /// Census note: names satellite row kinds, so files as `control` under
+    /// test-census.py's documented marker rule; the class here is
+    /// behavioral (drives the real `advance` path).
+    #[test]
+    fn gdl_advance_refuses_a_revoked_claim_and_leaves_no_satellite() {
+        let f = fixture(vec![]);
+        let mut conn = Connection::open(f.tmp.path()).unwrap();
+        let cp = checkpoint::admit(&mut conn, 1, "t", "test", "pin-owner").unwrap();
+        let exchange = fixture_exchange(
+            &mut conn,
+            &cp,
+            GdlPhase::Intake,
+            1,
+            INTAKE_JSON,
+            "pin-owner",
+        );
+        // Revoke: the mesh revocation drain releases the claim out from under
+        // the holder; the advance must refuse afterwards.
+        {
+            let mut tx = crate::workflow::tx::WorkflowTx::begin(&mut conn).unwrap();
+            crate::workflow::session_log::release(tx.tx(), 1, "pin-owner").unwrap();
+            tx.commit().unwrap();
+        }
+        let satellites = Satellites::new(
+            1,
+            "pin-owner",
+            &cp.case,
+            None,
+            false,
+            1,
+            0,
+            Some(AdversarialRow {
+                exchange_id: exchange,
+                outcome: "pass",
+                detail: "pin".into(),
+            }),
+        );
+        let err = checkpoint::advance(
+            &mut conn,
+            &cp,
+            "pin-owner",
+            checkpoint::Transition {
+                phase: GdlPhase::Intake,
+                attempt: 1,
+                verdict: "pass",
+                errors: vec![],
+                artifact: Some(INTAKE_JSON.into()),
+                exchange: Some(exchange),
+                terminal: None,
+            },
+            Some(&satellites),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("run ownership lost or absent"),
+            "the refusal must be the fence's own, not another failure: {err:?}"
+        );
+        let leaked: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE run_id = 1 AND kind IN \
+                 ('control:soft_handoff','control:soft_handoff_gap','control:handoff_offer', \
+                  'session_tree','handoff_summary_pointer','handoff_reinjection', \
+                  'handoff_lifecycle','control:sla_armed','control:adversarial_recheck', \
+                  'control:back_referral')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(leaked, 0, "a refused advance must leave no satellite row");
+    }
+
     #[test]
     fn r1_terminal_retry_refuses_changed_loop_policy() {
         let f = fixture(happy_script());
