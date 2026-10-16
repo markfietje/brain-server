@@ -104,7 +104,16 @@ impl WorkflowHost for TapeHost {
     fn load_state(&self, _run: i64) -> Result<Option<(String, i64)>, HostError> {
         Ok(lock(&self.inner).state.clone())
     }
-    fn audit(&self, _: AuditKind, _: &str, _: &str, _: AuditStatus, _: &str) {}
+    fn audit(
+        &self,
+        _: AuditKind,
+        _: &str,
+        _: &str,
+        _: AuditStatus,
+        _: &str,
+    ) -> Result<(), HostError> {
+        Ok(())
+    }
 }
 
 #[tokio::test]

@@ -287,6 +287,10 @@ pub fn install_audited<H: crate::host::WorkflowHost + ?Sized>(
     let key = svc.key();
     let result = ctx.install(svc);
     use crate::host::{AuditKind, AuditStatus};
+    // Fail-closed: audit failure denies the mount. KernelError carries no
+    // Internal variant and gaining one is out of scope here, so the audit
+    // text rides the key — the message names the failure, the mount does not
+    // pass without its evidence.
     host.audit(
         AuditKind::Workflow,
         "plugin",
@@ -297,7 +301,10 @@ pub fn install_audited<H: crate::host::WorkflowHost + ?Sized>(
             AuditStatus::Denied
         },
         "mount",
-    );
+    )
+    .map_err(|e| KernelError::NotMounted {
+        key: format!("audit failed: {e}"),
+    })?;
     result
 }
 
@@ -319,7 +326,10 @@ pub fn uninstall_audited<H: crate::host::WorkflowHost + ?Sized>(
             AuditStatus::Denied
         },
         "unmount",
-    );
+    )
+    .map_err(|e| KernelError::NotMounted {
+        key: format!("audit failed: {e}"),
+    })?;
     result
 }
 
@@ -579,7 +589,14 @@ mod audit_tests {
         fn load_state(&self, _: i64) -> Result<Option<(String, i64)>, HostError> {
             Ok(None)
         }
-        fn audit(&self, k: AuditKind, actor: &str, target: &str, s: AuditStatus, d: &str) {
+        fn audit(
+            &self,
+            k: AuditKind,
+            actor: &str,
+            target: &str,
+            s: AuditStatus,
+            d: &str,
+        ) -> Result<(), HostError> {
             if let Ok(mut g) = self.log.lock() {
                 g.push(format!(
                     "{}/{}/{}/{}/{}",
@@ -590,6 +607,7 @@ mod audit_tests {
                     d
                 ));
             }
+            Ok(())
         }
     }
 

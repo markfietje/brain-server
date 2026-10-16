@@ -740,7 +740,14 @@ mod tests {
         fn load_state(&self, _: i64) -> Result<Option<(String, i64)>, crate::host::HostError> {
             Ok(None)
         }
-        fn audit(&self, k: AuditKind, actor: &str, target: &str, s: AuditStatus, d: &str) {
+        fn audit(
+            &self,
+            k: AuditKind,
+            actor: &str,
+            target: &str,
+            s: AuditStatus,
+            d: &str,
+        ) -> Result<(), HostError> {
             self.record(format!(
                 "audit:{}/{}/{}:{}/{}",
                 k.as_str(),
@@ -749,6 +756,7 @@ mod tests {
                 s.as_str(),
                 d
             ));
+            Ok(())
         }
         fn enqueue_settlement(
             &self,

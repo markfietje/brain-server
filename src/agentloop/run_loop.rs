@@ -299,11 +299,57 @@ impl TurnSettlement {
         self.harness.message_end_owned(token, payload, key)
     }
 
-    fn complete<T>(&mut self, result: Result<T, LoopError>) -> Result<T, LoopError> {
-        if result.is_err() {
-            let _ = self.settle(false);
+    async fn complete<T>(
+        &mut self,
+        result: Result<T, LoopError>,
+        pool: &Pool,
+        run_id: i64,
+    ) -> Result<T, LoopError> {
+        let Err(original) = result else {
+            return result;
+        };
+        if let Err(settlement) = self.settle(false) {
+            // The settlement failure is secondary context, never the cause:
+            // record both, return the ORIGINAL unchanged. The row is
+            // diagnostic (like `control:gdl_denied`) — unfenced, best-effort;
+            // a failed row write still returns the original.
+            let pool = pool.clone();
+            let original_text = original.to_string();
+            let settlement_text = settlement.to_string();
+            // Best-effort evidence (DB down or join panic loses it); the
+            // original error below is still the returned cause — the
+            // settlement failure is secondary context, never inverted.
+            if tokio::task::spawn_blocking(move || {
+                let mut conn = pool.get().ok()?;
+                let mut tx = WorkflowTx::begin(&mut conn).ok()?;
+                let payload = serde_json::json!({
+                    "original": original_text,
+                    "settlement": settlement_text,
+                })
+                .to_string();
+                let key = format!(
+                    "run{run_id}:control:settlement_failed:{}",
+                    uuid::Uuid::new_v4()
+                );
+                session_log::append(
+                    tx.tx(),
+                    run_id,
+                    "control:settlement_failed",
+                    &payload,
+                    &key,
+                    chrono::Utc::now().timestamp(),
+                )
+                .ok()?;
+                tx.commit().ok()?;
+                Some(())
+            })
+            .await
+            .ok()
+            .flatten()
+            .is_none()
+            {}
         }
-        result
+        Err(original)
     }
 
     /// The fixed bounded secondary status, for diagnostics that must not
@@ -414,9 +460,15 @@ impl LoopDriver {
     /// One durable trace row per hook deny/steer (C4): coarse fields only —
     /// the event name and a FIXED kernel reason. Listener text never enters
     /// the chain (no input or payload echo).
-    fn audit_hook(&self, event: &'static str, status: AuditStatus, detail: &'static str) {
+    fn audit_hook(
+        &self,
+        event: &'static str,
+        status: AuditStatus,
+        detail: &'static str,
+    ) -> Result<(), LoopError> {
         self.host
-            .audit(AuditKind::Workflow, "loop-hooks", event, status, detail);
+            .audit(AuditKind::Workflow, "loop-hooks", event, status, detail)
+            .map_err(persist)
     }
 
     /// Waterfall policy at a failing boundary: deny ⇒ one Denied audit row
@@ -438,7 +490,7 @@ impl LoopDriver {
                 } else {
                     detail
                 };
-            self.audit_hook(event, AuditStatus::Denied, fixed);
+            self.audit_hook(event, AuditStatus::Denied, fixed)?;
             return Err(LoopError::Hook(denied.to_string()));
         }
         Ok(())
@@ -636,7 +688,7 @@ impl LoopDriver {
                 LOOP_BEFORE_INPUT,
                 AuditStatus::Denied,
                 "loop input steer refused past payload cap",
-            );
+            )?;
             return Err(LoopError::Hook(steer_refused.to_string()));
         }
         if pending_input != pre_steer {
@@ -646,7 +698,7 @@ impl LoopDriver {
                 LOOP_BEFORE_INPUT,
                 AuditStatus::Ok,
                 "loop input steered by hook listener",
-            );
+            )?;
         }
         let fingerprint = self.fingerprint(&pending_input, &snapshot);
         let pool = self.pool.clone();
@@ -882,7 +934,7 @@ impl LoopDriver {
                 Ok(TurnEnd::Done(assistant, assistant_key))
             }
             .await;
-            let completed = settlement.complete(result)?;
+            let completed = settlement.complete(result, &self.pool, run_id).await?;
             if matches!(completed, TurnEnd::Canceled) {
                 // Mid-turn cancellation: settle THIS turn through the armed
                 // token (one owned abort), then journal the marker. The
@@ -1072,7 +1124,7 @@ impl LoopDriver {
                 } else {
                     "compaction skipped by hook policy"
                 };
-            self.audit_hook(LOOP_BEFORE_COMPACTION, AuditStatus::Denied, fixed);
+            self.audit_hook(LOOP_BEFORE_COMPACTION, AuditStatus::Denied, fixed)?;
             return Ok(Compacted::No);
         }
         // The structural gate: `compact()` is Idle-only by harness law, so
@@ -4791,6 +4843,74 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(probes, 0, "no probe/degraded row from a refused drive");
+        });
+    }
+
+    /// F6: a failed settlement is recorded, not swallowed. Forces a REAL
+    /// `abort_turn` failure (a trigger refusing the `RunEnd:aborted` audit,
+    /// through `settle` — not a simulated bypass), then asserts the new
+    /// `control:settlement_failed` row carries BOTH errors AND the returned
+    /// error is still the original. Asserting only the returned error would
+    /// pass on the defect (it already IS the original today); the row is the
+    /// new behaviour and its absence is the red-proof. A row carrying only
+    /// one of the two is a dropped cause wearing a row.
+    ///
+    /// Census note: names the row kind it lands, so files as `control`
+    /// under test-census.py's documented marker rule; the class here is
+    /// behavioral (drives the real settlement path).
+    #[test]
+    fn a_failed_settlement_is_recorded_not_swallowed() {
+        rt().block_on(async {
+            let f = fixture(vec![scripted_text("done")]);
+            let (_, token) = f.driver.harness.start_turn(1).unwrap();
+            let mut settlement = TurnSettlement::arm(Arc::clone(&f.driver.harness), token);
+            let aborted_hash = crate::audit::hash("RunEnd:aborted");
+            f.pool
+                .get()
+                .unwrap()
+                .execute_batch(&format!(
+                    "CREATE TRIGGER refuse_aborted BEFORE INSERT ON audit_events \
+                     WHEN NEW.detail_hash='{aborted_hash}' \
+                     BEGIN SELECT RAISE(ABORT, 'fixture_aborted'); END;"
+                ))
+                .unwrap();
+            let err = match settlement
+                .complete::<()>(
+                    Err(LoopError::Persist("original-cause-pin".into())),
+                    &f.pool,
+                    1,
+                )
+                .await
+            {
+                Ok(_) => panic!("the original failure must still be returned"),
+                Err(e) => e,
+            };
+            assert!(
+                err.to_string().contains("original-cause-pin"),
+                "the returned error must still be the original: {err:?}"
+            );
+            assert!(
+                !err.to_string().contains("fixture_aborted"),
+                "the settlement failure must not replace the cause: {err:?}"
+            );
+            let conn = f.pool.get().unwrap();
+            let (count, payload): (i64, String) = conn
+                .query_row(
+                    "SELECT COUNT(*), COALESCE(MAX(payload_json),'') FROM agent_session_events \
+                     WHERE run_id = 1 AND kind = 'control:settlement_failed'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "the settlement failure must leave its row");
+            assert!(
+                payload.contains("original-cause-pin"),
+                "the row must carry the original cause: {payload}"
+            );
+            assert!(
+                payload.contains("fixture_aborted") || payload.contains("settlement"),
+                "the row must carry the settlement failure too: {payload}"
+            );
         });
     }
 }

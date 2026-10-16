@@ -288,8 +288,15 @@ impl WorkflowHost for SqliteWorkflowHost {
         })
     }
 
-    fn audit(&self, kind: AuditKind, actor: &str, target: &str, status: AuditStatus, detail: &str) {
-        let _ = self.scoped(|conn| -> Result<(), rusqlite::Error> {
+    fn audit(
+        &self,
+        kind: AuditKind,
+        actor: &str,
+        target: &str,
+        status: AuditStatus,
+        detail: &str,
+    ) -> Result<(), HostError> {
+        self.scoped(|conn| -> Result<(), rusqlite::Error> {
             let tenant = tenant_for_target(conn, target);
             let chain_kind = match kind {
                 AuditKind::Workflow => crate::audit::AuditKind::Workflow,
@@ -327,7 +334,7 @@ impl WorkflowHost for SqliteWorkflowHost {
             // decision record (it may carry free-form context).
             #[cfg(feature = "compliance-pack")]
             {
-                let _ = crate::audit::decision::record_decision(
+                crate::audit::decision::record_decision(
                     conn,
                     &crate::audit::decision::DecisionInput {
                         actor_id: actor,
@@ -338,12 +345,16 @@ impl WorkflowHost for SqliteWorkflowHost {
                         model_id: "",
                         outcome: status.as_str(),
                     },
-                );
+                )
+                .ok_or_else(|| {
+                    rusqlite::Error::InvalidParameterName("decision evidence not recorded".into())
+                })?;
             }
             Ok(())
-        });
-        // Best-effort only: a missing audit row need not create a detectable
-        // chain gap. This void method cannot certify lifecycle evidence.
+        })
+        .map_err(HostError::Internal)?
+        .map_err(|e: rusqlite::Error| HostError::Internal(e.to_string()))?;
+        Ok(())
     }
 
     /// Checked lifecycle audit: an independent transaction on a fresh pooled
@@ -1278,7 +1289,8 @@ mod tests {
             (AuditStatus::Ok, "RunStart"),
             (AuditStatus::Denied, "RunEnd:aborted"),
         ] {
-            host.audit(AuditKind::Workflow, "harness", "run:1", status, detail);
+            host.audit(AuditKind::Workflow, "harness", "run:1", status, detail)
+                .unwrap();
         }
         let observer = Connection::open(tmp.path()).expect("independent observer");
         let mut stmt = observer
@@ -1637,7 +1649,8 @@ mod tests {
                 "run:1",
                 AuditStatus::Ok,
                 "milestone",
-            );
+            )
+            .unwrap();
             unit.commit().unwrap();
         }
         let conn = rusqlite::Connection::open(tmp.path()).unwrap();
@@ -1675,14 +1688,16 @@ mod tests {
             "run:1",
             AuditStatus::Ok,
             "milestone",
-        );
+        )
+        .unwrap();
         host.audit(
             AuditKind::Workflow,
             "engine-x",
             "external-artifact",
             AuditStatus::Denied,
             "gate refused",
-        );
+        )
+        .unwrap();
         let rows = workflow_audit_rows(&tmp);
         assert_eq!(
             rows,

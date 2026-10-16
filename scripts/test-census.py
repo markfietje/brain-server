@@ -70,7 +70,7 @@ disagreement about a rule, which is arguable, rather than a matter of taste.
   KNOWN CEILING, stated rather than papered over, with the numbers that
   justify leaving it alone. A marker rule keys on the WORD, so a test whose
   doc-comment merely DISCUSSES a control or a ceiling classifies as one.
-  Five instances exist as of this commit, all recorded rather than reworded:
+  Six instances exist as of this commit, all recorded rather than reworded:
   the census pin classified itself as a `control` the moment its prose said
   "the label CONTROL", `no_workspace_enables_http3` classified as a
   `residual_documentation` the moment its prose said "CEILING, named rather
@@ -80,7 +80,9 @@ disagreement about a rule, which is arguable, rather than a matter of taste.
   (`compaction_quota_write_refuses_a_revoked_claim`,
   `gdl_advance_refuses_a_revoked_claim_and_leaves_no_satellite`) classify as
   `control` the moment theirs name the row kinds they refuse
-  (`` `control:compaction_quota_exhausted` `` etc.). The colon is a session-log ROW-KIND
+  (`` `control:compaction_quota_exhausted` `` etc.). The F6 pin
+  (`a_failed_settlement_is_recorded_not_swallowed`) is the sixth: it names
+  `` `control:settlement_failed` ``, the row it lands. The colon is a session-log ROW-KIND
   prefix, not a marker word, and the underscore exemption does not help
   because the separator is `:`. Those pins are behavioural drills;
   they are filed under the marker because their doc-comments have to name the exact
@@ -318,8 +320,9 @@ def parse(path):
         doc = []
         j = i - 1
         while j >= 0 and (DOC.match(lines[j]) or lines[j].lstrip().startswith("#[")):
-            if DOC.match(lines[j]):
-                doc.append(DOC.match(lines[j]).group(1))
+            doc_m = DOC.match(lines[j])
+            if doc_m is not None:
+                doc.append(doc_m.group(1))
             j -= 1
         doc = " ".join(reversed(doc))
         k = i
@@ -327,7 +330,10 @@ def parse(path):
             k += 1
         if k >= len(lines):
             sys.exit(f"ERR {rel}:{attr_line}: test attribute with no fn")
-        name = FN.match(lines[k]).group(1)
+        fn_m = FN.match(lines[k])
+        if fn_m is None:
+            sys.exit(f"ERR {rel}:{attr_line}: test attribute with no fn")
+        name = fn_m.group(1)
         depth = 0
         seen = False
         body = []
@@ -379,7 +385,8 @@ def load(path):
     """
     hit = _LOADED.get(path)
     if hit is None:
-        text = open(path, encoding="utf-8").read()
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
         hit = (text.splitlines(), brace_deltas(text))
         _LOADED[path] = hit
     return hit
@@ -395,6 +402,7 @@ def file_helper_bodies(path):
         if not ATTR.match(line):
             continue
         depth = seen = 0
+        k = i  # init for the checker; enumerate guarantees range() is non-empty
         for k in range(i, len(lines)):
             depth += deltas[k]
             seen = seen or depth > 0
@@ -583,7 +591,7 @@ def render(rows):
         a(f"| `{c}` | {by_class[c]} | {100.0 * by_class[c] / total:.1f}% |")
     a(f"| **total** | **{total}** | |")
     a("")
-    a(f"Scope: `src/` + `tests/`, the two trees the badge's count comes from.")
+    a("Scope: `src/` + `tests/`, the two trees the badge's count comes from.")
     a("The census reads HIGHER than the README badge for two reasons, both")
     a("expected. The badge counts tests that")
     a("*passed* a real run, after twelve `--skip` families remove the")

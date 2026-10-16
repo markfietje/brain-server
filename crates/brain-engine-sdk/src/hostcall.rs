@@ -227,7 +227,8 @@ impl<H: WorkflowHost + ?Sized> HostCallContext<H> {
             ),
         };
         self.host
-            .audit(AuditKind::Workflow, &self.engine, &target, status, cap);
+            .audit(AuditKind::Workflow, &self.engine, &target, status, cap)
+            .map_err(|e| DispatchError::Internal(e.to_string()))?;
         if let Some(r) = result {
             return r;
         }
@@ -409,7 +410,14 @@ mod tests {
         fn load_state(&self, _: i64) -> Result<Option<(String, i64)>, HostError> {
             Ok(None)
         }
-        fn audit(&self, k: AuditKind, actor: &str, target: &str, s: AuditStatus, d: &str) {
+        fn audit(
+            &self,
+            k: AuditKind,
+            actor: &str,
+            target: &str,
+            s: AuditStatus,
+            d: &str,
+        ) -> Result<(), HostError> {
             if let Ok(mut g) = self.log.lock() {
                 g.push(format!(
                     "{}/{}/{}/{}/{}",
@@ -420,6 +428,7 @@ mod tests {
                     d
                 ));
             }
+            Ok(())
         }
     }
 

@@ -82,8 +82,15 @@ impl WorkflowHost for BlockyHost {
     fn load_state(&self, run_id: i64) -> Result<Option<(String, i64)>, HostError> {
         self.inner.load_state(run_id)
     }
-    fn audit(&self, kind: AuditKind, actor: &str, target: &str, status: AuditStatus, detail: &str) {
-        self.inner.audit(kind, actor, target, status, detail);
+    fn audit(
+        &self,
+        kind: AuditKind,
+        actor: &str,
+        target: &str,
+        status: AuditStatus,
+        detail: &str,
+    ) -> Result<(), HostError> {
+        self.inner.audit(kind, actor, target, status, detail)
     }
 }
 

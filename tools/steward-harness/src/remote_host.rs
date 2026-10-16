@@ -229,12 +229,13 @@ impl WorkflowHost for RemoteWorkflowHost {
         _target: &str,
         _status: AuditStatus,
         _detail: &str,
-    ) {
+    ) -> Result<(), HostError> {
         // Documented ceiling: every durable effect the engine makes (CAS
         // write, outbox event) is ALREADY audited server-side in the same
         // transaction — there is no separate remote audit row to write, so
         // this contract hook stays a deliberate no-op rather than forging a
         // second chain entry.
+        Ok(())
     }
 }
 

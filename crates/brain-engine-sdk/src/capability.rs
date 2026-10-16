@@ -77,17 +77,24 @@ pub fn checked_dispatch<H: WorkflowHost + ?Sized>(
     actor: &str,
 ) -> bool {
     let allowed = allows(posture, class);
-    host.audit(
-        AuditKind::Workflow,
-        actor,
-        class.as_str(),
-        if allowed {
-            AuditStatus::Ok
-        } else {
-            AuditStatus::Denied
-        },
-        posture.as_str(),
-    );
+    // Fail-closed: audit failure denies (evidence required). The allow/deny
+    // decision itself is pure; without its evidence row it must not pass.
+    if host
+        .audit(
+            AuditKind::Workflow,
+            actor,
+            class.as_str(),
+            if allowed {
+                AuditStatus::Ok
+            } else {
+                AuditStatus::Denied
+            },
+            posture.as_str(),
+        )
+        .is_err()
+    {
+        return false;
+    }
     allowed
 }
 
@@ -114,7 +121,14 @@ mod tests {
         fn load_state(&self, _: i64) -> Result<Option<(String, i64)>, HostError> {
             Ok(None)
         }
-        fn audit(&self, k: AuditKind, actor: &str, target: &str, s: AuditStatus, d: &str) {
+        fn audit(
+            &self,
+            k: AuditKind,
+            actor: &str,
+            target: &str,
+            s: AuditStatus,
+            d: &str,
+        ) -> Result<(), HostError> {
             if let Ok(mut g) = self.log.lock() {
                 g.push(format!(
                     "{}/{}/{}/{}/{}",
@@ -125,6 +139,7 @@ mod tests {
                     d
                 ));
             }
+            Ok(())
         }
     }
 

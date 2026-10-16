@@ -122,7 +122,8 @@ fn deny_simple(
         who,
         AuditStatus::Denied,
         reason,
-    );
+    )
+    .map_err(|e| e.to_string())?;
     Err(reason.to_string())
 }
 
@@ -410,7 +411,8 @@ fn run_mediated_exec(
                 &who,
                 AuditStatus::Ok,
                 "mediated exec",
-            );
+            )
+            .map_err(|e| e.to_string())?;
             Ok(result)
         }
         Err(reason) => {
@@ -420,7 +422,8 @@ fn run_mediated_exec(
                 &who,
                 AuditStatus::Denied,
                 &reason,
-            );
+            )
+            .map_err(|e| e.to_string())?;
             Err(reason)
         }
     }
@@ -603,13 +606,15 @@ fn run_mediated_http(
 ) -> Result<String, String> {
     const WHO: &str = "workflow/hostcall/http";
     let deny = |reason: String| {
-        host.audit(
+        if let Err(e) = host.audit(
             AuditKind::Workflow,
             engine,
             WHO,
             AuditStatus::Denied,
             &reason,
-        );
+        ) {
+            return Err(e.to_string());
+        }
         Err(reason)
     };
     let v: serde_json::Value = match serde_json::from_str(body) {
@@ -681,7 +686,8 @@ fn run_mediated_http(
                         WHO,
                         AuditStatus::Ok,
                         &host_name,
-                    );
+                    )
+                    .map_err(|e| e.to_string())?;
                     Ok(result)
                 }
                 Err(e) => deny(format!("read failed: {e}")),
@@ -706,13 +712,15 @@ fn run_mediated_event(
     };
     let who = format!("workflow/hostcall/events/run:{run_id}");
     let deny = |reason: String| {
-        host.audit(
+        if let Err(e) = host.audit(
             AuditKind::Workflow,
             engine,
             &who,
             AuditStatus::Denied,
             &reason,
-        );
+        ) {
+            return Err(e.to_string());
+        }
         Err(reason)
     };
     let v: serde_json::Value = match serde_json::from_str(body) {
@@ -737,7 +745,8 @@ fn run_mediated_event(
     }
     match host.enqueue_with_parent(run_id, parent, topic, payload, key) {
         Ok((created, event_id)) => {
-            host.audit(AuditKind::Workflow, engine, &who, AuditStatus::Ok, topic);
+            host.audit(AuditKind::Workflow, engine, &who, AuditStatus::Ok, topic)
+                .map_err(|e| e.to_string())?;
             // The id rides the receipt so the engine can parent its NEXT
             // emission without a second read.
             Ok(format!("enqueued:{created}:{event_id}"))
@@ -768,7 +777,8 @@ fn run_knowledge_suggest(host: &SqliteWorkflowHost, body: &str) -> Result<String
             &format!("workflow/hostcall/tool/knowledge_suggest/run:{run_id}"),
             AuditStatus::Denied,
             "query out of bounds",
-        );
+        )
+        .map_err(|e| e.to_string())?;
         return Err("query out of bounds".into());
     }
     // The LIKE pattern escapes `%`/`_`/`\` so the query cannot inject
@@ -828,7 +838,8 @@ fn run_knowledge_suggest(host: &SqliteWorkflowHost, body: &str) -> Result<String
         &who,
         AuditStatus::Ok,
         "suggest",
-    );
+    )
+    .map_err(|e| e.to_string())?;
     Ok(result)
 }
 

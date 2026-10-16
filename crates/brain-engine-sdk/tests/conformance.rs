@@ -99,7 +99,14 @@ impl WorkflowHost for TapeHost {
     fn load_state(&self, _run_id: i64) -> Result<Option<(String, i64)>, HostError> {
         Ok(None)
     }
-    fn audit(&self, k: AuditKind, actor: &str, target: &str, s: AuditStatus, d: &str) {
+    fn audit(
+        &self,
+        k: AuditKind,
+        actor: &str,
+        target: &str,
+        s: AuditStatus,
+        d: &str,
+    ) -> Result<(), HostError> {
         push(
             &self.log,
             &format!(
@@ -111,6 +118,7 @@ impl WorkflowHost for TapeHost {
                 d
             ),
         );
+        Ok(())
     }
     fn enqueue_settlement(
         &self,

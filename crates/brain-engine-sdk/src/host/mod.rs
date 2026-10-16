@@ -156,9 +156,17 @@ pub trait WorkflowHost: Send + Sync {
     /// half of the CAS contract after a `Stale` conflict.
     fn load_state(&self, run_id: i64) -> Result<Option<(String, i64)>, HostError>;
 
-    /// Record an audit event, best-effort. Missing evidence need not create a
-    /// detectable chain gap; this void method cannot certify settlement.
-    fn audit(&self, kind: AuditKind, actor: &str, target: &str, status: AuditStatus, detail: &str);
+    /// Record an audit event. Returns `Err` on write failure — the caller
+    /// decides (propagate, or a named reason why it genuinely cannot act).
+    /// A `let _ =` on this path is how failures became invisible (F6).
+    fn audit(
+        &self,
+        kind: AuditKind,
+        actor: &str,
+        target: &str,
+        status: AuditStatus,
+        detail: &str,
+    ) -> Result<(), HostError>;
 
     /// Checked delivery: acknowledge ONLY a confirmed, independently
     /// committed outbox write (with its audit evidence). `Ok(false)` is a
@@ -243,7 +251,16 @@ mod tests {
         fn load_state(&self, _run_id: i64) -> Result<Option<(String, i64)>, HostError> {
             Ok(Some((r#"{"v":1}"#.into(), 1)))
         }
-        fn audit(&self, _k: AuditKind, _a: &str, _t: &str, _s: AuditStatus, _d: &str) {}
+        fn audit(
+            &self,
+            _k: AuditKind,
+            _a: &str,
+            _t: &str,
+            _s: AuditStatus,
+            _d: &str,
+        ) -> Result<(), HostError> {
+            Ok(())
+        }
     }
 
     #[test]

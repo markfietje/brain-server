@@ -133,7 +133,14 @@ impl WorkflowHost for InMemHost {
         Ok(g.runs.get(&run_id).cloned())
     }
 
-    fn audit(&self, kind: AuditKind, actor: &str, target: &str, status: AuditStatus, detail: &str) {
+    fn audit(
+        &self,
+        kind: AuditKind,
+        actor: &str,
+        target: &str,
+        status: AuditStatus,
+        detail: &str,
+    ) -> Result<(), HostError> {
         let mut g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         g.events.push(format!(
             "{}/{}/{}/{}/{}",
@@ -143,5 +150,6 @@ impl WorkflowHost for InMemHost {
             status.as_str(),
             detail
         ));
+        Ok(())
     }
 }
