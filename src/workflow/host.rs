@@ -55,6 +55,10 @@ impl SqliteWorkflowHost {
     /// Run `f` on the unit's connection when a unit is open, else on a
     /// transient pooled connection. Outer error = infra (pool acquisition);
     /// inner error = the op's own result type.
+    ///
+    /// NOTE: the transient arm hands `f` an AUTOCOMMIT connection. That is
+    /// correct for a single read or a single self-contained write, and wrong for
+    /// anything whose audit row must land with it — see [`Self::scoped_tx`].
     fn scoped<T, E>(
         &self,
         f: impl FnOnce(&Connection) -> Result<T, E>,
@@ -66,6 +70,60 @@ impl SqliteWorkflowHost {
         drop(guard);
         let conn = self.pool_get()?;
         Ok(f(&conn))
+    }
+
+    /// Like [`Self::scoped`], but guarantees `f` runs INSIDE a transaction.
+    ///
+    /// WHY THIS EXISTS. `audit::record_tenant_checked` branches on
+    /// `conn.is_autocommit()`: on an autocommit connection it opens its own
+    /// `BEGIN IMMEDIATE`, and otherwise it uses `SAVEPOINT audit_link`. So the
+    /// nesting is decided entirely by whether the CALLER already opened a
+    /// transaction.
+    ///
+    /// `enqueue_with_parent` used `scoped`, so on the transient arm — which is
+    /// every call with no open unit, which is the normal case for the harness
+    /// outbox drain — the `INSERT OR IGNORE` ran in autocommit and COMMITTED,
+    /// and only then did the audit open a second transaction. A crash between
+    /// the two commits leaves a durable outbox row with no audit row and nothing
+    /// anywhere recording the gap.
+    ///
+    /// Note this is NOT the same defect as `record_tenant` being best-effort.
+    /// That is deliberate and documented (a dropped audit row reads as a chain
+    /// gap and bumps `/health`'s `audit_commit_failures` counter, never a forged
+    /// continuation). The defect here is that the two writes are not in the same
+    /// transaction, so the best-effort path cannot even see a failure that has
+    /// already been committed past.
+    ///
+    /// The Active-lane arm is left alone: that connection is already inside the
+    /// caller's transaction, and re-wrapping it would break the caller's
+    /// rollback. `audit_write` already does the right thing there.
+    fn scoped_tx<T, E>(
+        &self,
+        f: impl FnOnce(&Connection) -> Result<T, E>,
+    ) -> Result<Result<T, E>, String> {
+        let guard = self.lock().map_err(|_| "host_lane_failed".to_string())?;
+        if let Lane::Active(conn) = &*guard {
+            // Already inside the caller's transaction: `f` joins it, and the
+            // audit nests as a SAVEPOINT. Nothing to add.
+            return Ok(f(conn));
+        }
+        drop(guard);
+
+        let conn = self.pool_get()?;
+        conn.execute_batch("BEGIN IMMEDIATE")
+            .map_err(|e| e.to_string())?;
+        let outcome = f(&conn);
+        match outcome {
+            Ok(value) => {
+                conn.execute_batch("COMMIT").map_err(|e| e.to_string())?;
+                Ok(Ok(value))
+            }
+            Err(err) => {
+                // Best-effort rollback: the primary error is the one reported.
+                let _ = conn.execute_batch("ROLLBACK");
+                Ok(Err(err))
+            }
+        }
     }
 
     fn pool_get(&self) -> Result<PooledConn, String> {
@@ -186,7 +244,9 @@ impl WorkflowHost for SqliteWorkflowHost {
         idempotency_key: &str,
     ) -> Result<(bool, i64), HostError> {
         let now = chrono::Utc::now().timestamp();
-        match self.scoped(|conn| {
+        // `scoped_tx`, not `scoped`: the row and its audit row must share a
+        // transaction so a crash cannot commit the row past the audit.
+        match self.scoped_tx(|conn| {
             super::outbox::enqueue_child(
                 conn,
                 run_id,
@@ -532,6 +592,68 @@ mod tests {
             )
             .unwrap();
         (SqliteWorkflowHost::new(pool), tmp)
+    }
+
+    /// F2 (plan 12): the outbox row and its audit row must share ONE
+    /// transaction, so a crash between them cannot commit the row past the
+    /// audit.
+    ///
+    /// `audit::record_tenant_checked` picks its strategy from
+    /// `conn.is_autocommit()` — `BEGIN IMMEDIATE` on an autocommit connection,
+    /// `SAVEPOINT audit_link` otherwise. The nesting is therefore decided purely
+    /// by whether the CALLER opened a transaction, and `enqueue_with_parent`
+    /// used `scoped`, whose transient arm hands out an autocommit connection.
+    ///
+    /// The pin reads that decision directly rather than asserting the outcome,
+    /// because both configurations produce a row AND an audit row on the happy
+    /// path — asserting their presence would pass on the defect. What differs is
+    /// whether they could ever be separated by a crash.
+    ///
+    /// This is NOT the "audit is best-effort" carve-out, which is deliberate and
+    /// documented. Best-effort means a DROPPED audit row reads as a chain gap and
+    /// bumps `/health`. Two separate transactions mean the audit is never even
+    /// ATTEMPTED after the row is already durable.
+    #[test]
+    fn outbox_enqueue_runs_inside_a_transaction() {
+        let (host, tmp) = host();
+
+        let created = host
+            .enqueue(1, "f2.topic", "{\"a\":1}", "f2:key")
+            .expect("enqueue succeeds");
+        assert!(created, "first enqueue creates the row");
+
+        assert!(
+            !super::super::outbox::last_insert_was_autocommit(),
+            "F2: the outbox INSERT ran on an autocommit connection, so it COMMITTED \
+             before the audit opened its own BEGIN IMMEDIATE. A crash in between \
+             leaves a durable outbox row with no audit row and no record of the gap."
+        );
+
+        // And both rows are present — the happy path, which must not regress.
+        let conn = rusqlite::Connection::open(tmp.path()).unwrap();
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM outbox WHERE idempotency_key = 'f2:key'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "the outbox row is present");
+        // `audit_events` stores `target_hash`, not `target` — the chain is
+        // hash-chained, so the row is counted by kind rather than looked up.
+        let audits: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM audit_events WHERE kind = 'workflow'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(audits, 1, "and its audit row landed with it");
+
+        assert!(
+            verify_chain(&conn),
+            "the audit chain is intact after a nested enqueue"
+        );
     }
 
     fn workflow_audit_rows(tmp: &tempfile::NamedTempFile) -> Vec<(String, String)> {

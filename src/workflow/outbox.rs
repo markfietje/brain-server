@@ -142,6 +142,27 @@ impl KernelOrigin {
     }
 }
 
+/// Test-only probe: did the last `insert_row` run inside a transaction?
+///
+/// Static because `insert_row` is reached from several enqueue flavors and
+/// threading a parameter through all of them would change production signatures
+/// to serve a test. `cfg(test)` means it does not exist in a release build.
+#[cfg(test)]
+static LAST_INSERT_AUTOCOMMIT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(true);
+
+#[cfg(test)]
+pub(crate) fn note_insert_autocommit(value: bool) {
+    LAST_INSERT_AUTOCOMMIT.store(value, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Test-only read of the probe. `true` means the insert was on an autocommit
+/// connection, which is the defect: the audit row then commits separately.
+#[cfg(test)]
+pub(crate) fn last_insert_was_autocommit() -> bool {
+    LAST_INSERT_AUTOCOMMIT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// The shared insert behind every enqueue flavor: exactly-once by key
 /// (INSERT OR IGNORE), audit row on first insert only.
 fn insert_row(
@@ -153,6 +174,12 @@ fn insert_row(
     idempotency_key: &str,
     now: i64,
 ) -> rusqlite::Result<(bool, i64)> {
+    // Test-only: record whether the insert ran inside a transaction. The audit
+    // row below nests as a SAVEPOINT only when this is false; on an autocommit
+    // connection it opens its own BEGIN and the two writes become two commits.
+    #[cfg(test)]
+    crate::workflow::outbox::note_insert_autocommit(conn.is_autocommit());
+
     let n = conn.execute(
         "INSERT OR IGNORE INTO outbox(run_id, topic, payload_json, status, idempotency_key, created_at, parent_id)
          VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6)",
