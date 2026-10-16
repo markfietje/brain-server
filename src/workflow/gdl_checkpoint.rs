@@ -570,13 +570,21 @@ pub(super) struct Transition {
 }
 
 /// Called only after the exchange has settled, never across an external await.
+///
+/// `satellites` carries the phase-pass rows that make this pass actionable —
+/// the soft-handoff evaluation, the handoff offer and handover, the resolved
+/// back-referral, the SLA-armed clock, the adversarial finding. They are
+/// written INSIDE this transaction, not beside it: a rollback takes them with
+/// the advance, and an advance cannot commit without them. `None` is for the
+/// direct-call paths that drive a checkpoint with no case behind it.
 pub(super) fn advance(
     conn: &mut Connection,
     old: &Checkpoint,
     owner: &str,
     change: Transition,
+    satellites: Option<&super::Satellites>,
 ) -> Result<Checkpoint, LoopError> {
-    let result = advance_tx(conn, old, owner, change);
+    let result = advance_tx(conn, old, owner, change, satellites);
     if result.is_err()
         && let Err(denial_error) = record_denial(conn, old, owner)
     {
@@ -617,6 +625,7 @@ fn advance_tx(
     old: &Checkpoint,
     owner: &str,
     change: Transition,
+    satellites: Option<&super::Satellites>,
 ) -> Result<Checkpoint, LoopError> {
     let mut tx = WorkflowTx::begin(conn).map_err(persist_error)?;
     old.verify(tx.tx(), owner)?;
@@ -710,6 +719,15 @@ fn advance_tx(
         "gdl_checkpoint_sealed"
     };
     checked_audit(tx.tx(), &next, crate::audit::AuditStatus::Ok, audit_detail)?;
+    // The phase pass's own satellites — the rows that make THIS pass
+    // actionable for the operator — commit in this transaction, after the
+    // checkpoint they belong to and before the release. Writing them here
+    // rather than beside the transaction is the whole point: there is no
+    // longer an ordering in which one is durable and the other is not. A
+    // refusal below aborts the advance along with them.
+    if let Some(satellites) = satellites {
+        satellites.write_in_tx(tx.tx())?;
+    }
     if next.terminal.is_some() {
         session_log::release(tx.tx(), old.run, owner).map_err(persist_error)?;
     }

@@ -70,11 +70,19 @@ disagreement about a rule, which is arguable, rather than a matter of taste.
   KNOWN CEILING, stated rather than papered over, with the numbers that
   justify leaving it alone. A marker rule keys on the WORD, so a test whose
   doc-comment merely DISCUSSES a control or a ceiling classifies as one.
-  Two instances exist as of this commit, both recorded rather than reworded:
+  Three instances exist as of this commit, all recorded rather than reworded:
   the census pin classified itself as a `control` the moment its prose said
-  "the label CONTROL", and `no_workspace_enables_http3` classified as a
+  "the label CONTROL", `no_workspace_enables_http3` classified as a
   `residual_documentation` the moment its prose said "CEILING, named rather
-  than hidden". Neither is one.
+  than hidden", and `the_sla_clock_arms_inside_the_phase_pass_it_makes_actionable`
+  classified as a `control` the moment its prose named the row kind it
+  refuses — `` `control:sla_armed` ``. The colon is a session-log ROW-KIND
+  prefix, not a marker word, and the underscore exemption does not help
+  because the separator is `:`. That pin is a behavioural phase-machine drill;
+  it is filed under the marker because its doc-comment has to name the exact
+  kind it forces a failure on, and a doc-comment that renamed the row to dodge
+  a classifier would be lying about what the pin refuses. The register's own
+  row for it carries the behavioural class.
 
   Tightening to a POSITIONAL anchor (a leading `CONTROL:` label) was measured
   and rejected: of 105 control+residual tests today, only 33 survive it, so

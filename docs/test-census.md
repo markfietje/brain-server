@@ -37,12 +37,12 @@ that applies them, not in prose that can drift from it.
 
 | Class | Tests | Share |
 |---|---:|---:|
-| `behavioral_pin` | 2961 | 86.8% |
+| `behavioral_pin` | 2962 | 86.8% |
 | `structural` | 338 | 9.9% |
-| `control` | 54 | 1.6% |
+| `control` | 55 | 1.6% |
 | `residual_documentation` | 51 | 1.5% |
 | `unclassified` | 7 | 0.2% |
-| **total** | **3411** | |
+| **total** | **3413** | |
 
 Scope: `src/` + `tests/`, the two trees the badge's count comes from.
 The census reads HIGHER than the README badge for two reasons, both
@@ -59,7 +59,7 @@ eleven such cases). The census counts what the compiler does.
 | File | Tests |
 |---|---:|
 | `tests/main_suite.rs` | 355 |
-| `src/workflow/gdl.rs` | 124 |
+| `src/workflow/gdl.rs` | 126 |
 | `src/workflow/decide/router.rs` | 59 |
 | `src/workflow/delivery.rs` | 54 |
 | `src/agentloop/run_loop.rs` | 52 |
@@ -85,7 +85,7 @@ have no call in it.
 | `src/trace.rs:47` `trace_traversal_caps_are_bounded` |
 | `src/workflow/decide/router.rs:351` `alias_checkpoints_table_is_the_three_names` |
 | `src/workflow/decide/router.rs:361` `alias_bundle_repo_is_the_english_root` |
-| `src/workflow/gdl.rs:5322` `adversarial_task_bound_is_pinned_by_value` |
+| `src/workflow/gdl.rs:5456` `adversarial_task_bound_is_pinned_by_value` |
 
 ## What this census does NOT police
 

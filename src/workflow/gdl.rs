@@ -35,7 +35,7 @@
 //! routing claims, and no auto-publish of anything the loop captures —
 //! capture lands as proposals on the human review queue or not at all.
 
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
@@ -125,8 +125,8 @@ pub(crate) fn soft_handoff_latch_fires(verify_pass: bool) -> bool {
 /// `SoftHandoffLatch` type, whose four call sites were ALL in `mod tests`. Two
 /// implementations of one law, one of them reachable only from tests, is the
 /// same shape as `attachment_errors`. The type is deleted; this is the
-/// single decision, and `record_soft_handoff_row` — a real production writer —
-/// is its caller.
+/// single decision, and `soft_handoff_row_in_tx` — the production writer the
+/// phase machine reaches through `Satellites` — is its caller.
 pub(crate) fn soft_handoff_latch_violation(
     fires: bool,
     prior_fired: bool,
@@ -2767,88 +2767,14 @@ impl GdlDriver {
         owner: &str,
         case: &GdlCase,
     ) -> Result<(), LoopError> {
-        let verify_pass = case.verify.as_ref().is_some_and(|v| v.pass);
-        let fires = soft_handoff_latch_fires(verify_pass);
-        let payload = serde_json::json!({
-            // What the predicate actually reads . The old
-            // `confidence_pct` key was a fabricated 0-or-100 the machine
-            // derived from `verify.pass`; naming it confidence invited a reader
-            // to treat a binary as a scale.
-            "verify_pass": verify_pass,
-            "fires": fires,
-            // The machine NEVER authors this. A justification is an operator
-            // accepting the handoff, and only an operator may write one — an
-            // agent that can justify its own soft handoff has no latch at all.
-            // The null is the honest value here, not a stub .
-            "justification": serde_json::Value::Null,
-        })
-        .to_string();
-        let key = format!("run{run_id}:control:soft_handoff:{owner}");
         let owner = owner.to_string();
+        let case = case.clone();
         let pool = self.pool.clone();
         tokio::task::spawn_blocking(move || {
             let mut conn = pool.get().map_err(checkpoint::persist_error)?;
             let mut tx =
                 super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
-            // The prior latch state for this run, read before this row
-            // lands: fired = any earlier fires:true row; justified = any
-            // recorded non-empty justification on those rows.
-            let prior: Vec<String> = {
-                let mut stmt = tx
-                    .tx()
-                    .prepare(
-                        "SELECT payload_json FROM agent_session_events \
-                         WHERE run_id = ?1 AND kind = 'control:soft_handoff' ORDER BY seq",
-                    )
-                    .map_err(checkpoint::persist_error)?;
-                stmt.query_map(rusqlite::params![run_id], |r| r.get(0))
-                    .map(|it| it.filter_map(Result::ok).collect())
-                    .map_err(checkpoint::persist_error)?
-            };
-            let prior_fired = prior.iter().any(|p| {
-                serde_json::from_str::<serde_json::Value>(p)
-                    .ok()
-                    .and_then(|v| v["fires"].as_bool())
-                    .unwrap_or(false)
-            });
-            let prior_justified = prior.iter().any(|p| {
-                serde_json::from_str::<serde_json::Value>(p)
-                    .ok()
-                    .and_then(|v| v["justification"].as_str().map(|s| !s.trim().is_empty()))
-                    .unwrap_or(false)
-            });
-            let now = chrono::Utc::now().timestamp();
-            session_log::append(tx.tx(), run_id, "control:soft_handoff", &payload, &key, now)
-                .map_err(checkpoint::persist_error)?;
-            // The unjustified-revisit law: a fired evaluation on an
-            // already-fired, never-justified run. The audit row is DENIED;
-            // the knowledge gap rides the SDK's gap rule (no coverage ->
-            // propose a new article) as a recorded proposal, never an
-            // auto-publish.
-            if soft_handoff_latch_violation(fires, prior_fired, prior_justified) {
-                super::audit_write(
-                    tx.tx(),
-                    run_id,
-                    "soft_handoff",
-                    AuditStatus::Denied,
-                    SOFT_HANDOFF_VIOLATION,
-                );
-                let action = brain_engine_sdk::pure::qa_score::gap_decision(0);
-                let gap = serde_json::json!({
-                    "violation": SOFT_HANDOFF_VIOLATION,
-                    "proposal": action.map(|a| format!("{a:?}")),
-                })
-                .to_string();
-                session_log::append(
-                    tx.tx(),
-                    run_id,
-                    "control:soft_handoff_gap",
-                    &gap,
-                    &format!("run{run_id}:control:soft_handoff_gap:{owner}"),
-                    now,
-                )
-                .map_err(checkpoint::persist_error)?;
-            }
+            soft_handoff_row_in_tx(tx.tx(), run_id, &owner, &case)?;
             tx.commit().map_err(checkpoint::persist_error)?;
             Ok::<_, LoopError>(())
         })
@@ -2863,129 +2789,6 @@ impl GdlDriver {
     /// monitor rides additively (the MTS window and the advertised
     /// tighter-of target); the P-class SLA stays authoritative.
     #[allow(clippy::too_many_arguments)]
-    async fn record_sla_armed_row(
-        &self,
-        run_id: i64,
-        owner: &str,
-        attempt: u32,
-        priority: &str,
-        acuity_band: Option<&str>,
-        now: i64,
-        deadline: i64,
-    ) -> Result<(), LoopError> {
-        let acuity_window = acuity_band.and_then(acuity_sla);
-        let payload = serde_json::json!({
-            "priority": priority,
-            "sla_deadline_epoch": deadline,
-            "acuity_band": acuity_band,
-            "acuity_sla_seconds": acuity_window,
-            "advertised_sla_seconds": advertised_sla(priority, acuity_band),
-        })
-        .to_string();
-        let key = format!("run{run_id}:control:sla_armed:{owner}:{attempt}");
-        let pool = self.pool.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut conn = pool.get().map_err(checkpoint::persist_error)?;
-            let mut tx =
-                super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
-            session_log::append(tx.tx(), run_id, "control:sla_armed", &payload, &key, now)
-                .map_err(checkpoint::persist_error)?;
-            tx.commit().map_err(checkpoint::persist_error)?;
-            Ok::<_, LoopError>(())
-        })
-        .await
-        .map_err(checkpoint::persist_error)??;
-        Ok(())
-    }
-
-    /// The machine-landed handoff offer at the escalation terminal: the
-    /// I-PASS packet pre-filled from the case. The offer is a DRAFT for a
-    /// human — it sits in `offered` until a role-gated operator decides;
-    /// the machine never calls the decision path. The typed row records
-    /// the offer id and the packet's remaining gaps — the coaching
-    /// surface, never an auto-publish.
-    async fn record_escalation_offer(
-        &self,
-        run_id: i64,
-        owner: &str,
-        case: &GdlCase,
-    ) -> Result<(), LoopError> {
-        let to = escalation_target(case);
-        let to = to
-            .chars()
-            .take(crate::workflow::relay::MAX_PRINCIPAL_LEN)
-            .collect::<String>();
-        let owner = owner.to_string();
-        let case = case.clone();
-        let pool = self.pool.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut conn = pool.get().map_err(checkpoint::persist_error)?;
-            let mut tx =
-                super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
-            let now = chrono::Utc::now().timestamp();
-            let domain: String = tx
-                .tx()
-                .query_row(
-                    "SELECT domain FROM workflow_runs WHERE id = ?1",
-                    rusqlite::params![run_id],
-                    |r| r.get(0),
-                )
-                .map_err(checkpoint::persist_error)?;
-            // The armed SLA clock rides the packet; the relay's own P3 TTL
-            // fallback applies when no clock was armed (a pre-R13 case).
-            let armed: Option<i64> = tx
-                .tx()
-                .query_row(
-                    "SELECT payload_json FROM agent_session_events \
-                     WHERE run_id = ?1 AND kind = 'control:sla_armed' \
-                     ORDER BY seq DESC LIMIT 1",
-                    rusqlite::params![run_id],
-                    |r| r.get::<_, String>(0),
-                )
-                .optional()
-                .map_err(checkpoint::persist_error)?
-                .and_then(|p| serde_json::from_str::<serde_json::Value>(&p).ok())
-                .and_then(|v| v["sla_deadline_epoch"].as_i64());
-            let deadline =
-                armed.unwrap_or_else(|| now + brain_engine_sdk::policy::Priority::P3.ttl_secs());
-            let draft = crate::workflow::relay::OfferDraft {
-                domain: &domain,
-                run_id,
-                from_principal: "gdl-loop",
-                to_principal: &to,
-                overlap_minutes: 0,
-                sla_deadline: deadline,
-                now,
-            };
-            let (offer_id, created) = crate::workflow::relay::insert_offer(tx.tx(), &draft)
-                .map_err(checkpoint::persist_error)?;
-            if created {
-                let facts = ipass_facts(&case, Some(deadline), now);
-                let missing = crate::workflow::relay::packet_missing(&facts);
-                let payload = serde_json::json!({
-                    "offer_id": offer_id,
-                    "to": to,
-                    "missing": missing,
-                })
-                .to_string();
-                session_log::append(
-                    tx.tx(),
-                    run_id,
-                    "control:handoff_offer",
-                    &payload,
-                    &format!("run{run_id}:control:handoff_offer:{owner}"),
-                    now,
-                )
-                .map_err(checkpoint::persist_error)?;
-            }
-            tx.commit().map_err(checkpoint::persist_error)?;
-            Ok::<_, LoopError>(())
-        })
-        .await
-        .map_err(checkpoint::persist_error)??;
-        Ok(())
-    }
-
     /// The handoff pipeline at the escalation terminal: the case's session
     /// tree (the revisit rides `branch()` — the path entries are recorded
     /// exactly as a no-revisit case records them; only the abandoned
@@ -3009,272 +2812,7 @@ impl GdlDriver {
             let mut conn = pool.get().map_err(checkpoint::persist_error)?;
             let mut tx =
                 super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
-            let now = chrono::Utc::now().timestamp();
-
-            // The case path as tree entries: one per completed phase,
-            // chained oldest→newest. Idempotent keys make a re-record a
-            // no-op receipt — the path rows are byte-stable whether or
-            // not the case revisited (the branch law, at row level).
-            let phases = (phases_completed as usize).min(GdlPhase::ALL.len());
-            let mut parent_id: Option<String> = None;
-            for (i, phase) in GdlPhase::ALL.iter().take(phases).enumerate() {
-                let entry = TreeEntry {
-                    id: format!("p{}", i + 1),
-                    parent_id: parent_id.clone(),
-                    kind: TreeEntryKind::Custom,
-                    body: format!("phase {} complete", phase.as_str()),
-                    from_id: None,
-                    label: None,
-                    seq: 0,
-                };
-                session_log::append(
-                    tx.tx(),
-                    run_id,
-                    TREE_ROW_KIND,
-                    &entry.to_json().to_string(),
-                    &format!("run{run_id}:handoff_tree:{owner}:{}", entry.id),
-                    now,
-                )
-                .map_err(checkpoint::persist_error)?;
-                parent_id = Some(entry.id);
-            }
-            // The pre-verify leaf: the last recorded path entry (or none —
-            // a case escalating at Intake branches from the very root,
-            // which persists `from: "root"`).
-            let pre_verify_leaf = parent_id;
-
-            // The revisit branch: the abandoned attempt is a child of the
-            // pre-verify leaf, summarized — never lost, never rewritten.
-            if attempt > 1
-                && let Some(leaf) = &pre_verify_leaf
-            {
-                let abandoned = TreeEntry {
-                    id: "abandoned".to_string(),
-                    parent_id: Some(leaf.clone()),
-                    kind: TreeEntryKind::Custom,
-                    body: format!("abandoned verify attempt {attempt}"),
-                    from_id: None,
-                    label: None,
-                    seq: 0,
-                };
-                session_log::append(
-                    tx.tx(),
-                    run_id,
-                    TREE_ROW_KIND,
-                    &abandoned.to_json().to_string(),
-                    &format!("run{run_id}:handoff_tree:{owner}:abandoned"),
-                    now,
-                )
-                .map_err(checkpoint::persist_error)?;
-            }
-
-            // The handoff summary: a child of the pre-verify leaf (the new
-            // navigation position), folding the abandoned branch into the
-            // context the packet walks.
-            let summary = TreeEntry {
-                id: "handoff_summary".to_string(),
-                parent_id: pre_verify_leaf.clone(),
-                kind: TreeEntryKind::BranchSummary,
-                body: format!("case handed off after {phases_completed} recorded phase(s)"),
-                from_id: pre_verify_leaf.clone(),
-                label: None,
-                seq: 0,
-            };
-            session_log::append(
-                tx.tx(),
-                run_id,
-                TREE_ROW_KIND,
-                &summary.to_json().to_string(),
-                &format!("run{run_id}:handoff_tree:{owner}:handoff_summary"),
-                now,
-            )
-            .map_err(checkpoint::persist_error)?;
-
-            // The lifecycle: requested → generated. `generated` carries
-            // the HITL seam — the machine stops here; delivery and
-            // cancellation are operator outcomes (named refusals without
-            // a decision reference).
-            write_handoff_transition(
-                tx.tx(),
-                run_id,
-                &owner,
-                HandoffTransition::Requested,
-                None,
-                &serde_json::json!({ "phases_completed": phases_completed }),
-                now,
-            )?;
-            write_handoff_transition(
-                tx.tx(),
-                run_id,
-                &owner,
-                HandoffTransition::Generated,
-                None,
-                &serde_json::json!({ "human_edit_required": true }),
-                now,
-            )?;
-
-            // The persist asymmetry: the old session's row is a POINTER —
-            // a digest reference, no packet body. The new session's row
-            // carries the reinjected packet context (typed case fields +
-            // the walked branch path — never raw session bytes) and links
-            // back to the pointer.
-            let branch_context = packet_branch_context(tx.tx(), run_id)?;
-            let reinjection = build_handoff_reinjection(&case, &branch_context, now);
-            let packet_sha = crate::audit::hash(&reinjection.to_string());
-            let pointer_key = format!("run{run_id}:handoff_pointer:{owner}");
-            let pointer_payload = serde_json::json!({
-                "session": "old",
-                "summary_entry": summary.id,
-                "packet_sha": packet_sha,
-            })
-            .to_string();
-            session_log::append(
-                tx.tx(),
-                run_id,
-                HANDOFF_POINTER_KIND,
-                &pointer_payload,
-                &pointer_key,
-                now,
-            )
-            .map_err(checkpoint::persist_error)?;
-            super::audit_write(
-                tx.tx(),
-                run_id,
-                "handoff_pointer",
-                AuditStatus::Ok,
-                "handoff summary pointer recorded",
-            );
-            let reinjection_payload = serde_json::json!({
-                "session": "new",
-                "parent_key": pointer_key,
-                "packet": reinjection,
-            })
-            .to_string();
-            session_log::append(
-                tx.tx(),
-                run_id,
-                HANDOFF_REINJECTION_KIND,
-                &reinjection_payload,
-                &format!("run{run_id}:handoff_reinjection:{owner}"),
-                now,
-            )
-            .map_err(checkpoint::persist_error)?;
-            super::audit_write(
-                tx.tx(),
-                run_id,
-                "handoff_reinjection",
-                AuditStatus::Ok,
-                "handoff reinjection recorded",
-            );
-
-            // C3 — the return contract: the referral handoff carries its
-            // return obligation IN THIS transaction (handoff rows +
-            // contract row + audit row commit together; a rollback removes
-            // both — no orphan obligations). The contract is the referring
-            // stage's typed artifact; the machine never invents its
-            // content. The closure, when the case carries one, rides the
-            // reinjection packet as the machine's ADVISORY proposal — the
-            // human owns the closure decision (loop exit 2).
-            if let Some(contract) = &case.back_referral {
-                let priority = case
-                    .triage
-                    .as_ref()
-                    .map(|t| t.priority.as_str())
-                    .unwrap_or("");
-                // The contract's own record law, enforced HERE. It was
-                // declared and advertised and called from tests only, so a
-                // model-authored contract reached storage unvalidated — which
-                // is why the return-window bound was inert and only the
-                // `checked_add` backstop stood between a model and a
-                // process-kill. A contract that does not satisfy its own
-                // completeness law does not get written.
-                let problems = contract.attachment_errors();
-                if !problems.is_empty() {
-                    return Err(checkpoint::persist_error(format!(
-                        "back-referral contract incomplete at handoff: {}",
-                        problems.join("; ")
-                    )));
-                }
-                write_back_referral_row(tx.tx(), run_id, &owner, contract, priority, now)?;
-            }
-
-            tx.commit().map_err(checkpoint::persist_error)?;
-            Ok::<_, LoopError>(())
-        })
-        .await
-        .map_err(checkpoint::persist_error)??;
-        Ok(())
-    }
-
-    /// The resolved-referral path: a referral-type case that RESOLVED
-    /// still owes its return contract — the row IS the obligation (it
-    /// surfaces on the open-contracts count until the receiver's report
-    /// comes back). One WorkflowTx: contract row + audit row; committed
-    /// only after the resolution itself committed.
-    async fn record_resolved_back_referral_row(
-        &self,
-        run_id: i64,
-        owner: &str,
-        case: &GdlCase,
-    ) -> Result<(), LoopError> {
-        let Some(contract) = case.back_referral.clone() else {
-            return Ok(());
-        };
-        let priority = case
-            .triage
-            .as_ref()
-            .map(|t| t.priority.clone())
-            .unwrap_or_default();
-        let owner = owner.to_string();
-        let pool = self.pool.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut conn = pool.get().map_err(checkpoint::persist_error)?;
-            let mut tx =
-                super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
-            let now = chrono::Utc::now().timestamp();
-            // Same completeness law as the handoff writer above, for the same
-            // reason: a gate nothing calls is not a gate.
-            let problems = contract.attachment_errors();
-            if !problems.is_empty() {
-                return Err(checkpoint::persist_error(format!(
-                    "back-referral contract incomplete: {}",
-                    problems.join("; ")
-                )));
-            }
-            write_back_referral_row(tx.tx(), run_id, &owner, &contract, &priority, now)?;
-            tx.commit().map_err(checkpoint::persist_error)?;
-            Ok::<_, LoopError>(())
-        })
-        .await
-        .map_err(checkpoint::persist_error)??;
-        Ok(())
-    }
-
-    /// The typed finding row on the session log — recorded for the
-    /// operator on EVERY delegation, whatever the outcome.
-    async fn record_adversarial_row(
-        &self,
-        run_id: i64,
-        exchange_id: i64,
-        outcome: &str,
-        detail: &str,
-    ) -> Result<(), LoopError> {
-        let pool = self.pool.clone();
-        let payload = serde_json::json!({ "outcome": outcome, "detail": detail }).to_string();
-        let key = format!("run{run_id}:control:adversarial_recheck:{exchange_id}");
-        tokio::task::spawn_blocking(move || {
-            let mut conn = pool.get().map_err(checkpoint::persist_error)?;
-            let mut tx =
-                super::tx::WorkflowTx::begin(&mut conn).map_err(checkpoint::persist_error)?;
-            session_log::append(
-                tx.tx(),
-                run_id,
-                "control:adversarial_recheck",
-                &payload,
-                &key,
-                chrono::Utc::now().timestamp(),
-            )
-            .map_err(checkpoint::persist_error)?;
+            handoff_handover_in_tx(tx.tx(), run_id, &owner, &case, phases_completed, attempt)?;
             tx.commit().map_err(checkpoint::persist_error)?;
             Ok::<_, LoopError>(())
         })
@@ -3354,6 +2892,10 @@ impl GdlDriver {
                 exchange: None,
                 terminal: None,
             };
+            // The adversarial re-check finding for THIS pass, if it runs one.
+            // Carried to the advance rather than written on the spot, so the
+            // finding and the phase it judged commit together.
+            let mut adversarial: Option<AdversarialRow> = None;
             let mut case = cp.case.clone();
             case.phase = phase;
             if self.proficiency < super::proficiency::phase_owner(phase) {
@@ -3615,13 +3157,17 @@ impl GdlDriver {
                                         AdversarialFinding::Consistent(d) => ("consistent", d),
                                         AdversarialFinding::Unavailable(d) => ("unavailable", d),
                                     };
-                                    self.record_adversarial_row(
-                                        run_id,
-                                        receipt.exchange_id,
-                                        outcome_label,
-                                        detail,
-                                    )
-                                    .await?;
+                                    // The typed row is NOT written here: it is
+                                    // a satellite of this phase pass and lands
+                                    // inside the advance's own transaction
+                                    // (below). Deferring it is what makes a
+                                    // rolled-back Verify leave neither an
+                                    // advanced phase nor a finding row for it.
+                                    adversarial = Some(AdversarialRow {
+                                        exchange_id: receipt.exchange_id,
+                                        outcome: outcome_label,
+                                        detail: detail.clone(),
+                                    });
                                     if let AdversarialFinding::Contradicted(d) = finding {
                                         change.verdict = "fail";
                                         let errors = vec![err(
@@ -3788,67 +3334,30 @@ impl GdlDriver {
                     }
                 }
             }
-            // The soft-handoff law at the escalation path: every
-            // escalated/routed terminal evaluates the integer predicate and
-            // lands a typed row — the operator sees whether the 80%
-            // soft-handoff posture fired for this case.
-            if matches!(
-                change.terminal,
-                Some(GdlOutcome::Escalated { .. } | GdlOutcome::Routed { .. })
-            ) {
-                self.record_soft_handoff_row(run_id, &owner, &case).await?;
-            }
-            // C3: the I-PASS packet pre-fill — an escalated case lands ONE
-            // offer draft, pre-filled from the case, for a human to decide.
-            if matches!(change.terminal, Some(GdlOutcome::Escalated { .. })) {
-                self.record_escalation_offer(run_id, &owner, &case).await?;
-                self.record_handoff_handover(run_id, &owner, &case, cp.phases, attempt)
-                    .await?;
-            }
+            // The soft-handoff row, the I-PASS offer draft, the handoff
+            // handover, the resolved back-referral and the SLA-armed clock
+            // used to commit here, in transactions of their own, split AROUND
+            // the advance. They are now satellites of it: ONE transaction,
+            // ONE commit point. See `Satellites`.
             let triage_passed = phase == GdlPhase::Triage && change.verdict == "pass";
+            let satellites = Satellites::new(
+                run_id,
+                &owner,
+                &case,
+                change.terminal.as_ref(),
+                triage_passed,
+                attempt,
+                cp.phases,
+                adversarial.take(),
+            );
             let pool = self.pool.clone();
             let owned = owner.clone();
             cp = tokio::task::spawn_blocking(move || {
                 let mut conn = pool.get().map_err(persist_error)?;
-                checkpoint::advance(&mut conn, &cp, &owned, change)
+                checkpoint::advance(&mut conn, &cp, &owned, change, Some(&satellites))
             })
             .await
             .map_err(persist_error)??;
-            // C3 — a referral-type case that RESOLVED still owes its
-            // return contract; the row is the obligation. Written only
-            // after the resolution committed, so a rolled-back case can
-            // never leave an orphan contract behind.
-            if matches!(cp.terminal, Some(GdlOutcome::Resolved { .. })) {
-                let care = case.triage.as_ref().and_then(|t| t.care_setting.clone());
-                if matches!(care.as_deref(), Some("refer") | Some("facility")) {
-                    self.record_resolved_back_referral_row(run_id, &owner, &case)
-                        .await?;
-                }
-            }
-            // The typed SLA-arming row: recorded only after the arming pass
-            // has committed. The row IS the durable clock — append-only,
-            // replay-exact — because the checkpoint state-derivation law
-            // requires the committed case to re-derive exactly from the
-            // prior case plus the artifact, which excludes any live-clock
-            // envelope field. ONE clock read arms both the stamp and the
-            // deadline, so the row's window is exact.
-            if triage_passed
-                && let Some(t) = case.triage.as_ref()
-                && let Some(window) = sla_seconds(&t.priority)
-            {
-                let now = chrono::Utc::now().timestamp();
-                let acuity = t.acuity_band.clone();
-                self.record_sla_armed_row(
-                    run_id,
-                    &owner,
-                    attempt,
-                    &t.priority,
-                    acuity.as_deref(),
-                    now,
-                    now + window,
-                )
-                .await?;
-            }
             completed += 1;
             if cp.terminal.is_none() && pause_after.is_some_and(|limit| completed >= limit) {
                 let pool = self.pool.clone();
@@ -3861,6 +3370,632 @@ impl GdlDriver {
                 return Ok(None);
             }
         }
+    }
+}
+
+// ── the satellite writers: the rows that make a phase pass actionable ──
+//
+// Six rows used to commit in transactions of their own, split AROUND the
+// checkpoint advance in BOTH directions, and both orderings were deliberate:
+//
+//   before the advance — soft-handoff, the I-PASS offer draft, the handoff
+//     handover, the adversarial re-check. Written first "so a rolled-back
+//     case can never leave an orphan contract behind."
+//   after the advance — the resolved back-referral, the SLA-armed row.
+//     Written last "because the row IS the durable clock" and the
+//     checkpoint state-derivation law requires the committed case to
+//     re-derive exactly from the prior case plus the artifact, which
+//     excludes any live-clock envelope field.
+//
+// Each ordering bought half the property and paid for it with the other
+// half. One transaction makes the orphan question UNASKABLE: a rollback
+// takes the satellites with the checkpoint, and a crash cannot leave an
+// advanced phase without the row that made it actionable, because there is
+// no longer a window between them. Neither invariant weakens — the clock
+// still lives in its own row, never in the case envelope; a rollback still
+// cannot strand a contract.
+//
+// The bodies take `&Connection` so they ride the CALLER's transaction, and
+// the phase machine reaches them ONLY through `Satellites::write_in_tx`. Two
+// async `record_*` wrappers survive above, each keeping its own transaction,
+// because the tests that drive a writer in isolation call them directly; the
+// other four had no caller left and were deleted rather than left as dead
+// wrappers.
+
+/// The `audit_write` law made fail-closed. Every satellite row above is a
+/// phase-pass commitment, so its audit row is REQUIRED like the checkpoint's
+/// own (`gdl_checkpoint::checked_audit`): a failure aborts the transaction
+/// instead of leaving a silent gap in the chain.
+fn checked_audit_write(
+    conn: &Connection,
+    run_id: i64,
+    target: &str,
+    status: AuditStatus,
+    detail: &str,
+) -> Result<(), LoopError> {
+    let tenant: String = conn
+        .query_row(
+            "SELECT domain FROM workflow_runs WHERE id = ?1",
+            rusqlite::params![run_id],
+            |r| r.get(0),
+        )
+        .unwrap_or_else(|_| "global".to_string());
+    crate::audit::record_tenant(
+        conn,
+        crate::audit::AuditKind::Workflow,
+        crate::workflow::ACTOR,
+        target,
+        status,
+        detail,
+        &tenant,
+    )
+    .ok_or_else(|| checkpoint::persist_error("GDL satellite audit insertion failed"))?;
+    Ok(())
+}
+
+/// The typed soft-handoff row: the integer predicate, the latch state, and
+/// on a violation the denied audit row + the SDK gap proposal.
+fn soft_handoff_row_in_tx(
+    conn: &Connection,
+    run_id: i64,
+    owner: &str,
+    case: &GdlCase,
+) -> Result<(), LoopError> {
+    let verify_pass = case.verify.as_ref().is_some_and(|v| v.pass);
+    let fires = soft_handoff_latch_fires(verify_pass);
+    let payload = serde_json::json!({
+        // What the predicate actually reads . The old
+        // `confidence_pct` key was a fabricated 0-or-100 the machine
+        // derived from `verify.pass`; naming it confidence invited a reader
+        // to treat a binary as a scale.
+        "verify_pass": verify_pass,
+        "fires": fires,
+        // The machine NEVER authors this. A justification is an operator
+        // accepting the handoff, and only an operator may write one — an
+        // agent that can justify its own soft handoff has no latch at all.
+        // The null is the honest value here, not a stub .
+        "justification": serde_json::Value::Null,
+    })
+    .to_string();
+    let key = format!("run{run_id}:control:soft_handoff:{owner}");
+    // The prior latch state for this run, read before this row
+    // lands: fired = any earlier fires:true row; justified = any
+    // recorded non-empty justification on those rows.
+    let prior: Vec<String> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT payload_json FROM agent_session_events \
+                 WHERE run_id = ?1 AND kind = 'control:soft_handoff' ORDER BY seq",
+            )
+            .map_err(checkpoint::persist_error)?;
+        stmt.query_map(rusqlite::params![run_id], |r| r.get(0))
+            .map(|it| it.filter_map(Result::ok).collect())
+            .map_err(checkpoint::persist_error)?
+    };
+    let prior_fired = prior.iter().any(|p| {
+        serde_json::from_str::<serde_json::Value>(p)
+            .ok()
+            .and_then(|v| v["fires"].as_bool())
+            .unwrap_or(false)
+    });
+    let prior_justified = prior.iter().any(|p| {
+        serde_json::from_str::<serde_json::Value>(p)
+            .ok()
+            .and_then(|v| v["justification"].as_str().map(|s| !s.trim().is_empty()))
+            .unwrap_or(false)
+    });
+    let now = chrono::Utc::now().timestamp();
+    session_log::append(conn, run_id, "control:soft_handoff", &payload, &key, now)
+        .map_err(checkpoint::persist_error)?;
+    // The unjustified-revisit law: a fired evaluation on an
+    // already-fired, never-justified run. The audit row is DENIED;
+    // the knowledge gap rides the SDK's gap rule (no coverage ->
+    // propose a new article) as a recorded proposal, never an
+    // auto-publish.
+    if soft_handoff_latch_violation(fires, prior_fired, prior_justified) {
+        checked_audit_write(
+            conn,
+            run_id,
+            "soft_handoff",
+            AuditStatus::Denied,
+            SOFT_HANDOFF_VIOLATION,
+        )?;
+        let action = brain_engine_sdk::pure::qa_score::gap_decision(0);
+        let gap = serde_json::json!({
+            "violation": SOFT_HANDOFF_VIOLATION,
+            "proposal": action.map(|a| format!("{a:?}")),
+        })
+        .to_string();
+        session_log::append(
+            conn,
+            run_id,
+            "control:soft_handoff_gap",
+            &gap,
+            &format!("run{run_id}:control:soft_handoff_gap:{owner}"),
+            now,
+        )
+        .map_err(checkpoint::persist_error)?;
+    }
+    Ok(())
+}
+
+/// The typed SLA-arming row: the pinned P-class window, its deadline, the
+/// acuity-band monitor and the advertised tighter-of target — all from the
+/// caller's ONE clock read, so the row's window is exact.
+#[allow(clippy::too_many_arguments)]
+fn sla_armed_row_in_tx(
+    conn: &Connection,
+    run_id: i64,
+    owner: &str,
+    attempt: u32,
+    priority: &str,
+    acuity_band: Option<&str>,
+    now: i64,
+    deadline: i64,
+) -> Result<(), LoopError> {
+    let acuity_window = acuity_band.and_then(acuity_sla);
+    let payload = serde_json::json!({
+        "priority": priority,
+        "sla_deadline_epoch": deadline,
+        "acuity_band": acuity_band,
+        "acuity_sla_seconds": acuity_window,
+        "advertised_sla_seconds": advertised_sla(priority, acuity_band),
+    })
+    .to_string();
+    let key = format!("run{run_id}:control:sla_armed:{owner}:{attempt}");
+    session_log::append(conn, run_id, "control:sla_armed", &payload, &key, now)
+        .map_err(checkpoint::persist_error)?;
+    Ok(())
+}
+
+/// The machine-landed handoff offer: the I-PASS packet pre-filled from the
+/// case, as a DRAFT a human decides.
+fn escalation_offer_in_tx(
+    conn: &Connection,
+    run_id: i64,
+    owner: &str,
+    case: &GdlCase,
+) -> Result<(), LoopError> {
+    let to = escalation_target(case);
+    let to = to
+        .chars()
+        .take(crate::workflow::relay::MAX_PRINCIPAL_LEN)
+        .collect::<String>();
+    let now = chrono::Utc::now().timestamp();
+    let domain: String = conn
+        .query_row(
+            "SELECT domain FROM workflow_runs WHERE id = ?1",
+            rusqlite::params![run_id],
+            |r| r.get(0),
+        )
+        .map_err(checkpoint::persist_error)?;
+    // The armed SLA clock rides the packet; the relay's own P3 TTL
+    // fallback applies when no clock was armed (a pre-R13 case).
+    let armed: Option<i64> = conn
+        .query_row(
+            "SELECT payload_json FROM agent_session_events \
+             WHERE run_id = ?1 AND kind = 'control:sla_armed' \
+             ORDER BY seq DESC LIMIT 1",
+            rusqlite::params![run_id],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(checkpoint::persist_error)?
+        .and_then(|p| serde_json::from_str::<serde_json::Value>(&p).ok())
+        .and_then(|v| v["sla_deadline_epoch"].as_i64());
+    let deadline = armed.unwrap_or_else(|| now + brain_engine_sdk::policy::Priority::P3.ttl_secs());
+    let draft = crate::workflow::relay::OfferDraft {
+        domain: &domain,
+        run_id,
+        from_principal: "gdl-loop",
+        to_principal: &to,
+        overlap_minutes: 0,
+        sla_deadline: deadline,
+        now,
+    };
+    let (offer_id, created) =
+        crate::workflow::relay::insert_offer(conn, &draft).map_err(checkpoint::persist_error)?;
+    if created {
+        let facts = ipass_facts(case, Some(deadline), now);
+        let missing = crate::workflow::relay::packet_missing(&facts);
+        let payload = serde_json::json!({
+            "offer_id": offer_id,
+            "to": to,
+            "missing": missing,
+        })
+        .to_string();
+        session_log::append(
+            conn,
+            run_id,
+            "control:handoff_offer",
+            &payload,
+            &format!("run{run_id}:control:handoff_offer:{owner}"),
+            now,
+        )
+        .map_err(checkpoint::persist_error)?;
+    }
+    Ok(())
+}
+
+/// The handoff pipeline: the session tree, the revisit branch, the named
+/// lifecycle transitions, the persist asymmetry, and the return contract.
+fn handoff_handover_in_tx(
+    conn: &Connection,
+    run_id: i64,
+    owner: &str,
+    case: &GdlCase,
+    phases_completed: u32,
+    attempt: u32,
+) -> Result<(), LoopError> {
+    let now = chrono::Utc::now().timestamp();
+
+    // The case path as tree entries: one per completed phase,
+    // chained oldest→newest. Idempotent keys make a re-record a
+    // no-op receipt — the path rows are byte-stable whether or
+    // not the case revisited (the branch law, at row level).
+    let phases = (phases_completed as usize).min(GdlPhase::ALL.len());
+    let mut parent_id: Option<String> = None;
+    for (i, phase) in GdlPhase::ALL.iter().take(phases).enumerate() {
+        let entry = TreeEntry {
+            id: format!("p{}", i + 1),
+            parent_id: parent_id.clone(),
+            kind: TreeEntryKind::Custom,
+            body: format!("phase {} complete", phase.as_str()),
+            from_id: None,
+            label: None,
+            seq: 0,
+        };
+        session_log::append(
+            conn,
+            run_id,
+            TREE_ROW_KIND,
+            &entry.to_json().to_string(),
+            &format!("run{run_id}:handoff_tree:{owner}:{}", entry.id),
+            now,
+        )
+        .map_err(checkpoint::persist_error)?;
+        parent_id = Some(entry.id);
+    }
+    // The pre-verify leaf: the last recorded path entry (or none —
+    // a case escalating at Intake branches from the very root,
+    // which persists `from: "root"`).
+    let pre_verify_leaf = parent_id;
+
+    // The revisit branch: the abandoned attempt is a child of the
+    // pre-verify leaf, summarized — never lost, never rewritten.
+    if attempt > 1
+        && let Some(leaf) = &pre_verify_leaf
+    {
+        let abandoned = TreeEntry {
+            id: "abandoned".to_string(),
+            parent_id: Some(leaf.clone()),
+            kind: TreeEntryKind::Custom,
+            body: format!("abandoned verify attempt {attempt}"),
+            from_id: None,
+            label: None,
+            seq: 0,
+        };
+        session_log::append(
+            conn,
+            run_id,
+            TREE_ROW_KIND,
+            &abandoned.to_json().to_string(),
+            &format!("run{run_id}:handoff_tree:{owner}:abandoned"),
+            now,
+        )
+        .map_err(checkpoint::persist_error)?;
+    }
+
+    // The handoff summary: a child of the pre-verify leaf (the new
+    // navigation position), folding the abandoned branch into the
+    // context the packet walks.
+    let summary = TreeEntry {
+        id: "handoff_summary".to_string(),
+        parent_id: pre_verify_leaf.clone(),
+        kind: TreeEntryKind::BranchSummary,
+        body: format!("case handed off after {phases_completed} recorded phase(s)"),
+        from_id: pre_verify_leaf.clone(),
+        label: None,
+        seq: 0,
+    };
+    session_log::append(
+        conn,
+        run_id,
+        TREE_ROW_KIND,
+        &summary.to_json().to_string(),
+        &format!("run{run_id}:handoff_tree:{owner}:handoff_summary"),
+        now,
+    )
+    .map_err(checkpoint::persist_error)?;
+
+    // The lifecycle: requested → generated. `generated` carries
+    // the HITL seam — the machine stops here; delivery and
+    // cancellation are operator outcomes (named refusals without
+    // a decision reference).
+    write_handoff_transition(
+        conn,
+        run_id,
+        owner,
+        HandoffTransition::Requested,
+        None,
+        &serde_json::json!({ "phases_completed": phases_completed }),
+        now,
+    )?;
+    write_handoff_transition(
+        conn,
+        run_id,
+        owner,
+        HandoffTransition::Generated,
+        None,
+        &serde_json::json!({ "human_edit_required": true }),
+        now,
+    )?;
+
+    // The persist asymmetry: the old session's row is a POINTER —
+    // a digest reference, no packet body. The new session's row
+    // carries the reinjected packet context (typed case fields +
+    // the walked branch path — never raw session bytes) and links
+    // back to the pointer.
+    let branch_context = packet_branch_context(conn, run_id)?;
+    let reinjection = build_handoff_reinjection(case, &branch_context, now);
+    let packet_sha = crate::audit::hash(&reinjection.to_string());
+    let pointer_key = format!("run{run_id}:handoff_pointer:{owner}");
+    let pointer_payload = serde_json::json!({
+        "session": "old",
+        "summary_entry": summary.id,
+        "packet_sha": packet_sha,
+    })
+    .to_string();
+    session_log::append(
+        conn,
+        run_id,
+        HANDOFF_POINTER_KIND,
+        &pointer_payload,
+        &pointer_key,
+        now,
+    )
+    .map_err(checkpoint::persist_error)?;
+    checked_audit_write(
+        conn,
+        run_id,
+        "handoff_pointer",
+        AuditStatus::Ok,
+        "handoff summary pointer recorded",
+    )?;
+    let reinjection_payload = serde_json::json!({
+        "session": "new",
+        "parent_key": pointer_key,
+        "packet": reinjection,
+    })
+    .to_string();
+    session_log::append(
+        conn,
+        run_id,
+        HANDOFF_REINJECTION_KIND,
+        &reinjection_payload,
+        &format!("run{run_id}:handoff_reinjection:{owner}"),
+        now,
+    )
+    .map_err(checkpoint::persist_error)?;
+    checked_audit_write(
+        conn,
+        run_id,
+        "handoff_reinjection",
+        AuditStatus::Ok,
+        "handoff reinjection recorded",
+    )?;
+
+    // C3 — the return contract: the referral handoff carries its
+    // return obligation IN THIS transaction (handoff rows +
+    // contract row + audit row commit together; a rollback removes
+    // both — no orphan obligations). The contract is the referring
+    // stage's typed artifact; the machine never invents its
+    // content. The closure, when the case carries one, rides the
+    // reinjection packet as the machine's ADVISORY proposal — the
+    // human owns the closure decision (loop exit 2).
+    if let Some(contract) = &case.back_referral {
+        let priority = case
+            .triage
+            .as_ref()
+            .map(|t| t.priority.as_str())
+            .unwrap_or("");
+        // The contract's own record law, enforced HERE. It was
+        // declared and advertised and called from tests only, so a
+        // model-authored contract reached storage unvalidated — which
+        // is why the return-window bound was inert and only the
+        // `checked_add` backstop stood between a model and a
+        // process-kill. A contract that does not satisfy its own
+        // completeness law does not get written.
+        let problems = contract.attachment_errors();
+        if !problems.is_empty() {
+            return Err(checkpoint::persist_error(format!(
+                "back-referral contract incomplete at handoff: {}",
+                problems.join("; ")
+            )));
+        }
+        write_back_referral_row(conn, run_id, owner, contract, priority, now)?;
+    }
+    Ok(())
+}
+
+/// The resolved-referral path: a referral-type case that RESOLVED still owes
+/// its return contract — the row IS the obligation.
+fn resolved_back_referral_row_in_tx(
+    conn: &Connection,
+    run_id: i64,
+    owner: &str,
+    case: &GdlCase,
+) -> Result<(), LoopError> {
+    let Some(contract) = case.back_referral.clone() else {
+        return Ok(());
+    };
+    let priority = case
+        .triage
+        .as_ref()
+        .map(|t| t.priority.clone())
+        .unwrap_or_default();
+    let now = chrono::Utc::now().timestamp();
+    // Same completeness law as the handoff writer above, for the same
+    // reason: a gate nothing calls is not a gate.
+    let problems = contract.attachment_errors();
+    if !problems.is_empty() {
+        return Err(checkpoint::persist_error(format!(
+            "back-referral contract incomplete: {}",
+            problems.join("; ")
+        )));
+    }
+    write_back_referral_row(conn, run_id, owner, &contract, &priority, now)?;
+    Ok(())
+}
+
+/// The typed finding row on the session log — recorded for the operator on
+/// EVERY delegation, whatever the outcome.
+fn adversarial_row_in_tx(
+    conn: &Connection,
+    run_id: i64,
+    exchange_id: i64,
+    outcome: &str,
+    detail: &str,
+) -> Result<(), LoopError> {
+    let payload = serde_json::json!({ "outcome": outcome, "detail": detail }).to_string();
+    let key = format!("run{run_id}:control:adversarial_recheck:{exchange_id}");
+    session_log::append(
+        conn,
+        run_id,
+        "control:adversarial_recheck",
+        &payload,
+        &key,
+        chrono::Utc::now().timestamp(),
+    )
+    .map_err(checkpoint::persist_error)?;
+    Ok(())
+}
+
+/// The satellite set for ONE phase pass, pre-computed from the pass's own
+/// decisions and written inside the checkpoint advance's transaction.
+///
+/// Every field is knowable before the advance runs: the terminal is the
+/// transition's own, `triage_passed` is the pass's own predicate, and the
+/// adversarial finding comes from the child that already returned. That is
+/// what lets the advance stay the single commit point instead of gaining a
+/// second one after it.
+///
+/// Owned, not borrowed: it crosses into the blocking closure beside the
+/// transition itself, and a `GdlCase` clone is cheaper than a lifetime that
+/// would keep the case borrowed across the await.
+pub(super) struct Satellites {
+    run_id: i64,
+    owner: String,
+    case: GdlCase,
+    terminal: Option<GdlOutcome>,
+    triage_passed: bool,
+    attempt: u32,
+    phases_completed: u32,
+    adversarial: Option<AdversarialRow>,
+}
+
+/// One adversarial re-check finding, carried from the child that produced it
+/// to the transaction that records it.
+pub(super) struct AdversarialRow {
+    pub(super) exchange_id: i64,
+    pub(super) outcome: &'static str,
+    pub(super) detail: String,
+}
+
+impl Satellites {
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn new(
+        run_id: i64,
+        owner: &str,
+        case: &GdlCase,
+        terminal: Option<&GdlOutcome>,
+        triage_passed: bool,
+        attempt: u32,
+        phases_completed: u32,
+        adversarial: Option<AdversarialRow>,
+    ) -> Self {
+        Self {
+            run_id,
+            owner: owner.to_string(),
+            case: case.clone(),
+            terminal: terminal.cloned(),
+            triage_passed,
+            attempt,
+            phases_completed,
+            adversarial,
+        }
+    }
+
+    /// Write every satellite row this pass owes, INSIDE the caller's
+    /// transaction — the same one holding the checkpoint advance. A failure
+    /// here aborts that transaction, so the phase does not advance and no
+    /// row is half-written; there is no longer a window in which one is
+    /// durable and the other is not.
+    pub(super) fn write_in_tx(&self, conn: &Connection) -> Result<(), LoopError> {
+        let owner = self.owner.as_str();
+        let case = &self.case;
+        // The soft-handoff law at the escalation path: every
+        // escalated/routed terminal evaluates the integer predicate and
+        // lands a typed row — the operator sees whether the 80%
+        // soft-handoff posture fired for this case.
+        if matches!(
+            self.terminal,
+            Some(GdlOutcome::Escalated { .. } | GdlOutcome::Routed { .. })
+        ) {
+            soft_handoff_row_in_tx(conn, self.run_id, owner, case)?;
+        }
+        // C3: the I-PASS packet pre-fill — an escalated case lands ONE
+        // offer draft, pre-filled from the case, for a human to decide.
+        if matches!(self.terminal, Some(GdlOutcome::Escalated { .. })) {
+            escalation_offer_in_tx(conn, self.run_id, owner, case)?;
+            handoff_handover_in_tx(
+                conn,
+                self.run_id,
+                owner,
+                case,
+                self.phases_completed,
+                self.attempt,
+            )?;
+        }
+        // C3 — a referral-type case that RESOLVED still owes its return
+        // contract; the row is the obligation. The gate is unchanged (only
+        // a refer/facility case owes one) and the row is still a SEPARATE
+        // row from the case envelope, so the state-derivation law holds: the
+        // committed case still re-derives exactly from the prior case plus
+        // the artifact. What changed is that it is no longer a separate
+        // COMMIT.
+        if matches!(self.terminal, Some(GdlOutcome::Resolved { .. })) {
+            let care = case.triage.as_ref().and_then(|t| t.care_setting.as_deref());
+            if matches!(care, Some("refer") | Some("facility")) {
+                resolved_back_referral_row_in_tx(conn, self.run_id, owner, case)?;
+            }
+        }
+        // The typed SLA-arming row: the row IS the durable clock —
+        // append-only, replay-exact — because the checkpoint
+        // state-derivation law requires the committed case to re-derive
+        // exactly from the prior case plus the artifact, which excludes any
+        // live-clock envelope field. ONE clock read arms both the stamp and
+        // the deadline, so the row's window is exact.
+        if self.triage_passed
+            && let Some(t) = case.triage.as_ref()
+            && let Some(window) = sla_seconds(&t.priority)
+        {
+            let now = chrono::Utc::now().timestamp();
+            sla_armed_row_in_tx(
+                conn,
+                self.run_id,
+                owner,
+                self.attempt,
+                &t.priority,
+                t.acuity_band.as_deref(),
+                now,
+                now + window,
+            )?;
+        }
+        if let Some(row) = &self.adversarial {
+            adversarial_row_in_tx(conn, self.run_id, row.exchange_id, row.outcome, &row.detail)?;
+        }
+        Ok(())
     }
 }
 
@@ -3925,7 +4060,7 @@ impl HandoffTransition {
 /// decision-required transition without a decision reference is a named
 /// refusal — the machine cannot close a handoff on its own.
 pub(crate) fn write_handoff_transition(
-    tx: &mut rusqlite::Transaction<'_>,
+    conn: &Connection,
     run_id: i64,
     owner: &str,
     transition: HandoffTransition,
@@ -3951,10 +4086,10 @@ pub(crate) fn write_handoff_transition(
         "run{run_id}:handoff_lifecycle:{owner}:{}",
         transition.as_str()
     );
-    session_log::append(tx, run_id, HANDOFF_LIFECYCLE_KIND, &payload, &key, now)
+    session_log::append(conn, run_id, HANDOFF_LIFECYCLE_KIND, &payload, &key, now)
         .map_err(checkpoint::persist_error)?;
     super::audit_write(
-        tx,
+        conn,
         run_id,
         "handoff_lifecycle",
         AuditStatus::Ok,
@@ -3968,7 +4103,7 @@ pub(crate) fn write_handoff_transition(
     // the payload, as the pointer a lineage reader needs, while the audit text
     // above stays exactly as its writer wrote it.
     super::outbox::append_case_decision(
-        tx,
+        conn,
         run_id,
         super::outbox::HANDOFF_DECISION_KIND,
         owner,
@@ -3992,7 +4127,7 @@ const BACK_REFERRAL_HITL_KIND: &str = "control:back_referral_hitl";
 /// deadline is armed from the caller-owned clock: the contract's own
 /// window, else 24h or the tighter P-class SLA.
 pub(crate) fn write_back_referral_row(
-    tx: &mut rusqlite::Transaction<'_>,
+    conn: &Connection,
     run_id: i64,
     owner: &str,
     contract: &BackReferralContract,
@@ -4018,10 +4153,10 @@ pub(crate) fn write_back_referral_row(
         "contract": contract,
     })
     .to_string();
-    session_log::append(tx, run_id, BACK_REFERRAL_ROW_KIND, &payload, &key, now)
+    session_log::append(conn, run_id, BACK_REFERRAL_ROW_KIND, &payload, &key, now)
         .map_err(checkpoint::persist_error)?;
     super::audit_write(
-        tx,
+        conn,
         run_id,
         "back_referral",
         AuditStatus::Ok,
@@ -4155,7 +4290,6 @@ fn latest_back_referral_row(
     run_id: i64,
     contract_key: &str,
 ) -> Result<Option<String>, LoopError> {
-    use rusqlite::OptionalExtension;
     // The key is matched as a JSON FIELD, not as a substring of the whole
     // payload. The `ESCAPE` clause stops `%` and `_` being wildcards, but a
     // substring match over `payload_json` is still wrong in a second way: the
@@ -6114,6 +6248,175 @@ mod tests {
         );
     }
 
+    /// The SLA-arming row and the Triage pass it makes actionable are ONE
+    /// commit. The row was written only AFTER the checkpoint committed (the
+    /// durable clock must not live in the case envelope), so a crash in that
+    /// window left a phase advanced with no clock at all — and a clock row that
+    /// is simply absent is indistinguishable from a case that was never
+    /// triaged. The pass and the row it owes commit together or not at all.
+    ///
+    /// The failure is forced honestly, with NO test-only seam in production
+    /// code: a BEFORE INSERT trigger refuses exactly the `control:sla_armed`
+    /// row, the same injection shape as
+    /// `r1_checked_seal_audit_failure_rolls_back_checkpoint`. Intake commits
+    /// first, and Triage is where the clock arms, so the refusal lands inside
+    /// the Triage transaction.
+    #[test]
+    fn the_sla_clock_arms_inside_the_phase_pass_it_makes_actionable() {
+        let f = fixture(happy_script());
+        {
+            let conn = Connection::open(f.tmp.path()).unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER refuse_sla_armed BEFORE INSERT ON agent_session_events
+                 WHEN NEW.kind = 'control:sla_armed'
+                 BEGIN SELECT RAISE(ABORT, 'sla_arming_row_refused'); END;",
+            )
+            .unwrap();
+        }
+        let err = rt()
+            .block_on(
+                f.driver
+                    .run_case(1, "atomic clock", &CancellationToken::new()),
+            )
+            .expect_err("a refused clock must fail the pass that arms it");
+        // Anti-vacuity: the pass died BECAUSE the clock row was refused. A pin
+        // that went green because the case failed for some unrelated reason
+        // would certify nothing.
+        assert!(
+            err.to_string().contains("sla_arming_row_refused"),
+            "the refusal must be the clock row's own: {err}"
+        );
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let gates: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE kind='gdl_gate'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            gates, 1,
+            "only Intake committed — the Triage gate row rolls back with its clock"
+        );
+        assert_eq!(
+            step_rows(f.tmp.path()).len(),
+            1,
+            "the Triage phase row rolls back with the clock it arms"
+        );
+        let (case, _revision) = super::super::state::read_state_and_revision(&conn, 1)
+            .unwrap()
+            .expect("the case survives its own Intake pass");
+        let case: serde_json::Value = serde_json::from_str(&case).expect("the case is canonical");
+        assert!(
+            case["triage"].is_null(),
+            "the committed case must not carry a triage artifact the clock never armed: {case}"
+        );
+        let (clocks,): (i64,) = conn
+            .query_row(
+                "SELECT COUNT(*) FROM agent_session_events WHERE kind='control:sla_armed'",
+                [],
+                |r| Ok((r.get(0)?,)),
+            )
+            .unwrap();
+        assert_eq!(clocks, 0, "the refused clock is never half-written");
+        assert!(
+            verify_chain(&conn),
+            "the refusal path stays on the green audit chain"
+        );
+    }
+
+    /// The same law from the OTHER side, and the opposite corruption class.
+    /// The soft-handoff evaluation, the I-PASS offer draft and the handoff
+    /// handover were written BEFORE the checkpoint committed — chosen so a
+    /// rolled-back case could never leave an orphan contract behind. The cost
+    /// was the mirror image: when the advance itself refused, all three rows
+    /// were already durable, announcing an escalation for a phase that never
+    /// advanced. In one transaction the orphan question is unaskable in both
+    /// directions: neither a rollback can orphan a satellite, nor a refusal
+    /// can leave one stranded.
+    ///
+    /// Forced honestly: the trigger refuses the checkpoint's OWN `gdl_gate`
+    /// row, so the satellites would succeed and only the advance fails. This
+    /// is the arm that cannot pass on the happy path.
+    #[test]
+    fn an_escalation_satellite_never_outlives_the_phase_pass_it_announced() {
+        let mut script = happy_script();
+        // A deferred triage escalates at Triage: soft-handoff + offer +
+        // handover all fire on that one pass.
+        script[1] = scripted_text(
+            r#"{"priority":"P3","stabilized":false,"search_hits":[],"verdict":"defer"}"#,
+        );
+        let f = fixture(script);
+        {
+            let conn = Connection::open(f.tmp.path()).unwrap();
+            conn.execute_batch(
+                // Scoped to the SECOND gate and every one after it: Intake is
+                // the first, and this case escalates at Triage. Scoping by
+                // `workflow_steps.phase` does not work here — a routed pass
+                // carries no artifact, so `write_phase` never runs and there
+                // is no triage step row to select on (that scoping is why the
+                // audit trigger's phase works and this one must differ).
+                "CREATE TRIGGER refuse_gate BEFORE INSERT ON agent_session_events
+                 WHEN NEW.kind = 'gdl_gate'
+                  AND (SELECT COUNT(*) FROM agent_session_events WHERE kind = 'gdl_gate') >= 1
+                 BEGIN SELECT RAISE(ABORT, 'checkpoint_gate_refused'); END;",
+            )
+            .unwrap();
+        }
+        let err = rt()
+            .block_on(
+                f.driver
+                    .run_case(1, "atomic satellites", &CancellationToken::new()),
+            )
+            .expect_err("a refused checkpoint gate must fail the pass");
+        assert!(
+            err.to_string().contains("checkpoint_gate_refused"),
+            "the refusal must be the checkpoint gate's own: {err}"
+        );
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let counts = |kinds: &[&str]| -> i64 {
+            let clause = kinds
+                .iter()
+                .map(|k| format!("'{k}'"))
+                .collect::<Vec<_>>()
+                .join(",");
+            conn.query_row(
+                &format!("SELECT COUNT(*) FROM agent_session_events WHERE kind IN ({clause})"),
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            counts(&["gdl_gate"]),
+            1,
+            "only Intake committed — the Triage gate was refused"
+        );
+        assert_eq!(
+            step_rows(f.tmp.path()).len(),
+            1,
+            "the Triage phase row rolls back with the satellites it announced"
+        );
+        assert_eq!(
+            counts(&[
+                "control:soft_handoff",
+                "control:soft_handoff_gap",
+                "control:handoff_offer",
+                "session_tree",
+                "handoff_pointer",
+                "handoff_reinjection",
+                "handoff_lifecycle",
+            ]),
+            0,
+            "a refused advance leaves NO satellite row behind — the orphan \
+             question is unaskable when they share one transaction"
+        );
+        assert!(
+            verify_chain(&conn),
+            "the refusal path stays on the green audit chain"
+        );
+    }
+
     #[test]
     fn r1_terminal_retry_refuses_changed_loop_policy() {
         let f = fixture(happy_script());
@@ -6289,6 +6592,7 @@ mod tests {
                 exchange: Some(exchange),
                 terminal: None,
             },
+            None,
         )
         .unwrap_err();
         assert!(
@@ -6582,6 +6886,7 @@ mod tests {
                 exchange: Some(exchange),
                 terminal: None,
             },
+            None,
         );
         assert!(result.is_err(), "stale prepared state must be rejected");
         assert_eq!(
@@ -8222,6 +8527,7 @@ mod tests {
                         exchange: Some(exchange),
                         terminal: None,
                     },
+                    None,
                 )
                 .unwrap();
             }
