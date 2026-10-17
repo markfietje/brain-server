@@ -688,12 +688,12 @@ pub(crate) fn verify_owner(conn: &Connection, run_id: i64, owner: &str) -> rusql
     }
 }
 
-/// The durable count of one event kind for a run, CAPPED (F14: the compaction
+/// The durable count of one event kind for a run, CAPPED (the compaction
 /// quota counts the log, not the replay window). COUNT ignores LIMIT, so the
 /// cap rides a subselect — callers pass ceiling+1, which is all a quota
 /// comparison needs. The walk rides the existing `(run_id, seq)` index
 /// discipline, bounded by the same lookup ceiling as the scope scan.
-/// The capped aggregate shape (F14): COUNT ignores LIMIT, so the cap rides
+/// The capped aggregate shape: COUNT ignores LIMIT, so the cap rides
 /// the subselect. A const so the EXPLAIN pin reads the SQL the fn really runs.
 const COUNT_KIND_SQL: &str = "SELECT COUNT(*) FROM (SELECT 1 FROM agent_session_events \
      WHERE run_id = ?1 AND kind = ?2 LIMIT ?3)";

@@ -1453,7 +1453,7 @@ pub fn max_domain_dbs() -> usize {
         .unwrap_or(MAX_DOMAIN_DBS)
 }
 
-/// The GDL case machine's cumulative token ceiling (F12). `None` (the
+/// The GDL case machine's cumulative token ceiling. `None` (the
 /// current default) = uncapped — the exact posture this seam exists to
 /// replace. The DEFAULT NUMBER IS OWED, not chosen: the measured per-phase
 /// cost of a real case is not recorded anywhere in the tree yet, and a

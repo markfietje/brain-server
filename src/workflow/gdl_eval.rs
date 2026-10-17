@@ -482,9 +482,9 @@ mod tests {
         let mut totals: Vec<u64> = Vec::new();
         let mut per_phase: std::collections::BTreeMap<String, Vec<u64>> =
             std::collections::BTreeMap::new();
-        let mut measured = 0usize;
+        let mut measured = 0;
         for seed in eval_fixtures::structural_seeds() {
-            let mut seed_total: u64 = 0;
+            let mut seed_total = 0;
             register_sqlite_vec();
             let tmp = tempfile::NamedTempFile::new().unwrap();
             let mgr = SqliteConnectionManager::file(tmp.path());

@@ -1062,7 +1062,7 @@ impl LoopDriver {
         // refuses the cycle with a named session-log row and stops loudly
         // (the caller maps this onto the budget-exhausted terminal).
         //
-        // F14: the count is over the DURABLE LOG, not the replay window —
+        // The count is over the DURABLE LOG, not the replay window —
         // compaction rows outside the session_replay_cap window are
         // invisible to a windowed count, and under-firing is the expensive
         // direction. The aggregate is capped at ceiling+1 in a subselect

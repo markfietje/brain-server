@@ -85,7 +85,7 @@ const ADVERSARIAL_TASK_BYTES: usize = 2_000;
 /// so it cannot misalign.
 const ADVERSARIAL_REASON_CHARS: usize = 512;
 
-/// The adversarial re-check child's own turn/budget envelope. Named (F17)
+/// The adversarial re-check child's own turn/budget envelope. Named,
 /// because both rode as bare literals in the recheck `SubagentSpec` — a
 /// retune was invisible. There is exactly one name for the 512-char reason
 /// ceiling above (`ADVERSARIAL_REASON_CHARS`); no second `TRUNCATE` name is
@@ -2779,12 +2779,12 @@ pub(crate) struct GdlDriver {
     /// exchange: the loop driver carries this budget as its
     /// `budget_accounting`, so each phase exchange is a `fresh_exchange`
     /// view whose exhaustion consults the case's cumulative usage. This
-    /// REVERSES F11's isolation rationale on purpose: F11 kept phase
+    /// REVERSES the previous isolation rationale on purpose: the old shape kept phase
     /// exchanges on per-exchange roots so one incomplete stream could not
     /// poison the case root (`mark_incomplete` closes the shared dispatch
     /// and fails every later admission). A real cumulative budget makes
     /// continued spending on an unknown-cost case the bigger hazard —
-    /// unknown spend plus continued spending is the unbounded shape F12
+    /// unknown spend plus continued spending is the unbounded shape this
     /// exists to kill — so a poisoned case now DIES at the budget boundary
     /// instead of continuing on fresh per-exchange ledgers. `mark_incomplete`
     /// itself is not on trial: the accounting core's poison walk keeps its
@@ -2798,7 +2798,7 @@ struct RecheckDeps {
     provider: Arc<dyn LlmProvider>,
     env: ExecutionEnv,
     tools: Vec<ToolDef>,
-    /// The driver's own posture: the recheck child inherits it (F13),
+    /// The driver's own posture: the recheck child inherits it,
     /// never re-defaults.
     config: LoopConfig,
 }
@@ -3060,16 +3060,18 @@ impl GdlDriver {
             return AdversarialFinding::Unavailable("no delegation seam".into());
         };
         let task = Self::build_adversarial_task(case);
-        // The ask tightens to the case ceiling, never widens it (F13's
-        // law, applied at the one production spec site): an operator
+        // The ask tightens to the case ceiling, never widens it — the
+        // delegation law, applied at the one production spec site: an operator
         // budget below 2_000 must not kill the falsifier — the
         // reservation already clamps the child's spend to the case's
         // remaining headroom, so asking for less is honest, and refusing
         // would silently strip the case of its second verification.
-        let token_ask = match deps.config.token_budget {
-            Some(case_ceiling) => ADVERSARIAL_RECHECK_TOKEN_BUDGET.min(case_ceiling),
-            None => ADVERSARIAL_RECHECK_TOKEN_BUDGET,
-        };
+        let token_ask = deps
+            .config
+            .token_budget
+            .map_or(ADVERSARIAL_RECHECK_TOKEN_BUDGET, |ceiling| {
+                ADVERSARIAL_RECHECK_TOKEN_BUDGET.min(ceiling)
+            });
         let spec = SubagentSpec {
             name: "adversarial-recheck".into(),
             system_prompt: ADVERSARIAL_RECHECK_PROMPT.into(),

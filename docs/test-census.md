@@ -85,8 +85,8 @@ have no call in it.
 | `src/trace.rs:47` `trace_traversal_caps_are_bounded` |
 | `src/workflow/decide/router.rs:351` `alias_checkpoints_table_is_the_three_names` |
 | `src/workflow/decide/router.rs:361` `alias_bundle_repo_is_the_english_root` |
-| `src/workflow/gdl.rs:5955` `adversarial_task_bound_is_pinned_by_value` |
-| `src/workflow/gdl.rs:5966` `artifact_bounds_are_pinned_by_value` |
+| `src/workflow/gdl.rs:5957` `adversarial_task_bound_is_pinned_by_value` |
+| `src/workflow/gdl.rs:5968` `artifact_bounds_are_pinned_by_value` |
 | `src/workflow/session_log.rs:1161` `scope_caps_are_pinned_by_value` |
 
 ## What this census does NOT police

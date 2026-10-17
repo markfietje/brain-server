@@ -328,7 +328,7 @@ pub(crate) struct AgentsSvc {
     tools: Vec<ToolDef>,
     provider: Arc<dyn LlmProvider>,
     budget: ExchangeBudget,
-    /// The owner driver's posture: children inherit it (F13), never
+    /// The owner driver's posture: children inherit it, never
     /// re-default. Boxed: LoopConfig is large and `Built` is a wide enum.
     config: Box<crate::agentloop::run_loop::LoopConfig>,
     injects: Vec<&'static str>,

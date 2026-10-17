@@ -657,7 +657,7 @@ pub(crate) async fn delegate_owned_budgeted(
         .filter(|t| spec.allowed_tools.contains(&t.name))
         .cloned()
         .collect();
-    // F13: the child starts from the PARENT's posture, never the default.
+    // The child starts from the PARENT's posture, never the default.
     // The spec's two bounds apply tighten-only: a widening ask is a
     // delegation REFUSAL before any dispatch, never a silent clamp. The
     // spec carries only these two bounds — the seven posture fields
