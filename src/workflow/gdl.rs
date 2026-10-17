@@ -85,6 +85,14 @@ const ADVERSARIAL_TASK_BYTES: usize = 2_000;
 /// so it cannot misalign.
 const ADVERSARIAL_REASON_CHARS: usize = 512;
 
+/// The adversarial re-check child's own turn/budget envelope. Named (F17)
+/// because both rode as bare literals in the recheck `SubagentSpec` — a
+/// retune was invisible. There is exactly one name for the 512-char reason
+/// ceiling above (`ADVERSARIAL_REASON_CHARS`); no second `TRUNCATE` name is
+/// introduced for it — the dedup stays deduped.
+const ADVERSARIAL_RECHECK_MAX_TURNS: u32 = 1;
+const ADVERSARIAL_RECHECK_TOKEN_BUDGET: u64 = 2_000;
+
 /// supporter. The child sees NO tools; its input is the hypothesis and
 /// the captured evidence rows, its output the agreed JSON verdict.
 const ADVERSARIAL_RECHECK_PROMPT: &str = "\
@@ -3041,8 +3049,8 @@ impl GdlDriver {
                 process: false,
                 commands: vec![],
             },
-            max_turns: 1,
-            token_budget: 2_000,
+            max_turns: ADVERSARIAL_RECHECK_MAX_TURNS,
+            token_budget: ADVERSARIAL_RECHECK_TOKEN_BUDGET,
         };
         let invocation_key = format!("gdl:{episode}:phase:verify:attempt:{attempt}:recheck");
         // The recheck reserves against the CASE budget, not a throwaway
@@ -5894,6 +5902,22 @@ mod tests {
         assert_eq!(MAX_RETURN_WINDOW_SECS, 2_592_000);
         assert_eq!(KB_HIT_TITLE_CHARS, 120);
         assert_eq!(MIN_CITATION_LOCATOR_CHARS, 3);
+    }
+
+    /// F17: every loop bound pinned by value. The relational tests above
+    /// pass at any cap; these literals ARE the ceilings — retuning one is
+    /// a named act. `ADVERSARIAL_REASON_CHARS` stands in for the plan's
+    /// `ADVERSARIAL_REASON_TRUNCATE`: that local is gone, deduped onto the
+    /// pre-existing char ceiling, and a second name would recreate the
+    /// drift the dedup removed. Overlap with the per-module pins above is
+    /// intentional (one retune fails two tests, both naming the value).
+    #[test]
+    fn every_loop_bound_is_pinned_by_value() {
+        assert_eq!(PLAN_STRIP_MAX_LINES, 24);
+        assert_eq!(ADVERSARIAL_REASON_CHARS, 512); // NOT a reintroduced TRUNCATE
+        assert_eq!(ADVERSARIAL_TASK_BYTES, 2_000);
+        assert_eq!(ADVERSARIAL_RECHECK_MAX_TURNS, 1);
+        assert_eq!(ADVERSARIAL_RECHECK_TOKEN_BUDGET, 2_000);
     }
 
     #[test]
