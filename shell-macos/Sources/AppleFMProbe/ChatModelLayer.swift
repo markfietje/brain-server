@@ -400,21 +400,24 @@ public enum HistoryBudget {
             return TrimPlan(dropped: [], keptTokens: total, droppedTokens: 0)
         }
 
-        // Only entries BEFORE the latest response are eligible. The suffix from
-        // there on is the exchange in flight: the model's most recent answer and
-        // the prompt being answered now. Dropping from there produced orphans,
-        // because a `.toolCalls` entry and its `.toolOutput` sit adjacent and a
-        // token-exact cut lands between them as often as not. Apple's own
-        // transform shape filters tool traffic within `history[0..<latestResponse]`
-        // and keeps the suffix whole; this mirrors it.
-        guard let responseStart = entries.lastIndex(where: { isResponse($0) }) else {
+        // Only entries BEFORE THE LATEST PROMPT are eligible — not before the
+        // latest RESPONSE, which is what this said and was wrong by one entry.
+        //
+        // Protecting from the last `.response` left the final `.prompt` inside
+        // the eligible range, so a trim could drop `q5` and keep `a5`, handing
+        // the model an answer to a question it can no longer see. Protecting
+        // from the last `.prompt` keeps the exchange in flight WHOLE, which is
+        // also the runtime case: `historyTransform` is handed the history
+        // including the pending prompt, and that prompt is the question being
+        // asked right now — it must never be droppable.
+        guard let promptStart = entries.lastIndex(where: { isPrompt($0) }) else {
             return TrimPlan(dropped: [], keptTokens: total, droppedTokens: 0)
         }
-        let eligible = Array(entries[..<responseStart])
+        let eligible = Array(entries[..<promptStart])
         guard eligible.count > keepAtLeast else {
             return TrimPlan(dropped: [], keptTokens: total, droppedTokens: 0)
         }
-        let eligibleCosts = Array(costs[..<responseStart])
+        let eligibleCosts = Array(costs[..<promptStart])
 
         var dropped = Set<Transcript.Entry.ID>()
         var remaining = total
@@ -434,8 +437,19 @@ public enum HistoryBudget {
             index = pairEnd
         }
 
-        // Then oldest-first down to the watermark, never past the floor.
-        for i in eligible.indices.reversed() where remaining > target {
+        // OLDEST FIRST, walking FORWARD. The comment here said "oldest-first"
+        // while the loop walked `.reversed()` — which drops the NEWEST eligible
+        // entries first and therefore keeps the oldest. In a real chat that is
+        // the exact inversion of the policy: under pressure the model recalls
+        // the opening exchange and forgets everything the user just said.
+        //
+        // Found by drill, not by reading: six equal-cost exchanges `q0 a0 …
+        // q5 a5` under a forcing budget kept `q0 a0 a5` — the first exchange and
+        // an orphaned trailing response. The pin that now covers this asserts
+        // the kept eligible entries form a SUFFIX of the eligible range, which
+        // is the property `.reversed()` violates and a token-count assertion
+        // cannot see.
+        for i in eligible.indices where remaining > target {
             guard !dropped.contains(eligible[i].id) else { continue }
             let alive = eligible.indices.filter { !dropped.contains(eligible[$0].id) }.count
             guard alive > keepAtLeast else { break }
@@ -451,8 +465,8 @@ public enum HistoryBudget {
         )
     }
 
-    static func isResponse(_ entry: Transcript.Entry) -> Bool {
-        if case .response = entry { return true }
+    static func isPrompt(_ entry: Transcript.Entry) -> Bool {
+        if case .prompt = entry { return true }
         return false
     }
 

@@ -267,6 +267,8 @@ public enum ContextBudget {
     /// means the model is *"allowed to produce the longest answer its context
     /// size supports."* Input and output draw from the same 4,096.
     ///
+    /// Source: <https://developer.apple.com/documentation/foundationmodels/managing-the-context-window>
+    ///
     /// So a budget that hands the whole remaining window to history is wrong by
     /// construction: it fills every input token and leaves nothing for the
     /// answer, and the failure mode is `contextSizeExceeded` raised MID-GENERATION
@@ -279,6 +281,22 @@ public enum ContextBudget {
     /// are the better length control. The reserve is the floor that makes any
     /// answer possible; the cap is a runaway guard set separately and far above
     /// it (see `responseRunawayCap`).
+    ///
+    /// ## THE ARITHMETIC, so the budget cannot be quoted without it
+    ///
+    ///     window 4096
+    ///   - instructions  58   (measured)
+    ///   - tool schemas  304   (measured; was 310 before MemoryRecallTool's
+    ///   -                        description was shortened — that cut saved 6)
+    ///   - reserve     1024   (this constant)
+    ///   = 2710 conversation tokens
+    ///
+    /// Written out because this number has been mis-stated twice: once by
+    /// pairing the OLD 3,728 remaining with the new reserve, and once by
+    /// pairing the NEW 3,734 remaining with the OLD 310-token tool cost. Both
+    /// are arithmetic slips on a figure that decides whether a turn completes.
+    /// `toolSchemaCostIsMeasured` prints the two measured inputs, so the
+    /// derivation above can be re-checked against a run rather than trusted.
     public static let responseReserve = 1024
 
     /// The runaway guard for `maximumResponseTokens`, deliberately far above the

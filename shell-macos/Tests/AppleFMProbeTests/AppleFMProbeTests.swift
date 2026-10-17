@@ -582,12 +582,13 @@ func needleSurvivesAtThreeDepths() async throws {
         // turning the build red, so an arm gets a small retry budget and has to
         // exhaust it to fail.
         //
-        // The budget was set from measurement, not taste. Characterising this
-        // arm across runs: under greedy sampling the first-attempt hit rate is
-        // high but not 1.0, and the misses are concentrated rather than random.
-        // Two attempts was NOT enough (observed: an arm missing both). The
-        // count printed below is what the budget should be re-derived from if
-        // this ever goes red again.
+        // THE BUDGET IS 3 BECAUSE TWO WAS NOT ENOUGH — but note the regime that
+        // observation belongs to: it was taken under the DEFAULT sampler, where
+        // this test was flaky roughly one run in five. Under greedy sampling,
+        // five consecutive characterisation runs had every arm clean on the
+        // FIRST attempt, so nothing has needed a second attempt since. Three is
+        // headroom, not a measured requirement; if this ever goes red, the
+        // printed attempt counts say which regime you are back in.
         var needed = 0
         var warmHas = false
         for attempt in 1...3 {
@@ -823,7 +824,9 @@ func historyPressureTrimsAndNeverRewrites() async throws {
     // The transform under test, wired the way the shell will wire it: on the
     // Dynamic Profile, because `historyTransform` is a PROFILE modifier and
     // there is no `LanguageModelSession(model:…)` overload that takes one.
-    // (That is the same fact that makes PCC reachable only through a profile.)
+    // (It is NOT the same fact that makes PCC reachable only through a profile
+    // — that claim is retracted above and is false. The profile is still used
+    // here because `historyTransform` is a profile modifier.)
     // Async measurement, synchronous application — the split the framework's
     // signature forces. The controller re-plans before each turn; the closure
     // it hands back is what `historyTransform` calls per request, and it only
@@ -869,8 +872,27 @@ func historyPressureTrimsAndNeverRewrites() async throws {
         // What the REQUEST saw, as opposed to what the session holds. The two
         // diverging is the whole point: the model gets less, the session keeps
         // everything.
-        let plan = controller.currentPlan
-        let seen = plan.apply(Array(session.transcript))
+        // The request view, measured the way the framework would see it: the
+        // plan applied to the history PLUS the turn's own pending prompt.
+        //
+        // It used to be applied to `session.transcript` AFTER the turn, which
+        // quietly included the response that had just been generated — content
+        // the pre-turn plan was never sized against, so the sum could exceed the
+        // budget for a reason that has nothing to do with whether the trim fits.
+        // That measurement started failing once the eligible range moved to
+        // "before the last prompt", which is when it stopped being able to hide
+        // its own flaw.
+        let requestEntries = Array(session.transcript) + [
+            .prompt(Transcript.Prompt(
+                segments: [.text(Transcript.TextSegment(content: prompt))]
+            )),
+        ]
+        let requestPlan = await HistoryBudget.plan(
+            requestEntries,
+            budgetTokens: budget - promptCost,
+            cost: { entry in await AppleFMProbeTests.cost(of: entry, model: model) },
+        )
+        let seen = requestPlan.apply(requestEntries)
         trimmedCounts.append(seen.count)
         seenTokens.append(await AppleFMProbeTests.totalCost(of: seen, model: model))
 
@@ -961,13 +983,20 @@ func historyPressureTrimsAndNeverRewrites() async throws {
 // Apple's key-value-caching article: *"Defer removing entries from the
 // transcript until the context window is nearly full, then consolidate the
 // context in a single operation rather than trimming incrementally after each
-// turn."* Trimming to the MINIMUM every turn — which the first version of
+// turn."*
+//
+// Source: <https://developer.apple.com/documentation/foundationmodels/optimizing-key-value-caching-in-language-model-sessions>
+// Trimming to the MINIMUM every turn — which the first version of
 // `HistoryBudget` did, and which its own comment called "the point" — changes
 // the kept set on every request and re-prefills the whole history each time.
 //
 // That cost is not observable in this environment: `usage.input.cachedTokenCount`
-// reads 0 on this build even for a plain warm second turn (measured, twice), so
-// there is no cache signal to assert against. Asserting TTFT instead would be
+// does NOT reliably report cache reuse on this build — it has been observed at
+// both 0 and 132/164 for the same shape of warm second turn, on the same
+// machine. An intermittent counter is worse than a dead one for a pin: a dead
+// one fails obviously, an intermittent one produces a test whose verdict
+// depends on when it ran. So the defensible claim is "no RELIABLE signal", and
+// nothing here asserts on cache reuse. Asserting TTFT instead would be
 // measuring the runner.
 //
 // So the property is pinned where it IS decidable — on `plan`, which is a pure
@@ -990,7 +1019,6 @@ func trimConsolidatesOnceRatherThanEveryTurn() {
     // Simulated conversation: one exchange costs 220 tokens against a 900-token
     // budget, and every turn appends one more exchange.
     let budget = 900
-    let perTurn = 220
     var entries: [Transcript.Entry] = []
     var costs: [Int] = []
     for i in 0..<12 {
@@ -1065,6 +1093,112 @@ func trimConsolidatesOnceRatherThanEveryTurn() {
     #expect(
         kept.last?.id == entries.last?.id,
         "the final entry was dropped — the in-flight exchange must survive intact"
+    )
+    #endif
+}
+
+// WHICH END SURVIVES A TRIM. This is the pin the `.reversed()` inversion
+// needed and did not have.
+//
+// The trimmer's loop said "oldest-first" while walking `.reversed()`, which
+// drops the NEWEST eligible entries first and therefore keeps the oldest. A
+// drill with six equal-cost exchanges — `q0 a0 … q5 a5` — under a forcing budget
+// returned:
+//
+//     KEPT: q0 a0 a5          <- the opening exchange, and a5 orphaned from q5
+//
+// Under real pressure the model would recall the first thing anyone said and
+// forget everything the user just said — the exact inversion of the policy the
+// comment above the loop describes.
+//
+// TWO REASONS NOTHING CAUGHT IT, both worth knowing:
+//
+//   - The cadence and budget assertions are TOKEN COUNTS. With equal-cost
+//     entries, dropping the oldest three and the newest three produce the same
+//     number. A token-count assertion is blind to direction by construction.
+//   - The existing suffix check was `kept.last?.id == entries.last?.id`, which
+//     `a5` alone satisfies. The trailing response was present; its PROMPT was
+//     not.
+//
+// So the checks are POSITIONAL: the kept entries inside the eligible range must
+// form a SUFFIX of it, and no kept response may have lost the prompt that asked
+// it. The second was added after the first turned out to be insufficient —
+// protecting from the last `.response` rather than the last `.prompt` yields
+// `a4 q5 a5`, which satisfies every suffix assertion while orphaning `a4`.
+@Test("A trim drops the OLDEST history and keeps the most recent exchange whole")
+func trimKeepsTheMostRecentAndDropsOldestFirst() {
+    #if canImport(FoundationModels)
+    guard #available(macOS 27.0, *) else { return }
+
+    func prompt(_ t: String) -> Transcript.Entry {
+        .prompt(Transcript.Prompt(segments: [.text(Transcript.TextSegment(content: t))]))
+    }
+    func response(_ t: String) -> Transcript.Entry {
+        .response(Transcript.Response(segments: [.text(Transcript.TextSegment(content: t))]))
+    }
+
+    // EQUAL costs on purpose: with unequal costs a token total can hide which
+    // end was dropped, which is how the bug survived.
+    var entries: [Transcript.Entry] = []
+    var costs: [Int] = []
+    for i in 0..<6 {
+        entries.append(prompt("q\(i)")); costs.append(100)
+        entries.append(response("a\(i)")); costs.append(100)
+    }
+
+    let plan = HistoryBudget.plan(entries, costs: costs, budgetTokens: 400)
+    let kept = plan.apply(entries)
+    let keptIds = Set(kept.map(\.id))
+
+    func text(_ e: Transcript.Entry) -> String {
+        func flat(_ s: [Transcript.Segment]) -> String {
+            s.compactMap { seg -> String? in
+                if case let .text(t) = seg { return t.content }
+                return nil
+            }.joined()
+        }
+        switch e {
+        case let .prompt(p): return flat(p.segments)
+        case let .response(r): return flat(r.segments)
+        default: return "?"
+        }
+    }
+
+    // The eligible range is everything before the latest prompt.
+    let promptStart = entries.lastIndex(where: { HistoryBudget.isPrompt($0) }) ?? 0
+    let eligibleIdx = Set(0..<promptStart)
+    let keptEligible = eligibleIdx.filter { keptIds.contains(entries[$0].id) }
+    let isSuffix = keptEligible == Set((keptEligible.min() ?? 0)..<promptStart)
+    print("KEPT: \(kept.map(text).joined(separator: " "))")
+
+    #expect(
+        isSuffix,
+        "a trim kept \(keptEligible.count) eligible entries that are NOT a suffix of the eligible range — it dropped the wrong end of the conversation"
+    )
+    let lastKept = kept.suffix(2).map(text)
+    #expect(
+        lastKept == ["q5", "a5"],
+        "the final exchange did not survive whole — kept \(lastKept), expected q5 then a5"
+    )
+    #expect(
+        !kept.contains { text($0) == "q0" || text($0) == "a0" },
+        "the oldest exchange survived a trim that should have dropped it"
+    )
+
+    // THE ORPHAN RULE: no kept `.response` may have lost the `.prompt` that
+    // asked it. This is the general form of "the exchange survives whole" and
+    // it covers the in-flight exchange and every older one.
+    var orphaned: [String] = []
+    for (i, entry) in entries.enumerated() {
+        guard case .response = entry, keptIds.contains(entry.id), i > 0 else { continue }
+        let previous = entries[i - 1]
+        if case .prompt = previous, !keptIds.contains(previous.id) {
+            orphaned.append(text(entry))
+        }
+    }
+    #expect(
+        orphaned.isEmpty,
+        "kept \(orphaned.count) response(s) whose prompt was dropped — the model is reading answers to questions it cannot see: \(orphaned.joined(separator: "; "))"
     )
     #endif
 }
@@ -1353,40 +1487,73 @@ func contextSizeIsReadThroughOnePath() async throws {
 // The rule is GENERAL rather than a phrase list: any block quote attributed to
 // Apple must sit in a file that links Apple's documentation. That catches the
 // next paraphrase, which no phrase list would.
-@Test("Any quote attributed to Apple cites Apple's documentation in the same file")
+@Test("Any quote attributed to Apple cites Apple, in the same comment block")
 func quotesAttributedToAppleCiteApple() throws {
-    let sources = URL(fileURLWithPath: #filePath)
+    // The FIRST version of this pin had three defects, all of which made it
+    // pass while the thing it polices was still true:
+    //
+    //  1. It scanned only `Sources/AppleFMProbe` — but the fabricated quote was
+    //     ALSO restated in this test file, so the pin could not see the one
+    //     place it had already reproduced the failure.
+    //  2. It matched only the `> "` block-quote form. The Apple quotation in
+    //     this file is an inline `*"…"` inside a `//` comment, which it never
+    //     matched at all.
+    //  3. It required `developer.apple.com` to appear ANYWHERE in the file —
+    //     and the pin's own source contains that literal. IT CERTIFIED ITSELF.
+    //
+    // Hence three properties now: both directories, both quote forms, and the
+    // citation must be in the SAME COMMENT BLOCK as the quote. The pin's own
+    // code is not a comment, so it cannot vouch for anything.
+    let packageRoot = URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .deletingLastPathComponent()
         .deletingLastPathComponent()
-        .appendingPathComponent("Sources/AppleFMProbe")
-    let files = try FileManager.default.contentsOfDirectory(
-        at: sources, includingPropertiesForKeys: nil
-    ).filter { $0.pathExtension == "swift" }
-    #expect(!files.isEmpty, "the scan found no files — it is passing vacuously")
+    var files: [URL] = []
+    for dir in ["Sources/AppleFMProbe", "Tests/AppleFMProbeTests"] {
+        files += try FileManager.default.contentsOfDirectory(
+            at: packageRoot.appendingPathComponent(dir),
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "swift" }
+    }
+    #expect(files.count >= 3, "the scan found \(files.count) files — it is passing vacuously")
 
     var offenders: [String] = []
+    var checkedBlocks = 0
     for file in files {
         let text = try String(contentsOf: file, encoding: .utf8)
-        // Whitespace-collapsed: a citation split across lines is still a
-        // citation, and a raw line scan misses both directions.
-        let flat = text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
-        guard flat.contains("> \"") else { continue }
-        guard flat.contains("Apple") else { continue }
-        if !flat.contains("developer.apple.com") {
-            offenders.append(file.lastPathComponent)
+        var block: [String] = []
+        func flush() {
+            defer { block = [] }
+            guard !block.isEmpty else { return }
+            // Whitespace-collapsed: a citation split across lines is still a
+            // citation, and a per-line scan misses both directions.
+            let flat = block.joined(separator: " ")
+            guard (flat.contains("> \"") || flat.contains("*\"")), flat.contains("Apple")
+            else { return }
+            checkedBlocks += 1
+            if !flat.contains("developer.apple.com") {
+                offenders.append(file.lastPathComponent)
+            }
         }
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("//") {
+                block.append(String(trimmed.dropFirst(2)))
+            } else {
+                flush()
+            }
+        }
+        flush()
     }
     #expect(
+        checkedBlocks > 0,
+        "no Apple-attributed quote was found anywhere — the detector matches nothing and is passing vacuously"
+    )
+    #expect(
         offenders.isEmpty,
-        """
-        a block quote attributed to Apple with no link to Apple's documentation, \
-        in: \(offenders.joined(separator: ", ")). Cite the page, or stop \
-        attributing the words to Apple.
-        """
+        "a quote attributed to Apple with no citation in the same comment block, in: \(offenders.joined(separator: ", ")). Cite the page, or stop attributing the words to Apple."
     )
 }
-
 // TRAP 4 — the false claim cannot come back.
 //
 // `shell-macos-mlx/Package.swift` asserted that the MLX adapter gives "the same
