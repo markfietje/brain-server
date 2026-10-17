@@ -83,6 +83,27 @@ public enum AppleFMProbe {
                     ? .eligibleButUnentitled
                     : .unavailable(reason: "device not eligible")
             }
+            // VERBOSE-ONLY: print the raw PCC facts, including the CONTEXT
+            // SIZE, so the 32k claim is measured on this machine rather than
+            // taken from a WWDC slide. `isAvailable` is an ELIGIBILITY flag; it
+            // is deliberately NOT reported as capability (the row above is
+            // pinned to that), so this line is the only place the two are kept
+            // apart.
+            if #available(macOS 27.0, *),
+               ProcessInfo.processInfo.environment["APPLEFM_VERBOSE"] == "1" {
+                let pcc = PrivateCloudComputeLanguageModel()
+                print("--- AppleFMProbe verbose ---")
+                // `contextSize` is async on PCC (it is a NETWORK model, so the
+                // window is a property of the server-side deployment, not of the
+                // binary). That is itself a fact worth having: the on-device
+                // window is a local constant, PCC's is a remote answer.
+                print("PCC isAvailable: \(pcc.isAvailable)")
+                Task {
+                    let pccSize = try? await pcc.contextSize
+                    print("PCC contextSize: " + String(describing: pccSize))
+                }
+                print("on-device contextSize: \(model.contextSize)")
+            }
 
             return AppleFMCapabilities(
                 onDevice: onDevice,
