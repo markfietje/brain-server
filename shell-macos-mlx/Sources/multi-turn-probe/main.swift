@@ -1,5 +1,28 @@
-// NOT YET COMPILING. Deliberately NOT registered as a SwiftPM target, so the
-// package still builds; an unreferenced Sources/ directory is inert.
+// NOW BUILDING AND RUNNING. Registered as a SwiftPM executable target.
+//
+// HEADLINE MEASUREMENT (Qwen3-0.6B, the CI model, via mlx-native ChatSession):
+// turn 2 does NOT throw, and the cold-session control FAILS to produce the
+// value -- so the warm answer is RECALL, not invention. Multi-turn memory works.
+//
+// THE SAME PROBE ON Qwen3.5-9B THROWS ON TURN 2 -- identically, on BOTH
+// surfaces: the FoundationModels adapter's LanguageModelSession AND the
+// mlx-native ChatSession. My call-shape hypothesis (that only the adapter failed
+// to thread history) was WRONG and is retracted by this measurement. The
+// failure is QWEN3.5-SPECIFIC, not an integration problem.
+//
+// KNOWN DEFECTS IN THIS PROBE, so nobody reads more into it than it supports:
+//   1. `text(of:)` only unwraps `.chunk`; other Generation cases contribute
+//      nothing, so the printed answers are partial.
+//   2. The verdict string still says "on Qwen3.5" although the run used ciModel
+//      (Qwen3-0.6B). The LABEL is stale; the computed verdict
+//      (warm contains the secret AND cold does not) is not.
+//
+// LOADER NOTE: the model is loaded through the adapter's PUBLIC
+// `MLXLanguageModel.loadContainer()`, which reuses the adapter cache. Every
+// `loadModelContainer` overload in MLXLMCommon/ModelFactory.swift requires
+// `from downloader` + `using tokenizerLoader`, and those concrete types exist
+// only inside the `#huggingFaceLanguageModel` macro expansion. ChatSession.swift
+// :129 documents a `loadModelContainer(id:)` overload that DOES NOT EXIST.
 //
 // WHERE IT STOPPED. ChatSession needs a ModelContainer, and every
 // `loadModelContainer` overload in MLXLMCommon/ModelFactory.swift requires
@@ -15,7 +38,11 @@
 // sources: the ChatSession conversation shape, streamDetails(to:images:videos:),
 // and the cold-session control that separates memory from compliance.
 import Foundation
+import Foundation
+import MLXFMProbe
 import MLXLMCommon
+import MLXFoundationModels
+import FoundationModels
 
 // MULTI-TURN MEMORY: can Qwen3.5 carry context across turns?
 //
@@ -79,8 +106,18 @@ func askChat(_ session: ChatSession, _ prompt: String) async -> String {
 }
 
 @available(macOS 27.0, *)
-func run() async {
-    let container = try! await loadModelContainer(id: MODEL_ID)
+func run() async throws {
+    // `MLXLanguageModel.loadContainer()` (MLXFoundationModels:110) is PUBLIC and
+    // "reuses the adapter cache", so the model loads ONCE through the same path
+    // the working banner experiment used, and the resulting ModelContainer is
+    // handed to the mlx-native ChatSession. That sidesteps the downloader /
+    // tokenizer-loader problem entirely: every `loadModelContainer` overload
+    // wants those, and ChatSession.swift:129 documents an `id:` overload that
+    // does not exist.
+    let adapter = try await MLXFMProbe.model(
+        configuration: MLXFMProbe.ciModel,
+        capabilities: [.toolCalling, .guidedGeneration, .reasoning])
+    let container = try await adapter.loadContainer()
     let params = GenerateParameters(maxTokens: 200, temperature: 0)
     let secret = SECRET
 
@@ -93,7 +130,7 @@ func run() async {
         print("  turn 1: \(t1.prefix(60))")
         if t1.hasPrefix("THREW") { print("  turn 1 THREW — the session shape itself is wrong") }
         let t2 = await askChat(session, "What was the number I asked you to remember? Numbers only.")
-        print("  turn 2: \(t2.prefix(80))")
+        print("  turn 2: \(t2)")
         warmAnswer = t2
     }
 
@@ -103,8 +140,8 @@ func run() async {
     let cold = await askChat(coldSession, "What was the number I asked you to remember? Numbers only.")
     let coldHas = cold.contains(secret)
     let warmHas = warmAnswer.contains(secret)
-    print("  cold (never saw it): '\(cold.prefix(70))'  contains=\(coldHas)")
-    print("  warm (was told it) : '\(warmAnswer.prefix(70))'  contains=\(warmHas)")
+    print("  cold: \(cold)")
+    print("  warm: \(warmAnswer)")
 
     if warmHas && !coldHas {
         print("\n  -> MULTI-TURN MEMORY WORKS on Qwen3.5 via ChatSession.")
@@ -121,7 +158,7 @@ func run() async {
 }
 
 if #available(macOS 27.0, *) {
-    await run()
+    do { try await run() } catch { print("multi-turn-probe: \(error)") }
 } else {
     print("multi-turn-probe: requires macOS 27.0+")
     exit(2)

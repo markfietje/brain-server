@@ -32,6 +32,7 @@ let package = Package(
     products: [
         .library(name: "MLXFMProbe", targets: ["MLXFMProbe"]),
         .executable(name: "banner-experiment", targets: ["banner-experiment"]),
+        .executable(name: "multi-turn-probe", targets: ["multi-turn-probe"]),
     ],
     dependencies: [
         // Default-on trait `FoundationModelsIntegration` gates MLXFoundationModels.
@@ -83,6 +84,16 @@ let package = Package(
         // measurement instrument, invoked deliberately.
         .executableTarget(
             name: "banner-experiment",
+            dependencies: ["MLXFMProbe"],
+            swiftSettings: [.swiftLanguageMode(.v5)],
+        ),
+        // Multi-turn memory probe. An executable like the banner experiment: it
+        // loads a 6 GB model, so `swift test` is the wrong home. It asks the CHAT
+        // product's question -- can the model carry context across turns -- which
+        // the banner experiment did NOT (that used a fresh session per turn,
+        // correct for a paired A/B and the wrong shape for chat).
+        .executableTarget(
+            name: "multi-turn-probe",
             dependencies: ["MLXFMProbe"],
             swiftSettings: [.swiftLanguageMode(.v5)],
         ),
