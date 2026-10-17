@@ -284,9 +284,25 @@
 > keeping: dropping the ceiling 9→7 leaves every individual number still
 > MEASURED, so only the ceiling arm fires (`It asserted [3, 5, 7, 6, 7]`).
 >
+> **A second pass found two of them measuring more than their claim**, and both
+> fixes are in the register row: the measurement pin's arms each asserted a
+> whole-case request count (11/13/11/14), which encoded the five-phase prefix
+> and the Handoff exchange as much as Verify — adding a phase would have broken a
+> pin about exchange COST for an unrelated reason. Replaced by an
+> instrument-vs-instrument equality that needs no phase knowledge (every
+> dispatched exchange leaves exactly one `control:exchange` row — they agree
+> EXACTLY, the child's included). And the two delegation doc pins were
+> substring-matching a 90 KB document, so a symbol named in an unrelated section
+> would have satisfied them; they now read one section. **All four red-proofs were
+> re-run after the refactor, because that is exactly when a pin goes vacuous
+> quietly** — and the first attempt at the third drill reported green because the
+> DRILL was buggy (it consumed its own line index before using it), which would
+> have been filed as a passed red-proof. Cost: three doc pins at 0.00s, the
+> measurement at 3.33s for five real case runs, zero production-code cost.
+>
 > **ponytail:** one measured const set the prose is held to, two doc pins, one
 > anti-rot name list, three register rows, three red-proofs RUN and recorded;
-> no behaviour change, no schema, no wire, no new dependency, no new error
+//! no behaviour change, no schema, no wire, no new dependency, no new error
 > type, no new test file, no floor written before its population was
 > measured — and the round's exit criterion was that every claim reads TRUE at
 > the commit that changes it, which is why the one commit whose measurement
