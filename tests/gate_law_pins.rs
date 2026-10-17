@@ -436,8 +436,11 @@ fn r51_gdl_engine_site_is_bound_to_new_with_proficiency() {
     // Re-dated for Phase D (F11), again for Phase E (F12a): the case-budget
     // wiring moved the engine construction down once more. The register
     // binds the SYMBOL (`new_with_proficiency`); this number is the
-    // re-derived anchor.
-    let site_line = 2867usize;
+    // re-derived anchor. Re-dated a third time for Phase F (F15), which added
+    // the measured per-phase exchange costs above this site — the SAME shape
+    // as the two earlier re-dates, and the reason the pin binds a symbol and
+    // treats the number as an anchor to re-derive rather than a fact.
+    let site_line = 2894usize;
 
     // Walk backwards to the nearest `fn` declaration.
     let enclosing = lines
@@ -457,9 +460,9 @@ fn r51_gdl_engine_site_is_bound_to_new_with_proficiency() {
         decl.contains(GDL_ENCLOSING_SYMBOL),
         "the `LoopDriver::new` at gdl.rs:{site_line} lives inside a function declared at \
          :{decl_line} — `{decl}` — but the register binds `{GDL_ENCLOSING_SYMBOL}`. The \
-         register must bind the function the call actually lives in: `GdlDriver::new` \
-         (:2817) is only the L3-delegating wrapper that calls `new_with_proficiency` \
-         (:2841), which is where the engine is built."
+         register must bind the function the call actually lives in:          `GdlDriver::new` \
+         (:2844) is only the L3-delegating wrapper that calls `new_with_proficiency` \
+         (:2868), which is where the engine is built."
     );
 
     // And the wrapper really is a delegator, not a constructor. Bound the search to

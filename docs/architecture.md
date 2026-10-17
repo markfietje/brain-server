@@ -320,13 +320,36 @@ satisfy a phase routes or escalates instead).
 
 The phase machine is deterministic Rust: the model proposes a phase artifact
 as JSON, a pure arbiter (`parse_and_gate` — no DB, no clock, no provider)
-decides, and a rejected artifact is retried bounded-then-routed — **three
-asks in total per phase: one original plus two corrective re-asks**
-(`MAX_PHASE_ATTEMPTS = 3` pins the *total*, not the re-ask count); exhausting
-them ROUTES the case (route, not resolve). The same law governs Deliver — a
-model proposes, only the gate disposes — where the arbiter is
-`brain-delivery-core`'s `promote` instead (see The delivery loop — the
-software axis).
+decides, and a rejected artifact is retried bounded-then-routed — one ask per
+attempt, `MAX_PHASE_ATTEMPTS = 3` bounding the ladder (it pins the *total*, not
+the re-ask count); exhausting it ROUTES the case (route, not resolve).
+
+**Asks are not exchanges.** A non-Verify phase spends one provider exchange per
+attempt, so its whole ladder costs 3 exchanges. Verify spends 1, 2 or 3 per
+attempt depending on how the attempt ends: a gate rejection costs the ask alone
+(nothing is delegated or confirmed), a contradicting re-check costs the child and
+never asks the confirmation, and a consistent re-check followed by a disagreeing
+confirmation costs all three. The per-phase cost is therefore
+**strategy-dependent** — 5 exchanges when two gate rejections precede a passing
+attempt, 7 exchanges when two re-check contradictions precede a consistent one,
+6 exchanges when three contradictions route the case, and up to 9 exchanges when
+three confirmations disagree. Only a *failing* attempt repeats, and the failing
+attempt is the expensive one, which is why the ceiling is the product and not
+less than it. The four counts are measured through the running machine, not
+derived (`verify_phase_exchange_cost_is_strategy_dependent_and_measured`), and
+the document is held to them.
+
+The case carries **one cumulative token budget across every phase**, not a
+per-attempt cap: `BRAIN_GDL_CASE_TOKEN_BUDGET` (default `3 × p99 = 336` tokens —
+the measured happy path times the bounded retry ladder, from
+`config::GDL_CASE_TOKEN_BUDGET_DEFAULT`). Exhausting it CAPPES the case
+receipt-backed rather than routing it. **Scale caveat:** the p99 is the loopback
+provider's own token accounting over the judged seeds, not a frontier model's —
+an operator on a real provider sets the variable to their own measured ceiling.
+
+The same law governs Deliver — a model proposes, only the gate disposes — where
+the arbiter is `brain-delivery-core`'s `promote` instead (see The delivery loop —
+the software axis).
 Persistence per phase-pass is ONE `WorkflowTx`: the phase's `workflow_steps`
 row (Act adds one sub-row per executed test-log row), the CAS run-state
 advance (with its own audit row), and one audit row per inserted step —

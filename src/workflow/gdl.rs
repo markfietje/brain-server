@@ -61,6 +61,33 @@ mod checkpoint;
 /// resolve — a case the model cannot artifact honestly is a human's case).
 pub(crate) const MAX_PHASE_ATTEMPTS: u32 = 3;
 
+/// The MEASURED provider-exchange cost of one Verify phase, by strategy —
+/// the number `docs/architecture.md` states and the doc-truth pin reads.
+///
+/// Measured through the real machine by
+/// `verify_phase_exchange_cost_is_strategy_dependent_and_measured`, which
+/// drives each strategy and asserts the machine produces exactly this. The
+/// chain is machine → this const → the document, with both ends pinned, so a
+/// change to the loop turns the measurement red rather than quietly leaving
+/// the prose true of a machine that no longer exists.
+///
+/// A Verify attempt spends 1 exchange (the gate rejects the artifact), 2 (the
+/// re-check contradicts, so no confirmation is asked) or 3 (the re-check is
+/// consistent and the confirmation disagrees). The ceiling is `3 × 3 = 9`:
+/// only a FAILING attempt repeats, and the failing attempt is the expensive
+/// one. Asks are not exchanges — that distinction is the whole finding.
+pub(crate) const VERIFY_PHASE_EXCHANGE_COSTS: [usize; 4] = [5, 7, 6, 9];
+
+/// The ceiling, named on its own because it is the number a reader sizing
+/// provider spend needs, and the one the arithmetic above produces.
+pub(crate) const VERIFY_PHASE_EXCHANGE_CEILING: usize = 9;
+
+/// The measured cost of a NON-Verify phase's whole retry ladder: one provider
+/// exchange per attempt, because such a phase delegates nothing and asks no
+/// confirmation. Measured in the same test, for the same reason — the document
+/// states it, so a derived number would be a number nothing checks.
+pub(crate) const NON_VERIFY_PHASE_EXCHANGE_COST: usize = 3;
+
 /// The plan strip is bounded (bounds law + cache discipline): a strip that
 /// grows without bound is context the model pays for on every phase.
 pub(crate) const PLAN_STRIP_MAX_LINES: usize = 24;
@@ -5869,6 +5896,292 @@ mod tests {
         );
     }
 
+    /// A Verify artifact the GATE rejects but the model believes passed:
+    /// `stability_window_min` under the floor is an A6 gate error, so the
+    /// attempt is retried rather than terminal. `pass: false` would not do —
+    /// that is `VerifyFailed`, a different terminal with no retry.
+    const VERIFY_UNDERSTABLE: &str = r#"{"re_run":"rebuild rate on VD 5 under the customer load","pass_condition":">10%/h","pass":true,"stability_window_min":0,"negative_check":true}"#;
+
+    /// The re-check's other verdict: the child names a falsifier, which is the
+    /// named A4 gate failure.
+    const RECHECK_CONTRADICTED: &str = r#"{"contradicted":true,"reason":"the captured evidence shows the rate recovered before the rebuild"}"#;
+
+    /// An intake artifact the gate rejects: the problem statement carries an
+    /// empty `is`, which is the named unbounded-statement failure. Rejected on
+    /// every attempt, it routes the case at Intake — which is how the
+    /// non-Verify ladder's cost gets measured rather than derived.
+    const INTAKE_UNBOUNDED: &str = r#"{"is_not":{"what":{"is":"","is_not":"read cache"},"where":{"is":"node-042 RAID-10 VDs","is_not":"node-041"},"when":{"is":"since 03:12 during rebuild","is_not":"before 03:12"},"extent":{"is":"VD 5 only","is_not":"all VDs"}},"telemetry_refs":["tsr://node-042","sel://events"],"what_changed":"fw 2.10 flashed last week","known_good":"node-041 same fw"}"#;
+
+    /// One strategy's measured Verify cost: the provider exchanges the phase
+    /// itself spent, decomposed by who spent them.
+    #[derive(Debug, PartialEq, Eq)]
+    struct VerifyCost {
+        /// Provider exchanges the whole case run made (`provider.requests()`).
+        exchanges: usize,
+        /// Exchanges billed to Verify: the main phase ask, plus its re-check
+        /// child and its confirmation.
+        verify: usize,
+        /// Main phase asks (`control:exchange:gdl:…:phase:verify:attempt:…`).
+        attempts: i64,
+        /// Confirmations (the same key, `:confirm`).
+        confirms: i64,
+        /// Re-check children (`control:adversarial_recheck`).
+        rechecks: i64,
+        terminal: &'static str,
+    }
+
+    /// Drive one scripted Verify strategy through the real machine and measure
+    /// what it cost, with TWO independent instruments.
+    ///
+    /// Takes the STRATEGY only — the texts from Verify onward — and supplies
+    /// the Intake-through-Act prefix every arm shares, so an arm cannot
+    /// silently misalign itself against that prefix.
+    ///
+    /// `provider.requests().len()` is ground truth for provider work; the
+    /// session log's keyed rows decompose it by phase. Neither alone is
+    /// enough: a log row can exist for an exchange that never dispatched, and
+    /// a request count cannot say which phase spent it. Their agreement is the
+    /// assertion, and `verify == attempts + confirms + rechecks` is the
+    /// cross-check that the decomposition is exhaustive rather than
+    /// convenient.
+    fn measure_verify_cost(
+        strategy: Vec<Vec<crate::agentloop::provider::StreamEvent>>,
+    ) -> VerifyCost {
+        let runtime = rt();
+        let mut script = happy_script();
+        script.truncate(5); // through Act — the prefix every arm shares
+        script.extend(strategy);
+        let f = fixture(script);
+        seed_kb_for_ticket(&f, "cost");
+        let outcome = runtime
+            .block_on(f.driver.run_case(1, "cost", &CancellationToken::new()))
+            .unwrap();
+        let terminal = match &outcome {
+            GdlOutcome::Resolved { .. } => "resolved",
+            GdlOutcome::Routed { .. } => "routed",
+            other => panic!("the scripted strategies terminate resolved or routed, got {other:?}"),
+        };
+        let conn = Connection::open(f.tmp.path()).unwrap();
+        let count = |sql: &str| -> i64 {
+            conn.query_row(sql, [], |r| r.get(0))
+                .unwrap_or_else(|e| panic!("{sql}: {e}"))
+        };
+        // The child's exchange DOES land a `control:exchange` row, keyed
+        // `control:exchange:child:gdl:…` — `scope_exchange` refuses to admit it
+        // into the scoped-exchange contract (`session_log.rs:286`), but the row
+        // is there. So the discriminator is the request prefix, not the kind:
+        // a main ask and its confirmation both start `control:exchange:gdl:`,
+        // the child starts `control:exchange:child:`.
+        let attempts = count(
+            "SELECT COUNT(*) FROM agent_session_events WHERE kind = 'control:exchange' \
+             AND idempotency_key LIKE 'control:exchange:gdl:%:phase:verify:attempt:%' \
+             AND idempotency_key NOT LIKE '%:confirm'",
+        );
+        let confirms = count(
+            "SELECT COUNT(*) FROM agent_session_events WHERE kind = 'control:exchange' \
+             AND idempotency_key LIKE 'control:exchange:gdl:%:phase:verify:attempt:%:confirm'",
+        );
+        let rechecks = count(
+            "SELECT COUNT(*) FROM agent_session_events \
+             WHERE kind = 'control:adversarial_recheck'",
+        );
+        VerifyCost {
+            exchanges: f.provider.requests().len(),
+            verify: (attempts + confirms + rechecks) as usize,
+            attempts,
+            confirms,
+            rechecks,
+            terminal,
+        }
+    }
+
+    /// F15: the per-phase exchange COST is strategy-dependent, and its ceiling
+    /// is nine — not the three `docs/architecture.md` claimed.
+    ///
+    /// **Asks are not exchanges.** One ask is one exchange only when the gate
+    /// rejects the artifact immediately. A Verify attempt spends **1**
+    /// exchange (gate reject), **2** (the re-check contradicts, so no
+    /// confirmation is ever asked) or **3** (the re-check is consistent and
+    /// the confirmation disagrees). The re-check is one exchange
+    /// (`ADVERSARIAL_RECHECK_MAX_TURNS = 1`); the non-Verify phases are a
+    /// flat 1 per attempt, which is the only number the old sentence got
+    /// right.
+    ///
+    /// **The ceiling is the product, and the first derivation of it here was
+    /// wrong in the opposite direction.** Three *passing* attempts cannot
+    /// happen — a pass advances the phase — but the maximum-cost attempt is a
+    /// FAILING one, and the failing attempt is exactly the kind that repeats.
+    /// Three A6 disagreements spend 3 + 3 + 3. An earlier draft of this work
+    /// reasoned from "no three passing attempts" to "not 9", measured 7, and
+    /// would have understated the cost by two exchanges; the A6 arm below is
+    /// what disproved it, and it was already driven (for its own law) by
+    /// `resolved_requires_a_second_agreeing_verification_exchange`.
+    ///
+    /// **All four signatures are distinct**, which is the anti-vacuity: arms 1
+    /// and 2 differ only in the re-check count (1 vs 3), arms 3 and 4 only in
+    /// the confirmation count (0 vs 3). A count that cannot tell "3 because of
+    /// the confirm" from "3 because of retries" proves nothing, so each arm
+    /// asserts its own composition and not only its total.
+    #[test]
+    fn verify_phase_exchange_cost_is_strategy_dependent_and_measured() {
+        let runtime = rt();
+        let disagree = VERIFY_JSON.replace("rebuild rate on VD 5", "a different re-run");
+
+        // 0 — the NON-Verify ladder, measured because the document now states
+        //     it. A phase with no delegation and no confirmation spends the ask
+        //     alone, so its whole retry ladder is exactly MAX_PHASE_ATTEMPTS.
+        //     Deriving that from the constant is what made it the one number in
+        //     the doc the doc-truth pin could not check.
+        let unbounded = fixture(vec![
+            scripted_text(INTAKE_UNBOUNDED),
+            scripted_text(INTAKE_UNBOUNDED),
+            scripted_text(INTAKE_UNBOUNDED),
+        ]);
+        seed_kb_for_ticket(&unbounded, "cost");
+        let exhausted = runtime
+            .block_on(
+                unbounded
+                    .driver
+                    .run_case(1, "cost", &CancellationToken::new()),
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                exhausted,
+                GdlOutcome::Routed {
+                    at: GdlPhase::Intake,
+                    ..
+                }
+            ),
+            "an unbounded statement exhausts the ladder and routes, never resolves: \
+             {exhausted:?}"
+        );
+        assert_eq!(
+            unbounded.provider.requests().len(),
+            NON_VERIFY_PHASE_EXCHANGE_COST,
+            "a non-Verify phase spends one exchange per attempt and delegates nothing, \
+             so the whole ladder is MAX_PHASE_ATTEMPTS"
+        );
+
+        // 1 — two gate rejections, then the third attempt passes outright:
+        //     three bare asks, then the re-check and the confirmation. 5.
+        let pass = measure_verify_cost(vec![
+            scripted_text(VERIFY_UNDERSTABLE),
+            scripted_text(VERIFY_UNDERSTABLE),
+            scripted_text(VERIFY_JSON),
+            scripted_text(RECHECK_JSON),
+            scripted_text(VERIFY_JSON),
+            scripted_text(HANDOFF_JSON),
+        ]);
+        assert_eq!(
+            pass,
+            VerifyCost {
+                exchanges: 11, // 5 prefix + 5 Verify + 1 Handoff
+                verify: 5,
+                attempts: 3,
+                confirms: 1,
+                rechecks: 1,
+                terminal: "resolved",
+            },
+            "a gate rejection costs the ask alone: the re-check and the confirmation \
+             are asked only after a PASSING gate"
+        );
+
+        // 2 — two A4 contradictions, then a consistent re-check: 2 + 2 + 3. 7.
+        let mut contradict_then_ok = Vec::new();
+        for _ in 0..2 {
+            contradict_then_ok.push(scripted_text(VERIFY_JSON));
+            contradict_then_ok.push(scripted_text(RECHECK_CONTRADICTED));
+        }
+        contradict_then_ok.extend([
+            scripted_text(VERIFY_JSON),
+            scripted_text(RECHECK_JSON),
+            scripted_text(VERIFY_JSON),
+            scripted_text(HANDOFF_JSON),
+        ]);
+        let consistent = measure_verify_cost(contradict_then_ok);
+        assert_eq!(
+            consistent,
+            VerifyCost {
+                exchanges: 13, // 5 prefix + 7 Verify + 1 Handoff
+                verify: 7,
+                attempts: 3,
+                confirms: 1,
+                rechecks: 3,
+                terminal: "resolved",
+            },
+            "a contradicting re-check is the A4 gate failure: it spends the child but \
+             never asks the confirmation, because there is no passing gate to confirm"
+        );
+
+        // 3 — three A4 contradictions: the case routes at exhaustion. 2 + 2 + 2. 6.
+        let mut contradict_out = Vec::new();
+        for _ in 0..MAX_PHASE_ATTEMPTS {
+            contradict_out.push(scripted_text(VERIFY_JSON));
+            contradict_out.push(scripted_text(RECHECK_CONTRADICTED));
+        }
+        let routed = measure_verify_cost(contradict_out);
+        assert_eq!(
+            routed,
+            VerifyCost {
+                exchanges: 11, // 5 prefix + 6 Verify, no Handoff
+                verify: 6,
+                attempts: 3,
+                confirms: 0,
+                rechecks: 3,
+                terminal: "routed",
+            },
+            "exhausting the A4 ladder routes: three asks and three children, and the \
+             absence of any confirmation is what makes this arm distinguishable from arm 4"
+        );
+
+        // 4 — three A6 disagreements: the CEILING. 3 + 3 + 3. 9.
+        let mut disagree_out = Vec::new();
+        for _ in 0..MAX_PHASE_ATTEMPTS {
+            disagree_out.push(scripted_text(VERIFY_JSON));
+            disagree_out.push(scripted_text(RECHECK_JSON));
+            disagree_out.push(scripted_text(&disagree));
+        }
+        let ceiling = measure_verify_cost(disagree_out);
+        assert_eq!(
+            ceiling,
+            VerifyCost {
+                exchanges: 14, // 5 prefix + 9 Verify, no Handoff
+                verify: 9,
+                attempts: 3,
+                confirms: 3,
+                rechecks: 3,
+                terminal: "routed",
+            },
+            "THE CEILING: a consistent re-check followed by a disagreeing confirmation \
+             spends three exchanges, and only a FAILING attempt repeats — so the \
+             per-phase ceiling is 3 x 3 = 9, reached with no passing attempt at all"
+        );
+
+        // The machine → const link. `docs/architecture.md` is held to these
+        // numbers, so they are not a second hand-written copy: they are what
+        // the four drives above measured, and the ceiling const is asserted
+        // to be the measured maximum rather than typed beside it.
+        assert_eq!(
+            [
+                pass.verify,
+                consistent.verify,
+                routed.verify,
+                ceiling.verify
+            ],
+            VERIFY_PHASE_EXCHANGE_COSTS,
+            "the measured per-strategy costs ARE the const the document is held to — \
+             a change to the loop turns THIS red, and the prose follows the machine \
+             instead of outliving it"
+        );
+        assert_eq!(
+            Some(VERIFY_PHASE_EXCHANGE_CEILING),
+            VERIFY_PHASE_EXCHANGE_COSTS.iter().copied().max(),
+            "the ceiling the doc quotes is the measured maximum, not a typed \
+             approximation of it"
+        );
+    }
+
     /// C3: a contradictory re-check verdict is the named A4 gate failure —
     /// the bounded retries re-run the whole phase and the case routes at
     /// exhaustion, never resolves. Every delegation lands a typed row.
@@ -9435,7 +9748,12 @@ mod tests {
             ]
         );
         assert!(GdlPhase::Intake < GdlPhase::Handoff);
-        assert_eq!(MAX_PHASE_ATTEMPTS, 3, "one ask + two corrective re-asks");
+        assert_eq!(
+            MAX_PHASE_ATTEMPTS, 3,
+            "one ask + two corrective re-asks — the ASKS, which is not the exchange \
+             cost: a Verify attempt spends one exchange per ask only when its gate \
+             rejects the artifact outright (VERIFY_PHASE_EXCHANGE_COSTS)"
+        );
     }
 
     #[test]

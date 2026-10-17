@@ -942,4 +942,125 @@ mod pins {
             );
         }
     }
+
+    /// F15: `docs/architecture.md`'s per-phase exchange claim is held to the
+    /// machine's MEASURED costs, not to its own wording.
+    ///
+    /// The doc read *"three asks in total per phase"*. Asks are not exchanges,
+    /// and Verify's cost turned out to be strategy-dependent (5 / 7 / 6 / 9)
+    /// — the exact defect class this file exists to catch, and the reason the
+    /// pin extracts NUMBERS instead of looking for a phrase: a reworded lie
+    /// satisfies a substring check and fails this one.
+    ///
+    /// The numbers come from `VERIFY_PHASE_EXCHANGE_COSTS`, which
+    /// `verify_phase_exchange_cost_is_strategy_dependent_and_measured` asserts
+    /// the real machine produces. So the chain is machine → const → prose with
+    /// both ends pinned; nothing here re-derives the arithmetic a third time,
+    /// and nothing here trusts the prose.
+    ///
+    /// Red-first: written against the pre-fix sentence, which claims three.
+    #[test]
+    fn the_architecture_docs_verify_exchange_cost_is_the_measured_ceiling() {
+        use crate::workflow::gdl::{
+            NON_VERIFY_PHASE_EXCHANGE_COST, VERIFY_PHASE_EXCHANGE_CEILING,
+            VERIFY_PHASE_EXCHANGE_COSTS,
+        };
+
+        let arch = doc("docs/architecture.md");
+
+        // The claim's own neighbourhood: the paragraph that carries the
+        // per-phase arithmetic. Scoped to the section so a number elsewhere in
+        // a 1,100-line document cannot satisfy this pin.
+        let section = arch
+            .split("## The GDL case machine")
+            .nth(1)
+            .unwrap_or_else(|| {
+                panic!("docs/architecture.md must keep its GDL case-machine section")
+            })
+            .split("\n## ")
+            .next()
+            .expect("the section has an end");
+
+        // Collapse whitespace before matching ANY of this. The first draft of
+        // this pin matched the phrase "three asks in total per phase" against
+        // the raw text — and the doc wraps it as `**three\nasks in total per
+        // phase`, so the check silently passed on the lie it was written to
+        // catch, and the pin failed three assertions later on a weaker
+        // complaint. A phrase check against wrapped markdown is a check that
+        // reports green exactly when the prose is reflowed.
+        let flat = section.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        assert!(
+            !flat.contains("three asks in total per phase"),
+            "the doc still claims three asks per phase. Asks are not exchanges: a \
+             Verify attempt spends 1, 2 or 3 depending on how it ends."
+        );
+        assert!(
+            flat.contains("MAX_PHASE_ATTEMPTS"),
+            "the paragraph must name `MAX_PHASE_ATTEMPTS` — the constant that bounds \
+             the retry ladder, so a reader can find the bound rather than take the \
+             count on trust"
+        );
+
+        // EVERY exchange count the paragraph asserts must be one the machine
+        // measured. Extracting all of them (rather than grepping for one digit)
+        // is the anti-vacuity: a doc that quietly drops the ceiling to 7 fails
+        // here even though 7 is a real measured cost, because the sentence
+        // would then be attributing it to the wrong thing.
+        let mut asserted: Vec<usize> = Vec::new();
+        let mut rest = flat.as_str();
+        while let Some(at) = rest.find("exchanges") {
+            // Skip the whitespace between the count and the noun, then take
+            // the digits. Without the trim a written "5 exchanges" yields no
+            // number at all and the pin reports an empty set instead of a
+            // wrong one — a silent miss wearing a failure's clothes.
+            let head = rest[..at].trim_end();
+            let digits: String = head
+                .chars()
+                .rev()
+                .take_while(char::is_ascii_digit)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            if let Ok(n) = digits.parse::<usize>() {
+                asserted.push(n);
+            }
+            rest = &rest[at + "exchanges".len()..];
+        }
+        assert!(
+            !asserted.is_empty(),
+            "the paragraph states no exchange count at all — a reader sizing \
+             provider spend is left with the bound and no cost"
+        );
+        for n in &asserted {
+            // Both kinds of phase are measured in the same drive, so the doc
+            // may state either — what it may not do is state a number nothing
+            // measured. The Verify costs and the non-Verify ladder are the
+            // complete measured set.
+            assert!(
+                VERIFY_PHASE_EXCHANGE_COSTS.contains(n) || *n == NON_VERIFY_PHASE_EXCHANGE_COST,
+                "the doc attributes {n} provider exchanges to a phase, which the machine \
+                 never spends. Measured: {VERIFY_PHASE_EXCHANGE_COSTS:?} for Verify (ceiling \
+                 {VERIFY_PHASE_EXCHANGE_CEILING}), and {NON_VERIFY_PHASE_EXCHANGE_COST} for a \
+                 non-Verify phase's whole ladder."
+            );
+        }
+        assert!(
+            asserted.contains(&VERIFY_PHASE_EXCHANGE_CEILING),
+            "the paragraph must state the CEILING ({VERIFY_PHASE_EXCHANGE_CEILING} \
+             exchanges), not only the cheap arms: a doc that names 5 and 7 and stays \
+             silent on the worst case understates provider spend by two exchanges \
+             per Verify phase. It asserted {asserted:?}."
+        );
+
+        // The budget sentence belongs to the same section: the case's
+        // cumulative ceiling is what an operator sizes against, and it was
+        // absent entirely.
+        assert!(
+            section.contains("BRAIN_GDL_CASE_TOKEN_BUDGET"),
+            "the phase section must name the case's cumulative token budget — an \
+             operator reading it for cost currently sees no ceiling on the case"
+        );
+    }
 }
