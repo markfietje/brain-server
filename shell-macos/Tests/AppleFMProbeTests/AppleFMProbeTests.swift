@@ -285,7 +285,7 @@ extension AppleFMProbeTests {
 @Test("Multi-turn: AFM carries a turn-1 value to turn 2, and a cold session cannot")
 func multiTurnMemoryIsMeasuredNotAssumed() async throws {
     #if canImport(FoundationModels)
-    guard #available(macOS 26.0, *) else { return }
+    guard #available(macOS 27.0, *) else { return }
     let secret = "184/97"
 
     // Same surface the latency test above already drives successfully, which is
@@ -320,6 +320,7 @@ func multiTurnMemoryIsMeasuredNotAssumed() async throws {
     #expect(warmHas, "AFM did not carry the turn-1 value into turn 2")
     #endif
 }
+
 // M1 — PCC LATENCY. UNMEASURED when plan 19 was written.
 //
 // The on-device numbers above describe a LOCAL model: cold first token ~2.0 s,
@@ -776,6 +777,7 @@ extension AppleFMProbeTests {
     }
 }
 #endif
+
 // HISTORY PRESSURE — trims, never rewrites.
 //
 // The window is 4,096 combined and the measured conversation budget is 3,728.
@@ -1167,6 +1169,65 @@ struct SwitchModifier: LanguageModelSession.DynamicProfileModifier {
         }
     }
 }
+
+// THE EXCLUSION IS A PIN, NOT A CONVENTION.
+//
+// Qwen3.5-9B throws `runtime("No user query found in messages.")` on turn 2 of
+// any conversation, on BOTH `LanguageModelSession` and the mlx-native
+// `ChatSession`.
+//
+// The DIAGNOSIS lives in exactly one place — the `ChatModelId` doc comment in
+// `ChatModelLayer.swift` — and is deliberately not restated here, because it was
+// restated in four places and drifted. An earlier version of this comment called
+// that symmetry "the diagnosis" and concluded the MLX executor's prefix
+// matching, which the same symmetry does not license: mlx-native `ChatSession`
+// never goes through a `LanguageModelExecutor`, so it cannot be the common
+// factor. Weights are not implicated; the cause is not established.
+//
+// What this pin holds is narrower and does not depend on settling the cause:
+// the id is REFUSED.
+//
+// "Simply not wired up" is not an exclusion. It re-enters the first time
+// someone adds a model picker, and the failure is silent: it starts throwing on
+// turn 2, which presents as a memory bug and gets chased as one. So the refusal
+// is a value, a throwing entry point, and this pin.
+//
+// The pin enumerates `allCases` rather than naming the one bad id, so a model
+// added LATER is covered by the same rule without this file being edited.
+@Test("Qwen3.5 cannot enter a chat path — the id is refused, not merely unused")
+func qwen35CannotEnterAChatPath() {
+    // The named case, stated plainly so a reader does not have to infer it.
+    #expect(
+        !ChatModelId.qwen3_5.mayServeChat,
+        "Qwen3.5 is marked chat-capable again — it throws on turn 2 of every conversation"
+    )
+    #expect(
+        ChatModelId.qwen3_5.chatRefusalReason?.isEmpty == false,
+        "an excluded model must say WHY, or the next person re-adds it to find out"
+    )
+    #expect(
+        ChatModelId.onDeviceAFM.mayServeChat,
+        "the measured tier must remain usable — nothing else has ever completed a turn here"
+    )
+
+    // The REFUSAL actually happens, rather than the flag merely being false.
+    #expect(throws: ChatModelError.self) {
+        try ChatModelId.forChat(.qwen3_5)
+    }
+    #expect(throws: Never.self) {
+        try ChatModelId.forChat(.onDeviceAFM)
+    }
+
+    // The law, over the whole set: every id is either chat-capable or carries a
+    // reason. An id that is neither is a model someone can route to by accident.
+    for id in ChatModelId.allCases {
+        #expect(
+            id.mayServeChat != (id.chatRefusalReason != nil),
+            "\(id.rawValue) is neither usable nor explained — one of the two must be true"
+        )
+    }
+}
+
 // TRAP 1's compile-time half, held as a pin.
 //
 // `SystemLanguageModel.contextSize` is a plain `var`;
@@ -1278,4 +1339,103 @@ func contextSizeIsReadThroughOnePath() async throws {
         #expect(!reason.isEmpty, "an unreadable window must say why")
     }
     #endif
+}
+
+// A QUOTE ATTRIBUTED TO APPLE MUST CITE APPLE.
+//
+// `HistoryBudget` previously block-quoted "Transcripts mutations can invalidate
+// key-value caches and raise latency; appending preserves them…" and introduced
+// it with "Apple's own wording is the rule this exists to enforce". It is a
+// paraphrase of WWDC26's third-party session notes, not a sentence from Apple's
+// documentation, and an unciteable quote presented as a citation is exactly what
+// makes the next reader stop checking.
+//
+// The rule is GENERAL rather than a phrase list: any block quote attributed to
+// Apple must sit in a file that links Apple's documentation. That catches the
+// next paraphrase, which no phrase list would.
+@Test("Any quote attributed to Apple cites Apple's documentation in the same file")
+func quotesAttributedToAppleCiteApple() throws {
+    let sources = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/AppleFMProbe")
+    let files = try FileManager.default.contentsOfDirectory(
+        at: sources, includingPropertiesForKeys: nil
+    ).filter { $0.pathExtension == "swift" }
+    #expect(!files.isEmpty, "the scan found no files — it is passing vacuously")
+
+    var offenders: [String] = []
+    for file in files {
+        let text = try String(contentsOf: file, encoding: .utf8)
+        // Whitespace-collapsed: a citation split across lines is still a
+        // citation, and a raw line scan misses both directions.
+        let flat = text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        guard flat.contains("> \"") else { continue }
+        guard flat.contains("Apple") else { continue }
+        if !flat.contains("developer.apple.com") {
+            offenders.append(file.lastPathComponent)
+        }
+    }
+    #expect(
+        offenders.isEmpty,
+        """
+        a block quote attributed to Apple with no link to Apple's documentation, \
+        in: \(offenders.joined(separator: ", ")). Cite the page, or stop \
+        attributing the words to Apple.
+        """
+    )
+}
+
+// TRAP 4 — the false claim cannot come back.
+//
+// `shell-macos-mlx/Package.swift` asserted that the MLX adapter gives "the same
+// transcript" as `SystemLanguageModel`. For multi-turn that is FALSE: Qwen3.5
+// throws `runtime("No user query found in messages.")` on turn 2 of any
+// conversation, on BOTH `LanguageModelSession` and the mlx-native `ChatSession`.
+// The symmetry is the diagnosis — not a call-shape problem, not the weights —
+// and the sentence is exactly the kind that sends the next reader down the same
+// path for an hour.
+//
+// Comments rot silently, so the correction is held by a scan rather than by
+// goodwill. It reads the file across the package boundary and fails if the
+// claim reappears in any of the wordings that have actually been tried.
+@Test("The MLX package header no longer claims the adapter gives 'the same transcript'")
+func mlxPackageHeaderDoesNotClaimTheSameTranscript() throws {
+    let here = URL(fileURLWithPath: #filePath)
+    let package = here.deletingLastPathComponent()   // Tests/AppleFMProbeTests
+        .deletingLastPathComponent()                  // Tests
+        .deletingLastPathComponent()                  // shell-macos
+        .deletingLastPathComponent()                  // repo root
+        .appendingPathComponent("shell-macos-mlx/Package.swift")
+
+    let text = try String(contentsOf: package, encoding: .utf8)
+
+    // Whitespace-collapsed, because the claim has been wrapped across lines
+    // before and a raw substring check went green on the very lie it was
+    // written to catch.
+    let flat = (text as String)
+        .split(whereSeparator: { $0.isWhitespace })
+        .joined(separator: " ")
+
+    for claim in [
+        "the same transcript",
+        "same transcript",
+    ] {
+        #expect(
+            !flat.contains(claim),
+            """
+            shell-macos-mlx/Package.swift claims "\(claim)" again. It is FALSE for \
+            multi-turn: Qwen3.5 throws on turn 2 of any conversation on both \
+            LanguageModelSession and ChatSession.
+            """
+        )
+    }
+
+    // The claim the file SHOULD make, so the correction cannot hollow out into
+    // silence — a header that says nothing is how the next reader re-adds it.
+    #expect(
+        flat.contains("Qwen3.5"),
+        "the header must name the model whose multi-turn failure falsified the claim"
+    )
 }

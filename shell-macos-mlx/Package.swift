@@ -11,9 +11,38 @@
 // WHAT THIS PROVES. `MLXFoundationModels` is an MLX adapter conforming to
 // Apple's `FoundationModels.LanguageModel`, so an MLX model is usable directly
 // with `LanguageModelSession` — same `Tool`s, same `@Generable` guided output,
-// same transcript, same streaming as `SystemLanguageModel`. That makes the two
-// model tiers one line apart, in one language, with no sidecar, no HTTP
-// listener, and no second implementation of the tool schema.
+// same streaming as `SystemLanguageModel`. That makes the two model tiers one
+// line apart, in one language, with no sidecar, no HTTP listener, and no second
+// implementation of the tool schema.
+//
+// WHAT THIS DOES NOT PROVE — and the sentence this file used to get wrong.
+// An earlier version of this comment claimed the adapter gave "the same
+// transcript" as `SystemLanguageModel`. For MULTI-TURN that is FALSE, and it is
+// false for a reason that is now measured rather than suspected: with
+// Qwen3.5-9B-4bit, turn 2 throws `runtime("No user query found in messages.")`
+// on BOTH `LanguageModelSession` AND the mlx-native `ChatSession`. The
+// adapter's one-tool-call session works; multi-turn memory does not.
+//
+// The single-tool-call path is therefore the whole of what has been shown to
+// work. Anything that carries history across turns is a DIFFERENT claim and
+// currently a negative one. Qwen3-0.6B-4bit does pass multi-turn, with a cold
+// control; Qwen3.5-9B does not, on either surface.
+//
+// The weights are not implicated. The cause is NOT ESTABLISHED — an earlier
+// version of this comment asserted it was the MLX executor's prefix matching,
+// which the same-symmetry evidence does not license, since mlx-native
+// `ChatSession` never goes through a `LanguageModelExecutor` at all. The single
+// diagnosis, its evidence and its two hypotheses live in ONE place:
+// `shell-macos/Sources/AppleFMProbe/ChatModelLayer.swift`, on `ChatModelId`.
+// This file does not restate it, because it was restated four times and the
+// copies drifted apart from the evidence.
+//
+// Until the cause is settled, Qwen3.5 is excluded from any chat path by a pin,
+// not by convention.
+//
+// UPSTREAM, recorded rather than patched here: `ChatSession.swift:129` in
+// mlx-swift-lm documents a `loadModelContainer(id:)` overload that does not
+// exist. That is upstream's file to fix, so it is a note and not a local edit.
 //
 // The architectures that were ruled out on memory grounds do not come back here:
 // Bonsai and the LFM2.5 DWQ quant need a FORK of MLX for their Hadamard-rotated

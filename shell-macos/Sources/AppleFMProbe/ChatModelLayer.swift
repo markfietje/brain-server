@@ -4,6 +4,93 @@ import Foundation
 import FoundationModels
 #endif
 
+// MARK: - Model choice
+
+/// The model id the chat layer is allowed to run on.
+///
+/// This is a STRING, and that is the point. A model that is merely "not wired
+/// up" re-enters the next time someone adds a picker, and the failure is silent
+/// — it simply starts throwing on turn 2, which looks like a memory bug and is
+/// chased as one. So the exclusion is a value, a check, and a pin, rather than a
+/// convention.
+///
+/// ## THE ONE PLACE QWEN3.5'S CAUSE IS STATED.
+///
+/// Everything else in the repo refers here rather than restating it.
+///
+/// **Measured.** Qwen3.5-9B-4bit throws `runtime("No user query found in
+/// messages.")` on turn 2 of any conversation, on BOTH `LanguageModelSession`
+/// and the mlx-native `ChatSession`. Qwen3-0.6B-4bit passes the same
+/// multi-turn probe with a cold control.
+///
+/// **Hypothesis, and previously overstated.** An earlier version of this comment
+/// asserted the defect "is in the MLX executor's prefix matching, not the
+/// weights", reasoning that the identical failure across two session types
+/// rules out a call-shape problem. The symmetry is real; the conclusion drawn
+/// from it was not licensed. mlx-native `ChatSession` does not go through a
+/// `LanguageModelExecutor` at all, so a defect in that executor cannot explain a
+/// throw on BOTH surfaces — the common factor is the chat-template path they
+/// share, which is also where upstream's own note about conversation-aware Qwen
+/// templates points.
+///
+/// So: the weights are not implicated, and the cause is **not established**.
+/// It is a rendering/template-layer question, and whether it is fixable locally
+/// is open. What is NOT open is that the model cannot serve chat today, which
+/// is what this enum actually enforces.
+public enum ChatModelId: String, Sendable, Equatable, CaseIterable {
+    /// The measured tier. 4,096 combined tokens, and the only one that has
+    /// completed a turn on the development machine.
+    case onDeviceAFM = "afm3-core"
+
+    /// Excluded, with the reason attached to the case rather than to a comment
+    /// that a refactor can leave behind.
+    ///
+    /// Retained as a case — not deleted — because `allCases` is what lets a pin
+    /// enumerate the whole set and fail if an id that is not allowed ever
+    /// appears. Deleting it would make the exclusion unenforceable and leave
+    /// only the memory of it.
+    case qwen3_5 = "qwen3.5-9b-4bit"
+
+    /// Whether this model may serve a CHAT path — a multi-turn conversation
+    /// with history carried across turns.
+    public var mayServeChat: Bool {
+        switch self {
+        case .onDeviceAFM: true
+        case .qwen3_5: false
+        }
+    }
+
+    /// Why not, for the error a caller gets.
+    public var chatRefusalReason: String? {
+        switch self {
+        case .onDeviceAFM: nil
+        case .qwen3_5:
+            "Qwen3.5 throws \"No user query found in messages.\" on turn 2 of any "
+                + "conversation, on both LanguageModelSession and mlx-native ChatSession. The "
+                + "weights are not implicated and the cause is not established — see ChatModelId "
+                + "for the evidence and the two hypotheses."
+        }
+    }
+
+    /// Refuses a model that may not serve chat.
+    ///
+    /// Returns the model rather than throwing, so a caller that wants to probe
+    /// can; the refusal is carried in the enum's own vocabulary rather than in
+    /// an error type that would need its own case for every future exclusion.
+    public static func forChat(_ id: ChatModelId) throws -> ChatModelId {
+        guard id.mayServeChat else {
+            throw ChatModelError.excludedFromChat(id: id, reason: id.chatRefusalReason ?? "")
+        }
+        return id
+    }
+}
+
+/// A model that cannot serve a chat path. Small on purpose: one case, and it
+/// names the id so the message says which model was refused.
+public enum ChatModelError: Error, Equatable {
+    case excludedFromChat(id: ChatModelId, reason: String)
+}
+
 // MARK: - The window, read through ONE path
 
 /// One seam for BOTH tiers' windows, so no caller can read one synchronously.
